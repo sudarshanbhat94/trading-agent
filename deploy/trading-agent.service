@@ -1,0 +1,17 @@
+[Unit]
+Description=Indian Equity Dry Trading Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-agent
+EnvironmentFile=/opt/trading-agent/.env
+ExecStart=/opt/trading-agent/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+User=opc
+Group=opc
+
+[Install]
+WantedBy=multi-user.target
