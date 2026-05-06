@@ -941,15 +941,33 @@ def _trade_plan(
     stop = min(price - atr * 1.2, price * (1 - stop_pct))
     risk = max(price - stop, price * 0.005)
     risk_per_trade_pct = min(float(risk_limits.get("max_order_value_pct", 0.04) or 0.04), 0.01)
+    target_1 = price + risk * 1.5
+    target_2 = price + risk * 2.5
+    structure_target = _float_or_none(key_levels.get("nearest_resistance") or key_levels.get("prev_swing_high"))
+    rr_target_3 = price + risk * 3.5
+    target_3 = max(structure_target or 0.0, rr_target_3, target_2 + risk)
+    target_3_note = (
+        "structure resistance used"
+        if structure_target and structure_target >= target_3
+        else "structure resistance was below T2, so T3 uses 3.5R ladder target"
+        if structure_target and structure_target < target_2
+        else "3.5R ladder target"
+    )
     return {
         "direction": "LONG" if confluence.get("total", 0) >= 14 else "WATCH" if confluence.get("total", 0) >= 10 else "NO_SIGNAL",
         "horizon": "swing_3_to_7_days",
         "entry_zone": [_round(price * 0.995), _round(price * 1.005)],
         "stop_loss": _round(stop),
         "targets": [
-            {"label": "T1", "price": _round(price + risk * 1.5), "rr": 1.5},
-            {"label": "T2", "price": _round(price + risk * 2.5), "rr": 2.5},
-            {"label": "T3", "price": _round(key_levels.get("prev_swing_high") or price + risk * 3.5), "rr": "structure"},
+            {"label": "T1", "price": _round(target_1), "rr": 1.5},
+            {"label": "T2", "price": _round(target_2), "rr": 2.5},
+            {
+                "label": "T3",
+                "price": _round(target_3),
+                "rr": "3.5_or_structure",
+                "structure_reference": _round(structure_target),
+                "note": target_3_note,
+            },
         ],
         "invalidation": {
             "chart": _round(stop),
@@ -2276,3 +2294,10 @@ def _unique(values: list[str]) -> list[str]:
 
 def _round(value: float | None, digits: int = 3) -> float | None:
     return round(value, digits) if value is not None else None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
