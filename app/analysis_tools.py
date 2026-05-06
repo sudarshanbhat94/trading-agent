@@ -160,12 +160,19 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
     options_oi = full.get("options_oi") or {}
     backtest = full.get("backtest_snapshot") or {}
     conflicts = full.get("signal_conflicts") or {}
+    scorecard = full.get("institutional_scorecard") or {}
 
     total = float(confluence.get("total") or 0.0)
     score = max(min((total - 10.0) / 12.0, 0.75), -0.45)
+    if scorecard.get("total_score") is not None:
+        score = max(min((float(scorecard.get("total_score") or 0.0) - 60.0) / 25.0, 0.9), -0.6)
 
     if risk.get("no_new_longs"):
         score -= 0.35
+    if scorecard.get("hard_veto", {}).get("failed"):
+        score -= 0.35
+    if scorecard.get("buy_ready"):
+        score += 0.15
     if liquidity.get("liquidity_tier") == "illiquid":
         score -= 0.3
     elif liquidity.get("liquidity_tier") == "thin":

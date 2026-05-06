@@ -65,6 +65,27 @@ def full_spectrum_analysis(
         corporate_risk=corporate_risk,
         options_oi=options_oi,
     )
+    trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits, liquidity, backtest)
+    scorecard = _institutional_scorecard(
+        price=quote.price,
+        data_quality=data_quality,
+        indicators=indicators,
+        filters=filters,
+        trend_context=trend_context,
+        liquidity=liquidity,
+        relative_strength=relative_strength,
+        delivery=delivery,
+        fundamental=fundamental,
+        corporate_risk=corporate_risk,
+        options_oi=options_oi,
+        backtest=backtest,
+        conflicts=conflicts,
+        sentiment_score=sentiment_score,
+        global_context=global_context,
+        institutional_flow=flow,
+        confluence=confluence,
+        trade_plan=trade_plan,
+    )
     risk_overrides = _risk_overrides(
         global_context,
         flow,
@@ -75,10 +96,10 @@ def full_spectrum_analysis(
         liquidity,
         corporate_risk,
         conflicts,
+        scorecard,
     )
-    trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits, liquidity, backtest)
-    signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides)
-    monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides)
+    signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides, scorecard)
+    monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides, scorecard)
     return {
         "version": "opentrade-full-spectrum-v2",
         "symbol": row.get("symbol"),
@@ -102,6 +123,7 @@ def full_spectrum_analysis(
         "options_oi": options_oi,
         "backtest_snapshot": backtest,
         "signal_conflicts": conflicts,
+        "institutional_scorecard": scorecard,
         "news_sentiment": _news_sentiment(sentiment_score),
         "confluence_score": confluence,
         "risk_overrides": risk_overrides,
@@ -508,6 +530,7 @@ def _risk_overrides(
     liquidity: dict[str, Any],
     corporate_risk: dict[str, Any],
     conflicts: dict[str, Any],
+    scorecard: dict[str, Any],
 ) -> dict[str, Any]:
     atr_pct = indicators.get("atr_pct")
     flags = []
@@ -529,6 +552,10 @@ def _risk_overrides(
         flags.append("corporate_event_risk_no_new_longs")
     if conflicts.get("severity") == "high":
         flags.append("conflicted_signal_no_new_longs")
+    for veto in (scorecard.get("hard_veto") or {}).get("failed", []):
+        flags.append(f"scorecard_{veto}_no_new_longs")
+    if not scorecard.get("buy_ready") and scorecard.get("total_score", 0) < scorecard.get("minimum_entry_score", 75):
+        flags.append("institutional_scorecard_below_entry_threshold")
     symbol_flags = institutional_flow.get("symbol_flags", {})
     if symbol_flags.get("asm"):
         flags.append("asm_surveillance_no_new_longs")
@@ -548,6 +575,7 @@ def _risk_overrides(
             "liquidity and circuit-risk proxy",
             "corporate event risk",
             "signal conflict severity",
+            "institutional scorecard hard vetoes",
         ],
         "no_new_longs": no_new_longs,
         "size_multiplier": _conviction_size_multiplier(confluence.get("total", 0), flags),
@@ -605,6 +633,7 @@ def _signal_plan(
     confluence: dict[str, Any],
     trade_plan: dict[str, Any],
     risk_overrides: dict[str, Any],
+    scorecard: dict[str, Any],
 ) -> dict[str, Any]:
     direction = trade_plan.get("direction", "NO_SIGNAL")
     return {
@@ -612,7 +641,12 @@ def _signal_plan(
         "sector": row.get("sector") or "unknown",
         "current_price": _round(price),
         "direction": direction,
-        "decision_readiness": "actionable" if direction == "LONG" and not risk_overrides.get("no_new_longs") else "monitor_only",
+        "decision_readiness": "actionable"
+        if direction == "LONG" and scorecard.get("buy_ready") and not risk_overrides.get("no_new_longs")
+        else "monitor_only",
+        "institutional_grade": scorecard.get("grade"),
+        "institutional_score": f"{scorecard.get('total_score', 0)}/{scorecard.get('max_score', 100)}",
+        "failed_must_pass": scorecard.get("must_pass_failed", []),
         "confluence": f"{confluence.get('total', 0)}/{confluence.get('max', 26)} {confluence.get('tier', 'NO_SIGNAL')}",
         "trend_alignment": {
             "weekly": trend_context.get("weekly"),
@@ -629,11 +663,13 @@ def _monitoring_checklist(
     trade_plan: dict[str, Any],
     confluence: dict[str, Any],
     risk_overrides: dict[str, Any],
+    scorecard: dict[str, Any],
 ) -> list[str]:
     entry = trade_plan.get("entry_zone") or []
     stop = trade_plan.get("stop_loss")
     checklist = [
         f"Re-score confluence every cycle; current score is {confluence.get('total', 0)}/26.",
+        f"Re-score institutional scorecard every cycle; current score is {scorecard.get('total_score', 0)}/100.",
         "Refresh quote, candles, global regime, and latest symbol news before acting.",
         "Block new long entries if global risk-off or no-new-longs override appears.",
     ]
@@ -910,6 +946,427 @@ def _signal_conflicts(
     }
 
 
+def _institutional_scorecard(
+    price: float,
+    data_quality: dict[str, Any],
+    indicators: dict[str, Any],
+    filters: dict[str, Any],
+    trend_context: dict[str, Any],
+    liquidity: dict[str, Any],
+    relative_strength: dict[str, Any],
+    delivery: dict[str, Any],
+    fundamental: dict[str, Any],
+    corporate_risk: dict[str, Any],
+    options_oi: dict[str, Any],
+    backtest: dict[str, Any],
+    conflicts: dict[str, Any],
+    sentiment_score: float,
+    global_context: dict[str, Any],
+    institutional_flow: dict[str, Any],
+    confluence: dict[str, Any],
+    trade_plan: dict[str, Any],
+) -> dict[str, Any]:
+    symbol_flags = institutional_flow.get("symbol_flags") or {}
+    hard_veto = []
+    warnings = []
+    atr_pct = indicators.get("atr_pct")
+    if data_quality.get("candle_count", 0) < 30:
+        hard_veto.append("insufficient_candle_history")
+    if global_context.get("regime") == "risk-off" and float(global_context.get("risk_score") or 0.0) <= -0.28:
+        hard_veto.append("global_risk_off")
+    if symbol_flags.get("asm"):
+        hard_veto.append("asm_surveillance")
+    if symbol_flags.get("gsm"):
+        hard_veto.append("gsm_surveillance")
+    if symbol_flags.get("fno_ban"):
+        hard_veto.append("fno_ban")
+    if liquidity.get("liquidity_tier") == "illiquid":
+        hard_veto.append("illiquid_execution")
+    if liquidity.get("circuit_risk_proxy"):
+        hard_veto.append("possible_circuit_risk")
+    if corporate_risk.get("high_impact_risk"):
+        hard_veto.append("high_impact_corporate_event")
+    if conflicts.get("severity") == "high":
+        hard_veto.append("high_signal_conflict")
+    if sentiment_score <= -0.45:
+        hard_veto.append("severe_negative_news_sentiment")
+    if atr_pct is not None and atr_pct > 8:
+        hard_veto.append("extreme_atr_volatility")
+
+    if data_quality.get("score", 0) < 75:
+        warnings.append("limited_history_reduces_confidence")
+    if liquidity.get("liquidity_tier") == "thin":
+        warnings.append("thin_liquidity_reduce_position_size")
+    if conflicts.get("severity") == "medium":
+        warnings.append("medium_signal_conflict")
+
+    sections = [
+        _market_regime_section(global_context, institutional_flow, filters),
+        _liquidity_section(liquidity),
+        _trend_relative_strength_section(price, indicators, filters, trend_context, relative_strength),
+        _momentum_section(indicators),
+        _volume_accumulation_section(indicators, delivery),
+        _news_event_section(sentiment_score, fundamental, corporate_risk, conflicts),
+        _derivatives_section(options_oi, institutional_flow),
+        _fundamental_section(fundamental, corporate_risk),
+        _backtest_section(backtest),
+        _risk_reward_section(price, indicators, trade_plan),
+    ]
+    total = sum(section["score"] for section in sections)
+    max_score = sum(section["max"] for section in sections)
+    min_entry_score = 75
+    strict_confluence = 16
+    section_map = {section["key"]: section for section in sections}
+    must_pass_failed = []
+    if hard_veto:
+        must_pass_failed.append("hard_veto_clear")
+    if total < min_entry_score:
+        must_pass_failed.append("institutional_score_min_75")
+    if int(confluence.get("total", 0) or 0) < strict_confluence:
+        must_pass_failed.append("confluence_min_16")
+    if data_quality.get("score", 0) < 55:
+        must_pass_failed.append("data_quality_min_55")
+    if section_map["liquidity_execution"]["score"] < 7:
+        must_pass_failed.append("liquidity_execution_min_7")
+    if section_map["trend_relative_strength"]["score"] < 9:
+        must_pass_failed.append("trend_relative_strength_min_9")
+    if section_map["risk_reward"]["score"] < 5:
+        must_pass_failed.append("risk_reward_min_5")
+    if sentiment_score < -0.2:
+        must_pass_failed.append("sentiment_not_bearish")
+
+    buy_ready = not must_pass_failed
+    return {
+        "version": "institutional-scorecard-v1",
+        "total_score": _round(total),
+        "max_score": max_score,
+        "normalized_score": _round(total / max_score if max_score else 0),
+        "minimum_entry_score": min_entry_score,
+        "strict_confluence_required": strict_confluence,
+        "grade": _scorecard_grade(total),
+        "buy_ready": buy_ready,
+        "hard_veto": {"passed": not hard_veto, "failed": _unique(hard_veto)},
+        "must_pass_failed": _unique(must_pass_failed),
+        "warnings": _unique(warnings),
+        "sections": section_map,
+        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, and sentiment is not bearish.",
+        "exit_rule": "For open positions, exit on hard stop, target/invalidation, breakdown, severe negative news, high conflict, or global risk-off.",
+        "accuracy_note": "No market system can guarantee 90% accuracy; this scorecard is designed to improve expectancy by rejecting low-quality trades.",
+    }
+
+
+def _market_regime_section(
+    global_context: dict[str, Any],
+    institutional_flow: dict[str, Any],
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    risk_score = float(global_context.get("risk_score") or 0.0)
+    if global_context.get("regime") == "risk-on":
+        score += 4
+        evidence.append("global regime risk-on")
+    elif global_context.get("regime") == "risk-off":
+        evidence.append("global regime risk-off")
+    else:
+        score += 2
+        evidence.append("global regime neutral/unavailable")
+    if risk_score > 0.15:
+        score += 2
+        evidence.append("positive global risk score")
+    elif risk_score > -0.15:
+        score += 1
+        evidence.append("global risk score neutral")
+    if filters.get("trend_not_down"):
+        score += 2
+        evidence.append("stock trend not down")
+    flow_bias = float((institutional_flow.get("market_bias") or {}).get("score") or 0.0)
+    if flow_bias > 0.1:
+        score += 2
+        evidence.append("positive institutional/free-feed market bias")
+    elif flow_bias >= -0.1:
+        score += 1
+        evidence.append("institutional/free-feed bias neutral")
+    return _score_section("market_regime", "Market Regime", score, 10, evidence)
+
+
+def _liquidity_section(liquidity: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    tier = liquidity.get("liquidity_tier")
+    if tier == "strong":
+        score += 6
+    elif tier == "tradeable":
+        score += 5
+    elif tier == "thin":
+        score += 2
+    evidence.append(f"liquidity tier {tier or 'unknown'}")
+    if not liquidity.get("circuit_risk_proxy"):
+        score += 3
+        evidence.append("no circuit-risk proxy")
+    if (liquidity.get("avg_traded_value_20") or 0) >= 10_000_000:
+        score += 2
+        evidence.append("average traded value >= 1 crore")
+    if liquidity.get("price_impact_risk") == "normal":
+        score += 1
+        evidence.append("normal price-impact proxy")
+    return _score_section("liquidity_execution", "Liquidity And Execution", score, 12, evidence)
+
+
+def _trend_relative_strength_section(
+    price: float,
+    indicators: dict[str, Any],
+    filters: dict[str, Any],
+    trend_context: dict[str, Any],
+    relative_strength: dict[str, Any],
+) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    daily = trend_context.get("daily")
+    if daily == "STRONG_UPTREND":
+        score += 4
+    elif daily == "WEAK_UPTREND":
+        score += 3
+    elif daily == "SIDEWAYS":
+        score += 1
+    evidence.append(f"daily trend {daily}")
+    ma = indicators.get("moving_averages") or {}
+    if ma.get("sma_20") is not None and price > ma["sma_20"]:
+        score += 2
+        evidence.append("price above 20 SMA")
+    if ma.get("sma_50") is not None and price > ma["sma_50"]:
+        score += 2
+        evidence.append("price above 50 SMA")
+    if filters.get("above_200dma"):
+        score += 2
+        evidence.append("price above 200 DMA")
+    elif filters.get("above_200dma") is None:
+        score += 1
+        evidence.append("200 DMA unavailable")
+    if relative_strength.get("bias") == "outperforming":
+        score += 4
+        evidence.append("outperforming Nifty proxy")
+    elif relative_strength.get("bias") == "neutral":
+        score += 2
+        evidence.append("relative strength neutral")
+    if filters.get("within_25pct_period_high"):
+        score += 2
+        evidence.append("within 25% of period high")
+    return _score_section("trend_relative_strength", "Trend And Relative Strength", score, 16, evidence)
+
+
+def _momentum_section(indicators: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    rsi = indicators.get("rsi_14")
+    if rsi is not None and 40 <= rsi <= 70:
+        score += 3
+        evidence.append("RSI in constructive 40-70 zone")
+    elif rsi is not None and 70 < rsi <= 78:
+        score += 1
+        evidence.append("RSI extended but not extreme")
+    adx = indicators.get("adx")
+    if adx is not None and adx >= 20:
+        score += 2
+        evidence.append("ADX confirms trend strength")
+    if (indicators.get("macd") or {}).get("bias") == "bullish":
+        score += 2
+        evidence.append("MACD bullish")
+    if (indicators.get("ichimoku") or {}).get("bias") == "bullish_cloud":
+        score += 2
+        evidence.append("Ichimoku bullish cloud")
+    cci = indicators.get("cci_20")
+    if cci is not None and 0 <= cci <= 200:
+        score += 1
+        evidence.append("CCI positive without extreme extension")
+    stochastic = indicators.get("stochastic") or {}
+    if stochastic.get("bias") != "overbought":
+        score += 2
+        evidence.append("stochastic not overbought")
+    return _score_section("momentum_quality", "Momentum Quality", score, 12, evidence)
+
+
+def _volume_accumulation_section(indicators: dict[str, Any], delivery: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    volume_ratio = indicators.get("volume_ratio_20")
+    if volume_ratio is not None and volume_ratio >= 1.5:
+        score += 3
+        evidence.append("volume expansion >= 1.5x")
+    elif volume_ratio is not None and volume_ratio >= 1.1:
+        score += 1
+        evidence.append("volume modestly above average")
+    if delivery.get("bias") in {"accumulation", "volume_accumulation_proxy"}:
+        score += 3
+        evidence.append(delivery.get("bias"))
+    if (indicators.get("obv_slope") or 0) > 0:
+        score += 2
+        evidence.append("OBV slope positive")
+    if (indicators.get("cmf_20") or 0) > 0:
+        score += 2
+        evidence.append("CMF positive")
+    if (indicators.get("volume_profile_proxy") or {}).get("bias") == "above_poc":
+        score += 2
+        evidence.append("price above volume-profile proxy POC")
+    return _score_section("volume_accumulation", "Volume And Accumulation", score, 12, evidence)
+
+
+def _news_event_section(
+    sentiment_score: float,
+    fundamental: dict[str, Any],
+    corporate_risk: dict[str, Any],
+    conflicts: dict[str, Any],
+) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    if sentiment_score > 0.2:
+        score += 4
+        evidence.append("positive news sentiment")
+    elif sentiment_score >= -0.1:
+        score += 2
+        evidence.append("news sentiment neutral")
+    else:
+        evidence.append("news sentiment negative")
+    if fundamental.get("quality_bucket") == "event_positive":
+        score += 2
+        evidence.append("positive official event keyword")
+    elif fundamental.get("quality_bucket") == "unknown":
+        score += 1
+        evidence.append("fundamental event data neutral/unknown")
+    if not corporate_risk.get("high_impact_risk"):
+        score += 2
+        evidence.append("no high-impact corporate event risk")
+    if conflicts.get("severity") == "none":
+        score += 2
+        evidence.append("no signal conflict")
+    return _score_section("news_events", "News And Event Risk", score, 10, evidence)
+
+
+def _derivatives_section(options_oi: dict[str, Any], institutional_flow: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    if institutional_flow.get("fno_ban"):
+        evidence.append("F&O ban flag")
+        return _score_section("derivatives_positioning", "Derivatives Positioning", 0, 6, evidence)
+    bias = options_oi.get("bias")
+    if bias == "put_heavy_supportive":
+        score += 5
+    elif bias == "balanced":
+        score += 4
+    elif bias == "call_heavy_caution":
+        score += 1
+    else:
+        score += 3
+    evidence.append(f"options/OI bias {bias or 'unavailable'}")
+    if not institutional_flow.get("fno_ban"):
+        score += 1
+        evidence.append("not flagged in F&O ban feed")
+    return _score_section("derivatives_positioning", "Derivatives Positioning", score, 6, evidence)
+
+
+def _fundamental_section(fundamental: dict[str, Any], corporate_risk: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    bucket = fundamental.get("quality_bucket")
+    if bucket == "event_positive":
+        score += 4
+    elif bucket == "unknown":
+        score += 2
+    evidence.append(f"fundamental bucket {bucket or 'unknown'}")
+    if not corporate_risk.get("high_impact_risk"):
+        score += 2
+        evidence.append("no governance/event veto")
+    return _score_section("fundamental_quality", "Fundamental Quality", score, 6, evidence)
+
+
+def _backtest_section(backtest: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    if not backtest.get("available"):
+        score = 3
+        evidence.append(backtest.get("reason", "backtest unavailable"))
+        return _score_section("backtest_expectancy", "Backtest Snapshot", score, 8, evidence)
+    expectancy = float(backtest.get("expectancy") or 0.0)
+    win_rate = float(backtest.get("win_rate") or 0.0)
+    if expectancy > 0:
+        score += 4
+        evidence.append("positive expectancy proxy")
+    elif expectancy == 0:
+        score += 2
+        evidence.append("flat expectancy proxy")
+    if win_rate >= 0.5:
+        score += 2
+        evidence.append("win rate >= 50%")
+    elif win_rate >= 0.35:
+        score += 1
+        evidence.append("win rate acceptable for swing proxy")
+    if float(backtest.get("max_drawdown_proxy") or 0.0) >= -8:
+        score += 2
+        evidence.append("drawdown proxy within tolerance")
+    return _score_section("backtest_expectancy", "Backtest Snapshot", score, 8, evidence)
+
+
+def _risk_reward_section(price: float, indicators: dict[str, Any], trade_plan: dict[str, Any]) -> dict[str, Any]:
+    score = 0
+    evidence = []
+    target_rr = _target_rr(trade_plan)
+    if target_rr >= 2:
+        score += 3
+        evidence.append(f"target RR {target_rr}")
+    stop = trade_plan.get("stop_loss")
+    stop_pct = ((price - stop) / price) * 100 if stop and price else None
+    if stop_pct is not None and 1.0 <= stop_pct <= 5.0:
+        score += 2
+        evidence.append("stop distance is swing-trade suitable")
+    atr_pct = indicators.get("atr_pct")
+    if atr_pct is not None and atr_pct <= 6:
+        score += 2
+        evidence.append("ATR volatility within limit")
+    risk_pct = ((trade_plan.get("position_sizing") or {}).get("max_capital_at_risk_pct") or 0.0) * 100
+    if risk_pct <= 1.0:
+        score += 1
+        evidence.append("risk per trade <= 1%")
+    return _score_section("risk_reward", "Risk Reward", score, 8, evidence)
+
+
+def _score_section(key: str, label: str, score: float, max_score: int, evidence: list[str]) -> dict[str, Any]:
+    score = max(min(float(score), float(max_score)), 0.0)
+    ratio = score / max_score if max_score else 0.0
+    status = "pass" if ratio >= 0.7 else "watch" if ratio >= 0.45 else "fail"
+    return {
+        "key": key,
+        "label": label,
+        "score": _round(score),
+        "max": max_score,
+        "status": status,
+        "evidence": _unique(evidence)[:6],
+    }
+
+
+def _scorecard_grade(score: float) -> str:
+    if score >= 88:
+        return "A+"
+    if score >= 80:
+        return "A"
+    if score >= 72:
+        return "B"
+    if score >= 62:
+        return "C"
+    return "Reject"
+
+
+def _target_rr(trade_plan: dict[str, Any]) -> float:
+    values = []
+    for target in trade_plan.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        try:
+            values.append(float(target.get("rr")))
+        except (TypeError, ValueError):
+            continue
+    return max(values) if values else 0.0
+
+
 def _news_sentiment(sentiment_score: float) -> dict[str, Any]:
     if sentiment_score > 0.2:
         bias = "bullish"
@@ -1028,7 +1485,7 @@ def _requirement_coverage(
         },
         "phase_9_confluence": {
             "status": "implemented_with_neutral_gaps",
-            "implemented": "26-point confluence score and tier thresholds; free FII/DII, PCR, ASM/GSM, announcements can contribute when available",
+            "implemented": "26-point confluence score, 100-point institutional scorecard, hard vetoes, and tier thresholds; free FII/DII, PCR, ASM/GSM, announcements can contribute when available",
             "gap": "missing institutional/feed-only factors are recorded as gaps instead of fabricated",
         },
         "phase_10_signal_output": {

@@ -306,8 +306,9 @@ class LLMBrain:
                         "reason must be concise; evidence must list the concrete inputs that support the action. "
                         "risk_checks must list the gates that passed or failed. "
                         "invalidators must list the exact conditions that would make the action wrong. "
-                        "Respect confluence_score: below 10 means HOLD, 10-13 watchlist only, 14+ may trade, "
-                        "18+ high conviction, 22+ maximum conviction. "
+                        "Respect confluence_score: below 10 means HOLD, 10-15 watchlist only, 16+ may trade, "
+                        "18+ high conviction, 22+ maximum conviction. For new BUY decisions, also require "
+                        "institutional_scorecard.buy_ready=true; hard vetoes or failed must-pass gates override your opinion. "
                         "If an existing long position is supplied, act as the exit/risk manager: SELL only when "
                         "the hard stop, target/invalidation, technical breakdown, news shock, or risk-off regime "
                         "justifies exit; otherwise HOLD with a concrete updated exit plan. "
@@ -1040,6 +1041,7 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
                 "options_oi": full.get("options_oi"),
                 "backtest_snapshot": full.get("backtest_snapshot"),
                 "signal_conflicts": full.get("signal_conflicts"),
+                "institutional_scorecard": full.get("institutional_scorecard"),
                 "news_sentiment": full.get("news_sentiment") if rich else None,
                 "institutional_flow": {
                     "available": institutional_flow.get("available"),
@@ -1087,6 +1089,7 @@ def _nvidia_retry_context(context: dict[str, Any]) -> dict[str, Any]:
             "options_oi": full.get("options_oi"),
             "backtest_snapshot": full.get("backtest_snapshot"),
             "signal_conflicts": full.get("signal_conflicts"),
+            "institutional_scorecard": full.get("institutional_scorecard"),
             "trade_plan": {
                 "direction": trade_plan.get("direction"),
                 "entry_zone": trade_plan.get("entry_zone"),
@@ -1225,6 +1228,7 @@ def _policy_gate_action(
     full_spectrum = context.get("full_spectrum_analysis") or {}
     confluence = full_spectrum.get("confluence_score") or {}
     risk_overrides = full_spectrum.get("risk_overrides") or {}
+    scorecard = full_spectrum.get("institutional_scorecard") or {}
     confluence_total = int(confluence.get("total", 0) or 0)
     gates: list[dict[str, Any]] = [
         {
@@ -1251,9 +1255,20 @@ def _policy_gate_action(
             [
                 {
                     "gate": "full_spectrum_confluence",
-                    "passed": confluence_total >= 14,
+                    "passed": confluence_total >= 16,
                     "value": confluence_total,
-                    "required": ">= 14/26",
+                    "required": ">= 16/26",
+                },
+                {
+                    "gate": "institutional_scorecard_buy_ready",
+                    "passed": bool(scorecard.get("buy_ready")),
+                    "value": {
+                        "score": scorecard.get("total_score"),
+                        "grade": scorecard.get("grade"),
+                        "failed": scorecard.get("must_pass_failed", []),
+                        "hard_veto": (scorecard.get("hard_veto") or {}).get("failed", []),
+                    },
+                    "required": "buy_ready=true, score >=75/100, hard veto clear, must-pass gates clear",
                 },
                 {
                     "gate": "no_new_longs_override",

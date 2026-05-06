@@ -220,12 +220,18 @@ class StrategyEngine:
         full_spectrum = context.get("full_spectrum_analysis", {})
         confluence = full_spectrum.get("confluence_score", {})
         risk_overrides = full_spectrum.get("risk_overrides", {})
+        scorecard = full_spectrum.get("institutional_scorecard", {})
         confluence_total = int(confluence.get("total", 0) or 0)
+        exit_pressure = (
+            scorecard.get("hard_veto", {}).get("failed")
+            or "sentiment_not_bearish" in (scorecard.get("must_pass_failed") or [])
+            or "hard_veto_clear" in (scorecard.get("must_pass_failed") or [])
+        )
         if risk_overrides.get("no_new_longs") and not has_position:
             return "HOLD"
-        if combined >= 0.35 and confluence_total >= 14 and not has_position:
+        if combined >= 0.35 and confluence_total >= 16 and scorecard.get("buy_ready") and not has_position:
             return "BUY"
-        if combined <= -0.38 and has_position:
+        if (combined <= -0.38 or exit_pressure) and has_position:
             return "SELL"
         return "HOLD"
 
@@ -293,12 +299,22 @@ class StrategyEngine:
     ) -> str:
         has_position = bool(context.get("position", {}).get("qty", 0))
         risk_limits = context.get("risk_limits", {})
+        full_spectrum = context.get("full_spectrum_analysis") or {}
+        scorecard = full_spectrum.get("institutional_scorecard") or {}
         gates = {
             "has_existing_position": has_position,
             "current_open_positions": len([row for row in positions.values() if row.get("qty", 0) > 0]),
             "max_positions": risk_limits.get("max_positions"),
             "buy_combined_threshold": 0.35,
-            "buy_confluence_threshold": 14,
+            "buy_confluence_threshold": 16,
+            "buy_requires_institutional_scorecard_ready": True,
+            "institutional_scorecard": {
+                "buy_ready": scorecard.get("buy_ready"),
+                "score": scorecard.get("total_score"),
+                "grade": scorecard.get("grade"),
+                "failed": scorecard.get("must_pass_failed", []),
+                "hard_veto": (scorecard.get("hard_veto") or {}).get("failed", []),
+            },
             "sell_threshold": -0.38,
             "buy_requires_no_existing_position": True,
             "buy_requires_no_new_longs_clear": True,
@@ -325,6 +341,7 @@ class StrategyEngine:
                 "hard_stop_price": round(avg_price * (1 - self.settings.stop_loss_pct), 4) if avg_price else None,
                 "take_profit_price": round(avg_price * (1 + self.settings.take_profit_pct), 4) if avg_price else None,
                 "deterministic_exit": "SELL if combined <= -0.38, hard stop hit, or take-profit hit",
+                "scorecard_exit": "SELL if a hard veto, severe negative sentiment, or high-conflict condition appears",
                 "llm_exit_review": "primary mode reviews open positions before new entries when within LLM Symbols/Cycle limit",
             }
         return _json_dumps(
@@ -334,7 +351,7 @@ class StrategyEngine:
                 "final_action": action,
                 "action_reason": action_reason,
                 "action_policy": {
-                    "BUY": "combined score >= 0.35, full-spectrum confluence >= 14/26, no existing long position, and no no-new-longs override",
+                    "BUY": "combined score >= 0.35, confluence >= 16/26, institutional scorecard buy_ready=true, no existing long position, and no no-new-longs override",
                     "SELL": "existing long position plus combined score <= -0.38, LLM exit call, hard stop, take-profit, or invalidation trigger",
                     "HOLD": "score/action gates did not permit a trade",
                 },

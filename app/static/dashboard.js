@@ -1063,10 +1063,12 @@ function fullSpectrumHtml(analysis) {
   const risk = analysis.risk_overrides || {};
   const liquidity = analysis.liquidity_profile || {};
   const conflicts = analysis.signal_conflicts || {};
+  const scorecard = analysis.institutional_scorecard || {};
   return `<section class="audit-section">
     <h4>Full-Spectrum v2 Analysis</h4>
     <div class="audit-cards">
       <div class="audit-card"><span>Confluence</span><strong>${escapeHtml(confluence.total ?? "-")}/26</strong><small>${escapeHtml(confluence.tier || "-")}</small></div>
+      <div class="audit-card"><span>Institutional Score</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(`${scorecard.grade || "-"} · ${scorecard.buy_ready ? "buy ready" : "not ready"}`)}</small></div>
       <div class="audit-card"><span>Daily Trend</span><strong>${escapeHtml(trend.daily || "-")}</strong><small>${escapeHtml(trend.structure || "-")}</small></div>
       <div class="audit-card"><span>Signal Direction</span><strong>${escapeHtml(tradePlan.direction || "-")}</strong><small>${escapeHtml(tradePlan.horizon || "-")}</small></div>
       <div class="audit-card"><span>Risk Overrides</span><strong>${escapeHtml(risk.no_new_longs ? "no new longs" : "clear")}</strong><small>${escapeHtml((risk.flags || []).join(", ") || "-")}</small></div>
@@ -1075,6 +1077,7 @@ function fullSpectrumHtml(analysis) {
     </div>
     ${objectCardsHtml("Confluence Breakdown", confluence.breakdown)}
     ${objectCardsHtml("Prompt v2 Requirement Coverage", analysis.requirement_coverage)}
+    ${scorecardHtml(scorecard)}
     ${objectCardsHtml("Signal Plan", analysis.signal_plan)}
     ${objectCardsHtml("News Sentiment", analysis.news_sentiment)}
     ${objectCardsHtml("Liquidity Profile", analysis.liquidity_profile)}
@@ -1104,8 +1107,34 @@ function fullSpectrumHtml(analysis) {
       options_oi: analysis.options_oi,
       backtest_snapshot: analysis.backtest_snapshot,
       signal_conflicts: analysis.signal_conflicts,
+      institutional_scorecard: analysis.institutional_scorecard,
       trade_plan: analysis.trade_plan,
     }, null, 2))}</pre>
+  </section>`;
+}
+
+function scorecardHtml(scorecard) {
+  if (!scorecard || typeof scorecard !== "object" || !Object.keys(scorecard).length) return "";
+  const sections = scorecard.sections || {};
+  return `<section class="audit-section">
+    <h4>Institutional Scorecard</h4>
+    <div class="audit-cards">
+      <div class="audit-card"><span>Score</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(scorecard.grade || "-")}</small></div>
+      <div class="audit-card"><span>Buy Ready</span><strong>${escapeHtml(scorecard.buy_ready ? "yes" : "no")}</strong><small>${escapeHtml((scorecard.must_pass_failed || []).join(", ") || "all must-pass clear")}</small></div>
+      <div class="audit-card"><span>Hard Veto</span><strong>${escapeHtml(scorecard.hard_veto?.passed ? "clear" : "blocked")}</strong><small>${escapeHtml((scorecard.hard_veto?.failed || []).join(", ") || "-")}</small></div>
+      <div class="audit-card"><span>Warnings</span><strong>${escapeHtml((scorecard.warnings || []).length)}</strong><small>${escapeHtml((scorecard.warnings || []).join(", ") || "-")}</small></div>
+    </div>
+    <div class="audit-cards">
+      ${Object.values(sections)
+        .map(
+          (section) => `<div class="audit-card">
+            <span>${escapeHtml(section.label || labelize(section.key || ""))}</span>
+            <strong>${escapeHtml(section.score ?? "-")}/${escapeHtml(section.max ?? "-")}</strong>
+            <small>${escapeHtml(`${section.status || "-"} · ${(section.evidence || []).join(", ") || "-"}`)}</small>
+          </div>`,
+        )
+        .join("")}
+    </div>
   </section>`;
 }
 
