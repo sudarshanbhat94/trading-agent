@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from time import perf_counter
 from typing import Any
 
@@ -314,7 +315,16 @@ class LLMBrain:
 
     async def _chat_content(self, payload: dict[str, Any], timeout_seconds: int) -> str:
         if self._should_stream():
-            return await self._chat_content_stream(payload, timeout_seconds)
+            return await asyncio.wait_for(
+                self._chat_content_stream(payload, timeout_seconds),
+                timeout=timeout_seconds,
+            )
+        return await asyncio.wait_for(
+            self._chat_content_once(payload, timeout_seconds),
+            timeout=timeout_seconds,
+        )
+
+    async def _chat_content_once(self, payload: dict[str, Any], timeout_seconds: int) -> str:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
             response = await client.post(

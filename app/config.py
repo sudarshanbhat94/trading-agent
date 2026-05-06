@@ -40,6 +40,7 @@ class Settings:
     universe_csv: Path = _path("UNIVERSE_CSV", "./data/universe.csv")
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 20)
+    cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 180)
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
     admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
     auth_session_secret: str = os.getenv("AUTH_SESSION_SECRET", "")
@@ -138,6 +139,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "initial_cash_inr", "label": "Demo Cash", "type": "number", "category": "Demo Account", "min": 1000, "step": 1000},
     {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Demo Account"},
     {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Demo Account", "min": 5, "step": 1},
+    {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Demo Account", "min": 30, "step": 15},
     {"key": "admin_password", "label": "Admin Password", "type": "secret", "category": "Access Control"},
     {"key": "admin_username", "label": "Admin Username", "type": "text", "category": "Access Control"},
     {"key": "auth_session_secret", "label": "Session Secret", "type": "secret", "category": "Access Control"},

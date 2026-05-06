@@ -28,6 +28,7 @@ class TradingAgentService:
         macro: GlobalIntelligenceService | None,
         institutional_feeds: FreeInstitutionalFeedsService | None,
         interval_seconds: int,
+        cycle_timeout_seconds: int,
         on_update: UpdateCallback | None = None,
     ) -> None:
         self.db = db
@@ -37,11 +38,15 @@ class TradingAgentService:
         self.macro = macro
         self.institutional_feeds = institutional_feeds
         self.interval_seconds = interval_seconds
+        self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
         self.on_update = on_update
         self._task: asyncio.Task | None = None
         self._running = False
         self._last_error: str | None = None
         self._last_cycle_at: str | None = None
+        self._cycle_started_at: str | None = None
+        self._cycle_phase = "idle"
+        self._last_cycle_duration_seconds: float | None = None
 
     @property
     def running(self) -> bool:
@@ -64,24 +69,35 @@ class TradingAgentService:
             self._task = None
 
     async def run_once(self) -> dict[str, Any]:
+        return await asyncio.wait_for(self._run_once_inner(), timeout=self.cycle_timeout_seconds)
+
+    async def _run_once_inner(self) -> dict[str, Any]:
+        started = datetime.now(timezone.utc)
+        self._cycle_started_at = started.isoformat()
+        self._cycle_phase = "market_quotes"
         universe = self.db.get_universe(enabled_only=True)
         quotes = await self.market_data.get_quotes(universe)
         if not quotes:
             raise MarketDataError(f"{self.market_data.source_name} returned no quotes for the enabled universe")
+        self._cycle_phase = "candles"
         candles = await self.market_data.get_candles(universe)
+        self._cycle_phase = "persist_market_data"
         self.db.upsert_quotes(quotes)
         self.db.upsert_candles(candles)
         self.broker.sync_marks(quotes)
         portfolio = self.broker.snapshot()
         positions = self.broker.positions_by_symbol()
+        self._cycle_phase = "global_intelligence"
         macro_context = await self.macro.context_for_cycle() if self.macro else {}
         self.db.set_state("macro_context", macro_context)
+        self._cycle_phase = "institutional_feeds"
         institutional_context = (
             await self.institutional_feeds.context_for_cycle(universe)
             if self.institutional_feeds
             else {}
         )
         self.db.set_state("institutional_context", institutional_context)
+        self._cycle_phase = "strategy_and_llm"
         decisions = await self.strategy.evaluate(
             universe,
             quotes,
@@ -90,12 +106,16 @@ class TradingAgentService:
             macro_context,
             institutional_context,
         )
+        self._cycle_phase = "risk_and_execution"
         risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions)
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         self._execute_top_decisions(decisions, portfolio["equity"])
         portfolio = self.broker.snapshot()
         self._last_cycle_at = utc_now()
+        self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
+        self._cycle_started_at = None
+        self._cycle_phase = "idle"
         snapshot = self.snapshot()
         if self.on_update:
             await self.on_update(snapshot)
@@ -114,6 +134,12 @@ class TradingAgentService:
             "provider": self.market_data.source_name,
             "last_error": self._last_error,
             "last_cycle_at": self._last_cycle_at,
+            "cycle": {
+                "phase": self._cycle_phase,
+                "started_at": self._cycle_started_at,
+                "timeout_seconds": self.cycle_timeout_seconds,
+                "last_duration_seconds": self._last_cycle_duration_seconds,
+            },
             "portfolio": self.db.latest_portfolio()
             or {
                 "cash": self.broker.cash,
@@ -222,10 +248,18 @@ class TradingAgentService:
             try:
                 await self.run_once()
                 self._last_error = None
+            except asyncio.TimeoutError:
+                self._last_error = f"Cycle timed out after {self.cycle_timeout_seconds}s during {self._cycle_phase}"
+                self._cycle_started_at = None
+                self._cycle_phase = "idle"
+                if self.on_update:
+                    await self.on_update(self.snapshot())
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
+                self._cycle_started_at = None
+                self._cycle_phase = "idle"
                 if self.on_update:
                     await self.on_update(self.snapshot())
             await asyncio.sleep(self.interval_seconds)

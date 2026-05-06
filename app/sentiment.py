@@ -307,7 +307,10 @@ class SentimentService:
                 timeout=self.settings.llm_timeout_seconds,
                 headers={"Authorization": f"Bearer {self._llm_key()}"},
             ) as client:
-                response = await client.post(self._llm_chat_completions_url(), json=payload)
+                response = await asyncio.wait_for(
+                    client.post(self._llm_chat_completions_url(), json=payload),
+                    timeout=self.settings.llm_timeout_seconds,
+                )
                 response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(_extract_json(content))

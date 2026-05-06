@@ -75,6 +75,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         macro=new_macro,
         institutional_feeds=new_institutional_feeds,
         interval_seconds=new_settings.agent_interval_seconds,
+        cycle_timeout_seconds=new_settings.cycle_timeout_seconds,
         on_update=hub.broadcast,
     )
     return {
