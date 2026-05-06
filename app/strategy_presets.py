@@ -42,6 +42,9 @@ def evaluate_strategy_presets(candles: list[Candle], quote_price: float) -> list
         _ema_pullback_continuation(closes, quote_price),
         _bollinger_squeeze_breakout(closes, quote_price),
         _rsi_mean_reversion(closes, quote_price),
+        _donchian_momentum_breakout(highs, lows, closes, volumes, quote_price),
+        _volume_price_accumulation(candles, quote_price),
+        _failed_breakdown_reversal(candles, quote_price),
     ]
     return signals
 
@@ -197,6 +200,82 @@ def _rsi_mean_reversion(closes: list[float], quote_price: float) -> StrategySign
         notes.append("above 50 SMA")
     direction = "BUY" if score >= 0.52 else "HOLD"
     return StrategySignal("rsi_mean_reversion", round(score, 3), direction, round(score, 3), notes)
+
+
+def _donchian_momentum_breakout(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+    quote_price: float,
+) -> StrategySignal:
+    channel_high = max(highs[-55:-1]) if len(highs) >= 56 else max(highs[:-1])
+    channel_low = min(lows[-55:-1]) if len(lows) >= 56 else min(lows[:-1])
+    average_volume = mean(volumes[-20:-1]) if len(volumes) >= 21 else mean(volumes[:-1])
+    volume_ratio = volumes[-1] / average_volume if average_volume else 1.0
+    trend = _sma(closes, 20) and _sma(closes, 50) and _sma(closes, 20) > _sma(closes, 50)
+    score = 0.0
+    notes: list[str] = []
+    if quote_price > channel_high:
+        score += 0.38
+        notes.append("55-period channel breakout")
+    if trend:
+        score += 0.24
+        notes.append("20 SMA above 50 SMA")
+    if volume_ratio >= 1.25:
+        score += 0.18
+        notes.append("volume confirmation")
+    if channel_low and ((channel_high - channel_low) / channel_low) <= 0.18:
+        score += 0.12
+        notes.append("controlled channel width")
+    direction = "BUY" if score >= 0.62 else "HOLD"
+    return StrategySignal("donchian_momentum_breakout", round(score, 3), direction, round(score, 3), notes)
+
+
+def _volume_price_accumulation(candles: list[Candle], quote_price: float) -> StrategySignal:
+    recent = candles[-20:]
+    up_volume = sum(candle.volume for candle in recent if candle.close >= candle.open)
+    down_volume = sum(candle.volume for candle in recent if candle.close < candle.open)
+    closes = [candle.close for candle in candles]
+    score = 0.0
+    notes: list[str] = []
+    if down_volume and up_volume / down_volume >= 1.35:
+        score += 0.28
+        notes.append("up-volume accumulation")
+    if len(closes) >= 10 and closes[-1] >= max(closes[-10:-1]):
+        score += 0.22
+        notes.append("near 10-period closing high")
+    if _ema(closes, 10) and _ema(closes, 21) and _ema(closes, 10) > _ema(closes, 21):
+        score += 0.2
+        notes.append("10 EMA above 21 EMA")
+    if len(recent) >= 2 and recent[-1].close > recent[-1].open and recent[-1].volume > mean([c.volume for c in recent[:-1]]) * 1.15:
+        score += 0.16
+        notes.append("fresh demand candle")
+    direction = "BUY" if score >= 0.58 else "HOLD"
+    return StrategySignal("volume_price_accumulation", round(score, 3), direction, round(score, 3), notes)
+
+
+def _failed_breakdown_reversal(candles: list[Candle], quote_price: float) -> StrategySignal:
+    recent = candles[-20:]
+    prior_lows = [candle.low for candle in recent[:-1]]
+    last = recent[-1]
+    previous = recent[-2]
+    score = 0.0
+    notes: list[str] = []
+    if prior_lows and previous.close < min(prior_lows[:-1] or prior_lows) and quote_price > previous.high:
+        score += 0.34
+        notes.append("failed breakdown reclaimed prior high")
+    if last.close > last.open:
+        score += 0.14
+        notes.append("bullish reclaim candle")
+    if last.volume > mean([candle.volume for candle in recent[:-1]]) * 1.2:
+        score += 0.18
+        notes.append("reversal volume")
+    if _rsi([candle.close for candle in candles], 14) and _rsi([candle.close for candle in candles], 14) < 45:
+        score += 0.1
+        notes.append("reversal from lower RSI zone")
+    direction = "BUY" if score >= 0.56 else "HOLD"
+    return StrategySignal("failed_breakdown_reversal", round(score, 3), direction, round(score, 3), notes)
 
 
 def _sma(values: list[float], window: int) -> float | None:

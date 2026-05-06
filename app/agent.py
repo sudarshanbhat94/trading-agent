@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .db import Database
+from .macro import GlobalIntelligenceService
 from .market_data import MarketDataError, MarketDataProvider
 from .models import Decision, utc_now
 from .paper_broker import PaperBroker
@@ -22,6 +23,7 @@ class TradingAgentService:
         market_data: MarketDataProvider,
         broker: PaperBroker,
         strategy: StrategyEngine,
+        macro: GlobalIntelligenceService | None,
         interval_seconds: int,
         on_update: UpdateCallback | None = None,
     ) -> None:
@@ -29,6 +31,7 @@ class TradingAgentService:
         self.market_data = market_data
         self.broker = broker
         self.strategy = strategy
+        self.macro = macro
         self.interval_seconds = interval_seconds
         self.on_update = on_update
         self._task: asyncio.Task | None = None
@@ -67,7 +70,9 @@ class TradingAgentService:
         self.broker.sync_marks(quotes)
         portfolio = self.broker.snapshot()
         positions = self.broker.positions_by_symbol()
-        decisions = await self.strategy.evaluate(universe, quotes, positions, candles)
+        macro_context = await self.macro.context_for_cycle() if self.macro else {}
+        self.db.set_state("macro_context", macro_context)
+        decisions = await self.strategy.evaluate(universe, quotes, positions, candles, macro_context)
         risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions)
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
@@ -107,6 +112,7 @@ class TradingAgentService:
             "sentiment": self.db.latest_sentiment(40),
             "universe_size": len(self.db.get_universe(enabled_only=True)),
             "market_health": self._market_health(quotes),
+            "macro_context": self.db.get_state("macro_context", {}),
         }
 
     async def _loop(self) -> None:

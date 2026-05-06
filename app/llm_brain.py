@@ -153,7 +153,8 @@ class LLMBrain:
                     "content": (
                         "You are the primary dry-run analyst for Indian equities. "
                         "Use the supplied MCP-style tool context: quote, candles, exact math indicators, "
-                        "candlestick facts, strategy_signals, sentiment, position, and risk limits. "
+                        "candlestick facts, strategy_signals, sentiment, global market context, universe scan rank, "
+                        "position, and risk limits. "
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
                         "evidence, risk_checks, and invalidators. "
                         "action must be BUY, SELL, or HOLD. confidence is 0..1. "
@@ -489,6 +490,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "best_strategy": context.get("best_strategy"),
         "strategy_signals": context.get("strategy_signals"),
         "sentiment": context.get("sentiment"),
+        "global_market_context": context.get("global_market_context"),
+        "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
         "recent_candle_count": len(recent_candles),
         "recent_candles_tail": recent_candles[-5:],

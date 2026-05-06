@@ -14,6 +14,7 @@ This defaults to paper trading. Upstox live order routing exists, but it is disa
   - `upstox`: Upstox REST quote and candle APIs using your access token.
 - Builds MCP-style tool context with quotes, candles, candlestick facts, exact math indicators, sentiment, position, and risk limits.
 - Scores sentiment from a conservative rotating news RSS scan.
+- Adds global market intelligence from major indices, crude, gold, USD/INR, and global news before each stock decision.
 - Uses NVIDIA NIM or another OpenAI-compatible LLM as the primary analyst, or as a reviewer.
 - Evaluates named strategy presets and tracks their performance in the UI.
 - Enforces dry-money risk rules: max positions, max order size, max position size, stop loss, take profit, and daily drawdown limit.
@@ -55,6 +56,7 @@ Every row in **Decisions** and **Orders** is clickable. The drawer shows:
 - The score formula and weighted contributions from technical math, candlesticks, strategy preset, and sentiment.
 - LLM evidence, checklist, confidence gate, risk checks, and invalidators when the LLM is enabled.
 - Market context used: quote, position, technical snapshot, candlestick patterns, best strategy, and recent candle tail.
+- Global context used: market regime, global risk score, major market moves, and global headlines.
 - Broker execution sizing and veto/fill gates for BUY/SELL orders.
 
 This is evidence and audit data, not hidden chain-of-thought. The app asks the model for concise evidence lists and stores the exact structured output used by the agent.
@@ -87,6 +89,27 @@ The sentiment pipeline now does more than keyword counts:
 - Persists the event JSON and headline set for auditability.
 
 For true institutional coverage, plug in licensed feeds for exchange announcements, Reuters/Bloomberg/Dow Jones, filings, transcripts, and broker research through the same adapter pattern.
+
+## Global Market Intelligence
+
+OpenTrade now adds a macro backdrop to every stock decision. Each cycle checks:
+
+- US, Europe, Asia, and Indian index moves.
+- Crude oil, gold, and USD/INR pressure.
+- Global market headlines around rates, inflation, crude, rupee, Asia, and geopolitical risk.
+
+The resulting `global_market_context.risk_score` is included in the decision score and sent to the LLM. The dashboard shows it under **Global Risk**, and every decision drawer includes the exact macro inputs used.
+
+Tune the macro influence:
+
+```bash
+ENABLE_GLOBAL_INTELLIGENCE=true
+GLOBAL_CACHE_SECONDS=900
+GLOBAL_NEWS_LOOKBACK_DAYS=2
+GLOBAL_RISK_WEIGHT=0.10
+```
+
+`GLOBAL_RISK_WEIGHT` is capped at `0.30`; keep it modest so macro conditions influence stock selection without drowning out price action.
 
 ## Live Indian Market Data
 
@@ -182,6 +205,9 @@ Included presets:
 - `ema_pullback_continuation`: trend continuation after a pullback toward the 21 EMA.
 - `bollinger_squeeze_breakout`: low-volatility compression followed by upper-band breakout.
 - `rsi_mean_reversion`: oversold rebound setup with trend filter.
+- `donchian_momentum_breakout`: channel breakout with trend and volume confirmation.
+- `volume_price_accumulation`: accumulation pressure, demand candle, and EMA alignment.
+- `failed_breakdown_reversal`: false breakdown reclaim with reversal volume.
 
 The dashboard shows strategy-level open positions, exposure, unrealized P&L, and filled orders. For Minervini-style analysis, use enough daily history to make the 150/200 SMA checks meaningful.
 
@@ -231,6 +257,20 @@ The bundled `data/universe.csv` starts with a Nifty-style sample list. For all N
 ```csv
 symbol,name,exchange,yahoo_symbol,kite_symbol,upstox_instrument_key,sector,base_price,enabled
 ```
+
+To generate an Upstox-backed universe:
+
+```bash
+python scripts/update_universe_from_upstox.py --exchange NSE --output data/universe.csv
+```
+
+For NSE plus BSE:
+
+```bash
+python scripts/update_universe_from_upstox.py --exchange both --output data/universe.csv
+```
+
+After regenerating the file, restart the app so it reseeds SQLite. For a very large universe on OCI Free Tier, increase `AGENT_INTERVAL_SECONDS`, keep `NEWS_SYMBOLS_PER_CYCLE` conservative, and keep `LLM_MAX_SYMBOLS_PER_CYCLE` to a realistic shortlist. The agent still scans every enabled symbol deterministically, ranks the full universe, and sends only the strongest candidates to the LLM unless you raise the limit.
 
 For a free-tier VM, do not scan news and LLM-review every listed stock every few seconds. A practical setup is:
 

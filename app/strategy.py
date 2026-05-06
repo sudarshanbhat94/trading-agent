@@ -25,6 +25,7 @@ class StrategyEngine:
         quotes: dict[str, Quote],
         positions: dict[str, dict[str, Any]],
         candles_by_symbol: dict[str, list[Candle]] | None = None,
+        global_context: dict[str, Any] | None = None,
     ) -> list[Decision]:
         sentiment_scores = await self.sentiment.scores_for_cycle(universe)
         decisions: list[Decision] = []
@@ -39,8 +40,11 @@ class StrategyEngine:
             "take_profit_pct": self.settings.take_profit_pct,
             "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
             "min_llm_confidence": self.settings.llm_primary_min_confidence,
+            "global_risk_weight": self.settings.global_risk_weight,
+            "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
         }
 
+        scan_items: list[dict[str, Any]] = []
         for row in universe:
             symbol = row["symbol"]
             quote = quotes.get(symbol)
@@ -61,49 +65,92 @@ class StrategyEngine:
                 position=positions.get(symbol),
                 sentiment_score=sentiment_score,
                 risk_limits=risk_limits,
+                global_context=global_context,
             )
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
-            if llm_primary and llm_reviews < self.settings.llm_max_symbols_per_cycle:
+            action = self._action_from_score(symbol, combined, positions)
+            confidence = min(abs(combined), 0.99)
+            scan_items.append(
+                {
+                    "row": row,
+                    "symbol": symbol,
+                    "quote": quote,
+                    "technical": technical,
+                    "sentiment_score": sentiment_score,
+                    "context": context,
+                    "combined": combined,
+                    "score_breakdown": score_breakdown,
+                    "action": action,
+                    "confidence": confidence,
+                }
+            )
+
+        ranked = sorted(scan_items, key=self._scan_priority, reverse=True)
+        for rank, item in enumerate(ranked, start=1):
+            context = item["context"]
+            context["universe_scan"] = {
+                "symbols_scanned": len(scan_items),
+                "rank": rank,
+                "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
+                "priority_score": round(self._scan_priority_score(item), 4),
+                "selection_basis": (
+                    "non-HOLD candidates ranked first, then absolute combined score, strategy confidence, "
+                    "technical score, and sentiment"
+                ),
+            }
+
+        llm_candidate_symbols: set[str] = set()
+        if llm_primary:
+            llm_pool = [item for item in ranked if item["action"] != "HOLD"] or ranked
+            llm_candidate_symbols = {
+                item["symbol"] for item in llm_pool[: self.settings.llm_max_symbols_per_cycle]
+            }
+
+        for item in scan_items:
+            context = item["context"]
+            if llm_primary and item["symbol"] in llm_candidate_symbols:
                 decision = await self.llm.decide(context)
                 llm_reviews += 1
                 decisions.append(decision)
                 continue
 
-            action = self._action_from_score(symbol, combined, positions)
-            confidence = min(abs(combined), 0.99)
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
+            global_risk = context.get("global_market_context", {})
             reason = (
-                f"tools technical={technical.score:.2f} ({technical.trend}), "
+                f"tools technical={item['technical'].score:.2f} ({item['technical'].trend}), "
                 f"candles={candle_summary['score']:.2f} {candle_summary['patterns']}, "
                 f"best_strategy={best_strategy['name']}:{best_strategy['score']:.2f}, "
-                f"sentiment={sentiment_score:.2f}, combined={combined:.2f}"
+                f"sentiment={item['sentiment_score']:.2f}, "
+                f"global={float(global_risk.get('risk_score', 0.0) or 0.0):.2f} ({global_risk.get('regime', 'unknown')}), "
+                f"combined={item['combined']:.2f}, universe_rank={context['universe_scan']['rank']}/{len(scan_items)}"
             )
+            decision_path = "deterministic_after_full_universe_scan"
             decision = Decision(
-                symbol=symbol,
-                action=action,
-                confidence=round(confidence, 3),
-                price=quote.price,
-                technical_score=round(technical.score, 3),
-                sentiment_score=round(sentiment_score, 3),
+                symbol=item["symbol"],
+                action=item["action"],
+                confidence=round(item["confidence"], 3),
+                price=item["quote"].price,
+                technical_score=round(item["technical"].score, 3),
+                sentiment_score=round(item["sentiment_score"], 3),
                 reason=reason,
                 asof=utc_now(),
                 strategy=best_strategy["name"],
                 details_json=self._decision_details_json(
                     context=context,
-                    action=action,
-                    decision_path="deterministic",
-                    score_breakdown=score_breakdown,
+                    action=item["action"],
+                    decision_path=decision_path,
+                    score_breakdown=item["score_breakdown"],
                     action_reason=reason,
                     positions=positions,
+                    llm_selected=item["symbol"] in llm_candidate_symbols,
                 ),
             )
-
             if (
                 self.llm.enabled
                 and self.settings.llm_decision_mode == "review"
-                and action != "HOLD"
+                and item["action"] != "HOLD"
                 and llm_reviews < self.settings.llm_max_symbols_per_cycle
             ):
                 decision = await self.llm.review(decision, context)
@@ -166,6 +213,19 @@ class StrategyEngine:
             return "SELL"
         return "HOLD"
 
+    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float]:
+        return (
+            1.0 if item["action"] != "HOLD" else 0.0,
+            abs(float(item["combined"])),
+            abs(float(item["context"].get("best_strategy", {}).get("score", 0.0) or 0.0)),
+            abs(float(item["technical"].score)),
+            abs(float(item["sentiment_score"])),
+        )
+
+    def _scan_priority_score(self, item: dict[str, Any]) -> float:
+        action_boost, combined, strategy, technical, sentiment = self._scan_priority(item)
+        return (action_boost * 0.5) + (combined * 0.28) + (strategy * 0.12) + (technical * 0.06) + (sentiment * 0.04)
+
     def _decision_details_json(
         self,
         context: dict[str, Any],
@@ -174,6 +234,7 @@ class StrategyEngine:
         score_breakdown: dict[str, Any],
         action_reason: str,
         positions: dict[str, dict[str, Any]],
+        llm_selected: bool = False,
     ) -> str:
         has_position = bool(context.get("position", {}).get("qty", 0))
         risk_limits = context.get("risk_limits", {})
@@ -192,6 +253,8 @@ class StrategyEngine:
                 "max_order_value_pct",
                 "available_cash",
             ],
+            "llm_deep_review_selected": llm_selected,
+            "llm_candidate_limit": risk_limits.get("llm_candidate_limit"),
         }
         return _json_dumps(
             {
@@ -259,6 +322,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "best_strategy": context.get("best_strategy"),
         "strategy_signals": context.get("strategy_signals"),
         "sentiment": context.get("sentiment"),
+        "global_market_context": context.get("global_market_context"),
+        "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
         "recent_candle_count": len(recent_candles),
         "recent_candles_tail": recent_candles[-5:],

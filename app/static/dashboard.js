@@ -132,6 +132,7 @@ function plainSetting(key, fallback = "-") {
 
 function renderShell(payload = state.latest || {}) {
   const health = payload.market_health || {};
+  const macro = payload.macro_context || {};
   const runtime = payload.runtime || {};
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
   const mode = health.mode || "unknown";
@@ -152,6 +153,8 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-llm-meta").textContent = `${llmMode} · ${llmModel || "model unset"}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
+  byId("ops-macro").textContent = macro.regime || "unknown";
+  byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · ${fmtNumber(Number(macro.confidence || 0) * 100)}% conf`;
   byId("ops-cycle").textContent = payload.running ? "Running" : "Stopped";
   byId("ops-cycle-meta").textContent = payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending";
 }
@@ -755,12 +758,16 @@ function marketContextHtml(context) {
       <div class="audit-card"><span>Technical</span><strong class="${pnlClass(context.technical_math?.score)}">${fmtNumber(context.technical_math?.score)}</strong><small>${escapeHtml(context.technical_math?.trend || "-")}</small></div>
       <div class="audit-card"><span>Candles</span><strong class="${pnlClass(context.candlestick_analysis?.score)}">${fmtNumber(context.candlestick_analysis?.score)}</strong><small>${escapeHtml((context.candlestick_analysis?.patterns || []).join(", "))}</small></div>
       <div class="audit-card"><span>Sentiment</span><strong class="${pnlClass(context.sentiment?.score)}">${fmtNumber(context.sentiment?.score)}</strong><small>news sentiment score</small></div>
+      <div class="audit-card"><span>Global Risk</span><strong class="${pnlClass(context.global_market_context?.risk_score)}">${fmtNumber(context.global_market_context?.risk_score)}</strong><small>${escapeHtml(context.global_market_context?.regime || "-")}</small></div>
+      <div class="audit-card"><span>Universe Rank</span><strong>${escapeHtml(context.universe_scan?.rank || "-")}</strong><small>${escapeHtml(shortValue(context.universe_scan?.selection_basis || "-", 110))}</small></div>
     </div>
     <pre>${escapeHtml(JSON.stringify({
       position: context.position,
       technical_math: context.technical_math,
       candlestick_analysis: context.candlestick_analysis,
       best_strategy: context.best_strategy,
+      global_market_context: context.global_market_context,
+      universe_scan: context.universe_scan,
       recent_candle_count: context.recent_candle_count,
       recent_candles_tail: context.recent_candles_tail,
     }, null, 2))}</pre>
@@ -968,6 +975,7 @@ function bindControls() {
           take_profit_pct: settings.take_profit_pct,
           daily_loss_limit_pct: settings.daily_loss_limit_pct,
         },
+        "macro-health": state.latest?.macro_context || {},
         "cycle-health": {
           running: state.latest?.running,
           last_cycle_at: state.latest?.last_cycle_at,

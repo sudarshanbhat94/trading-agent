@@ -15,6 +15,7 @@ def build_symbol_tool_context(
     position: dict[str, Any] | None,
     sentiment_score: float,
     risk_limits: dict[str, Any],
+    global_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     closes = [candle.close for candle in candles] or [quote.price]
     technical = technical_snapshot(closes)
@@ -34,6 +35,13 @@ def build_symbol_tool_context(
         "strategy_signals": [signal.to_dict() for signal in strategy_signals],
         "best_strategy": best_strategy.to_dict(),
         "sentiment": {"score": sentiment_score},
+        "global_market_context": global_context
+        or {
+            "enabled": False,
+            "risk_score": 0.0,
+            "confidence": 0.0,
+            "regime": "unavailable",
+        },
         "risk_limits": risk_limits,
         "recent_candles": [candle.to_dict() for candle in candles[-24:]],
     }
@@ -48,16 +56,21 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     sentiment = float(context["sentiment"]["score"])
     candle_score = float(context["candlestick_analysis"]["score"])
     preset_score = float(context["best_strategy"]["score"])
+    global_risk = float(context.get("global_market_context", {}).get("risk_score", 0.0) or 0.0)
+    global_weight = float(context.get("risk_limits", {}).get("global_risk_weight", 0.1) or 0.0)
+    global_weight = max(min(global_weight, 0.3), 0.0)
+    remaining = 1.0 - global_weight
     components = [
-        {"name": "technical_math", "score": technical, "weight": 0.40},
-        {"name": "candlestick_analysis", "score": candle_score, "weight": 0.20},
-        {"name": "best_strategy", "score": preset_score, "weight": 0.25},
-        {"name": "sentiment", "score": sentiment, "weight": 0.15},
+        {"name": "technical_math", "score": technical, "weight": round(0.40 * remaining, 4)},
+        {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.20 * remaining, 4)},
+        {"name": "best_strategy", "score": preset_score, "weight": round(0.25 * remaining, 4)},
+        {"name": "sentiment", "score": sentiment, "weight": round(0.15 * remaining, 4)},
+        {"name": "global_market_context", "score": global_risk, "weight": round(global_weight, 4)},
     ]
     raw = sum(component["score"] * component["weight"] for component in components)
     combined = max(min(raw, 1.0), -1.0)
     return {
-        "formula": "technical_math*0.40 + candlestick_analysis*0.20 + best_strategy*0.25 + sentiment*0.15",
+        "formula": "technical_math*scaled_0.40 + candlestick_analysis*scaled_0.20 + best_strategy*scaled_0.25 + sentiment*scaled_0.15 + global_market_context*global_risk_weight",
         "components": [
             {
                 **component,

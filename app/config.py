@@ -71,6 +71,10 @@ class Settings:
     news_cache_seconds: int = _int("NEWS_CACHE_SECONDS", 1800)
     news_lookback_days: int = _int("NEWS_LOOKBACK_DAYS", 7)
     news_symbols_per_cycle: int = _int("NEWS_SYMBOLS_PER_CYCLE", 5)
+    enable_global_intelligence: bool = _bool("ENABLE_GLOBAL_INTELLIGENCE", True)
+    global_cache_seconds: int = _int("GLOBAL_CACHE_SECONDS", 900)
+    global_news_lookback_days: int = _int("GLOBAL_NEWS_LOOKBACK_DAYS", 2)
+    global_risk_weight: float = _float("GLOBAL_RISK_WEIGHT", 0.1)
 
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").strip().lower()
     live_trading_enabled: bool = _bool("LIVE_TRADING_ENABLED", False)
@@ -160,6 +164,10 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "news_cache_seconds", "label": "News Cache Seconds", "type": "number", "category": "Sentiment", "min": 60, "step": 60},
     {"key": "news_lookback_days", "label": "News Lookback Days", "type": "number", "category": "Sentiment", "min": 1, "step": 1},
     {"key": "news_symbols_per_cycle", "label": "News Symbols/Cycle", "type": "number", "category": "Sentiment", "min": 0, "step": 1},
+    {"key": "enable_global_intelligence", "label": "Global Intelligence", "type": "boolean", "category": "Global Intelligence"},
+    {"key": "global_cache_seconds", "label": "Global Cache Seconds", "type": "number", "category": "Global Intelligence", "min": 60, "step": 60},
+    {"key": "global_news_lookback_days", "label": "Global News Days", "type": "number", "category": "Global Intelligence", "min": 1, "step": 1},
+    {"key": "global_risk_weight", "label": "Global Risk Weight", "type": "number", "category": "Global Intelligence", "min": 0, "max": 0.3, "step": 0.01},
     {"key": "live_trading_enabled", "label": "Live Trading Enabled", "type": "boolean", "category": "Live Protection"},
     {"key": "live_trading_confirm", "label": "Live Confirm Phrase", "type": "secret", "category": "Live Protection"},
     {"key": "upstox_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["D", "I"]},
