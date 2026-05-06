@@ -190,7 +190,7 @@ class LLMBrain:
             "model": self.model,
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
-            "max_tokens": self.settings.llm_max_tokens,
+            "max_tokens": max(350, min(self.settings.llm_max_tokens, 700)),
             "messages": [
                 {
                     "role": "system",
@@ -368,7 +368,14 @@ class LLMBrain:
             )
 
     async def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
-        content = await self._chat_content(payload, self.settings.llm_timeout_seconds)
+        try:
+            content = await self._chat_content(payload, self.settings.llm_timeout_seconds)
+        except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+            synthetic = _synthetic_safe_decision_from_text("", exc)
+            synthetic["_json_synthetic"] = True
+            synthetic["_llm_timeout"] = True
+            synthetic["_json_repaired"] = False
+            return synthetic
         try:
             return self._parse_json_content(content)
         except LLMResponseError as exc:
@@ -595,6 +602,8 @@ class LLMBrain:
                 "action_reason": parsed.get("reason", "no reason supplied"),
                 "confidence": round(confidence, 4),
                 "json_repaired": bool(parsed.get("_json_repaired")),
+                "json_synthetic": bool(parsed.get("_json_synthetic")),
+                "llm_timeout": bool(parsed.get("_llm_timeout")),
                 "confidence_gate": {
                     "minimum_required": self.settings.llm_primary_min_confidence,
                     "passed": confidence_gate_passed,
@@ -617,6 +626,7 @@ class LLMBrain:
                     "data_gaps": parsed.get("data_gaps", []),
                     "json_repaired": bool(parsed.get("_json_repaired")),
                     "json_synthetic": bool(parsed.get("_json_synthetic")),
+                    "llm_timeout": bool(parsed.get("_llm_timeout")),
                     "json_repair_error": parsed.get("_json_repair_error"),
                 },
                 "risk_gates": {
@@ -655,6 +665,8 @@ class LLMBrain:
                 "final_action": final_action,
                 "confidence": round(confidence, 4),
                 "json_repaired": bool(parsed.get("_json_repaired")),
+                "json_synthetic": bool(parsed.get("_json_synthetic")),
+                "llm_timeout": bool(parsed.get("_llm_timeout")),
                 "action_reason": parsed.get("reason", original.reason),
                 "policy_gates": policy_gates,
                 "score_breakdown": deterministic_score_breakdown(context),
@@ -671,6 +683,7 @@ class LLMBrain:
                     "data_gaps": parsed.get("data_gaps", []),
                     "json_repaired": bool(parsed.get("_json_repaired")),
                     "json_synthetic": bool(parsed.get("_json_synthetic")),
+                    "llm_timeout": bool(parsed.get("_llm_timeout")),
                     "json_repair_error": parsed.get("_json_repair_error"),
                 },
                 "context": _compact_context(context),
