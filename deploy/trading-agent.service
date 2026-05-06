@@ -1,5 +1,5 @@
 [Unit]
-Description=Indian Equity Dry Trading Agent
+Description=OpenTrade Autonomous Paper Trading Platform
 After=network-online.target
 Wants=network-online.target
 

@@ -1,1 +1,1 @@
-"""Dry-money Indian equity trading agent."""
+"""OpenTrade dry-money Indian equity trading platform."""

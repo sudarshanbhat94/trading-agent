@@ -15,6 +15,11 @@ const number = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
 });
 
+const compactNumber = new Intl.NumberFormat("en-IN", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -27,11 +32,27 @@ function fmtNumber(value) {
   return Number.isFinite(Number(value)) ? number.format(Number(value)) : "-";
 }
 
+function fmtCompact(value) {
+  return Number.isFinite(Number(value)) ? compactNumber.format(Number(value)) : "-";
+}
+
+function fmtPct(value) {
+  return Number.isFinite(Number(value)) ? `${number.format(Number(value))}%` : "-";
+}
+
 function fmtTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function fmtAge(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value)) return "no ticks yet";
+  if (value < 60) return `${Math.round(value)}s old`;
+  if (value < 3600) return `${Math.round(value / 60)}m old`;
+  return `${Math.round(value / 3600)}h old`;
 }
 
 function pnlClass(value) {
@@ -53,10 +74,11 @@ function render(payload) {
 
   byId("kpi-equity").textContent = fmtMoney(portfolio.equity);
   byId("kpi-cash").textContent = fmtMoney(portfolio.cash);
+  byId("kpi-invested").textContent = fmtMoney(portfolio.invested);
   byId("kpi-unrealized").textContent = fmtMoney(portfolio.unrealized_pnl);
   byId("kpi-unrealized").className = pnlClass(portfolio.unrealized_pnl);
   byId("kpi-positions").textContent = String(positions.length);
-  byId("kpi-universe").textContent = String(payload.universe_size ?? "-");
+  byId("kpi-decisions").textContent = String(decisions.length);
   byId("last-cycle").textContent = payload.last_cycle_at ? `Last cycle ${fmtTime(payload.last_cycle_at)}` : "waiting";
 
   const pill = byId("status-pill");
@@ -74,18 +96,94 @@ function render(payload) {
 
   byId("position-count").textContent = `${positions.length} open`;
   byId("quote-count").textContent = `${quotes.length} quotes`;
+  byId("account-quote-count").textContent = `${quotes.length} quotes`;
   byId("decision-count").textContent = `${decisions.length} decisions`;
+  byId("overview-decision-count").textContent = `${decisions.length} decisions`;
   byId("order-count").textContent = `${orders.length} orders`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
   byId("sentiment-count").textContent = `${sentiment.length} events`;
+  byId("nav-positions-badge").textContent = String(positions.length);
+  byId("nav-decisions-badge").textContent = String(decisions.length);
+  byId("nav-orders-badge").textContent = String(orders.length);
+  byId("nav-sentiment-badge").textContent = String(sentiment.length);
+  byId("nav-overview-badge").textContent = payload.running ? "on" : "off";
 
   renderPositions(positions);
   renderStrategies(strategies);
   renderSentiment(sentiment);
   renderQuotes(quotes);
   renderDecisions(decisions);
+  renderOverviewDecisions(decisions);
   renderOrders(orders);
+  renderAgentConsole(payload);
+  renderShell(payload);
   drawEquity(payload.equity_curve || []);
+}
+
+function currentSettings() {
+  return state.config?.settings || {};
+}
+
+function plainSetting(key, fallback = "-") {
+  const value = currentSettings()[key];
+  if (value && typeof value === "object" && "saved" in value) return value.saved ? "saved" : "not saved";
+  return value ?? fallback;
+}
+
+function renderShell(payload = state.latest || {}) {
+  const health = payload.market_health || {};
+  const runtime = payload.runtime || {};
+  const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
+  const mode = health.mode || "unknown";
+  const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
+  const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
+  const nvidiaModel = plainSetting("nvidia_model", "");
+  const llmModel = llmProvider === "nvidia" ? nvidiaModel : plainSetting("llm_model", "offline");
+
+  byId("top-provider").textContent = provider;
+  byId("top-llm").textContent = llmProvider === "offline" ? "off" : llmModel;
+  byId("top-execution").textContent = plainSetting("execution_mode", runtime.execution_mode || "-");
+
+  byId("feed-pill").textContent = `${mode} feed`;
+  byId("feed-pill").className = `pill ${mode === "live" ? "running" : mode === "simulated" ? "stopped" : ""}`;
+  byId("ops-feed").textContent = provider;
+  byId("ops-feed-meta").textContent = `${health.quote_count || 0} quotes · ${fmtAge(health.latest_quote_age_seconds)}`;
+  byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmProvider;
+  byId("ops-llm-meta").textContent = `${llmMode} · ${llmModel || "model unset"}`;
+  byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
+  byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
+  byId("ops-cycle").textContent = payload.running ? "Running" : "Stopped";
+  byId("ops-cycle-meta").textContent = payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending";
+}
+
+function renderAgentConsole(payload) {
+  const portfolio = payload.portfolio || {};
+  const health = payload.market_health || {};
+  const settings = currentSettings();
+  const positions = payload.positions || [];
+  const orders = payload.orders || [];
+  const decisions = payload.decisions || [];
+  const latestAction = decisions.find((row) => row.action && row.action !== "HOLD");
+  const rows = [
+    ["Feed mode", health.mode || "unknown", health.provider || payload.provider || "-"],
+    ["Universe", String(payload.universe_size ?? "-"), `${health.quote_count || 0} priced`],
+    ["Exposure", fmtMoney(portfolio.invested), `${positions.length}/${settings.max_positions ?? "-"} positions`],
+    ["Risk", fmtPct(Number(settings.daily_loss_limit_pct || 0) * 100), "daily loss limit"],
+    ["Execution", settings.execution_mode || payload.runtime?.execution_mode || "-", settings.live_trading_enabled ? "live switch on" : "live switch off"],
+    ["Latest action", latestAction ? `${latestAction.action} ${latestAction.symbol}` : "No trade action", `${orders.length} orders tracked`],
+  ];
+  byId("agent-console").innerHTML = rows
+    .map(
+      ([label, value, note]) => `<button class="console-row" type="button">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        <small>${escapeHtml(note)}</small>
+      </button>`,
+    )
+    .join("");
+  [...byId("agent-console").querySelectorAll(".console-row")].forEach((button, index) => {
+    button.addEventListener("click", () => showDetails(rows[index][0], rows[index]));
+  });
 }
 
 function renderAuth(auth) {
@@ -132,6 +230,10 @@ function renderAccount(account) {
       <div><span>Paper Equity</span><strong>${fmtMoney(portfolio.equity ?? paper.cash)}</strong></div>
       <div><span>Upstox</span><strong>${upstox.connected ? "connected" : "not connected"}</strong></div>
     </div>
+    <div class="account-note">
+      <strong>Runtime ledger</strong>
+      <span>Paper execution stays internal unless live protection is explicitly enabled.</span>
+    </div>
     <pre>${escapeHtml(JSON.stringify({ upstox }, null, 2))}</pre>
   `;
 }
@@ -139,7 +241,7 @@ function renderAccount(account) {
 function renderSentiment(rows) {
   const body = byId("sentiment-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="4">No sentiment events yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="5">No sentiment events yet</td></tr>`;
     return;
   }
   body.innerHTML = rows
@@ -155,6 +257,7 @@ function renderSentiment(rows) {
         <td><strong>${row.symbol}</strong></td>
         <td class="num ${pnlClass(row.score)}">${fmtNumber(row.score)}</td>
         <td class="num">${fmtNumber(row.confidence)}</td>
+        <td class="num">${row.headline_count || 0}</td>
         <td class="reason">${headlines.slice(0, 3).map(escapeHtml).join("<br>")}</td>
       </tr>`;
     })
@@ -191,6 +294,7 @@ function renderSettings(config) {
     })
     .join("");
   applyAccessMode();
+  renderShell();
 }
 
 function renderField(item, stored) {
@@ -349,18 +453,20 @@ function renderStrategies(rows) {
 function renderPositions(rows) {
   const body = byId("positions-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="6">No open positions</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7">No open positions</td></tr>`;
     return;
   }
   body.innerHTML = rows
     .map((row) => {
       const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
+      const marketValue = Number(row.market_price) * Number(row.qty);
       return `<tr>
         <td><strong>${row.symbol}</strong></td>
         <td>${row.strategy || "-"}</td>
         <td class="num">${row.qty}</td>
         <td class="num">${fmtMoney(row.avg_price)}</td>
         <td class="num">${fmtMoney(row.market_price)}</td>
+        <td class="num">${fmtMoney(marketValue)}</td>
         <td class="num ${pnlClass(pnl)}">${fmtMoney(pnl)}</td>
       </tr>`;
     })
@@ -369,24 +475,53 @@ function renderPositions(rows) {
 }
 
 function renderQuotes(rows) {
-  const body = byId("quotes-body");
-  body.innerHTML = rows
+  const accountBody = byId("quotes-body");
+  const overviewBody = byId("overview-quotes-body");
+  const markup = rows
     .slice(0, 160)
-    .map(
-      (row) => `<tr>
+    .map((row) => quoteRow(row))
+    .join("");
+  accountBody.innerHTML = markup || `<tr><td colspan="6">No quotes yet</td></tr>`;
+  overviewBody.innerHTML =
+    rows
+      .slice(0, 12)
+      .map((row) => quoteRow(row))
+      .join("") || `<tr><td colspan="6">No quotes yet</td></tr>`;
+  bindRowDetails(accountBody, rows.slice(0, 160), "Quote");
+  bindRowDetails(overviewBody, rows.slice(0, 12), "Quote");
+}
+
+function quoteRow(row) {
+  const dayPct = quoteDayPct(row);
+  return `<tr>
         <td><strong>${row.symbol}</strong></td>
         <td class="num">${fmtMoney(row.price)}</td>
-        <td>${row.source}</td>
+        <td class="num ${pnlClass(dayPct)}">${fmtPct(dayPct)}</td>
+        <td class="num">${fmtCompact(row.volume)}</td>
+        <td><span class="source ${sourceClass(row.source)}">${row.source}</span></td>
         <td>${fmtTime(row.ts)}</td>
-      </tr>`,
-    )
-    .join("");
-  bindRowDetails(body, rows.slice(0, 160), "Quote");
+      </tr>`;
+}
+
+function quoteDayPct(row) {
+  const price = Number(row.price);
+  const close = Number(row.close);
+  if (!Number.isFinite(price) || !Number.isFinite(close) || close === 0) return NaN;
+  return ((price - close) / close) * 100;
+}
+
+function sourceClass(source) {
+  const value = String(source || "");
+  if (value.includes("live")) return "live";
+  if (value.includes("delayed")) return "delayed";
+  if (value.includes("simulated")) return "simulated";
+  return "";
 }
 
 function renderDecisions(rows) {
   const body = byId("decisions-body");
-  body.innerHTML = rows
+  body.innerHTML = rows.length
+    ? rows
     .slice(0, 120)
     .map((row) => {
       const action = String(row.action || "HOLD").toLowerCase();
@@ -396,17 +531,41 @@ function renderDecisions(rows) {
         <td>${row.strategy || "-"}</td>
         <td><span class="tag ${action}">${row.action}</span></td>
         <td class="num">${fmtNumber(Number(row.confidence) * 100)}%</td>
+        <td class="num">${fmtMoney(row.price)}</td>
+        <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
+        <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
         <td class="reason">${row.reason}</td>
       </tr>`;
     })
-    .join("");
+    .join("")
+    : `<tr><td colspan="9">No decisions yet</td></tr>`;
   bindRowDetails(body, rows.slice(0, 120), "Decision");
+}
+
+function renderOverviewDecisions(rows) {
+  const body = byId("overview-decisions-body");
+  body.innerHTML = rows.length
+    ? rows
+        .slice(0, 10)
+        .map((row) => {
+          const action = String(row.action || "HOLD").toLowerCase();
+          return `<tr>
+            <td><strong>${row.symbol}</strong></td>
+            <td><span class="tag ${action}">${row.action}</span></td>
+            <td class="num">${fmtNumber(Number(row.confidence) * 100)}%</td>
+            <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
+            <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
+          </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="5">No decisions yet</td></tr>`;
+  bindRowDetails(body, rows.slice(0, 10), "Decision");
 }
 
 function renderOrders(rows) {
   const body = byId("orders-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="6">No orders yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8">No orders yet</td></tr>`;
     return;
   }
   body.innerHTML = rows
@@ -419,6 +578,8 @@ function renderOrders(rows) {
         <td><strong>${row.symbol}</strong></td>
         <td>${row.strategy || "-"}</td>
         <td class="num">${row.qty}</td>
+        <td class="num">${fmtMoney(row.price)}</td>
+        <td class="num">${fmtMoney(row.notional)}</td>
         <td>${row.status}</td>
       </tr>`;
     })
@@ -523,7 +684,15 @@ function drawEquity(rows) {
 
 async function postControl(path) {
   const response = await fetch(path, { method: "POST" });
-  render(await response.json());
+  const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+  if (!response.ok) {
+    showDetails("Control Error", payload);
+    const error = byId("error-box");
+    error.hidden = false;
+    error.textContent = payload.detail || `Control request failed: ${response.status}`;
+    return;
+  }
+  render(payload);
 }
 
 function bindControls() {
@@ -543,9 +712,39 @@ function bindControls() {
       const map = {
         portfolio,
         cash: { cash: portfolio.cash, equity: portfolio.equity },
+        invested: { invested: portfolio.invested, market_value: portfolio.market_value },
         pnl: { unrealized_pnl: portfolio.unrealized_pnl, realized_pnl: portfolio.realized_pnl },
         "positions-summary": state.latest?.positions || [],
-        universe: { universe_size: state.latest?.universe_size, provider: state.latest?.provider },
+        "decision-summary": state.latest?.decisions || [],
+      };
+      showDetails(tile.dataset.detailType, map[tile.dataset.detailType]);
+    });
+  }
+  for (const tile of document.querySelectorAll(".ops-card")) {
+    tile.addEventListener("click", () => {
+      const settings = currentSettings();
+      const map = {
+        "feed-health": state.latest?.market_health || {},
+        "llm-health": {
+          provider: settings.llm_provider,
+          mode: settings.llm_decision_mode,
+          model: settings.llm_provider === "nvidia" ? settings.nvidia_model : settings.llm_model,
+          timeout_seconds: settings.llm_timeout_seconds,
+        },
+        "risk-health": {
+          max_positions: settings.max_positions,
+          max_position_pct: settings.max_position_pct,
+          max_order_value_pct: settings.max_order_value_pct,
+          stop_loss_pct: settings.stop_loss_pct,
+          take_profit_pct: settings.take_profit_pct,
+          daily_loss_limit_pct: settings.daily_loss_limit_pct,
+        },
+        "cycle-health": {
+          running: state.latest?.running,
+          last_cycle_at: state.latest?.last_cycle_at,
+          interval_seconds: settings.agent_interval_seconds,
+          last_error: state.latest?.last_error,
+        },
       };
       showDetails(tile.dataset.detailType, map[tile.dataset.detailType]);
     });
@@ -567,7 +766,7 @@ function setView(view) {
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("active", section.id === `${view}-view`);
   }
-  const label = document.querySelector(`.nav-item[data-view="${view}"]`)?.textContent || "Overview";
+  const label = document.querySelector(`.nav-item[data-view="${view}"] span`)?.textContent || "Overview";
   byId("view-title").textContent = label;
 }
 

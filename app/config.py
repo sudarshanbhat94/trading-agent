@@ -63,6 +63,8 @@ class Settings:
     upstox_order_base_url: str = os.getenv("UPSTOX_ORDER_BASE_URL", "https://api-hft.upstox.com/v2").rstrip("/")
     upstox_candle_interval: str = os.getenv("UPSTOX_CANDLE_INTERVAL", "30minute")
     upstox_candle_lookback_days: int = _int("UPSTOX_CANDLE_LOOKBACK_DAYS", 3)
+    yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "15m")
+    yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
 
     enable_news_sentiment: bool = _bool("ENABLE_NEWS_SENTIMENT", True)
     enable_llm_sentiment: bool = _bool("ENABLE_LLM_SENTIMENT", True)
@@ -125,6 +127,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "upstox_order_base_url", "label": "Upstox Order URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_candle_interval", "label": "Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},
     {"key": "upstox_candle_lookback_days", "label": "Candle Lookback Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "yahoo_candle_interval", "label": "Yahoo Candle Interval", "type": "select", "category": "Market Data", "choices": ["5m", "15m", "30m", "60m", "1d"]},
+    {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["1d", "5d", "1mo", "3mo"]},
     {"key": "kite_api_key", "label": "Kite API Key", "type": "secret", "category": "Market Data"},
     {"key": "kite_access_token", "label": "Kite Access Token", "type": "secret", "category": "Market Data"},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["offline", "nvidia", "openai_compatible"]},

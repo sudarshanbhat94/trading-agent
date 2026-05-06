@@ -3,31 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Indian Equity Dry Trading Agent</title>
+    <title>OpenTrade</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="mark">IN</div>
+          <div class="mark">OT</div>
           <div>
-            <h1>Trade Agent</h1>
-            <p>Paper · Live Data</p>
+            <h1>OpenTrade</h1>
+            <p>Autonomous paper desk</p>
           </div>
         </div>
         <nav class="nav">
-          <button class="nav-item active" type="button" data-view="overview">Overview</button>
-          <button class="nav-item" type="button" data-view="positions">Positions</button>
-          <button class="nav-item" type="button" data-view="decisions">Decisions</button>
-          <button class="nav-item" type="button" data-view="orders">Orders</button>
-          <button class="nav-item" type="button" data-view="sentiment">Sentiment</button>
-          <button class="nav-item" type="button" data-view="account">Account</button>
-          <button class="nav-item" type="button" data-view="settings">Settings</button>
+          <button class="nav-item active" type="button" data-view="overview"><span>Overview</span><strong id="nav-overview-badge">live</strong></button>
+          <button class="nav-item" type="button" data-view="positions"><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="decisions"><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="orders"><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="sentiment"><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="account"><span>Account</span><strong>paper</strong></button>
+          <button class="nav-item" type="button" data-view="settings"><span>Settings</span><strong>admin</strong></button>
         </nav>
         <div class="sidebar-foot">
           <span id="status-pill" class="pill">connecting</span>
           <span id="admin-pill" class="pill">read only</span>
+          <span id="feed-pill" class="pill">feed unknown</span>
         </div>
       </aside>
 
@@ -36,9 +37,9 @@
           <div>
             <h2 id="view-title">Overview</h2>
             <p>
-              Provider: <strong>{{ provider }}</strong> ·
-              LLM: <strong>{{ llm_model if llm_enabled else "off" }}</strong> ·
-              Execution: <strong>{{ execution_mode }}</strong>
+              Provider: <strong id="top-provider">{{ provider }}</strong> ·
+              LLM: <strong id="top-llm">{{ llm_model if llm_enabled else "off" }}</strong> ·
+              Execution: <strong id="top-execution">{{ execution_mode }}</strong>
             </p>
           </div>
           <div class="controls">
@@ -46,7 +47,7 @@
             <input id="admin-password" class="admin-input" type="password" placeholder="Admin password" autocomplete="current-password" />
             <button id="login-btn" type="button">Login</button>
             <button id="logout-btn" type="button">Logout</button>
-            <button id="start-btn" type="button">Start</button>
+            <button id="start-btn" class="primary" type="button">Start</button>
             <button id="stop-btn" type="button">Stop</button>
             <button id="run-btn" type="button">Run Once</button>
           </div>
@@ -54,6 +55,29 @@
 
         <main class="content">
           <section id="overview-view" class="view active">
+            <section class="ops-grid" aria-label="Agent operating state">
+              <button class="ops-card" type="button" data-detail-type="feed-health">
+                <span>Market Feed</span>
+                <strong id="ops-feed">-</strong>
+                <small id="ops-feed-meta">waiting</small>
+              </button>
+              <button class="ops-card" type="button" data-detail-type="llm-health">
+                <span>LLM Brain</span>
+                <strong id="ops-llm">-</strong>
+                <small id="ops-llm-meta">decision mode</small>
+              </button>
+              <button class="ops-card" type="button" data-detail-type="risk-health">
+                <span>Risk Guard</span>
+                <strong id="ops-risk">-</strong>
+                <small id="ops-risk-meta">paper rules</small>
+              </button>
+              <button class="ops-card" type="button" data-detail-type="cycle-health">
+                <span>Agent Cycle</span>
+                <strong id="ops-cycle">-</strong>
+                <small id="ops-cycle-meta">not run yet</small>
+              </button>
+            </section>
+
             <section class="kpis" aria-label="Portfolio summary">
               <button class="kpi" type="button" data-detail-type="portfolio">
                 <span>Equity</span>
@@ -63,6 +87,10 @@
                 <span>Cash</span>
                 <strong id="kpi-cash">-</strong>
               </button>
+              <button class="kpi" type="button" data-detail-type="invested">
+                <span>Deployed</span>
+                <strong id="kpi-invested">-</strong>
+              </button>
               <button class="kpi" type="button" data-detail-type="pnl">
                 <span>Unrealized P&amp;L</span>
                 <strong id="kpi-unrealized">-</strong>
@@ -71,9 +99,9 @@
                 <span>Open Positions</span>
                 <strong id="kpi-positions">-</strong>
               </button>
-              <button class="kpi" type="button" data-detail-type="universe">
-                <span>Universe</span>
-                <strong id="kpi-universe">-</strong>
+              <button class="kpi" type="button" data-detail-type="decision-summary">
+                <span>Decisions</span>
+                <strong id="kpi-decisions">-</strong>
               </button>
             </section>
 
@@ -89,24 +117,77 @@
 
               <div class="panel">
                 <div class="panel-head">
-                  <h3>Strategy Tracking</h3>
-                  <span id="strategy-count">0 strategies</span>
+                  <h3>Agent Console</h3>
+                  <span id="console-status">monitoring</span>
+                </div>
+                <div id="agent-console" class="console-grid"></div>
+              </div>
+            </section>
+
+            <section class="overview-grid lower">
+              <div class="panel">
+                <div class="panel-head">
+                  <h3>Market Watch</h3>
+                  <span id="quote-count">0 quotes</span>
                 </div>
                 <div class="table-wrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Strategy</th>
-                        <th>Open</th>
-                        <th>Exposure</th>
-                        <th>Unrealized</th>
-                        <th>Realized</th>
-                        <th>Orders</th>
+                        <th>Symbol</th>
+                        <th>LTP</th>
+                        <th>Day %</th>
+                        <th>Volume</th>
+                        <th>Source</th>
+                        <th>As Of</th>
                       </tr>
                     </thead>
-                    <tbody id="strategies-body"></tbody>
+                    <tbody id="overview-quotes-body"></tbody>
                   </table>
                 </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head">
+                  <h3>Recent Decisions</h3>
+                  <span id="overview-decision-count">0 decisions</span>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>Conf.</th>
+                        <th>Tech</th>
+                        <th>Sent.</th>
+                      </tr>
+                    </thead>
+                    <tbody id="overview-decisions-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel full-lite">
+              <div class="panel-head">
+                <h3>Strategy Tracking</h3>
+                <span id="strategy-count">0 strategies</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Strategy</th>
+                      <th>Open</th>
+                      <th>Exposure</th>
+                      <th>Unrealized</th>
+                      <th>Realized</th>
+                      <th>Orders</th>
+                    </tr>
+                  </thead>
+                  <tbody id="strategies-body"></tbody>
+                </table>
               </div>
             </section>
           </section>
@@ -126,6 +207,7 @@
                       <th>Qty</th>
                       <th>Avg</th>
                       <th>LTP</th>
+                      <th>Market Value</th>
                       <th>P&amp;L</th>
                     </tr>
                   </thead>
@@ -150,6 +232,9 @@
                       <th>Strategy</th>
                       <th>Action</th>
                       <th>Confidence</th>
+                      <th>Price</th>
+                      <th>Tech</th>
+                      <th>Sentiment</th>
                       <th>Reason</th>
                     </tr>
                   </thead>
@@ -174,6 +259,8 @@
                       <th>Symbol</th>
                       <th>Strategy</th>
                       <th>Qty</th>
+                      <th>Price</th>
+                      <th>Value</th>
                       <th>Status</th>
                     </tr>
                   </thead>
@@ -196,6 +283,7 @@
                       <th>Symbol</th>
                       <th>Score</th>
                       <th>Confidence</th>
+                      <th>Items</th>
                       <th>Headlines</th>
                     </tr>
                   </thead>
@@ -216,7 +304,7 @@
             <div class="panel full">
               <div class="panel-head">
                 <h3>Market Watch</h3>
-                <span id="quote-count">0 quotes</span>
+                <span id="account-quote-count">0 quotes</span>
               </div>
               <div class="table-wrap page-table compact">
                 <table>
@@ -224,6 +312,8 @@
                     <tr>
                       <th>Symbol</th>
                       <th>Price</th>
+                      <th>Day %</th>
+                      <th>Volume</th>
                       <th>Source</th>
                       <th>As Of</th>
                     </tr>

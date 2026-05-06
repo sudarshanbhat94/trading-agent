@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from .db import Database
-from .market_data import MarketDataProvider
+from .market_data import MarketDataError, MarketDataProvider
 from .models import Decision, utc_now
 from .paper_broker import PaperBroker
 from .strategy import StrategyEngine
@@ -58,6 +59,8 @@ class TradingAgentService:
     async def run_once(self) -> dict[str, Any]:
         universe = self.db.get_universe(enabled_only=True)
         quotes = await self.market_data.get_quotes(universe)
+        if not quotes:
+            raise MarketDataError(f"{self.market_data.source_name} returned no quotes for the enabled universe")
         candles = await self.market_data.get_candles(universe)
         self.db.upsert_quotes(quotes)
         self.db.upsert_candles(candles)
@@ -77,6 +80,10 @@ class TradingAgentService:
         return snapshot
 
     def snapshot(self) -> dict[str, Any]:
+        quotes = self.db.latest_quotes()
+        positions = self.db.positions()
+        decisions = self.db.latest_decisions(80)
+        orders = self.db.latest_orders(80)
         return {
             "running": self.running,
             "provider": self.market_data.source_name,
@@ -91,14 +98,15 @@ class TradingAgentService:
                 "realized_pnl": 0,
                 "unrealized_pnl": 0,
             },
-            "positions": self.db.positions(),
-            "quotes": self.db.latest_quotes(),
-            "decisions": self.db.latest_decisions(80),
-            "orders": self.db.latest_orders(80),
+            "positions": positions,
+            "quotes": quotes,
+            "decisions": decisions,
+            "orders": orders,
             "equity_curve": self.db.recent_equity(120),
             "strategy_metrics": self.db.strategy_metrics(),
             "sentiment": self.db.latest_sentiment(40),
             "universe_size": len(self.db.get_universe(enabled_only=True)),
+            "market_health": self._market_health(quotes),
         }
 
     async def _loop(self) -> None:
@@ -125,3 +133,37 @@ class TradingAgentService:
         candidates.sort(key=lambda decision: decision.confidence, reverse=True)
         for decision in candidates[: self.broker.settings.max_trades_per_cycle]:
             self.broker.execute(decision, equity)
+
+    def _market_health(self, quotes: list[dict[str, Any]]) -> dict[str, Any]:
+        latest_age: float | None = None
+        latest_ts: str | None = None
+        for quote in quotes:
+            ts = quote.get("ts")
+            if not ts:
+                continue
+            try:
+                parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = max((datetime.now(timezone.utc) - parsed).total_seconds(), 0)
+            if latest_age is None or age < latest_age:
+                latest_age = age
+                latest_ts = str(ts)
+        provider = self.market_data.source_name
+        if "live" in provider:
+            mode = "live"
+        elif "delayed" in provider:
+            mode = "delayed"
+        elif "simulated" in provider:
+            mode = "simulated"
+        else:
+            mode = "external"
+        return {
+            "provider": provider,
+            "mode": mode,
+            "quote_count": len(quotes),
+            "latest_quote_at": latest_ts,
+            "latest_quote_age_seconds": round(latest_age, 1) if latest_age is not None else None,
+        }

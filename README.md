@@ -1,6 +1,6 @@
-# Indian Equity Dry Trading Agent
+# OpenTrade
 
-Dry-money autonomous trading agent for Indian equities. It watches a stock universe, pulls quote/candle data, builds MCP-style analysis context, asks an LLM to decide or review, applies risk controls, paper-fills BUY/SELL orders, and streams the state to a live dashboard.
+Autonomous dry-money trading platform for Indian equities. It watches a stock universe, pulls quote/candle data, builds MCP-style analysis context, asks an LLM to decide or review, applies risk controls, paper-fills BUY/SELL orders, and streams the state to a live dashboard.
 
 This defaults to paper trading. Upstox live order routing exists, but it is disabled unless you explicitly enable it with a confirmation phrase.
 
@@ -9,7 +9,7 @@ This defaults to paper trading. Upstox live order routing exists, but it is disa
 - Monitors an enabled Indian equity universe from `data/universe.csv`.
 - Supports quote adapters:
   - `simulated`: works immediately for local testing.
-  - `yahoo`: public best-effort delayed quote fallback, not exchange-authorized live data.
+  - `yahoo`: public best-effort delayed quotes plus candles, not exchange-authorized live data.
   - `kite`: Zerodha Kite Connect quote endpoint for authorized live market data.
   - `upstox`: Upstox REST quote and candle APIs using your access token.
 - Builds MCP-style tool context with quotes, candles, candlestick facts, exact math indicators, sentiment, position, and risk limits.
@@ -89,6 +89,8 @@ UPSTOX_API_BASE_URL=https://api.upstox.com/v2
 UPSTOX_ORDER_BASE_URL=https://api-hft.upstox.com/v2
 UPSTOX_CANDLE_INTERVAL=30minute
 UPSTOX_CANDLE_LOOKBACK_DAYS=3
+YAHOO_CANDLE_INTERVAL=15m
+YAHOO_CANDLE_RANGE=5d
 ```
 
 The universe file includes `upstox_instrument_key` values like `NSE_EQ|INE002A01018`. For all stocks, regenerate `data/universe.csv` from Upstox's instrument master and keep that column accurate.
@@ -105,7 +107,7 @@ KITE_ACCESS_TOKEN=your_daily_access_token
 
 Kite access tokens are session-based, so you need a daily login/token refresh workflow before market open. The universe uses `kite_symbol` values like `NSE:INFY`.
 
-The `yahoo` provider is useful only for development. Treat it as delayed/best-effort, not exact live market data.
+The `yahoo` provider is useful for development and paper testing. It now pulls delayed quotes and recent candles for technical analysis, but treat it as best-effort and not exact live market data.
 
 ## LLM Brain
 

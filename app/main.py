@@ -93,7 +93,7 @@ llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
 
-app = FastAPI(title="Indian Equity Dry Trading Agent")
+app = FastAPI(title="OpenTrade")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
