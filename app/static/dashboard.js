@@ -794,6 +794,7 @@ function fullSpectrumHtml(analysis) {
       <div class="audit-card"><span>Risk Overrides</span><strong>${escapeHtml(risk.no_new_longs ? "no new longs" : "clear")}</strong><small>${escapeHtml((risk.flags || []).join(", ") || "-")}</small></div>
     </div>
     ${objectCardsHtml("Confluence Breakdown", confluence.breakdown)}
+    ${objectCardsHtml("Prompt v2 Requirement Coverage", analysis.requirement_coverage)}
     ${objectCardsHtml("Signal Plan", analysis.signal_plan)}
     ${objectCardsHtml("News Sentiment", analysis.news_sentiment)}
     ${objectCardsHtml("Institutional Flow", analysis.institutional_flow)}

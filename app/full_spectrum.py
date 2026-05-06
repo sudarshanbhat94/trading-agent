@@ -48,6 +48,7 @@ def full_spectrum_analysis(
     return {
         "version": "opentrade-full-spectrum-v2",
         "symbol": row.get("symbol"),
+        "requirement_coverage": _requirement_coverage(data_quality, global_context),
         "data_quality": data_quality,
         "primary_filters": filters,
         "signal_plan": signal_plan,
@@ -556,15 +557,87 @@ def _data_gaps(candles: list[Candle], row: dict[str, Any]) -> list[str]:
         gaps.append("200-period trend and true 52-week context unavailable")
     gaps.extend(
         [
+            "Official NSE/BSE circulars, filings, corporate actions, ASM/GSM, and F&O ban feeds not connected",
+            "Paid Reuters/Bloomberg/Dow Jones/broker research feeds not connected",
             "FII/DII stock-level flows require licensed/exchange datasets",
             "PCR/OI requires derivatives chain data",
             "delivery percentage requires NSE/BSE bhavcopy integration",
-            "macro calendar requires a dedicated events feed",
+            "GIFT Nifty, India VIX, FedWatch, DXY detail, yield curve, and macro calendar require dedicated feeds",
+            "Social sentiment, analyst consensus, consensus targets, and promoter pledge feeds not connected",
+            "Volume profile HVN/LVN/POC requires tick or volume-at-price data",
+            "Full NSE/BSE coverage depends on the enabled symbols in universe.csv",
         ]
     )
     if not row.get("sector"):
         gaps.append("sector metadata missing")
     return gaps
+
+
+def _requirement_coverage(data_quality: dict[str, Any], global_context: dict[str, Any]) -> dict[str, Any]:
+    history = data_quality.get("coverage", "thin")
+    macro_enabled = bool(global_context.get("enabled"))
+    return {
+        "phase_1_global_macro": {
+            "status": "partial" if macro_enabled else "not_enabled",
+            "implemented": "global index, crude, gold, USD/INR, and global-news risk score",
+            "gap": "GIFT Nifty, India VIX, FedWatch, yield curve, and macro-calendar feeds still need dedicated adapters",
+        },
+        "phase_2_news_sentiment": {
+            "status": "partial",
+            "implemented": "rotating Google News RSS, source weighting, recency decay, event labels, optional LLM refinement",
+            "gap": "official filings/circulars, paid wires, social sentiment, analyst consensus, and corporate actions need adapters",
+        },
+        "phase_3_universe_scan": {
+            "status": "implemented_for_enabled_universe",
+            "implemented": "every enabled symbol is scanned before LLM shortlisting",
+            "gap": "full NSE/BSE breadth requires a populated universe.csv and valid provider symbols",
+        },
+        "phase_4_historical_trend": {
+            "status": "implemented" if history in {"usable", "strong"} else "limited_by_history",
+            "implemented": "multi-timeframe proxy trend, swing structure, moving averages, levels, gaps, Fibonacci",
+            "gap": "true weekly/52-week/200-DMA context needs enough historical candles from the provider",
+        },
+        "phase_5_candlesticks": {
+            "status": "proxy_engine",
+            "implemented": "major single and multi-candle pattern proxies with reliability/confirmation",
+            "gap": "the prompt's exhaustive pattern library is approximated, not a full TA-Lib-style recognizer",
+        },
+        "phase_6_chart_patterns": {
+            "status": "proxy_engine",
+            "implemented": "double-top/bottom, breakout/breakdown, and volatility-contraction proxies",
+            "gap": "full H&S, cup-and-handle, wedge, flag, pennant, IPO-base, and volume-profile engines need deeper history",
+        },
+        "phase_7_smc_wyckoff": {
+            "status": "proxy_engine",
+            "implemented": "liquidity sweep, BOS/range, FVG, order-block proxy, premium/discount, Wyckoff proxy",
+            "gap": "true ICT/SMC/Wyckoff labeling requires richer multi-timeframe structure and volume/liquidity feeds",
+        },
+        "phase_8_indicators": {
+            "status": "partial",
+            "implemented": "EMA/SMA, ADX, RSI, MACD, Bollinger, ATR, OBV slope, CMF, volume ratio",
+            "gap": "Ichimoku, Stochastic, CCI, volume profile, and full divergence engine are not yet implemented",
+        },
+        "phase_9_confluence": {
+            "status": "implemented_with_neutral_gaps",
+            "implemented": "26-point confluence score and tier thresholds",
+            "gap": "missing institutional/feed-only factors are recorded as gaps instead of fabricated",
+        },
+        "phase_10_signal_output": {
+            "status": "implemented_as_json_audit",
+            "implemented": "signal plan, trade plan, invalidation, monitoring checklist, confluence breakdown, data gaps",
+            "gap": "UI renders structured cards rather than the prompt's long textual report format",
+        },
+        "phase_11_risk_management": {
+            "status": "implemented_for_paper_long_only",
+            "implemented": "max positions, max position/order size, hard stop, take profit, daily loss, LLM policy gates",
+            "gap": "sector concentration, 3-stop lockout, event-calendar lockout, and live kill-switch workflow need adapters/UI",
+        },
+        "phase_12_intelligence_loop": {
+            "status": "single_cycle_loop",
+            "implemented": "continuous configurable agent cycle with snapshots and dashboard monitoring",
+            "gap": "separate pre-market/opening/intraday/post-market/weekly schedules are not split yet",
+        },
+    }
 
 
 def _trend_state(
