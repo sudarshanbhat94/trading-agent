@@ -22,6 +22,8 @@ This defaults to paper trading. Upstox live order routing exists, but it is disa
 - Stores quotes, decisions, orders, positions, portfolio snapshots, and sentiment events in SQLite.
 - Serves a live dashboard at `/`.
 - Records a structured audit trail for every decision and order so you can inspect exactly why the agent chose BUY, SELL, or HOLD.
+- Ranks the top 5 current BUY/WATCH candidates in a dedicated Suggestions tab with entry, stop, target, institutional bias, and full audit details.
+- Shows an exit plan for executed BUY orders and open positions, including hard stop, targets, invalidation, review cadence, and monitoring checklist.
 
 ## Quick Start
 
@@ -54,6 +56,8 @@ Every row in **Decisions** and **Orders** is clickable. The drawer shows:
 
 - The final action and plain-English reason.
 - The score formula and weighted contributions from technical math, candlesticks, strategy preset, and sentiment.
+- The global/institutional score components that affected BUY/SELL/HOLD.
+- The planned exit logic: entry zone, hard stop, target ladder, invalidation, and monitoring checklist when a trade plan exists.
 - LLM evidence, checklist, confidence gate, risk checks, and invalidators when the LLM is enabled.
 - Market context used: quote, position, technical snapshot, candlestick patterns, best strategy, and recent candle tail.
 - Global context used: market regime, global risk score, major market moves, and global headlines.
@@ -121,6 +125,7 @@ FREE_FEED_CACHE_SECONDS=1800
 FREE_FEED_TIMEOUT_SECONDS=10
 FREE_FEED_OPTION_CHAIN_SYMBOLS=NIFTY,BANKNIFTY
 FREE_FEED_CORPORATE_LOOKBACK_DAYS=2
+INSTITUTIONAL_RISK_WEIGHT=0.12
 ```
 
 Currently included:
@@ -131,6 +136,13 @@ Currently included:
 - NSE ASM/GSM surveillance lists.
 - NSE corporate announcements for recent official filings.
 - Best-effort bulk-deal adapter.
+
+These feeds are not just displayed. They are used in the decision engine through:
+
+- The weighted `free_institutional_context` score component.
+- The full-spectrum confluence score.
+- Hard no-new-long gates for ASM/GSM/F&O-ban flags when those feeds are available.
+- The Suggestions tab and decision drawer, which show the institutional bias and symbol-level flags used.
 
 Still intentionally marked as gaps until a stable adapter/feed is connected: F&O ban, delivery percentage bhavcopy, stock-level FII/DII flow, GIFT Nifty, FedWatch/yield curve detail, social sentiment, analyst consensus, promoter pledge, and tick-level volume profile.
 

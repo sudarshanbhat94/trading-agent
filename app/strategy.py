@@ -42,6 +42,7 @@ class StrategyEngine:
             "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
             "min_llm_confidence": self.settings.llm_primary_min_confidence,
             "global_risk_weight": self.settings.global_risk_weight,
+            "institutional_risk_weight": self.settings.institutional_risk_weight,
             "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
         }
 

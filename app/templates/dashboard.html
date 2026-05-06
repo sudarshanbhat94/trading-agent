@@ -18,6 +18,7 @@
         </div>
         <nav class="nav">
           <button class="nav-item active" type="button" data-view="overview"><span>Overview</span><strong id="nav-overview-badge">live</strong></button>
+          <button class="nav-item" type="button" data-view="suggestions"><span>Suggestions</span><strong id="nav-suggestions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="positions"><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="decisions"><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="orders"><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
@@ -214,11 +215,22 @@
                       <th>LTP</th>
                       <th>Market Value</th>
                       <th>P&amp;L</th>
+                      <th>Exit Plan</th>
                     </tr>
                   </thead>
                   <tbody id="positions-body"></tbody>
                 </table>
               </div>
+            </div>
+          </section>
+
+          <section id="suggestions-view" class="view">
+            <div class="panel full">
+              <div class="panel-head">
+                <h3>Top 5 Suggestions</h3>
+                <span id="suggestion-count">0 candidates</span>
+              </div>
+              <div class="suggestion-grid" id="suggestions-body"></div>
             </div>
           </section>
 
@@ -267,6 +279,7 @@
                       <th>Price</th>
                       <th>Value</th>
                       <th>Status</th>
+                      <th>Exit Plan</th>
                     </tr>
                   </thead>
                   <tbody id="orders-body"></tbody>

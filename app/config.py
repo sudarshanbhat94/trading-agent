@@ -91,6 +91,7 @@ class Settings:
     free_feed_timeout_seconds: int = _int("FREE_FEED_TIMEOUT_SECONDS", 10)
     free_feed_option_chain_symbols: str = os.getenv("FREE_FEED_OPTION_CHAIN_SYMBOLS", "NIFTY,BANKNIFTY")
     free_feed_corporate_lookback_days: int = _int("FREE_FEED_CORPORATE_LOOKBACK_DAYS", 2)
+    institutional_risk_weight: float = _float("INSTITUTIONAL_RISK_WEIGHT", 0.12)
 
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").strip().lower()
     live_trading_enabled: bool = _bool("LIVE_TRADING_ENABLED", False)
@@ -201,6 +202,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "free_feed_timeout_seconds", "label": "Free Feed Timeout Seconds", "type": "number", "category": "Institutional Feeds", "min": 3, "step": 1},
     {"key": "free_feed_option_chain_symbols", "label": "Free Option Chain Symbols", "type": "text", "category": "Institutional Feeds"},
     {"key": "free_feed_corporate_lookback_days", "label": "Corporate Lookback Days", "type": "number", "category": "Institutional Feeds", "min": 1, "step": 1},
+    {"key": "institutional_risk_weight", "label": "Institutional Weight", "type": "number", "category": "Institutional Feeds", "min": 0, "max": 0.3, "step": 0.01},
     {"key": "live_trading_enabled", "label": "Live Trading Enabled", "type": "boolean", "category": "Live Protection"},
     {"key": "live_trading_confirm", "label": "Live Confirm Phrase", "type": "secret", "category": "Live Protection"},
     {"key": "upstox_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["D", "I"]},

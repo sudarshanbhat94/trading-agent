@@ -386,7 +386,10 @@ def _confluence_score(
         news += 1
     if filters.get("volume_ratio_min_1_5"):
         news += 1
-    if institutional_flow.get("symbol_flags", {}).get("official_announcements_count", 0) > 0:
+    if (
+        institutional_flow.get("symbol_flags", {}).get("official_announcements_count", 0) > 0
+        and sentiment_score > 0.15
+    ):
         news += 1
 
     macro = min(macro, 8)

@@ -82,20 +82,28 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     candle_score = float(context["candlestick_analysis"]["score"])
     preset_score = float(context["best_strategy"]["score"])
     global_risk = float(context.get("global_market_context", {}).get("risk_score", 0.0) or 0.0)
+    institutional_score = _institutional_score(context)
     global_weight = float(context.get("risk_limits", {}).get("global_risk_weight", 0.1) or 0.0)
+    institutional_weight = float(context.get("risk_limits", {}).get("institutional_risk_weight", 0.12) or 0.0)
     global_weight = max(min(global_weight, 0.3), 0.0)
-    remaining = 1.0 - global_weight
+    institutional_weight = max(min(institutional_weight, 0.3), 0.0)
+    if global_weight + institutional_weight > 0.45:
+        scale = 0.45 / (global_weight + institutional_weight)
+        global_weight *= scale
+        institutional_weight *= scale
+    remaining = 1.0 - global_weight - institutional_weight
     components = [
         {"name": "technical_math", "score": technical, "weight": round(0.40 * remaining, 4)},
         {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.20 * remaining, 4)},
         {"name": "best_strategy", "score": preset_score, "weight": round(0.25 * remaining, 4)},
         {"name": "sentiment", "score": sentiment, "weight": round(0.15 * remaining, 4)},
         {"name": "global_market_context", "score": global_risk, "weight": round(global_weight, 4)},
+        {"name": "free_institutional_context", "score": institutional_score, "weight": round(institutional_weight, 4)},
     ]
     raw = sum(component["score"] * component["weight"] for component in components)
     combined = max(min(raw, 1.0), -1.0)
     return {
-        "formula": "technical_math*scaled_0.40 + candlestick_analysis*scaled_0.20 + best_strategy*scaled_0.25 + sentiment*scaled_0.15 + global_market_context*global_risk_weight",
+        "formula": "technical_math*scaled_0.40 + candlestick_analysis*scaled_0.20 + best_strategy*scaled_0.25 + sentiment*scaled_0.15 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
         "components": [
             {
                 **component,
@@ -107,6 +115,20 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
         "combined": combined,
         "clamped": combined != raw,
     }
+
+
+def _institutional_score(context: dict[str, Any]) -> float:
+    institutional = context.get("institutional_context") or {}
+    score = float((institutional.get("market_bias") or {}).get("score", 0.0) or 0.0)
+    symbol = str(context.get("symbol") or "").upper()
+    flags = (institutional.get("symbol_flags") or {}).get(symbol, {})
+    if flags.get("asm"):
+        score -= 0.35
+    if flags.get("gsm"):
+        score -= 0.45
+    if flags.get("fno_ban"):
+        score -= 0.25
+    return round(max(min(score, 1.0), -1.0), 4)
 
 
 def _candle_tools(candles: list[Candle]) -> dict[str, Any]:

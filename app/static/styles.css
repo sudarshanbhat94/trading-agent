@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  --bg: #f5f9ff;
+  --bg: #f3f8fd;
   --sidebar: #ffffff;
   --surface: #ffffff;
   --surface-2: #eef7ff;
@@ -14,7 +14,7 @@
   --green: #16803c;
   --red: #c2413f;
   --amber: #b7791f;
-  --shadow: 0 10px 30px rgba(43, 94, 143, 0.09);
+  --shadow: 0 8px 22px rgba(43, 94, 143, 0.08);
 }
 
 * {
@@ -422,13 +422,13 @@ canvas {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 th,
 td {
   border-bottom: 1px solid var(--line);
-  padding: 12px 14px;
+  padding: 10px 12px;
   text-align: left;
   vertical-align: top;
   white-space: nowrap;
@@ -524,6 +524,125 @@ td.reason {
 .tag.hold {
   background: #eef2f7;
   color: var(--muted);
+}
+
+.tag.watch,
+.tag.open {
+  background: #fff8ec;
+  color: var(--amber);
+}
+
+.tag.no_trade {
+  background: #eef2f7;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.exit-mini {
+  color: #0b406e;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.suggestion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.suggestion-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 250px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  box-shadow: none;
+  padding: 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.suggestion-card:hover {
+  border-color: #8fc8f3;
+  background: #f8fcff;
+}
+
+.suggestion-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.suggestion-top strong {
+  margin-right: auto;
+  font-size: 18px;
+}
+
+.rank {
+  display: inline-flex;
+  min-width: 30px;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef6ff;
+  color: #075b9d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.suggestion-score {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.suggestion-score div,
+.suggestion-plan {
+  border: 1px solid #e3eef8;
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 9px;
+}
+
+.suggestion-score span,
+.suggestion-score small,
+.suggestion-plan span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.suggestion-score strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 16px;
+}
+
+.suggestion-plan {
+  display: grid;
+  gap: 5px;
+}
+
+.suggestion-card p {
+  color: #44566b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.empty-state {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
 }
 
 .account-body {
@@ -651,6 +770,16 @@ td.reason {
   font-size: 13px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.settings-inline-status.positive {
+  color: var(--green);
+  font-weight: 750;
+}
+
+.settings-inline-status.negative {
+  color: var(--red);
+  font-weight: 750;
 }
 
 .detail-drawer {
@@ -875,6 +1004,7 @@ td.reason {
   .kpis,
   .ops-grid,
   .overview-grid,
+  .suggestion-grid,
   .settings-form {
     grid-template-columns: 1fr 1fr;
   }
@@ -899,6 +1029,7 @@ td.reason {
   .kpis,
   .ops-grid,
   .overview-grid,
+  .suggestion-grid,
   .settings-form,
   .account-metrics {
     grid-template-columns: 1fr;

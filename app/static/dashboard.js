@@ -68,6 +68,7 @@ function render(payload) {
   const positions = payload.positions || [];
   const quotes = payload.quotes || [];
   const decisions = payload.decisions || [];
+  const suggestions = payload.suggestions || [];
   const orders = payload.orders || [];
   const strategies = payload.strategy_metrics || [];
   const sentiment = payload.sentiment || [];
@@ -99,10 +100,12 @@ function render(payload) {
   byId("account-quote-count").textContent = `${quotes.length} quotes`;
   byId("decision-count").textContent = `${decisions.length} decisions`;
   byId("overview-decision-count").textContent = `${decisions.length} decisions`;
+  byId("suggestion-count").textContent = `${suggestions.length} candidates`;
   byId("order-count").textContent = `${orders.length} orders`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
   byId("sentiment-count").textContent = `${sentiment.length} events`;
   byId("nav-positions-badge").textContent = String(positions.length);
+  byId("nav-suggestions-badge").textContent = String(suggestions.length);
   byId("nav-decisions-badge").textContent = String(decisions.length);
   byId("nav-orders-badge").textContent = String(orders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
@@ -112,6 +115,7 @@ function render(payload) {
   renderStrategies(strategies);
   renderSentiment(sentiment);
   renderQuotes(quotes);
+  renderSuggestions(suggestions);
   renderDecisions(decisions);
   renderOverviewDecisions(decisions);
   renderOrders(orders);
@@ -346,7 +350,9 @@ function collectSettings() {
 }
 
 async function saveSettings() {
-  byId("settings-status").textContent = "saving";
+  const status = byId("settings-status");
+  status.textContent = "saving";
+  status.className = "settings-inline-status";
   const response = await fetch("/api/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -354,12 +360,15 @@ async function saveSettings() {
   });
   const payload = await response.json();
   if (!response.ok) {
-    byId("settings-status").textContent = payload.detail || "save failed";
+    status.textContent = payload.detail || "save failed";
+    status.className = "settings-inline-status negative";
     return;
   }
   renderSettings(payload.config);
   render(payload.status);
-  byId("settings-status").textContent = "saved";
+  const savedAt = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  byId("settings-status").textContent = `saved at ${savedAt}`;
+  byId("settings-status").className = "settings-inline-status positive";
 }
 
 async function resetDemo() {
@@ -456,13 +465,14 @@ function renderStrategies(rows) {
 function renderPositions(rows) {
   const body = byId("positions-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="7">No open positions</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8">No open positions</td></tr>`;
     return;
   }
   body.innerHTML = rows
     .map((row) => {
       const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
       const marketValue = Number(row.market_price) * Number(row.qty);
+      const exit = row.exit_plan || {};
       return `<tr>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
         <td>${escapeHtml(row.strategy || "-")}</td>
@@ -471,10 +481,48 @@ function renderPositions(rows) {
         <td class="num">${fmtMoney(row.market_price)}</td>
         <td class="num">${fmtMoney(marketValue)}</td>
         <td class="num ${pnlClass(pnl)}">${fmtMoney(pnl)}</td>
+        <td>${exitPlanMini(exit)}</td>
       </tr>`;
     })
     .join("");
   bindRowDetails(body, rows, "Position");
+}
+
+function renderSuggestions(rows) {
+  const body = byId("suggestions-body");
+  if (!rows.length) {
+    body.innerHTML = `<div class="empty-state">Run a cycle to generate ranked suggestions.</div>`;
+    return;
+  }
+  body.innerHTML = rows
+    .slice(0, 5)
+    .map((row, index) => {
+      const action = String(row.suggestion || "WATCH").toLowerCase();
+      const t1 = (row.targets || [])[0] || {};
+      return `<button class="suggestion-card" type="button" data-index="${index}">
+        <div class="suggestion-top">
+          <span class="rank">#${index + 1}</span>
+          <strong>${escapeHtml(row.symbol)}</strong>
+          <span class="tag ${action}">${escapeHtml(row.suggestion)}</span>
+        </div>
+        <div class="suggestion-score">
+          <div><span>Confluence</span><strong>${escapeHtml(row.confluence ?? "-")}/26</strong><small>${escapeHtml(row.tier || "-")}</small></div>
+          <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>${escapeHtml(row.decision_readiness || "-")}</small></div>
+          <div><span>Inst.</span><strong class="${pnlClass(row.institutional_bias)}">${fmtNumber(row.institutional_bias)}</strong><small>${escapeHtml(shortValue(row.institutional_flags || {}, 46))}</small></div>
+        </div>
+        <div class="suggestion-plan">
+          <span>Entry ${formatZone(row.entry_zone)}</span>
+          <span>SL ${fmtMoney(row.stop_loss)}</span>
+          <span>T1 ${fmtMoney(t1.price)}</span>
+        </div>
+        <p>${escapeHtml(shortValue(row.reason || "-", 190))}</p>
+      </button>`;
+    })
+    .join("");
+  [...body.querySelectorAll(".suggestion-card")].forEach((button) => {
+    const row = rows[Number(button.dataset.index)];
+    button.addEventListener("click", () => showDetails("Suggestion", row));
+  });
 }
 
 function renderQuotes(rows) {
@@ -568,13 +616,14 @@ function renderOverviewDecisions(rows) {
 function renderOrders(rows) {
   const body = byId("orders-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="8">No orders yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9">No orders yet</td></tr>`;
     return;
   }
   body.innerHTML = rows
     .slice(0, 120)
     .map((row) => {
       const side = String(row.side || "").toLowerCase();
+      const exit = exitPlanFromOrder(row);
       return `<tr>
         <td>${fmtTime(row.ts)}</td>
         <td><span class="tag ${side}">${escapeHtml(row.side)}</span></td>
@@ -584,6 +633,7 @@ function renderOrders(rows) {
         <td class="num">${fmtMoney(row.price)}</td>
         <td class="num">${fmtMoney(row.notional)}</td>
         <td>${escapeHtml(row.status)}</td>
+        <td>${exitPlanMini(exit)}</td>
       </tr>`;
     })
     .join("");
@@ -608,6 +658,12 @@ function detailHtml(value) {
   if (!value || typeof value !== "object") {
     return `<pre>${escapeHtml(value)}</pre>`;
   }
+  if (value.suggestion) {
+    return suggestionDetailHtml(value);
+  }
+  if (value.exit_plan) {
+    return positionDetailHtml(value);
+  }
   if (value.details_json && value.action) {
     return decisionDetailHtml(value);
   }
@@ -625,10 +681,63 @@ function detailHtml(value) {
   return `<div class="detail-list">${rows}</div>${jsonBlocks}<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
 }
 
+function suggestionDetailHtml(row) {
+  const audit = parseJsonObject(row.details_json);
+  const context = audit.context || {};
+  return `
+    ${auditHero({
+      label: "Suggestion",
+      symbol: row.symbol,
+      action: row.suggestion,
+      status: `${row.confluence}/26 ${row.tier || ""}`,
+      meta: `${fmtMoney(row.price)} · combined ${fmtNumber(row.combined_score)}`,
+    })}
+    <section class="audit-section">
+      <h4>Why Suggested</h4>
+      <p>${escapeHtml(row.reason || "-")}</p>
+      <div class="audit-chips">
+        <span>Readiness: ${escapeHtml(row.decision_readiness || "-")}</span>
+        <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
+        <span>Institutional: ${fmtNumber(row.institutional_bias)}</span>
+      </div>
+    </section>
+    ${exitPlanHtml(row.exit_plan)}
+    ${scoreBreakdownHtml(audit.score_breakdown)}
+    ${marketContextHtml(context)}
+    ${fullSpectrumHtml(context.full_spectrum_analysis)}
+  `;
+}
+
+function positionDetailHtml(row) {
+  const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
+  return `
+    ${auditHero({
+      label: "Position",
+      symbol: row.symbol,
+      action: pnl >= 0 ? "OPEN" : "WATCH",
+      status: row.strategy || "-",
+      meta: `${row.qty} qty · ${fmtMoney(pnl)} unrealized`,
+    })}
+    ${objectCardsHtml("Position", {
+      qty: row.qty,
+      avg_price: fmtMoney(row.avg_price),
+      market_price: fmtMoney(row.market_price),
+      market_value: fmtMoney(Number(row.market_price) * Number(row.qty)),
+      unrealized_pnl: fmtMoney(pnl),
+    })}
+    ${exitPlanHtml(row.exit_plan)}
+    <section class="audit-section">
+      <h4>Full Position JSON</h4>
+      <pre>${escapeHtml(JSON.stringify(row, null, 2))}</pre>
+    </section>
+  `;
+}
+
 function decisionDetailHtml(row) {
   const audit = parseJsonObject(row.details_json);
   const context = audit.context || {};
   const llm = audit.llm_output || null;
+  const exit = exitPlanFromAudit(audit);
   return `
     ${auditHero({
       label: "Decision audit",
@@ -646,6 +755,7 @@ function decisionDetailHtml(row) {
         <span>At: ${escapeHtml(fmtTime(row.ts))}</span>
       </div>
     </section>
+    ${exitPlanHtml(exit)}
     ${scoreBreakdownHtml(audit.score_breakdown)}
     ${llm ? llmOutputHtml(llm, audit) : ""}
     ${riskGateHtml(audit)}
@@ -663,6 +773,7 @@ function orderDetailHtml(row) {
   const audit = parseJsonObject(row.details_json);
   const execution = audit.execution || {};
   const route = audit.route || {};
+  const exit = exitPlanFromOrder(row);
   return `
     ${auditHero({
       label: "Order audit",
@@ -682,6 +793,7 @@ function orderDetailHtml(row) {
     </section>
     ${objectCardsHtml("Execution Sizing", execution.sizing)}
     ${objectCardsHtml("Execution Risk Checks", execution.risk_checks || execution.daily_loss)}
+    ${exitPlanHtml(exit)}
     ${objectCardsHtml("Broker / Route", route)}
     ${audit.decision ? nestedDecisionHtml(audit.decision) : ""}
     <section class="audit-section">
@@ -689,6 +801,58 @@ function orderDetailHtml(row) {
       <pre>${escapeHtml(JSON.stringify(audit, null, 2))}</pre>
     </section>
   `;
+}
+
+function exitPlanFromOrder(row) {
+  const audit = parseJsonObject(row.details_json);
+  return exitPlanFromAudit(audit);
+}
+
+function exitPlanFromAudit(audit) {
+  const details = audit.decision?.details || {};
+  const full = details.context?.full_spectrum_analysis || audit.context?.full_spectrum_analysis || {};
+  const tradePlan = full.trade_plan || {};
+  if (!Object.keys(tradePlan).length) return {};
+  return {
+    horizon: tradePlan.horizon,
+    entry_zone: tradePlan.entry_zone,
+    stop_loss: tradePlan.stop_loss,
+    target_1: (tradePlan.targets || [])[0],
+    target_2: (tradePlan.targets || [])[1],
+    target_3: (tradePlan.targets || [])[2],
+    invalidation: tradePlan.invalidation,
+    monitoring_checklist: full.monitoring_checklist || [],
+    plan: "Exit on stop or invalidation. Take partial profit or tighten stop near T1, trail after T1, then reassess at T2/T3 or if news/global risk turns negative.",
+  };
+}
+
+function exitPlanMini(exit) {
+  if (!exit || !Object.keys(exit).length) return `<span class="muted">pending</span>`;
+  const t1 = exit.target_1 || {};
+  return `<span class="exit-mini">SL ${fmtMoney(exit.stop_loss)} · T1 ${fmtMoney(t1.price)}</span>`;
+}
+
+function exitPlanHtml(exit) {
+  if (!exit || !Object.keys(exit).length) return "";
+  return `<section class="audit-section exit-plan">
+    <h4>Exit Plan</h4>
+    <div class="audit-cards">
+      <div class="audit-card"><span>When</span><strong>${escapeHtml(exit.horizon || "swing_3_to_7_days")}</strong><small>review every cycle</small></div>
+      <div class="audit-card"><span>Entry Zone</span><strong>${escapeHtml(formatZone(exit.entry_zone))}</strong><small>avoid chasing outside plan</small></div>
+      <div class="audit-card"><span>Hard Stop</span><strong class="negative">${fmtMoney(exit.stop_loss)}</strong><small>exit if invalidated</small></div>
+      <div class="audit-card"><span>Target 1</span><strong class="positive">${fmtMoney(exit.target_1?.price)}</strong><small>R:R ${escapeHtml(exit.target_1?.rr ?? "-")}</small></div>
+      <div class="audit-card"><span>Target 2</span><strong class="positive">${fmtMoney(exit.target_2?.price)}</strong><small>R:R ${escapeHtml(exit.target_2?.rr ?? "-")}</small></div>
+      <div class="audit-card"><span>Target 3</span><strong class="positive">${fmtMoney(exit.target_3?.price)}</strong><small>${escapeHtml(exit.target_3?.rr ?? "-")}</small></div>
+    </div>
+    <p>${escapeHtml(exit.plan || "-")}</p>
+    ${objectCardsHtml("Invalidation", exit.invalidation)}
+    ${auditList("Exit Monitoring", exit.monitoring_checklist)}
+  </section>`;
+}
+
+function formatZone(zone) {
+  if (!Array.isArray(zone) || !zone.length) return "-";
+  return zone.length === 1 ? fmtMoney(zone[0]) : `${fmtMoney(zone[0])} - ${fmtMoney(zone[zone.length - 1])}`;
 }
 
 function auditHero({ label, symbol, action, status, meta }) {
