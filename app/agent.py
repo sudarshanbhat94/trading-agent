@@ -57,9 +57,11 @@ class TradingAgentService:
             return
         self._running = True
         self._task = asyncio.create_task(self._loop())
+        self._log("INFO", "agent", "start", "Agent loop started", {"interval_seconds": self.interval_seconds})
 
     async def stop(self) -> None:
         self._running = False
+        self._log("INFO", "agent", "stop_requested", "Agent loop stop requested")
         if self._task:
             self._task.cancel()
             try:
@@ -76,20 +78,59 @@ class TradingAgentService:
         self._cycle_started_at = started.isoformat()
         self._cycle_phase = "market_quotes"
         universe = self.db.get_universe(enabled_only=True)
+        self._log("INFO", "cycle", "cycle_start", "Agent cycle started", {"universe_size": len(universe)})
         quotes = await self.market_data.get_quotes(universe)
         if not quotes:
             raise MarketDataError(f"{self.market_data.source_name} returned no quotes for the enabled universe")
+        self._log(
+            "INFO",
+            "market_data",
+            "quotes_fetched",
+            f"Fetched {len(quotes)} quotes from {self.market_data.source_name}",
+            {"provider": self.market_data.source_name, "quote_count": len(quotes)},
+        )
         self._cycle_phase = "candles"
         candles = await self.market_data.get_candles(universe)
+        candle_counts = {symbol: len(items) for symbol, items in candles.items()}
+        self._log(
+            "INFO",
+            "market_data",
+            "candles_fetched",
+            f"Fetched candles for {len(candles)} symbols",
+            {
+                "provider": self.market_data.source_name,
+                "symbols_with_candles": len(candles),
+                "total_candles": sum(candle_counts.values()),
+                "sample_counts": dict(list(candle_counts.items())[:10]),
+            },
+        )
         self._cycle_phase = "persist_market_data"
         self.db.upsert_quotes(quotes)
         self.db.upsert_candles(candles)
         self.broker.sync_marks(quotes)
         portfolio = self.broker.snapshot()
         positions = self.broker.positions_by_symbol()
+        self._log(
+            "INFO",
+            "portfolio",
+            "portfolio_marked",
+            "Portfolio marks updated",
+            {"cash": portfolio.get("cash"), "equity": portfolio.get("equity"), "open_positions": len(positions)},
+        )
         self._cycle_phase = "global_intelligence"
         macro_context = await self.macro.context_for_cycle() if self.macro else {}
         self.db.set_state("macro_context", macro_context)
+        self._log(
+            "INFO",
+            "macro",
+            "global_context",
+            "Global intelligence refreshed",
+            {
+                "regime": macro_context.get("regime"),
+                "risk_score": macro_context.get("risk_score"),
+                "confidence": macro_context.get("confidence"),
+            },
+        )
         self._cycle_phase = "institutional_feeds"
         institutional_context = (
             await self.institutional_feeds.context_for_cycle(universe)
@@ -97,6 +138,17 @@ class TradingAgentService:
             else {}
         )
         self.db.set_state("institutional_context", institutional_context)
+        self._log(
+            "INFO",
+            "feeds",
+            "institutional_context",
+            "Free institutional context refreshed",
+            {
+                "source_quality": institutional_context.get("source_quality"),
+                "market_bias": institutional_context.get("market_bias"),
+                "data_gaps": institutional_context.get("data_gaps", [])[:8],
+            },
+        )
         self._cycle_phase = "strategy_and_llm"
         decisions = await self.strategy.evaluate(
             universe,
@@ -106,16 +158,39 @@ class TradingAgentService:
             macro_context,
             institutional_context,
         )
+        action_counts: dict[str, int] = {}
+        for decision in decisions:
+            action_counts[decision.action] = action_counts.get(decision.action, 0) + 1
+        self._log(
+            "INFO",
+            "strategy",
+            "decisions_created",
+            f"Created {len(decisions)} decisions",
+            {"action_counts": action_counts},
+        )
         self._cycle_phase = "risk_and_execution"
         risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions)
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
-        self._execute_top_decisions(decisions, portfolio["equity"])
+        executed_count = self._execute_top_decisions(decisions, portfolio["equity"])
         portfolio = self.broker.snapshot()
         self._last_cycle_at = utc_now()
         self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
         self._cycle_started_at = None
         self._cycle_phase = "idle"
+        self._log(
+            "INFO",
+            "cycle",
+            "cycle_complete",
+            f"Agent cycle completed in {self._last_cycle_duration_seconds}s",
+            {
+                "duration_seconds": self._last_cycle_duration_seconds,
+                "decisions": len(decisions),
+                "risk_exits": len(risk_exits),
+                "executed_orders": executed_count,
+                "equity": portfolio.get("equity"),
+            },
+        )
         snapshot = self.snapshot()
         if self.on_update:
             await self.on_update(snapshot)
@@ -250,6 +325,13 @@ class TradingAgentService:
                 self._last_error = None
             except asyncio.TimeoutError:
                 self._last_error = f"Cycle timed out after {self.cycle_timeout_seconds}s during {self._cycle_phase}"
+                self._log(
+                    "ERROR",
+                    "cycle",
+                    "cycle_timeout",
+                    self._last_error,
+                    {"phase": self._cycle_phase, "timeout_seconds": self.cycle_timeout_seconds},
+                )
                 self._cycle_started_at = None
                 self._cycle_phase = "idle"
                 if self.on_update:
@@ -258,6 +340,13 @@ class TradingAgentService:
                 raise
             except Exception as exc:
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
+                self._log(
+                    "ERROR",
+                    "cycle",
+                    "cycle_error",
+                    self._last_error,
+                    {"phase": self._cycle_phase, "error_type": exc.__class__.__name__},
+                )
                 self._cycle_started_at = None
                 self._cycle_phase = "idle"
                 if self.on_update:
@@ -270,11 +359,43 @@ class TradingAgentService:
             by_symbol[decision.symbol] = decision
         return list(by_symbol.values())
 
-    def _execute_top_decisions(self, decisions: list[Decision], equity: float) -> None:
+    def _execute_top_decisions(self, decisions: list[Decision], equity: float) -> int:
         candidates = [decision for decision in decisions if decision.action != "HOLD"]
         candidates.sort(key=lambda decision: decision.confidence, reverse=True)
+        executed = 0
         for decision in candidates[: self.broker.settings.max_trades_per_cycle]:
-            self.broker.execute(decision, equity)
+            result = self.broker.execute(decision, equity)
+            executed += 1 if result else 0
+            self._log(
+                "INFO",
+                "execution",
+                "order_attempt",
+                f"{decision.action} {decision.symbol} {decision.strategy}: {'executed' if result else 'not executed'}",
+                {
+                    "symbol": decision.symbol,
+                    "action": decision.action,
+                    "strategy": decision.strategy,
+                    "confidence": decision.confidence,
+                    "price": decision.price,
+                    "executed": result,
+                },
+            )
+        if not candidates:
+            self._log("INFO", "execution", "no_trade_actions", "No BUY/SELL candidates this cycle")
+        return executed
+
+    def _log(
+        self,
+        level: str,
+        component: str,
+        event: str,
+        message: str,
+        details: Any | None = None,
+    ) -> None:
+        try:
+            self.db.insert_agent_log(level, component, event, message, details)
+        except Exception:
+            pass
 
     def _market_health(self, quotes: list[dict[str, Any]]) -> dict[str, Any]:
         latest_age: float | None = None

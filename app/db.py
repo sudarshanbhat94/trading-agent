@@ -158,6 +158,16 @@ class Database:
                     events_json text not null default '[]'
                 );
 
+                create table if not exists agent_logs (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    level text not null,
+                    component text not null,
+                    event text not null,
+                    message text not null,
+                    details_json text not null default '{}'
+                );
+
                 create index if not exists idx_market_ticks_symbol_ts
                     on market_ticks(symbol, ts);
                 create index if not exists idx_candles_symbol_ts
@@ -166,6 +176,8 @@ class Database:
                     on decisions(ts);
                 create index if not exists idx_orders_ts
                     on orders(ts);
+                create index if not exists idx_agent_logs_ts
+                    on agent_logs(ts);
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
@@ -404,6 +416,50 @@ class Database:
                 """,
                 rows,
             )
+
+    def insert_agent_log(
+        self,
+        level: str,
+        component: str,
+        event: str,
+        message: str,
+        details: Any | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into agent_logs (ts, level, component, event, message, details_json)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    level.upper(),
+                    component,
+                    event,
+                    message,
+                    json.dumps(details or {}, default=str, separators=(",", ":")),
+                ),
+            )
+            conn.execute(
+                """
+                delete from agent_logs
+                where id not in (
+                    select id from agent_logs order by id desc limit 2000
+                )
+                """
+            )
+
+    def latest_agent_logs(self, limit: int = 300) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from agent_logs
+                order by id desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def reset_trading_ledger(self, cash: float) -> None:
         with self.connect() as conn:

@@ -159,6 +159,13 @@ async def get_config() -> dict[str, Any]:
     }
 
 
+@app.get("/api/logs")
+async def agent_logs(request: Request, limit: int = 300) -> dict[str, Any]:
+    require_admin(request, settings)
+    safe_limit = max(1, min(int(limit), 1000))
+    return {"logs": db.latest_agent_logs(safe_limit)}
+
+
 @app.post("/api/llm/test")
 async def test_llm(request: Request) -> dict[str, Any]:
     require_admin(request, settings)
@@ -192,6 +199,16 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
     was_running = agent.running
     await agent.stop()
     db.update_runtime_settings(candidate_overrides)
+    db.insert_agent_log(
+        "INFO",
+        "admin",
+        "config_saved",
+        "Runtime configuration saved",
+        {
+            "changed_keys": sorted(key for key in incoming.keys() if key in CONFIG_KEYS),
+            "was_running": was_running,
+        },
+    )
 
     settings = candidate_settings
     market_data = candidate_stack["market_data"]
@@ -233,6 +250,7 @@ async def auth_logout(response: Response) -> dict[str, bool]:
 @app.post("/api/control/start")
 async def start_agent(request: Request) -> dict[str, Any]:
     require_admin(request, settings)
+    db.insert_agent_log("INFO", "admin", "control_start", "Admin requested agent start")
     agent.start()
     snapshot = agent.snapshot()
     await hub.broadcast(snapshot)
@@ -242,6 +260,7 @@ async def start_agent(request: Request) -> dict[str, Any]:
 @app.post("/api/control/stop")
 async def stop_agent(request: Request) -> dict[str, Any]:
     require_admin(request, settings)
+    db.insert_agent_log("INFO", "admin", "control_stop", "Admin requested agent stop")
     await agent.stop()
     snapshot = agent.snapshot()
     await hub.broadcast(snapshot)
@@ -251,6 +270,7 @@ async def stop_agent(request: Request) -> dict[str, Any]:
 @app.post("/api/control/run-once")
 async def run_once(request: Request) -> dict[str, Any]:
     require_admin(request, settings)
+    db.insert_agent_log("INFO", "admin", "control_run_once", "Admin requested one manual cycle")
     return await agent.run_once()
 
 
@@ -260,6 +280,13 @@ async def reset_demo(request: Request) -> dict[str, Any]:
     was_running = agent.running
     await agent.stop()
     db.reset_trading_ledger(settings.initial_cash_inr)
+    db.insert_agent_log(
+        "WARN",
+        "admin",
+        "demo_reset",
+        "Demo trading ledger reset",
+        {"initial_cash_inr": settings.initial_cash_inr, "was_running": was_running},
+    )
     if was_running:
         agent.start()
     snapshot = await status()

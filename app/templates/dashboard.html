@@ -23,6 +23,7 @@
           <button class="nav-item" type="button" data-view="decisions"><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="orders"><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="sentiment"><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="logs"><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
           <button class="nav-item" type="button" data-view="account"><span>Account</span><strong>paper</strong></button>
           <button class="nav-item" type="button" data-view="settings"><span>Settings</span><strong>admin</strong></button>
         </nav>
@@ -337,6 +338,33 @@
                     </tr>
                   </thead>
                   <tbody id="quotes-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="logs-view" class="view">
+            <div class="panel full">
+              <div class="panel-head">
+                <h3>Agent Logs</h3>
+                <div class="panel-actions">
+                  <span id="logs-count">admin login required</span>
+                  <button id="refresh-logs-btn" type="button">Refresh Logs</button>
+                </div>
+              </div>
+              <div class="table-wrap page-table logs-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Level</th>
+                      <th>Component</th>
+                      <th>Event</th>
+                      <th>Message</th>
+                      <th>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody id="logs-body"></tbody>
                 </table>
               </div>
             </div>

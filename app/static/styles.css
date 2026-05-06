@@ -361,6 +361,12 @@ p {
   font-size: 16px;
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .panel-chart {
   min-height: 354px;
 }
@@ -535,6 +541,36 @@ td.reason {
 .tag.no_trade {
   background: #eef2f7;
   color: var(--muted);
+}
+
+.log-level {
+  display: inline-flex;
+  align-items: center;
+  min-width: 58px;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eaf6ff;
+  color: #075b9d;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.log-level.warn {
+  background: #fff8ec;
+  color: var(--amber);
+}
+
+.log-level.error {
+  background: #fff0f0;
+  color: var(--red);
+}
+
+.logs-table td:nth-child(6) {
+  min-width: 280px;
+  max-width: 520px;
+  color: #516173;
+  white-space: normal;
 }
 
 .muted {

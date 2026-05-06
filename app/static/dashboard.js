@@ -3,6 +3,7 @@ const state = {
   config: null,
   auth: { admin: false, admin_configured: false },
   account: null,
+  logs: [],
 };
 
 const money = new Intl.NumberFormat("en-IN", {
@@ -109,6 +110,7 @@ function render(payload) {
   byId("nav-decisions-badge").textContent = String(decisions.length);
   byId("nav-orders-badge").textContent = String(orders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
+  byId("nav-logs-badge").textContent = state.auth?.admin ? String(state.logs.length) : "admin";
   byId("nav-overview-badge").textContent = payload.running ? "on" : "off";
 
   renderPositions(positions);
@@ -203,11 +205,13 @@ function renderAuth(auth) {
   byId("login-btn").hidden = auth.admin;
   byId("logout-btn").hidden = !auth.admin;
   applyAccessMode();
+  if (auth.admin) fetchLogs();
+  else renderLogs([]);
 }
 
 function applyAccessMode() {
   const admin = Boolean(state.auth && state.auth.admin);
-  for (const id of ["start-btn", "stop-btn", "run-btn", "save-settings-btn", "reset-demo-btn", "test-llm-btn"]) {
+  for (const id of ["start-btn", "stop-btn", "run-btn", "save-settings-btn", "reset-demo-btn", "test-llm-btn", "refresh-logs-btn"]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
   }
@@ -222,6 +226,56 @@ function applyAccessMode() {
     : state.auth.admin_configured
       ? "read only: login to change settings"
       : "read only: set ADMIN_PASSWORD in .env";
+}
+
+async function fetchLogs() {
+  if (!(state.auth && state.auth.admin)) {
+    renderLogs([]);
+    return;
+  }
+  try {
+    const response = await fetch("/api/logs?limit=400");
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      byId("logs-count").textContent = payload.detail || "logs unavailable";
+      return;
+    }
+    renderLogs(payload.logs || []);
+  } catch (error) {
+    byId("logs-count").textContent = "logs unavailable";
+    showBackendError(networkErrorMessage(error, "logs fetch"), { action: "fetch logs" });
+  }
+}
+
+function renderLogs(rows) {
+  state.logs = rows || [];
+  const body = byId("logs-body");
+  if (!state.auth?.admin) {
+    byId("logs-count").textContent = "admin login required";
+    byId("nav-logs-badge").textContent = "admin";
+    body.innerHTML = `<tr><td colspan="6">Login as admin to view agent logs.</td></tr>`;
+    return;
+  }
+  byId("logs-count").textContent = `${state.logs.length} logs`;
+  byId("nav-logs-badge").textContent = String(state.logs.length);
+  if (!state.logs.length) {
+    body.innerHTML = `<tr><td colspan="6">No logs yet</td></tr>`;
+    return;
+  }
+  body.innerHTML = state.logs
+    .map((row) => {
+      const details = parseJsonObject(row.details_json);
+      return `<tr>
+        <td>${fmtTime(row.ts)}</td>
+        <td><span class="log-level ${escapeHtml(String(row.level || "").toLowerCase())}">${escapeHtml(row.level)}</span></td>
+        <td>${escapeHtml(row.component || "-")}</td>
+        <td>${escapeHtml(row.event || "-")}</td>
+        <td class="reason">${escapeHtml(row.message || "-")}</td>
+        <td>${escapeHtml(shortValue(details, 110))}</td>
+      </tr>`;
+    })
+    .join("");
+  bindRowDetails(body, state.logs, "Agent Log");
 }
 
 function renderAccount(account) {
@@ -379,6 +433,7 @@ async function saveSettings() {
     }
     renderSettings(payload.config);
     render(payload.status);
+    fetchLogs();
     const savedAt = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     byId("settings-status").textContent = `saved at ${savedAt}`;
     byId("settings-status").className = "settings-inline-status positive";
@@ -396,6 +451,7 @@ async function resetDemo() {
     const response = await fetch("/api/control/reset-demo", { method: "POST" });
     render(await response.json());
     byId("settings-status").textContent = "demo account reset";
+    fetchLogs();
   } catch (error) {
     byId("settings-status").textContent = "reset failed: backend unreachable";
     showBackendError(networkErrorMessage(error, "demo reset"), { action: "reset demo" });
@@ -1168,6 +1224,7 @@ async function postControl(path) {
       return;
     }
     render(payload);
+    fetchLogs();
   } catch (error) {
     showBackendError(networkErrorMessage(error, "control request"), { path });
   }
@@ -1180,6 +1237,7 @@ function bindControls() {
   byId("save-settings-btn").addEventListener("click", saveSettings);
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);
+  byId("refresh-logs-btn").addEventListener("click", fetchLogs);
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
     button.addEventListener("click", () => setView(button.dataset.view));
@@ -1224,6 +1282,7 @@ function bindControls() {
         "cycle-health": {
           running: state.latest?.running,
           last_cycle_at: state.latest?.last_cycle_at,
+          cycle: state.latest?.cycle,
           interval_seconds: settings.agent_interval_seconds,
           last_error: state.latest?.last_error,
         },
@@ -1262,7 +1321,8 @@ async function loadInitial() {
     ]);
     render(await statusResponse.json());
     renderSettings(await configResponse.json());
-    renderAuth(await authResponse.json());
+    const auth = await authResponse.json();
+    renderAuth(auth);
     renderAccount(await accountResponse.json());
   } catch (error) {
     showBackendError(networkErrorMessage(error, "initial load"), { action: "initial load" });
