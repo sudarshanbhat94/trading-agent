@@ -229,7 +229,7 @@ class LLMBrain:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(context, separators=(",", ":")),
+                    "content": json.dumps(_llm_prompt_context(context), separators=(",", ":")),
                 },
             ],
         }
@@ -310,7 +310,7 @@ class LLMBrain:
                     "content": json.dumps(
                         {
                             "candidate_decision": candidate_decision,
-                            "context": context,
+                            "context": _llm_prompt_context(context),
                             "constraints": {
                                 "dry_money_only": True,
                                 "long_only": True,
@@ -767,6 +767,158 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "risk_limits": context.get("risk_limits"),
         "recent_candle_count": len(recent_candles),
         "recent_candles_tail": recent_candles[-5:],
+    }
+
+
+def _llm_prompt_context(context: dict[str, Any]) -> dict[str, Any]:
+    full = context.get("full_spectrum_analysis") or {}
+    institutional = context.get("institutional_context") or {}
+    institutional_flow = full.get("institutional_flow") or {}
+    symbol = str(context.get("symbol") or "").upper()
+    recent_candles = context.get("recent_candles") or []
+    return _prune_empty(
+        {
+            "tool_protocol": "opentrade-compact-decision-context-v1",
+            "symbol": context.get("symbol"),
+            "company": context.get("company"),
+            "sector": context.get("sector"),
+            "exchange": context.get("exchange"),
+            "quote": context.get("quote"),
+            "position": context.get("position"),
+            "technical_math": context.get("technical_math"),
+            "candlestick_analysis": context.get("candlestick_analysis"),
+            "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or []),
+            "best_strategy": context.get("best_strategy"),
+            "sentiment": context.get("sentiment"),
+            "global_market_context": _compact_global_context(context.get("global_market_context") or {}),
+            "institutional_context": {
+                "enabled": institutional.get("enabled"),
+                "source_quality": institutional.get("source_quality"),
+                "market_bias": institutional.get("market_bias"),
+                "symbol_flags": (institutional.get("symbol_flags") or {}).get(symbol, {}),
+            },
+            "full_spectrum_analysis": {
+                "data_quality": full.get("data_quality"),
+                "primary_filters": full.get("primary_filters"),
+                "signal_plan": full.get("signal_plan"),
+                "trend_context": full.get("trend_context"),
+                "key_levels": full.get("key_levels"),
+                "indicator_suite": _compact_indicators(full.get("indicator_suite") or {}),
+                "candlestick_v2": full.get("candlestick_v2"),
+                "chart_patterns": full.get("chart_patterns"),
+                "institutional_structure": full.get("institutional_structure"),
+                "institutional_flow": {
+                    "available": institutional_flow.get("available"),
+                    "source_quality": institutional_flow.get("source_quality"),
+                    "symbol_flags": institutional_flow.get("symbol_flags"),
+                    "market_bias": institutional_flow.get("market_bias"),
+                    "option_chain_proxy": institutional_flow.get("option_chain_proxy"),
+                    "delivery_proxy": institutional_flow.get("delivery_proxy"),
+                    "data_gaps": _limit_list(institutional_flow.get("data_gaps"), 8),
+                },
+                "confluence_score": full.get("confluence_score"),
+                "risk_overrides": full.get("risk_overrides"),
+                "trade_plan": full.get("trade_plan"),
+                "monitoring_checklist": _limit_list(full.get("monitoring_checklist"), 8),
+                "data_gaps": _limit_list(full.get("data_gaps"), 10),
+            },
+            "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
+            "universe_scan": context.get("universe_scan"),
+            "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-8:]],
+        }
+    )
+
+
+def _compact_global_context(global_context: dict[str, Any]) -> dict[str, Any]:
+    return _prune_empty(
+        {
+            "enabled": global_context.get("enabled"),
+            "risk_score": global_context.get("risk_score"),
+            "confidence": global_context.get("confidence"),
+            "regime": global_context.get("regime"),
+            "signals": _limit_list(global_context.get("signals"), 8),
+            "data_gaps": _limit_list(global_context.get("data_gaps"), 8),
+        }
+    )
+
+
+def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
+    return _prune_empty(
+        {
+            "atr": indicators.get("atr"),
+            "atr_pct": indicators.get("atr_pct"),
+            "adx": indicators.get("adx"),
+            "rsi": indicators.get("rsi"),
+            "macd": indicators.get("macd"),
+            "bollinger": indicators.get("bollinger"),
+            "moving_averages": indicators.get("moving_averages"),
+            "volume_ratio": indicators.get("volume_ratio"),
+            "obv_slope": indicators.get("obv_slope"),
+            "cmf": indicators.get("cmf"),
+        }
+    )
+
+
+def _compact_risk_limits(risk_limits: dict[str, Any]) -> dict[str, Any]:
+    keep = {
+        "max_positions",
+        "max_position_pct",
+        "max_order_value_pct",
+        "stop_loss_pct",
+        "take_profit_pct",
+        "daily_loss_limit_pct",
+        "min_llm_confidence",
+        "global_risk_weight",
+        "institutional_risk_weight",
+    }
+    return {key: risk_limits.get(key) for key in keep if key in risk_limits}
+
+
+def _top_strategy_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked = sorted(signals, key=lambda item: abs(float(item.get("score", 0.0) or 0.0)), reverse=True)
+    output: list[dict[str, Any]] = []
+    for item in ranked[:6]:
+        output.append(
+            _prune_empty(
+                {
+                    "name": item.get("name"),
+                    "score": item.get("score"),
+                    "direction": item.get("direction"),
+                    "confidence": item.get("confidence"),
+                    "notes": _limit_list(item.get("notes"), 4),
+                }
+            )
+        )
+    return output
+
+
+def _compact_candle(candle: Any) -> dict[str, Any]:
+    if not isinstance(candle, dict):
+        return {}
+    return _prune_empty(
+        {
+            "ts": candle.get("ts"),
+            "open": candle.get("open"),
+            "high": candle.get("high"),
+            "low": candle.get("low"),
+            "close": candle.get("close"),
+            "volume": candle.get("volume"),
+            "source": candle.get("source"),
+        }
+    )
+
+
+def _limit_list(value: Any, limit: int) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return value[:limit]
+
+
+def _prune_empty(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item
+        for key, item in value.items()
+        if item is not None and item != {} and item != []
     }
 
 
