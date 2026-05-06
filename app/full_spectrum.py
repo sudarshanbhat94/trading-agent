@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from statistics import mean, pstdev
 from typing import Any
 
@@ -31,7 +32,14 @@ def full_spectrum_analysis(
     chart_patterns = _chart_patterns(candles)
     institutional = _institutional_structure(candles, quote.price, key_levels)
     flow = _institutional_flow(row, institutional_context)
-    filters = _primary_filters(quote.price, indicators, key_levels, volumes, technical)
+    liquidity = _liquidity_profile(candles, quote.price)
+    fundamental = _fundamental_quality(row, flow)
+    corporate_risk = _corporate_event_risk(flow)
+    delivery = _delivery_accumulation(flow, candles)
+    relative_strength = _relative_strength(closes, global_context)
+    options_oi = _options_oi_layer(flow)
+    backtest = _backtest_snapshot(candles)
+    filters = _primary_filters(quote.price, indicators, key_levels, volumes, technical, liquidity, corporate_risk)
     confluence = _confluence_score(
         trend_context=trend_context,
         indicators=indicators,
@@ -43,9 +51,32 @@ def full_spectrum_analysis(
         global_context=global_context,
         strategy_signals=strategy_signals,
         filters=filters,
+        liquidity=liquidity,
+        delivery=delivery,
+        relative_strength=relative_strength,
+        backtest=backtest,
     )
-    risk_overrides = _risk_overrides(global_context, flow, indicators, confluence, data_quality, risk_limits)
-    trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits)
+    conflicts = _signal_conflicts(
+        technical=technical,
+        sentiment_score=sentiment_score,
+        global_context=global_context,
+        confluence=confluence,
+        liquidity=liquidity,
+        corporate_risk=corporate_risk,
+        options_oi=options_oi,
+    )
+    risk_overrides = _risk_overrides(
+        global_context,
+        flow,
+        indicators,
+        confluence,
+        data_quality,
+        risk_limits,
+        liquidity,
+        corporate_risk,
+        conflicts,
+    )
+    trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits, liquidity, backtest)
     signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides)
     monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides)
     return {
@@ -59,10 +90,18 @@ def full_spectrum_analysis(
         "key_levels": key_levels,
         "fibonacci": fib,
         "indicator_suite": indicators,
+        "liquidity_profile": liquidity,
+        "relative_strength": relative_strength,
         "candlestick_v2": candlestick_v2,
         "chart_patterns": chart_patterns,
         "institutional_structure": institutional,
         "institutional_flow": flow,
+        "fundamental_quality": fundamental,
+        "corporate_event_risk": corporate_risk,
+        "delivery_accumulation": delivery,
+        "options_oi": options_oi,
+        "backtest_snapshot": backtest,
+        "signal_conflicts": conflicts,
         "news_sentiment": _news_sentiment(sentiment_score),
         "confluence_score": confluence,
         "risk_overrides": risk_overrides,
@@ -74,12 +113,24 @@ def full_spectrum_analysis(
 
 def _data_quality(candles: list[Candle]) -> dict[str, Any]:
     count = len(candles)
+    score = 0
+    if count >= 30:
+        score += 35
+    if count >= 50:
+        score += 20
+    if count >= 96:
+        score += 20
+    if count >= 200:
+        score += 15
+    if any(candle.volume for candle in candles):
+        score += 10
     return {
         "candle_count": count,
         "has_intraday_or_daily_history": count >= 30,
         "has_50_period_context": count >= 50,
         "has_200_period_context": count >= 200,
         "coverage": "strong" if count >= 200 else "usable" if count >= 50 else "limited" if count >= 30 else "thin",
+        "score": min(score, 100),
     }
 
 
@@ -92,6 +143,11 @@ def _indicator_suite(candles: list[Candle]) -> dict[str, Any]:
     atr_pct = (atr / closes[-1]) * 100 if atr and closes else None
     macd_line, signal_line, histogram = _macd(closes)
     bb = _bollinger(closes)
+    stochastic_k, stochastic_d = _stochastic(highs, lows, closes)
+    cci_20 = _cci(candles, 20)
+    ichimoku = _ichimoku(highs, lows, closes)
+    volume_profile = _volume_profile_proxy(candles)
+    divergence = _divergence_proxy(closes, highs, lows)
     return {
         "moving_averages": {
             "ema_9": _round(_ema(closes, 9)),
@@ -103,6 +159,16 @@ def _indicator_suite(candles: list[Candle]) -> dict[str, Any]:
         },
         "adx": _round(_adx(candles, 14)),
         "rsi_14": _round(_rsi(closes, 14)),
+        "stochastic": {
+            "k": _round(stochastic_k),
+            "d": _round(stochastic_d),
+            "bias": "overbought"
+            if stochastic_k is not None and stochastic_k >= 80
+            else "oversold"
+            if stochastic_k is not None and stochastic_k <= 20
+            else "neutral",
+        },
+        "cci_20": _round(cci_20),
         "macd": {
             "line": _round(macd_line),
             "signal": _round(signal_line),
@@ -115,6 +181,9 @@ def _indicator_suite(candles: list[Candle]) -> dict[str, Any]:
         "obv_slope": _round(_obv_slope(closes, volumes)),
         "cmf_20": _round(_cmf(highs, lows, closes, volumes, 20)),
         "volume_ratio_20": _round(_volume_ratio(volumes, 20)),
+        "ichimoku": ichimoku,
+        "volume_profile_proxy": volume_profile,
+        "divergence_proxy": divergence,
     }
 
 
@@ -302,6 +371,8 @@ def _primary_filters(
     key_levels: dict[str, Any],
     volumes: list[float],
     technical: dict[str, Any],
+    liquidity: dict[str, Any],
+    corporate_risk: dict[str, Any],
 ) -> dict[str, Any]:
     ma = indicators["moving_averages"]
     rsi = indicators.get("rsi_14")
@@ -315,13 +386,13 @@ def _primary_filters(
         "within_25pct_period_high": None if not period_high else ((period_high - price) / price) * 100 <= 25,
         "atr_pct_1_5_to_6": None if atr_pct is None else 1.5 <= atr_pct <= 6.0,
         "trend_not_down": technical.get("trend") != "downtrend",
+        "liquidity_tradeable": liquidity.get("tradeable"),
+        "not_circuit_risk": not liquidity.get("circuit_risk_proxy"),
+        "no_high_impact_event_risk": not corporate_risk.get("high_impact_risk"),
         "unavailable_filters": [
-            "delivery_pct",
             "market_cap",
-            "avg_daily_value",
             "fo_ban",
             "promoter_pledge",
-            "asm_gsm_surveillance",
             "earnings_48h",
         ],
     }
@@ -338,6 +409,10 @@ def _confluence_score(
     global_context: dict[str, Any],
     strategy_signals: list[dict[str, Any]],
     filters: dict[str, Any],
+    liquidity: dict[str, Any],
+    delivery: dict[str, Any],
+    relative_strength: dict[str, Any],
+    backtest: dict[str, Any],
 ) -> dict[str, Any]:
     macro = 0
     if trend_context["daily"] in {"STRONG_UPTREND", "WEAK_UPTREND"}:
@@ -366,6 +441,10 @@ def _confluence_score(
         technical += 1
     if filters.get("above_200dma") or filters.get("above_200dma") is None and indicators["moving_averages"].get("sma_50"):
         technical += 1
+    if indicators.get("ichimoku", {}).get("bias") == "bullish_cloud":
+        technical += 1
+    if indicators.get("divergence_proxy", {}).get("signal") == "bullish_divergence":
+        technical += 1
 
     candle = 0
     if abs(candlestick_v2.get("score", 0)) >= 0.35:
@@ -375,6 +454,8 @@ def _confluence_score(
     if filters.get("volume_ratio_min_1_5"):
         candle += 1
     if filters.get("rsi_40_70"):
+        candle += 1
+    if liquidity.get("tradeable") and not liquidity.get("circuit_risk_proxy"):
         candle += 1
 
     news = 0
@@ -386,6 +467,12 @@ def _confluence_score(
         news += 1
     if filters.get("volume_ratio_min_1_5"):
         news += 1
+    if delivery.get("bias") == "accumulation":
+        news += 1
+    if relative_strength.get("bias") == "outperforming":
+        news += 1
+    if backtest.get("expectancy") and backtest.get("expectancy") > 0:
+        news += 1
     if (
         institutional_flow.get("symbol_flags", {}).get("official_announcements_count", 0) > 0
         and sentiment_score > 0.15
@@ -395,7 +482,7 @@ def _confluence_score(
     macro = min(macro, 8)
     technical = min(technical, 10)
     candle = min(candle, 5)
-    news = min(news, 4)
+    news = min(news, 3)
     total = macro + technical + candle + news
     return {
         "total": total,
@@ -406,7 +493,7 @@ def _confluence_score(
             "macro_flow": {"score": macro, "max": 8},
             "technical_structure": {"score": technical, "max": 10},
             "candle_timing": {"score": candle, "max": 5},
-            "news_sentiment": {"score": news, "max": 4},
+            "news_sentiment": {"score": news, "max": 3},
         },
     }
 
@@ -418,6 +505,9 @@ def _risk_overrides(
     confluence: dict[str, Any],
     data_quality: dict[str, Any],
     risk_limits: dict[str, Any],
+    liquidity: dict[str, Any],
+    corporate_risk: dict[str, Any],
+    conflicts: dict[str, Any],
 ) -> dict[str, Any]:
     atr_pct = indicators.get("atr_pct")
     flags = []
@@ -429,6 +519,16 @@ def _risk_overrides(
         flags.append("confluence_below_watch_threshold")
     if data_quality.get("coverage") in {"thin", "limited"}:
         flags.append("limited_history_use_smaller_size")
+    if liquidity.get("liquidity_tier") == "illiquid":
+        flags.append("illiquid_stock_no_new_longs")
+    elif liquidity.get("liquidity_tier") == "thin":
+        flags.append("thin_liquidity_reduce_size")
+    if liquidity.get("circuit_risk_proxy"):
+        flags.append("possible_circuit_stock_reduce_size")
+    if corporate_risk.get("high_impact_risk"):
+        flags.append("corporate_event_risk_no_new_longs")
+    if conflicts.get("severity") == "high":
+        flags.append("conflicted_signal_no_new_longs")
     symbol_flags = institutional_flow.get("symbol_flags", {})
     if symbol_flags.get("asm"):
         flags.append("asm_surveillance_no_new_longs")
@@ -445,6 +545,9 @@ def _risk_overrides(
             "ATR swing suitability",
             "minimum confluence",
             "data-quality coverage",
+            "liquidity and circuit-risk proxy",
+            "corporate event risk",
+            "signal conflict severity",
         ],
         "no_new_longs": no_new_longs,
         "size_multiplier": _conviction_size_multiplier(confluence.get("total", 0), flags),
@@ -458,11 +561,14 @@ def _trade_plan(
     indicators: dict[str, Any],
     confluence: dict[str, Any],
     risk_limits: dict[str, Any],
+    liquidity: dict[str, Any],
+    backtest: dict[str, Any],
 ) -> dict[str, Any]:
     atr = indicators.get("atr") or price * 0.02
     stop_pct = min(max(float(risk_limits.get("stop_loss_pct", 0.035) or 0.035), 0.005), 0.04)
     stop = min(price - atr * 1.2, price * (1 - stop_pct))
     risk = max(price - stop, price * 0.005)
+    risk_per_trade_pct = min(float(risk_limits.get("max_order_value_pct", 0.04) or 0.04), 0.01)
     return {
         "direction": "LONG" if confluence.get("total", 0) >= 14 else "WATCH" if confluence.get("total", 0) >= 10 else "NO_SIGNAL",
         "horizon": "swing_3_to_7_days",
@@ -479,10 +585,16 @@ def _trade_plan(
             "news": "strong negative regulatory/credit/promoter pledge event",
         },
         "position_sizing": {
-            "max_capital_at_risk_pct": min(float(risk_limits.get("max_order_value_pct", 0.04) or 0.04), 0.02),
+            "method": "atr_stop_risk",
+            "max_capital_at_risk_pct": risk_per_trade_pct,
+            "risk_per_share": _round(risk),
             "conviction_tier": confluence.get("tier"),
+            "liquidity_tier": liquidity.get("liquidity_tier"),
+            "backtest_expectancy": backtest.get("expectancy"),
             "sizing_note": "paper broker still enforces max order, max position, cash, and daily loss limits",
         },
+        "time_stop": "exit or re-score if not moving toward T1 within 5 trading sessions",
+        "trailing_stop": "after T1, trail below previous swing low or 1.2 ATR, whichever is tighter",
     }
 
 
@@ -561,6 +673,243 @@ def _institutional_flow(row: dict[str, Any], institutional_context: dict[str, An
     }
 
 
+def _liquidity_profile(candles: list[Candle], price: float) -> dict[str, Any]:
+    if not candles:
+        return {
+            "available": False,
+            "tradeable": False,
+            "liquidity_tier": "unknown",
+            "reason": "no candles/volume data",
+        }
+    volumes = [float(candle.volume or 0) for candle in candles if candle.volume is not None]
+    recent = candles[-20:]
+    avg_volume = mean([float(candle.volume or 0) for candle in recent]) if recent else 0.0
+    avg_traded_value = avg_volume * price
+    last = candles[-1]
+    day_move_pct = ((last.close - last.open) / last.open) * 100 if last.open else 0.0
+    volume_ratio = _volume_ratio(volumes, 20) if volumes else None
+    if avg_traded_value >= 50_000_000:
+        tier = "strong"
+    elif avg_traded_value >= 10_000_000:
+        tier = "tradeable"
+    elif avg_traded_value >= 2_000_000:
+        tier = "thin"
+    else:
+        tier = "illiquid"
+    circuit_risk = abs(day_move_pct) >= 8.5 or bool(volume_ratio and volume_ratio > 8)
+    return {
+        "available": True,
+        "avg_volume_20": _round(avg_volume),
+        "avg_traded_value_20": _round(avg_traded_value),
+        "volume_ratio_20": _round(volume_ratio),
+        "last_move_pct": _round(day_move_pct),
+        "liquidity_tier": tier,
+        "tradeable": tier in {"strong", "tradeable", "thin"},
+        "circuit_risk_proxy": circuit_risk,
+        "spread_proxy": "unknown_without_depth",
+        "price_impact_risk": "high" if tier in {"illiquid", "thin"} else "normal",
+    }
+
+
+def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any]:
+    announcements = flow.get("official_announcements") or []
+    negative_event = _event_text_matches(announcements, r"loss|default|resign|fraud|forensic|penalty|downgrade|pledge")
+    positive_event = _event_text_matches(announcements, r"profit|order|contract|approval|dividend|bonus|split|upgrade")
+    score = 0.0
+    reasons = []
+    if positive_event:
+        score += 0.15
+        reasons.append("recent positive official announcement keyword")
+    if negative_event:
+        score -= 0.35
+        reasons.append("recent negative official announcement keyword")
+    return {
+        "available": bool(announcements),
+        "score": _round(max(min(score, 1.0), -1.0)),
+        "quality_bucket": "event_positive" if score > 0 else "event_risk" if score < 0 else "unknown",
+        "checked": [
+            "official announcement keyword proxy",
+            "promoter pledge placeholder",
+            "debt/profitability ratios placeholder",
+            "ROE/ROCE/revenue growth placeholder",
+        ],
+        "reasons": reasons or ["fundamental ratios not connected yet"],
+        "data_gaps": [
+            "revenue/profit growth",
+            "debt/equity",
+            "ROE/ROCE",
+            "promoter holding and pledge",
+            "cash-flow quality",
+            "quarterly trend",
+        ],
+    }
+
+
+def _corporate_event_risk(flow: dict[str, Any]) -> dict[str, Any]:
+    announcements = flow.get("official_announcements") or []
+    risk_keywords = r"board meeting|results|fund raising|rights|pledge|default|resign|auditor|forensic|fraud|penalty|sebi|insolvency"
+    hits = [item for item in announcements if _event_text_matches([item], risk_keywords)]
+    return {
+        "available": bool(announcements),
+        "high_impact_risk": bool(hits),
+        "events": hits[:5],
+        "risk_keywords_checked": [
+            "results",
+            "fund raising",
+            "pledge",
+            "auditor/governance",
+            "SEBI/regulatory",
+            "default/insolvency",
+        ],
+        "data_gap": None if announcements else "corporate action feed returned no symbol event this cycle",
+    }
+
+
+def _delivery_accumulation(flow: dict[str, Any], candles: list[Candle]) -> dict[str, Any]:
+    delivery_pct = flow.get("delivery_percentage")
+    volume_ratio = _volume_ratio([candle.volume for candle in candles if candle.volume is not None], 20) if candles else None
+    price_change = ((candles[-1].close - candles[-5].close) / candles[-5].close) * 100 if len(candles) >= 5 and candles[-5].close else None
+    if delivery_pct is not None:
+        bias = "accumulation" if delivery_pct >= 50 and (price_change or 0) >= 0 else "distribution" if delivery_pct >= 50 and (price_change or 0) < 0 else "neutral"
+    elif volume_ratio and volume_ratio >= 1.5 and price_change and price_change > 0:
+        bias = "volume_accumulation_proxy"
+    elif volume_ratio and volume_ratio >= 1.5 and price_change and price_change < 0:
+        bias = "volume_distribution_proxy"
+    else:
+        bias = "unknown"
+    return {
+        "delivery_pct": delivery_pct,
+        "volume_ratio_20": _round(volume_ratio),
+        "price_change_5_candles_pct": _round(price_change),
+        "bias": bias,
+        "source": "delivery feed if available, otherwise price-volume proxy",
+    }
+
+
+def _relative_strength(closes: list[float], global_context: dict[str, Any]) -> dict[str, Any]:
+    if len(closes) < 6:
+        return {"available": False, "bias": "unknown"}
+    stock_return = ((closes[-1] - closes[-6]) / closes[-6]) * 100 if closes[-6] else 0.0
+    nifty_change = None
+    for item in global_context.get("markets", []) or []:
+        if item.get("symbol") == "^NSEI" or item.get("label") == "Nifty 50":
+            nifty_change = item.get("change_pct")
+            break
+    rs = stock_return - float(nifty_change or 0.0)
+    return {
+        "available": True,
+        "stock_return_5_candles_pct": _round(stock_return),
+        "nifty_change_pct": _round(float(nifty_change)) if nifty_change is not None else None,
+        "relative_strength_pct": _round(rs),
+        "bias": "outperforming" if rs >= 1.5 else "underperforming" if rs <= -1.5 else "neutral",
+        "note": "uses Nifty 50 change when available, otherwise stock-only short-window proxy",
+    }
+
+
+def _options_oi_layer(flow: dict[str, Any]) -> dict[str, Any]:
+    pcr_feed = flow.get("pcr_oi") or {}
+    items = pcr_feed.get("items") if isinstance(pcr_feed, dict) else None
+    pcr_values = []
+    if isinstance(items, dict):
+        for item in items.values():
+            if isinstance(item, dict) and item.get("pcr_oi") is not None:
+                pcr_values.append(float(item["pcr_oi"]))
+    avg_pcr = mean(pcr_values) if pcr_values else None
+    if avg_pcr is None:
+        bias = "unavailable"
+    elif avg_pcr > 1.2:
+        bias = "put_heavy_supportive"
+    elif avg_pcr < 0.75:
+        bias = "call_heavy_caution"
+    else:
+        bias = "balanced"
+    return {
+        "available": avg_pcr is not None,
+        "market_pcr_proxy": _round(avg_pcr),
+        "bias": bias,
+        "fno_ban": flow.get("fno_ban"),
+        "data_gap": None if avg_pcr is not None else "stock-level OI/PCR/IV/max-pain not connected",
+    }
+
+
+def _backtest_snapshot(candles: list[Candle]) -> dict[str, Any]:
+    if len(candles) < 40:
+        return {"available": False, "reason": "need at least 40 candles"}
+    closes = [candle.close for candle in candles]
+    trades = []
+    position: dict[str, Any] | None = None
+    for index in range(20, len(candles)):
+        price = closes[index]
+        sma20 = mean(closes[index - 20 : index])
+        volume_ratio = _volume_ratio([candle.volume for candle in candles[: index + 1]], 20)
+        if position is None and price > sma20 and (volume_ratio or 0) >= 1.1:
+            stop = price * 0.96
+            target = price * 1.08
+            position = {"entry": price, "stop": stop, "target": target, "entry_index": index}
+            continue
+        if position is None:
+            continue
+        exit_reason = None
+        if price <= position["stop"]:
+            exit_reason = "stop"
+        elif price >= position["target"]:
+            exit_reason = "target"
+        elif index - position["entry_index"] >= 12:
+            exit_reason = "time"
+        if exit_reason:
+            pnl_pct = ((price - position["entry"]) / position["entry"]) * 100 if position["entry"] else 0
+            trades.append({"pnl_pct": pnl_pct, "exit": exit_reason})
+            position = None
+    if not trades:
+        return {"available": True, "trades": 0, "expectancy": 0.0, "win_rate": 0.0, "max_drawdown_proxy": 0.0}
+    wins = [trade for trade in trades if trade["pnl_pct"] > 0]
+    expectancy = mean([trade["pnl_pct"] for trade in trades])
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for trade in trades:
+        equity += trade["pnl_pct"]
+        peak = max(peak, equity)
+        max_drawdown = min(max_drawdown, equity - peak)
+    return {
+        "available": True,
+        "engine": "simple_sma20_volume_breakout_proxy",
+        "trades": len(trades),
+        "win_rate": _round(len(wins) / len(trades)),
+        "expectancy": _round(expectancy),
+        "max_drawdown_proxy": _round(max_drawdown),
+        "last_5_trades": [{"pnl_pct": _round(trade["pnl_pct"]), "exit": trade["exit"]} for trade in trades[-5:]],
+    }
+
+
+def _signal_conflicts(
+    technical: dict[str, Any],
+    sentiment_score: float,
+    global_context: dict[str, Any],
+    confluence: dict[str, Any],
+    liquidity: dict[str, Any],
+    corporate_risk: dict[str, Any],
+    options_oi: dict[str, Any],
+) -> dict[str, Any]:
+    conflicts = []
+    if technical.get("score", 0) > 0.25 and sentiment_score < -0.25:
+        conflicts.append("technical_bullish_vs_negative_news")
+    if confluence.get("total", 0) >= 14 and global_context.get("regime") == "risk-off":
+        conflicts.append("trade_signal_vs_global_risk_off")
+    if confluence.get("total", 0) >= 14 and liquidity.get("liquidity_tier") in {"illiquid", "thin"}:
+        conflicts.append("trade_signal_vs_liquidity_risk")
+    if confluence.get("total", 0) >= 14 and corporate_risk.get("high_impact_risk"):
+        conflicts.append("trade_signal_vs_corporate_event_risk")
+    if options_oi.get("bias") == "call_heavy_caution" and confluence.get("total", 0) >= 14:
+        conflicts.append("trade_signal_vs_options_caution")
+    severity = "high" if len(conflicts) >= 2 or any("corporate_event" in item for item in conflicts) else "medium" if conflicts else "none"
+    return {
+        "severity": severity,
+        "conflicts": conflicts,
+        "decision_rule": "high severity conflict forces HOLD/no-new-longs; medium conflict reduces size",
+    }
+
+
 def _news_sentiment(sentiment_score: float) -> dict[str, Any]:
     if sentiment_score > 0.2:
         bias = "bullish"
@@ -619,6 +968,14 @@ def _data_gaps(candles: list[Candle], row: dict[str, Any], institutional_context
     return gaps
 
 
+def _event_text_matches(items: list[dict[str, Any]], pattern: str) -> bool:
+    for item in items:
+        text = " ".join(str(value) for value in item.values()).lower()
+        if re.search(pattern, text):
+            return True
+    return False
+
+
 def _requirement_coverage(
     data_quality: dict[str, Any],
     global_context: dict[str, Any],
@@ -665,9 +1022,9 @@ def _requirement_coverage(
             "gap": "true ICT/SMC/Wyckoff labeling requires richer multi-timeframe structure and volume/liquidity feeds",
         },
         "phase_8_indicators": {
-            "status": "partial",
-            "implemented": "EMA/SMA, ADX, RSI, MACD, Bollinger, ATR, OBV slope, CMF, volume ratio",
-            "gap": "Ichimoku, Stochastic, CCI, volume profile, and full divergence engine are not yet implemented",
+            "status": "expanded",
+            "implemented": "EMA/SMA, ADX, RSI, MACD, Bollinger, ATR, OBV slope, CMF, stochastic, CCI, Ichimoku, divergence proxy, candle volume-profile proxy, volume ratio",
+            "gap": "true tick-level volume profile and full multi-timeframe divergence engine need deeper historical/depth data",
         },
         "phase_9_confluence": {
             "status": "implemented_with_neutral_gaps",
@@ -680,9 +1037,19 @@ def _requirement_coverage(
             "gap": "UI renders structured cards rather than the prompt's long textual report format",
         },
         "phase_11_risk_management": {
-            "status": "implemented_for_paper_long_only",
-            "implemented": "max positions, max position/order size, hard stop, take profit, daily loss, LLM policy gates, free ASM/GSM/F&O-ban veto hooks",
-            "gap": "sector concentration, 3-stop lockout, event-calendar lockout, and live kill-switch workflow need adapters/UI",
+            "status": "expanded_for_paper_long_only",
+            "implemented": "max positions, ATR-aware sizing metadata, max position/order size, hard stop, take profit, daily loss, conflict vetoes, LLM policy gates, free ASM/GSM/F&O-ban hooks",
+            "gap": "sector concentration, 3-stop lockout, true event-calendar lockout, and live kill-switch workflow need adapters/UI",
+        },
+        "phase_13_backtest_and_learning": {
+            "status": "proxy_engine",
+            "implemented": "per-symbol candle backtest snapshot, strategy metrics, closed-trade realized P&L, expectancy proxy",
+            "gap": "full walk-forward testing, slippage, brokerage, taxes, and multi-year survivorship-safe data need a historical database",
+        },
+        "phase_14_smallcap_liquidity": {
+            "status": "proxy_engine",
+            "implemented": "average traded value, liquidity tier, volume spike, circuit-risk proxy, price-impact flag",
+            "gap": "bid/ask spread and true market depth require broker/Nubra depth endpoint",
         },
         "phase_12_intelligence_loop": {
             "status": "single_cycle_loop",
@@ -802,6 +1169,125 @@ def _macd(values: list[float]) -> tuple[float | None, float | None, float | None
     if not signal:
         return None, None, None
     return macd[-1], signal[-1], macd[-1] - signal[-1]
+
+
+def _stochastic(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    window: int = 14,
+) -> tuple[float | None, float | None]:
+    if len(closes) < window or len(highs) < window or len(lows) < window:
+        return None, None
+    k_values: list[float] = []
+    for index in range(window - 1, len(closes)):
+        high = max(highs[index - window + 1 : index + 1])
+        low = min(lows[index - window + 1 : index + 1])
+        k_values.append(50.0 if high == low else ((closes[index] - low) / (high - low)) * 100)
+    return k_values[-1], mean(k_values[-3:]) if len(k_values) >= 3 else None
+
+
+def _cci(candles: list[Candle], window: int = 20) -> float | None:
+    if len(candles) < window:
+        return None
+    typical_prices = [(candle.high + candle.low + candle.close) / 3 for candle in candles[-window:]]
+    typical_mean = mean(typical_prices)
+    mean_deviation = mean(abs(price - typical_mean) for price in typical_prices)
+    if mean_deviation == 0:
+        return 0.0
+    return (typical_prices[-1] - typical_mean) / (0.015 * mean_deviation)
+
+
+def _ichimoku(highs: list[float], lows: list[float], closes: list[float]) -> dict[str, Any]:
+    if len(closes) < 26 or len(highs) < 26 or len(lows) < 26:
+        return {"available": False, "reason": "need at least 26 candles"}
+
+    def midpoint(window: int) -> float | None:
+        if len(highs) < window or len(lows) < window:
+            return None
+        return (max(highs[-window:]) + min(lows[-window:])) / 2
+
+    conversion = midpoint(9)
+    base = midpoint(26)
+    span_b = midpoint(52)
+    span_a = (conversion + base) / 2 if conversion is not None and base is not None else None
+    price = closes[-1]
+    cloud_top = max(value for value in (span_a, span_b) if value is not None) if span_a is not None or span_b is not None else None
+    cloud_bottom = min(value for value in (span_a, span_b) if value is not None) if span_a is not None or span_b is not None else None
+    if cloud_top is not None and price > cloud_top and conversion is not None and base is not None and conversion >= base:
+        bias = "bullish_cloud"
+    elif cloud_bottom is not None and price < cloud_bottom and conversion is not None and base is not None and conversion <= base:
+        bias = "bearish_cloud"
+    else:
+        bias = "neutral"
+    return {
+        "available": True,
+        "conversion": _round(conversion),
+        "base": _round(base),
+        "span_a": _round(span_a),
+        "span_b": _round(span_b),
+        "bias": bias,
+    }
+
+
+def _volume_profile_proxy(candles: list[Candle], buckets: int = 12) -> dict[str, Any]:
+    if len(candles) < 20:
+        return {"available": False, "reason": "need at least 20 candles"}
+    lows = [candle.low for candle in candles]
+    highs = [candle.high for candle in candles]
+    low = min(lows)
+    high = max(highs)
+    if high <= low:
+        return {"available": False, "reason": "flat price range"}
+    bucket_size = (high - low) / buckets
+    profile = [0.0 for _ in range(buckets)]
+    for candle in candles:
+        typical = (candle.high + candle.low + candle.close) / 3
+        index = min(int((typical - low) / bucket_size), buckets - 1)
+        profile[index] += float(candle.volume or 0.0)
+    poc_index = max(range(buckets), key=lambda index: profile[index])
+    poc = low + bucket_size * (poc_index + 0.5)
+    current = candles[-1].close
+    sorted_buckets = sorted(range(buckets), key=lambda index: profile[index], reverse=True)
+    high_volume_nodes = [low + bucket_size * (index + 0.5) for index in sorted_buckets[:3]]
+    low_volume_nodes = [low + bucket_size * (index + 0.5) for index in sorted_buckets[-3:]]
+    return {
+        "available": True,
+        "method": "candle_typical_price_volume_bucket_proxy",
+        "poc": _round(poc),
+        "price_vs_poc_pct": _round(((current - poc) / poc) * 100 if poc else None),
+        "bias": "above_poc" if current >= poc else "below_poc",
+        "high_volume_nodes": [_round(value) for value in high_volume_nodes],
+        "low_volume_nodes": [_round(value) for value in low_volume_nodes],
+        "limitation": "not tick-level volume-at-price",
+    }
+
+
+def _divergence_proxy(closes: list[float], highs: list[float], lows: list[float]) -> dict[str, Any]:
+    if len(closes) < 24 or len(highs) < 24 or len(lows) < 24:
+        return {"available": False, "signal": "insufficient_history"}
+    previous_low = min(lows[-16:-8])
+    recent_low = min(lows[-8:])
+    previous_high = max(highs[-16:-8])
+    recent_high = max(highs[-8:])
+    previous_rsi = _rsi(closes[:-5], 14)
+    current_rsi = _rsi(closes, 14)
+    signal = "none"
+    if current_rsi is not None and previous_rsi is not None:
+        if recent_low < previous_low and current_rsi > previous_rsi:
+            signal = "bullish_divergence"
+        elif recent_high > previous_high and current_rsi < previous_rsi:
+            signal = "bearish_divergence"
+    return {
+        "available": True,
+        "signal": signal,
+        "previous_rsi": _round(previous_rsi),
+        "current_rsi": _round(current_rsi),
+        "recent_low": _round(recent_low),
+        "previous_low": _round(previous_low),
+        "recent_high": _round(recent_high),
+        "previous_high": _round(previous_high),
+    }
 
 
 def _bollinger(values: list[float]) -> dict[str, Any]:

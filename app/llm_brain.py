@@ -478,6 +478,24 @@ class LLMBrain:
             synthetic["_llm_timeout"] = True
             synthetic["_json_repaired"] = False
             return synthetic
+        except LLMResponseError as exc:
+            if retry_payload is not None:
+                try:
+                    retry_content = await self._chat_content(retry_payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
+                    parsed = _normalize_decision_payload(self._parse_json_content(retry_content))
+                    parsed["_json_retry"] = True
+                    parsed["_json_retry_reason"] = _error_summary(exc)
+                    return parsed
+                except Exception as retry_exc:
+                    synthetic = _synthetic_safe_decision_from_text(getattr(exc, "raw", ""), exc)
+                    synthetic["_json_synthetic"] = True
+                    synthetic["_json_repaired"] = False
+                    synthetic["_json_retry_error"] = _error_summary(retry_exc)
+                    return synthetic
+            synthetic = _synthetic_safe_decision_from_text(getattr(exc, "raw", ""), exc)
+            synthetic["_json_synthetic"] = True
+            synthetic["_json_repaired"] = False
+            return synthetic
         try:
             return _normalize_decision_payload(self._parse_json_content(content))
         except LLMResponseError as exc:
@@ -488,7 +506,7 @@ class LLMBrain:
                     retry_content = await self._chat_content(retry_payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
                     parsed = _normalize_decision_payload(self._parse_json_content(retry_content))
                     parsed["_json_retry"] = True
-                    parsed["_json_retry_reason"] = str(exc)[:240]
+                    parsed["_json_retry_reason"] = _error_summary(exc)
                     return parsed
                 except Exception as retry_exc:
                     synthetic["_json_retry_error"] = _error_summary(retry_exc)
@@ -629,13 +647,17 @@ class LLMBrain:
         if not choices:
             raise LLMResponseError("LLM response had no choices", raw=data)
         message = choices[0].get("message") or {}
-        content = _first_text(
-            message.get("content"),
-            message.get("reasoning_content"),
-            message.get("reasoning"),
-        )
+        content = _first_text(message.get("content"))
         if content:
             return content
+        reasoning = _first_text(message.get("reasoning_content"), message.get("reasoning"))
+        if reasoning and "{" in reasoning and "}" in reasoning:
+            return reasoning
+        if reasoning:
+            raise LLMResponseError(
+                "LLM returned reasoning but no final JSON content",
+                raw={"reasoning_tail": reasoning[-1000:]},
+            )
         raise LLMResponseError("LLM response had no text content", raw=message)
 
     async def _chat_content_stream(self, payload: dict[str, Any], timeout_seconds: int) -> str:
@@ -1007,9 +1029,17 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
                 "key_levels": full.get("key_levels"),
                 "fibonacci": full.get("fibonacci") if rich else None,
                 "indicator_suite": _compact_indicators(full.get("indicator_suite") or {}),
+                "liquidity_profile": full.get("liquidity_profile"),
+                "relative_strength": full.get("relative_strength"),
                 "candlestick_v2": full.get("candlestick_v2"),
                 "chart_patterns": full.get("chart_patterns"),
                 "institutional_structure": full.get("institutional_structure"),
+                "fundamental_quality": full.get("fundamental_quality"),
+                "corporate_event_risk": full.get("corporate_event_risk"),
+                "delivery_accumulation": full.get("delivery_accumulation"),
+                "options_oi": full.get("options_oi"),
+                "backtest_snapshot": full.get("backtest_snapshot"),
+                "signal_conflicts": full.get("signal_conflicts"),
                 "news_sentiment": full.get("news_sentiment") if rich else None,
                 "institutional_flow": {
                     "available": institutional_flow.get("available"),
@@ -1048,7 +1078,15 @@ def _nvidia_retry_context(context: dict[str, Any]) -> dict[str, Any]:
             "sentiment": context.get("sentiment"),
             "global_regime": _compact_global_context(context.get("global_market_context") or {}, limit=5),
             "confluence_score": confluence,
+            "indicator_suite": _compact_indicators(full.get("indicator_suite") or {}),
             "risk_overrides": full.get("risk_overrides"),
+            "liquidity_profile": full.get("liquidity_profile"),
+            "relative_strength": full.get("relative_strength"),
+            "corporate_event_risk": full.get("corporate_event_risk"),
+            "delivery_accumulation": full.get("delivery_accumulation"),
+            "options_oi": full.get("options_oi"),
+            "backtest_snapshot": full.get("backtest_snapshot"),
+            "signal_conflicts": full.get("signal_conflicts"),
             "trade_plan": {
                 "direction": trade_plan.get("direction"),
                 "entry_zone": trade_plan.get("entry_zone"),
@@ -1082,10 +1120,15 @@ def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
             "atr_pct": indicators.get("atr_pct"),
             "adx": indicators.get("adx"),
             "rsi_14": indicators.get("rsi_14"),
+            "stochastic": indicators.get("stochastic"),
+            "cci_20": indicators.get("cci_20"),
             "macd": indicators.get("macd"),
             "bollinger": indicators.get("bollinger"),
+            "ichimoku": indicators.get("ichimoku"),
             "moving_averages": indicators.get("moving_averages"),
             "volume_ratio_20": indicators.get("volume_ratio_20"),
+            "volume_profile_proxy": indicators.get("volume_profile_proxy"),
+            "divergence_proxy": indicators.get("divergence_proxy"),
             "obv_slope": indicators.get("obv_slope"),
             "cmf_20": indicators.get("cmf_20"),
         }
@@ -1303,6 +1346,7 @@ def _normalize_decision_payload(parsed: dict[str, Any]) -> dict[str, Any]:
         "_json_repaired",
         "_json_retry",
         "_json_retry_reason",
+        "_json_retry_error",
         "_json_synthetic",
         "_llm_timeout",
         "_json_repair_error",
@@ -1446,7 +1490,7 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
         "strategy": "",
         "reason": (
             "LLM returned malformed or non-JSON output, so OpenTrade used the safe fallback HOLD. "
-            f"parse_error={str(exc)[:180]}"
+            f"parse_error={_error_summary(exc)[:180]}"
         ),
         "checklist": ["strict_json_failed", "json_repair_attempted", "safe_hold_fallback_used"],
         "evidence": [

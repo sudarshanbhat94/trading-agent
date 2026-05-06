@@ -85,6 +85,7 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     sentiment = float(context["sentiment"]["score"])
     candle_score = float(context["candlestick_analysis"]["score"])
     preset_score = float(context["best_strategy"]["score"])
+    full_spectrum_score = _full_spectrum_score(context)
     global_risk = float(context.get("global_market_context", {}).get("risk_score", 0.0) or 0.0)
     institutional_score = _institutional_score(context)
     global_weight = float(context.get("risk_limits", {}).get("global_risk_weight", 0.1) or 0.0)
@@ -97,17 +98,18 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
         institutional_weight *= scale
     remaining = 1.0 - global_weight - institutional_weight
     components = [
-        {"name": "technical_math", "score": technical, "weight": round(0.40 * remaining, 4)},
-        {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.20 * remaining, 4)},
-        {"name": "best_strategy", "score": preset_score, "weight": round(0.25 * remaining, 4)},
-        {"name": "sentiment", "score": sentiment, "weight": round(0.15 * remaining, 4)},
+        {"name": "technical_math", "score": technical, "weight": round(0.30 * remaining, 4)},
+        {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.15 * remaining, 4)},
+        {"name": "best_strategy", "score": preset_score, "weight": round(0.20 * remaining, 4)},
+        {"name": "sentiment", "score": sentiment, "weight": round(0.12 * remaining, 4)},
+        {"name": "full_spectrum_layers", "score": full_spectrum_score, "weight": round(0.23 * remaining, 4)},
         {"name": "global_market_context", "score": global_risk, "weight": round(global_weight, 4)},
         {"name": "free_institutional_context", "score": institutional_score, "weight": round(institutional_weight, 4)},
     ]
     raw = sum(component["score"] * component["weight"] for component in components)
     combined = max(min(raw, 1.0), -1.0)
     return {
-        "formula": "technical_math*scaled_0.40 + candlestick_analysis*scaled_0.20 + best_strategy*scaled_0.25 + sentiment*scaled_0.15 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
+        "formula": "technical_math*scaled_0.30 + candlestick_analysis*scaled_0.15 + best_strategy*scaled_0.20 + sentiment*scaled_0.12 + full_spectrum_layers*scaled_0.23 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
         "components": [
             {
                 **component,
@@ -144,6 +146,55 @@ def _institutional_score(context: dict[str, Any]) -> float:
         score -= 0.45
     if flags.get("fno_ban"):
         score -= 0.25
+    return round(max(min(score, 1.0), -1.0), 4)
+
+
+def _full_spectrum_score(context: dict[str, Any]) -> float:
+    full = context.get("full_spectrum_analysis") or {}
+    confluence = full.get("confluence_score") or {}
+    risk = full.get("risk_overrides") or {}
+    liquidity = full.get("liquidity_profile") or {}
+    delivery = full.get("delivery_accumulation") or {}
+    relative_strength = full.get("relative_strength") or {}
+    corporate_risk = full.get("corporate_event_risk") or {}
+    options_oi = full.get("options_oi") or {}
+    backtest = full.get("backtest_snapshot") or {}
+    conflicts = full.get("signal_conflicts") or {}
+
+    total = float(confluence.get("total") or 0.0)
+    score = max(min((total - 10.0) / 12.0, 0.75), -0.45)
+
+    if risk.get("no_new_longs"):
+        score -= 0.35
+    if liquidity.get("liquidity_tier") == "illiquid":
+        score -= 0.3
+    elif liquidity.get("liquidity_tier") == "thin":
+        score -= 0.12
+    elif liquidity.get("liquidity_tier") in {"tradeable", "strong"}:
+        score += 0.08
+    if liquidity.get("circuit_risk_proxy"):
+        score -= 0.2
+    if delivery.get("bias") in {"accumulation", "volume_accumulation_proxy"}:
+        score += 0.12
+    elif delivery.get("bias") in {"distribution", "volume_distribution_proxy"}:
+        score -= 0.18
+    if relative_strength.get("bias") == "outperforming":
+        score += 0.12
+    elif relative_strength.get("bias") == "underperforming":
+        score -= 0.12
+    if corporate_risk.get("high_impact_risk"):
+        score -= 0.3
+    if options_oi.get("bias") == "put_heavy_supportive":
+        score += 0.06
+    elif options_oi.get("bias") == "call_heavy_caution":
+        score -= 0.1
+    expectancy = backtest.get("expectancy")
+    if expectancy is not None:
+        score += max(min(float(expectancy) / 10.0, 0.12), -0.12)
+    if conflicts.get("severity") == "high":
+        score -= 0.3
+    elif conflicts.get("severity") == "medium":
+        score -= 0.12
     return round(max(min(score, 1.0), -1.0), 4)
 
 

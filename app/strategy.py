@@ -100,7 +100,7 @@ class StrategyEngine:
                 "priority_score": round(self._scan_priority_score(item), 4),
                 "selection_basis": (
                     "LLM primary reviews open positions first for exit risk, then non-HOLD candidates, "
-                    "then highest-ranked symbols by combined score, strategy confidence, technical score, and sentiment"
+                    "then highest-ranked symbols by combined score, full-spectrum layers, strategy confidence, technical score, and sentiment"
                 ),
             }
 
@@ -121,6 +121,8 @@ class StrategyEngine:
             global_risk = context.get("global_market_context", {})
             institutional = context.get("institutional_context", {})
             confluence = context.get("full_spectrum_analysis", {}).get("confluence_score", {})
+            liquidity = context.get("full_spectrum_analysis", {}).get("liquidity_profile", {})
+            conflicts = context.get("full_spectrum_analysis", {}).get("signal_conflicts", {})
             institutional_bias = (institutional.get("market_bias") or {}).get("score", 0.0)
             reason = (
                 f"tools technical={item['technical'].score:.2f} ({item['technical'].trend}), "
@@ -130,6 +132,7 @@ class StrategyEngine:
                 f"global={float(global_risk.get('risk_score', 0.0) or 0.0):.2f} ({global_risk.get('regime', 'unknown')}), "
                 f"free_inst={float(institutional_bias or 0.0):.2f} ({institutional.get('source_quality', 'unknown')}), "
                 f"confluence={confluence.get('total', 0)}/26 {confluence.get('tier', 'NO_SIGNAL')}, "
+                f"liquidity={liquidity.get('liquidity_tier', 'unknown')}, conflicts={conflicts.get('severity', 'none')}, "
                 f"combined={item['combined']:.2f}, universe_rank={context['universe_scan']['rank']}/{len(scan_items)}"
             )
             decision_path = "deterministic_after_full_universe_scan"

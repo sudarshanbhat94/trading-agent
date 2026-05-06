@@ -1061,6 +1061,8 @@ function fullSpectrumHtml(analysis) {
   const trend = analysis.trend_context || {};
   const tradePlan = analysis.trade_plan || {};
   const risk = analysis.risk_overrides || {};
+  const liquidity = analysis.liquidity_profile || {};
+  const conflicts = analysis.signal_conflicts || {};
   return `<section class="audit-section">
     <h4>Full-Spectrum v2 Analysis</h4>
     <div class="audit-cards">
@@ -1068,11 +1070,21 @@ function fullSpectrumHtml(analysis) {
       <div class="audit-card"><span>Daily Trend</span><strong>${escapeHtml(trend.daily || "-")}</strong><small>${escapeHtml(trend.structure || "-")}</small></div>
       <div class="audit-card"><span>Signal Direction</span><strong>${escapeHtml(tradePlan.direction || "-")}</strong><small>${escapeHtml(tradePlan.horizon || "-")}</small></div>
       <div class="audit-card"><span>Risk Overrides</span><strong>${escapeHtml(risk.no_new_longs ? "no new longs" : "clear")}</strong><small>${escapeHtml((risk.flags || []).join(", ") || "-")}</small></div>
+      <div class="audit-card"><span>Liquidity</span><strong>${escapeHtml(liquidity.liquidity_tier || "-")}</strong><small>${fmtMoney(liquidity.avg_traded_value_20)} avg value</small></div>
+      <div class="audit-card"><span>Conflicts</span><strong>${escapeHtml(conflicts.severity || "-")}</strong><small>${escapeHtml((conflicts.conflicts || []).join(", ") || "-")}</small></div>
     </div>
     ${objectCardsHtml("Confluence Breakdown", confluence.breakdown)}
     ${objectCardsHtml("Prompt v2 Requirement Coverage", analysis.requirement_coverage)}
     ${objectCardsHtml("Signal Plan", analysis.signal_plan)}
     ${objectCardsHtml("News Sentiment", analysis.news_sentiment)}
+    ${objectCardsHtml("Liquidity Profile", analysis.liquidity_profile)}
+    ${objectCardsHtml("Relative Strength", analysis.relative_strength)}
+    ${objectCardsHtml("Fundamental Quality", analysis.fundamental_quality)}
+    ${objectCardsHtml("Corporate Event Risk", analysis.corporate_event_risk)}
+    ${objectCardsHtml("Delivery / Accumulation", analysis.delivery_accumulation)}
+    ${objectCardsHtml("Options / OI", analysis.options_oi)}
+    ${objectCardsHtml("Backtest Snapshot", analysis.backtest_snapshot)}
+    ${objectCardsHtml("Signal Conflicts", analysis.signal_conflicts)}
     ${objectCardsHtml("Institutional Flow", analysis.institutional_flow)}
     ${objectCardsHtml("Key Levels", analysis.key_levels)}
     ${objectCardsHtml("Institutional Structure", analysis.institutional_structure)}
@@ -1084,6 +1096,14 @@ function fullSpectrumHtml(analysis) {
       indicator_suite: analysis.indicator_suite,
       candlestick_v2: analysis.candlestick_v2,
       chart_patterns: analysis.chart_patterns,
+      liquidity_profile: analysis.liquidity_profile,
+      relative_strength: analysis.relative_strength,
+      fundamental_quality: analysis.fundamental_quality,
+      corporate_event_risk: analysis.corporate_event_risk,
+      delivery_accumulation: analysis.delivery_accumulation,
+      options_oi: analysis.options_oi,
+      backtest_snapshot: analysis.backtest_snapshot,
+      signal_conflicts: analysis.signal_conflicts,
       trade_plan: analysis.trade_plan,
     }, null, 2))}</pre>
   </section>`;

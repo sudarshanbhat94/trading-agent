@@ -142,8 +142,9 @@ class PaperBroker:
 
         max_order_value = portfolio_equity * self.settings.max_order_value_pct
         cash_before = self.cash
-        spend = min(max_order_value, max_position_value - current_value, cash_before)
-        qty = int(spend // decision.price)
+        sizing_plan = _sizing_plan_from_decision(decision, portfolio_equity, max_order_value)
+        spend = min(max_order_value, max_position_value - current_value, cash_before, sizing_plan["max_notional"])
+        qty = min(int(spend // decision.price), int(sizing_plan["risk_qty"]))
         if qty <= 0:
             self.db.insert_order(
                 decision.symbol,
@@ -159,6 +160,7 @@ class PaperBroker:
                         "veto_gate": "available_cash",
                         "cash_before": round(cash_before, 2),
                         "max_order_value": round(max_order_value, 2),
+                        "atr_risk_sizing": sizing_plan,
                         "max_position_value_remaining": round(max_position_value - current_value, 2),
                         "planned_spend": round(spend, 2),
                         "price": decision.price,
@@ -223,6 +225,7 @@ class PaperBroker:
                         "max_position_value": round(max_position_value, 2),
                         "max_order_value_pct": self.settings.max_order_value_pct,
                         "max_order_value": round(max_order_value, 2),
+                        "atr_risk_sizing": sizing_plan,
                         "planned_spend": round(spend, 2),
                         "filled_qty": qty,
                         "filled_notional": round(qty * decision.price, 2),
@@ -359,6 +362,39 @@ def _order_details_json(decision: Decision, execution: dict[str, Any]) -> str:
         default=str,
         separators=(",", ":"),
     )
+
+
+def _sizing_plan_from_decision(decision: Decision, portfolio_equity: float, max_order_value: float) -> dict[str, Any]:
+    try:
+        details = json.loads(decision.details_json or "{}")
+    except json.JSONDecodeError:
+        details = {}
+    full = (details.get("context") or {}).get("full_spectrum_analysis") or {}
+    trade_plan = full.get("trade_plan") or {}
+    sizing = trade_plan.get("position_sizing") or {}
+    stop = _float_or_none(trade_plan.get("stop_loss"))
+    risk_pct = _float_or_none(sizing.get("max_capital_at_risk_pct"))
+    risk_pct = min(max(risk_pct if risk_pct is not None else 0.01, 0.0025), 0.02)
+    risk_budget = portfolio_equity * risk_pct
+    risk_per_share = max(decision.price - stop, decision.price * 0.005) if stop and stop < decision.price else decision.price * 0.02
+    risk_qty = max(int(risk_budget // risk_per_share), 1)
+    max_notional = min(max_order_value, risk_qty * decision.price)
+    return {
+        "method": "atr_stop_risk",
+        "stop_loss": round(stop, 4) if stop else None,
+        "risk_pct": round(risk_pct, 4),
+        "risk_budget": round(risk_budget, 2),
+        "risk_per_share": round(risk_per_share, 4),
+        "risk_qty": risk_qty,
+        "max_notional": round(max_notional, 2),
+    }
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _decision_summary(decision: Decision) -> dict[str, Any]:
