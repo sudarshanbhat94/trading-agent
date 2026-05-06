@@ -650,6 +650,7 @@ function decisionDetailHtml(row) {
     ${llm ? llmOutputHtml(llm, audit) : ""}
     ${riskGateHtml(audit)}
     ${marketContextHtml(context)}
+    ${fullSpectrumHtml(context.full_spectrum_analysis)}
     ${strategySignalsHtml(context.strategy_signals || [])}
     <section class="audit-section">
       <h4>Full Audit JSON</h4>
@@ -740,6 +741,10 @@ function llmOutputHtml(llm, audit) {
     ${auditList("Checklist", llm.checklist)}
     ${auditList("Risk Checks", llm.risk_checks)}
     ${auditList("Invalidators", llm.invalidators)}
+    ${objectCardsHtml("LLM Signal Plan", llm.signal_plan)}
+    ${objectCardsHtml("LLM Trade Plan", llm.trade_plan)}
+    ${auditList("LLM Monitoring Checklist", llm.monitoring_checklist)}
+    ${auditList("LLM Data Gaps", llm.data_gaps)}
   </section>`;
 }
 
@@ -770,6 +775,39 @@ function marketContextHtml(context) {
       universe_scan: context.universe_scan,
       recent_candle_count: context.recent_candle_count,
       recent_candles_tail: context.recent_candles_tail,
+    }, null, 2))}</pre>
+  </section>`;
+}
+
+function fullSpectrumHtml(analysis) {
+  if (!analysis || typeof analysis !== "object") return "";
+  const confluence = analysis.confluence_score || {};
+  const trend = analysis.trend_context || {};
+  const tradePlan = analysis.trade_plan || {};
+  const risk = analysis.risk_overrides || {};
+  return `<section class="audit-section">
+    <h4>Full-Spectrum v2 Analysis</h4>
+    <div class="audit-cards">
+      <div class="audit-card"><span>Confluence</span><strong>${escapeHtml(confluence.total ?? "-")}/26</strong><small>${escapeHtml(confluence.tier || "-")}</small></div>
+      <div class="audit-card"><span>Daily Trend</span><strong>${escapeHtml(trend.daily || "-")}</strong><small>${escapeHtml(trend.structure || "-")}</small></div>
+      <div class="audit-card"><span>Signal Direction</span><strong>${escapeHtml(tradePlan.direction || "-")}</strong><small>${escapeHtml(tradePlan.horizon || "-")}</small></div>
+      <div class="audit-card"><span>Risk Overrides</span><strong>${escapeHtml(risk.no_new_longs ? "no new longs" : "clear")}</strong><small>${escapeHtml((risk.flags || []).join(", ") || "-")}</small></div>
+    </div>
+    ${objectCardsHtml("Confluence Breakdown", confluence.breakdown)}
+    ${objectCardsHtml("Signal Plan", analysis.signal_plan)}
+    ${objectCardsHtml("News Sentiment", analysis.news_sentiment)}
+    ${objectCardsHtml("Institutional Flow", analysis.institutional_flow)}
+    ${objectCardsHtml("Key Levels", analysis.key_levels)}
+    ${objectCardsHtml("Institutional Structure", analysis.institutional_structure)}
+    ${auditList("Monitoring Checklist", analysis.monitoring_checklist)}
+    ${auditList("Data Gaps", analysis.data_gaps)}
+    <pre>${escapeHtml(JSON.stringify({
+      primary_filters: analysis.primary_filters,
+      fibonacci: analysis.fibonacci,
+      indicator_suite: analysis.indicator_suite,
+      candlestick_v2: analysis.candlestick_v2,
+      chart_patterns: analysis.chart_patterns,
+      trade_plan: analysis.trade_plan,
     }, null, 2))}</pre>
   </section>`;
 }

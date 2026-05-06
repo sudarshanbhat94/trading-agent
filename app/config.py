@@ -97,7 +97,7 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4.1-mini")
     llm_temperature: float = _float("LLM_TEMPERATURE", 0.05)
     llm_top_p: float = _float("LLM_TOP_P", 0.7)
-    llm_max_tokens: int = _int("LLM_MAX_TOKENS", 900)
+    llm_max_tokens: int = _int("LLM_MAX_TOKENS", 1400)
     llm_max_symbols_per_cycle: int = _int("LLM_MAX_SYMBOLS_PER_CYCLE", 8)
     llm_primary_min_confidence: float = _float("LLM_PRIMARY_MIN_CONFIDENCE", 0.62)
     llm_reasoning_effort: str = os.getenv("LLM_REASONING_EFFORT", "none").strip().lower()

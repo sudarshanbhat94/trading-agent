@@ -3,6 +3,7 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
+from .full_spectrum import full_spectrum_analysis
 from .indicators import technical_snapshot
 from .models import Candle, Quote
 from .strategy_presets import choose_best_strategy, evaluate_strategy_presets
@@ -22,6 +23,25 @@ def build_symbol_tool_context(
     candle_tools = _candle_tools(candles)
     strategy_signals = evaluate_strategy_presets(candles, quote.price)
     best_strategy = choose_best_strategy(strategy_signals)
+    normalized_global_context = global_context or {
+        "enabled": False,
+        "risk_score": 0.0,
+        "confidence": 0.0,
+        "regime": "unavailable",
+    }
+    strategy_signal_dicts = [signal.to_dict() for signal in strategy_signals]
+    technical_dict = technical.to_dict()
+    full_spectrum = full_spectrum_analysis(
+        row=row,
+        quote=quote,
+        candles=candles,
+        technical=technical_dict,
+        candle_tools=candle_tools,
+        strategy_signals=strategy_signal_dicts,
+        sentiment_score=sentiment_score,
+        global_context=normalized_global_context,
+        risk_limits=risk_limits,
+    )
     return {
         "tool_protocol": "mcp-style-json-context",
         "symbol": row["symbol"],
@@ -30,18 +50,13 @@ def build_symbol_tool_context(
         "exchange": row.get("exchange", "NSE"),
         "quote": quote.to_dict(),
         "position": position or {"qty": 0, "avg_price": 0, "market_price": quote.price},
-        "technical_math": technical.to_dict(),
+        "technical_math": technical_dict,
         "candlestick_analysis": candle_tools,
-        "strategy_signals": [signal.to_dict() for signal in strategy_signals],
+        "strategy_signals": strategy_signal_dicts,
         "best_strategy": best_strategy.to_dict(),
         "sentiment": {"score": sentiment_score},
-        "global_market_context": global_context
-        or {
-            "enabled": False,
-            "risk_score": 0.0,
-            "confidence": 0.0,
-            "regime": "unavailable",
-        },
+        "global_market_context": normalized_global_context,
+        "full_spectrum_analysis": full_spectrum,
         "risk_limits": risk_limits,
         "recent_candles": [candle.to_dict() for candle in candles[-24:]],
     }

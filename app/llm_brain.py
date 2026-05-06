@@ -151,19 +151,22 @@ class LLMBrain:
                 {
                     "role": "system",
                     "content": (
-                        "You are the primary dry-run analyst for Indian equities. "
+                        "You are OpenTrade Intelligence v2.0, an institutional-style dry-run analyst for Indian equities. "
                         "Use the supplied MCP-style tool context: quote, candles, exact math indicators, "
                         "candlestick facts, strategy_signals, sentiment, global market context, universe scan rank, "
-                        "position, and risk limits. "
+                        "full_spectrum_analysis, position, and risk limits. "
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
-                        "evidence, risk_checks, and invalidators. "
+                        "evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
+                        "monitoring_checklist, and data_gaps. "
                         "action must be BUY, SELL, or HOLD. confidence is 0..1. "
                         "strategy must be one of the supplied strategy_signals names or best_strategy.name. "
                         "risk must be LOW, MEDIUM, or HIGH. "
                         "reason must be concise; evidence must list the concrete inputs that support the action. "
                         "risk_checks must list the gates that passed or failed. "
                         "invalidators must list the exact conditions that would make the action wrong. "
-                        "Be conservative: HOLD unless the candle structure, math, sentiment, and risk all support action. "
+                        "Respect confluence_score: below 10 means HOLD, 10-13 watchlist only, 14+ may trade, "
+                        "18+ high conviction, 22+ maximum conviction. "
+                        "Be conservative: HOLD unless the candle structure, math, sentiment, global regime, and risk all support action. "
                         "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
                     ),
                 },
@@ -177,16 +180,20 @@ class LLMBrain:
         try:
             parsed = await self._chat_json(payload)
             requested_action = str(parsed.get("action", "HOLD")).upper()
-            action = requested_action
-            if action not in {"BUY", "SELL", "HOLD"}:
-                action = "HOLD"
             confidence = max(min(float(parsed.get("confidence", 0)), 1.0), 0.0)
             confidence_gate_passed = confidence >= self.settings.llm_primary_min_confidence
-            if confidence < self.settings.llm_primary_min_confidence:
-                action = "HOLD"
+            action, policy_gates = _policy_gate_action(
+                context=context,
+                requested_action=requested_action,
+                confidence=confidence,
+                min_confidence=self.settings.llm_primary_min_confidence,
+            )
             checklist = parsed.get("checklist", [])
             strategy = str(parsed.get("strategy") or context.get("best_strategy", {}).get("name") or "llm_primary")
             reason = str(parsed.get("reason", "no reason supplied"))
+            failed_policy = _failed_gate_summary(policy_gates)
+            if action != requested_action and failed_policy:
+                reason = f"{reason} | policy_gate={failed_policy}"
             if checklist:
                 reason = f"{reason} | checklist={checklist}"
             return Decision(
@@ -206,6 +213,7 @@ class LLMBrain:
                     final_action=action,
                     confidence=confidence,
                     confidence_gate_passed=confidence_gate_passed,
+                    policy_gates=policy_gates,
                 ),
             )
         except Exception as exc:
@@ -227,7 +235,8 @@ class LLMBrain:
                     "content": (
                         "You are a dry-run equity trading risk reviewer. "
                         "Return strict JSON only with action BUY, SELL, or HOLD; "
-                        "confidence from 0 to 1; reason; evidence; risk_checks; and invalidators. "
+                        "confidence from 0 to 1; reason; evidence; risk_checks; invalidators; "
+                        "signal_plan; confluence_score; trade_plan; monitoring_checklist; and data_gaps. "
                         "Never recommend leverage, options, futures, or short-selling."
                     ),
                 },
@@ -251,10 +260,17 @@ class LLMBrain:
         try:
             parsed = await self._chat_json(payload)
             action = str(parsed.get("action", decision.action)).upper()
-            if action not in {"BUY", "SELL", "HOLD"}:
-                action = "HOLD"
             confidence = max(min(float(parsed.get("confidence", decision.confidence)), 1.0), 0.0)
+            action, policy_gates = _policy_gate_action(
+                context=context,
+                requested_action=action,
+                confidence=confidence,
+                min_confidence=self.settings.llm_primary_min_confidence,
+            )
             reason = str(parsed.get("reason", decision.reason))[:500]
+            failed_policy = _failed_gate_summary(policy_gates)
+            if action != str(parsed.get("action", decision.action)).upper() and failed_policy:
+                reason = f"{reason} | policy_gate={failed_policy}"[:500]
             reviewed = Decision(
                 symbol=decision.symbol,
                 action=action,
@@ -265,7 +281,7 @@ class LLMBrain:
                 reason=f"LLM review: {reason}",
                 asof=decision.asof,
                 strategy=decision.strategy,
-                details_json=self._llm_review_details_json(decision, context, parsed, action, confidence),
+                details_json=self._llm_review_details_json(decision, context, parsed, action, confidence, policy_gates),
             )
             return reviewed
         except Exception as exc:
@@ -403,6 +419,7 @@ class LLMBrain:
         final_action: str,
         confidence: float,
         confidence_gate_passed: bool,
+        policy_gates: list[dict[str, Any]],
     ) -> str:
         return _json_dumps(
             {
@@ -419,6 +436,7 @@ class LLMBrain:
                     "passed": confidence_gate_passed,
                     "effect": "requested action allowed" if confidence_gate_passed else "downgraded to HOLD",
                 },
+                "policy_gates": policy_gates,
                 "score_breakdown": deterministic_score_breakdown(context),
                 "llm_output": {
                     "risk": parsed.get("risk"),
@@ -428,11 +446,17 @@ class LLMBrain:
                     "evidence": parsed.get("evidence", []),
                     "risk_checks": parsed.get("risk_checks", []),
                     "invalidators": parsed.get("invalidators", []),
+                    "signal_plan": parsed.get("signal_plan", {}),
+                    "confluence_score": parsed.get("confluence_score", {}),
+                    "trade_plan": parsed.get("trade_plan", {}),
+                    "monitoring_checklist": parsed.get("monitoring_checklist", []),
+                    "data_gaps": parsed.get("data_gaps", []),
                 },
                 "risk_gates": {
                     "dry_run": True,
                     "long_only": True,
                     "no_leverage": True,
+                    "llm_policy_gates_passed": all(gate.get("passed", False) for gate in policy_gates),
                     "broker_checks_after_decision": [
                         "daily_loss_limit",
                         "max_positions",
@@ -452,6 +476,7 @@ class LLMBrain:
         parsed: dict[str, Any],
         final_action: str,
         confidence: float,
+        policy_gates: list[dict[str, Any]],
     ) -> str:
         return _json_dumps(
             {
@@ -463,6 +488,7 @@ class LLMBrain:
                 "final_action": final_action,
                 "confidence": round(confidence, 4),
                 "action_reason": parsed.get("reason", original.reason),
+                "policy_gates": policy_gates,
                 "score_breakdown": deterministic_score_breakdown(context),
                 "llm_output": {
                     "risk": parsed.get("risk"),
@@ -470,6 +496,11 @@ class LLMBrain:
                     "evidence": parsed.get("evidence", []),
                     "risk_checks": parsed.get("risk_checks", []),
                     "invalidators": parsed.get("invalidators", []),
+                    "signal_plan": parsed.get("signal_plan", {}),
+                    "confluence_score": parsed.get("confluence_score", {}),
+                    "trade_plan": parsed.get("trade_plan", {}),
+                    "monitoring_checklist": parsed.get("monitoring_checklist", []),
+                    "data_gaps": parsed.get("data_gaps", []),
                 },
                 "context": _compact_context(context),
             }
@@ -491,11 +522,78 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "strategy_signals": context.get("strategy_signals"),
         "sentiment": context.get("sentiment"),
         "global_market_context": context.get("global_market_context"),
+        "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
         "recent_candle_count": len(recent_candles),
         "recent_candles_tail": recent_candles[-5:],
     }
+
+
+def _policy_gate_action(
+    context: dict[str, Any],
+    requested_action: str,
+    confidence: float,
+    min_confidence: float,
+) -> tuple[str, list[dict[str, Any]]]:
+    action = requested_action if requested_action in {"BUY", "SELL", "HOLD"} else "HOLD"
+    position = context.get("position") or {}
+    has_position = float(position.get("qty") or 0) > 0
+    full_spectrum = context.get("full_spectrum_analysis") or {}
+    confluence = full_spectrum.get("confluence_score") or {}
+    risk_overrides = full_spectrum.get("risk_overrides") or {}
+    confluence_total = int(confluence.get("total", 0) or 0)
+    gates: list[dict[str, Any]] = [
+        {
+            "gate": "valid_action",
+            "passed": requested_action in {"BUY", "SELL", "HOLD"},
+            "value": requested_action,
+            "required": "BUY, SELL, or HOLD",
+        },
+        {
+            "gate": "min_llm_confidence",
+            "passed": action == "HOLD" or confidence >= min_confidence,
+            "value": round(confidence, 4),
+            "required": min_confidence,
+        },
+        {
+            "gate": "dry_money_long_only",
+            "passed": action != "SELL" or has_position,
+            "value": action,
+            "required": "SELL only closes an existing long; no short-selling",
+        },
+    ]
+    if action == "BUY":
+        gates.extend(
+            [
+                {
+                    "gate": "full_spectrum_confluence",
+                    "passed": confluence_total >= 14,
+                    "value": confluence_total,
+                    "required": ">= 14/26",
+                },
+                {
+                    "gate": "no_new_longs_override",
+                    "passed": not risk_overrides.get("no_new_longs"),
+                    "value": risk_overrides.get("flags", []),
+                    "required": "no active no-new-longs flag",
+                },
+                {
+                    "gate": "no_existing_long_position",
+                    "passed": not has_position,
+                    "value": position.get("qty", 0),
+                    "required": "0",
+                },
+            ]
+        )
+    if action in {"BUY", "SELL"} and not all(gate["passed"] for gate in gates):
+        return "HOLD", gates
+    return action, gates
+
+
+def _failed_gate_summary(gates: list[dict[str, Any]]) -> str:
+    failed = [str(gate.get("gate")) for gate in gates if not gate.get("passed")]
+    return ", ".join(failed)
 
 
 def _decision_summary(decision: Decision) -> dict[str, Any]:

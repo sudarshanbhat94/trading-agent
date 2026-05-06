@@ -69,7 +69,7 @@ class StrategyEngine:
             )
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
-            action = self._action_from_score(symbol, combined, positions)
+            action = self._action_from_context(symbol, combined, positions, context)
             confidence = min(abs(combined), 0.99)
             scan_items.append(
                 {
@@ -118,12 +118,14 @@ class StrategyEngine:
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
             global_risk = context.get("global_market_context", {})
+            confluence = context.get("full_spectrum_analysis", {}).get("confluence_score", {})
             reason = (
                 f"tools technical={item['technical'].score:.2f} ({item['technical'].trend}), "
                 f"candles={candle_summary['score']:.2f} {candle_summary['patterns']}, "
                 f"best_strategy={best_strategy['name']}:{best_strategy['score']:.2f}, "
                 f"sentiment={item['sentiment_score']:.2f}, "
                 f"global={float(global_risk.get('risk_score', 0.0) or 0.0):.2f} ({global_risk.get('regime', 'unknown')}), "
+                f"confluence={confluence.get('total', 0)}/26 {confluence.get('tier', 'NO_SIGNAL')}, "
                 f"combined={item['combined']:.2f}, universe_rank={context['universe_scan']['rank']}/{len(scan_items)}"
             )
             decision_path = "deterministic_after_full_universe_scan"
@@ -200,14 +202,21 @@ class StrategyEngine:
             )
         return decisions
 
-    def _action_from_score(
+    def _action_from_context(
         self,
         symbol: str,
         combined: float,
         positions: dict[str, dict[str, Any]],
+        context: dict[str, Any],
     ) -> str:
         has_position = symbol in positions and positions[symbol]["qty"] > 0
-        if combined >= 0.45 and not has_position:
+        full_spectrum = context.get("full_spectrum_analysis", {})
+        confluence = full_spectrum.get("confluence_score", {})
+        risk_overrides = full_spectrum.get("risk_overrides", {})
+        confluence_total = int(confluence.get("total", 0) or 0)
+        if risk_overrides.get("no_new_longs") and not has_position:
+            return "HOLD"
+        if combined >= 0.35 and confluence_total >= 14 and not has_position:
             return "BUY"
         if combined <= -0.38 and has_position:
             return "SELL"
@@ -242,9 +251,11 @@ class StrategyEngine:
             "has_existing_position": has_position,
             "current_open_positions": len([row for row in positions.values() if row.get("qty", 0) > 0]),
             "max_positions": risk_limits.get("max_positions"),
-            "buy_threshold": 0.45,
+            "buy_combined_threshold": 0.35,
+            "buy_confluence_threshold": 14,
             "sell_threshold": -0.38,
             "buy_requires_no_existing_position": True,
+            "buy_requires_no_new_longs_clear": True,
             "sell_requires_existing_position": True,
             "broker_checks_after_decision": [
                 "daily_loss_limit",
@@ -263,7 +274,7 @@ class StrategyEngine:
                 "final_action": action,
                 "action_reason": action_reason,
                 "action_policy": {
-                    "BUY": "combined score >= 0.45 and no existing long position",
+                    "BUY": "combined score >= 0.35, full-spectrum confluence >= 14/26, no existing long position, and no no-new-longs override",
                     "SELL": "combined score <= -0.38 and an existing long position is open",
                     "HOLD": "score/action gates did not permit a trade",
                 },
@@ -323,6 +334,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "strategy_signals": context.get("strategy_signals"),
         "sentiment": context.get("sentiment"),
         "global_market_context": context.get("global_market_context"),
+        "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
         "recent_candle_count": len(recent_candles),

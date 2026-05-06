@@ -189,7 +189,7 @@ NVIDIA_BASE_URL=https://integrate.api.nvidia.com
 NVIDIA_MODEL=deepseek-ai/deepseek-r1
 LLM_TEMPERATURE=0.05
 LLM_TOP_P=0.7
-LLM_MAX_TOKENS=900
+LLM_MAX_TOKENS=1400
 LLM_MAX_SYMBOLS_PER_CYCLE=8
 LLM_PRIMARY_MIN_CONFIDENCE=0.62
 LLM_REASONING_EFFORT=none
@@ -235,6 +235,21 @@ Included presets:
 - `failed_breakdown_reversal`: false breakdown reclaim with reversal volume.
 
 The dashboard shows strategy-level open positions, exposure, unrealized P&L, and filled orders. For Minervini-style analysis, use enough daily history to make the 150/200 SMA checks meaningful.
+
+## Full-Spectrum v2 Analysis
+
+Every decision now includes an `opentrade-full-spectrum-v2` audit block inspired by the institutional prompt. The app computes and stores:
+
+- Primary universe filters and data gaps.
+- Multi-timeframe trend context from available candles.
+- Key levels, gap zones, VWAP proxy, Fibonacci levels, ATR, ADX, MACD, Bollinger, OBV, and CMF.
+- Expanded candlestick recognition and classical chart-pattern proxies.
+- SMC/Wyckoff approximations: liquidity sweep, BOS/range state, order-block proxy, FVG, and premium/discount zone.
+- Confluence score out of 26 with tiers: `NO_SIGNAL`, `WATCHLIST`, `TRADE_SIGNAL`, `HIGH_CONVICTION`, and `MAXIMUM_CONVICTION`.
+- Signal plan, trade plan, entry zone, hard stop, targets, invalidation, position-sizing note, and monitoring checklist.
+- Code-level action gates: BUY requires full-spectrum confluence `>= 14/26` plus the normal score and risk gates; LLM-primary mode cannot bypass those gates.
+
+Unavailable institutional inputs are not guessed. The audit explicitly records data gaps such as FII/DII flow, PCR/OI, delivery percentage, surveillance lists, earnings calendar, and macro event calendar until those feeds are connected.
 
 ## Demo And Live Order Routing
 
