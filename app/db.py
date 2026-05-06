@@ -172,6 +172,7 @@ class Database:
             raise FileNotFoundError(f"Universe CSV not found: {csv_path}")
         with csv_path.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
+        symbols = [row["symbol"] for row in rows]
         with self.connect() as conn:
             conn.executemany(
                 """
@@ -189,10 +190,14 @@ class Database:
                     kite_symbol = excluded.kite_symbol,
                     upstox_instrument_key = excluded.upstox_instrument_key,
                     sector = excluded.sector,
-                    base_price = excluded.base_price
+                    base_price = excluded.base_price,
+                    enabled = excluded.enabled
                 """,
                 rows,
             )
+            if symbols:
+                placeholders = ",".join("?" for _ in symbols)
+                conn.execute(f"update universe set enabled = 0 where symbol not in ({placeholders})", symbols)
 
     def upsert_candles(self, candles_by_symbol: dict[str, list[Candle]]) -> None:
         rows = [candle.to_dict() for candles in candles_by_symbol.values() for candle in candles]
@@ -376,7 +381,16 @@ class Database:
 
     def latest_quotes(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute("select * from latest_quotes order by symbol").fetchall()]
+            rows = conn.execute(
+                """
+                select q.*
+                from latest_quotes q
+                join universe u on u.symbol = q.symbol
+                where u.enabled = 1
+                order by q.symbol
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def latest_decisions(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
