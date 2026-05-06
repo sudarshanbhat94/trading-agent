@@ -406,6 +406,14 @@ class LLMBrain:
                         "Use the supplied MCP-style tool context: quote, candles, exact math indicators, "
                         "candlestick facts, strategy_signals, sentiment, global market context, free institutional "
                         "feed context, universe scan rank, full_spectrum_analysis, position, and risk limits. "
+                        "You must explicitly use stage_analysis, entry_quality.entry_grade, breakout_quality.two_day_rule_failed, "
+                        "price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, "
+                        "sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, "
+                        "and delivery_accumulation.institutional_fingerprint. BUY is permitted only in Stage2_Markup; "
+                        "entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or "
+                        "bear_confirmed breadth means HOLD. Evidence must state the value checked for each new gate. "
+                        "risk_checks must say whether each new gate passed or failed. If you recommend BUY while any "
+                        "new gate conflicts, acknowledge that conflict in reason. "
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
                         "evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
                         "monitoring_checklist, and data_gaps. "
@@ -1347,6 +1355,10 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "sentiment": context.get("sentiment"),
         "global_market_context": context.get("global_market_context"),
         "institutional_context": context.get("institutional_context"),
+        "market_breadth_context": context.get("market_breadth_context"),
+        "macro_event_context": context.get("macro_event_context"),
+        "sector_rotation": context.get("sector_rotation"),
+        "delivery_data": context.get("delivery_data"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
@@ -1384,12 +1396,20 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
                 "symbol_flags": (institutional.get("symbol_flags") or {}).get(symbol, {}),
                 "data_gaps": _limit_list(institutional.get("data_gaps"), 16 if rich else 8),
             },
+            "market_breadth_context": context.get("market_breadth_context"),
+            "macro_event_context": context.get("macro_event_context"),
+            "sector_rotation": context.get("sector_rotation"),
+            "delivery_data": context.get("delivery_data"),
             "full_spectrum_analysis": {
                 "requirement_coverage": _coverage_summary(full.get("requirement_coverage") or {}) if rich else None,
                 "data_quality": full.get("data_quality"),
                 "primary_filters": full.get("primary_filters"),
                 "signal_plan": full.get("signal_plan"),
                 "trend_context": full.get("trend_context"),
+                "stage_analysis": full.get("stage_analysis"),
+                "entry_quality": full.get("entry_quality"),
+                "breakout_quality": full.get("breakout_quality"),
+                "price_volume_divergence": full.get("price_volume_divergence"),
                 "key_levels": full.get("key_levels"),
                 "fibonacci": full.get("fibonacci") if rich else None,
                 "indicator_suite": _compact_indicators(full.get("indicator_suite") or {}),
@@ -1401,6 +1421,9 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
                 "fundamental_quality": full.get("fundamental_quality"),
                 "corporate_event_risk": full.get("corporate_event_risk"),
                 "delivery_accumulation": full.get("delivery_accumulation"),
+                "sector_rotation": full.get("sector_rotation"),
+                "market_breadth": full.get("market_breadth"),
+                "macro_event_context": full.get("macro_event_context"),
                 "options_oi": full.get("options_oi"),
                 "backtest_snapshot": full.get("backtest_snapshot"),
                 "signal_conflicts": full.get("signal_conflicts"),
@@ -1592,6 +1615,11 @@ def _policy_gate_action(
     confluence = full_spectrum.get("confluence_score") or {}
     risk_overrides = full_spectrum.get("risk_overrides") or {}
     scorecard = full_spectrum.get("institutional_scorecard") or {}
+    stage = full_spectrum.get("stage_analysis") or {}
+    entry = full_spectrum.get("entry_quality") or {}
+    breakout = full_spectrum.get("breakout_quality") or {}
+    divergence = full_spectrum.get("price_volume_divergence") or {}
+    alignment = ((full_spectrum.get("trend_context") or {}).get("timeframe_alignment") or {})
     confluence_total = int(confluence.get("total", 0) or 0)
     gates: list[dict[str, Any]] = [
         {
@@ -1616,6 +1644,36 @@ def _policy_gate_action(
     if action == "BUY":
         gates.extend(
             [
+                {
+                    "gate": "stage_buy_permitted",
+                    "passed": bool(stage.get("buy_permitted")),
+                    "value": stage.get("stage"),
+                    "required": "Stage2_Markup buy_permitted=true",
+                },
+                {
+                    "gate": "entry_grade_gate",
+                    "passed": entry.get("entry_grade") != "D",
+                    "value": entry.get("entry_grade"),
+                    "required": "entry grade not D",
+                },
+                {
+                    "gate": "breakout_quality_gate",
+                    "passed": not breakout.get("two_day_rule_failed"),
+                    "value": breakout.get("two_day_rule_failed"),
+                    "required": "two_day_rule_failed=false",
+                },
+                {
+                    "gate": "climax_volume_gate",
+                    "passed": not divergence.get("climax_volume_top"),
+                    "value": divergence.get("climax_volume_top"),
+                    "required": "climax_volume_top=false",
+                },
+                {
+                    "gate": "timeframe_alignment_gate",
+                    "passed": alignment.get("alignment_grade") != "D",
+                    "value": alignment.get("alignment_grade"),
+                    "required": "alignment grade not D",
+                },
                 {
                     "gate": "full_spectrum_confluence",
                     "passed": confluence_total >= 16,

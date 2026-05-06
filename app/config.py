@@ -94,6 +94,15 @@ class Settings:
     free_feed_option_chain_symbols: str = os.getenv("FREE_FEED_OPTION_CHAIN_SYMBOLS", "NIFTY,BANKNIFTY")
     free_feed_corporate_lookback_days: int = _int("FREE_FEED_CORPORATE_LOOKBACK_DAYS", 2)
     institutional_risk_weight: float = _float("INSTITUTIONAL_RISK_WEIGHT", 0.12)
+    enable_delivery_data: bool = _bool("ENABLE_DELIVERY_DATA", True)
+    delivery_cache_seconds: int = _int("DELIVERY_CACHE_SECONDS", 86400)
+    delivery_fetch_days: int = _int("DELIVERY_FETCH_DAYS", 20)
+    enable_market_breadth: bool = _bool("ENABLE_MARKET_BREADTH", True)
+    market_breadth_cache_seconds: int = _int("MARKET_BREADTH_CACHE_SECONDS", 60)
+    enable_sector_rotation: bool = _bool("ENABLE_SECTOR_ROTATION", True)
+    sector_rotation_cache_seconds: int = _int("SECTOR_ROTATION_CACHE_SECONDS", 300)
+    enable_macro_calendar: bool = _bool("ENABLE_MACRO_CALENDAR", True)
+    macro_calendar_cache_seconds: int = _int("MACRO_CALENDAR_CACHE_SECONDS", 3600)
 
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").strip().lower()
     live_trading_enabled: bool = _bool("LIVE_TRADING_ENABLED", False)
@@ -233,6 +242,15 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "free_feed_option_chain_symbols", "label": "Free Option Chain Symbols", "type": "text", "category": "Institutional Feeds"},
     {"key": "free_feed_corporate_lookback_days", "label": "Corporate Lookback Days", "type": "number", "category": "Institutional Feeds", "min": 1, "step": 1},
     {"key": "institutional_risk_weight", "label": "Institutional Weight", "type": "number", "category": "Institutional Feeds", "min": 0, "max": 0.3, "step": 0.01},
+    {"key": "enable_delivery_data", "label": "NSE Delivery Data", "type": "boolean", "category": "Institutional Feeds"},
+    {"key": "delivery_cache_seconds", "label": "Delivery Cache Seconds", "type": "number", "category": "Institutional Feeds", "min": 3600, "step": 3600},
+    {"key": "delivery_fetch_days", "label": "Delivery Fetch Days", "type": "number", "category": "Institutional Feeds", "min": 5, "step": 1},
+    {"key": "enable_market_breadth", "label": "Market Breadth", "type": "boolean", "category": "Institutional Feeds"},
+    {"key": "market_breadth_cache_seconds", "label": "Breadth Cache Seconds", "type": "number", "category": "Institutional Feeds", "min": 30, "step": 30},
+    {"key": "enable_sector_rotation", "label": "Sector Rotation", "type": "boolean", "category": "Institutional Feeds"},
+    {"key": "sector_rotation_cache_seconds", "label": "Sector Cache Seconds", "type": "number", "category": "Institutional Feeds", "min": 60, "step": 60},
+    {"key": "enable_macro_calendar", "label": "Macro Calendar", "type": "boolean", "category": "Global Intelligence"},
+    {"key": "macro_calendar_cache_seconds", "label": "Macro Calendar Cache Seconds", "type": "number", "category": "Global Intelligence", "min": 300, "step": 300},
     {"key": "live_trading_enabled", "label": "Live Trading Enabled", "type": "boolean", "category": "Live Protection"},
     {"key": "live_trading_confirm", "label": "Live Confirm Phrase", "type": "secret", "category": "Live Protection"},
     {"key": "upstox_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["D", "I"]},

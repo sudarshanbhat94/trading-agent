@@ -27,6 +27,10 @@ class TradingAgentService:
         strategy: StrategyEngine,
         macro: GlobalIntelligenceService | None,
         institutional_feeds: FreeInstitutionalFeedsService | None,
+        delivery_service: Any | None,
+        market_breadth: Any | None,
+        sector_rotation: Any | None,
+        macro_calendar: Any | None,
         interval_seconds: int,
         cycle_timeout_seconds: int,
         on_update: UpdateCallback | None = None,
@@ -37,6 +41,10 @@ class TradingAgentService:
         self.strategy = strategy
         self.macro = macro
         self.institutional_feeds = institutional_feeds
+        self.delivery_service = delivery_service
+        self.market_breadth = market_breadth
+        self.sector_rotation = sector_rotation
+        self.macro_calendar = macro_calendar
         self.interval_seconds = interval_seconds
         self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
         self.on_update = on_update
@@ -154,6 +162,30 @@ class TradingAgentService:
                 "data_gaps": institutional_context.get("data_gaps", [])[:8],
             },
         )
+        self._cycle_phase = "delivery_data"
+        delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else {}
+        self.db.set_state("delivery_data_status", delivery_status)
+        self._cycle_phase = "market_breadth"
+        market_breadth_context = (
+            await self.market_breadth.compute_breadth(universe, quotes, candles)
+            if self.market_breadth
+            else {}
+        )
+        self.db.set_state("market_breadth_context", market_breadth_context)
+        self._cycle_phase = "sector_rotation"
+        sector_rotation_context = (
+            await self.sector_rotation.compute_sector_scores(universe, quotes, candles)
+            if self.sector_rotation
+            else {}
+        )
+        self.db.set_state("sector_rotation_context", sector_rotation_context)
+        self._cycle_phase = "macro_calendar"
+        macro_calendar_context = (
+            await self.macro_calendar.event_context_for_cycle()
+            if self.macro_calendar
+            else {}
+        )
+        self.db.set_state("macro_calendar_context", macro_calendar_context)
         self._cycle_phase = "strategy_and_llm"
         decisions = await self.strategy.evaluate(
             universe,
@@ -162,6 +194,10 @@ class TradingAgentService:
             candles,
             macro_context,
             institutional_context,
+            self.delivery_service,
+            market_breadth_context,
+            sector_rotation_context,
+            self.macro_calendar,
         )
         action_counts: dict[str, int] = {}
         decision_paths: dict[str, int] = {}
@@ -185,7 +221,7 @@ class TradingAgentService:
             },
         )
         self._cycle_phase = "risk_and_execution"
-        risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions)
+        risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions, candles)
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         executed_count = self._execute_top_decisions(decisions, portfolio["equity"])
@@ -252,6 +288,9 @@ class TradingAgentService:
             "market_health": self._market_health(quotes),
             "macro_context": self.db.get_state("macro_context", {}),
             "institutional_context": self.db.get_state("institutional_context", {}),
+            "market_breadth": self.db.get_state("market_breadth_context", {}),
+            "sector_rotation_context": _sector_rotation_summary(self.db.get_state("sector_rotation_context", {})),
+            "upcoming_macro_events": (self.db.get_state("macro_calendar_context", {}) or {}).get("next_10", []),
         }
 
     def _suggestions(self, decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -464,6 +503,21 @@ def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[
         item["detail_url"] = f"/api/{collection}/{item.get('id')}"
         output.append(item)
     return output
+
+
+def _sector_rotation_summary(context: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    leaderboard = context.get("leaderboard") or {}
+    return {
+        "enabled": context.get("enabled"),
+        "updated_at": context.get("updated_at"),
+        "nifty_proxy_return_20d": context.get("nifty_proxy_return_20d"),
+        "leaderboard": {
+            "top": (leaderboard.get("top") or [])[:3],
+            "bottom": (leaderboard.get("bottom") or [])[:3],
+        },
+    }
 
 
 def _exit_plan_from_trade_plan(

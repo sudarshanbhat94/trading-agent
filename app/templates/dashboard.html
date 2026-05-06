@@ -135,6 +135,24 @@
             <section class="overview-grid lower">
               <div class="panel">
                 <div class="panel-head">
+                  <h3>Market Breadth</h3>
+                  <span id="breadth-status">neutral</span>
+                </div>
+                <div id="market-breadth-panel" class="breadth-panel"></div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head">
+                  <h3>Sector Rotation</h3>
+                  <span id="sector-status">waiting</span>
+                </div>
+                <div id="sector-rotation-panel" class="sector-panel"></div>
+              </div>
+            </section>
+
+            <section class="overview-grid lower">
+              <div class="panel">
+                <div class="panel-head">
                   <h3>Market Watch</h3>
                   <span id="quote-count">0 quotes</span>
                 </div>
@@ -396,6 +414,15 @@
                 <span id="settings-status">loaded from runtime config</span>
               </div>
               <form id="settings-form" class="settings-form"></form>
+              <section class="settings-macro-events">
+                <h3>Upcoming Macro Events</h3>
+                <div class="table-wrap compact">
+                  <table>
+                    <thead><tr><th>Date</th><th>Type</th><th>Scope</th></tr></thead>
+                    <tbody id="macro-events-body"></tbody>
+                  </table>
+                </div>
+              </section>
               <div class="settings-actions">
                 <span id="llm-test-status" class="settings-inline-status">LLM test not run</span>
                 <button id="test-llm-btn" type="button">Test LLM</button>

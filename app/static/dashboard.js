@@ -121,9 +121,69 @@ function render(payload) {
   renderDecisions(decisions);
   renderOverviewDecisions(decisions);
   renderOrders(orders);
+  renderMarketBreadth(payload.market_breadth || {});
+  renderSectorRotation(payload.sector_rotation_context || {});
+  renderMacroEvents(payload.upcoming_macro_events || []);
   renderAgentConsole(payload);
   renderShell(payload);
   drawEquity(payload.equity_curve || []);
+}
+
+function renderMarketBreadth(breadth) {
+  const panel = byId("market-breadth-panel");
+  if (!panel) return;
+  const regime = breadth.breadth_regime || "neutral";
+  byId("breadth-status").textContent = regime;
+  const pct50 = Number(breadth.pct_above_50dma || 0);
+  panel.innerHTML = `
+    <div class="breadth-headline">
+      <span class="pill regime ${escapeHtml(regime)}">${escapeHtml(regime)}</span>
+      ${breadth.breadth_thrust ? `<strong class="breadth-thrust">BREADTH THRUST DETECTED</strong>` : ""}
+    </div>
+    <div class="progress-row">
+      <span>Above 50 DMA</span>
+      <div class="progress-track"><div style="width:${Math.max(0, Math.min(pct50, 100))}%"></div></div>
+      <strong>${fmtPct(pct50)}</strong>
+    </div>
+    <div class="mini-grid">
+      <button type="button" data-breadth-detail="adr"><span>A/D Ratio</span><strong>${fmtNumber(breadth.advance_decline_ratio)}</strong></button>
+      <button type="button" data-breadth-detail="highs"><span>New Highs</span><strong class="positive">${fmtNumber(breadth.new_highs_count)}</strong></button>
+      <button type="button" data-breadth-detail="lows"><span>New Lows</span><strong class="negative">${fmtNumber(breadth.new_lows_count)}</strong></button>
+      <button type="button" data-breadth-detail="mcclellan"><span>McClellan</span><strong class="${pnlClass(breadth.mcclellan_proxy)}">${fmtNumber(breadth.mcclellan_proxy)}</strong></button>
+    </div>
+  `;
+  panel.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => showDetails("Market Breadth", breadth)));
+}
+
+function renderSectorRotation(context) {
+  const panel = byId("sector-rotation-panel");
+  if (!panel) return;
+  const top = context.leaderboard?.top || [];
+  const bottom = context.leaderboard?.bottom || [];
+  byId("sector-status").textContent = `${top.length + bottom.length} sectors`;
+  const row = (sector, tone) => `<button class="sector-row" type="button">
+    <span>${escapeHtml(sector.sector || "-")}</span>
+    <strong class="${tone}">${fmtNumber(sector.sector_vs_nifty_rs)}</strong>
+    <small>${escapeHtml(`${sector.sector_stage || "-"} · rank ${sector.sector_rank || "-"}`)}</small>
+  </button>`;
+  panel.innerHTML = `
+    <div class="sector-columns">
+      <div><h4>Top 3</h4>${top.map((item) => row(item, "positive")).join("") || `<p class="muted">waiting</p>`}</div>
+      <div><h4>Bottom 3</h4>${bottom.map((item) => row(item, "negative")).join("") || `<p class="muted">waiting</p>`}</div>
+    </div>
+  `;
+  [...panel.querySelectorAll(".sector-row")].forEach((button, index) => {
+    const data = index < top.length ? top[index] : bottom[index - top.length];
+    button.addEventListener("click", () => showDetails("Sector Rotation", data));
+  });
+}
+
+function renderMacroEvents(events) {
+  const body = byId("macro-events-body");
+  if (!body) return;
+  body.innerHTML = events.length
+    ? events.slice(0, 10).map((event) => `<tr><td>${escapeHtml(event.date || "-")}</td><td>${escapeHtml(event.type || "-")}</td><td>${escapeHtml(event.scope || (event.symbols || []).join(", ") || "-")}</td></tr>`).join("")
+    : `<tr><td colspan="3">No upcoming macro events loaded</td></tr>`;
 }
 
 function currentSettings() {
@@ -139,6 +199,7 @@ function plainSetting(key, fallback = "-") {
 function renderShell(payload = state.latest || {}) {
   const health = payload.market_health || {};
   const macro = payload.macro_context || {};
+  const breadth = payload.market_breadth || {};
   const runtime = payload.runtime || {};
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
   const mode = health.mode || "unknown";
@@ -162,7 +223,7 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   byId("ops-macro").textContent = macro.regime || "unknown";
-  byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · ${fmtNumber(Number(macro.confidence || 0) * 100)}% conf`;
+  byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · breadth ${escapeHtml(breadth.breadth_regime || "neutral")}`;
   byId("ops-cycle").textContent = payload.running ? "Running" : "Stopped";
   byId("ops-cycle-meta").textContent = payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending";
 }
@@ -866,6 +927,7 @@ function decisionDetailHtml(row) {
         <span>At: ${escapeHtml(fmtTime(row.ts))}</span>
       </div>
     </section>
+    ${preFilterHtml(audit, context)}
     ${exitPlanHtml(exit)}
     ${scoreBreakdownHtml(audit.score_breakdown)}
     ${llm ? llmOutputHtml(llm, audit) : ""}
@@ -997,6 +1059,24 @@ function scoreBreakdownHtml(score) {
   </section>`;
 }
 
+function preFilterHtml(audit, context) {
+  const pre = audit.pre_filter || context.pre_filter || audit.risk_gates?.pre_filter || {};
+  const gateContext = audit.risk_gates?.decision_gate_context || {};
+  const gates = gateContext.evaluated_gates || pre.gates || gateContext.failed_gates || [];
+  if (!gates.length) return "";
+  return `<section class="audit-section">
+    <h4>Pre-Filter Gates</h4>
+    <div class="audit-cards">
+      ${gates.map((gate) => `<div class="audit-card">
+        <span>${escapeHtml(labelize(gate.gate || "gate"))}</span>
+        <strong class="${gate.passed === false ? "negative" : "positive"}">${gate.passed === false ? "fail" : "pass"}</strong>
+        <small>${escapeHtml(shortValue(gate.value ?? gate.reason ?? "-", 160))}</small>
+      </div>`).join("")}
+    </div>
+    ${pre.elimination_reason ? `<p class="negative">${escapeHtml(pre.elimination_reason)}</p>` : ""}
+  </section>`;
+}
+
 function llmOutputHtml(llm, audit) {
   return `<section class="audit-section">
     <h4>LLM Evidence</h4>
@@ -1079,9 +1159,21 @@ function fullSpectrumHtml(analysis) {
   const liquidity = analysis.liquidity_profile || {};
   const conflicts = analysis.signal_conflicts || {};
   const scorecard = analysis.institutional_scorecard || {};
+  const stage = analysis.stage_analysis || {};
+  const entry = analysis.entry_quality || {};
+  const breakout = analysis.breakout_quality || {};
+  const divergence = analysis.price_volume_divergence || {};
+  const alignment = trend.timeframe_alignment || {};
+  const sector = analysis.sector_rotation || {};
   return `<section class="audit-section">
     <h4>Full-Spectrum v2 Analysis</h4>
     <div class="audit-cards">
+      <div class="audit-card"><span>Stage</span><strong class="${stage.buy_permitted ? "positive" : "negative"}">${escapeHtml(stage.stage || "-")}</strong><small>${escapeHtml(`${stage.stage_confidence || "-"} · buy ${stage.buy_permitted ? "permitted" : "blocked"}`)}</small></div>
+      <div class="audit-card"><span>Entry Grade</span><strong class="${entry.entry_grade === "D" ? "negative" : "positive"}">${escapeHtml(entry.entry_grade || "-")}</strong><small>${fmtPct(entry.distance_from_pivot_pct)} from pivot</small></div>
+      <div class="audit-card"><span>Breakout</span><strong class="${breakout.two_day_rule_failed ? "negative" : ""}">${escapeHtml(breakout.breakout_quality || "-")}</strong><small>2-day fail: ${escapeHtml(String(Boolean(breakout.two_day_rule_failed)))}</small></div>
+      <div class="audit-card"><span>PV Divergence</span><strong class="${pnlClass(divergence.divergence_score)}">${fmtNumber(divergence.divergence_score)}</strong><small>climax ${escapeHtml(String(Boolean(divergence.climax_volume_top)))}</small></div>
+      <div class="audit-card"><span>MTF Alignment</span><strong class="grade-${escapeHtml(alignment.alignment_grade || "D")}">${escapeHtml(alignment.alignment_grade || "-")}</strong><small>${escapeHtml(shortValue(alignment.timeframes || {}, 120))}</small></div>
+      <div class="audit-card"><span>Sector</span><strong class="${sector.sector_tailwind ? "positive" : sector.sector_headwind ? "negative" : ""}">${escapeHtml(sector.sector_tier || "-")}</strong><small>${escapeHtml(`${sector.sector_stage || "-"} · rank ${sector.sector_rank || "-"}`)}</small></div>
       <div class="audit-card"><span>Confluence</span><strong>${escapeHtml(confluence.total ?? "-")}/26</strong><small>${escapeHtml(confluence.tier || "-")}</small></div>
       <div class="audit-card"><span>Institutional Score</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(`${scorecard.grade || "-"} · ${scorecard.buy_ready ? "buy ready" : "not ready"}`)}</small></div>
       <div class="audit-card"><span>Daily Trend</span><strong>${escapeHtml(trend.daily || "-")}</strong><small>${escapeHtml(trend.structure || "-")}</small></div>
@@ -1090,6 +1182,12 @@ function fullSpectrumHtml(analysis) {
       <div class="audit-card"><span>Liquidity</span><strong>${escapeHtml(liquidity.liquidity_tier || "-")}</strong><small>${fmtMoney(liquidity.avg_traded_value_20)} avg value</small></div>
       <div class="audit-card"><span>Conflicts</span><strong>${escapeHtml(conflicts.severity || "-")}</strong><small>${escapeHtml((conflicts.conflicts || []).join(", ") || "-")}</small></div>
     </div>
+    ${objectCardsHtml("Stage Analysis", stage)}
+    ${objectCardsHtml("Entry Quality", entry)}
+    ${objectCardsHtml("Breakout Quality", breakout)}
+    ${objectCardsHtml("Price-Volume Divergence", divergence)}
+    ${objectCardsHtml("Multi-Timeframe Alignment", alignment)}
+    ${objectCardsHtml("Sector Rotation", sector)}
     ${objectCardsHtml("Confluence Breakdown", confluence.breakdown)}
     ${objectCardsHtml("Prompt v2 Requirement Coverage", analysis.requirement_coverage)}
     ${scorecardHtml(scorecard)}
@@ -1444,6 +1542,9 @@ function bindControls() {
         "macro-health": {
           global: state.latest?.macro_context || {},
           institutional: state.latest?.institutional_context || {},
+          market_breadth: state.latest?.market_breadth || {},
+          sector_rotation: state.latest?.sector_rotation_context || {},
+          upcoming_macro_events: state.latest?.upcoming_macro_events || [],
         },
         "cycle-health": {
           running: state.latest?.running,

@@ -258,6 +258,106 @@ p {
   gap: 14px;
 }
 
+.breadth-panel,
+.sector-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.breadth-headline,
+.sector-columns {
+  display: grid;
+  gap: 10px;
+}
+
+.breadth-headline {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.breadth-thrust {
+  color: var(--green);
+  font-size: 13px;
+}
+
+.pill.regime.bull_confirmed {
+  border-color: #86d39b;
+  color: var(--green);
+  background: #eefaf2;
+}
+
+.pill.regime.bear_confirmed {
+  border-color: #f1a8a5;
+  color: var(--red);
+  background: #fff1f1;
+}
+
+.progress-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.progress-track {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: #dcebf8;
+}
+
+.progress-track div {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+}
+
+.mini-grid,
+.sector-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mini-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.mini-grid button,
+.sector-row {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  min-height: 58px;
+  text-align: left;
+}
+
+.sector-columns {
+  display: grid;
+}
+
+.sector-columns h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.grade-A {
+  color: var(--green);
+}
+
+.grade-B {
+  color: #4d7c0f;
+}
+
+.grade-C {
+  color: var(--amber);
+}
+
+.grade-D {
+  color: var(--red);
+}
+
 .ops-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(160px, 1fr));

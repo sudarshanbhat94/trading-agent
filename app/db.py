@@ -20,6 +20,15 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
@@ -122,7 +131,8 @@ class Database:
                     avg_price real not null,
                     market_price real not null,
                     realized_pnl real not null default 0,
-                    updated_at text not null
+                    updated_at text not null,
+                    details_json text not null default '{}'
                 );
 
                 create table if not exists portfolio_snapshots (
@@ -168,6 +178,16 @@ class Database:
                     details_json text not null default '{}'
                 );
 
+                create table if not exists delivery_data (
+                    symbol text not null,
+                    date text not null,
+                    close real,
+                    total_volume real,
+                    delivery_volume real,
+                    delivery_pct real,
+                    primary key (symbol, date)
+                );
+
                 create index if not exists idx_market_ticks_symbol_ts
                     on market_ticks(symbol, ts);
                 create index if not exists idx_candles_symbol_ts
@@ -178,6 +198,8 @@ class Database:
                     on orders(ts);
                 create index if not exists idx_agent_logs_ts
                     on agent_logs(ts);
+                create index if not exists idx_delivery_symbol_date
+                    on delivery_data(symbol, date);
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
@@ -188,8 +210,13 @@ class Database:
             self._ensure_column(conn, "orders", "strategy", "text not null default 'unknown'")
             self._ensure_column(conn, "orders", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "positions", "strategy", "text not null default 'unknown'")
+            self._ensure_column(conn, "positions", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
             self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
+            self._ensure_column(conn, "delivery_data", "close", "real")
+            self._ensure_column(conn, "delivery_data", "total_volume", "real")
+            self._ensure_column(conn, "delivery_data", "delivery_volume", "real")
+            self._ensure_column(conn, "delivery_data", "delivery_pct", "real")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         rows = conn.execute(f"pragma table_info({table})").fetchall()
@@ -267,6 +294,52 @@ class Database:
                 """,
                 rows,
             )
+
+    def upsert_delivery_data(self, rows: Iterable[dict[str, Any]]) -> None:
+        normalized = []
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            date = str(row.get("date") or "").strip()
+            if not symbol or not date:
+                continue
+            normalized.append(
+                {
+                    "symbol": symbol,
+                    "date": date,
+                    "close": _optional_float(row.get("close")),
+                    "total_volume": _optional_float(row.get("total_volume")),
+                    "delivery_volume": _optional_float(row.get("delivery_volume")),
+                    "delivery_pct": _optional_float(row.get("delivery_pct")),
+                }
+            )
+        if not normalized:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                insert into delivery_data (symbol, date, close, total_volume, delivery_volume, delivery_pct)
+                values (:symbol, :date, :close, :total_volume, :delivery_volume, :delivery_pct)
+                on conflict(symbol, date) do update set
+                    close = excluded.close,
+                    total_volume = excluded.total_volume,
+                    delivery_volume = excluded.delivery_volume,
+                    delivery_pct = excluded.delivery_pct
+                """,
+                normalized,
+            )
+
+    def delivery_rows(self, symbol: str, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from delivery_data
+                where symbol = ?
+                order by date desc
+                limit ?
+                """,
+                (symbol.upper(), limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
     def candles_for_symbols(self, symbols: list[str], limit_per_symbol: int = 80) -> dict[str, list[dict[str, Any]]]:
         if not symbols:

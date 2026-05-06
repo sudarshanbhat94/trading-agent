@@ -15,12 +15,16 @@ from .agent import TradingAgentService
 from .auth import is_admin_request, login_admin, logout_admin, require_admin
 from .config import CONFIG_KEYS, CONFIG_SCHEMA, SECRET_FIELDS, Settings, public_settings, settings_from_overrides
 from .db import Database
+from .delivery_data import DeliveryDataService
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_brain import LLMBrain
 from .macro import GlobalIntelligenceService
+from .macro_calendar import MacroCalendarService
+from .market_breadth import MarketBreadthService
 from .market_data import YahooMarketDataProvider, build_market_data_provider
 from .order_router import build_order_router
 from .paper_broker import PaperBroker
+from .sector_rotation import SectorRotationService
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
 
@@ -66,6 +70,10 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_sentiment = SentimentService(new_settings, db)
     new_macro = GlobalIntelligenceService(new_settings)
     new_institutional_feeds = FreeInstitutionalFeedsService(new_settings)
+    new_delivery_service = DeliveryDataService(new_settings, db)
+    new_market_breadth = MarketBreadthService(new_settings, db)
+    new_sector_rotation = SectorRotationService(new_settings, db)
+    new_macro_calendar = MacroCalendarService(new_settings, db)
     new_llm = LLMBrain(new_settings)
     new_strategy = StrategyEngine(new_settings, new_sentiment, new_llm)
     new_agent = TradingAgentService(
@@ -75,6 +83,10 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         strategy=new_strategy,
         macro=new_macro,
         institutional_feeds=new_institutional_feeds,
+        delivery_service=new_delivery_service,
+        market_breadth=new_market_breadth,
+        sector_rotation=new_sector_rotation,
+        macro_calendar=new_macro_calendar,
         interval_seconds=new_settings.agent_interval_seconds,
         cycle_timeout_seconds=new_settings.cycle_timeout_seconds,
         on_update=hub.broadcast,
@@ -87,6 +99,10 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         "sentiment": new_sentiment,
         "macro": new_macro,
         "institutional_feeds": new_institutional_feeds,
+        "delivery_service": new_delivery_service,
+        "market_breadth": new_market_breadth,
+        "sector_rotation": new_sector_rotation,
+        "macro_calendar": new_macro_calendar,
         "llm": new_llm,
         "strategy": new_strategy,
         "agent": new_agent,
@@ -101,6 +117,10 @@ account = stack["account"]
 sentiment = stack["sentiment"]
 macro = stack["macro"]
 institutional_feeds = stack["institutional_feeds"]
+delivery_service = stack["delivery_service"]
+market_breadth = stack["market_breadth"]
+sector_rotation = stack["sector_rotation"]
+macro_calendar = stack["macro_calendar"]
 llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
@@ -112,6 +132,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 @app.on_event("startup")
 async def startup() -> None:
+    delivery_service.start_background_task()
     if settings.auto_start_agent:
         agent.start()
 
@@ -119,6 +140,7 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     await agent.stop()
+    await delivery_service.stop_background_task()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -206,6 +228,10 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         candles,
         macro_context,
         institutional_context,
+        delivery_service,
+        db.get_state("market_breadth_context", {}),
+        db.get_state("sector_rotation_context", {}),
+        macro_calendar,
     )
     if not decisions:
         raise HTTPException(status_code=500, detail=f"Analysis produced no decision for {symbol}.")
@@ -259,6 +285,24 @@ async def agent_logs(request: Request, limit: int = 300) -> dict[str, Any]:
     return {"logs": db.latest_agent_logs(safe_limit)}
 
 
+@app.get("/api/market-breadth")
+async def market_breadth_snapshot() -> dict[str, Any]:
+    return db.get_state("market_breadth_context", {})
+
+
+@app.get("/api/sector-rotation")
+async def sector_rotation_snapshot() -> dict[str, Any]:
+    return db.get_state("sector_rotation_context", {})
+
+
+@app.get("/api/macro-calendar")
+async def macro_calendar_snapshot() -> dict[str, Any]:
+    context = db.get_state("macro_calendar_context", {})
+    if not context:
+        return {"enabled": settings.enable_macro_calendar, "events": macro_calendar.upcoming_events(30)}
+    return context
+
+
 @app.post("/api/llm/test")
 async def test_llm(request: Request) -> dict[str, Any]:
     require_admin(request, settings)
@@ -267,7 +311,7 @@ async def test_llm(request: Request) -> dict[str, Any]:
 
 @app.post("/api/config")
 async def update_config(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, llm, strategy, agent
+    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, llm, strategy, agent
     require_admin(request, settings)
 
     incoming = payload.get("settings", payload)
@@ -291,6 +335,7 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
 
     was_running = agent.running
     await agent.stop()
+    await delivery_service.stop_background_task()
     db.update_runtime_settings(candidate_overrides)
     db.insert_agent_log(
         "INFO",
@@ -311,9 +356,14 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
     sentiment = candidate_stack["sentiment"]
     macro = candidate_stack["macro"]
     institutional_feeds = candidate_stack["institutional_feeds"]
+    delivery_service = candidate_stack["delivery_service"]
+    market_breadth = candidate_stack["market_breadth"]
+    sector_rotation = candidate_stack["sector_rotation"]
+    macro_calendar = candidate_stack["macro_calendar"]
     llm = candidate_stack["llm"]
     strategy = candidate_stack["strategy"]
     agent = candidate_stack["agent"]
+    delivery_service.start_background_task()
     if was_running:
         agent.start()
 

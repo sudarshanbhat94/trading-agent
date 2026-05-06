@@ -19,6 +19,10 @@ def build_symbol_tool_context(
     global_context: dict[str, Any] | None = None,
     institutional_context: dict[str, Any] | None = None,
     sentiment_detail: dict[str, Any] | None = None,
+    delivery_data: dict[str, Any] | None = None,
+    sector_context: dict[str, Any] | None = None,
+    market_breadth: dict[str, Any] | None = None,
+    macro_event_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     closes = [candle.close for candle in candles] or [quote.price]
     highs = [candle.high for candle in candles]
@@ -54,6 +58,10 @@ def build_symbol_tool_context(
         global_context=normalized_global_context,
         institutional_context=normalized_institutional_context,
         risk_limits=risk_limits,
+        delivery_data=delivery_data,
+        sector_context=sector_context,
+        market_breadth=market_breadth,
+        macro_event_context=macro_event_context,
     )
     return {
         "tool_protocol": "mcp-style-json-context",
@@ -70,6 +78,10 @@ def build_symbol_tool_context(
         "sentiment": _sentiment_context(sentiment_score, sentiment_detail),
         "global_market_context": normalized_global_context,
         "institutional_context": normalized_institutional_context,
+        "delivery_data": delivery_data or {},
+        "sector_rotation": sector_context or {},
+        "market_breadth_context": market_breadth or {},
+        "macro_event_context": macro_event_context or {},
         "full_spectrum_analysis": full_spectrum,
         "risk_limits": risk_limits,
         "recent_candles": [candle.to_dict() for candle in candles[-24:]],
@@ -86,6 +98,11 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     candle_score = float(context["candlestick_analysis"]["score"])
     preset_score = float(context["best_strategy"]["score"])
     full_spectrum_score = _full_spectrum_score(context)
+    delivery_score = _delivery_score(context)
+    sector_rotation_score = _sector_rotation_score(context)
+    stage_score = _stage_score(context)
+    divergence_score = _divergence_score(context)
+    entry_quality_score = _entry_quality_score(context)
     global_risk = float(context.get("global_market_context", {}).get("risk_score", 0.0) or 0.0)
     institutional_score = _institutional_score(context)
     global_weight = float(context.get("risk_limits", {}).get("global_risk_weight", 0.1) or 0.0)
@@ -98,18 +115,23 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
         institutional_weight *= scale
     remaining = 1.0 - global_weight - institutional_weight
     components = [
-        {"name": "technical_math", "score": technical, "weight": round(0.30 * remaining, 4)},
-        {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.15 * remaining, 4)},
-        {"name": "best_strategy", "score": preset_score, "weight": round(0.20 * remaining, 4)},
-        {"name": "sentiment", "score": sentiment, "weight": round(0.12 * remaining, 4)},
-        {"name": "full_spectrum_layers", "score": full_spectrum_score, "weight": round(0.23 * remaining, 4)},
+        {"name": "technical_math", "score": technical, "weight": round(0.20 * remaining, 4)},
+        {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.10 * remaining, 4)},
+        {"name": "best_strategy", "score": preset_score, "weight": round(0.15 * remaining, 4)},
+        {"name": "sentiment", "score": sentiment, "weight": round(0.09 * remaining, 4)},
+        {"name": "full_spectrum_layers", "score": full_spectrum_score, "weight": round(0.10 * remaining, 4)},
+        {"name": "delivery_score", "score": delivery_score, "weight": round(0.08 * remaining, 4)},
+        {"name": "sector_rotation_score", "score": sector_rotation_score, "weight": round(0.07 * remaining, 4)},
+        {"name": "stage_score", "score": stage_score, "weight": round(0.10 * remaining, 4)},
+        {"name": "divergence_score", "score": divergence_score, "weight": round(0.06 * remaining, 4)},
+        {"name": "entry_quality_score", "score": entry_quality_score, "weight": round(0.05 * remaining, 4)},
         {"name": "global_market_context", "score": global_risk, "weight": round(global_weight, 4)},
         {"name": "free_institutional_context", "score": institutional_score, "weight": round(institutional_weight, 4)},
     ]
     raw = sum(component["score"] * component["weight"] for component in components)
     combined = max(min(raw, 1.0), -1.0)
     return {
-        "formula": "technical_math*scaled_0.30 + candlestick_analysis*scaled_0.15 + best_strategy*scaled_0.20 + sentiment*scaled_0.12 + full_spectrum_layers*scaled_0.23 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
+        "formula": "technical_math*scaled_0.20 + candlestick_analysis*scaled_0.10 + best_strategy*scaled_0.15 + sentiment*scaled_0.09 + full_spectrum_layers*scaled_0.10 + delivery_score*scaled_0.08 + sector_rotation_score*scaled_0.07 + stage_score*scaled_0.10 + divergence_score*scaled_0.06 + entry_quality_score*scaled_0.05 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
         "components": [
             {
                 **component,
@@ -149,6 +171,49 @@ def _institutional_score(context: dict[str, Any]) -> float:
     return round(max(min(score, 1.0), -1.0), 4)
 
 
+def _delivery_score(context: dict[str, Any]) -> float:
+    full = context.get("full_spectrum_analysis") or {}
+    delivery = full.get("delivery_accumulation") or {}
+    return round(max(min(float(delivery.get("delivery_score") or 0.0), 1.0), -1.0), 4)
+
+
+def _sector_rotation_score(context: dict[str, Any]) -> float:
+    full = context.get("full_spectrum_analysis") or {}
+    sector = full.get("sector_rotation") or {}
+    return round(max(min(float(sector.get("sector_rotation_score") or 0.0), 1.0), -1.0), 4)
+
+
+def _stage_score(context: dict[str, Any]) -> float:
+    full = context.get("full_spectrum_analysis") or {}
+    stage = full.get("stage_analysis") or {}
+    name = stage.get("stage")
+    confidence = stage.get("stage_confidence")
+    if name == "Stage2_Markup" and confidence == "high":
+        return 0.8
+    if name == "Stage2_Markup" and confidence == "medium":
+        return 0.5
+    if name == "Stage1_Base":
+        return 0.1
+    if name == "Stage3_Distribution":
+        return -0.7
+    if name == "Stage4_Decline":
+        return -0.9
+    return 0.0
+
+
+def _divergence_score(context: dict[str, Any]) -> float:
+    full = context.get("full_spectrum_analysis") or {}
+    divergence = full.get("price_volume_divergence") or {}
+    return round(max(min(float(divergence.get("divergence_score") or 0.0), 1.0), -1.0), 4)
+
+
+def _entry_quality_score(context: dict[str, Any]) -> float:
+    full = context.get("full_spectrum_analysis") or {}
+    entry = full.get("entry_quality") or {}
+    quality = float(entry.get("quality_score") or 0.0)
+    return round(max(min((quality * 1.5) - 0.5, 1.0), -1.0), 4)
+
+
 def _full_spectrum_score(context: dict[str, Any]) -> float:
     full = context.get("full_spectrum_analysis") or {}
     confluence = full.get("confluence_score") or {}
@@ -161,6 +226,8 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
     backtest = full.get("backtest_snapshot") or {}
     conflicts = full.get("signal_conflicts") or {}
     scorecard = full.get("institutional_scorecard") or {}
+    sector = full.get("sector_rotation") or {}
+    confluence_total = int(confluence.get("total") or 0)
 
     total = float(confluence.get("total") or 0.0)
     score = max(min((total - 10.0) / 12.0, 0.75), -0.45)
@@ -202,6 +269,13 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
         score -= 0.3
     elif conflicts.get("severity") == "medium":
         score -= 0.12
+    if sector.get("sector_tailwind"):
+        score += 0.15
+    if sector.get("sector_headwind"):
+        score -= 0.25
+    if sector.get("sector_tier") == "bottom_quartile" and confluence_total < 18:
+        score -= 0.15
+    score += float((full.get("price_volume_divergence") or {}).get("divergence_score") or 0.0)
     return round(max(min(score, 1.0), -1.0), 4)
 
 

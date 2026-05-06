@@ -112,12 +112,30 @@ class PaperBroker:
             )
             return False
 
+        sector_veto = self._sector_concentration_veto(decision, positions, portfolio_equity)
+        if sector_veto["veto"]:
+            self.db.insert_order(
+                decision.symbol,
+                "BUY",
+                0,
+                decision.price,
+                "VETOED",
+                "sector_concentration_limit_35pct",
+                decision.strategy,
+                _order_details_json(decision, sector_veto),
+            )
+            return False
+
         current_value = 0.0
         for row in positions:
             if row["symbol"] == decision.symbol:
                 current_value = row["qty"] * row["market_price"]
                 break
-        max_position_value = portfolio_equity * self.settings.max_position_pct
+        sizing_grade = _sizing_grade_from_decision(decision)
+        max_position_pct = sizing_grade.get("recommended_max_position_pct") or self.settings.max_position_pct
+        absolute_cap = self.settings.max_position_pct * 1.5
+        max_position_pct = min(float(max_position_pct), absolute_cap)
+        max_position_value = portfolio_equity * max_position_pct
         if current_value >= max_position_value:
             self.db.insert_order(
                 decision.symbol,
@@ -133,7 +151,8 @@ class PaperBroker:
                         "veto_gate": "max_position_pct",
                         "current_position_value": round(current_value, 2),
                         "max_position_value": round(max_position_value, 2),
-                        "max_position_pct": self.settings.max_position_pct,
+                        "max_position_pct": max_position_pct,
+                        "sizing_grade": sizing_grade,
                         "portfolio_equity": portfolio_equity,
                     },
                 ),
@@ -180,18 +199,18 @@ class PaperBroker:
                 conn.execute(
                     """
                     update positions
-                    set strategy = ?, qty = ?, avg_price = ?, market_price = ?, updated_at = ?
+                    set strategy = ?, qty = ?, avg_price = ?, market_price = ?, updated_at = ?, details_json = ?
                     where symbol = ?
                     """,
-                    (decision.strategy, new_qty, new_avg, decision.price, utc_now(), decision.symbol),
+                    (decision.strategy, new_qty, new_avg, decision.price, utc_now(), _position_details_json(decision), decision.symbol),
                 )
             else:
                 conn.execute(
                     """
-                    insert into positions (symbol, strategy, qty, avg_price, market_price, realized_pnl, updated_at)
-                    values (?, ?, ?, ?, ?, 0, ?)
+                    insert into positions (symbol, strategy, qty, avg_price, market_price, realized_pnl, updated_at, details_json)
+                    values (?, ?, ?, ?, ?, 0, ?, ?)
                     """,
-                    (decision.symbol, decision.strategy, qty, decision.price, decision.price, utc_now()),
+                    (decision.symbol, decision.strategy, qty, decision.price, decision.price, utc_now(), _position_details_json(decision)),
                 )
             conn.execute(
                 """
@@ -221,11 +240,12 @@ class PaperBroker:
                         "cash_before": round(cash_before, 2),
                         "cash_after": round(cash_before - (qty * decision.price), 2),
                         "current_position_value_before": round(current_value, 2),
-                        "max_position_pct": self.settings.max_position_pct,
+                        "max_position_pct": max_position_pct,
                         "max_position_value": round(max_position_value, 2),
                         "max_order_value_pct": self.settings.max_order_value_pct,
                         "max_order_value": round(max_order_value, 2),
                         "atr_risk_sizing": sizing_plan,
+                        "sizing_grade": sizing_grade,
                         "planned_spend": round(spend, 2),
                         "filled_qty": qty,
                         "filled_notional": round(qty * decision.price, 2),
@@ -238,6 +258,9 @@ class PaperBroker:
         return True
 
     def _sell(self, decision: Decision) -> bool:
+        partial_pct = _partial_sell_pct_from_decision(decision)
+        if partial_pct is not None and 0 < partial_pct < 1:
+            return self.partial_sell(decision.symbol, partial_pct, decision.reason, decision.strategy, decision)
         cash_before = self.cash
         with self.db.connect() as conn:
             row = conn.execute("select * from positions where symbol = ?", (decision.symbol,)).fetchone()
@@ -312,6 +335,98 @@ class PaperBroker:
             )
             self.order_router.route(routed_decision, qty)
         return True
+
+    def partial_sell(
+        self,
+        symbol: str,
+        pct_of_position: float,
+        reason: str,
+        strategy: str,
+        decision: Decision | None = None,
+    ) -> bool:
+        pct = max(min(float(pct_of_position), 1.0), 0.0)
+        cash_before = self.cash
+        price = float(decision.price if decision else 0.0)
+        with self.db.connect() as conn:
+            row = conn.execute("select * from positions where symbol = ?", (symbol,)).fetchone()
+            if not row or row["qty"] <= 0 or price <= 0:
+                self.db.insert_order(symbol, "SELL", 0, price, "VETOED", "partial sell unavailable", strategy, "{}")
+                return False
+            qty = max(int(int(row["qty"]) * pct), 1)
+            qty = min(qty, int(row["qty"]))
+            remaining = int(row["qty"]) - qty
+            proceeds = qty * price
+            realized = row["realized_pnl"] + (price - row["avg_price"]) * qty
+            details = _json_object(row["details_json"])
+            if pct <= 0.34 and not details.get("tier1_hit"):
+                details["tier1_hit"] = True
+                details["trailing_stop"] = row["avg_price"]
+            elif pct <= 0.34:
+                details["tier2_hit"] = True
+            conn.execute(
+                """
+                update positions
+                set qty = ?, market_price = ?, realized_pnl = ?, updated_at = ?, details_json = ?
+                where symbol = ?
+                """,
+                (remaining, price, realized, utc_now(), json.dumps(details, default=str, separators=(",", ":")), symbol),
+            )
+            conn.execute(
+                """
+                insert into agent_state (key, value) values ('cash', ?)
+                on conflict(key) do update set value = excluded.value
+                """,
+                (str(cash_before + proceeds),),
+            )
+        self.db.insert_order(
+            symbol,
+            "SELL",
+            qty,
+            price,
+            "FILLED",
+            reason,
+            strategy,
+            _order_details_json(
+                decision
+                or Decision(symbol, "SELL", 0.99, price, 0.0, 0.0, reason, utc_now(), strategy),
+                {
+                    "partial_sell": True,
+                    "pct_of_position": pct,
+                    "cash_before": round(cash_before, 2),
+                    "cash_after": round(cash_before + proceeds, 2),
+                    "remaining_qty": remaining,
+                    "filled_qty": qty,
+                    "filled_notional": round(proceeds, 2),
+                },
+            ),
+        )
+        return True
+
+    def _sector_concentration_veto(self, decision: Decision, positions: list[dict[str, Any]], portfolio_equity: float) -> dict[str, Any]:
+        if portfolio_equity <= 0:
+            return {"veto": False}
+        try:
+            audit = json.loads(decision.details_json or "{}")
+        except json.JSONDecodeError:
+            audit = {}
+        context = audit.get("context") or {}
+        sector = context.get("sector")
+        if not sector:
+            return {"veto": False}
+        exposure = 0.0
+        for row in positions:
+            universe_row = self.db.universe_row(row["symbol"]) or {}
+            if universe_row.get("sector") == sector:
+                exposure += float(row["qty"]) * float(row["market_price"])
+        pct = exposure / portfolio_equity
+        return {
+            "veto": pct > 0.35,
+            "veto_gate": "sector_concentration_limit_35pct",
+            "sector": sector,
+            "sector_exposure": round(exposure, 2),
+            "sector_exposure_pct": round(pct, 4),
+            "limit_pct": 0.35,
+        }
 
     def _daily_loss_limit_hit(self, equity: float) -> bool:
         return self._daily_loss_status(equity)["hit"]
@@ -388,6 +503,46 @@ def _sizing_plan_from_decision(decision: Decision, portfolio_equity: float, max_
         "risk_qty": risk_qty,
         "max_notional": round(max_notional, 2),
     }
+
+
+def _sizing_grade_from_decision(decision: Decision) -> dict[str, Any]:
+    details = _json_object(decision.details_json)
+    sizing = details.get("sizing_grade") or (details.get("risk_gates") or {}).get("sizing_grade") or {}
+    return sizing if isinstance(sizing, dict) else {}
+
+
+def _partial_sell_pct_from_decision(decision: Decision) -> float | None:
+    details = _json_object(decision.details_json)
+    gates = details.get("risk_gates") or {}
+    value = gates.get("partial_sell_pct") or details.get("partial_sell_pct")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _position_details_json(decision: Decision) -> str:
+    details = _json_object(decision.details_json)
+    full = (details.get("context") or {}).get("full_spectrum_analysis") or {}
+    return json.dumps(
+        {
+            "opened_from_decision": decision.to_dict(),
+            "trade_plan": full.get("trade_plan") or {},
+            "sizing_grade": details.get("sizing_grade") or {},
+            "tier1_hit": False,
+            "tier2_hit": False,
+        },
+        default=str,
+        separators=(",", ":"),
+    )
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}") if isinstance(value, str) else value
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 def _float_or_none(value: Any) -> float | None:

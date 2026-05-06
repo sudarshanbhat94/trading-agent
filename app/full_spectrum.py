@@ -18,6 +18,10 @@ def full_spectrum_analysis(
     global_context: dict[str, Any],
     institutional_context: dict[str, Any],
     risk_limits: dict[str, Any],
+    delivery_data: dict[str, Any] | None = None,
+    sector_context: dict[str, Any] | None = None,
+    market_breadth: dict[str, Any] | None = None,
+    macro_event_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     closes = [candle.close for candle in candles]
     highs = [candle.high for candle in candles]
@@ -27,6 +31,12 @@ def full_spectrum_analysis(
     indicators = _indicator_suite(candles)
     key_levels = _key_levels(candles, quote.price)
     trend_context = _trend_context(closes, highs, lows, indicators)
+    timeframe_alignment = _multi_timeframe_alignment(candles, technical)
+    trend_context["timeframe_alignment"] = timeframe_alignment
+    stage_analysis = _stage_analysis(candles, quote.price, technical)
+    price_volume_divergence = _price_volume_divergence(candles, technical)
+    entry_quality = _entry_grade(candles, quote.price, indicators)
+    breakout_quality = _false_breakout_filter(candles, quote.price)
     fib = _fib_levels(candles)
     candlestick_v2 = _candlestick_v2(candles, candle_tools)
     chart_patterns = _chart_patterns(candles)
@@ -35,7 +45,8 @@ def full_spectrum_analysis(
     liquidity = _liquidity_profile(candles, quote.price)
     fundamental = _fundamental_quality(row, flow)
     corporate_risk = _corporate_event_risk(flow)
-    delivery = _delivery_accumulation(flow, candles)
+    delivery = _delivery_accumulation(flow, candles, delivery_data)
+    sector_rotation = _sector_rotation_layer(sector_context)
     relative_strength = _relative_strength(closes, global_context)
     options_oi = _options_oi_layer(flow)
     backtest = _backtest_snapshot(candles)
@@ -55,6 +66,10 @@ def full_spectrum_analysis(
         delivery=delivery,
         relative_strength=relative_strength,
         backtest=backtest,
+        stage_analysis=stage_analysis,
+        timeframe_alignment=timeframe_alignment,
+        price_volume_divergence=price_volume_divergence,
+        entry_quality=entry_quality,
     )
     conflicts = _signal_conflicts(
         technical=technical,
@@ -97,6 +112,12 @@ def full_spectrum_analysis(
         corporate_risk,
         conflicts,
         scorecard,
+        stage_analysis,
+        timeframe_alignment,
+        price_volume_divergence,
+        entry_quality,
+        breakout_quality,
+        macro_event_context or {},
     )
     signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides, scorecard)
     monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides, scorecard)
@@ -108,6 +129,10 @@ def full_spectrum_analysis(
         "primary_filters": filters,
         "signal_plan": signal_plan,
         "trend_context": trend_context,
+        "stage_analysis": stage_analysis,
+        "price_volume_divergence": price_volume_divergence,
+        "entry_quality": entry_quality,
+        "breakout_quality": breakout_quality,
         "key_levels": key_levels,
         "fibonacci": fib,
         "indicator_suite": indicators,
@@ -120,6 +145,9 @@ def full_spectrum_analysis(
         "fundamental_quality": fundamental,
         "corporate_event_risk": corporate_risk,
         "delivery_accumulation": delivery,
+        "sector_rotation": sector_rotation,
+        "market_breadth": market_breadth or {},
+        "macro_event_context": macro_event_context or {},
         "options_oi": options_oi,
         "backtest_snapshot": backtest,
         "signal_conflicts": conflicts,
@@ -215,6 +243,15 @@ def _key_levels(candles: list[Candle], price: float) -> dict[str, Any]:
     closes = [candle.close for candle in candles]
     highs = [candle.high for candle in candles]
     lows = [candle.low for candle in candles]
+    support, support_tests = _tested_level(lows[-20:], mode="support")
+    resistance, resistance_tests = _tested_level(highs[-20:], mode="resistance")
+    distance_to_support = ((price - support) / price) * 100 if support and price else None
+    distance_to_resistance = ((resistance - price) / price) * 100 if resistance and price else None
+    risk_reward = (
+        distance_to_resistance / max(distance_to_support, 0.01)
+        if distance_to_resistance is not None and distance_to_support is not None
+        else None
+    )
     return {
         "period_high": _round(max(highs)),
         "period_low": _round(min(lows)),
@@ -225,6 +262,13 @@ def _key_levels(candles: list[Candle], price: float) -> dict[str, Any]:
         "open_gaps": _open_gaps(candles),
         "vwap_period": _round(_vwap(candles)),
         "period_return_pct": _round(((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else None),
+        "nearest_support": _round(support),
+        "nearest_resistance": _round(resistance),
+        "support_strength": support_tests,
+        "resistance_strength": resistance_tests,
+        "distance_to_support_pct": _round(distance_to_support),
+        "distance_to_resistance_pct": _round(distance_to_resistance),
+        "risk_reward_from_current": _round(risk_reward),
     }
 
 
@@ -240,6 +284,259 @@ def _trend_context(closes: list[float], highs: list[float], lows: list[float], i
         "trend_age_candles": _trend_age(closes),
         "structure": _swing_structure(highs, lows),
     }
+
+
+def _stage_analysis(candles: list[Candle], quote_price: float, technical: dict[str, Any]) -> dict[str, Any]:
+    if len(candles) < 30:
+        return {
+            "stage": "Stage1_Base",
+            "stage_confidence": "low",
+            "sma_30w_proxy": None,
+            "sma_slope_pct": None,
+            "volume_pattern": "insufficient_history",
+            "buy_permitted": False,
+            "stage_note": "Need at least 30 candles for Weinstein stage proxy.",
+        }
+    proxy = candles[::5] if len(candles) >= 150 else candles[-30:]
+    closes = [c.close for c in proxy]
+    sma = mean(closes[-30:]) if len(closes) >= 30 else mean(closes)
+    prior_slice = closes[-35:-5] if len(closes) >= 35 else closes[: max(len(closes) - 5, 1)]
+    prior_sma = mean(prior_slice) if prior_slice else sma
+    slope_pct = ((sma - prior_sma) / prior_sma) * 100 / 5 if prior_sma else 0.0
+    recent_high = max(c.high for c in candles[-30:])
+    volume_pattern = _stage_volume_pattern(candles)
+    down_volume_days = sum(1 for candle in candles[-10:] if candle.close < candle.open and candle.volume)
+    up_volume_days = sum(1 for candle in candles[-10:] if candle.close > candle.open and candle.volume)
+    near_sma = abs(quote_price - sma) / sma <= 0.05 if sma else False
+    near_high = quote_price >= recent_high * 0.92 if recent_high else False
+    if quote_price < sma and slope_pct < 0:
+        stage = "Stage4_Decline"
+    elif near_high and (volume_pattern == "rising_volume_downtrend" or down_volume_days > up_volume_days):
+        stage = "Stage3_Distribution"
+    elif quote_price > sma and slope_pct > 0 and volume_pattern == "rising_volume_uptrend":
+        stage = "Stage2_Markup"
+    elif near_sma and abs(slope_pct) < 0.2 and volume_pattern == "neutral":
+        stage = "Stage1_Base"
+    else:
+        stage = "Stage2_Markup" if quote_price > sma and slope_pct >= 0 else "Stage1_Base"
+    clarity = abs(slope_pct) + (abs(quote_price - sma) / sma * 100 if sma else 0)
+    confidence = "high" if clarity >= 5 or volume_pattern != "neutral" else "medium" if clarity >= 2 else "low"
+    return {
+        "stage": stage,
+        "stage_confidence": confidence,
+        "sma_30w_proxy": _round(sma),
+        "sma_slope_pct": _round(slope_pct),
+        "volume_pattern": volume_pattern,
+        "buy_permitted": stage == "Stage2_Markup",
+        "stage_note": f"{stage} from price vs 30-week proxy, slope, and {volume_pattern}.",
+    }
+
+
+def _multi_timeframe_alignment(candles: list[Candle], technical: dict[str, Any]) -> dict[str, Any]:
+    weekly = _timeframe_view([c.close for c in candles[::5] if c.close], candles[::5])
+    daily = _timeframe_view([c.close for c in candles if c.close], candles)
+    intraday = _timeframe_view([c.close for c in candles[-16:] if c.close], candles[-16:])
+    views = {"weekly_proxy": weekly, "daily": daily, "intraday_proxy": intraday}
+    up_count = sum(1 for item in views.values() if item.get("direction") == "up")
+    sideways_count = sum(1 for item in views.values() if item.get("direction") == "sideways")
+    down_count = sum(1 for item in views.values() if item.get("direction") == "down")
+    if up_count == 3:
+        grade = "A"
+    elif up_count == 2 and sideways_count == 1:
+        grade = "B"
+    elif up_count == 2 and down_count == 1:
+        grade = "C"
+    else:
+        grade = "D"
+    return {"timeframes": views, "alignment_score": up_count, "alignment_grade": grade}
+
+
+def _price_volume_divergence(candles: list[Candle], technical: dict[str, Any]) -> dict[str, Any]:
+    if len(candles) < 20:
+        return {"available": False, "divergence_score": 0.0, "reason": "insufficient candles"}
+    closes = [c.close for c in candles]
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    volumes = [c.volume for c in candles]
+    obv = _obv_series(closes, volumes)
+    ad_line = _ad_line(candles)
+    price_new_high = max(highs[-5:]) >= max(highs[-20:])
+    obv_price_divergence = price_new_high and max(obv[-5:]) < max(obv[-20:])
+    ad_price_divergence = len(ad_line) >= 11 and closes[-1] > closes[-11] and ad_line[-1] < ad_line[-11]
+    avg_volume_20 = mean([v for v in volumes[-20:] if v]) if any(volumes[-20:]) else 0.0
+    climax_volume_top = any(c.volume > avg_volume_20 * 4 and c.high >= max(highs[-52:] or highs) for c in candles[-3:]) if avg_volume_20 else False
+    rsi = technical.get("rsi")
+    panic_volume_bottom = any(
+        c.volume > avg_volume_20 * 4
+        and (c.close - c.low) / max(c.high - c.low, 0.01) < 0.25
+        and rsi is not None
+        and rsi < 35
+        for c in candles[-3:]
+    ) if avg_volume_20 else False
+    score = 0.0
+    if obv_price_divergence:
+        score -= 0.4
+    if ad_price_divergence:
+        score -= 0.3
+    if climax_volume_top:
+        score -= 0.5
+    if panic_volume_bottom:
+        score += 0.3
+    return {
+        "available": True,
+        "obv_price_divergence": obv_price_divergence,
+        "ad_price_divergence": ad_price_divergence,
+        "climax_volume_top": climax_volume_top,
+        "panic_volume_bottom": panic_volume_bottom,
+        "divergence_score": _round(max(min(score, 1.0), -1.0)),
+    }
+
+
+def _entry_grade(candles: list[Candle], quote_price: float, indicators: dict[str, Any]) -> dict[str, Any]:
+    if len(candles) < 21:
+        return {"entry_grade": "WATCH", "quality_score": 0.0, "entry_note": "insufficient candles for pivot"}
+    last = candles[-1]
+    pivot = max(c.high for c in candles[-21:-1])
+    distance = ((quote_price - pivot) / pivot) * 100 if pivot else None
+    if distance is None or distance < 0:
+        grade = "WATCH"
+    elif distance <= 2:
+        grade = "A"
+    elif distance <= 5:
+        grade = "B"
+    elif distance <= 8:
+        grade = "C"
+    else:
+        grade = "D"
+    position = (last.close - last.low) / max(last.high - last.low, 0.01)
+    volumes = [c.volume for c in candles[-21:-1] if c.volume]
+    avg_volume = mean(volumes) if volumes else 0.0
+    volume_confirmation = bool(avg_volume and last.volume > avg_volume * 1.5)
+    quality = {"A": 1.0, "B": 0.7, "C": 0.4, "D": 0.0, "WATCH": 0.0}.get(grade, 0.0)
+    return {
+        "entry_grade": grade,
+        "pivot": _round(pivot),
+        "distance_from_pivot_pct": _round(distance),
+        "last_close_position_in_range": _round(position),
+        "volume_confirmation": volume_confirmation,
+        "quality_score": quality,
+        "entry_note": f"{grade} entry from pivot distance and volume confirmation.",
+    }
+
+
+def _false_breakout_filter(candles: list[Candle], quote_price: float) -> dict[str, Any]:
+    if len(candles) < 25:
+        return {"is_breakout_attempt": False, "breakout_quality": "insufficient_history", "false_breakout_risk_score": 0.0}
+    prior_resistance = max(c.high for c in candles[-25:-2])
+    last = candles[-1]
+    candle_pos = (last.close - last.low) / max(last.high - last.low, 0.01)
+    is_attempt = 0 <= ((quote_price - prior_resistance) / prior_resistance) * 100 <= 3 if prior_resistance else False
+    volumes = [c.volume for c in candles[-21:-1] if c.volume]
+    avg_volume = mean(volumes) if volumes else 0.0
+    close_in_upper_range = candle_pos >= 0.75
+    volume_expansion = bool(avg_volume and last.volume > avg_volume * 1.5)
+    breakout_quality = "not_breakout"
+    if is_attempt:
+        if close_in_upper_range and volume_expansion:
+            breakout_quality = "confirmed"
+        elif close_in_upper_range or volume_expansion:
+            breakout_quality = "suspect"
+        else:
+            breakout_quality = "false_breakout_risk"
+    crossed_indices = [idx for idx, c in enumerate(candles[-4:-1], start=len(candles) - 4) if c.close > prior_resistance]
+    two_day_failed = bool(crossed_indices and any(c.close < prior_resistance for c in candles[crossed_indices[0] + 1 :]))
+    risk_score = 0.0
+    if breakout_quality == "suspect":
+        risk_score = 0.4
+    elif breakout_quality == "false_breakout_risk":
+        risk_score = 0.8
+    if two_day_failed:
+        risk_score = 1.0
+    return {
+        "is_breakout_attempt": is_attempt,
+        "breakout_quality": breakout_quality,
+        "two_day_rule_failed": two_day_failed,
+        "prior_resistance": _round(prior_resistance),
+        "close_in_upper_range": close_in_upper_range,
+        "volume_expansion": volume_expansion,
+        "false_breakout_risk_score": risk_score,
+    }
+
+
+def _tested_level(values: list[float], mode: str) -> tuple[float | None, int]:
+    if not values:
+        return None, 0
+    candidates = sorted(values)[:5] if mode == "support" else sorted(values, reverse=True)[:5]
+    best_level: float | None = None
+    best_tests = 0
+    for level in candidates:
+        tests = sum(1 for value in values if abs(value - level) / max(level, 0.01) <= 0.01)
+        if tests > best_tests:
+            best_level = level
+            best_tests = tests
+    if best_tests < 2:
+        best_level = min(values) if mode == "support" else max(values)
+    return best_level, best_tests
+
+
+def _stage_volume_pattern(candles: list[Candle]) -> str:
+    recent = candles[-20:]
+    if len(recent) < 5:
+        return "neutral"
+    up_volumes = [c.volume for c in recent if c.close > c.open and c.volume]
+    down_volumes = [c.volume for c in recent if c.close < c.open and c.volume]
+    first_half = recent[: len(recent) // 2]
+    second_half = recent[len(recent) // 2 :]
+    first_avg = mean([c.volume for c in first_half if c.volume] or [0])
+    second_avg = mean([c.volume for c in second_half if c.volume] or [0])
+    if second_avg <= first_avg * 1.1:
+        return "neutral"
+    if sum(up_volumes) > sum(down_volumes) * 1.2:
+        return "rising_volume_uptrend"
+    if sum(down_volumes) > sum(up_volumes) * 1.2:
+        return "rising_volume_downtrend"
+    return "neutral"
+
+
+def _timeframe_view(closes: list[float], candles: list[Candle]) -> dict[str, Any]:
+    if len(closes) < 5:
+        return {"direction": "sideways", "strength": "weak", "price_vs_20sma": "unknown"}
+    sma5 = mean(closes[-5:])
+    sma20 = mean(closes[-20:]) if len(closes) >= 20 else mean(closes)
+    distance = ((sma5 - sma20) / sma20) * 100 if sma20 else 0.0
+    direction = "up" if distance > 0.4 else "down" if distance < -0.4 else "sideways"
+    adx_proxy = _adx(candles, 14) if len(candles) >= 15 else None
+    return {
+        "direction": direction,
+        "strength": "strong" if adx_proxy is not None and adx_proxy > 25 else "weak",
+        "price_vs_20sma": "above" if closes[-1] >= sma20 else "below",
+        "sma5": _round(sma5),
+        "sma20": _round(sma20),
+        "adx_proxy": _round(adx_proxy),
+    }
+
+
+def _obv_series(closes: list[float], volumes: list[float]) -> list[float]:
+    output = [0.0]
+    for previous_close, close, volume in zip(closes, closes[1:], volumes[1:]):
+        current = output[-1]
+        if close > previous_close:
+            current += volume
+        elif close < previous_close:
+            current -= volume
+        output.append(current)
+    return output
+
+
+def _ad_line(candles: list[Candle]) -> list[float]:
+    output: list[float] = []
+    running = 0.0
+    for candle in candles:
+        span = candle.high - candle.low
+        multiplier = (((candle.close - candle.low) - (candle.high - candle.close)) / span) if span else 0.0
+        running += multiplier * candle.volume
+        output.append(running)
+    return output
 
 
 def _fib_levels(candles: list[Candle]) -> dict[str, Any]:
@@ -435,6 +732,10 @@ def _confluence_score(
     delivery: dict[str, Any],
     relative_strength: dict[str, Any],
     backtest: dict[str, Any],
+    stage_analysis: dict[str, Any],
+    timeframe_alignment: dict[str, Any],
+    price_volume_divergence: dict[str, Any],
+    entry_quality: dict[str, Any],
 ) -> dict[str, Any]:
     macro = 0
     if trend_context["daily"] in {"STRONG_UPTREND", "WEAK_UPTREND"}:
@@ -500,6 +801,27 @@ def _confluence_score(
         and sentiment_score > 0.15
     ):
         news += 1
+    delivery_score = float(delivery.get("delivery_score") or 0.0)
+    if delivery_score > 0.6:
+        news += 2
+    elif delivery_score < -0.6:
+        news -= 2
+    if stage_analysis.get("stage") == "Stage2_Markup":
+        technical += 2 if stage_analysis.get("stage_confidence") == "high" else 1
+    elif stage_analysis.get("stage") in {"Stage3_Distribution", "Stage4_Decline"}:
+        technical -= 3
+    alignment_grade = timeframe_alignment.get("alignment_grade")
+    if alignment_grade == "A":
+        technical += 2
+    elif alignment_grade == "B":
+        technical += 1
+    elif alignment_grade == "D":
+        technical -= 2
+    technical += float(price_volume_divergence.get("divergence_score") or 0.0)
+    if entry_quality.get("volume_confirmation"):
+        candle += 1
+    if float(entry_quality.get("last_close_position_in_range") or 0.0) > 0.75:
+        candle += 1
 
     macro = min(macro, 8)
     technical = min(technical, 10)
@@ -531,6 +853,12 @@ def _risk_overrides(
     corporate_risk: dict[str, Any],
     conflicts: dict[str, Any],
     scorecard: dict[str, Any],
+    stage_analysis: dict[str, Any],
+    timeframe_alignment: dict[str, Any],
+    price_volume_divergence: dict[str, Any],
+    entry_quality: dict[str, Any],
+    breakout_quality: dict[str, Any],
+    macro_event_context: dict[str, Any],
 ) -> dict[str, Any]:
     atr_pct = indicators.get("atr_pct")
     flags = []
@@ -556,6 +884,22 @@ def _risk_overrides(
         flags.append(f"scorecard_{veto}_no_new_longs")
     if not scorecard.get("buy_ready") and scorecard.get("total_score", 0) < scorecard.get("minimum_entry_score", 75):
         flags.append("institutional_scorecard_below_entry_threshold")
+    if stage_analysis.get("stage") in {"Stage3_Distribution", "Stage4_Decline"}:
+        flags.append("stage_no_new_longs")
+    if timeframe_alignment.get("alignment_grade") == "D":
+        flags.append("timeframe_conflict_no_new_longs")
+    if price_volume_divergence.get("climax_volume_top"):
+        flags.append("climax_top_detected_no_new_longs")
+    if entry_quality.get("entry_grade") == "D":
+        flags.append("extended_entry_no_new_longs")
+    if breakout_quality.get("two_day_rule_failed"):
+        flags.append("false_breakout_two_day_rule_failed_no_new_longs")
+    if breakout_quality.get("breakout_quality") == "suspect":
+        flags.append("suspect_breakout_reduce_size")
+    if breakout_quality.get("breakout_quality") == "false_breakout_risk":
+        flags.append("false_breakout_risk_no_new_longs")
+    if float(macro_event_context.get("event_risk_score") or 0.0) > 0.6:
+        flags.append("high_macro_event_risk")
     symbol_flags = institutional_flow.get("symbol_flags", {})
     if symbol_flags.get("asm"):
         flags.append("asm_surveillance_no_new_longs")
@@ -801,7 +1145,16 @@ def _corporate_event_risk(flow: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _delivery_accumulation(flow: dict[str, Any], candles: list[Candle]) -> dict[str, Any]:
+def _delivery_accumulation(flow: dict[str, Any], candles: list[Candle], delivery_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    if delivery_data and delivery_data.get("available"):
+        score_payload = delivery_data.get("score_payload") or {}
+        return {
+            **delivery_data,
+            "bias": delivery_data.get("net_bias") or delivery_data.get("trend_direction") or "neutral",
+            "delivery_score": float(score_payload.get("score") if isinstance(score_payload, dict) else delivery_data.get("delivery_score") or 0.0),
+            "institutional_fingerprint": bool(score_payload.get("fingerprint") if isinstance(score_payload, dict) else delivery_data.get("institutional_fingerprint")),
+            "source": "nse_delivery_bhavcopy",
+        }
     delivery_pct = flow.get("delivery_percentage")
     volume_ratio = _volume_ratio([candle.volume for candle in candles if candle.volume is not None], 20) if candles else None
     price_change = ((candles[-1].close - candles[-5].close) / candles[-5].close) * 100 if len(candles) >= 5 and candles[-5].close else None
@@ -818,8 +1171,23 @@ def _delivery_accumulation(flow: dict[str, Any], candles: list[Candle]) -> dict[
         "volume_ratio_20": _round(volume_ratio),
         "price_change_5_candles_pct": _round(price_change),
         "bias": bias,
-        "source": "delivery feed if available, otherwise price-volume proxy",
+        "delivery_score": 0.0,
+        "institutional_fingerprint": False,
+        "source": "delivery feed if available, otherwise volume_proxy_no_delivery_data",
+        "data_gap": "volume_proxy_no_delivery_data" if delivery_pct is None else None,
     }
+
+
+def _sector_rotation_layer(sector_context: dict[str, Any] | None) -> dict[str, Any]:
+    if not sector_context:
+        return {
+            "available": False,
+            "sector_tailwind": False,
+            "sector_headwind": False,
+            "sector_rotation_score": 0.0,
+            "data_gap": "sector_rotation_unavailable",
+        }
+    return sector_context
 
 
 def _relative_strength(closes: list[float], global_context: dict[str, Any]) -> dict[str, Any]:

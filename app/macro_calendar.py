@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from .config import Settings
+from .db import Database
+from .models import utc_now
+
+
+class MacroCalendarService:
+    def __init__(self, settings: Settings, db: Database, earnings_calendar: dict[str, str] | None = None) -> None:
+        self.settings = settings
+        self.db = db
+        self.earnings_calendar = {str(k).upper(): v for k, v in (earnings_calendar or {}).items()}
+
+    async def event_context_for_cycle(self) -> dict[str, Any]:
+        if not self.settings.enable_macro_calendar:
+            return {"enabled": False, "updated_at": utc_now(), "events": [], "data_gap": "macro_calendar_disabled"}
+        today = _today_ist()
+        events = self.upcoming_events(30, today)
+        context = {"enabled": True, "updated_at": utc_now(), "events": events[:30], "next_10": events[:10]}
+        self.db.set_state("macro_calendar_context", context)
+        self._log("INFO", "macro_calendar_cycle", "Macro calendar refreshed", {"events": len(events)})
+        return context
+
+    def event_context_for_date(self, event_date: date | str | None = None, symbol: str | None = None) -> dict[str, Any]:
+        if not self.settings.enable_macro_calendar:
+            return _neutral_event("macro_calendar_disabled")
+        day = _coerce_date(event_date) or _today_ist()
+        monthly_expiry = _last_thursday(day.year, day.month)
+        next_weekly = _nearest_weekly_expiry(day)
+        is_expiry_day = day == monthly_expiry or day.weekday() == 3
+        is_expiry_week = abs((monthly_expiry - day).days) <= 2 or abs((next_weekly - day).days) <= 2
+        rbi_dates = [item["date"] for item in _static_events(day.year) + _static_events(day.year + 1) if item["type"] == "rbi_mpc_placeholder"]
+        budget_dates = [item["date"] for item in _static_events(day.year) + _static_events(day.year + 1) if item["type"] == "union_budget_placeholder"]
+        is_rbi_week = any(abs((_coerce_date(value) - day).days) <= 3 for value in rbi_dates if _coerce_date(value))
+        is_budget_week = any(abs((_coerce_date(value) - day).days) <= 5 for value in budget_dates if _coerce_date(value))
+        earnings_date = _coerce_date(self.earnings_calendar.get(str(symbol or "").upper()))
+        earnings_days_away = (earnings_date - day).days if earnings_date else None
+        event_score = 0.0
+        if is_expiry_day:
+            event_score = max(event_score, 0.4)
+        elif is_expiry_week:
+            event_score = max(event_score, 0.25)
+        if is_rbi_week:
+            event_score = max(event_score, 0.6)
+        if is_budget_week:
+            event_score = max(event_score, 0.7)
+        if earnings_days_away is not None and 0 <= earnings_days_away <= 5:
+            event_score = max(event_score, 0.9)
+        recommended = "hold_for_clarity" if event_score > 0.5 else "reduce_size" if 0.3 <= event_score <= 0.5 else "normal"
+        data_gaps = []
+        if not self.earnings_calendar:
+            data_gaps.append("earnings_calendar_empty")
+        return {
+            "enabled": True,
+            "date": day.isoformat(),
+            "symbol": symbol,
+            "is_expiry_day": is_expiry_day,
+            "is_expiry_week": is_expiry_week,
+            "is_rbi_week": is_rbi_week,
+            "is_budget_week": is_budget_week,
+            "earnings_days_away": earnings_days_away,
+            "has_high_impact_event": event_score > 0,
+            "event_risk_score": round(event_score, 3),
+            "recommended_action": recommended,
+            "data_gaps": data_gaps,
+        }
+
+    def upcoming_events(self, days: int = 30, start: date | None = None) -> list[dict[str, Any]]:
+        start = start or _today_ist()
+        end = start + timedelta(days=days)
+        events: list[dict[str, Any]] = []
+        for year in {start.year, end.year}:
+            events.extend(_static_events(year))
+            for month in range(1, 13):
+                expiry = _last_thursday(year, month)
+                events.append({"date": expiry.isoformat(), "type": "monthly_derivatives_expiry", "scope": "market_wide"})
+        cursor = start
+        while cursor <= end:
+            if cursor.weekday() == 3:
+                events.append({"date": cursor.isoformat(), "type": "weekly_expiry", "scope": "market_wide"})
+            cursor += timedelta(days=1)
+        for symbol, value in self.earnings_calendar.items():
+            earnings_date = _coerce_date(value)
+            if earnings_date:
+                events.append({"date": earnings_date.isoformat(), "type": "earnings", "scope": symbol, "symbols": [symbol]})
+        return sorted(
+            [event for event in events if start <= _coerce_date(event.get("date")) <= end],
+            key=lambda item: (item["date"], item["type"]),
+        )
+
+    def _log(self, level: str, event: str, message: str, details: Any | None = None) -> None:
+        try:
+            self.db.insert_agent_log(level, "macro_calendar", event, message, details)
+        except Exception:
+            pass
+
+
+def _static_events(year: int) -> list[dict[str, Any]]:
+    rbi_months = [2, 4, 6, 8, 10, 12]
+    events = [
+        {"date": f"{year}-02-01", "type": "union_budget_placeholder", "scope": "market_wide"},
+        {"date": f"{year}-06-15", "type": "advance_tax_payment", "scope": "market_wide"},
+        {"date": f"{year}-09-15", "type": "advance_tax_payment", "scope": "market_wide"},
+        {"date": f"{year}-12-15", "type": "advance_tax_payment", "scope": "market_wide"},
+        {"date": f"{year}-03-15", "type": "advance_tax_payment", "scope": "market_wide"},
+    ]
+    for month in rbi_months:
+        events.append({"date": date(year, month, min(8, 28)).isoformat(), "type": "rbi_mpc_placeholder", "scope": "market_wide"})
+    return events
+
+
+def _last_thursday(year: int, month: int) -> date:
+    if month == 12:
+        cursor = date(year, 12, 31)
+    else:
+        cursor = date(year, month + 1, 1) - timedelta(days=1)
+    while cursor.weekday() != 3:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _nearest_weekly_expiry(day: date) -> date:
+    days_ahead = (3 - day.weekday()) % 7
+    return day + timedelta(days=days_ahead)
+
+
+def _today_ist() -> date:
+    return (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
+
+
+def _coerce_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if value in (None, ""):
+        return None
+    text = str(value)[:10]
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
+
+
+def _neutral_event(reason: str) -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "is_expiry_day": False,
+        "is_expiry_week": False,
+        "is_rbi_week": False,
+        "is_budget_week": False,
+        "earnings_days_away": None,
+        "has_high_impact_event": False,
+        "event_risk_score": 0.0,
+        "recommended_action": "normal",
+        "data_gap": reason,
+    }
