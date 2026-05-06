@@ -65,6 +65,13 @@ class Settings:
     upstox_candle_lookback_days: int = _int("UPSTOX_CANDLE_LOOKBACK_DAYS", 3)
     yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "15m")
     yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
+    nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
+    nubra_session_token: str = os.getenv("NUBRA_SESSION_TOKEN", "")
+    nubra_device_id: str = os.getenv("NUBRA_DEVICE_ID", "")
+    nubra_price_scale: float = _float("NUBRA_PRICE_SCALE", 100)
+    nubra_candle_interval: str = os.getenv("NUBRA_CANDLE_INTERVAL", "15m")
+    nubra_candle_lookback_days: int = _int("NUBRA_CANDLE_LOOKBACK_DAYS", 5)
+    nubra_candle_symbols_per_cycle: int = _int("NUBRA_CANDLE_SYMBOLS_PER_CYCLE", 100)
 
     enable_news_sentiment: bool = _bool("ENABLE_NEWS_SENTIMENT", True)
     enable_llm_sentiment: bool = _bool("ENABLE_LLM_SENTIMENT", True)
@@ -107,6 +114,7 @@ SECRET_FIELDS = {
     "kite_access_token",
     "upstox_access_token",
     "upstox_sandbox_access_token",
+    "nubra_session_token",
     "llm_api_key",
     "nvidia_api_key",
     "live_trading_confirm",
@@ -124,7 +132,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "admin_username", "label": "Admin Username", "type": "text", "category": "Access Control"},
     {"key": "auth_session_secret", "label": "Session Secret", "type": "secret", "category": "Access Control"},
     {"key": "admin_session_hours", "label": "Session Hours", "type": "number", "category": "Access Control", "min": 1, "step": 1},
-    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["simulated", "yahoo", "kite", "upstox"]},
+    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["simulated", "yahoo", "kite", "upstox", "nubra"]},
     {"key": "upstox_access_token", "label": "Upstox Access Token", "type": "secret", "category": "Market Data"},
     {"key": "upstox_sandbox_access_token", "label": "Upstox Sandbox Token", "type": "secret", "category": "Market Data"},
     {"key": "upstox_api_base_url", "label": "Upstox Data URL", "type": "text", "category": "Market Data"},
@@ -135,6 +143,13 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["1d", "5d", "1mo", "3mo"]},
     {"key": "kite_api_key", "label": "Kite API Key", "type": "secret", "category": "Market Data"},
     {"key": "kite_access_token", "label": "Kite Access Token", "type": "secret", "category": "Market Data"},
+    {"key": "nubra_api_base_url", "label": "Nubra API Base URL", "type": "text", "category": "Market Data"},
+    {"key": "nubra_session_token", "label": "Nubra Session Token", "type": "secret", "category": "Market Data"},
+    {"key": "nubra_device_id", "label": "Nubra Device ID", "type": "text", "category": "Market Data"},
+    {"key": "nubra_price_scale", "label": "Nubra Price Scale", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "nubra_candle_interval", "label": "Nubra Candle Interval", "type": "select", "category": "Market Data", "choices": ["1m", "5m", "15m", "30m", "1h", "1d"]},
+    {"key": "nubra_candle_lookback_days", "label": "Nubra Candle Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "nubra_candle_symbols_per_cycle", "label": "Nubra Candle Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 10},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["offline", "nvidia", "openai_compatible"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "nvidia_api_key", "label": "NVIDIA API Key", "type": "secret", "category": "LLM Brain"},

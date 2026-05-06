@@ -11,6 +11,15 @@ from typing import Any, Iterable
 from .models import Candle, Decision, Quote, utc_now
 
 
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
@@ -39,6 +48,8 @@ class Database:
                     yahoo_symbol text,
                     kite_symbol text,
                     upstox_instrument_key text,
+                    nubra_symbol text,
+                    nubra_ref_id integer,
                     sector text,
                     base_price real not null default 100,
                     enabled integer not null default 1
@@ -158,6 +169,8 @@ class Database:
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
+            self._ensure_column(conn, "universe", "nubra_symbol", "text")
+            self._ensure_column(conn, "universe", "nubra_ref_id", "integer")
             self._ensure_column(conn, "decisions", "strategy", "text not null default 'unknown'")
             self._ensure_column(conn, "decisions", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "orders", "strategy", "text not null default 'unknown'")
@@ -175,16 +188,18 @@ class Database:
         if not csv_path.exists():
             raise FileNotFoundError(f"Universe CSV not found: {csv_path}")
         with csv_path.open("r", newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
+            rows = [self._normalize_universe_row(row) for row in csv.DictReader(handle)]
         symbols = [row["symbol"] for row in rows]
         with self.connect() as conn:
             conn.executemany(
                 """
                 insert into universe (
                     symbol, name, exchange, yahoo_symbol, kite_symbol, upstox_instrument_key,
+                    nubra_symbol, nubra_ref_id,
                     sector, base_price, enabled
                 ) values (
                     :symbol, :name, :exchange, :yahoo_symbol, :kite_symbol, :upstox_instrument_key,
+                    :nubra_symbol, :nubra_ref_id,
                     :sector, :base_price, :enabled
                 )
                 on conflict(symbol) do update set
@@ -193,6 +208,8 @@ class Database:
                     yahoo_symbol = excluded.yahoo_symbol,
                     kite_symbol = excluded.kite_symbol,
                     upstox_instrument_key = excluded.upstox_instrument_key,
+                    nubra_symbol = excluded.nubra_symbol,
+                    nubra_ref_id = excluded.nubra_ref_id,
                     sector = excluded.sector,
                     base_price = excluded.base_price,
                     enabled = excluded.enabled
@@ -202,6 +219,23 @@ class Database:
             if symbols:
                 placeholders = ",".join("?" for _ in symbols)
                 conn.execute(f"update universe set enabled = 0 where symbol not in ({placeholders})", symbols)
+
+    def _normalize_universe_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(row.get("symbol", "")).strip()
+        exchange = str(row.get("exchange") or "NSE").strip() or "NSE"
+        return {
+            "symbol": symbol,
+            "name": row.get("name") or symbol,
+            "exchange": exchange,
+            "yahoo_symbol": row.get("yahoo_symbol") or (f"{symbol}.NS" if exchange == "NSE" else ""),
+            "kite_symbol": row.get("kite_symbol") or f"{exchange}:{symbol}",
+            "upstox_instrument_key": row.get("upstox_instrument_key") or "",
+            "nubra_symbol": row.get("nubra_symbol") or symbol,
+            "nubra_ref_id": _optional_int(row.get("nubra_ref_id")),
+            "sector": row.get("sector") or "",
+            "base_price": row.get("base_price") or 100,
+            "enabled": row.get("enabled") if row.get("enabled") not in (None, "") else 1,
+        }
 
     def upsert_candles(self, candles_by_symbol: dict[str, list[Candle]]) -> None:
         rows = [candle.to_dict() for candles in candles_by_symbol.values() for candle in candles]

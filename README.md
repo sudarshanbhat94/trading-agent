@@ -113,7 +113,7 @@ GLOBAL_RISK_WEIGHT=0.10
 
 ## Live Indian Market Data
 
-For exact live Indian equity prices, use an exchange-authorized broker/data API. The app includes Upstox and Kite market-data adapters.
+For exact live Indian equity prices, use an exchange-authorized broker/data API. The app includes Upstox, Kite, and Nubra market-data adapters.
 
 ### Upstox Market Data
 
@@ -130,6 +130,31 @@ YAHOO_CANDLE_RANGE=5d
 ```
 
 The universe file includes `upstox_instrument_key` values like `NSE_EQ|INE002A01018`. For all stocks, regenerate `data/universe.csv` from Upstox's instrument master and keep that column accurate.
+
+### Nubra Market Data
+
+Nubra works well for testing market watch because its REST API exposes current price and historical time-series endpoints. First get a Nubra `session_token` through the Nubra login flow, then save the token and device id:
+
+```bash
+MARKET_DATA_PROVIDER=nubra
+NUBRA_API_BASE_URL=https://uatapi.nubra.io
+NUBRA_SESSION_TOKEN=your_session_token
+NUBRA_DEVICE_ID=your_device_id
+NUBRA_PRICE_SCALE=100
+NUBRA_CANDLE_INTERVAL=15m
+NUBRA_CANDLE_LOOKBACK_DAYS=5
+NUBRA_CANDLE_SYMBOLS_PER_CYCLE=100
+```
+
+To quickly test market watch before starting OpenTrade:
+
+```bash
+export NUBRA_SESSION_TOKEN=...
+export NUBRA_DEVICE_ID=...
+python scripts/test_nubra_market_watch.py RELIANCE TCS INFY
+```
+
+For production market data, change `NUBRA_API_BASE_URL` from `https://uatapi.nubra.io` to your approved Nubra production base URL. Keep `NUBRA_CANDLE_SYMBOLS_PER_CYCLE` conservative for large universes because historical candles are heavier than LTP quotes.
 
 ### Kite Market Data
 
@@ -255,7 +280,7 @@ The app builds an MCP-style JSON tool context internally for every LLM decision.
 The bundled `data/universe.csv` starts with a Nifty-style sample list. For all NSE equities, replace or regenerate that file from your broker's instrument master and keep these columns:
 
 ```csv
-symbol,name,exchange,yahoo_symbol,kite_symbol,upstox_instrument_key,sector,base_price,enabled
+symbol,name,exchange,yahoo_symbol,kite_symbol,upstox_instrument_key,nubra_symbol,nubra_ref_id,sector,base_price,enabled
 ```
 
 To generate an Upstox-backed universe:

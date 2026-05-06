@@ -404,6 +404,186 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         )
 
 
+class NubraMarketDataProvider(MarketDataProvider):
+    source_name = "nubra"
+
+    def __init__(self, settings: Settings) -> None:
+        self.base_url = settings.nubra_api_base_url
+        self.session_token = settings.nubra_session_token
+        self.device_id = settings.nubra_device_id
+        self.price_scale = settings.nubra_price_scale or 100
+        self.interval = settings.nubra_candle_interval
+        self.lookback_days = settings.nubra_candle_lookback_days
+        self.candle_symbols_per_cycle = settings.nubra_candle_symbols_per_cycle
+        self.source_name = "nubra-uat" if "uat" in self.base_url.lower() else "nubra-live"
+        if not self.session_token or not self.device_id:
+            raise MarketDataError("Nubra provider needs NUBRA_SESSION_TOKEN and NUBRA_DEVICE_ID")
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        quotes: dict[str, Quote] = {}
+        semaphore = asyncio.Semaphore(10)
+        async with httpx.AsyncClient(timeout=10, headers=self._headers(), follow_redirects=True) as client:
+            async def fetch(row: dict[str, Any]) -> Quote | None:
+                async with semaphore:
+                    return await self._current_price(client, row)
+
+            results = await asyncio.gather(*(fetch(row) for row in universe), return_exceptions=True)
+        for item in results:
+            if isinstance(item, Quote):
+                quotes[item.symbol] = item
+        return quotes
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        if self.candle_symbols_per_cycle <= 0:
+            return {}
+        selected = universe[: self.candle_symbols_per_cycle]
+        output: dict[str, list[Candle]] = {}
+        by_exchange: dict[str, list[dict[str, Any]]] = {}
+        for row in selected:
+            by_exchange.setdefault(str(row.get("exchange") or "NSE"), []).append(row)
+
+        async with httpx.AsyncClient(timeout=20, headers=self._headers(), follow_redirects=True) as client:
+            tasks = []
+            for exchange, rows in by_exchange.items():
+                for index in range(0, len(rows), 40):
+                    tasks.append(self._candles_for_chunk(client, exchange, rows[index : index + 40]))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in results:
+            if isinstance(item, dict):
+                output.update(item)
+        return output
+
+    async def _current_price(self, client: httpx.AsyncClient, row: dict[str, Any]) -> Quote | None:
+        symbol = self._nubra_symbol(row)
+        params = {}
+        exchange = str(row.get("exchange") or "NSE").upper()
+        if exchange == "BSE":
+            params["exchange"] = "BSE"
+        try:
+            response = await client.get(f"{self.base_url}/optionchains/{quote(symbol, safe='')}/price", params=params)
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            return None
+        price = self._scaled(data.get("price"))
+        if price is None:
+            return None
+        return Quote(
+            symbol=row["symbol"],
+            price=price,
+            source=self.source_name,
+            asof=utc_now(),
+            open=None,
+            high=None,
+            low=None,
+            close=self._scaled(data.get("prev_close")),
+            volume=None,
+        )
+
+    async def _candles_for_chunk(
+        self,
+        client: httpx.AsyncClient,
+        exchange: str,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, list[Candle]]:
+        if not rows:
+            return {}
+        now = datetime.now(timezone.utc)
+        payload = {
+            "query": [
+                {
+                    "exchange": exchange,
+                    "type": "STOCK",
+                    "values": [self._nubra_symbol(row) for row in rows],
+                    "fields": ["open", "high", "low", "close", "cumulative_volume"],
+                    "startDate": (now - timedelta(days=self.lookback_days)).isoformat().replace("+00:00", "Z"),
+                    "endDate": now.isoformat().replace("+00:00", "Z"),
+                    "interval": self.interval,
+                    "intraDay": False,
+                    "realTime": False,
+                }
+            ]
+        }
+        try:
+            response = await client.post(f"{self.base_url}/charts/timeseries", json=payload)
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            return {}
+        by_nubra = {self._nubra_symbol(row): row["symbol"] for row in rows}
+        output: dict[str, list[Candle]] = {}
+        for result in data.get("result", []):
+            for value_item in result.get("values", []):
+                if not isinstance(value_item, dict):
+                    continue
+                for nubra_symbol, series in value_item.items():
+                    symbol = by_nubra.get(nubra_symbol)
+                    if symbol and isinstance(series, dict):
+                        output[symbol] = self._parse_candle_series(symbol, series)
+        return output
+
+    def _parse_candle_series(self, symbol: str, series: dict[str, Any]) -> list[Candle]:
+        by_ts: dict[int, dict[str, float]] = {}
+        for field in ("open", "high", "low", "close", "cumulative_volume"):
+            for point in series.get(field, []) or []:
+                ts = self._point_ts(point)
+                raw_value = self._point_value(point)
+                if ts is None or raw_value is None:
+                    continue
+                value = raw_value if field == "cumulative_volume" else self._scaled(raw_value)
+                if value is None:
+                    continue
+                by_ts.setdefault(ts, {})[field] = value
+        candles: list[Candle] = []
+        for ts, values in sorted(by_ts.items()):
+            if not all(key in values for key in ("open", "high", "low", "close")):
+                continue
+            candles.append(
+                Candle(
+                    symbol=symbol,
+                    ts=datetime.fromtimestamp(ts / 1_000_000_000, timezone.utc).isoformat(),
+                    open=float(values["open"]),
+                    high=float(values["high"]),
+                    low=float(values["low"]),
+                    close=float(values["close"]),
+                    volume=float(values.get("cumulative_volume", 0)),
+                    source=self.source_name,
+                )
+            )
+        return candles[-96:]
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-device-id": self.device_id,
+            "Authorization": f"Bearer {self.session_token}",
+        }
+
+    def _nubra_symbol(self, row: dict[str, Any]) -> str:
+        return str(row.get("nubra_symbol") or row["symbol"]).strip()
+
+    def _scaled(self, value: Any) -> float | None:
+        try:
+            return round(float(value) / float(self.price_scale), 4)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    def _point_ts(self, point: dict[str, Any]) -> int | None:
+        value = point.get("ts", point.get("timestamp"))
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _point_value(self, point: dict[str, Any]) -> float | None:
+        value = point.get("v", point.get("value"))
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+
 def build_market_data_provider(settings: Settings) -> MarketDataProvider:
     provider = settings.market_data_provider
     if provider == "simulated":
@@ -414,4 +594,6 @@ def build_market_data_provider(settings: Settings) -> MarketDataProvider:
         return KiteMarketDataProvider(settings)
     if provider == "upstox":
         return UpstoxMarketDataProvider(settings)
+    if provider == "nubra":
+        return NubraMarketDataProvider(settings)
     raise MarketDataError(f"Unsupported MARKET_DATA_PROVIDER={provider!r}")
