@@ -349,33 +349,57 @@ function collectSettings() {
   return values;
 }
 
+function networkErrorMessage(error, action = "request") {
+  const reason = error && error.message ? error.message : "network unavailable";
+  return `Backend ${action} failed: ${reason}. Check that trading-agent is running and port 8000 is reachable.`;
+}
+
+function showBackendError(message, detail = {}) {
+  const error = byId("error-box");
+  error.hidden = false;
+  error.textContent = message;
+  showDetails("Backend Connection", { message, ...detail });
+}
+
 async function saveSettings() {
   const status = byId("settings-status");
   status.textContent = "saving";
   status.className = "settings-inline-status";
-  const response = await fetch("/api/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings: collectSettings() }),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    status.textContent = payload.detail || "save failed";
+  try {
+    const response = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: collectSettings() }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      status.textContent = payload.detail || "save failed";
+      status.className = "settings-inline-status negative";
+      return;
+    }
+    renderSettings(payload.config);
+    render(payload.status);
+    const savedAt = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    byId("settings-status").textContent = `saved at ${savedAt}`;
+    byId("settings-status").className = "settings-inline-status positive";
+  } catch (error) {
+    const message = networkErrorMessage(error, "settings save");
+    status.textContent = "save failed: backend unreachable";
     status.className = "settings-inline-status negative";
-    return;
+    showBackendError(message, { action: "save settings" });
   }
-  renderSettings(payload.config);
-  render(payload.status);
-  const savedAt = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  byId("settings-status").textContent = `saved at ${savedAt}`;
-  byId("settings-status").className = "settings-inline-status positive";
 }
 
 async function resetDemo() {
   byId("settings-status").textContent = "resetting demo account";
-  const response = await fetch("/api/control/reset-demo", { method: "POST" });
-  render(await response.json());
-  byId("settings-status").textContent = "demo account reset";
+  try {
+    const response = await fetch("/api/control/reset-demo", { method: "POST" });
+    render(await response.json());
+    byId("settings-status").textContent = "demo account reset";
+  } catch (error) {
+    byId("settings-status").textContent = "reset failed: backend unreachable";
+    showBackendError(networkErrorMessage(error, "demo reset"), { action: "reset demo" });
+  }
 }
 
 async function testLlm() {
@@ -421,23 +445,32 @@ async function testLlm() {
 async function login() {
   const username = byId("admin-username").value;
   const password = byId("admin-password").value;
-  const response = await fetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    byId("settings-status").textContent = payload.detail || "login failed";
-    return;
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      byId("settings-status").textContent = payload.detail || "login failed";
+      return;
+    }
+    byId("admin-password").value = "";
+    renderAuth(payload);
+  } catch (error) {
+    byId("settings-status").textContent = "login failed: backend unreachable";
+    showBackendError(networkErrorMessage(error, "login"), { action: "login" });
   }
-  byId("admin-password").value = "";
-  renderAuth(payload);
 }
 
 async function logout() {
-  await fetch("/api/auth/logout", { method: "POST" });
-  renderAuth({ admin: false, admin_configured: state.auth.admin_configured });
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+    renderAuth({ admin: false, admin_configured: state.auth.admin_configured });
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "logout"), { action: "logout" });
+  }
 }
 
 function renderStrategies(rows) {
@@ -1124,16 +1157,20 @@ function drawEquity(rows) {
 }
 
 async function postControl(path) {
-  const response = await fetch(path, { method: "POST" });
-  const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-  if (!response.ok) {
-    showDetails("Control Error", payload);
-    const error = byId("error-box");
-    error.hidden = false;
-    error.textContent = payload.detail || `Control request failed: ${response.status}`;
-    return;
+  try {
+    const response = await fetch(path, { method: "POST" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      showDetails("Control Error", payload);
+      const error = byId("error-box");
+      error.hidden = false;
+      error.textContent = payload.detail || `Control request failed: ${response.status}`;
+      return;
+    }
+    render(payload);
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "control request"), { path });
   }
-  render(payload);
 }
 
 function bindControls() {
@@ -1216,16 +1253,20 @@ function setView(view) {
 }
 
 async function loadInitial() {
-  const [statusResponse, configResponse, authResponse, accountResponse] = await Promise.all([
-    fetch("/api/status"),
-    fetch("/api/config"),
-    fetch("/api/auth/me"),
-    fetch("/api/account"),
-  ]);
-  render(await statusResponse.json());
-  renderSettings(await configResponse.json());
-  renderAuth(await authResponse.json());
-  renderAccount(await accountResponse.json());
+  try {
+    const [statusResponse, configResponse, authResponse, accountResponse] = await Promise.all([
+      fetch("/api/status"),
+      fetch("/api/config"),
+      fetch("/api/auth/me"),
+      fetch("/api/account"),
+    ]);
+    render(await statusResponse.json());
+    renderSettings(await configResponse.json());
+    renderAuth(await authResponse.json());
+    renderAccount(await accountResponse.json());
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "initial load"), { action: "initial load" });
+  }
 }
 
 function openSocket() {
