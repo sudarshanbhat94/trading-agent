@@ -13,6 +13,56 @@ from .config import Settings
 from .models import Decision, utc_now
 
 
+HEALTH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "ok": {"type": "boolean"},
+        "service": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["ok", "service", "note"],
+}
+
+
+DECISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+        "confidence": {"type": "number"},
+        "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "strategy": {"type": "string"},
+        "reason": {"type": "string"},
+        "checklist": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "risk_checks": {"type": "array", "items": {"type": "string"}},
+        "invalidators": {"type": "array", "items": {"type": "string"}},
+        "signal_plan": {"type": "object"},
+        "confluence_score": {"type": "object"},
+        "trade_plan": {"type": "object"},
+        "monitoring_checklist": {"type": "array", "items": {"type": "string"}},
+        "data_gaps": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "action",
+        "confidence",
+        "risk",
+        "strategy",
+        "reason",
+        "checklist",
+        "evidence",
+        "risk_checks",
+        "invalidators",
+        "signal_plan",
+        "confluence_score",
+        "trade_plan",
+        "monitoring_checklist",
+        "data_gaps",
+    ],
+}
+
+
 class LLMResponseError(RuntimeError):
     def __init__(self, message: str, raw: Any | None = None) -> None:
         super().__init__(message)
@@ -91,7 +141,7 @@ class LLMBrain:
                 },
             ],
         }
-        self._apply_model_options(payload)
+        self._apply_model_options(payload, schema=HEALTH_SCHEMA)
         started = perf_counter()
         url = self.chat_completions_url()
         timeout_seconds = min(max(self.settings.llm_timeout_seconds, 5), 180)
@@ -110,6 +160,7 @@ class LLMBrain:
                         f'If it clearly indicates failure, return {{"ok":false,"service":"{self._service_name()}","note":"not ready"}}. '
                         "Return one JSON object only. Do not explain."
                     ),
+                    schema=HEALTH_SCHEMA,
                 )
                 try:
                     parsed = self._parse_json_content(repaired)
@@ -198,7 +249,7 @@ class LLMBrain:
             "model": self.model,
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
-            "max_tokens": max(350, min(self.settings.llm_max_tokens, 700)),
+            "max_tokens": self._decision_max_tokens(),
             "messages": [
                 {
                     "role": "system",
@@ -229,11 +280,11 @@ class LLMBrain:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(_llm_prompt_context(context), separators=(",", ":")),
+                    "content": json.dumps(self._prompt_context(context), separators=(",", ":")),
                 },
             ],
         }
-        self._apply_model_options(payload)
+        self._apply_model_options(payload, schema=DECISION_SCHEMA)
         try:
             parsed = await self._chat_json(payload)
             requested_action = str(parsed.get("action", "HOLD")).upper()
@@ -289,7 +340,7 @@ class LLMBrain:
             "model": self.model,
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
-            "max_tokens": max(256, min(self.settings.llm_max_tokens, 900)),
+            "max_tokens": self._review_max_tokens(),
             "messages": [
                 {
                     "role": "system",
@@ -310,7 +361,7 @@ class LLMBrain:
                     "content": json.dumps(
                         {
                             "candidate_decision": candidate_decision,
-                            "context": _llm_prompt_context(context),
+                            "context": self._prompt_context(context),
                             "constraints": {
                                 "dry_money_only": True,
                                 "long_only": True,
@@ -321,7 +372,7 @@ class LLMBrain:
                 },
             ],
         }
-        self._apply_model_options(payload)
+        self._apply_model_options(payload, schema=DECISION_SCHEMA)
         try:
             parsed = await self._chat_json(payload)
             action = str(parsed.get("action", decision.action)).upper()
@@ -390,7 +441,7 @@ class LLMBrain:
             repaired = ""
             synthetic = _synthetic_safe_decision_from_text(content, exc)
             try:
-                repaired = await self._repair_json(content)
+                repaired = await self._repair_json(content, schema=DECISION_SCHEMA)
             except Exception as repair_call_exc:
                 synthetic["_json_repaired"] = False
                 synthetic["_json_synthetic"] = True
@@ -418,7 +469,12 @@ class LLMBrain:
             raise LLMResponseError("LLM JSON response was not an object", raw=parsed)
         return parsed
 
-    async def _repair_json(self, content: Any, system_content: str | None = None) -> str:
+    async def _repair_json(
+        self,
+        content: Any,
+        system_content: str | None = None,
+        schema: dict[str, Any] | None = None,
+    ) -> str:
         if system_content is None:
             system_content = (
                 "Convert the analyst text into one strict JSON object only. Do not explain. "
@@ -443,11 +499,11 @@ class LLMBrain:
                 },
             ],
         }
-        self._apply_model_options(payload)
+        self._apply_model_options(payload, schema=schema)
         return await self._chat_content(payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
 
     async def _chat_content(self, payload: dict[str, Any], timeout_seconds: int) -> str:
-        if self._should_stream():
+        if self._should_stream(payload):
             return await asyncio.wait_for(
                 self._chat_content_stream(payload, timeout_seconds),
                 timeout=timeout_seconds,
@@ -464,6 +520,18 @@ class LLMBrain:
                 self.chat_completions_url(),
                 json=payload,
             )
+            if (
+                self.settings.llm_provider == "nvidia"
+                and response.status_code in {400, 422}
+                and "guided_json" in payload
+            ):
+                fallback_payload = dict(payload)
+                fallback_payload.pop("guided_json", None)
+                fallback_payload["response_format"] = {"type": "json_object"}
+                response = await client.post(
+                    self.chat_completions_url(),
+                    json=fallback_payload,
+                )
             response.raise_for_status()
         data = response.json()
         choices = data.get("choices") or []
@@ -518,20 +586,48 @@ class LLMBrain:
             raw={"reasoning_tail": reasoning[-1000:] if reasoning else ""},
         )
 
-    def _apply_model_options(self, payload: dict[str, Any]) -> None:
+    def _prompt_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        if self.settings.llm_provider == "nvidia":
+            return _llm_prompt_context(context, profile="rich")
+        return _llm_prompt_context(context, profile="compact")
+
+    def _decision_max_tokens(self) -> int:
         if self.settings.llm_provider == "groq":
-            self._apply_groq_options(payload)
+            return max(350, min(self.settings.llm_max_tokens, 700))
+        if self.settings.llm_provider == "nvidia":
+            return max(700, min(self.settings.llm_max_tokens, 2500))
+        return max(350, min(self.settings.llm_max_tokens, 1400))
+
+    def _review_max_tokens(self) -> int:
+        if self.settings.llm_provider == "groq":
+            return max(256, min(self.settings.llm_max_tokens, 700))
+        if self.settings.llm_provider == "nvidia":
+            return max(700, min(self.settings.llm_max_tokens, 1800))
+        return max(256, min(self.settings.llm_max_tokens, 1200))
+
+    def _apply_model_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
+        if self.settings.llm_provider == "groq":
+            self._apply_groq_options(payload, schema=schema)
             return
+        if self.settings.llm_provider == "nvidia":
+            self._apply_nvidia_options(payload, schema=schema)
+            return
+        if schema is not None:
+            payload["response_format"] = {"type": "json_object"}
+
+    def _apply_nvidia_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
         if self._supports_nvidia_thinking():
             chat_template_kwargs: dict[str, Any] = {"thinking": self.settings.llm_thinking_enabled}
             effort = self.settings.llm_reasoning_effort
             if self.settings.llm_thinking_enabled and effort in {"high", "max"} and self._is_nvidia_deepseek_v4():
                 chat_template_kwargs["reasoning_effort"] = effort
             payload["chat_template_kwargs"] = chat_template_kwargs
+        if schema is not None:
+            payload["guided_json"] = schema
         if not self.settings.llm_thinking_enabled:
             return
 
-    def _apply_groq_options(self, payload: dict[str, Any]) -> None:
+    def _apply_groq_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
         if "max_tokens" in payload:
             payload["max_completion_tokens"] = payload.pop("max_tokens")
         payload["response_format"] = {"type": "json_object"}
@@ -576,7 +672,9 @@ class LLMBrain:
             return False
         return self.model.startswith(("deepseek-ai/deepseek-v4", "moonshotai/kimi-"))
 
-    def _should_stream(self) -> bool:
+    def _should_stream(self, payload: dict[str, Any] | None = None) -> bool:
+        if payload and ("guided_json" in payload or "response_format" in payload):
+            return False
         return self.settings.llm_provider == "nvidia" and self.settings.llm_streaming_enabled
 
     def _service_name(self) -> str:
@@ -770,15 +868,16 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _llm_prompt_context(context: dict[str, Any]) -> dict[str, Any]:
+def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> dict[str, Any]:
     full = context.get("full_spectrum_analysis") or {}
     institutional = context.get("institutional_context") or {}
     institutional_flow = full.get("institutional_flow") or {}
     symbol = str(context.get("symbol") or "").upper()
     recent_candles = context.get("recent_candles") or []
+    rich = profile == "rich"
     return _prune_empty(
         {
-            "tool_protocol": "opentrade-compact-decision-context-v1",
+            "tool_protocol": "opentrade-rich-decision-context-v1" if rich else "opentrade-compact-decision-context-v1",
             "symbol": context.get("symbol"),
             "company": context.get("company"),
             "sector": context.get("sector"),
@@ -787,26 +886,30 @@ def _llm_prompt_context(context: dict[str, Any]) -> dict[str, Any]:
             "position": context.get("position"),
             "technical_math": context.get("technical_math"),
             "candlestick_analysis": context.get("candlestick_analysis"),
-            "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or []),
+            "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or [], limit=12 if rich else 6),
             "best_strategy": context.get("best_strategy"),
             "sentiment": context.get("sentiment"),
-            "global_market_context": _compact_global_context(context.get("global_market_context") or {}),
+            "global_market_context": _compact_global_context(context.get("global_market_context") or {}, limit=16 if rich else 8),
             "institutional_context": {
                 "enabled": institutional.get("enabled"),
                 "source_quality": institutional.get("source_quality"),
                 "market_bias": institutional.get("market_bias"),
                 "symbol_flags": (institutional.get("symbol_flags") or {}).get(symbol, {}),
+                "data_gaps": _limit_list(institutional.get("data_gaps"), 16 if rich else 8),
             },
             "full_spectrum_analysis": {
+                "requirement_coverage": _coverage_summary(full.get("requirement_coverage") or {}) if rich else None,
                 "data_quality": full.get("data_quality"),
                 "primary_filters": full.get("primary_filters"),
                 "signal_plan": full.get("signal_plan"),
                 "trend_context": full.get("trend_context"),
                 "key_levels": full.get("key_levels"),
+                "fibonacci": full.get("fibonacci") if rich else None,
                 "indicator_suite": _compact_indicators(full.get("indicator_suite") or {}),
                 "candlestick_v2": full.get("candlestick_v2"),
                 "chart_patterns": full.get("chart_patterns"),
                 "institutional_structure": full.get("institutional_structure"),
+                "news_sentiment": full.get("news_sentiment") if rich else None,
                 "institutional_flow": {
                     "available": institutional_flow.get("available"),
                     "source_quality": institutional_flow.get("source_quality"),
@@ -814,30 +917,30 @@ def _llm_prompt_context(context: dict[str, Any]) -> dict[str, Any]:
                     "market_bias": institutional_flow.get("market_bias"),
                     "option_chain_proxy": institutional_flow.get("option_chain_proxy"),
                     "delivery_proxy": institutional_flow.get("delivery_proxy"),
-                    "data_gaps": _limit_list(institutional_flow.get("data_gaps"), 8),
+                    "data_gaps": _limit_list(institutional_flow.get("data_gaps"), 16 if rich else 8),
                 },
                 "confluence_score": full.get("confluence_score"),
                 "risk_overrides": full.get("risk_overrides"),
                 "trade_plan": full.get("trade_plan"),
-                "monitoring_checklist": _limit_list(full.get("monitoring_checklist"), 8),
-                "data_gaps": _limit_list(full.get("data_gaps"), 10),
+                "monitoring_checklist": _limit_list(full.get("monitoring_checklist"), 12 if rich else 8),
+                "data_gaps": _limit_list(full.get("data_gaps"), 16 if rich else 10),
             },
             "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
             "universe_scan": context.get("universe_scan"),
-            "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-8:]],
+            "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-(24 if rich else 8):]],
         }
     )
 
 
-def _compact_global_context(global_context: dict[str, Any]) -> dict[str, Any]:
+def _compact_global_context(global_context: dict[str, Any], limit: int = 8) -> dict[str, Any]:
     return _prune_empty(
         {
             "enabled": global_context.get("enabled"),
             "risk_score": global_context.get("risk_score"),
             "confidence": global_context.get("confidence"),
             "regime": global_context.get("regime"),
-            "signals": _limit_list(global_context.get("signals"), 8),
-            "data_gaps": _limit_list(global_context.get("data_gaps"), 8),
+            "signals": _limit_list(global_context.get("signals"), limit),
+            "data_gaps": _limit_list(global_context.get("data_gaps"), limit),
         }
     )
 
@@ -874,10 +977,10 @@ def _compact_risk_limits(risk_limits: dict[str, Any]) -> dict[str, Any]:
     return {key: risk_limits.get(key) for key in keep if key in risk_limits}
 
 
-def _top_strategy_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _top_strategy_signals(signals: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
     ranked = sorted(signals, key=lambda item: abs(float(item.get("score", 0.0) or 0.0)), reverse=True)
     output: list[dict[str, Any]] = []
-    for item in ranked[:6]:
+    for item in ranked[:limit]:
         output.append(
             _prune_empty(
                 {
@@ -885,11 +988,26 @@ def _top_strategy_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]
                     "score": item.get("score"),
                     "direction": item.get("direction"),
                     "confidence": item.get("confidence"),
-                    "notes": _limit_list(item.get("notes"), 4),
+                    "notes": _limit_list(item.get("notes"), 6 if limit > 6 else 4),
                 }
             )
         )
     return output
+
+
+def _coverage_summary(coverage: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in coverage.items():
+        if isinstance(value, dict):
+            summary[key] = _prune_empty(
+                {
+                    "status": value.get("status"),
+                    "gap": value.get("gap"),
+                }
+            )
+        else:
+            summary[key] = value
+    return summary
 
 
 def _compact_candle(candle: Any) -> dict[str, Any]:

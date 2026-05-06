@@ -266,7 +266,7 @@ LLM_MAX_SYMBOLS_PER_CYCLE=1
 LLM_TIMEOUT_SECONDS=20
 ```
 
-`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. NVIDIA models use streaming by default when `LLM_STREAMING_ENABLED=true`. For NVIDIA DeepSeek V4 and Kimi models, the app sends `chat_template_kwargs.thinking=false` by default. Turn `LLM_THINKING_ENABLED` on only when you can tolerate slower responses; then `LLM_REASONING_EFFORT=high` or `max` can be used for supported DeepSeek V4 models. If a large model is slow to respond, increase `LLM_TIMEOUT_SECONDS` or switch to a faster NVIDIA model.
+`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. NVIDIA models use schema-guided JSON decisions with a richer context packet and non-streamed structured calls; Groq uses a compact JSON-mode packet to stay under rate/payload limits. For NVIDIA DeepSeek V4 and Kimi models, the app sends `chat_template_kwargs.thinking=false` by default. Turn `LLM_THINKING_ENABLED` on only when you can tolerate slower responses; then `LLM_REASONING_EFFORT=high` or `max` can be used for supported DeepSeek V4 models. If a large model is slow to respond, increase `LLM_TIMEOUT_SECONDS` or switch to a faster model.
 
 For NVIDIA Kimi K2.6, set:
 
