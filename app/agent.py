@@ -164,14 +164,25 @@ class TradingAgentService:
             institutional_context,
         )
         action_counts: dict[str, int] = {}
+        decision_paths: dict[str, int] = {}
+        llm_error_count = 0
         for decision in decisions:
             action_counts[decision.action] = action_counts.get(decision.action, 0) + 1
+            audit = _json_object(decision.details_json)
+            path = str(audit.get("decision_path") or "unknown")
+            decision_paths[path] = decision_paths.get(path, 0) + 1
+            if audit.get("llm_error"):
+                llm_error_count += 1
         self._log(
             "INFO",
             "strategy",
             "decisions_created",
             f"Created {len(decisions)} decisions",
-            {"action_counts": action_counts},
+            {
+                "action_counts": action_counts,
+                "decision_paths": decision_paths,
+                "llm_error_count": llm_error_count,
+            },
         )
         self._cycle_phase = "risk_and_execution"
         risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions)

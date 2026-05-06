@@ -98,17 +98,14 @@ class StrategyEngine:
                 "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
                 "priority_score": round(self._scan_priority_score(item), 4),
                 "selection_basis": (
-                    "non-HOLD candidates ranked first, then absolute combined score, strategy confidence, "
-                    "technical score, and sentiment"
+                    "LLM primary reviews open positions first for exit risk, then non-HOLD candidates, "
+                    "then highest-ranked symbols by combined score, strategy confidence, technical score, and sentiment"
                 ),
             }
 
         llm_candidate_symbols: set[str] = set()
         if llm_primary:
-            llm_pool = [item for item in ranked if item["action"] != "HOLD"] or ranked
-            llm_candidate_symbols = {
-                item["symbol"] for item in llm_pool[: self.settings.llm_max_symbols_per_cycle]
-            }
+            llm_candidate_symbols = self._llm_candidate_symbols(ranked)
 
         for item in scan_items:
             context = item["context"]
@@ -241,6 +238,45 @@ class StrategyEngine:
         action_boost, combined, strategy, technical, sentiment = self._scan_priority(item)
         return (action_boost * 0.5) + (combined * 0.28) + (strategy * 0.12) + (technical * 0.06) + (sentiment * 0.04)
 
+    def _llm_candidate_symbols(self, ranked: list[dict[str, Any]]) -> set[str]:
+        limit = max(int(self.settings.llm_max_symbols_per_cycle or 1), 1)
+        selected: list[str] = []
+
+        def add(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                symbol = item["symbol"]
+                if symbol in selected:
+                    continue
+                selected.append(symbol)
+                if len(selected) >= limit:
+                    return
+
+        open_positions = sorted(
+            [item for item in ranked if self._has_open_position(item)],
+            key=self._exit_review_priority,
+            reverse=True,
+        )
+        action_candidates = [item for item in ranked if item["action"] != "HOLD"]
+        add(open_positions)
+        if len(selected) < limit:
+            add(action_candidates)
+        if len(selected) < limit:
+            add(ranked)
+        return set(selected)
+
+    def _has_open_position(self, item: dict[str, Any]) -> bool:
+        return float((item.get("context", {}).get("position") or {}).get("qty") or 0) > 0
+
+    def _exit_review_priority(self, item: dict[str, Any]) -> tuple[float, float, float]:
+        position = item.get("context", {}).get("position") or {}
+        quote = item.get("quote")
+        avg_price = float(position.get("avg_price") or 0)
+        current_price = float(getattr(quote, "price", 0.0) or 0.0)
+        pnl_pct = ((current_price - avg_price) / avg_price) if avg_price > 0 else 0.0
+        negative_score = max(-float(item.get("combined") or 0.0), 0.0)
+        stress = max(-pnl_pct, 0.0) + max(pnl_pct - self.settings.take_profit_pct * 0.7, 0.0)
+        return (negative_score + stress, abs(pnl_pct), abs(float(item.get("combined") or 0.0)))
+
     def _decision_details_json(
         self,
         context: dict[str, Any],
@@ -273,6 +309,20 @@ class StrategyEngine:
             "llm_deep_review_selected": llm_selected,
             "llm_candidate_limit": risk_limits.get("llm_candidate_limit"),
         }
+        if has_position:
+            position = context.get("position") or {}
+            avg_price = float(position.get("avg_price") or 0)
+            current_price = float((context.get("quote") or {}).get("price") or 0)
+            pnl_pct = ((current_price - avg_price) / avg_price) if avg_price > 0 else 0.0
+            gates["position_exit_management"] = {
+                "avg_price": round(avg_price, 4),
+                "current_price": round(current_price, 4),
+                "unrealized_pnl_pct": round(pnl_pct, 4),
+                "hard_stop_price": round(avg_price * (1 - self.settings.stop_loss_pct), 4) if avg_price else None,
+                "take_profit_price": round(avg_price * (1 + self.settings.take_profit_pct), 4) if avg_price else None,
+                "deterministic_exit": "SELL if combined <= -0.38, hard stop hit, or take-profit hit",
+                "llm_exit_review": "primary mode reviews open positions before new entries when within LLM Symbols/Cycle limit",
+            }
         return _json_dumps(
             {
                 "audit_version": 1,
@@ -281,7 +331,7 @@ class StrategyEngine:
                 "action_reason": action_reason,
                 "action_policy": {
                     "BUY": "combined score >= 0.35, full-spectrum confluence >= 14/26, no existing long position, and no no-new-longs override",
-                    "SELL": "combined score <= -0.38 and an existing long position is open",
+                    "SELL": "existing long position plus combined score <= -0.38, LLM exit call, hard stop, take-profit, or invalidation trigger",
                     "HOLD": "score/action gates did not permit a trade",
                 },
                 "score_breakdown": score_breakdown,

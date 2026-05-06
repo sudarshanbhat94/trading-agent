@@ -12,6 +12,12 @@ from .config import Settings
 from .models import Decision, utc_now
 
 
+class LLMResponseError(RuntimeError):
+    def __init__(self, message: str, raw: Any | None = None) -> None:
+        super().__init__(message)
+        self.raw = raw
+
+
 class LLMBrain:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -167,6 +173,9 @@ class LLMBrain:
                         "invalidators must list the exact conditions that would make the action wrong. "
                         "Respect confluence_score: below 10 means HOLD, 10-13 watchlist only, 14+ may trade, "
                         "18+ high conviction, 22+ maximum conviction. "
+                        "If an existing long position is supplied, act as the exit/risk manager: SELL only when "
+                        "the hard stop, target/invalidation, technical breakdown, news shock, or risk-off regime "
+                        "justifies exit; otherwise HOLD with a concrete updated exit plan. "
                         "Be conservative: HOLD unless the candle structure, math, sentiment, global regime, and risk all support action. "
                         "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
                     ),
@@ -218,7 +227,11 @@ class LLMBrain:
                 ),
             )
         except Exception as exc:
-            return self._hold_from_context(context, f"LLM primary failed safely: {exc.__class__.__name__}")
+            return self._hold_from_context(
+                context,
+                f"LLM primary failed safely: {_error_summary(exc)}",
+                exc,
+            )
 
     async def review(self, decision: Decision, context: dict[str, Any]) -> Decision:
         if not self.enabled:
@@ -238,6 +251,8 @@ class LLMBrain:
                         "Return strict JSON only with action BUY, SELL, or HOLD; "
                         "confidence from 0 to 1; reason; evidence; risk_checks; invalidators; "
                         "signal_plan; confluence_score; trade_plan; monitoring_checklist; and data_gaps. "
+                        "For existing long positions, review whether to continue holding or exit based on stop, "
+                        "target, invalidation, technical breakdown, news, and market regime. "
                         "Never recommend leverage, options, futures, or short-selling."
                     ),
                 },
@@ -293,7 +308,7 @@ class LLMBrain:
                 price=decision.price,
                 technical_score=decision.technical_score,
                 sentiment_score=decision.sentiment_score,
-                reason=f"LLM review failed; held safely: {exc.__class__.__name__}",
+                reason=f"LLM review failed; held safely: {_error_summary(exc)}",
                 asof=decision.asof,
                 strategy=decision.strategy,
                 details_json=_json_dumps(
@@ -301,17 +316,29 @@ class LLMBrain:
                         "audit_version": 1,
                         "decision_path": "llm_review_failed",
                         "final_action": "HOLD",
-                        "action_reason": f"LLM review failed safely: {exc.__class__.__name__}",
+                        "action_reason": f"LLM review failed safely: {_error_summary(exc)}",
                         "candidate_decision": _decision_summary(decision),
                         "context": _compact_context(context),
                         "error_type": exc.__class__.__name__,
+                        "error": str(exc)[:500],
+                        "raw_response": getattr(exc, "raw", None),
                     }
                 ),
             )
 
     async def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         content = await self._chat_content(payload, self.settings.llm_timeout_seconds)
-        return json.loads(self._strip_json(content))
+        stripped = self._strip_json(content)
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise LLMResponseError(
+                f"LLM returned non-JSON content: {str(exc)}",
+                raw=str(content)[:2000],
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise LLMResponseError("LLM JSON response was not an object", raw=parsed)
+        return parsed
 
     async def _chat_content(self, payload: dict[str, Any], timeout_seconds: int) -> str:
         if self._should_stream():
@@ -332,13 +359,26 @@ class LLMBrain:
                 json=payload,
             )
             response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        data = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMResponseError("LLM response had no choices", raw=data)
+        message = choices[0].get("message") or {}
+        content = _first_text(
+            message.get("content"),
+            message.get("reasoning_content"),
+            message.get("reasoning"),
+        )
+        if content:
+            return content
+        raise LLMResponseError("LLM response had no text content", raw=message)
 
     async def _chat_content_stream(self, payload: dict[str, Any], timeout_seconds: int) -> str:
         stream_payload = dict(payload)
         stream_payload["stream"] = True
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
             async with client.stream("POST", self.chat_completions_url(), json=stream_payload) as response:
                 if response.status_code >= 400:
@@ -355,10 +395,22 @@ class LLMBrain:
                     if not choices:
                         continue
                     delta = choices[0].get("delta") or {}
-                    content = delta.get("content")
+                    content = _first_text(delta.get("content"))
                     if content:
                         chunks.append(content)
-        return "".join(chunks)
+                    reasoning = _first_text(delta.get("reasoning_content"), delta.get("reasoning"))
+                    if reasoning:
+                        reasoning_chunks.append(reasoning)
+        content = "".join(chunks).strip()
+        if content:
+            return content
+        reasoning = "".join(reasoning_chunks).strip()
+        if reasoning and "{" in reasoning and "}" in reasoning:
+            return reasoning
+        raise LLMResponseError(
+            "LLM stream finished without final content",
+            raw={"reasoning_tail": reasoning[-1000:] if reasoning else ""},
+        )
 
     def _apply_model_options(self, payload: dict[str, Any]) -> None:
         if self._supports_nvidia_thinking():
@@ -386,8 +438,10 @@ class LLMBrain:
             return max(512, min(self.settings.llm_max_tokens, 4096))
         return 128
 
-    def _strip_json(self, content: str) -> str:
-        text = content.strip()
+    def _strip_json(self, content: Any) -> str:
+        text = "" if content is None else str(content).strip()
+        if not text:
+            raise LLMResponseError("LLM returned empty content")
         if text.startswith("```"):
             text = text.strip("`")
             if text.lower().startswith("json"):
@@ -398,7 +452,14 @@ class LLMBrain:
             return text[start : end + 1]
         return text
 
-    def _hold_from_context(self, context: dict[str, Any], reason: str) -> Decision:
+    def _hold_from_context(self, context: dict[str, Any], reason: str, exc: Exception | None = None) -> Decision:
+        error_details = None
+        if exc is not None:
+            error_details = {
+                "error_type": exc.__class__.__name__,
+                "error": str(exc)[:500],
+                "raw_response": getattr(exc, "raw", None),
+            }
         return Decision(
             symbol=context["symbol"],
             action="HOLD",
@@ -417,6 +478,7 @@ class LLMBrain:
                     "action_reason": reason,
                     "score_breakdown": deterministic_score_breakdown(context),
                     "context": _compact_context(context),
+                    "llm_error": error_details,
                 }
             ),
         )
@@ -615,3 +677,29 @@ def _decision_summary(decision: Decision) -> dict[str, Any]:
 
 def _json_dumps(value: dict[str, Any]) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str):
+                        parts.append(text)
+            joined = "".join(parts).strip()
+            if joined:
+                return joined
+    return ""
+
+
+def _error_summary(exc: Exception) -> str:
+    message = str(exc).strip()
+    if message:
+        return f"{exc.__class__.__name__}: {message[:240]}"
+    return exc.__class__.__name__
