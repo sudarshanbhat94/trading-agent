@@ -212,9 +212,15 @@ function renderAuth(auth) {
 
 function applyAccessMode() {
   const admin = Boolean(state.auth && state.auth.admin);
-  for (const id of ["start-btn", "stop-btn", "run-btn", "save-settings-btn", "reset-demo-btn", "test-llm-btn", "refresh-logs-btn"]) {
+  for (const id of ["start-btn", "stop-btn", "run-btn", "save-settings-btn", "reset-demo-btn", "test-llm-btn", "refresh-logs-btn", "analyze-btn"]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
+  }
+  const analyzeInput = byId("analyze-symbol");
+  if (analyzeInput) analyzeInput.disabled = !admin;
+  const analyzeStatus = byId("analyze-status");
+  if (analyzeStatus && !state.latest?.manual_analysis_active) {
+    analyzeStatus.textContent = admin ? "ready" : "admin login required";
   }
   const form = byId("settings-form");
   if (form) {
@@ -1245,10 +1251,80 @@ async function postControl(path) {
   }
 }
 
+async function analyzeSymbol(event) {
+  event.preventDefault();
+  const input = byId("analyze-symbol");
+  const symbol = input.value.trim().toUpperCase();
+  if (!symbol) {
+    byId("analyze-status").textContent = "enter a symbol";
+    return;
+  }
+  byId("analyze-status").textContent = `analyzing ${symbol}...`;
+  byId("analyze-result").innerHTML = `<div class="empty-state">Running live quote, candles, strategy, sentiment, risk gates, and LLM if enabled...</div>`;
+  try {
+    const response = await fetch("/api/analyze-symbol", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      byId("analyze-status").textContent = "analysis failed";
+      byId("analyze-result").innerHTML = `<div class="error-box">${escapeHtml(payload.detail || "Analysis failed")}</div>`;
+      return;
+    }
+    byId("analyze-status").textContent = `${payload.symbol} analyzed`;
+    renderManualAnalysis(payload);
+    fetchLogs();
+  } catch (error) {
+    byId("analyze-status").textContent = "network error";
+    byId("analyze-result").innerHTML = `<div class="error-box">${escapeHtml(networkErrorMessage(error, "symbol analysis"))}</div>`;
+  }
+}
+
+function renderManualAnalysis(payload) {
+  const decision = payload.decision || {};
+  const action = String(decision.action || "HOLD").toLowerCase();
+  const details = decision.details || parseJsonObject(decision.details_json);
+  const path = details.decision_path || decision.strategy || "-";
+  byId("analyze-result").innerHTML = `
+    <div class="manual-analysis-card">
+      <div>
+        <span>Symbol</span>
+        <strong>${escapeHtml(payload.symbol || decision.symbol || "-")}</strong>
+        <small>${escapeHtml(payload.provider || "-")} · ${payload.candle_count || 0} candles</small>
+      </div>
+      <div>
+        <span>Decision</span>
+        <strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong>
+        <small>${escapeHtml(path)}</small>
+      </div>
+      <div>
+        <span>Confidence</span>
+        <strong>${fmtNumber(Number(decision.confidence || 0) * 100)}%</strong>
+        <small>policy gates still apply</small>
+      </div>
+      <div>
+        <span>Price</span>
+        <strong>${fmtMoney(decision.price || payload.quote?.price)}</strong>
+        <small>${escapeHtml(fmtTime(payload.quote?.asof))}</small>
+      </div>
+    </div>
+    <section class="audit-section manual-summary">
+      <h4>Reason</h4>
+      <p>${escapeHtml(decision.reason || "-")}</p>
+      ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
+      <button id="manual-detail-btn" type="button">Open Full Analysis</button>
+    </section>
+  `;
+  byId("manual-detail-btn").addEventListener("click", () => showDetails("Manual Analysis", decision));
+}
+
 function bindControls() {
   byId("start-btn").addEventListener("click", () => postControl("/api/control/start"));
   byId("stop-btn").addEventListener("click", () => postControl("/api/control/stop"));
   byId("run-btn").addEventListener("click", () => postControl("/api/control/run-once"));
+  byId("analyze-form").addEventListener("submit", analyzeSymbol);
   byId("save-settings-btn").addEventListener("click", saveSettings);
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);

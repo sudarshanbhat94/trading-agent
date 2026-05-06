@@ -19,6 +19,7 @@
         <nav class="nav">
           <button class="nav-item active" type="button" data-view="overview"><span>Overview</span><strong id="nav-overview-badge">live</strong></button>
           <button class="nav-item" type="button" data-view="suggestions"><span>Suggestions</span><strong id="nav-suggestions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="analyze"><span>Analyze</span><strong>symbol</strong></button>
           <button class="nav-item" type="button" data-view="positions"><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="decisions"><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="orders"><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
@@ -232,6 +233,24 @@
                 <span id="suggestion-count">0 candidates</span>
               </div>
               <div class="suggestion-grid" id="suggestions-body"></div>
+            </div>
+          </section>
+
+          <section id="analyze-view" class="view">
+            <div class="panel full">
+              <div class="panel-head">
+                <h3>Symbol Analysis</h3>
+                <span id="analyze-status">admin login required</span>
+              </div>
+              <div class="symbol-lab">
+                <form id="analyze-form" class="symbol-search">
+                  <input id="analyze-symbol" type="text" placeholder="Enter NSE symbol, e.g. SUZLON" autocomplete="off" />
+                  <button id="analyze-btn" class="primary" type="submit">Analyze</button>
+                </form>
+                <div id="analyze-result" class="analyze-result">
+                  <div class="empty-state">Search a symbol to run market data, candles, strategy, sentiment, risk checks, and LLM review if enabled.</div>
+                </div>
+              </div>
             </div>
           </section>
 

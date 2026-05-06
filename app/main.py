@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -17,7 +18,7 @@ from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_brain import LLMBrain
 from .macro import GlobalIntelligenceService
-from .market_data import build_market_data_provider
+from .market_data import YahooMarketDataProvider, build_market_data_provider
 from .order_router import build_order_router
 from .paper_broker import PaperBroker
 from .sentiment import SentimentService
@@ -160,6 +161,78 @@ async def order_detail(order_id: int) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return row
+
+
+@app.post("/api/analyze-symbol")
+async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings)
+    symbol = _normalize_symbol(str(payload.get("symbol", "")))
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Enter a valid NSE symbol, for example SUZLON or INFY.")
+
+    row = db.universe_row(symbol) or _manual_universe_row(symbol)
+    provider_error: str | None = None
+    try:
+        quotes = await market_data.get_quotes([row])
+        candles = await market_data.get_candles([row])
+    except Exception as exc:
+        provider_error = f"{exc.__class__.__name__}: {exc}"
+        quotes = {}
+        candles = {}
+
+    if symbol not in quotes:
+        try:
+            fallback = YahooMarketDataProvider(settings)
+            quotes = await fallback.get_quotes([row])
+            candles = await fallback.get_candles([row])
+        except Exception as exc:
+            provider_error = f"{provider_error or ''} yahoo_fallback={exc.__class__.__name__}: {exc}".strip()
+
+    quote = quotes.get(symbol)
+    if quote is None:
+        raise HTTPException(status_code=404, detail=f"No market quote found for {symbol}. Check the symbol spelling.")
+
+    db.upsert_quotes(quotes)
+    db.upsert_candles(candles)
+    macro_context = db.get_state("macro_context", {})
+    institutional_context = db.get_state("institutional_context", {})
+    decisions = await strategy.evaluate(
+        [row],
+        quotes,
+        broker.positions_by_symbol(),
+        candles,
+        macro_context,
+        institutional_context,
+    )
+    if not decisions:
+        raise HTTPException(status_code=500, detail=f"Analysis produced no decision for {symbol}.")
+
+    decision = decisions[0]
+    decision_payload = decision.to_dict()
+    decision_payload["details"] = _json_object(decision.details_json)
+    db.insert_agent_log(
+        "INFO",
+        "manual_analysis",
+        "symbol_analyzed",
+        f"Manual analysis completed for {symbol}",
+        {
+            "symbol": symbol,
+            "action": decision.action,
+            "confidence": decision.confidence,
+            "provider_error": provider_error,
+        },
+    )
+    return {
+        "ok": True,
+        "manual_only": True,
+        "message": "Analysis completed. This does not place an order; autonomous cycles still handle trading.",
+        "symbol": symbol,
+        "quote": quote.to_dict(),
+        "candle_count": len(candles.get(symbol, [])),
+        "provider": quote.source,
+        "provider_error": provider_error,
+        "decision": decision_payload,
+    }
 
 
 @app.get("/api/account")
@@ -319,3 +392,36 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         hub.disconnect(websocket)
+
+
+def _normalize_symbol(value: str) -> str:
+    symbol = value.strip().upper()
+    symbol = symbol.removeprefix("NSE:")
+    symbol = symbol.removesuffix(".NS")
+    if not re.fullmatch(r"[A-Z0-9&-]{1,24}", symbol):
+        return ""
+    return symbol
+
+
+def _manual_universe_row(symbol: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "name": symbol,
+        "exchange": "NSE",
+        "yahoo_symbol": f"{symbol}.NS",
+        "kite_symbol": f"NSE:{symbol}",
+        "upstox_instrument_key": "",
+        "nubra_symbol": symbol,
+        "nubra_ref_id": None,
+        "sector": "manual",
+        "base_price": 100,
+        "enabled": 1,
+    }
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}") if isinstance(value, str) else value
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}

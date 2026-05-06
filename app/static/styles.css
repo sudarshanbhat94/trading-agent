@@ -681,6 +681,66 @@ td.reason {
   text-align: center;
 }
 
+.symbol-lab {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+}
+
+.symbol-search {
+  display: grid;
+  grid-template-columns: minmax(220px, 420px) 120px;
+  gap: 10px;
+  align-items: center;
+}
+
+.symbol-search input {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 12px;
+  text-transform: uppercase;
+}
+
+.analyze-result {
+  display: grid;
+  gap: 12px;
+}
+
+.manual-analysis-card {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.manual-analysis-card > div {
+  display: grid;
+  gap: 6px;
+  min-height: 96px;
+  align-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 14px;
+}
+
+.manual-analysis-card span,
+.manual-analysis-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manual-analysis-card strong {
+  color: #0b406e;
+  font-size: 18px;
+}
+
+.manual-summary {
+  margin: 0;
+}
+
 .account-body {
   padding: 16px;
 }
@@ -1041,6 +1101,7 @@ td.reason {
   .ops-grid,
   .overview-grid,
   .suggestion-grid,
+  .manual-analysis-card,
   .settings-form {
     grid-template-columns: 1fr 1fr;
   }
@@ -1066,6 +1127,8 @@ td.reason {
   .ops-grid,
   .overview-grid,
   .suggestion-grid,
+  .symbol-search,
+  .manual-analysis-card,
   .settings-form,
   .account-metrics {
     grid-template-columns: 1fr;

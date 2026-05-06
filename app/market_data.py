@@ -356,6 +356,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             raise MarketDataError("Upstox provider needs UPSTOX_ACCESS_TOKEN")
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        universe = [row for row in universe if row.get("upstox_instrument_key")]
         quotes: dict[str, Quote] = {}
         async with httpx.AsyncClient(timeout=10, headers=self._headers()) as client:
             for i in range(0, len(universe), 100):
@@ -388,6 +389,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         return quotes
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        universe = [row for row in universe if row.get("upstox_instrument_key")]
         output: dict[str, list[Candle]] = {}
         to_date = date.today()
         from_date = to_date - timedelta(days=self.lookback_days)
