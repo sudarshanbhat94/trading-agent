@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import re
 from time import perf_counter
 from typing import Any
 
@@ -106,17 +107,20 @@ class LLMBrain:
                     parsed = self._parse_json_content(repaired)
                     json_repaired = True
                 except LLMResponseError as repair_exc:
-                    reason = f"Model responded, but not with parseable JSON. repair_failed={repair_exc}"
-                    if str(parse_exc):
-                        reason = f"{reason}; original_parse={parse_exc}"
                     return {
-                        "ok": False,
+                        "ok": True,
                         "provider": self.settings.llm_provider,
                         "model": self.model,
                         "url": url,
                         "latency_ms": latency_ms,
                         "timeout_seconds": timeout_seconds,
-                        "reason": reason,
+                        "json_strict": False,
+                        "json_repaired": False,
+                        "warning": (
+                            "Model endpoint responded, but did not obey strict JSON even after repair. "
+                            "Trading decisions will use safe HOLD fallback on malformed output."
+                        ),
+                        "reason": f"non_strict_json; original_parse={parse_exc}; repair_failed={repair_exc}",
                         "raw_reply": str(content)[:1000],
                         "repair_reply": str(repaired)[:1000],
                     }
@@ -368,17 +372,24 @@ class LLMBrain:
         try:
             return self._parse_json_content(content)
         except LLMResponseError as exc:
-            repaired = await self._repair_json(content)
+            repaired = ""
+            synthetic = _synthetic_safe_decision_from_text(content, exc)
+            try:
+                repaired = await self._repair_json(content)
+            except Exception as repair_call_exc:
+                synthetic["_json_repaired"] = False
+                synthetic["_json_synthetic"] = True
+                synthetic["_json_repair_error"] = _error_summary(repair_call_exc)
+                synthetic["_json_repair_raw"] = ""
+                return synthetic
             try:
                 parsed = self._parse_json_content(repaired)
             except LLMResponseError as repair_exc:
-                raise LLMResponseError(
-                    f"{exc}; JSON repair also failed: {repair_exc}",
-                    raw={
-                        "original": str(content)[:3000],
-                        "repair": str(repaired)[:3000],
-                    },
-                ) from repair_exc
+                synthetic["_json_repaired"] = False
+                synthetic["_json_synthetic"] = True
+                synthetic["_json_repair_error"] = str(repair_exc)[:500]
+                synthetic["_json_repair_raw"] = str(repaired)[:1000]
+                return synthetic
             parsed["_json_repaired"] = True
             return parsed
 
@@ -605,6 +616,8 @@ class LLMBrain:
                     "monitoring_checklist": parsed.get("monitoring_checklist", []),
                     "data_gaps": parsed.get("data_gaps", []),
                     "json_repaired": bool(parsed.get("_json_repaired")),
+                    "json_synthetic": bool(parsed.get("_json_synthetic")),
+                    "json_repair_error": parsed.get("_json_repair_error"),
                 },
                 "risk_gates": {
                     "dry_run": True,
@@ -657,6 +670,8 @@ class LLMBrain:
                     "monitoring_checklist": parsed.get("monitoring_checklist", []),
                     "data_gaps": parsed.get("data_gaps", []),
                     "json_repaired": bool(parsed.get("_json_repaired")),
+                    "json_synthetic": bool(parsed.get("_json_synthetic")),
+                    "json_repair_error": parsed.get("_json_repair_error"),
                 },
                 "context": _compact_context(context),
             }
@@ -787,3 +802,34 @@ def _error_summary(exc: Exception) -> str:
     if message:
         return f"{exc.__class__.__name__}: {message[:240]}"
     return exc.__class__.__name__
+
+
+def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str, Any]:
+    text = str(content or "")
+    explicit = re.search(r"""["']?action["']?\s*[:=]\s*["']?(BUY|SELL|HOLD)["']?""", text, re.IGNORECASE)
+    action = explicit.group(1).upper() if explicit else "HOLD"
+    if action in {"BUY", "SELL"}:
+        action = "HOLD"
+    snippet = " ".join(text.split())[:500]
+    return {
+        "action": action,
+        "confidence": 0.0,
+        "risk": "HIGH",
+        "strategy": "",
+        "reason": (
+            "LLM returned malformed or non-JSON output, so OpenTrade used the safe fallback HOLD. "
+            f"parse_error={str(exc)[:180]}"
+        ),
+        "checklist": ["strict_json_failed", "json_repair_attempted", "safe_hold_fallback_used"],
+        "evidence": [
+            "The model endpoint responded, but the response was not a valid decision JSON object.",
+            f"raw_excerpt={snippet}",
+        ],
+        "risk_checks": ["No BUY/SELL is allowed from malformed free-form model text."],
+        "invalidators": ["A future cycle returns valid strict JSON with passed policy gates."],
+        "signal_plan": {"action": "HOLD", "source": "synthetic_safe_fallback"},
+        "confluence_score": {},
+        "trade_plan": {},
+        "monitoring_checklist": ["Retry next cycle with fresh market data and strict JSON repair."],
+        "data_gaps": ["llm_response_not_strict_json"],
+    }
