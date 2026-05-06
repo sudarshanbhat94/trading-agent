@@ -72,6 +72,10 @@ class Settings:
     nubra_candle_interval: str = os.getenv("NUBRA_CANDLE_INTERVAL", "15m")
     nubra_candle_lookback_days: int = _int("NUBRA_CANDLE_LOOKBACK_DAYS", 5)
     nubra_candle_symbols_per_cycle: int = _int("NUBRA_CANDLE_SYMBOLS_PER_CYCLE", 100)
+    nubra_option_chain_endpoint: str = os.getenv("NUBRA_OPTION_CHAIN_ENDPOINT", "")
+    nubra_market_depth_endpoint: str = os.getenv("NUBRA_MARKET_DEPTH_ENDPOINT", "")
+    nubra_delivery_endpoint: str = os.getenv("NUBRA_DELIVERY_ENDPOINT", "")
+    nubra_oi_endpoint: str = os.getenv("NUBRA_OI_ENDPOINT", "")
 
     enable_news_sentiment: bool = _bool("ENABLE_NEWS_SENTIMENT", True)
     enable_llm_sentiment: bool = _bool("ENABLE_LLM_SENTIMENT", True)
@@ -82,6 +86,11 @@ class Settings:
     global_cache_seconds: int = _int("GLOBAL_CACHE_SECONDS", 900)
     global_news_lookback_days: int = _int("GLOBAL_NEWS_LOOKBACK_DAYS", 2)
     global_risk_weight: float = _float("GLOBAL_RISK_WEIGHT", 0.1)
+    enable_free_institutional_feeds: bool = _bool("ENABLE_FREE_INSTITUTIONAL_FEEDS", True)
+    free_feed_cache_seconds: int = _int("FREE_FEED_CACHE_SECONDS", 1800)
+    free_feed_timeout_seconds: int = _int("FREE_FEED_TIMEOUT_SECONDS", 10)
+    free_feed_option_chain_symbols: str = os.getenv("FREE_FEED_OPTION_CHAIN_SYMBOLS", "NIFTY,BANKNIFTY")
+    free_feed_corporate_lookback_days: int = _int("FREE_FEED_CORPORATE_LOOKBACK_DAYS", 2)
 
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").strip().lower()
     live_trading_enabled: bool = _bool("LIVE_TRADING_ENABLED", False)
@@ -150,6 +159,10 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "nubra_candle_interval", "label": "Nubra Candle Interval", "type": "select", "category": "Market Data", "choices": ["1m", "5m", "15m", "30m", "1h", "1d"]},
     {"key": "nubra_candle_lookback_days", "label": "Nubra Candle Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
     {"key": "nubra_candle_symbols_per_cycle", "label": "Nubra Candle Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 10},
+    {"key": "nubra_option_chain_endpoint", "label": "Nubra Option Chain Path", "type": "text", "category": "Institutional Feeds"},
+    {"key": "nubra_market_depth_endpoint", "label": "Nubra Depth Path", "type": "text", "category": "Institutional Feeds"},
+    {"key": "nubra_delivery_endpoint", "label": "Nubra Delivery Path", "type": "text", "category": "Institutional Feeds"},
+    {"key": "nubra_oi_endpoint", "label": "Nubra OI Path", "type": "text", "category": "Institutional Feeds"},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["offline", "nvidia", "openai_compatible"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "nvidia_api_key", "label": "NVIDIA API Key", "type": "secret", "category": "LLM Brain"},
@@ -183,6 +196,11 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "global_cache_seconds", "label": "Global Cache Seconds", "type": "number", "category": "Global Intelligence", "min": 60, "step": 60},
     {"key": "global_news_lookback_days", "label": "Global News Days", "type": "number", "category": "Global Intelligence", "min": 1, "step": 1},
     {"key": "global_risk_weight", "label": "Global Risk Weight", "type": "number", "category": "Global Intelligence", "min": 0, "max": 0.3, "step": 0.01},
+    {"key": "enable_free_institutional_feeds", "label": "Free Institutional Feeds", "type": "boolean", "category": "Institutional Feeds"},
+    {"key": "free_feed_cache_seconds", "label": "Free Feed Cache Seconds", "type": "number", "category": "Institutional Feeds", "min": 300, "step": 300},
+    {"key": "free_feed_timeout_seconds", "label": "Free Feed Timeout Seconds", "type": "number", "category": "Institutional Feeds", "min": 3, "step": 1},
+    {"key": "free_feed_option_chain_symbols", "label": "Free Option Chain Symbols", "type": "text", "category": "Institutional Feeds"},
+    {"key": "free_feed_corporate_lookback_days", "label": "Corporate Lookback Days", "type": "number", "category": "Institutional Feeds", "min": 1, "step": 1},
     {"key": "live_trading_enabled", "label": "Live Trading Enabled", "type": "boolean", "category": "Live Protection"},
     {"key": "live_trading_confirm", "label": "Live Confirm Phrase", "type": "secret", "category": "Live Protection"},
     {"key": "upstox_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["D", "I"]},

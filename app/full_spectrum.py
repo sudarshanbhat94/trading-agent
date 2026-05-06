@@ -15,6 +15,7 @@ def full_spectrum_analysis(
     strategy_signals: list[dict[str, Any]],
     sentiment_score: float,
     global_context: dict[str, Any],
+    institutional_context: dict[str, Any],
     risk_limits: dict[str, Any],
 ) -> dict[str, Any]:
     closes = [candle.close for candle in candles]
@@ -29,6 +30,7 @@ def full_spectrum_analysis(
     candlestick_v2 = _candlestick_v2(candles, candle_tools)
     chart_patterns = _chart_patterns(candles)
     institutional = _institutional_structure(candles, quote.price, key_levels)
+    flow = _institutional_flow(row, institutional_context)
     filters = _primary_filters(quote.price, indicators, key_levels, volumes, technical)
     confluence = _confluence_score(
         trend_context=trend_context,
@@ -36,19 +38,20 @@ def full_spectrum_analysis(
         chart_patterns=chart_patterns,
         candlestick_v2=candlestick_v2,
         institutional=institutional,
+        institutional_flow=flow,
         sentiment_score=sentiment_score,
         global_context=global_context,
         strategy_signals=strategy_signals,
         filters=filters,
     )
-    risk_overrides = _risk_overrides(global_context, indicators, confluence, data_quality, risk_limits)
+    risk_overrides = _risk_overrides(global_context, flow, indicators, confluence, data_quality, risk_limits)
     trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits)
     signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides)
     monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides)
     return {
         "version": "opentrade-full-spectrum-v2",
         "symbol": row.get("symbol"),
-        "requirement_coverage": _requirement_coverage(data_quality, global_context),
+        "requirement_coverage": _requirement_coverage(data_quality, global_context, institutional_context),
         "data_quality": data_quality,
         "primary_filters": filters,
         "signal_plan": signal_plan,
@@ -59,13 +62,13 @@ def full_spectrum_analysis(
         "candlestick_v2": candlestick_v2,
         "chart_patterns": chart_patterns,
         "institutional_structure": institutional,
-        "institutional_flow": _institutional_flow_placeholder(),
+        "institutional_flow": flow,
         "news_sentiment": _news_sentiment(sentiment_score),
         "confluence_score": confluence,
         "risk_overrides": risk_overrides,
         "trade_plan": trade_plan,
         "monitoring_checklist": monitoring,
-        "data_gaps": _data_gaps(candles, row),
+        "data_gaps": _data_gaps(candles, row, institutional_context),
     }
 
 
@@ -330,6 +333,7 @@ def _confluence_score(
     chart_patterns: dict[str, Any],
     candlestick_v2: dict[str, Any],
     institutional: dict[str, Any],
+    institutional_flow: dict[str, Any],
     sentiment_score: float,
     global_context: dict[str, Any],
     strategy_signals: list[dict[str, Any]],
@@ -345,6 +349,9 @@ def _confluence_score(
     if global_context.get("regime") == "risk-on":
         macro += 1
     if filters.get("within_25pct_period_high"):
+        macro += 1
+    flow_bias = institutional_flow.get("market_bias", {}).get("score")
+    if flow_bias is not None and flow_bias > 0.1:
         macro += 1
 
     technical = 0
@@ -379,6 +386,8 @@ def _confluence_score(
         news += 1
     if filters.get("volume_ratio_min_1_5"):
         news += 1
+    if institutional_flow.get("symbol_flags", {}).get("official_announcements_count", 0) > 0:
+        news += 1
 
     macro = min(macro, 8)
     technical = min(technical, 10)
@@ -401,6 +410,7 @@ def _confluence_score(
 
 def _risk_overrides(
     global_context: dict[str, Any],
+    institutional_flow: dict[str, Any],
     indicators: dict[str, Any],
     confluence: dict[str, Any],
     data_quality: dict[str, Any],
@@ -416,11 +426,19 @@ def _risk_overrides(
         flags.append("confluence_below_watch_threshold")
     if data_quality.get("coverage") in {"thin", "limited"}:
         flags.append("limited_history_use_smaller_size")
-    no_new_longs = "global_risk_off_no_new_longs" in flags
+    symbol_flags = institutional_flow.get("symbol_flags", {})
+    if symbol_flags.get("asm"):
+        flags.append("asm_surveillance_no_new_longs")
+    if symbol_flags.get("gsm"):
+        flags.append("gsm_surveillance_no_new_longs")
+    if symbol_flags.get("fno_ban"):
+        flags.append("fo_ban_no_new_longs")
+    no_new_longs = any(flag.endswith("_no_new_longs") for flag in flags)
     return {
         "flags": flags,
         "absolute_no_trade_conditions_checked": [
             "global risk-off proxy",
+            "ASM/GSM/F&O-ban public feed flags",
             "ATR swing suitability",
             "minimum confluence",
             "data-quality coverage",
@@ -514,14 +532,29 @@ def _monitoring_checklist(
     return checklist
 
 
-def _institutional_flow_placeholder() -> dict[str, Any]:
+def _institutional_flow(row: dict[str, Any], institutional_context: dict[str, Any]) -> dict[str, Any]:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    feeds = institutional_context.get("feeds") or {}
+    flags = (institutional_context.get("symbol_flags") or {}).get(symbol, {})
     return {
-        "available": False,
-        "fii_dii_flow": None,
-        "pcr_oi": None,
-        "delivery_percentage": None,
-        "block_bulk_deals": None,
-        "note": "requires licensed/exchange datasets; not fabricated from price candles",
+        "available": bool(institutional_context.get("enabled")),
+        "source_quality": institutional_context.get("source_quality", "unavailable"),
+        "symbol": symbol,
+        "symbol_flags": flags,
+        "market_bias": institutional_context.get("market_bias", {"score": 0.0, "rationale": []}),
+        "fii_dii_flow": feeds.get("fii_dii"),
+        "pcr_oi": feeds.get("option_pcr"),
+        "india_indices": feeds.get("indices"),
+        "asm_gsm": {
+            "asm": flags.get("asm"),
+            "gsm": flags.get("gsm"),
+        },
+        "fno_ban": flags.get("fno_ban"),
+        "official_announcements": flags.get("recent_announcements", []),
+        "bulk_deals": flags.get("recent_bulk_deals", []),
+        "delivery_percentage": flags.get("delivery_pct"),
+        "nubra_placeholders": institutional_context.get("nubra_placeholders", {}),
+        "note": "free feeds are best-effort/EOD/public unless a Nubra or licensed adapter is configured",
     }
 
 
@@ -551,18 +584,28 @@ def _conviction_size_multiplier(confluence_total: int, flags: list[str]) -> floa
     return 0.0
 
 
-def _data_gaps(candles: list[Candle], row: dict[str, Any]) -> list[str]:
+def _data_gaps(candles: list[Candle], row: dict[str, Any], institutional_context: dict[str, Any]) -> list[str]:
     gaps = []
     if len(candles) < 200:
         gaps.append("200-period trend and true 52-week context unavailable")
+    feeds = institutional_context.get("feeds") or {}
+    if not institutional_context.get("enabled"):
+        gaps.append("free institutional feeds disabled")
+    if feeds.get("fo_ban", {}).get("status") != "ok":
+        gaps.append("F&O ban adapter not connected or returned no usable feed")
+    if feeds.get("delivery_pct", {}).get("status") != "ok":
+        gaps.append("delivery percentage requires NSE/BSE bhavcopy integration")
+    if feeds.get("option_pcr", {}).get("status") not in {"ok", "partial_or_empty"}:
+        gaps.append("PCR/OI requires option-chain data")
+    if feeds.get("fii_dii", {}).get("status") != "ok":
+        gaps.append("FII/DII market flow feed unavailable this cycle")
+    if feeds.get("asm", {}).get("status") != "ok" or feeds.get("gsm", {}).get("status") != "ok":
+        gaps.append("ASM/GSM surveillance feed unavailable this cycle")
     gaps.extend(
         [
-            "Official NSE/BSE circulars, filings, corporate actions, ASM/GSM, and F&O ban feeds not connected",
-            "Paid Reuters/Bloomberg/Dow Jones/broker research feeds not connected",
             "FII/DII stock-level flows require licensed/exchange datasets",
-            "PCR/OI requires derivatives chain data",
-            "delivery percentage requires NSE/BSE bhavcopy integration",
-            "GIFT Nifty, India VIX, FedWatch, DXY detail, yield curve, and macro calendar require dedicated feeds",
+            "GIFT Nifty, FedWatch, DXY detail, yield curve, and macro calendar require dedicated feeds",
+            "Paid Reuters/Bloomberg/Dow Jones/broker research feeds not connected",
             "Social sentiment, analyst consensus, consensus targets, and promoter pledge feeds not connected",
             "Volume profile HVN/LVN/POC requires tick or volume-at-price data",
             "Full NSE/BSE coverage depends on the enabled symbols in universe.csv",
@@ -573,9 +616,15 @@ def _data_gaps(candles: list[Candle], row: dict[str, Any]) -> list[str]:
     return gaps
 
 
-def _requirement_coverage(data_quality: dict[str, Any], global_context: dict[str, Any]) -> dict[str, Any]:
+def _requirement_coverage(
+    data_quality: dict[str, Any],
+    global_context: dict[str, Any],
+    institutional_context: dict[str, Any],
+) -> dict[str, Any]:
     history = data_quality.get("coverage", "thin")
     macro_enabled = bool(global_context.get("enabled"))
+    feeds = institutional_context.get("feeds") or {}
+    institutional_enabled = bool(institutional_context.get("enabled"))
     return {
         "phase_1_global_macro": {
             "status": "partial" if macro_enabled else "not_enabled",
@@ -583,9 +632,9 @@ def _requirement_coverage(data_quality: dict[str, Any], global_context: dict[str
             "gap": "GIFT Nifty, India VIX, FedWatch, yield curve, and macro-calendar feeds still need dedicated adapters",
         },
         "phase_2_news_sentiment": {
-            "status": "partial",
-            "implemented": "rotating Google News RSS, source weighting, recency decay, event labels, optional LLM refinement",
-            "gap": "official filings/circulars, paid wires, social sentiment, analyst consensus, and corporate actions need adapters",
+            "status": "partial_with_official_free_feeds" if institutional_enabled else "partial",
+            "implemented": "rotating Google News RSS, NSE corporate announcements, source weighting, recency decay, event labels, optional LLM refinement",
+            "gap": "paid wires, BSE filing expansion, social sentiment, analyst consensus, and corporate actions depth need adapters",
         },
         "phase_3_universe_scan": {
             "status": "implemented_for_enabled_universe",
@@ -619,7 +668,7 @@ def _requirement_coverage(data_quality: dict[str, Any], global_context: dict[str
         },
         "phase_9_confluence": {
             "status": "implemented_with_neutral_gaps",
-            "implemented": "26-point confluence score and tier thresholds",
+            "implemented": "26-point confluence score and tier thresholds; free FII/DII, PCR, ASM/GSM, announcements can contribute when available",
             "gap": "missing institutional/feed-only factors are recorded as gaps instead of fabricated",
         },
         "phase_10_signal_output": {
@@ -629,13 +678,21 @@ def _requirement_coverage(data_quality: dict[str, Any], global_context: dict[str
         },
         "phase_11_risk_management": {
             "status": "implemented_for_paper_long_only",
-            "implemented": "max positions, max position/order size, hard stop, take profit, daily loss, LLM policy gates",
+            "implemented": "max positions, max position/order size, hard stop, take profit, daily loss, LLM policy gates, free ASM/GSM/F&O-ban veto hooks",
             "gap": "sector concentration, 3-stop lockout, event-calendar lockout, and live kill-switch workflow need adapters/UI",
         },
         "phase_12_intelligence_loop": {
             "status": "single_cycle_loop",
             "implemented": "continuous configurable agent cycle with snapshots and dashboard monitoring",
             "gap": "separate pre-market/opening/intraday/post-market/weekly schedules are not split yet",
+        },
+        "free_feed_status": {
+            "source_quality": institutional_context.get("source_quality", "unavailable"),
+            "fii_dii": feeds.get("fii_dii", {}).get("status"),
+            "asm": feeds.get("asm", {}).get("status"),
+            "gsm": feeds.get("gsm", {}).get("status"),
+            "option_pcr": feeds.get("option_pcr", {}).get("status"),
+            "corporate_announcements": feeds.get("corporate_announcements", {}).get("status"),
         },
     }
 

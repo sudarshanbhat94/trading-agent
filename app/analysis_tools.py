@@ -17,6 +17,7 @@ def build_symbol_tool_context(
     sentiment_score: float,
     risk_limits: dict[str, Any],
     global_context: dict[str, Any] | None = None,
+    institutional_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     closes = [candle.close for candle in candles] or [quote.price]
     technical = technical_snapshot(closes)
@@ -29,6 +30,13 @@ def build_symbol_tool_context(
         "confidence": 0.0,
         "regime": "unavailable",
     }
+    normalized_institutional_context = institutional_context or {
+        "enabled": False,
+        "source_quality": "unavailable",
+        "feeds": {},
+        "symbol_flags": {},
+        "market_bias": {"score": 0.0, "rationale": []},
+    }
     strategy_signal_dicts = [signal.to_dict() for signal in strategy_signals]
     technical_dict = technical.to_dict()
     full_spectrum = full_spectrum_analysis(
@@ -40,6 +48,7 @@ def build_symbol_tool_context(
         strategy_signals=strategy_signal_dicts,
         sentiment_score=sentiment_score,
         global_context=normalized_global_context,
+        institutional_context=normalized_institutional_context,
         risk_limits=risk_limits,
     )
     return {
@@ -56,6 +65,7 @@ def build_symbol_tool_context(
         "best_strategy": best_strategy.to_dict(),
         "sentiment": {"score": sentiment_score},
         "global_market_context": normalized_global_context,
+        "institutional_context": normalized_institutional_context,
         "full_spectrum_analysis": full_spectrum,
         "risk_limits": risk_limits,
         "recent_candles": [candle.to_dict() for candle in candles[-24:]],

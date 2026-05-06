@@ -14,6 +14,7 @@ from .agent import TradingAgentService
 from .auth import is_admin_request, login_admin, logout_admin, require_admin
 from .config import CONFIG_KEYS, CONFIG_SCHEMA, SECRET_FIELDS, Settings, public_settings, settings_from_overrides
 from .db import Database
+from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_brain import LLMBrain
 from .macro import GlobalIntelligenceService
 from .market_data import build_market_data_provider
@@ -63,6 +64,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_account = AccountService(new_settings, db)
     new_sentiment = SentimentService(new_settings, db)
     new_macro = GlobalIntelligenceService(new_settings)
+    new_institutional_feeds = FreeInstitutionalFeedsService(new_settings)
     new_llm = LLMBrain(new_settings)
     new_strategy = StrategyEngine(new_settings, new_sentiment, new_llm)
     new_agent = TradingAgentService(
@@ -71,6 +73,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         broker=new_broker,
         strategy=new_strategy,
         macro=new_macro,
+        institutional_feeds=new_institutional_feeds,
         interval_seconds=new_settings.agent_interval_seconds,
         on_update=hub.broadcast,
     )
@@ -81,6 +84,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         "account": new_account,
         "sentiment": new_sentiment,
         "macro": new_macro,
+        "institutional_feeds": new_institutional_feeds,
         "llm": new_llm,
         "strategy": new_strategy,
         "agent": new_agent,
@@ -94,6 +98,7 @@ broker = stack["broker"]
 account = stack["account"]
 sentiment = stack["sentiment"]
 macro = stack["macro"]
+institutional_feeds = stack["institutional_feeds"]
 llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
@@ -161,7 +166,7 @@ async def test_llm(request: Request) -> dict[str, Any]:
 
 @app.post("/api/config")
 async def update_config(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    global settings, market_data, order_router, broker, account, sentiment, macro, llm, strategy, agent
+    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, llm, strategy, agent
     require_admin(request, settings)
 
     incoming = payload.get("settings", payload)
@@ -194,6 +199,7 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
     account = candidate_stack["account"]
     sentiment = candidate_stack["sentiment"]
     macro = candidate_stack["macro"]
+    institutional_feeds = candidate_stack["institutional_feeds"]
     llm = candidate_stack["llm"]
     strategy = candidate_stack["strategy"]
     agent = candidate_stack["agent"]

@@ -111,6 +111,29 @@ GLOBAL_RISK_WEIGHT=0.10
 
 `GLOBAL_RISK_WEIGHT` is capped at `0.30`; keep it modest so macro conditions influence stock selection without drowning out price action.
 
+## Free Institutional Feeds
+
+OpenTrade can now enrich every decision with free/public institutional context. These feeds are best-effort and often EOD, so the audit labels them separately from live broker/vendor data.
+
+```bash
+ENABLE_FREE_INSTITUTIONAL_FEEDS=true
+FREE_FEED_CACHE_SECONDS=1800
+FREE_FEED_TIMEOUT_SECONDS=10
+FREE_FEED_OPTION_CHAIN_SYMBOLS=NIFTY,BANKNIFTY
+FREE_FEED_CORPORATE_LOOKBACK_DAYS=2
+```
+
+Currently included:
+
+- NSE FII/DII market activity.
+- NSE India VIX / index context through public index data.
+- NSE option-chain PCR/OI for configured index symbols when the public endpoint responds.
+- NSE ASM/GSM surveillance lists.
+- NSE corporate announcements for recent official filings.
+- Best-effort bulk-deal adapter.
+
+Still intentionally marked as gaps until a stable adapter/feed is connected: F&O ban, delivery percentage bhavcopy, stock-level FII/DII flow, GIFT Nifty, FedWatch/yield curve detail, social sentiment, analyst consensus, promoter pledge, and tick-level volume profile.
+
 ## Live Indian Market Data
 
 For exact live Indian equity prices, use an exchange-authorized broker/data API. The app includes Upstox, Kite, and Nubra market-data adapters.
@@ -144,6 +167,10 @@ NUBRA_PRICE_SCALE=100
 NUBRA_CANDLE_INTERVAL=15m
 NUBRA_CANDLE_LOOKBACK_DAYS=5
 NUBRA_CANDLE_SYMBOLS_PER_CYCLE=100
+NUBRA_OPTION_CHAIN_ENDPOINT=
+NUBRA_MARKET_DEPTH_ENDPOINT=
+NUBRA_DELIVERY_ENDPOINT=
+NUBRA_OI_ENDPOINT=
 ```
 
 To quickly test market watch before starting OpenTrade:
@@ -155,6 +182,8 @@ python scripts/test_nubra_market_watch.py RELIANCE TCS INFY
 ```
 
 For production market data, change `NUBRA_API_BASE_URL` from `https://uatapi.nubra.io` to your approved Nubra production base URL. Keep `NUBRA_CANDLE_SYMBOLS_PER_CYCLE` conservative for large universes because historical candles are heavier than LTP quotes.
+
+The `NUBRA_*_ENDPOINT` fields are placeholders for your account-specific Nubra option-chain, market-depth, delivery, and OI APIs. Once you get those endpoint paths from Nubra, add them in Settings and wire the adapter without changing the decision engine.
 
 ### Kite Market Data
 
@@ -249,7 +278,7 @@ Every decision now includes an `opentrade-full-spectrum-v2` audit block inspired
 - Signal plan, trade plan, entry zone, hard stop, targets, invalidation, position-sizing note, and monitoring checklist.
 - Code-level action gates: BUY requires full-spectrum confluence `>= 14/26` plus the normal score and risk gates; LLM-primary mode cannot bypass those gates.
 
-Unavailable institutional inputs are not guessed. The audit explicitly records data gaps such as FII/DII flow, PCR/OI, delivery percentage, surveillance lists, earnings calendar, and macro event calendar until those feeds are connected.
+Unavailable institutional inputs are not guessed. The audit explicitly records data gaps such as stock-level FII/DII flow, delivery percentage, earnings calendar, and macro event calendar until those feeds are connected. Free/EOD feeds are labelled as `free_public_eod_best_effort` in the audit.
 
 ## Demo And Live Order Routing
 

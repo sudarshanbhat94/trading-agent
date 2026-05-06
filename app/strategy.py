@@ -26,6 +26,7 @@ class StrategyEngine:
         positions: dict[str, dict[str, Any]],
         candles_by_symbol: dict[str, list[Candle]] | None = None,
         global_context: dict[str, Any] | None = None,
+        institutional_context: dict[str, Any] | None = None,
     ) -> list[Decision]:
         sentiment_scores = await self.sentiment.scores_for_cycle(universe)
         decisions: list[Decision] = []
@@ -66,6 +67,7 @@ class StrategyEngine:
                 sentiment_score=sentiment_score,
                 risk_limits=risk_limits,
                 global_context=global_context,
+                institutional_context=institutional_context,
             )
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
@@ -118,13 +120,16 @@ class StrategyEngine:
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
             global_risk = context.get("global_market_context", {})
+            institutional = context.get("institutional_context", {})
             confluence = context.get("full_spectrum_analysis", {}).get("confluence_score", {})
+            institutional_bias = (institutional.get("market_bias") or {}).get("score", 0.0)
             reason = (
                 f"tools technical={item['technical'].score:.2f} ({item['technical'].trend}), "
                 f"candles={candle_summary['score']:.2f} {candle_summary['patterns']}, "
                 f"best_strategy={best_strategy['name']}:{best_strategy['score']:.2f}, "
                 f"sentiment={item['sentiment_score']:.2f}, "
                 f"global={float(global_risk.get('risk_score', 0.0) or 0.0):.2f} ({global_risk.get('regime', 'unknown')}), "
+                f"free_inst={float(institutional_bias or 0.0):.2f} ({institutional.get('source_quality', 'unknown')}), "
                 f"confluence={confluence.get('total', 0)}/26 {confluence.get('tier', 'NO_SIGNAL')}, "
                 f"combined={item['combined']:.2f}, universe_rank={context['universe_scan']['rank']}/{len(scan_items)}"
             )
@@ -334,6 +339,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "strategy_signals": context.get("strategy_signals"),
         "sentiment": context.get("sentiment"),
         "global_market_context": context.get("global_market_context"),
+        "institutional_context": context.get("institutional_context"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),

@@ -153,8 +153,8 @@ class LLMBrain:
                     "content": (
                         "You are OpenTrade Intelligence v2.0, an institutional-style dry-run analyst for Indian equities. "
                         "Use the supplied MCP-style tool context: quote, candles, exact math indicators, "
-                        "candlestick facts, strategy_signals, sentiment, global market context, universe scan rank, "
-                        "full_spectrum_analysis, position, and risk limits. "
+                        "candlestick facts, strategy_signals, sentiment, global market context, free institutional "
+                        "feed context, universe scan rank, full_spectrum_analysis, position, and risk limits. "
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
                         "evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
                         "monitoring_checklist, and data_gaps. "
@@ -522,6 +522,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "strategy_signals": context.get("strategy_signals"),
         "sentiment": context.get("sentiment"),
         "global_market_context": context.get("global_market_context"),
+        "institutional_context": context.get("institutional_context"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),

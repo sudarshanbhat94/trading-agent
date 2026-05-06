@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .db import Database
+from .institutional_feeds import FreeInstitutionalFeedsService
 from .macro import GlobalIntelligenceService
 from .market_data import MarketDataError, MarketDataProvider
 from .models import Decision, utc_now
@@ -24,6 +25,7 @@ class TradingAgentService:
         broker: PaperBroker,
         strategy: StrategyEngine,
         macro: GlobalIntelligenceService | None,
+        institutional_feeds: FreeInstitutionalFeedsService | None,
         interval_seconds: int,
         on_update: UpdateCallback | None = None,
     ) -> None:
@@ -32,6 +34,7 @@ class TradingAgentService:
         self.broker = broker
         self.strategy = strategy
         self.macro = macro
+        self.institutional_feeds = institutional_feeds
         self.interval_seconds = interval_seconds
         self.on_update = on_update
         self._task: asyncio.Task | None = None
@@ -72,7 +75,20 @@ class TradingAgentService:
         positions = self.broker.positions_by_symbol()
         macro_context = await self.macro.context_for_cycle() if self.macro else {}
         self.db.set_state("macro_context", macro_context)
-        decisions = await self.strategy.evaluate(universe, quotes, positions, candles, macro_context)
+        institutional_context = (
+            await self.institutional_feeds.context_for_cycle(universe)
+            if self.institutional_feeds
+            else {}
+        )
+        self.db.set_state("institutional_context", institutional_context)
+        decisions = await self.strategy.evaluate(
+            universe,
+            quotes,
+            positions,
+            candles,
+            macro_context,
+            institutional_context,
+        )
         risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions)
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
@@ -113,6 +129,7 @@ class TradingAgentService:
             "universe_size": len(self.db.get_universe(enabled_only=True)),
             "market_health": self._market_health(quotes),
             "macro_context": self.db.get_state("macro_context", {}),
+            "institutional_context": self.db.get_state("institutional_context", {}),
         }
 
     async def _loop(self) -> None:

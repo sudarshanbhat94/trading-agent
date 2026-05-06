@@ -764,6 +764,7 @@ function marketContextHtml(context) {
       <div class="audit-card"><span>Candles</span><strong class="${pnlClass(context.candlestick_analysis?.score)}">${fmtNumber(context.candlestick_analysis?.score)}</strong><small>${escapeHtml((context.candlestick_analysis?.patterns || []).join(", "))}</small></div>
       <div class="audit-card"><span>Sentiment</span><strong class="${pnlClass(context.sentiment?.score)}">${fmtNumber(context.sentiment?.score)}</strong><small>news sentiment score</small></div>
       <div class="audit-card"><span>Global Risk</span><strong class="${pnlClass(context.global_market_context?.risk_score)}">${fmtNumber(context.global_market_context?.risk_score)}</strong><small>${escapeHtml(context.global_market_context?.regime || "-")}</small></div>
+      <div class="audit-card"><span>Free Institutional</span><strong class="${pnlClass(context.institutional_context?.market_bias?.score)}">${fmtNumber(context.institutional_context?.market_bias?.score)}</strong><small>${escapeHtml(context.institutional_context?.source_quality || "-")}</small></div>
       <div class="audit-card"><span>Universe Rank</span><strong>${escapeHtml(context.universe_scan?.rank || "-")}</strong><small>${escapeHtml(shortValue(context.universe_scan?.selection_basis || "-", 110))}</small></div>
     </div>
     <pre>${escapeHtml(JSON.stringify({
@@ -772,6 +773,7 @@ function marketContextHtml(context) {
       candlestick_analysis: context.candlestick_analysis,
       best_strategy: context.best_strategy,
       global_market_context: context.global_market_context,
+      institutional_context: context.institutional_context,
       universe_scan: context.universe_scan,
       recent_candle_count: context.recent_candle_count,
       recent_candles_tail: context.recent_candles_tail,
@@ -1014,7 +1016,10 @@ function bindControls() {
           take_profit_pct: settings.take_profit_pct,
           daily_loss_limit_pct: settings.daily_loss_limit_pct,
         },
-        "macro-health": state.latest?.macro_context || {},
+        "macro-health": {
+          global: state.latest?.macro_context || {},
+          institutional: state.latest?.institutional_context || {},
+        },
         "cycle-health": {
           running: state.latest?.running,
           last_cycle_at: state.latest?.last_cycle_at,
