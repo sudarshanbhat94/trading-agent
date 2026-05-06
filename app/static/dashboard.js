@@ -145,8 +145,9 @@ function renderShell(payload = state.latest || {}) {
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
   const nvidiaModel = plainSetting("nvidia_model", "");
+  const nvidiaChain = plainSetting("nvidia_model_chain", "");
   const groqModel = plainSetting("groq_model", "");
-  const llmModel = llmProvider === "nvidia" ? nvidiaModel : llmProvider === "groq" ? groqModel : plainSetting("llm_model", "offline");
+  const llmModel = llmProvider === "nvidia" ? (nvidiaChain || nvidiaModel).split(",")[0] : llmProvider === "groq" ? groqModel : plainSetting("llm_model", "offline");
 
   byId("top-provider").textContent = provider;
   byId("top-llm").textContent = llmProvider === "offline" ? "off" : llmModel;
@@ -1006,11 +1007,25 @@ function llmOutputHtml(llm, audit) {
         <small>model risk: ${escapeHtml(llm.risk || "-")}</small>
       </div>
       <div class="audit-card">
+        <span>Analysed By</span>
+        <strong>${escapeHtml(audit.model || llm.model || "-")}</strong>
+        <small>${escapeHtml(audit.provider || llm.provider || "-")} · ${escapeHtml(audit.analysis_mode || llm.analysis_mode || "single_context")}</small>
+      </div>
+      <div class="audit-card">
         <span>Confidence Gate</span>
         <strong>${audit.confidence_gate?.passed ? "passed" : "not passed"}</strong>
         <small>minimum ${fmtNumber(Number(audit.confidence_gate?.minimum_required || 0) * 100)}%</small>
       </div>
     </div>
+    ${objectCardsHtml("LLM Routing", {
+      configured_provider: audit.configured_provider,
+      configured_model: audit.configured_model,
+      selected_provider: audit.provider,
+      selected_model: audit.model,
+      analysis_mode: audit.analysis_mode,
+      rolling_context: audit.rolling_context,
+    })}
+    ${auditList("Model Attempts", (audit.model_attempts || []).map((item) => `${item.status}: ${item.provider}/${item.model} ${item.latency_ms || 0}ms ${item.error || ""}`))}
     ${auditList("Evidence", llm.evidence)}
     ${auditList("Checklist", llm.checklist)}
     ${auditList("Risk Checks", llm.risk_checks)}
@@ -1413,6 +1428,9 @@ function bindControls() {
           provider: settings.llm_provider,
           mode: settings.llm_decision_mode,
           model: settings.llm_provider === "nvidia" ? settings.nvidia_model : settings.llm_provider === "groq" ? settings.groq_model : settings.llm_model,
+          nvidia_model_chain: settings.nvidia_model_chain,
+          model_fallback_enabled: settings.llm_model_fallback_enabled,
+          rolling_context_enabled: settings.llm_rolling_context_enabled,
           timeout_seconds: settings.llm_timeout_seconds,
         },
         "risk-health": {

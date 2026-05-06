@@ -227,15 +227,21 @@ LLM_PROVIDER=nvidia
 LLM_DECISION_MODE=primary
 NVIDIA_API_KEY=...
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com
-NVIDIA_MODEL=deepseek-ai/deepseek-r1
+NVIDIA_MODEL=deepseek-ai/deepseek-v4-pro
+NVIDIA_MODEL_CHAIN=deepseek-ai/deepseek-v4-pro,moonshotai/kimi-k2.6,deepseek-ai/deepseek-v4-flash,z-ai/glm-5.1,minimaxai/minimax-m2.7,mistralai/mistral-medium-3.5-128b
+LLM_MODEL_FALLBACK_ENABLED=true
+LLM_ROLLING_CONTEXT_ENABLED=true
+LLM_ROLLING_CONTEXT_THRESHOLD_CHARS=16000
+LLM_ROLLING_CONTEXT_CHUNK_CHARS=7000
+LLM_ROLLING_CONTEXT_MAX_CHUNKS=0
 LLM_TEMPERATURE=0.05
 LLM_TOP_P=0.7
 LLM_MAX_TOKENS=1400
-LLM_MAX_SYMBOLS_PER_CYCLE=8
+LLM_MAX_SYMBOLS_PER_CYCLE=1
 LLM_PRIMARY_MIN_CONFIDENCE=0.62
 LLM_REASONING_EFFORT=none
 LLM_THINKING_ENABLED=false
-LLM_STREAMING_ENABLED=true
+LLM_STREAMING_ENABLED=false
 LLM_TIMEOUT_SECONDS=45
 ```
 
@@ -266,7 +272,11 @@ LLM_MAX_SYMBOLS_PER_CYCLE=1
 LLM_TIMEOUT_SECONDS=20
 ```
 
-`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. NVIDIA models use schema-guided JSON decisions with a richer context packet and non-streamed structured calls; Groq uses a compact JSON-mode packet to stay under rate/payload limits. For NVIDIA DeepSeek V4 and Kimi models, the app sends `chat_template_kwargs.thinking=false` by default. Turn `LLM_THINKING_ENABLED` on only when you can tolerate slower responses; then `LLM_REASONING_EFFORT=high` or `max` can be used for supported DeepSeek V4 models. If a large model is slow to respond, increase `LLM_TIMEOUT_SECONDS` or switch to a faster model.
+`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. NVIDIA decisions use the model chain in order, and transport errors, timeouts, empty content, or malformed JSON advance to the next model. If all NVIDIA models fail and `GROQ_API_KEY` is saved, Groq Qwen is used as the final fallback. Every decision audit records the selected provider/model, all model attempts, and whether rolling context was used.
+
+Large context is handled with rolling analysis instead of blunt trimming. When the rich context exceeds `LLM_ROLLING_CONTEXT_THRESHOLD_CHARS`, OpenTrade summarizes each chunk with the same model cascade, then sends a compact core packet plus the chunk evidence summaries for the final decision. `LLM_ROLLING_CONTEXT_MAX_CHUNKS=0` means cover all chunks; set a positive number only when you intentionally want to cap cost/latency on a small VM.
+
+NVIDIA models use schema-guided JSON decisions with a richer context packet and non-streamed structured calls; Groq uses a compact JSON-mode packet to stay under rate/payload limits. For NVIDIA DeepSeek V4 and Kimi models, the app sends `chat_template_kwargs.thinking=false` by default. Turn `LLM_THINKING_ENABLED` on only when you can tolerate slower responses; then `LLM_REASONING_EFFORT=high` or `max` can be used for supported DeepSeek V4 models. If a large model is slow to respond, increase `LLM_TIMEOUT_SECONDS` or keep the fallback chain enabled.
 
 For NVIDIA Kimi K2.6, set:
 

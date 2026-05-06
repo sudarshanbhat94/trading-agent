@@ -118,7 +118,16 @@ class Settings:
     llm_timeout_seconds: int = _int("LLM_TIMEOUT_SECONDS", 30)
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
     nvidia_base_url: str = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com").rstrip("/")
-    nvidia_model: str = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-r1")
+    nvidia_model: str = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-pro")
+    nvidia_model_chain: str = os.getenv(
+        "NVIDIA_MODEL_CHAIN",
+        "deepseek-ai/deepseek-v4-pro,moonshotai/kimi-k2.6,deepseek-ai/deepseek-v4-flash,z-ai/glm-5.1,minimaxai/minimax-m2.7,mistralai/mistral-medium-3.5-128b",
+    )
+    llm_model_fallback_enabled: bool = _bool("LLM_MODEL_FALLBACK_ENABLED", True)
+    llm_rolling_context_enabled: bool = _bool("LLM_ROLLING_CONTEXT_ENABLED", True)
+    llm_rolling_context_threshold_chars: int = _int("LLM_ROLLING_CONTEXT_THRESHOLD_CHARS", 16000)
+    llm_rolling_context_chunk_chars: int = _int("LLM_ROLLING_CONTEXT_CHUNK_CHARS", 7000)
+    llm_rolling_context_max_chunks: int = _int("LLM_ROLLING_CONTEXT_MAX_CHUNKS", 0)
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     groq_base_url: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
     groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
@@ -184,6 +193,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "nvidia_api_key", "label": "NVIDIA API Key", "type": "secret", "category": "LLM Brain"},
     {"key": "nvidia_base_url", "label": "NVIDIA Base URL", "type": "text", "category": "LLM Brain"},
     {"key": "nvidia_model", "label": "NVIDIA Model", "type": "text", "category": "LLM Brain"},
+    {"key": "nvidia_model_chain", "label": "NVIDIA Model Chain", "type": "text", "category": "LLM Brain"},
+    {"key": "llm_model_fallback_enabled", "label": "Model Fallback", "type": "boolean", "category": "LLM Brain"},
+    {"key": "llm_rolling_context_enabled", "label": "Rolling Context", "type": "boolean", "category": "LLM Brain"},
+    {"key": "llm_rolling_context_threshold_chars", "label": "Rolling Threshold Chars", "type": "number", "category": "LLM Brain", "min": 2000, "step": 1000},
+    {"key": "llm_rolling_context_chunk_chars", "label": "Rolling Chunk Chars", "type": "number", "category": "LLM Brain", "min": 1000, "step": 500},
+    {"key": "llm_rolling_context_max_chunks", "label": "Rolling Max Chunks (0=All)", "type": "number", "category": "LLM Brain", "min": 0, "step": 1},
     {"key": "llm_base_url", "label": "OpenAI-Compatible URL", "type": "text", "category": "LLM Brain"},
     {"key": "llm_api_key", "label": "OpenAI-Compatible Key", "type": "secret", "category": "LLM Brain"},
     {"key": "llm_model", "label": "OpenAI-Compatible Model", "type": "text", "category": "LLM Brain"},

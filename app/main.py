@@ -143,6 +143,8 @@ async def status() -> dict[str, Any]:
         "execution_mode": settings.execution_mode,
         "llm_provider": settings.llm_provider,
         "llm_decision_mode": settings.llm_decision_mode,
+        "llm_model_fallback_enabled": settings.llm_model_fallback_enabled,
+        "llm_rolling_context_enabled": settings.llm_rolling_context_enabled,
     }
     return snapshot
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import json
 import asyncio
 import re
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
@@ -11,6 +13,24 @@ import httpx
 from .analysis_tools import deterministic_score_breakdown
 from .config import Settings
 from .models import Decision, utc_now
+
+
+DEFAULT_NVIDIA_MODEL_CHAIN = [
+    "deepseek-ai/deepseek-v4-pro",
+    "moonshotai/kimi-k2.6",
+    "deepseek-ai/deepseek-v4-flash",
+    "z-ai/glm-5.1",
+    "minimaxai/minimax-m2.7",
+    "mistralai/mistral-medium-3.5-128b",
+]
+
+
+@dataclass(frozen=True)
+class LLMEndpoint:
+    provider: str
+    model: str
+    base_url: str
+    api_key: str
 
 
 HEALTH_SCHEMA: dict[str, Any] = {
@@ -98,6 +118,21 @@ DECISION_SCHEMA: dict[str, Any] = {
 }
 
 
+ROLLING_CONTEXT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "chunk_index": {"type": "number"},
+        "key_evidence": {"type": "array", "items": SHORT_TEXT},
+        "bullish_factors": {"type": "array", "items": SHORT_TEXT},
+        "bearish_factors": {"type": "array", "items": SHORT_TEXT},
+        "risk_flags": {"type": "array", "items": SHORT_TEXT},
+        "missing_data": {"type": "array", "items": SHORT_TEXT},
+        "trade_implication": MEDIUM_TEXT,
+    },
+}
+
+
 class LLMResponseError(RuntimeError):
     def __init__(self, message: str, raw: Any | None = None) -> None:
         super().__init__(message)
@@ -110,6 +145,8 @@ class LLMBrain:
 
     @property
     def enabled(self) -> bool:
+        if self.settings.llm_provider == "nvidia" and self.settings.llm_model_fallback_enabled:
+            return bool(self.settings.nvidia_api_key or self.settings.groq_api_key)
         if self.settings.llm_provider == "groq":
             return bool(self.settings.groq_api_key)
         if self.settings.llm_provider == "nvidia":
@@ -123,7 +160,7 @@ class LLMBrain:
         if self.settings.llm_provider == "groq":
             return self.settings.groq_model
         if self.settings.llm_provider == "nvidia":
-            return self.settings.nvidia_model
+            return self._nvidia_models()[0]
         return self.settings.llm_model
 
     @property
@@ -147,6 +184,58 @@ class LLMBrain:
         if base_url.endswith("/v1"):
             return f"{base_url}/chat/completions"
         return f"{base_url}/v1/chat/completions"
+
+    def _nvidia_models(self) -> list[str]:
+        configured = _split_model_chain(self.settings.nvidia_model_chain)
+        if configured:
+            return configured
+        if self.settings.nvidia_model:
+            return [self.settings.nvidia_model]
+        return list(DEFAULT_NVIDIA_MODEL_CHAIN)
+
+    def _endpoint_candidates(self) -> list[LLMEndpoint]:
+        endpoints: list[LLMEndpoint] = []
+        if self.settings.llm_provider == "nvidia":
+            if self.settings.nvidia_api_key:
+                models = self._nvidia_models() if self.settings.llm_model_fallback_enabled else [self.settings.nvidia_model]
+                for model in _unique([model for model in models if model]):
+                    endpoints.append(
+                        LLMEndpoint(
+                            provider="nvidia",
+                            model=model,
+                            base_url=self.settings.nvidia_base_url,
+                            api_key=self.settings.nvidia_api_key,
+                        )
+                    )
+            if self.settings.llm_model_fallback_enabled and self.settings.groq_api_key:
+                endpoints.append(
+                    LLMEndpoint(
+                        provider="groq",
+                        model=self.settings.groq_model,
+                        base_url=self.settings.groq_base_url,
+                        api_key=self.settings.groq_api_key,
+                    )
+                )
+            return endpoints
+        if self.settings.llm_provider == "groq" and self.settings.groq_api_key:
+            return [
+                LLMEndpoint(
+                    provider="groq",
+                    model=self.settings.groq_model,
+                    base_url=self.settings.groq_base_url,
+                    api_key=self.settings.groq_api_key,
+                )
+            ]
+        if self.settings.llm_provider == "openai_compatible" and self.settings.llm_api_key:
+            return [
+                LLMEndpoint(
+                    provider="openai_compatible",
+                    model=self.settings.llm_model,
+                    base_url=self.settings.llm_base_url,
+                    api_key=self.settings.llm_api_key,
+                )
+            ]
+        return []
 
     async def test_connection(self) -> dict[str, Any]:
         if not self.enabled:
@@ -180,8 +269,14 @@ class LLMBrain:
         started = perf_counter()
         url = self.chat_completions_url()
         timeout_seconds = min(max(self.settings.llm_timeout_seconds, 5), 180)
+        meta: dict[str, Any] = {}
         try:
-            content = await self._chat_content(payload, timeout_seconds)
+            content, meta = await self._chat_content_with_fallback(
+                payload,
+                timeout_seconds,
+                schema=HEALTH_SCHEMA,
+                require_json=True,
+            )
             latency_ms = round((perf_counter() - started) * 1000)
             json_repaired = False
             try:
@@ -204,7 +299,9 @@ class LLMBrain:
                     return {
                         "ok": True,
                         "provider": self.settings.llm_provider,
-                        "model": self.model,
+                        "model": meta.get("_llm_model", self.model),
+                        "actual_provider": meta.get("_llm_provider", self.settings.llm_provider),
+                        "attempts": meta.get("_llm_attempts", []),
                         "url": url,
                         "latency_ms": latency_ms,
                         "timeout_seconds": timeout_seconds,
@@ -232,12 +329,27 @@ class LLMBrain:
             return {
                 "ok": bool(parsed.get("ok")),
                 "provider": self.settings.llm_provider,
-                "model": self.model,
+                "model": meta.get("_llm_model", self.model),
+                "actual_provider": meta.get("_llm_provider", self.settings.llm_provider),
                 "url": url,
                 "latency_ms": latency_ms,
                 "timeout_seconds": timeout_seconds,
                 "json_repaired": json_repaired,
+                "attempts": meta.get("_llm_attempts", []),
                 "reply": parsed,
+            }
+        except LLMResponseError as exc:
+            latency_ms = round((perf_counter() - started) * 1000)
+            return {
+                "ok": False,
+                "provider": self.settings.llm_provider,
+                "model": self.model,
+                "url": url,
+                "latency_ms": latency_ms,
+                "timeout_seconds": timeout_seconds,
+                "reason": _error_summary(exc),
+                "attempts": _attempts_from_exception(exc),
+                "raw": getattr(exc, "raw", None),
             }
         except httpx.HTTPStatusError as exc:
             try:
@@ -280,6 +392,7 @@ class LLMBrain:
         if not self.enabled:
             return self._hold_from_context(context, "LLM disabled")
 
+        prompt_context, rolling_meta = await self._decision_prompt_context(context)
         payload = {
             "model": self.model,
             "temperature": min(self.settings.llm_temperature, 0.2),
@@ -318,13 +431,14 @@ class LLMBrain:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(self._prompt_context(context), separators=(",", ":")),
+                    "content": json.dumps(prompt_context, separators=(",", ":")),
                 },
             ],
         }
         self._apply_model_options(payload, schema=DECISION_SCHEMA)
         try:
             parsed = await self._chat_json(payload, retry_payload=self._compact_decision_retry_payload(context))
+            parsed.update(rolling_meta)
             requested_action = str(parsed.get("action", "HOLD")).upper()
             confidence = max(min(float(parsed.get("confidence", 0)), 1.0), 0.0)
             confidence_gate_passed = confidence >= self.settings.llm_primary_min_confidence
@@ -349,7 +463,7 @@ class LLMBrain:
                 price=float(context["quote"]["price"]),
                 technical_score=float(context["technical_math"]["score"]),
                 sentiment_score=float(context["sentiment"]["score"]),
-                reason=f"LLM primary ({parsed.get('risk', 'UNKNOWN')}): {reason}"[:700],
+                reason=f"LLM primary {parsed.get('_llm_provider', self.settings.llm_provider)}/{parsed.get('_llm_model', self.model)} ({parsed.get('risk', 'UNKNOWN')}): {reason}"[:700],
                 asof=utc_now(),
                 strategy=strategy[:80],
                 details_json=self._llm_primary_details_json(
@@ -374,6 +488,7 @@ class LLMBrain:
             return decision
         candidate_decision = decision.to_dict()
         candidate_decision.pop("details_json", None)
+        prompt_context, rolling_meta = await self._decision_prompt_context(context)
         payload = {
             "model": self.model,
             "temperature": min(self.settings.llm_temperature, 0.2),
@@ -401,7 +516,7 @@ class LLMBrain:
                     "content": json.dumps(
                         {
                             "candidate_decision": candidate_decision,
-                            "context": self._prompt_context(context),
+                            "context": prompt_context,
                             "constraints": {
                                 "dry_money_only": True,
                                 "long_only": True,
@@ -415,6 +530,7 @@ class LLMBrain:
         self._apply_model_options(payload, schema=DECISION_SCHEMA)
         try:
             parsed = await self._chat_json(payload)
+            parsed.update(rolling_meta)
             action = str(parsed.get("action", decision.action)).upper()
             confidence = max(min(float(parsed.get("confidence", decision.confidence)), 1.0), 0.0)
             action, policy_gates = _policy_gate_action(
@@ -434,7 +550,7 @@ class LLMBrain:
                 price=decision.price,
                 technical_score=decision.technical_score,
                 sentiment_score=decision.sentiment_score,
-                reason=f"LLM review: {reason}",
+                reason=f"LLM review {parsed.get('_llm_provider', self.settings.llm_provider)}/{parsed.get('_llm_model', self.model)}: {reason}",
                 asof=decision.asof,
                 strategy=decision.strategy,
                 details_json=self._llm_review_details_json(decision, context, parsed, action, confidence, policy_gates),
@@ -466,13 +582,118 @@ class LLMBrain:
                 ),
             )
 
+    async def _decision_prompt_context(self, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        rich_context = _llm_prompt_context(context, profile="rich")
+        rich_json = json.dumps(rich_context, default=str, separators=(",", ":"))
+        if (
+            not self.settings.llm_rolling_context_enabled
+            or len(rich_json) <= self.settings.llm_rolling_context_threshold_chars
+        ):
+            return self._prompt_context(context), {"_llm_analysis_mode": "single_context"}
+
+        chunks = _chunk_text(
+            rich_json,
+            max(int(self.settings.llm_rolling_context_chunk_chars or 7000), 1000),
+        )
+        max_chunks = int(self.settings.llm_rolling_context_max_chunks or 0)
+        selected_chunks = chunks if max_chunks <= 0 else chunks[:max(max_chunks, 1)]
+        summaries: list[dict[str, Any]] = []
+        summary_attempts: list[dict[str, Any]] = []
+        for index, chunk in enumerate(selected_chunks, start=1):
+            payload = {
+                "model": self.model,
+                "temperature": 0,
+                "top_p": 0.1,
+                "max_tokens": max(600, min(self.settings.llm_max_tokens, 1200)),
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are compressing one chunk of an Indian equity trading context for a later decision. "
+                            "Return one strict JSON object only. Preserve numeric thresholds, risk vetoes, data gaps, "
+                            "scorecard values, institutional flow, news, indicators, and trade implications. "
+                            "Do not make the final BUY/SELL/HOLD decision."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "chunk_index": index,
+                                "chunk_count": len(chunks),
+                                "symbol": context.get("symbol"),
+                                "context_chunk": chunk,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                ],
+            }
+            self._apply_model_options(payload, schema=ROLLING_CONTEXT_SCHEMA)
+            try:
+                content, meta = await self._chat_content_with_fallback(
+                    payload,
+                    min(max(self.settings.llm_timeout_seconds, 10), 45),
+                    schema=ROLLING_CONTEXT_SCHEMA,
+                    require_json=True,
+                )
+                summary = self._parse_json_content(content)
+                summary["chunk_index"] = index
+                summary["source_chars"] = len(chunk)
+                summary["model"] = meta.get("_llm_model")
+                summary["provider"] = meta.get("_llm_provider")
+                summaries.append(_compact_rolling_summary(summary))
+                summary_attempts.extend(meta.get("_llm_attempts", []))
+            except Exception as exc:
+                summaries.append(
+                    {
+                        "chunk_index": index,
+                        "source_chars": len(chunk),
+                        "summary_error": _error_summary(exc),
+                        "fallback_excerpt": chunk[:800],
+                    }
+                )
+                summary_attempts.extend(_attempts_from_exception(exc))
+
+        rolling_context = _prune_empty(
+            {
+                "tool_protocol": "opentrade-rolling-decision-context-v1",
+                "core_decision_context": _llm_prompt_context(context, profile="compact"),
+                "rolling_context_coverage": {
+                    "full_context_chars": len(rich_json),
+                    "chunk_count": len(chunks),
+                    "summarized_chunks": len(summaries),
+                    "truncated_chunks": max(len(chunks) - len(selected_chunks), 0),
+                    "chunk_chars": self.settings.llm_rolling_context_chunk_chars,
+                    "method": "map_summarize_chunks_then_final_decision",
+                },
+                "rolling_evidence_summaries": summaries,
+            }
+        )
+        return rolling_context, {
+            "_llm_analysis_mode": "rolling_context",
+            "_rolling_context": {
+                "full_context_chars": len(rich_json),
+                "chunk_count": len(chunks),
+                "summarized_chunks": len(summaries),
+                "truncated_chunks": max(len(chunks) - len(selected_chunks), 0),
+                "summary_attempts": summary_attempts[-20:],
+            },
+        }
+
     async def _chat_json(
         self,
         payload: dict[str, Any],
         retry_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        meta: dict[str, Any] = {}
         try:
-            content = await self._chat_content(payload, self.settings.llm_timeout_seconds)
+            content, meta = await self._chat_content_with_fallback(
+                payload,
+                self.settings.llm_timeout_seconds,
+                schema=DECISION_SCHEMA,
+                require_json=True,
+            )
         except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
             synthetic = _synthetic_safe_decision_from_text("", exc)
             synthetic["_json_synthetic"] = True
@@ -480,37 +701,59 @@ class LLMBrain:
             synthetic["_json_repaired"] = False
             return synthetic
         except LLMResponseError as exc:
+            initial_attempts = _attempts_from_exception(exc)
             if retry_payload is not None:
                 try:
-                    retry_content = await self._chat_content(retry_payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
+                    retry_content, retry_meta = await self._chat_content_with_fallback(
+                        retry_payload,
+                        min(max(self.settings.llm_timeout_seconds, 10), 45),
+                        schema=DECISION_SCHEMA,
+                        require_json=True,
+                    )
                     parsed = _normalize_decision_payload(self._parse_json_content(retry_content))
+                    parsed.update(retry_meta)
+                    parsed["_llm_attempts"] = initial_attempts + retry_meta.get("_llm_attempts", [])
                     parsed["_json_retry"] = True
                     parsed["_json_retry_reason"] = _error_summary(exc)
                     return parsed
                 except Exception as retry_exc:
+                    retry_attempts = _attempts_from_exception(retry_exc)
                     synthetic = _synthetic_safe_decision_from_text(getattr(exc, "raw", ""), exc)
                     synthetic["_json_synthetic"] = True
                     synthetic["_json_repaired"] = False
                     synthetic["_json_retry_error"] = _error_summary(retry_exc)
+                    synthetic["_llm_attempts"] = initial_attempts + retry_attempts
                     return synthetic
             synthetic = _synthetic_safe_decision_from_text(getattr(exc, "raw", ""), exc)
             synthetic["_json_synthetic"] = True
             synthetic["_json_repaired"] = False
+            synthetic["_llm_attempts"] = initial_attempts
             return synthetic
         try:
-            return _normalize_decision_payload(self._parse_json_content(content))
+            parsed = _normalize_decision_payload(self._parse_json_content(content))
+            parsed.update(meta)
+            return parsed
         except LLMResponseError as exc:
             repaired = ""
             synthetic = _synthetic_safe_decision_from_text(content, exc)
+            synthetic.update(meta)
             if retry_payload is not None:
                 try:
-                    retry_content = await self._chat_content(retry_payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
+                    retry_content, retry_meta = await self._chat_content_with_fallback(
+                        retry_payload,
+                        min(max(self.settings.llm_timeout_seconds, 10), 45),
+                        schema=DECISION_SCHEMA,
+                        require_json=True,
+                    )
                     parsed = _normalize_decision_payload(self._parse_json_content(retry_content))
+                    parsed.update(retry_meta)
+                    parsed["_llm_attempts"] = meta.get("_llm_attempts", []) + retry_meta.get("_llm_attempts", [])
                     parsed["_json_retry"] = True
                     parsed["_json_retry_reason"] = _error_summary(exc)
                     return parsed
                 except Exception as retry_exc:
                     synthetic["_json_retry_error"] = _error_summary(retry_exc)
+                    synthetic["_llm_attempts"] = meta.get("_llm_attempts", []) + _attempts_from_exception(retry_exc)
             try:
                 repaired = await self._repair_json(content, schema=DECISION_SCHEMA)
             except Exception as repair_call_exc:
@@ -528,7 +771,9 @@ class LLMBrain:
                 synthetic["_json_repair_raw"] = str(repaired)[:1000]
                 return synthetic
             parsed["_json_repaired"] = True
-            return _normalize_decision_payload(parsed)
+            normalized = _normalize_decision_payload(parsed)
+            normalized.update(meta)
+            return normalized
 
     def _compact_decision_retry_payload(self, context: dict[str, Any]) -> dict[str, Any] | None:
         if self.settings.llm_provider != "nvidia":
@@ -610,28 +855,107 @@ class LLMBrain:
             ],
         }
         self._apply_model_options(payload, schema=schema)
-        return await self._chat_content(payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
-
-    async def _chat_content(self, payload: dict[str, Any], timeout_seconds: int) -> str:
-        if self._should_stream(payload):
-            return await asyncio.wait_for(
-                self._chat_content_stream(payload, timeout_seconds),
-                timeout=timeout_seconds,
-            )
-        return await asyncio.wait_for(
-            self._chat_content_once(payload, timeout_seconds),
-            timeout=timeout_seconds,
+        return await self._chat_content(
+            payload,
+            min(max(self.settings.llm_timeout_seconds, 10), 45),
+            schema=schema,
+            require_json=True,
         )
 
-    async def _chat_content_once(self, payload: dict[str, Any], timeout_seconds: int) -> str:
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+    async def _chat_content(
+        self,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+        schema: dict[str, Any] | None = None,
+        require_json: bool = False,
+    ) -> str:
+        content, _ = await self._chat_content_with_fallback(
+            payload,
+            timeout_seconds,
+            schema=schema,
+            require_json=require_json,
+        )
+        return content
+
+    async def _chat_content_with_fallback(
+        self,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+        schema: dict[str, Any] | None = None,
+        require_json: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        endpoints = self._endpoint_candidates()
+        if not endpoints:
+            raise LLMResponseError("No configured LLM endpoint is available")
+        attempts: list[dict[str, Any]] = []
+        for index, endpoint in enumerate(endpoints, start=1):
+            endpoint_payload = self._payload_for_endpoint(payload, endpoint, schema=schema)
+            started = perf_counter()
+            try:
+                if self._should_stream(endpoint_payload, endpoint):
+                    content = await asyncio.wait_for(
+                        self._chat_content_stream(endpoint_payload, timeout_seconds, endpoint),
+                        timeout=timeout_seconds,
+                    )
+                else:
+                    content = await asyncio.wait_for(
+                        self._chat_content_once(endpoint_payload, timeout_seconds, endpoint),
+                        timeout=timeout_seconds,
+                    )
+                if require_json:
+                    self._parse_json_content(content)
+                attempts.append(
+                    {
+                        "provider": endpoint.provider,
+                        "model": endpoint.model,
+                        "status": "ok",
+                        "attempt": index,
+                        "latency_ms": round((perf_counter() - started) * 1000),
+                    }
+                )
+                return content, {
+                    "_llm_provider": endpoint.provider,
+                    "_llm_model": endpoint.model,
+                    "_llm_attempts": attempts,
+                }
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "provider": endpoint.provider,
+                        "model": endpoint.model,
+                        "status": "failed",
+                        "attempt": index,
+                        "latency_ms": round((perf_counter() - started) * 1000),
+                        "error": _error_summary(exc),
+                    }
+                )
+                continue
+        raise LLMResponseError("All configured LLM models failed", raw={"attempts": attempts})
+
+    def _payload_for_endpoint(
+        self,
+        payload: dict[str, Any],
+        endpoint: LLMEndpoint,
+        schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        endpoint_payload = copy.deepcopy(payload)
+        if "max_completion_tokens" in endpoint_payload and "max_tokens" not in endpoint_payload:
+            endpoint_payload["max_tokens"] = endpoint_payload.pop("max_completion_tokens")
+        for key in ("guided_json", "response_format", "chat_template_kwargs", "reasoning_effort", "reasoning_format"):
+            endpoint_payload.pop(key, None)
+        endpoint_payload["model"] = endpoint.model
+        self._apply_model_options_for_endpoint(endpoint_payload, endpoint, schema=schema)
+        return endpoint_payload
+
+    async def _chat_content_once(self, payload: dict[str, Any], timeout_seconds: int, endpoint: LLMEndpoint) -> str:
+        headers = {"Authorization": f"Bearer {endpoint.api_key}"}
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
             response = await client.post(
-                self.chat_completions_url(),
+                _chat_completions_url_for_endpoint(endpoint),
                 json=payload,
             )
             if (
-                self.settings.llm_provider == "nvidia"
+                endpoint.provider == "nvidia"
                 and response.status_code in {400, 422}
                 and "guided_json" in payload
             ):
@@ -639,7 +963,7 @@ class LLMBrain:
                 fallback_payload.pop("guided_json", None)
                 fallback_payload["response_format"] = {"type": "json_object"}
                 response = await client.post(
-                    self.chat_completions_url(),
+                    _chat_completions_url_for_endpoint(endpoint),
                     json=fallback_payload,
                 )
             response.raise_for_status()
@@ -661,14 +985,14 @@ class LLMBrain:
             )
         raise LLMResponseError("LLM response had no text content", raw=message)
 
-    async def _chat_content_stream(self, payload: dict[str, Any], timeout_seconds: int) -> str:
+    async def _chat_content_stream(self, payload: dict[str, Any], timeout_seconds: int, endpoint: LLMEndpoint) -> str:
         stream_payload = dict(payload)
         stream_payload["stream"] = True
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {endpoint.api_key}", "Content-Type": "application/json"}
         chunks: list[str] = []
         reasoning_chunks: list[str] = []
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
-            async with client.stream("POST", self.chat_completions_url(), json=stream_payload) as response:
+            async with client.stream("POST", _chat_completions_url_for_endpoint(endpoint), json=stream_payload) as response:
                 if response.status_code >= 400:
                     await response.aread()
                 response.raise_for_status()
@@ -722,20 +1046,38 @@ class LLMBrain:
         return max(256, min(self.settings.llm_max_tokens, 1200))
 
     def _apply_model_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
-        if self.settings.llm_provider == "groq":
+        self._apply_model_options_for_provider(payload, self.settings.llm_provider, self.model, schema=schema)
+
+    def _apply_model_options_for_endpoint(
+        self,
+        payload: dict[str, Any],
+        endpoint: LLMEndpoint,
+        schema: dict[str, Any] | None = None,
+    ) -> None:
+        self._apply_model_options_for_provider(payload, endpoint.provider, endpoint.model, schema=schema)
+
+    def _apply_model_options_for_provider(
+        self,
+        payload: dict[str, Any],
+        provider: str,
+        model: str,
+        schema: dict[str, Any] | None = None,
+    ) -> None:
+        if provider == "groq":
             self._apply_groq_options(payload, schema=schema)
             return
-        if self.settings.llm_provider == "nvidia":
-            self._apply_nvidia_options(payload, schema=schema)
+        if provider == "nvidia":
+            self._apply_nvidia_options(payload, model=model, schema=schema)
             return
         if schema is not None:
             payload["response_format"] = {"type": "json_object"}
 
-    def _apply_nvidia_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
-        if self._supports_nvidia_thinking():
+    def _apply_nvidia_options(self, payload: dict[str, Any], model: str | None = None, schema: dict[str, Any] | None = None) -> None:
+        model = model or self.model
+        if self._supports_nvidia_thinking_model(model):
             chat_template_kwargs: dict[str, Any] = {"thinking": self.settings.llm_thinking_enabled}
             effort = self.settings.llm_reasoning_effort
-            if self.settings.llm_thinking_enabled and effort in {"high", "max"} and self._is_nvidia_deepseek_v4():
+            if self.settings.llm_thinking_enabled and effort in {"high", "max"} and self._is_nvidia_deepseek_v4_model(model):
                 chat_template_kwargs["reasoning_effort"] = effort
             payload["chat_template_kwargs"] = chat_template_kwargs
         if schema is not None:
@@ -781,17 +1123,22 @@ class LLMBrain:
             payload["messages"] = folded
 
     def _is_nvidia_deepseek_v4(self) -> bool:
-        return self.settings.llm_provider == "nvidia" and self.model.startswith("deepseek-ai/deepseek-v4")
+        return self.settings.llm_provider == "nvidia" and self._is_nvidia_deepseek_v4_model(self.model)
+
+    def _is_nvidia_deepseek_v4_model(self, model: str) -> bool:
+        return model.startswith("deepseek-ai/deepseek-v4")
 
     def _supports_nvidia_thinking(self) -> bool:
-        if self.settings.llm_provider != "nvidia":
-            return False
-        return self.model.startswith(("deepseek-ai/deepseek-v4", "moonshotai/kimi-"))
+        return self.settings.llm_provider == "nvidia" and self._supports_nvidia_thinking_model(self.model)
 
-    def _should_stream(self, payload: dict[str, Any] | None = None) -> bool:
+    def _supports_nvidia_thinking_model(self, model: str) -> bool:
+        return model.startswith(("deepseek-ai/deepseek-v4", "moonshotai/kimi-"))
+
+    def _should_stream(self, payload: dict[str, Any] | None = None, endpoint: LLMEndpoint | None = None) -> bool:
         if payload and ("guided_json" in payload or "response_format" in payload):
             return False
-        return self.settings.llm_provider == "nvidia" and self.settings.llm_streaming_enabled
+        provider = endpoint.provider if endpoint else self.settings.llm_provider
+        return provider == "nvidia" and self.settings.llm_streaming_enabled
 
     def _service_name(self) -> str:
         if self.settings.llm_provider == "groq":
@@ -864,8 +1211,13 @@ class LLMBrain:
             {
                 "audit_version": 1,
                 "decision_path": "llm_primary",
-                "provider": self.settings.llm_provider,
-                "model": self.model,
+                "provider": parsed.get("_llm_provider", self.settings.llm_provider),
+                "model": parsed.get("_llm_model", self.model),
+                "configured_provider": self.settings.llm_provider,
+                "configured_model": self.model,
+                "model_attempts": parsed.get("_llm_attempts", []),
+                "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
+                "rolling_context": parsed.get("_rolling_context"),
                 "requested_action": requested_action,
                 "final_action": final_action,
                 "action_reason": parsed.get("reason", "no reason supplied"),
@@ -900,6 +1252,9 @@ class LLMBrain:
                     "json_retry_reason": parsed.get("_json_retry_reason"),
                     "json_synthetic": bool(parsed.get("_json_synthetic")),
                     "llm_timeout": bool(parsed.get("_llm_timeout")),
+                    "provider": parsed.get("_llm_provider", self.settings.llm_provider),
+                    "model": parsed.get("_llm_model", self.model),
+                    "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
                     "json_repair_error": parsed.get("_json_repair_error"),
                 },
                 "risk_gates": {
@@ -932,8 +1287,13 @@ class LLMBrain:
             {
                 "audit_version": 1,
                 "decision_path": "llm_review",
-                "provider": self.settings.llm_provider,
-                "model": self.model,
+                "provider": parsed.get("_llm_provider", self.settings.llm_provider),
+                "model": parsed.get("_llm_model", self.model),
+                "configured_provider": self.settings.llm_provider,
+                "configured_model": self.model,
+                "model_attempts": parsed.get("_llm_attempts", []),
+                "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
+                "rolling_context": parsed.get("_rolling_context"),
                 "candidate_decision": _decision_summary(original),
                 "final_action": final_action,
                 "confidence": round(confidence, 4),
@@ -961,6 +1321,9 @@ class LLMBrain:
                     "json_retry_reason": parsed.get("_json_retry_reason"),
                     "json_synthetic": bool(parsed.get("_json_synthetic")),
                     "llm_timeout": bool(parsed.get("_llm_timeout")),
+                    "provider": parsed.get("_llm_provider", self.settings.llm_provider),
+                    "model": parsed.get("_llm_model", self.model),
+                    "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
                     "json_repair_error": parsed.get("_json_repair_error"),
                 },
                 "context": _compact_context(context),
@@ -1304,6 +1667,60 @@ def _json_dumps(value: dict[str, Any]) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
 
 
+def _chat_completions_url_for_endpoint(endpoint: LLMEndpoint) -> str:
+    base_url = endpoint.base_url.rstrip("/")
+    if base_url.endswith("/v1"):
+        return f"{base_url}/chat/completions"
+    return f"{base_url}/v1/chat/completions"
+
+
+def _split_model_chain(value: str) -> list[str]:
+    models = [item.strip() for item in str(value or "").replace("\n", ",").split(",")]
+    return _unique([model for model in models if model])
+
+
+def _attempts_from_exception(exc: Exception) -> list[dict[str, Any]]:
+    raw = getattr(exc, "raw", None)
+    if isinstance(raw, dict) and isinstance(raw.get("attempts"), list):
+        return raw["attempts"]
+    return []
+
+
+def _chunk_text(text: str, chunk_chars: int) -> list[str]:
+    if chunk_chars <= 0:
+        return [text]
+    return [text[index : index + chunk_chars] for index in range(0, len(text), chunk_chars)] or [""]
+
+
+def _compact_rolling_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    keep = {
+        "chunk_index",
+        "source_chars",
+        "provider",
+        "model",
+        "key_evidence",
+        "bullish_factors",
+        "bearish_factors",
+        "risk_flags",
+        "missing_data",
+        "trade_implication",
+    }
+    output = {key: summary.get(key) for key in keep if key in summary}
+    for key in ("key_evidence", "bullish_factors", "bearish_factors", "risk_flags", "missing_data"):
+        output[key] = _short_list(output.get(key), limit=6, length=180)
+    if "trade_implication" in output:
+        output["trade_implication"] = _short_scalar(output["trade_implication"], 280)
+    return _prune_empty(output)
+
+
+def _unique(values: list[str]) -> list[str]:
+    output: list[str] = []
+    for value in values:
+        if value not in output:
+            output.append(value)
+    return output
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         if isinstance(value, str) and value.strip():
@@ -1364,6 +1781,11 @@ def _normalize_decision_payload(parsed: dict[str, Any]) -> dict[str, Any]:
         "_json_retry_error",
         "_json_synthetic",
         "_llm_timeout",
+        "_llm_provider",
+        "_llm_model",
+        "_llm_attempts",
+        "_llm_analysis_mode",
+        "_rolling_context",
         "_json_repair_error",
         "_json_repair_raw",
     ):
@@ -1485,6 +1907,13 @@ def _escape_json_string_newlines(text: str) -> str:
 
 
 def _error_summary(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            detail = exc.response.text[:180]
+        except Exception:
+            detail = ""
+        base = f"HTTPStatusError: HTTP {exc.response.status_code}"
+        return f"{base} {detail}".strip()
     message = str(exc).strip()
     if message:
         return f"{exc.__class__.__name__}: {message[:240]}"
