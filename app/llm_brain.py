@@ -65,13 +65,16 @@ class LLMBrain:
 
         payload = {
             "model": self.model,
-            "temperature": self.settings.llm_temperature,
-            "top_p": self.settings.llm_top_p,
+            "temperature": 0,
+            "top_p": 0.1,
             "max_tokens": self._test_max_tokens(),
             "messages": [
                 {
                     "role": "system",
-                    "content": "Return strict JSON only.",
+                    "content": (
+                        "Return one strict JSON object only. The first character must be { and the last "
+                        "character must be }. Do not include reasoning, markdown, or commentary."
+                    ),
                 },
                 {
                     "role": "user",
@@ -86,8 +89,37 @@ class LLMBrain:
         try:
             content = await self._chat_content(payload, timeout_seconds)
             latency_ms = round((perf_counter() - started) * 1000)
+            json_repaired = False
             try:
-                parsed = json.loads(self._strip_json(content))
+                parsed = self._parse_json_content(content)
+            except LLMResponseError as parse_exc:
+                repaired = await self._repair_json(
+                    content,
+                    (
+                        'Convert the model response into exactly this JSON object if it indicates readiness: '
+                        '{"ok":true,"service":"nvidia-nim","note":"ready"}. '
+                        'If it clearly indicates failure, return {"ok":false,"service":"nvidia-nim","note":"not ready"}. '
+                        "Return one JSON object only. Do not explain."
+                    ),
+                )
+                try:
+                    parsed = self._parse_json_content(repaired)
+                    json_repaired = True
+                except LLMResponseError as repair_exc:
+                    reason = f"Model responded, but not with parseable JSON. repair_failed={repair_exc}"
+                    if str(parse_exc):
+                        reason = f"{reason}; original_parse={parse_exc}"
+                    return {
+                        "ok": False,
+                        "provider": self.settings.llm_provider,
+                        "model": self.model,
+                        "url": url,
+                        "latency_ms": latency_ms,
+                        "timeout_seconds": timeout_seconds,
+                        "reason": reason,
+                        "raw_reply": str(content)[:1000],
+                        "repair_reply": str(repaired)[:1000],
+                    }
             except json.JSONDecodeError:
                 return {
                     "ok": False,
@@ -106,6 +138,7 @@ class LLMBrain:
                 "url": url,
                 "latency_ms": latency_ms,
                 "timeout_seconds": timeout_seconds,
+                "json_repaired": json_repaired,
                 "reply": parsed,
             }
         except httpx.HTTPStatusError as exc:
@@ -151,8 +184,8 @@ class LLMBrain:
 
         payload = {
             "model": self.model,
-            "temperature": self.settings.llm_temperature,
-            "top_p": self.settings.llm_top_p,
+            "temperature": min(self.settings.llm_temperature, 0.2),
+            "top_p": min(self.settings.llm_top_p, 0.7),
             "max_tokens": self.settings.llm_max_tokens,
             "messages": [
                 {
@@ -165,6 +198,8 @@ class LLMBrain:
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
                         "evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
                         "monitoring_checklist, and data_gaps. "
+                        "Your entire response must be one JSON object. The first character must be { and the last "
+                        "character must be }. Do not include markdown, scratchpad, reasoning text, or commentary. "
                         "action must be BUY, SELL, or HOLD. confidence is 0..1. "
                         "strategy must be one of the supplied strategy_signals names or best_strategy.name. "
                         "risk must be LOW, MEDIUM, or HIGH. "
@@ -240,8 +275,8 @@ class LLMBrain:
         candidate_decision.pop("details_json", None)
         payload = {
             "model": self.model,
-            "temperature": self.settings.llm_temperature,
-            "top_p": self.settings.llm_top_p,
+            "temperature": min(self.settings.llm_temperature, 0.2),
+            "top_p": min(self.settings.llm_top_p, 0.7),
             "max_tokens": max(256, min(self.settings.llm_max_tokens, 900)),
             "messages": [
                 {
@@ -251,6 +286,8 @@ class LLMBrain:
                         "Return strict JSON only with action BUY, SELL, or HOLD; "
                         "confidence from 0 to 1; reason; evidence; risk_checks; invalidators; "
                         "signal_plan; confluence_score; trade_plan; monitoring_checklist; and data_gaps. "
+                        "Your entire response must be one JSON object. Do not include markdown, scratchpad, "
+                        "reasoning text, or commentary. "
                         "For existing long positions, review whether to continue holding or exit based on stop, "
                         "target, invalidation, technical breakdown, news, and market regime. "
                         "Never recommend leverage, options, futures, or short-selling."
@@ -328,17 +365,60 @@ class LLMBrain:
 
     async def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         content = await self._chat_content(payload, self.settings.llm_timeout_seconds)
+        try:
+            return self._parse_json_content(content)
+        except LLMResponseError as exc:
+            repaired = await self._repair_json(content)
+            try:
+                parsed = self._parse_json_content(repaired)
+            except LLMResponseError as repair_exc:
+                raise LLMResponseError(
+                    f"{exc}; JSON repair also failed: {repair_exc}",
+                    raw={
+                        "original": str(content)[:3000],
+                        "repair": str(repaired)[:3000],
+                    },
+                ) from repair_exc
+            parsed["_json_repaired"] = True
+            return parsed
+
+    def _parse_json_content(self, content: Any) -> dict[str, Any]:
         stripped = self._strip_json(content)
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            raise LLMResponseError(
-                f"LLM returned non-JSON content: {str(exc)}",
-                raw=str(content)[:2000],
-            ) from exc
+            raise LLMResponseError(f"LLM returned non-JSON content: {str(exc)}", raw=str(content)[:3000]) from exc
         if not isinstance(parsed, dict):
             raise LLMResponseError("LLM JSON response was not an object", raw=parsed)
         return parsed
+
+    async def _repair_json(self, content: Any, system_content: str | None = None) -> str:
+        if system_content is None:
+            system_content = (
+                "Convert the analyst text into one strict JSON object only. Do not explain. "
+                "If the text is ambiguous or conflicted, set action to HOLD and confidence to 0.0. "
+                "Required keys: action, confidence, risk, strategy, reason, checklist, evidence, "
+                "risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
+                "monitoring_checklist, data_gaps."
+            )
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "top_p": 0.1,
+            "max_tokens": max(500, min(self.settings.llm_max_tokens, 900)),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_content,
+                },
+                {
+                    "role": "user",
+                    "content": str(content)[:6000],
+                },
+            ],
+        }
+        self._apply_model_options(payload)
+        return await self._chat_content(payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
 
     async def _chat_content(self, payload: dict[str, Any], timeout_seconds: int) -> str:
         if self._should_stream():
@@ -503,6 +583,7 @@ class LLMBrain:
                 "final_action": final_action,
                 "action_reason": parsed.get("reason", "no reason supplied"),
                 "confidence": round(confidence, 4),
+                "json_repaired": bool(parsed.get("_json_repaired")),
                 "confidence_gate": {
                     "minimum_required": self.settings.llm_primary_min_confidence,
                     "passed": confidence_gate_passed,
@@ -523,6 +604,7 @@ class LLMBrain:
                     "trade_plan": parsed.get("trade_plan", {}),
                     "monitoring_checklist": parsed.get("monitoring_checklist", []),
                     "data_gaps": parsed.get("data_gaps", []),
+                    "json_repaired": bool(parsed.get("_json_repaired")),
                 },
                 "risk_gates": {
                     "dry_run": True,
@@ -559,6 +641,7 @@ class LLMBrain:
                 "candidate_decision": _decision_summary(original),
                 "final_action": final_action,
                 "confidence": round(confidence, 4),
+                "json_repaired": bool(parsed.get("_json_repaired")),
                 "action_reason": parsed.get("reason", original.reason),
                 "policy_gates": policy_gates,
                 "score_breakdown": deterministic_score_breakdown(context),
@@ -573,6 +656,7 @@ class LLMBrain:
                     "trade_plan": parsed.get("trade_plan", {}),
                     "monitoring_checklist": parsed.get("monitoring_checklist", []),
                     "data_gaps": parsed.get("data_gaps", []),
+                    "json_repaired": bool(parsed.get("_json_repaired")),
                 },
                 "context": _compact_context(context),
             }
