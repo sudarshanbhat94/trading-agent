@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .config import Settings
@@ -34,7 +35,8 @@ class PaperBroker:
     def execute(self, decision: Decision, portfolio_equity: float) -> bool:
         if decision.action == "HOLD":
             return False
-        if self._daily_loss_limit_hit(portfolio_equity):
+        daily_loss = self._daily_loss_status(portfolio_equity)
+        if daily_loss["hit"]:
             self.db.insert_order(
                 decision.symbol,
                 decision.action,
@@ -43,6 +45,7 @@ class PaperBroker:
                 "VETOED",
                 "daily loss limit reached",
                 decision.strategy,
+                _order_details_json(decision, {"daily_loss": daily_loss, "portfolio_equity": portfolio_equity}),
             )
             return False
 
@@ -90,7 +93,23 @@ class PaperBroker:
     def _buy(self, decision: Decision, portfolio_equity: float) -> bool:
         positions = self.db.positions()
         if len(positions) >= self.settings.max_positions:
-            self.db.insert_order(decision.symbol, "BUY", 0, decision.price, "VETOED", "max positions reached", decision.strategy)
+            self.db.insert_order(
+                decision.symbol,
+                "BUY",
+                0,
+                decision.price,
+                "VETOED",
+                "max positions reached",
+                decision.strategy,
+                _order_details_json(
+                    decision,
+                    {
+                        "veto_gate": "max_positions",
+                        "open_positions": len(positions),
+                        "max_positions": self.settings.max_positions,
+                    },
+                ),
+            )
             return False
 
         current_value = 0.0
@@ -100,7 +119,25 @@ class PaperBroker:
                 break
         max_position_value = portfolio_equity * self.settings.max_position_pct
         if current_value >= max_position_value:
-            self.db.insert_order(decision.symbol, "BUY", 0, decision.price, "VETOED", "max position size reached", decision.strategy)
+            self.db.insert_order(
+                decision.symbol,
+                "BUY",
+                0,
+                decision.price,
+                "VETOED",
+                "max position size reached",
+                decision.strategy,
+                _order_details_json(
+                    decision,
+                    {
+                        "veto_gate": "max_position_pct",
+                        "current_position_value": round(current_value, 2),
+                        "max_position_value": round(max_position_value, 2),
+                        "max_position_pct": self.settings.max_position_pct,
+                        "portfolio_equity": portfolio_equity,
+                    },
+                ),
+            )
             return False
 
         max_order_value = portfolio_equity * self.settings.max_order_value_pct
@@ -108,7 +145,26 @@ class PaperBroker:
         spend = min(max_order_value, max_position_value - current_value, cash_before)
         qty = int(spend // decision.price)
         if qty <= 0:
-            self.db.insert_order(decision.symbol, "BUY", 0, decision.price, "VETOED", "insufficient cash", decision.strategy)
+            self.db.insert_order(
+                decision.symbol,
+                "BUY",
+                0,
+                decision.price,
+                "VETOED",
+                "insufficient cash",
+                decision.strategy,
+                _order_details_json(
+                    decision,
+                    {
+                        "veto_gate": "available_cash",
+                        "cash_before": round(cash_before, 2),
+                        "max_order_value": round(max_order_value, 2),
+                        "max_position_value_remaining": round(max_position_value - current_value, 2),
+                        "planned_spend": round(spend, 2),
+                        "price": decision.price,
+                    },
+                ),
+            )
             return False
 
         with self.db.connect() as conn:
@@ -142,7 +198,38 @@ class PaperBroker:
                 """,
                 (str(cash_before - (qty * decision.price)),),
             )
-        self.db.insert_order(decision.symbol, "BUY", qty, decision.price, "FILLED", decision.reason, decision.strategy)
+        self.db.insert_order(
+            decision.symbol,
+            "BUY",
+            qty,
+            decision.price,
+            "FILLED",
+            decision.reason,
+            decision.strategy,
+            _order_details_json(
+                decision,
+                {
+                    "risk_checks": {
+                        "max_positions_passed": len(positions) < self.settings.max_positions,
+                        "max_position_pct_passed": current_value < max_position_value,
+                        "cash_available": cash_before >= decision.price,
+                    },
+                    "sizing": {
+                        "portfolio_equity": round(portfolio_equity, 2),
+                        "cash_before": round(cash_before, 2),
+                        "cash_after": round(cash_before - (qty * decision.price), 2),
+                        "current_position_value_before": round(current_value, 2),
+                        "max_position_pct": self.settings.max_position_pct,
+                        "max_position_value": round(max_position_value, 2),
+                        "max_order_value_pct": self.settings.max_order_value_pct,
+                        "max_order_value": round(max_order_value, 2),
+                        "planned_spend": round(spend, 2),
+                        "filled_qty": qty,
+                        "filled_notional": round(qty * decision.price, 2),
+                    },
+                },
+            ),
+        )
         if self.order_router:
             self.order_router.route(decision, qty)
         return True
@@ -152,7 +239,16 @@ class PaperBroker:
         with self.db.connect() as conn:
             row = conn.execute("select * from positions where symbol = ?", (decision.symbol,)).fetchone()
             if not row or row["qty"] <= 0:
-                self.db.insert_order(decision.symbol, "SELL", 0, decision.price, "VETOED", "no long position", decision.strategy)
+                self.db.insert_order(
+                    decision.symbol,
+                    "SELL",
+                    0,
+                    decision.price,
+                    "VETOED",
+                    "no long position",
+                    decision.strategy,
+                    _order_details_json(decision, {"veto_gate": "no_long_position"}),
+                )
                 return False
 
             qty = int(row["qty"])
@@ -174,7 +270,30 @@ class PaperBroker:
                 """,
                 (str(cash_before + proceeds),),
             )
-        self.db.insert_order(decision.symbol, "SELL", qty, decision.price, "FILLED", decision.reason, strategy)
+        self.db.insert_order(
+            decision.symbol,
+            "SELL",
+            qty,
+            decision.price,
+            "FILLED",
+            decision.reason,
+            strategy,
+            _order_details_json(
+                decision,
+                {
+                    "risk_checks": {"long_position_exists": True},
+                    "sizing": {
+                        "cash_before": round(cash_before, 2),
+                        "cash_after": round(cash_before + proceeds, 2),
+                        "filled_qty": qty,
+                        "avg_price": round(float(row["avg_price"]), 2),
+                        "filled_price": decision.price,
+                        "filled_notional": round(proceeds, 2),
+                        "realized_pnl_after": round(realized, 2),
+                    },
+                },
+            ),
+        )
         if self.order_router:
             routed_decision = Decision(
                 symbol=decision.symbol,
@@ -186,11 +305,15 @@ class PaperBroker:
                 reason=decision.reason,
                 asof=decision.asof,
                 strategy=strategy,
+                details_json=decision.details_json,
             )
             self.order_router.route(routed_decision, qty)
         return True
 
     def _daily_loss_limit_hit(self, equity: float) -> bool:
+        return self._daily_loss_status(equity)["hit"]
+
+    def _daily_loss_status(self, equity: float) -> dict[str, Any]:
         with self.db.connect() as conn:
             row = conn.execute(
                 """
@@ -201,9 +324,48 @@ class PaperBroker:
                 (utc_now(),),
             ).fetchone()
         if row is None:
-            return False
+            return {
+                "hit": False,
+                "reason": "no starting equity snapshot for today",
+                "current_equity": round(equity, 2),
+                "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
+            }
         start_equity = float(row["equity"])
         if start_equity <= 0:
-            return False
+            return {
+                "hit": False,
+                "reason": "starting equity is not positive",
+                "start_equity": start_equity,
+                "current_equity": round(equity, 2),
+                "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
+            }
         drawdown = (start_equity - equity) / start_equity
-        return drawdown >= self.settings.daily_loss_limit_pct
+        return {
+            "hit": drawdown >= self.settings.daily_loss_limit_pct,
+            "start_equity": round(start_equity, 2),
+            "current_equity": round(equity, 2),
+            "drawdown_pct": round(drawdown, 6),
+            "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
+        }
+
+
+def _order_details_json(decision: Decision, execution: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "audit_version": 1,
+            "decision": _decision_summary(decision),
+            "execution": execution,
+        },
+        default=str,
+        separators=(",", ":"),
+    )
+
+
+def _decision_summary(decision: Decision) -> dict[str, Any]:
+    data = decision.to_dict()
+    raw_details = data.pop("details_json", "{}")
+    try:
+        data["details"] = json.loads(raw_details or "{}")
+    except json.JSONDecodeError:
+        data["details_json"] = raw_details
+    return data

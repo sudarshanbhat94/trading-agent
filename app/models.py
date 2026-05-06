@@ -67,6 +67,7 @@ class Decision:
     reason: str
     asof: str
     strategy: str = "llm_primary"
+    details_json: str = "{}"
 
     def to_dict(self) -> dict:
         return asdict(self)

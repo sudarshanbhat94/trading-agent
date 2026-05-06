@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -44,6 +45,7 @@ class UpstoxOrderRouter(OrderRouter):
                 "LIVE_FAILED",
                 "missing upstox_instrument_key",
                 decision.strategy,
+                self._route_details(decision, qty, {"error": "missing upstox_instrument_key"}),
             )
             return
 
@@ -80,6 +82,7 @@ class UpstoxOrderRouter(OrderRouter):
                 status,
                 f"Upstox order_id={order_id}",
                 decision.strategy,
+                self._route_details(decision, qty, {"order_id": order_id, "payload": payload}),
             )
         except Exception as exc:
             status = "SANDBOX_FAILED" if self.sandbox else "LIVE_FAILED"
@@ -91,7 +94,26 @@ class UpstoxOrderRouter(OrderRouter):
                 status,
                 f"{exc.__class__.__name__}: {exc}",
                 decision.strategy,
+                self._route_details(decision, qty, {"error_type": exc.__class__.__name__, "error": str(exc), "payload": payload}),
             )
+
+    def _route_details(self, decision: Decision, qty: int, route: dict[str, Any]) -> str:
+        decision_data = decision.to_dict()
+        try:
+            decision_data["details"] = json.loads(decision_data.pop("details_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            pass
+        return json.dumps(
+            {
+                "audit_version": 1,
+                "router": "upstox_sandbox" if self.sandbox else "upstox_live",
+                "decision": decision_data,
+                "qty": qty,
+                "route": route,
+            },
+            default=str,
+            separators=(",", ":"),
+        )
 
 
 def build_order_router(settings: Settings, db: Database) -> OrderRouter | None:

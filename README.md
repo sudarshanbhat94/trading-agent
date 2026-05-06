@@ -20,6 +20,7 @@ This defaults to paper trading. Upstox live order routing exists, but it is disa
 - Can optionally mirror allowed paper orders to Upstox live order placement, disabled by default.
 - Stores quotes, decisions, orders, positions, portfolio snapshots, and sentiment events in SQLite.
 - Serves a live dashboard at `/`.
+- Records a structured audit trail for every decision and order so you can inspect exactly why the agent chose BUY, SELL, or HOLD.
 
 ## Quick Start
 
@@ -45,6 +46,18 @@ The dashboard includes a **Settings** panel. Use it to change:
 - Sentiment scan settings.
 
 Saved settings are stored in SQLite and override `.env` defaults at runtime. Secret values are write-only in the UI: the dashboard shows whether a key is saved but does not display the key. Use **Reset Demo Account** after changing demo cash if you want to clear positions/orders and restart the dummy ledger with the new amount.
+
+### Decision Audit Trail
+
+Every row in **Decisions** and **Orders** is clickable. The drawer shows:
+
+- The final action and plain-English reason.
+- The score formula and weighted contributions from technical math, candlesticks, strategy preset, and sentiment.
+- LLM evidence, checklist, confidence gate, risk checks, and invalidators when the LLM is enabled.
+- Market context used: quote, position, technical snapshot, candlestick patterns, best strategy, and recent candle tail.
+- Broker execution sizing and veto/fill gates for BUY/SELL orders.
+
+This is evidence and audit data, not hidden chain-of-thought. The app asks the model for concise evidence lists and stores the exact structured output used by the agent.
 
 ### Admin Access
 

@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from .analysis_tools import deterministic_score_breakdown
 from .config import Settings
 from .models import Decision, utc_now
 
@@ -153,10 +154,14 @@ class LLMBrain:
                         "You are the primary dry-run analyst for Indian equities. "
                         "Use the supplied MCP-style tool context: quote, candles, exact math indicators, "
                         "candlestick facts, strategy_signals, sentiment, position, and risk limits. "
-                        "Return strict JSON only with keys action, confidence, risk, strategy, reason, and checklist. "
+                        "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
+                        "evidence, risk_checks, and invalidators. "
                         "action must be BUY, SELL, or HOLD. confidence is 0..1. "
                         "strategy must be one of the supplied strategy_signals names or best_strategy.name. "
                         "risk must be LOW, MEDIUM, or HIGH. "
+                        "reason must be concise; evidence must list the concrete inputs that support the action. "
+                        "risk_checks must list the gates that passed or failed. "
+                        "invalidators must list the exact conditions that would make the action wrong. "
                         "Be conservative: HOLD unless the candle structure, math, sentiment, and risk all support action. "
                         "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
                     ),
@@ -170,10 +175,12 @@ class LLMBrain:
         self._apply_model_options(payload)
         try:
             parsed = await self._chat_json(payload)
-            action = parsed.get("action", "HOLD")
+            requested_action = str(parsed.get("action", "HOLD")).upper()
+            action = requested_action
             if action not in {"BUY", "SELL", "HOLD"}:
                 action = "HOLD"
             confidence = max(min(float(parsed.get("confidence", 0)), 1.0), 0.0)
+            confidence_gate_passed = confidence >= self.settings.llm_primary_min_confidence
             if confidence < self.settings.llm_primary_min_confidence:
                 action = "HOLD"
             checklist = parsed.get("checklist", [])
@@ -191,6 +198,14 @@ class LLMBrain:
                 reason=f"LLM primary ({parsed.get('risk', 'UNKNOWN')}): {reason}"[:700],
                 asof=utc_now(),
                 strategy=strategy[:80],
+                details_json=self._llm_primary_details_json(
+                    context=context,
+                    parsed=parsed,
+                    requested_action=requested_action,
+                    final_action=action,
+                    confidence=confidence,
+                    confidence_gate_passed=confidence_gate_passed,
+                ),
             )
         except Exception as exc:
             return self._hold_from_context(context, f"LLM primary failed safely: {exc.__class__.__name__}")
@@ -198,6 +213,8 @@ class LLMBrain:
     async def review(self, decision: Decision, context: dict[str, Any]) -> Decision:
         if not self.enabled:
             return decision
+        candidate_decision = decision.to_dict()
+        candidate_decision.pop("details_json", None)
         payload = {
             "model": self.model,
             "temperature": self.settings.llm_temperature,
@@ -209,7 +226,7 @@ class LLMBrain:
                     "content": (
                         "You are a dry-run equity trading risk reviewer. "
                         "Return strict JSON only with action BUY, SELL, or HOLD; "
-                        "confidence from 0 to 1; and a brief reason. "
+                        "confidence from 0 to 1; reason; evidence; risk_checks; and invalidators. "
                         "Never recommend leverage, options, futures, or short-selling."
                     ),
                 },
@@ -217,7 +234,7 @@ class LLMBrain:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "candidate_decision": decision.to_dict(),
+                            "candidate_decision": candidate_decision,
                             "context": context,
                             "constraints": {
                                 "dry_money_only": True,
@@ -232,22 +249,24 @@ class LLMBrain:
         self._apply_model_options(payload)
         try:
             parsed = await self._chat_json(payload)
-            action = parsed.get("action", decision.action)
+            action = str(parsed.get("action", decision.action)).upper()
             if action not in {"BUY", "SELL", "HOLD"}:
                 action = "HOLD"
             confidence = max(min(float(parsed.get("confidence", decision.confidence)), 1.0), 0.0)
             reason = str(parsed.get("reason", decision.reason))[:500]
-            return Decision(
+            reviewed = Decision(
                 symbol=decision.symbol,
                 action=action,
                 confidence=confidence,
                 price=decision.price,
                 technical_score=decision.technical_score,
                 sentiment_score=decision.sentiment_score,
-                reason=f"LLM: {reason}",
+                reason=f"LLM review: {reason}",
                 asof=decision.asof,
                 strategy=decision.strategy,
+                details_json=self._llm_review_details_json(decision, context, parsed, action, confidence),
             )
+            return reviewed
         except Exception as exc:
             return Decision(
                 symbol=decision.symbol,
@@ -259,6 +278,17 @@ class LLMBrain:
                 reason=f"LLM review failed; held safely: {exc.__class__.__name__}",
                 asof=decision.asof,
                 strategy=decision.strategy,
+                details_json=_json_dumps(
+                    {
+                        "audit_version": 1,
+                        "decision_path": "llm_review_failed",
+                        "final_action": "HOLD",
+                        "action_reason": f"LLM review failed safely: {exc.__class__.__name__}",
+                        "candidate_decision": _decision_summary(decision),
+                        "context": _compact_context(context),
+                        "error_type": exc.__class__.__name__,
+                    }
+                ),
             )
 
     async def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -352,4 +382,124 @@ class LLMBrain:
             reason=reason,
             asof=utc_now(),
             strategy=str(context.get("best_strategy", {}).get("name") or "llm_primary")[:80],
+            details_json=_json_dumps(
+                {
+                    "audit_version": 1,
+                    "decision_path": "safe_hold",
+                    "final_action": "HOLD",
+                    "action_reason": reason,
+                    "score_breakdown": deterministic_score_breakdown(context),
+                    "context": _compact_context(context),
+                }
+            ),
         )
+
+    def _llm_primary_details_json(
+        self,
+        context: dict[str, Any],
+        parsed: dict[str, Any],
+        requested_action: str,
+        final_action: str,
+        confidence: float,
+        confidence_gate_passed: bool,
+    ) -> str:
+        return _json_dumps(
+            {
+                "audit_version": 1,
+                "decision_path": "llm_primary",
+                "provider": self.settings.llm_provider,
+                "model": self.model,
+                "requested_action": requested_action,
+                "final_action": final_action,
+                "action_reason": parsed.get("reason", "no reason supplied"),
+                "confidence": round(confidence, 4),
+                "confidence_gate": {
+                    "minimum_required": self.settings.llm_primary_min_confidence,
+                    "passed": confidence_gate_passed,
+                    "effect": "requested action allowed" if confidence_gate_passed else "downgraded to HOLD",
+                },
+                "score_breakdown": deterministic_score_breakdown(context),
+                "llm_output": {
+                    "risk": parsed.get("risk"),
+                    "strategy": parsed.get("strategy"),
+                    "reason": parsed.get("reason"),
+                    "checklist": parsed.get("checklist", []),
+                    "evidence": parsed.get("evidence", []),
+                    "risk_checks": parsed.get("risk_checks", []),
+                    "invalidators": parsed.get("invalidators", []),
+                },
+                "risk_gates": {
+                    "dry_run": True,
+                    "long_only": True,
+                    "no_leverage": True,
+                    "broker_checks_after_decision": [
+                        "daily_loss_limit",
+                        "max_positions",
+                        "max_position_pct",
+                        "max_order_value_pct",
+                        "available_cash",
+                    ],
+                },
+                "context": _compact_context(context),
+            }
+        )
+
+    def _llm_review_details_json(
+        self,
+        original: Decision,
+        context: dict[str, Any],
+        parsed: dict[str, Any],
+        final_action: str,
+        confidence: float,
+    ) -> str:
+        return _json_dumps(
+            {
+                "audit_version": 1,
+                "decision_path": "llm_review",
+                "provider": self.settings.llm_provider,
+                "model": self.model,
+                "candidate_decision": _decision_summary(original),
+                "final_action": final_action,
+                "confidence": round(confidence, 4),
+                "action_reason": parsed.get("reason", original.reason),
+                "score_breakdown": deterministic_score_breakdown(context),
+                "llm_output": {
+                    "risk": parsed.get("risk"),
+                    "reason": parsed.get("reason"),
+                    "evidence": parsed.get("evidence", []),
+                    "risk_checks": parsed.get("risk_checks", []),
+                    "invalidators": parsed.get("invalidators", []),
+                },
+                "context": _compact_context(context),
+            }
+        )
+
+
+def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
+    recent_candles = context.get("recent_candles", [])
+    return {
+        "symbol": context.get("symbol"),
+        "company": context.get("company"),
+        "sector": context.get("sector"),
+        "exchange": context.get("exchange"),
+        "quote": context.get("quote"),
+        "position": context.get("position"),
+        "technical_math": context.get("technical_math"),
+        "candlestick_analysis": context.get("candlestick_analysis"),
+        "best_strategy": context.get("best_strategy"),
+        "strategy_signals": context.get("strategy_signals"),
+        "sentiment": context.get("sentiment"),
+        "risk_limits": context.get("risk_limits"),
+        "recent_candle_count": len(recent_candles),
+        "recent_candles_tail": recent_candles[-5:],
+    }
+
+
+def _decision_summary(decision: Decision) -> dict[str, Any]:
+    data = decision.to_dict()
+    data.pop("details_json", None)
+    return data
+
+
+def _json_dumps(value: dict[str, Any]) -> str:
+    return json.dumps(value, default=str, separators=(",", ":"))

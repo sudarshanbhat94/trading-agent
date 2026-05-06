@@ -40,11 +40,35 @@ def build_symbol_tool_context(
 
 
 def deterministic_score(context: dict[str, Any]) -> float:
+    return deterministic_score_breakdown(context)["combined"]
+
+
+def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     technical = float(context["technical_math"]["score"])
     sentiment = float(context["sentiment"]["score"])
     candle_score = float(context["candlestick_analysis"]["score"])
     preset_score = float(context["best_strategy"]["score"])
-    return max(min((technical * 0.4) + (candle_score * 0.2) + (preset_score * 0.25) + (sentiment * 0.15), 1.0), -1.0)
+    components = [
+        {"name": "technical_math", "score": technical, "weight": 0.40},
+        {"name": "candlestick_analysis", "score": candle_score, "weight": 0.20},
+        {"name": "best_strategy", "score": preset_score, "weight": 0.25},
+        {"name": "sentiment", "score": sentiment, "weight": 0.15},
+    ]
+    raw = sum(component["score"] * component["weight"] for component in components)
+    combined = max(min(raw, 1.0), -1.0)
+    return {
+        "formula": "technical_math*0.40 + candlestick_analysis*0.20 + best_strategy*0.25 + sentiment*0.15",
+        "components": [
+            {
+                **component,
+                "contribution": round(component["score"] * component["weight"], 4),
+            }
+            for component in components
+        ],
+        "raw": round(raw, 4),
+        "combined": combined,
+        "clamped": combined != raw,
+    }
 
 
 def _candle_tools(candles: list[Candle]) -> dict[str, Any]:

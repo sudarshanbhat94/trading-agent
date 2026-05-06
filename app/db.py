@@ -86,7 +86,8 @@ class Database:
                     price real not null,
                     technical_score real not null,
                     sentiment_score real not null,
-                    reason text not null
+                    reason text not null,
+                    details_json text not null default '{}'
                 );
 
                 create table if not exists orders (
@@ -99,7 +100,8 @@ class Database:
                     price real not null,
                     notional real not null,
                     status text not null,
-                    reason text not null
+                    reason text not null,
+                    details_json text not null default '{}'
                 );
 
                 create table if not exists positions (
@@ -157,7 +159,9 @@ class Database:
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
             self._ensure_column(conn, "decisions", "strategy", "text not null default 'unknown'")
+            self._ensure_column(conn, "decisions", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "orders", "strategy", "text not null default 'unknown'")
+            self._ensure_column(conn, "orders", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "positions", "strategy", "text not null default 'unknown'")
             self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
             self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
@@ -289,10 +293,11 @@ class Database:
             conn.executemany(
                 """
                 insert into decisions (
-                    ts, symbol, action, strategy, confidence, price, technical_score, sentiment_score, reason
+                    ts, symbol, action, strategy, confidence, price, technical_score,
+                    sentiment_score, reason, details_json
                 ) values (
                     :asof, :symbol, :action, :strategy, :confidence, :price,
-                    :technical_score, :sentiment_score, :reason
+                    :technical_score, :sentiment_score, :reason, :details_json
                 )
                 """,
                 rows,
@@ -307,14 +312,15 @@ class Database:
         status: str,
         reason: str,
         strategy: str = "unknown",
+        details_json: str = "{}",
     ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into orders (ts, symbol, side, strategy, qty, price, notional, status, reason)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                insert into orders (ts, symbol, side, strategy, qty, price, notional, status, reason, details_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (utc_now(), symbol, side, strategy, qty, price, qty * price, status, reason),
+                (utc_now(), symbol, side, strategy, qty, price, qty * price, status, reason, details_json),
             )
 
     def get_state(self, key: str, default: Any = None) -> Any:

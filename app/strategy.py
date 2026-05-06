@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict, deque
 from typing import Any
 
-from .analysis_tools import build_symbol_tool_context, deterministic_score
+from .analysis_tools import build_symbol_tool_context, deterministic_score, deterministic_score_breakdown
 from .config import Settings
 from .indicators import technical_snapshot
 from .llm_brain import LLMBrain
@@ -62,6 +63,7 @@ class StrategyEngine:
                 risk_limits=risk_limits,
             )
             combined = deterministic_score(context)
+            score_breakdown = deterministic_score_breakdown(context)
             if llm_primary and llm_reviews < self.settings.llm_max_symbols_per_cycle:
                 decision = await self.llm.decide(context)
                 llm_reviews += 1
@@ -88,6 +90,14 @@ class StrategyEngine:
                 reason=reason,
                 asof=utc_now(),
                 strategy=best_strategy["name"],
+                details_json=self._decision_details_json(
+                    context=context,
+                    action=action,
+                    decision_path="deterministic",
+                    score_breakdown=score_breakdown,
+                    action_reason=reason,
+                    positions=positions,
+                ),
             )
 
             if (
@@ -131,6 +141,14 @@ class StrategyEngine:
                     reason=reason,
                     asof=utc_now(),
                     strategy="risk_exit",
+                    details_json=self._risk_exit_details_json(
+                        symbol=symbol,
+                        quote=quote,
+                        position=position,
+                        stop=stop,
+                        target=target,
+                        reason=reason,
+                    ),
                 )
             )
         return decisions
@@ -147,3 +165,105 @@ class StrategyEngine:
         if combined <= -0.38 and has_position:
             return "SELL"
         return "HOLD"
+
+    def _decision_details_json(
+        self,
+        context: dict[str, Any],
+        action: str,
+        decision_path: str,
+        score_breakdown: dict[str, Any],
+        action_reason: str,
+        positions: dict[str, dict[str, Any]],
+    ) -> str:
+        has_position = bool(context.get("position", {}).get("qty", 0))
+        risk_limits = context.get("risk_limits", {})
+        gates = {
+            "has_existing_position": has_position,
+            "current_open_positions": len([row for row in positions.values() if row.get("qty", 0) > 0]),
+            "max_positions": risk_limits.get("max_positions"),
+            "buy_threshold": 0.45,
+            "sell_threshold": -0.38,
+            "buy_requires_no_existing_position": True,
+            "sell_requires_existing_position": True,
+            "broker_checks_after_decision": [
+                "daily_loss_limit",
+                "max_positions",
+                "max_position_pct",
+                "max_order_value_pct",
+                "available_cash",
+            ],
+        }
+        return _json_dumps(
+            {
+                "audit_version": 1,
+                "decision_path": decision_path,
+                "final_action": action,
+                "action_reason": action_reason,
+                "action_policy": {
+                    "BUY": "combined score >= 0.45 and no existing long position",
+                    "SELL": "combined score <= -0.38 and an existing long position is open",
+                    "HOLD": "score/action gates did not permit a trade",
+                },
+                "score_breakdown": score_breakdown,
+                "risk_gates": gates,
+                "context": _compact_context(context),
+            }
+        )
+
+    def _risk_exit_details_json(
+        self,
+        symbol: str,
+        quote: Quote,
+        position: dict[str, Any],
+        stop: float,
+        target: float,
+        reason: str,
+    ) -> str:
+        avg_price = float(position["avg_price"])
+        return _json_dumps(
+            {
+                "audit_version": 1,
+                "decision_path": "risk_exit",
+                "final_action": "SELL",
+                "action_reason": reason,
+                "risk_gates": {
+                    "entry_price": avg_price,
+                    "current_price": quote.price,
+                    "stop_loss_pct": self.settings.stop_loss_pct,
+                    "take_profit_pct": self.settings.take_profit_pct,
+                    "stop_price": round(stop, 4),
+                    "target_price": round(target, 4),
+                    "stop_triggered": quote.price <= stop,
+                    "take_profit_triggered": quote.price >= target,
+                },
+                "context": {
+                    "symbol": symbol,
+                    "quote": quote.to_dict(),
+                    "position": position,
+                },
+            }
+        )
+
+
+def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
+    recent_candles = context.get("recent_candles", [])
+    return {
+        "symbol": context.get("symbol"),
+        "company": context.get("company"),
+        "sector": context.get("sector"),
+        "exchange": context.get("exchange"),
+        "quote": context.get("quote"),
+        "position": context.get("position"),
+        "technical_math": context.get("technical_math"),
+        "candlestick_analysis": context.get("candlestick_analysis"),
+        "best_strategy": context.get("best_strategy"),
+        "strategy_signals": context.get("strategy_signals"),
+        "sentiment": context.get("sentiment"),
+        "risk_limits": context.get("risk_limits"),
+        "recent_candle_count": len(recent_candles),
+        "recent_candles_tail": recent_candles[-5:],
+    }
+
+
+def _json_dumps(value: dict[str, Any]) -> str:
+    return json.dumps(value, default=str, separators=(",", ":"))

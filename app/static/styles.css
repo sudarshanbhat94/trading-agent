@@ -658,7 +658,7 @@ td.reason {
   top: 0;
   right: 0;
   z-index: 40;
-  width: min(520px, 100vw);
+  width: min(760px, 100vw);
   height: 100vh;
   transform: translateX(105%);
   border-left: 1px solid var(--line);
@@ -684,6 +684,139 @@ td.reason {
   height: calc(100vh - 58px);
   overflow: auto;
   padding: 16px;
+}
+
+.audit-hero {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #b7dcf8;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f7fbff, #ffffff);
+  padding: 14px;
+}
+
+.audit-hero > span,
+.audit-hero p,
+.audit-card span,
+.audit-card small,
+.audit-list strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-hero div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.audit-hero strong {
+  font-size: 22px;
+}
+
+.audit-section {
+  margin-top: 16px;
+}
+
+.audit-section h4 {
+  margin: 0 0 9px;
+  color: #0b406e;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.audit-section p {
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.audit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.audit-chips span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f8fbff;
+  color: #466078;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.audit-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.audit-cards.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.audit-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 10px;
+}
+
+.audit-card strong {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+}
+
+.audit-card small {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.audit-formula {
+  margin-top: 10px;
+  border-left: 3px solid var(--blue);
+  padding-left: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.audit-list {
+  margin-top: 12px;
+}
+
+.audit-list ul {
+  margin: 7px 0 0;
+  padding-left: 18px;
+}
+
+.audit-list li {
+  margin: 5px 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.audit-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.audit-table {
+  font-size: 12px;
+}
+
+.audit-table th,
+.audit-table td {
+  padding: 9px 10px;
+  white-space: normal;
 }
 
 .detail-list {
@@ -777,5 +910,10 @@ td.reason {
 
   td.reason {
     min-width: 360px;
+  }
+
+  .audit-cards,
+  .audit-cards.two {
+    grid-template-columns: 1fr;
   }
 }

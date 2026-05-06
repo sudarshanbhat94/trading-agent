@@ -438,7 +438,7 @@ function renderStrategies(rows) {
     .slice(0, 80)
     .map(
       (row) => `<tr>
-        <td><strong>${row.strategy}</strong></td>
+        <td><strong>${escapeHtml(row.strategy)}</strong></td>
         <td class="num">${row.open_positions}</td>
         <td class="num">${fmtMoney(row.exposure)}</td>
         <td class="num ${pnlClass(row.unrealized_pnl)}">${fmtMoney(row.unrealized_pnl)}</td>
@@ -461,8 +461,8 @@ function renderPositions(rows) {
       const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
       const marketValue = Number(row.market_price) * Number(row.qty);
       return `<tr>
-        <td><strong>${row.symbol}</strong></td>
-        <td>${row.strategy || "-"}</td>
+        <td><strong>${escapeHtml(row.symbol)}</strong></td>
+        <td>${escapeHtml(row.strategy || "-")}</td>
         <td class="num">${row.qty}</td>
         <td class="num">${fmtMoney(row.avg_price)}</td>
         <td class="num">${fmtMoney(row.market_price)}</td>
@@ -494,11 +494,11 @@ function renderQuotes(rows) {
 function quoteRow(row) {
   const dayPct = quoteDayPct(row);
   return `<tr>
-        <td><strong>${row.symbol}</strong></td>
+        <td><strong>${escapeHtml(row.symbol)}</strong></td>
         <td class="num">${fmtMoney(row.price)}</td>
         <td class="num ${pnlClass(dayPct)}">${fmtPct(dayPct)}</td>
         <td class="num">${fmtCompact(row.volume)}</td>
-        <td><span class="source ${sourceClass(row.source)}">${row.source}</span></td>
+        <td><span class="source ${sourceClass(row.source)}">${escapeHtml(row.source)}</span></td>
         <td>${fmtTime(row.ts)}</td>
       </tr>`;
 }
@@ -527,14 +527,14 @@ function renderDecisions(rows) {
       const action = String(row.action || "HOLD").toLowerCase();
       return `<tr>
         <td>${fmtTime(row.ts)}</td>
-        <td><strong>${row.symbol}</strong></td>
-        <td>${row.strategy || "-"}</td>
-        <td><span class="tag ${action}">${row.action}</span></td>
+        <td><strong>${escapeHtml(row.symbol)}</strong></td>
+        <td>${escapeHtml(row.strategy || "-")}</td>
+        <td><span class="tag ${action}">${escapeHtml(row.action)}</span></td>
         <td class="num">${fmtNumber(Number(row.confidence) * 100)}%</td>
         <td class="num">${fmtMoney(row.price)}</td>
         <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
         <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
-        <td class="reason">${row.reason}</td>
+        <td class="reason">${escapeHtml(row.reason)}</td>
       </tr>`;
     })
     .join("")
@@ -550,8 +550,8 @@ function renderOverviewDecisions(rows) {
         .map((row) => {
           const action = String(row.action || "HOLD").toLowerCase();
           return `<tr>
-            <td><strong>${row.symbol}</strong></td>
-            <td><span class="tag ${action}">${row.action}</span></td>
+            <td><strong>${escapeHtml(row.symbol)}</strong></td>
+            <td><span class="tag ${action}">${escapeHtml(row.action)}</span></td>
             <td class="num">${fmtNumber(Number(row.confidence) * 100)}%</td>
             <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
             <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
@@ -574,13 +574,13 @@ function renderOrders(rows) {
       const side = String(row.side || "").toLowerCase();
       return `<tr>
         <td>${fmtTime(row.ts)}</td>
-        <td><span class="tag ${side}">${row.side}</span></td>
-        <td><strong>${row.symbol}</strong></td>
-        <td>${row.strategy || "-"}</td>
+        <td><span class="tag ${side}">${escapeHtml(row.side)}</span></td>
+        <td><strong>${escapeHtml(row.symbol)}</strong></td>
+        <td>${escapeHtml(row.strategy || "-")}</td>
         <td class="num">${row.qty}</td>
         <td class="num">${fmtMoney(row.price)}</td>
         <td class="num">${fmtMoney(row.notional)}</td>
-        <td>${row.status}</td>
+        <td>${escapeHtml(row.status)}</td>
       </tr>`;
     })
     .join("");
@@ -605,6 +605,12 @@ function detailHtml(value) {
   if (!value || typeof value !== "object") {
     return `<pre>${escapeHtml(value)}</pre>`;
   }
+  if (value.details_json && value.action) {
+    return decisionDetailHtml(value);
+  }
+  if (value.details_json && value.side) {
+    return orderDetailHtml(value);
+  }
   const rows = Object.entries(value)
     .filter(([key]) => !key.endsWith("_json"))
     .map(([key, item]) => `<div><span>${escapeHtml(key)}</span><strong>${escapeHtml(formatDetailValue(item))}</strong></div>`)
@@ -614,6 +620,229 @@ function detailHtml(value) {
     .map(([key, item]) => `<h4>${escapeHtml(key)}</h4><pre>${escapeHtml(prettyJson(item))}</pre>`)
     .join("");
   return `<div class="detail-list">${rows}</div>${jsonBlocks}<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+}
+
+function decisionDetailHtml(row) {
+  const audit = parseJsonObject(row.details_json);
+  const context = audit.context || {};
+  const llm = audit.llm_output || null;
+  return `
+    ${auditHero({
+      label: "Decision audit",
+      symbol: row.symbol,
+      action: row.action,
+      status: audit.decision_path || row.strategy || "-",
+      meta: `${fmtNumber(Number(row.confidence) * 100)}% confidence · ${fmtMoney(row.price)}`,
+    })}
+    <section class="audit-section">
+      <h4>Why ${escapeHtml(row.action)}</h4>
+      <p>${escapeHtml(audit.action_reason || row.reason || "-")}</p>
+      <div class="audit-chips">
+        <span>Strategy: ${escapeHtml(row.strategy || context.best_strategy?.name || "-")}</span>
+        <span>Path: ${escapeHtml(audit.decision_path || "-")}</span>
+        <span>At: ${escapeHtml(fmtTime(row.ts))}</span>
+      </div>
+    </section>
+    ${scoreBreakdownHtml(audit.score_breakdown)}
+    ${llm ? llmOutputHtml(llm, audit) : ""}
+    ${riskGateHtml(audit)}
+    ${marketContextHtml(context)}
+    ${strategySignalsHtml(context.strategy_signals || [])}
+    <section class="audit-section">
+      <h4>Full Audit JSON</h4>
+      <pre>${escapeHtml(JSON.stringify(audit, null, 2))}</pre>
+    </section>
+  `;
+}
+
+function orderDetailHtml(row) {
+  const audit = parseJsonObject(row.details_json);
+  const execution = audit.execution || {};
+  const route = audit.route || {};
+  return `
+    ${auditHero({
+      label: "Order audit",
+      symbol: row.symbol,
+      action: row.side,
+      status: row.status,
+      meta: `${row.qty} qty · ${fmtMoney(row.notional)}`,
+    })}
+    <section class="audit-section">
+      <h4>Why Order ${escapeHtml(row.status)}</h4>
+      <p>${escapeHtml(row.reason || "-")}</p>
+      <div class="audit-chips">
+        <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
+        <span>Price: ${fmtMoney(row.price)}</span>
+        <span>Time: ${escapeHtml(fmtTime(row.ts))}</span>
+      </div>
+    </section>
+    ${objectCardsHtml("Execution Sizing", execution.sizing)}
+    ${objectCardsHtml("Execution Risk Checks", execution.risk_checks || execution.daily_loss)}
+    ${objectCardsHtml("Broker / Route", route)}
+    ${audit.decision ? nestedDecisionHtml(audit.decision) : ""}
+    <section class="audit-section">
+      <h4>Full Audit JSON</h4>
+      <pre>${escapeHtml(JSON.stringify(audit, null, 2))}</pre>
+    </section>
+  `;
+}
+
+function auditHero({ label, symbol, action, status, meta }) {
+  const tagClass = String(action || "").toLowerCase();
+  return `<section class="audit-hero">
+    <span>${escapeHtml(label)}</span>
+    <div>
+      <strong>${escapeHtml(symbol || "-")}</strong>
+      <span class="tag ${tagClass}">${escapeHtml(action || "-")}</span>
+    </div>
+    <p>${escapeHtml(status || "-")} · ${escapeHtml(meta || "-")}</p>
+  </section>`;
+}
+
+function scoreBreakdownHtml(score) {
+  if (!score || !Array.isArray(score.components)) return "";
+  return `<section class="audit-section">
+    <h4>Score Breakdown</h4>
+    <div class="audit-cards">
+      ${score.components
+        .map(
+          (component) => `<div class="audit-card">
+            <span>${labelize(component.name)}</span>
+            <strong class="${pnlClass(component.score)}">${fmtNumber(component.score)}</strong>
+            <small>weight ${fmtNumber(Number(component.weight) * 100)}% · contribution ${fmtNumber(component.contribution)}</small>
+          </div>`,
+        )
+        .join("")}
+    </div>
+    <p class="audit-formula">${escapeHtml(score.formula || "")} = <strong>${fmtNumber(score.combined)}</strong></p>
+  </section>`;
+}
+
+function llmOutputHtml(llm, audit) {
+  return `<section class="audit-section">
+    <h4>LLM Evidence</h4>
+    <div class="audit-cards two">
+      <div class="audit-card">
+        <span>Requested Action</span>
+        <strong>${escapeHtml(audit.requested_action || audit.final_action || "-")}</strong>
+        <small>model risk: ${escapeHtml(llm.risk || "-")}</small>
+      </div>
+      <div class="audit-card">
+        <span>Confidence Gate</span>
+        <strong>${audit.confidence_gate?.passed ? "passed" : "not passed"}</strong>
+        <small>minimum ${fmtNumber(Number(audit.confidence_gate?.minimum_required || 0) * 100)}%</small>
+      </div>
+    </div>
+    ${auditList("Evidence", llm.evidence)}
+    ${auditList("Checklist", llm.checklist)}
+    ${auditList("Risk Checks", llm.risk_checks)}
+    ${auditList("Invalidators", llm.invalidators)}
+  </section>`;
+}
+
+function riskGateHtml(audit) {
+  const gates = audit.risk_gates || {};
+  const confidence = audit.confidence_gate ? { confidence_gate: audit.confidence_gate } : {};
+  return objectCardsHtml("Risk Gates", { ...confidence, ...gates });
+}
+
+function marketContextHtml(context) {
+  if (!context || !Object.keys(context).length) return "";
+  return `<section class="audit-section">
+    <h4>Market Context Used</h4>
+    <div class="audit-cards">
+      <div class="audit-card"><span>Quote</span><strong>${fmtMoney(context.quote?.price)}</strong><small>${escapeHtml(context.quote?.source || "-")}</small></div>
+      <div class="audit-card"><span>Technical</span><strong class="${pnlClass(context.technical_math?.score)}">${fmtNumber(context.technical_math?.score)}</strong><small>${escapeHtml(context.technical_math?.trend || "-")}</small></div>
+      <div class="audit-card"><span>Candles</span><strong class="${pnlClass(context.candlestick_analysis?.score)}">${fmtNumber(context.candlestick_analysis?.score)}</strong><small>${escapeHtml((context.candlestick_analysis?.patterns || []).join(", "))}</small></div>
+      <div class="audit-card"><span>Sentiment</span><strong class="${pnlClass(context.sentiment?.score)}">${fmtNumber(context.sentiment?.score)}</strong><small>news sentiment score</small></div>
+    </div>
+    <pre>${escapeHtml(JSON.stringify({
+      position: context.position,
+      technical_math: context.technical_math,
+      candlestick_analysis: context.candlestick_analysis,
+      best_strategy: context.best_strategy,
+      recent_candle_count: context.recent_candle_count,
+      recent_candles_tail: context.recent_candles_tail,
+    }, null, 2))}</pre>
+  </section>`;
+}
+
+function strategySignalsHtml(signals) {
+  if (!Array.isArray(signals) || !signals.length) return "";
+  return `<section class="audit-section">
+    <h4>Strategy Signals</h4>
+    <div class="audit-table-wrap">
+      <table class="audit-table">
+        <thead><tr><th>Name</th><th>Direction</th><th>Score</th><th>Confidence</th><th>Notes</th></tr></thead>
+        <tbody>
+          ${signals
+            .map(
+              (signal) => `<tr>
+                <td>${escapeHtml(signal.name || "-")}</td>
+                <td>${escapeHtml(signal.direction || "-")}</td>
+                <td class="num ${pnlClass(signal.score)}">${fmtNumber(signal.score)}</td>
+                <td class="num">${fmtNumber(Number(signal.confidence) * 100)}%</td>
+                <td>${escapeHtml((signal.notes || []).join(", ") || "-")}</td>
+              </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+function nestedDecisionHtml(decision) {
+  return `<section class="audit-section">
+    <h4>Linked Decision</h4>
+    <p>${escapeHtml(decision.reason || decision.action_reason || "-")}</p>
+    <pre>${escapeHtml(JSON.stringify(decision, null, 2))}</pre>
+  </section>`;
+}
+
+function objectCardsHtml(title, object) {
+  if (!object || typeof object !== "object" || !Object.keys(object).length) return "";
+  return `<section class="audit-section">
+    <h4>${escapeHtml(title)}</h4>
+    <div class="audit-cards">
+      ${Object.entries(object)
+        .map(
+          ([key, value]) => `<div class="audit-card">
+            <span>${labelize(key)}</span>
+            <strong>${escapeHtml(shortValue(value))}</strong>
+          </div>`,
+        )
+        .join("")}
+    </div>
+  </section>`;
+}
+
+function auditList(title, items) {
+  if (!items || (Array.isArray(items) && !items.length)) return "";
+  const list = Array.isArray(items) ? items : [items];
+  return `<div class="audit-list">
+    <strong>${escapeHtml(title)}</strong>
+    <ul>${list.map((item) => `<li>${escapeHtml(shortValue(item, 220))}</li>`).join("")}</ul>
+  </div>`;
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value || "{}") : value;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function labelize(value) {
+  return escapeHtml(String(value || "-").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()));
+}
+
+function shortValue(value, max = 90) {
+  if (value === null || value === undefined) return "-";
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
 function formatDetailValue(value) {
