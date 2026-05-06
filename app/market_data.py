@@ -29,6 +29,41 @@ class MarketDataProvider(ABC):
         return {}
 
 
+class HistoricalCandleFallbackProvider(MarketDataProvider):
+    def __init__(
+        self,
+        primary: MarketDataProvider,
+        fallback: MarketDataProvider,
+        min_candles: int = 3,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.min_candles = min_candles
+        self.source_name = f"{primary.source_name}+{fallback.source_name}-candles"
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        return await self.primary.get_quotes(universe)
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        primary_candles = await self.primary.get_candles(universe)
+        missing_rows = [
+            row
+            for row in universe
+            if len(primary_candles.get(row["symbol"], [])) < self.min_candles
+        ]
+        if not missing_rows:
+            return primary_candles
+
+        fallback_candles = await self.fallback.get_candles(missing_rows)
+        merged = dict(primary_candles)
+        for row in missing_rows:
+            symbol = row["symbol"]
+            candles = fallback_candles.get(symbol, [])
+            if len(candles) >= self.min_candles:
+                merged[symbol] = candles
+        return merged
+
+
 class SimulatedMarketDataProvider(MarketDataProvider):
     source_name = "simulated"
 
@@ -595,5 +630,8 @@ def build_market_data_provider(settings: Settings) -> MarketDataProvider:
     if provider == "upstox":
         return UpstoxMarketDataProvider(settings)
     if provider == "nubra":
-        return NubraMarketDataProvider(settings)
+        nubra = NubraMarketDataProvider(settings)
+        if settings.enable_yahoo_candle_fallback:
+            return HistoricalCandleFallbackProvider(nubra, YahooMarketDataProvider(settings))
+        return nubra
     raise MarketDataError(f"Unsupported MARKET_DATA_PROVIDER={provider!r}")

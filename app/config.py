@@ -66,6 +66,7 @@ class Settings:
     upstox_candle_lookback_days: int = _int("UPSTOX_CANDLE_LOOKBACK_DAYS", 3)
     yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "15m")
     yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
+    enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", True)
     nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
     nubra_session_token: str = os.getenv("NUBRA_SESSION_TOKEN", "")
     nubra_device_id: str = os.getenv("NUBRA_DEVICE_ID", "")
@@ -153,6 +154,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "upstox_candle_lookback_days", "label": "Candle Lookback Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
     {"key": "yahoo_candle_interval", "label": "Yahoo Candle Interval", "type": "select", "category": "Market Data", "choices": ["5m", "15m", "30m", "60m", "1d"]},
     {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["1d", "5d", "1mo", "3mo"]},
+    {"key": "enable_yahoo_candle_fallback", "label": "Yahoo Candle Fallback", "type": "boolean", "category": "Market Data"},
     {"key": "kite_api_key", "label": "Kite API Key", "type": "secret", "category": "Market Data"},
     {"key": "kite_access_token", "label": "Kite Access Token", "type": "secret", "category": "Market Data"},
     {"key": "nubra_api_base_url", "label": "Nubra API Base URL", "type": "text", "category": "Market Data"},

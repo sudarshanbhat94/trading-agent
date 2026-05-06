@@ -92,6 +92,10 @@ class TradingAgentService:
         self._cycle_phase = "candles"
         candles = await self.market_data.get_candles(universe)
         candle_counts = {symbol: len(items) for symbol, items in candles.items()}
+        candle_sources: dict[str, int] = {}
+        for items in candles.values():
+            for candle in items[:1]:
+                candle_sources[candle.source] = candle_sources.get(candle.source, 0) + 1
         self._log(
             "INFO",
             "market_data",
@@ -101,6 +105,7 @@ class TradingAgentService:
                 "provider": self.market_data.source_name,
                 "symbols_with_candles": len(candles),
                 "total_candles": sum(candle_counts.values()),
+                "source_counts": candle_sources,
                 "sample_counts": dict(list(candle_counts.items())[:10]),
             },
         )
