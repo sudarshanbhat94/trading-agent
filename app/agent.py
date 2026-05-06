@@ -214,10 +214,10 @@ class TradingAgentService:
 
     def snapshot(self) -> dict[str, Any]:
         quotes = self.db.latest_quotes()
-        decisions = self.db.latest_decisions(80)
-        suggestion_decisions = self.db.latest_decisions(1000)
-        orders = self.db.latest_orders(80)
-        order_audit_history = self.db.latest_orders(1000)
+        decisions = _with_detail_urls(self.db.latest_decision_summaries(80), "decisions")
+        suggestion_decisions = self.db.latest_decisions(240)
+        orders = _with_detail_urls(self.db.latest_order_summaries(80), "orders")
+        order_audit_history = self.db.latest_orders(240)
         positions = self._positions_with_exit_plans(self.db.positions(), order_audit_history)
         suggestions = self._suggestions(suggestion_decisions)
         return {
@@ -298,7 +298,8 @@ class TradingAgentService:
                     "institutional_bias": (institutional.get("market_bias") or {}).get("score"),
                     "risk_flags": risk.get("flags", []),
                     "reason": audit.get("action_reason") or decision.get("reason"),
-                    "details_json": decision.get("details_json"),
+                    "id": decision.get("id"),
+                    "detail_url": f"/api/decisions/{decision.get('id')}",
                 }
             )
         suggestions.sort(
@@ -454,6 +455,15 @@ def _json_object(value: Any) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["detail_url"] = f"/api/{collection}/{item.get('id')}"
+        output.append(item)
+    return output
 
 
 def _exit_plan_from_trade_plan(

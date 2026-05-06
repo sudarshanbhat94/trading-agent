@@ -146,6 +146,22 @@ async def status() -> dict[str, Any]:
     return snapshot
 
 
+@app.get("/api/decisions/{decision_id}")
+async def decision_detail(decision_id: int) -> dict[str, Any]:
+    row = db.decision_by_id(decision_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return row
+
+
+@app.get("/api/orders/{order_id}")
+async def order_detail(order_id: int) -> dict[str, Any]:
+    row = db.order_by_id(order_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return row
+
+
 @app.get("/api/account")
 async def account_details() -> dict[str, Any]:
     return await account.snapshot()

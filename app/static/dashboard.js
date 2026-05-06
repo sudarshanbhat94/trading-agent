@@ -738,10 +738,24 @@ function bindRowDetails(body, rows, title) {
   });
 }
 
-function showDetails(title, value) {
+async function showDetails(title, value) {
   byId("drawer-title").textContent = title;
-  byId("drawer-body").innerHTML = detailHtml(value);
   byId("detail-drawer").classList.add("open");
+  byId("drawer-body").innerHTML = `<div class="empty-state">Loading details...</div>`;
+  let detailValue = value;
+  if (value?.detail_url && !value.details_json) {
+    try {
+      const response = await fetch(value.detail_url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      detailValue = { ...value, ...(await response.json()) };
+    } catch (error) {
+      detailValue = {
+        ...value,
+        detail_error: error.message || String(error),
+      };
+    }
+  }
+  byId("drawer-body").innerHTML = detailHtml(detailValue);
 }
 
 function detailHtml(value) {

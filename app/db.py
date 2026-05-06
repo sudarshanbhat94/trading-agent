@@ -496,6 +496,28 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def latest_decision_summaries(self, limit: int = 80) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select id, ts, symbol, action, strategy, confidence, price,
+                    technical_score, sentiment_score, reason
+                from decisions
+                order by id desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def decision_by_id(self, decision_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from decisions where id = ?",
+                (decision_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def latest_orders(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -503,6 +525,27 @@ class Database:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def latest_order_summaries(self, limit: int = 80) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select id, ts, symbol, side, strategy, qty, price, notional, status, reason
+                from orders
+                order by id desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def order_by_id(self, order_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from orders where id = ?",
+                (order_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def positions(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
