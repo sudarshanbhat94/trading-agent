@@ -391,6 +391,19 @@ class LLMBrain:
     async def decide(self, context: dict[str, Any]) -> Decision:
         if not self.enabled:
             return self._hold_from_context(context, "LLM disabled")
+        budget = self._decision_budget_seconds()
+        try:
+            return await asyncio.wait_for(self._decide_inner(context), timeout=budget)
+        except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+            return self._hold_from_context(
+                context,
+                f"LLM primary timed out after {budget}s; deterministic gates remain active",
+                exc,
+            )
+
+    async def _decide_inner(self, context: dict[str, Any]) -> Decision:
+        if not self.enabled:
+            return self._hold_from_context(context, "LLM disabled")
 
         prompt_context, rolling_meta = await self._decision_prompt_context(context)
         payload = {
@@ -591,20 +604,22 @@ class LLMBrain:
             )
 
     async def _decision_prompt_context(self, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        rich_context = _llm_prompt_context(context, profile="rich")
-        rich_json = json.dumps(rich_context, default=str, separators=(",", ":"))
+        cycle_safe_context = _llm_prompt_context(context, profile="compact")
+        cycle_safe_json = json.dumps(cycle_safe_context, default=str, separators=(",", ":"))
         if (
             not self.settings.llm_rolling_context_enabled
-            or len(rich_json) <= self.settings.llm_rolling_context_threshold_chars
+            or len(cycle_safe_json) <= self.settings.llm_rolling_context_threshold_chars
         ):
-            return self._prompt_context(context), {"_llm_analysis_mode": "single_context"}
+            return cycle_safe_context, {"_llm_analysis_mode": "single_context"}
 
+        rich_context = _llm_prompt_context(context, profile="rich")
+        rich_json = json.dumps(rich_context, default=str, separators=(",", ":"))
         chunks = _chunk_text(
             rich_json,
             max(int(self.settings.llm_rolling_context_chunk_chars or 7000), 1000),
         )
         max_chunks = int(self.settings.llm_rolling_context_max_chunks or 0)
-        selected_chunks = chunks if max_chunks <= 0 else chunks[:max(max_chunks, 1)]
+        selected_chunks = chunks[: min(len(chunks), 2)] if max_chunks <= 0 else chunks[:max(max_chunks, 1)]
         summaries: list[dict[str, Any]] = []
         summary_attempts: list[dict[str, Any]] = []
         for index, chunk in enumerate(selected_chunks, start=1):
@@ -896,19 +911,34 @@ class LLMBrain:
         if not endpoints:
             raise LLMResponseError("No configured LLM endpoint is available")
         attempts: list[dict[str, Any]] = []
+        deadline = perf_counter() + max(float(timeout_seconds), 1.0)
         for index, endpoint in enumerate(endpoints, start=1):
+            remaining = deadline - perf_counter()
+            if remaining <= 0:
+                attempts.append(
+                    {
+                        "provider": endpoint.provider,
+                        "model": endpoint.model,
+                        "status": "skipped",
+                        "attempt": index,
+                        "latency_ms": 0,
+                        "error": f"LLM decision budget exhausted after {timeout_seconds}s",
+                    }
+                )
+                break
             endpoint_payload = self._payload_for_endpoint(payload, endpoint, schema=schema)
+            attempt_timeout = self._endpoint_attempt_timeout_seconds(endpoint, remaining)
             started = perf_counter()
             try:
                 if self._should_stream(endpoint_payload, endpoint):
                     content = await asyncio.wait_for(
-                        self._chat_content_stream(endpoint_payload, timeout_seconds, endpoint),
-                        timeout=timeout_seconds,
+                        self._chat_content_stream(endpoint_payload, attempt_timeout, endpoint),
+                        timeout=attempt_timeout,
                     )
                 else:
                     content = await asyncio.wait_for(
-                        self._chat_content_once(endpoint_payload, timeout_seconds, endpoint),
-                        timeout=timeout_seconds,
+                        self._chat_content_once(endpoint_payload, attempt_timeout, endpoint),
+                        timeout=attempt_timeout,
                     )
                 if require_json:
                     self._parse_json_content(content)
@@ -1159,6 +1189,20 @@ class LLMBrain:
         if self.settings.llm_thinking_enabled:
             return max(512, min(self.settings.llm_max_tokens, 4096))
         return 128
+
+    def _decision_budget_seconds(self) -> int:
+        configured = int(self.settings.llm_timeout_seconds or 30)
+        return max(8, min(configured, 30))
+
+    def _endpoint_attempt_timeout_seconds(self, endpoint: LLMEndpoint, remaining_seconds: float) -> float:
+        model = endpoint.model.lower()
+        if endpoint.provider == "groq":
+            preferred = 8.0
+        elif "flash" in model or "mistral" in model or "glm" in model or "minimax" in model:
+            preferred = 7.0
+        else:
+            preferred = 10.0
+        return max(2.0, min(preferred, remaining_seconds))
 
     def _strip_json(self, content: Any) -> str:
         text = "" if content is None else str(content).strip()

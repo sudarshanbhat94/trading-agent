@@ -986,17 +986,36 @@ function exitPlanFromAudit(audit) {
   const full = details.context?.full_spectrum_analysis || audit.context?.full_spectrum_analysis || {};
   const tradePlan = full.trade_plan || {};
   if (!Object.keys(tradePlan).length) return {};
+  const targets = normalizedTargets(tradePlan.targets || []);
   return {
     horizon: tradePlan.horizon,
     entry_zone: tradePlan.entry_zone,
     stop_loss: tradePlan.stop_loss,
-    target_1: (tradePlan.targets || [])[0],
-    target_2: (tradePlan.targets || [])[1],
-    target_3: (tradePlan.targets || [])[2],
+    target_1: targets[0],
+    target_2: targets[1],
+    target_3: targets[2],
     invalidation: tradePlan.invalidation,
     monitoring_checklist: full.monitoring_checklist || [],
     plan: "Exit on stop or invalidation. Take partial profit or tighten stop near T1, trail after T1, then reassess at T2/T3 or if news/global risk turns negative.",
   };
+}
+
+function normalizedTargets(targets) {
+  const normalized = Array.isArray(targets) ? targets.map((target) => ({ ...(target || {}) })) : [];
+  if (normalized.length < 3) return normalized;
+  const t1 = Number(normalized[0]?.price);
+  const t2 = Number(normalized[1]?.price);
+  const t3 = Number(normalized[2]?.price);
+  if (!Number.isFinite(t2) || !Number.isFinite(t3) || t3 > t2) return normalized;
+  const riskStep = Number.isFinite(t1) && t2 > t1 ? t2 - t1 : Math.max(t2 * 0.01, 0.01);
+  normalized[2] = {
+    ...normalized[2],
+    price: t2 + riskStep,
+    rr: normalized[2].rr === "structure" ? "3.5_or_structure" : normalized[2].rr,
+    structure_reference: normalized[2].structure_reference ?? t3,
+    note: "Normalized above T2; original structure target is kept as reference.",
+  };
+  return normalized;
 }
 
 function exitPlanMini(exit) {
@@ -1416,11 +1435,22 @@ async function postControl(path) {
 async function analyzeSymbol(event) {
   event.preventDefault();
   const input = byId("analyze-symbol");
+  const button = byId("analyze-btn");
   const symbol = input.value.trim().toUpperCase();
   if (!symbol) {
     byId("analyze-status").textContent = "enter a symbol";
     return;
   }
+  const configuredTimeout = Number(state.config?.settings?.llm_timeout_seconds || 30);
+  const timeoutMs = Math.max(45000, Math.min(70000, configuredTimeout * 1000 + 20000));
+  const controller = new AbortController();
+  const started = Date.now();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const ticker = window.setInterval(() => {
+    const elapsed = Math.round((Date.now() - started) / 1000);
+    byId("analyze-status").textContent = `analyzing ${symbol} · ${elapsed}s`;
+  }, 1000);
+  button.disabled = true;
   byId("analyze-status").textContent = `analyzing ${symbol}...`;
   byId("analyze-result").innerHTML = `<div class="empty-state">Running live quote, candles, strategy, sentiment, risk gates, and LLM if enabled...</div>`;
   try {
@@ -1428,6 +1458,7 @@ async function analyzeSymbol(event) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol }),
+      signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok) {
@@ -1439,8 +1470,16 @@ async function analyzeSymbol(event) {
     renderManualAnalysis(payload);
     fetchLogs();
   } catch (error) {
-    byId("analyze-status").textContent = "network error";
-    byId("analyze-result").innerHTML = `<div class="error-box">${escapeHtml(networkErrorMessage(error, "symbol analysis"))}</div>`;
+    const timeout = error?.name === "AbortError";
+    byId("analyze-status").textContent = timeout ? "analysis timed out" : "network error";
+    const message = timeout
+      ? "Symbol analysis exceeded the UI wait budget. The backend will now fail safely instead of blocking the desk; try again after the current cycle is idle."
+      : networkErrorMessage(error, "symbol analysis");
+    byId("analyze-result").innerHTML = `<div class="error-box">${escapeHtml(message)}</div>`;
+  } finally {
+    window.clearTimeout(timer);
+    window.clearInterval(ticker);
+    button.disabled = false;
   }
 }
 

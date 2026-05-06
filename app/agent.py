@@ -524,7 +524,7 @@ def _exit_plan_from_trade_plan(
     trade_plan: dict[str, Any],
     monitoring_checklist: list[str] | None = None,
 ) -> dict[str, Any]:
-    targets = trade_plan.get("targets") or []
+    targets = _monotonic_targets(trade_plan.get("targets") or [])
     t1 = targets[0] if targets else {}
     t2 = targets[1] if len(targets) > 1 else {}
     t3 = targets[2] if len(targets) > 2 else {}
@@ -542,3 +542,31 @@ def _exit_plan_from_trade_plan(
             "trail after T1, and reassess at T2/T3 or on negative news/global risk shift."
         ),
     }
+
+
+def _monotonic_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = [dict(target) for target in targets if isinstance(target, dict)]
+    if len(normalized) < 3:
+        return normalized
+    t1_price = _float_or_none(normalized[0].get("price"))
+    t2_price = _float_or_none(normalized[1].get("price"))
+    t3_price = _float_or_none(normalized[2].get("price"))
+    if t2_price is None or t3_price is None or t3_price > t2_price:
+        return normalized
+    risk_step = (t2_price - t1_price) if t1_price is not None and t2_price > t1_price else max(t2_price * 0.01, 0.01)
+    original = dict(normalized[2])
+    normalized[2] = {
+        **original,
+        "price": round(t2_price + risk_step, 3),
+        "rr": original.get("rr") if original.get("rr") != "structure" else "3.5_or_structure",
+        "structure_reference": original.get("structure_reference", t3_price),
+        "note": "normalized so target ladder stays above T2; original structure target is retained as reference",
+    }
+    return normalized
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
