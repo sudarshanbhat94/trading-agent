@@ -18,11 +18,17 @@ HEALTH_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "ok": {"type": "boolean"},
-        "service": {"type": "string"},
-        "note": {"type": "string"},
+        "service": {"type": "string", "maxLength": 40},
+        "note": {"type": "string", "maxLength": 80},
     },
     "required": ["ok", "service", "note"],
 }
+
+
+SHORT_TEXT: dict[str, Any] = {"type": "string", "maxLength": 180}
+MEDIUM_TEXT: dict[str, Any] = {"type": "string", "maxLength": 280}
+SHORT_LIST: dict[str, Any] = {"type": "array", "maxItems": 4, "items": SHORT_TEXT}
+GAP_LIST: dict[str, Any] = {"type": "array", "maxItems": 6, "items": SHORT_TEXT}
 
 
 DECISION_SCHEMA: dict[str, Any] = {
@@ -30,19 +36,48 @@ DECISION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
-        "confidence": {"type": "number"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-        "strategy": {"type": "string"},
-        "reason": {"type": "string"},
-        "checklist": {"type": "array", "items": {"type": "string"}},
-        "evidence": {"type": "array", "items": {"type": "string"}},
-        "risk_checks": {"type": "array", "items": {"type": "string"}},
-        "invalidators": {"type": "array", "items": {"type": "string"}},
-        "signal_plan": {"type": "object"},
-        "confluence_score": {"type": "object"},
-        "trade_plan": {"type": "object"},
-        "monitoring_checklist": {"type": "array", "items": {"type": "string"}},
-        "data_gaps": {"type": "array", "items": {"type": "string"}},
+        "strategy": {"type": "string", "maxLength": 80},
+        "reason": MEDIUM_TEXT,
+        "checklist": SHORT_LIST,
+        "evidence": {"type": "array", "maxItems": 5, "items": SHORT_TEXT},
+        "risk_checks": {"type": "array", "maxItems": 5, "items": SHORT_TEXT},
+        "invalidators": SHORT_LIST,
+        "signal_plan": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "bias": SHORT_TEXT,
+                "entry_trigger": SHORT_TEXT,
+                "exit_trigger": SHORT_TEXT,
+                "timeframe": SHORT_TEXT,
+            },
+        },
+        "confluence_score": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "total": {"type": "number"},
+                "max": {"type": "number"},
+                "rating": SHORT_TEXT,
+                "why": SHORT_TEXT,
+            },
+        },
+        "trade_plan": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "entry": SHORT_TEXT,
+                "stop_loss": SHORT_TEXT,
+                "target": SHORT_TEXT,
+                "position_size": SHORT_TEXT,
+                "exit_rule": SHORT_TEXT,
+                "time_stop": SHORT_TEXT,
+            },
+        },
+        "monitoring_checklist": {"type": "array", "maxItems": 5, "items": SHORT_TEXT},
+        "data_gaps": GAP_LIST,
     },
     "required": [
         "action",
@@ -263,6 +298,8 @@ class LLMBrain:
                         "monitoring_checklist, and data_gaps. "
                         "Your entire response must be one JSON object. The first character must be { and the last "
                         "character must be }. Do not include markdown, scratchpad, reasoning text, or commentary. "
+                        "Keep it compact: no newline characters inside strings, reason <= 280 characters, "
+                        "each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. "
                         "action must be BUY, SELL, or HOLD. confidence is 0..1. "
                         "strategy must be one of the supplied strategy_signals names or best_strategy.name. "
                         "risk must be LOW, MEDIUM, or HIGH. "
@@ -351,6 +388,8 @@ class LLMBrain:
                         "signal_plan; confluence_score; trade_plan; monitoring_checklist; and data_gaps. "
                         "Your entire response must be one JSON object. Do not include markdown, scratchpad, "
                         "reasoning text, or commentary. "
+                        "Keep it compact: no newline characters inside strings, reason <= 280 characters, "
+                        "each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. "
                         "For existing long positions, review whether to continue holding or exit based on stop, "
                         "target, invalidation, technical breakdown, news, and market regime. "
                         "Never recommend leverage, options, futures, or short-selling."
@@ -436,7 +475,7 @@ class LLMBrain:
             synthetic["_json_repaired"] = False
             return synthetic
         try:
-            return self._parse_json_content(content)
+            return _normalize_decision_payload(self._parse_json_content(content))
         except LLMResponseError as exc:
             repaired = ""
             synthetic = _synthetic_safe_decision_from_text(content, exc)
@@ -457,13 +496,22 @@ class LLMBrain:
                 synthetic["_json_repair_raw"] = str(repaired)[:1000]
                 return synthetic
             parsed["_json_repaired"] = True
-            return parsed
+            return _normalize_decision_payload(parsed)
 
     def _parse_json_content(self, content: Any) -> dict[str, Any]:
         stripped = self._strip_json(content)
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError as exc:
+            repaired = _escape_json_string_newlines(stripped)
+            if repaired != stripped:
+                try:
+                    parsed = json.loads(repaired)
+                    if isinstance(parsed, dict):
+                        parsed["_json_repaired"] = True
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
             raise LLMResponseError(f"LLM returned non-JSON content: {str(exc)}", raw=str(content)[:3000]) from exc
         if not isinstance(parsed, dict):
             raise LLMResponseError("LLM JSON response was not an object", raw=parsed)
@@ -481,7 +529,8 @@ class LLMBrain:
                 "If the text is ambiguous or conflicted, set action to HOLD and confidence to 0.0. "
                 "Required keys: action, confidence, risk, strategy, reason, checklist, evidence, "
                 "risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
-                "monitoring_checklist, data_gaps."
+                "monitoring_checklist, data_gaps. Keep arrays to 5 short phrases, use no newline "
+                "characters inside strings, and keep reason under 280 characters."
             )
         payload = {
             "model": self.model,
@@ -623,7 +672,7 @@ class LLMBrain:
                 chat_template_kwargs["reasoning_effort"] = effort
             payload["chat_template_kwargs"] = chat_template_kwargs
         if schema is not None:
-            payload["guided_json"] = schema
+            payload["guided_json"] = _nvidia_guided_schema(schema)
         if not self.settings.llm_thinking_enabled:
             return
 
@@ -1133,6 +1182,164 @@ def _first_text(*values: Any) -> str:
             if joined:
                 return joined
     return ""
+
+
+def _normalize_decision_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+    action = str(parsed.get("action") or "HOLD").upper()
+    if action not in {"BUY", "SELL", "HOLD"}:
+        action = "HOLD"
+    try:
+        confidence = max(min(float(parsed.get("confidence", 0.0) or 0.0), 1.0), 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    risk = str(parsed.get("risk") or "MEDIUM").upper()
+    if risk not in {"LOW", "MEDIUM", "HIGH"}:
+        risk = "MEDIUM"
+
+    normalized: dict[str, Any] = {
+        "action": action,
+        "confidence": confidence,
+        "risk": risk,
+        "strategy": _short_scalar(parsed.get("strategy") or "llm_primary", 80),
+        "reason": _short_scalar(parsed.get("reason") or "no reason supplied", 280),
+        "checklist": _short_list(parsed.get("checklist"), limit=4),
+        "evidence": _short_list(parsed.get("evidence"), limit=5),
+        "risk_checks": _short_list(parsed.get("risk_checks"), limit=5),
+        "invalidators": _short_list(parsed.get("invalidators"), limit=4),
+        "signal_plan": _short_object(
+            parsed.get("signal_plan"),
+            ["bias", "entry_trigger", "exit_trigger", "timeframe"],
+        ),
+        "confluence_score": _short_score_object(parsed.get("confluence_score")),
+        "trade_plan": _short_object(
+            parsed.get("trade_plan"),
+            ["entry", "stop_loss", "target", "position_size", "exit_rule", "time_stop"],
+        ),
+        "monitoring_checklist": _short_list(parsed.get("monitoring_checklist"), limit=5),
+        "data_gaps": _short_list(parsed.get("data_gaps"), limit=6),
+    }
+    for key in (
+        "_json_repaired",
+        "_json_synthetic",
+        "_llm_timeout",
+        "_json_repair_error",
+        "_json_repair_raw",
+    ):
+        if key in parsed:
+            normalized[key] = parsed[key]
+    return normalized
+
+
+def _nvidia_guided_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    # NVIDIA guided_json is strong at object shape/enums, but some deployments reject
+    # stricter validation keywords. Keep payload guidance broadly compatible.
+    unsupported = {"maxLength", "minLength", "maxItems", "minItems", "minimum", "maximum"}
+    if not isinstance(schema, dict):
+        return schema
+    output: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in unsupported:
+            continue
+        if isinstance(value, dict):
+            output[key] = _nvidia_guided_schema(value)
+        elif isinstance(value, list):
+            output[key] = [_nvidia_guided_schema(item) if isinstance(item, dict) else item for item in value]
+        else:
+            output[key] = value
+    return output
+
+
+def _short_list(value: Any, limit: int, length: int = 180) -> list[str]:
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    output: list[str] = []
+    for item in items[:limit]:
+        text = _short_scalar(item, length)
+        if text:
+            output.append(text)
+    return output
+
+
+def _short_object(value: Any, keys: list[str], length: int = 120) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, str] = {}
+    for key in keys:
+        if key in value:
+            output[key] = _short_scalar(value.get(key), length)
+    if output:
+        return output
+    for key, item in list(value.items())[:6]:
+        short_key = _short_scalar(key, 40)
+        if short_key:
+            output[short_key] = _short_scalar(item, length)
+    return output
+
+
+def _short_score_object(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key in ("total", "max"):
+        if key not in value:
+            continue
+        try:
+            output[key] = float(value[key])
+        except (TypeError, ValueError):
+            output[key] = _short_scalar(value[key], 80)
+    for key in ("rating", "why"):
+        if key in value:
+            output[key] = _short_scalar(value[key], 120)
+    return output
+
+
+def _short_scalar(value: Any, length: int) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, default=str, separators=(",", ":"))
+    else:
+        text = str(value)
+    text = " ".join(text.split())
+    if len(text) <= length:
+        return text
+    return text[: max(length - 3, 0)].rstrip() + "..."
+
+
+def _escape_json_string_newlines(text: str) -> str:
+    output: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if not in_string:
+            output.append(char)
+            if char == '"':
+                in_string = True
+            continue
+        if escaped:
+            output.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            output.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            output.append(char)
+            in_string = False
+            continue
+        if char == "\n":
+            output.append("\\n")
+            continue
+        if char == "\r":
+            output.append("\\n")
+            continue
+        if char == "\t":
+            output.append("\\t")
+            continue
+        output.append(char)
+    return "".join(output)
 
 
 def _error_summary(exc: Exception) -> str:
