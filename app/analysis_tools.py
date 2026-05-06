@@ -18,9 +18,13 @@ def build_symbol_tool_context(
     risk_limits: dict[str, Any],
     global_context: dict[str, Any] | None = None,
     institutional_context: dict[str, Any] | None = None,
+    sentiment_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     closes = [candle.close for candle in candles] or [quote.price]
-    technical = technical_snapshot(closes)
+    highs = [candle.high for candle in candles]
+    lows = [candle.low for candle in candles]
+    volumes = [candle.volume for candle in candles]
+    technical = technical_snapshot(closes, highs, lows, volumes)
     candle_tools = _candle_tools(candles)
     strategy_signals = evaluate_strategy_presets(candles, quote.price)
     best_strategy = choose_best_strategy(strategy_signals)
@@ -63,7 +67,7 @@ def build_symbol_tool_context(
         "candlestick_analysis": candle_tools,
         "strategy_signals": strategy_signal_dicts,
         "best_strategy": best_strategy.to_dict(),
-        "sentiment": {"score": sentiment_score},
+        "sentiment": _sentiment_context(sentiment_score, sentiment_detail),
         "global_market_context": normalized_global_context,
         "institutional_context": normalized_institutional_context,
         "full_spectrum_analysis": full_spectrum,
@@ -114,6 +118,18 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
         "raw": round(raw, 4),
         "combined": combined,
         "clamped": combined != raw,
+    }
+
+
+def _sentiment_context(score: float, detail: dict[str, Any] | None) -> dict[str, Any]:
+    detail = detail or {}
+    return {
+        "score": score,
+        "confidence": detail.get("confidence", 0.0),
+        "headline_count": len(detail.get("headlines") or []),
+        "headlines": (detail.get("headlines") or [])[:8],
+        "events": (detail.get("events") or [])[:8],
+        "asof": detail.get("asof"),
     }
 
 

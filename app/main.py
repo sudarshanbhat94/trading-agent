@@ -192,6 +192,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     if quote is None:
         raise HTTPException(status_code=404, detail=f"No market quote found for {symbol}. Check the symbol spelling.")
 
+    news = await sentiment.analyze_symbol_news(row)
     db.upsert_quotes(quotes)
     db.upsert_candles(candles)
     macro_context = db.get_state("macro_context", {})
@@ -229,6 +230,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         "symbol": symbol,
         "quote": quote.to_dict(),
         "candle_count": len(candles.get(symbol, [])),
+        "news": news,
         "provider": quote.source,
         "provider_error": provider_error,
         "decision": decision_payload,

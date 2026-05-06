@@ -69,6 +69,7 @@ class StrategyEngine:
                 risk_limits=risk_limits,
                 global_context=global_context,
                 institutional_context=institutional_context,
+                sentiment_detail=self.sentiment.latest_for_symbol(symbol),
             )
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)

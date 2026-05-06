@@ -1287,6 +1287,8 @@ function renderManualAnalysis(payload) {
   const action = String(decision.action || "HOLD").toLowerCase();
   const details = decision.details || parseJsonObject(decision.details_json);
   const path = details.decision_path || decision.strategy || "-";
+  const news = payload.news || {};
+  const headlines = news.headlines || [];
   byId("analyze-result").innerHTML = `
     <div class="manual-analysis-card">
       <div>
@@ -1309,10 +1311,16 @@ function renderManualAnalysis(payload) {
         <strong>${fmtMoney(decision.price || payload.quote?.price)}</strong>
         <small>${escapeHtml(fmtTime(payload.quote?.asof))}</small>
       </div>
+      <div>
+        <span>News Sentiment</span>
+        <strong class="${pnlClass(news.score)}">${fmtNumber(news.score)}</strong>
+        <small>${headlines.length} latest items · ${fmtNumber(Number(news.confidence || 0) * 100)}% conf</small>
+      </div>
     </div>
     <section class="audit-section manual-summary">
       <h4>Reason</h4>
       <p>${escapeHtml(decision.reason || "-")}</p>
+      ${auditList("Latest News", headlines.slice(0, 6))}
       ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
       <button id="manual-detail-btn" type="button">Open Full Analysis</button>
     </section>

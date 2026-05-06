@@ -130,6 +130,25 @@ class SentimentService:
             for row in universe
         }
 
+    def latest_for_symbol(self, symbol: str) -> dict[str, Any]:
+        cached = self._cache.get(symbol)
+        if not cached:
+            return {"score": 0.0, "confidence": 0.0, "headlines": [], "events": []}
+        return self._result_payload(cached[1])
+
+    async def analyze_symbol_news(self, row: dict[str, Any]) -> dict[str, Any]:
+        if not self.settings.enable_news_sentiment:
+            result = SentimentResult(score=0.0, confidence=0.0, headlines=[], events=[])
+        else:
+            raw_items = await self._fetch_news_items(row)
+            events = self._dedupe_events([self._classify_item(item) for item in raw_items])
+            if self._llm_sentiment_enabled() and events:
+                events = await self._llm_refine_events(row, events)
+            result = self._aggregate(events)
+        self._cache[row["symbol"]] = (time.monotonic(), result)
+        self._persist(row["symbol"], result)
+        return self._result_payload(result)
+
     def _next_symbols(self, universe: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not universe:
             return []
@@ -146,6 +165,15 @@ class SentimentService:
             if len(selected) >= limit:
                 break
         return selected
+
+    def _result_payload(self, result: SentimentResult) -> dict[str, Any]:
+        return {
+            "score": result.score,
+            "confidence": result.confidence,
+            "headlines": result.headlines[:12],
+            "events": [event.to_dict() for event in result.events[:12]],
+            "asof": utc_now(),
+        }
 
     async def _refresh(self, row: dict[str, Any]) -> None:
         symbol = row["symbol"]

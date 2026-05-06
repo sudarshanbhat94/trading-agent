@@ -51,6 +51,24 @@ class TechnicalSnapshot:
     sma_fast: float | None
     sma_slow: float | None
     momentum_pct: float | None
+    ema_9: float | None = None
+    ema_21: float | None = None
+    sma_50: float | None = None
+    sma_200: float | None = None
+    macd_line: float | None = None
+    macd_signal: float | None = None
+    macd_histogram: float | None = None
+    bollinger_pct_b: float | None = None
+    bollinger_bandwidth_pct: float | None = None
+    atr_pct: float | None = None
+    adx: float | None = None
+    stochastic_k: float | None = None
+    stochastic_d: float | None = None
+    volume_ratio_20: float | None = None
+    obv_slope: float | None = None
+    cmf_20: float | None = None
+    distance_from_sma_20_pct: float | None = None
+    distance_from_sma_50_pct: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

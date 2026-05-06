@@ -323,7 +323,7 @@ class LLMBrain:
         }
         self._apply_model_options(payload, schema=DECISION_SCHEMA)
         try:
-            parsed = await self._chat_json(payload)
+            parsed = await self._chat_json(payload, retry_payload=self._compact_decision_retry_payload(context))
             requested_action = str(parsed.get("action", "HOLD")).upper()
             confidence = max(min(float(parsed.get("confidence", 0)), 1.0), 0.0)
             confidence_gate_passed = confidence >= self.settings.llm_primary_min_confidence
@@ -465,7 +465,11 @@ class LLMBrain:
                 ),
             )
 
-    async def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _chat_json(
+        self,
+        payload: dict[str, Any],
+        retry_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
             content = await self._chat_content(payload, self.settings.llm_timeout_seconds)
         except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
@@ -479,6 +483,15 @@ class LLMBrain:
         except LLMResponseError as exc:
             repaired = ""
             synthetic = _synthetic_safe_decision_from_text(content, exc)
+            if retry_payload is not None:
+                try:
+                    retry_content = await self._chat_content(retry_payload, min(max(self.settings.llm_timeout_seconds, 10), 45))
+                    parsed = _normalize_decision_payload(self._parse_json_content(retry_content))
+                    parsed["_json_retry"] = True
+                    parsed["_json_retry_reason"] = str(exc)[:240]
+                    return parsed
+                except Exception as retry_exc:
+                    synthetic["_json_retry_error"] = _error_summary(retry_exc)
             try:
                 repaired = await self._repair_json(content, schema=DECISION_SCHEMA)
             except Exception as repair_call_exc:
@@ -497,6 +510,35 @@ class LLMBrain:
                 return synthetic
             parsed["_json_repaired"] = True
             return _normalize_decision_payload(parsed)
+
+    def _compact_decision_retry_payload(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        if self.settings.llm_provider != "nvidia":
+            return None
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "top_p": 0.1,
+            "max_tokens": max(500, min(self.settings.llm_max_tokens, 800)),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return only a minified JSON object. No markdown. No prose. No analysis text before JSON. "
+                        "If uncertain, use HOLD. Required shape: "
+                        '{"action":"HOLD","confidence":0.0,"risk":"HIGH","strategy":"name",'
+                        '"reason":"short reason","checklist":[],"evidence":[],"risk_checks":[],'
+                        '"invalidators":[],"signal_plan":{},"confluence_score":{},"trade_plan":{},'
+                        '"monitoring_checklist":[],"data_gaps":[]}'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(_nvidia_retry_context(context), separators=(",", ":")),
+                },
+            ],
+        }
+        self._apply_model_options(payload, schema=DECISION_SCHEMA)
+        return payload
 
     def _parse_json_content(self, content: Any) -> dict[str, Any]:
         stripped = self._strip_json(content)
@@ -637,6 +679,8 @@ class LLMBrain:
 
     def _prompt_context(self, context: dict[str, Any]) -> dict[str, Any]:
         if self.settings.llm_provider == "nvidia":
+            if "nemotron" in self.model.lower():
+                return _llm_prompt_context(context, profile="compact")
             return _llm_prompt_context(context, profile="rich")
         return _llm_prompt_context(context, profile="compact")
 
@@ -804,6 +848,8 @@ class LLMBrain:
                 "action_reason": parsed.get("reason", "no reason supplied"),
                 "confidence": round(confidence, 4),
                 "json_repaired": bool(parsed.get("_json_repaired")),
+                "json_retry": bool(parsed.get("_json_retry")),
+                "json_retry_reason": parsed.get("_json_retry_reason"),
                 "json_synthetic": bool(parsed.get("_json_synthetic")),
                 "llm_timeout": bool(parsed.get("_llm_timeout")),
                 "confidence_gate": {
@@ -827,6 +873,8 @@ class LLMBrain:
                     "monitoring_checklist": parsed.get("monitoring_checklist", []),
                     "data_gaps": parsed.get("data_gaps", []),
                     "json_repaired": bool(parsed.get("_json_repaired")),
+                    "json_retry": bool(parsed.get("_json_retry")),
+                    "json_retry_reason": parsed.get("_json_retry_reason"),
                     "json_synthetic": bool(parsed.get("_json_synthetic")),
                     "llm_timeout": bool(parsed.get("_llm_timeout")),
                     "json_repair_error": parsed.get("_json_repair_error"),
@@ -867,6 +915,8 @@ class LLMBrain:
                 "final_action": final_action,
                 "confidence": round(confidence, 4),
                 "json_repaired": bool(parsed.get("_json_repaired")),
+                "json_retry": bool(parsed.get("_json_retry")),
+                "json_retry_reason": parsed.get("_json_retry_reason"),
                 "json_synthetic": bool(parsed.get("_json_synthetic")),
                 "llm_timeout": bool(parsed.get("_llm_timeout")),
                 "action_reason": parsed.get("reason", original.reason),
@@ -884,6 +934,8 @@ class LLMBrain:
                     "monitoring_checklist": parsed.get("monitoring_checklist", []),
                     "data_gaps": parsed.get("data_gaps", []),
                     "json_repaired": bool(parsed.get("_json_repaired")),
+                    "json_retry": bool(parsed.get("_json_retry")),
+                    "json_retry_reason": parsed.get("_json_retry_reason"),
                     "json_synthetic": bool(parsed.get("_json_synthetic")),
                     "llm_timeout": bool(parsed.get("_llm_timeout")),
                     "json_repair_error": parsed.get("_json_repair_error"),
@@ -981,6 +1033,35 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
     )
 
 
+def _nvidia_retry_context(context: dict[str, Any]) -> dict[str, Any]:
+    full = context.get("full_spectrum_analysis") or {}
+    confluence = full.get("confluence_score") or {}
+    trade_plan = full.get("trade_plan") or {}
+    return _prune_empty(
+        {
+            "symbol": context.get("symbol"),
+            "quote": context.get("quote"),
+            "position": context.get("position"),
+            "technical_math": context.get("technical_math"),
+            "candles": context.get("candlestick_analysis"),
+            "best_strategy": context.get("best_strategy"),
+            "sentiment": context.get("sentiment"),
+            "global_regime": _compact_global_context(context.get("global_market_context") or {}, limit=5),
+            "confluence_score": confluence,
+            "risk_overrides": full.get("risk_overrides"),
+            "trade_plan": {
+                "direction": trade_plan.get("direction"),
+                "entry_zone": trade_plan.get("entry_zone"),
+                "stop_loss": trade_plan.get("stop_loss"),
+                "targets": _limit_list(trade_plan.get("targets"), 3),
+                "invalidation": trade_plan.get("invalidation"),
+            },
+            "universe_scan": context.get("universe_scan"),
+            "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
+        }
+    )
+
+
 def _compact_global_context(global_context: dict[str, Any], limit: int = 8) -> dict[str, Any]:
     return _prune_empty(
         {
@@ -1000,13 +1081,13 @@ def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
             "atr": indicators.get("atr"),
             "atr_pct": indicators.get("atr_pct"),
             "adx": indicators.get("adx"),
-            "rsi": indicators.get("rsi"),
+            "rsi_14": indicators.get("rsi_14"),
             "macd": indicators.get("macd"),
             "bollinger": indicators.get("bollinger"),
             "moving_averages": indicators.get("moving_averages"),
-            "volume_ratio": indicators.get("volume_ratio"),
+            "volume_ratio_20": indicators.get("volume_ratio_20"),
             "obv_slope": indicators.get("obv_slope"),
-            "cmf": indicators.get("cmf"),
+            "cmf_20": indicators.get("cmf_20"),
         }
     )
 
@@ -1220,6 +1301,8 @@ def _normalize_decision_payload(parsed: dict[str, Any]) -> dict[str, Any]:
     }
     for key in (
         "_json_repaired",
+        "_json_retry",
+        "_json_retry_reason",
         "_json_synthetic",
         "_llm_timeout",
         "_json_repair_error",
