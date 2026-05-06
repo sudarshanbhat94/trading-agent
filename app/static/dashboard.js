@@ -145,7 +145,8 @@ function renderShell(payload = state.latest || {}) {
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
   const nvidiaModel = plainSetting("nvidia_model", "");
-  const llmModel = llmProvider === "nvidia" ? nvidiaModel : plainSetting("llm_model", "offline");
+  const groqModel = plainSetting("groq_model", "");
+  const llmModel = llmProvider === "nvidia" ? nvidiaModel : llmProvider === "groq" ? groqModel : plainSetting("llm_model", "offline");
 
   byId("top-provider").textContent = provider;
   byId("top-llm").textContent = llmProvider === "offline" ? "off" : llmModel;
@@ -1264,7 +1265,7 @@ function bindControls() {
         "llm-health": {
           provider: settings.llm_provider,
           mode: settings.llm_decision_mode,
-          model: settings.llm_provider === "nvidia" ? settings.nvidia_model : settings.llm_model,
+          model: settings.llm_provider === "nvidia" ? settings.nvidia_model : settings.llm_provider === "groq" ? settings.groq_model : settings.llm_model,
           timeout_seconds: settings.llm_timeout_seconds,
         },
         "risk-health": {

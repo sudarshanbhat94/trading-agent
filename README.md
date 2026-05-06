@@ -249,6 +249,23 @@ LLM_API_KEY=...
 LLM_MODEL=gpt-4.1-mini
 ```
 
+To make Groq Qwen the fast primary analyst:
+
+```bash
+LLM_PROVIDER=groq
+LLM_DECISION_MODE=primary
+GROQ_API_KEY=...
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=qwen/qwen3-32b
+GROQ_REASONING_EFFORT=none
+GROQ_REASONING_FORMAT=hidden
+LLM_TEMPERATURE=0.05
+LLM_TOP_P=0.7
+LLM_MAX_TOKENS=700
+LLM_MAX_SYMBOLS_PER_CYCLE=1
+LLM_TIMEOUT_SECONDS=20
+```
+
 `LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. NVIDIA models use streaming by default when `LLM_STREAMING_ENABLED=true`. For NVIDIA DeepSeek V4 and Kimi models, the app sends `chat_template_kwargs.thinking=false` by default. Turn `LLM_THINKING_ENABLED` on only when you can tolerate slower responses; then `LLM_REASONING_EFFORT=high` or `max` can be used for supported DeepSeek V4 models. If a large model is slow to respond, increase `LLM_TIMEOUT_SECONDS` or switch to a faster NVIDIA model.
 
 For NVIDIA Kimi K2.6, set:

@@ -399,6 +399,8 @@ class SentimentService:
     def _llm_sentiment_enabled(self) -> bool:
         if not self.settings.enable_llm_sentiment:
             return False
+        if self.settings.llm_provider == "groq":
+            return bool(self.settings.groq_api_key)
         if self.settings.llm_provider == "nvidia":
             return bool(self.settings.nvidia_api_key)
         if self.settings.llm_provider == "openai_compatible":
@@ -406,6 +408,8 @@ class SentimentService:
         return False
 
     def _llm_base_url(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_base_url
         return self.settings.nvidia_base_url if self.settings.llm_provider == "nvidia" else self.settings.llm_base_url
 
     def _llm_chat_completions_url(self) -> str:
@@ -415,13 +419,26 @@ class SentimentService:
         return f"{base_url}/v1/chat/completions"
 
     def _llm_model(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_model
         return self.settings.nvidia_model if self.settings.llm_provider == "nvidia" else self.settings.llm_model
 
     def _llm_key(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_api_key
         return self.settings.nvidia_api_key if self.settings.llm_provider == "nvidia" else self.settings.llm_api_key
 
     def _apply_llm_model_options(self, payload: dict[str, Any]) -> None:
         model = self._llm_model()
+        if self.settings.llm_provider == "groq":
+            if "max_tokens" in payload:
+                payload["max_completion_tokens"] = payload.pop("max_tokens")
+            payload["response_format"] = {"type": "json_object"}
+            if self.settings.groq_reasoning_effort in {"none", "default"}:
+                payload["reasoning_effort"] = self.settings.groq_reasoning_effort
+            if self.settings.groq_reasoning_format in {"hidden", "parsed", "raw"}:
+                payload["reasoning_format"] = self.settings.groq_reasoning_format
+            return
         if self.settings.llm_provider == "nvidia" and model.startswith(("deepseek-ai/deepseek-v4", "moonshotai/kimi-")):
             chat_template_kwargs: dict[str, Any] = {"thinking": self.settings.llm_thinking_enabled}
             effort = self.settings.llm_reasoning_effort

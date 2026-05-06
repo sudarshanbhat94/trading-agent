@@ -119,6 +119,11 @@ class Settings:
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
     nvidia_base_url: str = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com").rstrip("/")
     nvidia_model: str = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-r1")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_base_url: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+    groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
+    groq_reasoning_effort: str = os.getenv("GROQ_REASONING_EFFORT", "none").strip().lower()
+    groq_reasoning_format: str = os.getenv("GROQ_REASONING_FORMAT", "hidden").strip().lower()
 
 
 SECRET_FIELDS = {
@@ -129,6 +134,7 @@ SECRET_FIELDS = {
     "nubra_session_token",
     "llm_api_key",
     "nvidia_api_key",
+    "groq_api_key",
     "live_trading_confirm",
     "admin_password",
     "auth_session_secret",
@@ -168,8 +174,13 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "nubra_market_depth_endpoint", "label": "Nubra Depth Path", "type": "text", "category": "Institutional Feeds"},
     {"key": "nubra_delivery_endpoint", "label": "Nubra Delivery Path", "type": "text", "category": "Institutional Feeds"},
     {"key": "nubra_oi_endpoint", "label": "Nubra OI Path", "type": "text", "category": "Institutional Feeds"},
-    {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["offline", "nvidia", "openai_compatible"]},
+    {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["offline", "groq", "nvidia", "openai_compatible"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
+    {"key": "groq_api_key", "label": "Groq API Key", "type": "secret", "category": "LLM Brain"},
+    {"key": "groq_base_url", "label": "Groq Base URL", "type": "text", "category": "LLM Brain"},
+    {"key": "groq_model", "label": "Groq Model", "type": "text", "category": "LLM Brain"},
+    {"key": "groq_reasoning_effort", "label": "Groq Reasoning Effort", "type": "select", "category": "LLM Brain", "choices": ["none", "default"]},
+    {"key": "groq_reasoning_format", "label": "Groq Reasoning Format", "type": "select", "category": "LLM Brain", "choices": ["hidden", "parsed", "raw"]},
     {"key": "nvidia_api_key", "label": "NVIDIA API Key", "type": "secret", "category": "LLM Brain"},
     {"key": "nvidia_base_url", "label": "NVIDIA Base URL", "type": "text", "category": "LLM Brain"},
     {"key": "nvidia_model", "label": "NVIDIA Model", "type": "text", "category": "LLM Brain"},

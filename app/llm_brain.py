@@ -25,6 +25,8 @@ class LLMBrain:
 
     @property
     def enabled(self) -> bool:
+        if self.settings.llm_provider == "groq":
+            return bool(self.settings.groq_api_key)
         if self.settings.llm_provider == "nvidia":
             return bool(self.settings.nvidia_api_key)
         if self.settings.llm_provider == "openai_compatible":
@@ -33,18 +35,24 @@ class LLMBrain:
 
     @property
     def model(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_model
         if self.settings.llm_provider == "nvidia":
             return self.settings.nvidia_model
         return self.settings.llm_model
 
     @property
     def base_url(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_base_url
         if self.settings.llm_provider == "nvidia":
             return self.settings.nvidia_base_url
         return self.settings.llm_base_url
 
     @property
     def api_key(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_api_key
         if self.settings.llm_provider == "nvidia":
             return self.settings.nvidia_api_key
         return self.settings.llm_api_key
@@ -79,7 +87,7 @@ class LLMBrain:
                 },
                 {
                     "role": "user",
-                    "content": 'Return exactly this JSON shape: {"ok":true,"service":"nvidia-nim","note":"ready"}',
+                    "content": f'Return exactly this JSON shape: {{"ok":true,"service":"{self._service_name()}","note":"ready"}}',
                 },
             ],
         }
@@ -98,8 +106,8 @@ class LLMBrain:
                     content,
                     (
                         'Convert the model response into exactly this JSON object if it indicates readiness: '
-                        '{"ok":true,"service":"nvidia-nim","note":"ready"}. '
-                        'If it clearly indicates failure, return {"ok":false,"service":"nvidia-nim","note":"not ready"}. '
+                        f'{{"ok":true,"service":"{self._service_name()}","note":"ready"}}. '
+                        f'If it clearly indicates failure, return {{"ok":false,"service":"{self._service_name()}","note":"not ready"}}. '
                         "Return one JSON object only. Do not explain."
                     ),
                 )
@@ -169,7 +177,7 @@ class LLMBrain:
                 "timeout_seconds": timeout_seconds,
                 "reason": (
                     f"Timed out after {timeout_seconds}s. This model/endpoint is too slow or unavailable "
-                    "for trading-cycle use. Try Reasoning Effort=none, a faster NVIDIA model, or a higher "
+                    "for trading-cycle use. Try Reasoning Effort=none, a faster model, or a higher "
                     "timeout only for manual testing."
                 ),
             }
@@ -511,6 +519,9 @@ class LLMBrain:
         )
 
     def _apply_model_options(self, payload: dict[str, Any]) -> None:
+        if self.settings.llm_provider == "groq":
+            self._apply_groq_options(payload)
+            return
         if self._supports_nvidia_thinking():
             chat_template_kwargs: dict[str, Any] = {"thinking": self.settings.llm_thinking_enabled}
             effort = self.settings.llm_reasoning_effort
@@ -519,6 +530,43 @@ class LLMBrain:
             payload["chat_template_kwargs"] = chat_template_kwargs
         if not self.settings.llm_thinking_enabled:
             return
+
+    def _apply_groq_options(self, payload: dict[str, Any]) -> None:
+        if "max_tokens" in payload:
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+        payload["response_format"] = {"type": "json_object"}
+        effort = self.settings.groq_reasoning_effort
+        if effort in {"none", "default"}:
+            payload["reasoning_effort"] = effort
+        reasoning_format = self.settings.groq_reasoning_format
+        if reasoning_format in {"hidden", "parsed", "raw"}:
+            payload["reasoning_format"] = reasoning_format
+        self._fold_system_messages_into_user(payload)
+
+    def _fold_system_messages_into_user(self, payload: dict[str, Any]) -> None:
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return
+        system_parts = [
+            str(message.get("content", ""))
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "system"
+        ]
+        if not system_parts:
+            return
+        instruction = "\n\n".join(part for part in system_parts if part).strip()
+        folded: list[dict[str, Any]] = []
+        inserted = False
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") == "system":
+                continue
+            item = dict(message)
+            if not inserted and item.get("role") == "user":
+                item["content"] = f"{instruction}\n\nTask:\n{item.get('content', '')}"
+                inserted = True
+            folded.append(item)
+        if folded:
+            payload["messages"] = folded
 
     def _is_nvidia_deepseek_v4(self) -> bool:
         return self.settings.llm_provider == "nvidia" and self.model.startswith("deepseek-ai/deepseek-v4")
@@ -530,6 +578,13 @@ class LLMBrain:
 
     def _should_stream(self) -> bool:
         return self.settings.llm_provider == "nvidia" and self.settings.llm_streaming_enabled
+
+    def _service_name(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return "groq"
+        if self.settings.llm_provider == "nvidia":
+            return "nvidia-nim"
+        return "openai-compatible"
 
     def _test_max_tokens(self) -> int:
         if self.settings.llm_thinking_enabled:
