@@ -129,8 +129,8 @@ def _sma(values: list[float], period: int) -> float | None:
 
 
 def _breadth_regime(pct_above_50: float, highs_lows_ratio: float) -> str:
-    if pct_above_50 > 65 and highs_lows_ratio > 0.65:
-        return "bull_confirmed"
+    if pct_above_50 > 65:
+        return "bull_confirmed" if highs_lows_ratio > 0.65 else "bull_weakening"
     if 50 <= pct_above_50 <= 65:
         return "bull_weakening"
     if 40 <= pct_above_50 < 50:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from typing import Any
 
 from .analysis_tools import build_symbol_tool_context, deterministic_score, deterministic_score_breakdown
@@ -150,10 +151,20 @@ class StrategyEngine:
         for item in scan_items:
             context = item["context"]
             if llm_primary and item["symbol"] in llm_candidate_symbols:
-                decision = await self.llm.decide(context)
+                llm_decision = await self.llm.decide(context)
                 llm_reviews += 1
-                decisions.append(decision)
-                continue
+                llm_audit = _json_object(llm_decision.details_json)
+                llm_failed = bool(llm_audit.get("llm_error") or llm_audit.get("json_synthetic"))
+                if not llm_failed or item["action"] == "HOLD":
+                    decisions.append(llm_decision)
+                    continue
+                context["llm_primary_fallback"] = {
+                    "reason": "llm_failed_deterministic_action_preserved",
+                    "llm_action": llm_decision.action,
+                    "llm_reason": llm_decision.reason,
+                    "llm_error": llm_audit.get("llm_error"),
+                    "preserved_action": item["action"],
+                }
 
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
@@ -180,6 +191,8 @@ class StrategyEngine:
             ]
             if failed_gate_names:
                 reason = f"{reason}, failed_gates={failed_gate_names}"
+            if context.get("llm_primary_fallback"):
+                reason = f"{reason}, llm_failed_deterministic_action_preserved"
             decision_path = "deterministic_after_full_universe_scan"
             decision = Decision(
                 symbol=item["symbol"],
@@ -229,7 +242,7 @@ class StrategyEngine:
             candles = candles_by_symbol.get(symbol, [])
             atr = _atr(candles, 14)
             if atr:
-                risk_unit = 1.5 * atr
+                risk_unit = max(1.5 * atr, avg_price * 0.01)
                 stop = avg_price - risk_unit
                 target1 = avg_price + (risk_unit * 1.5)
                 target2 = avg_price + (risk_unit * 2.5)
@@ -433,8 +446,22 @@ class StrategyEngine:
             block_value = block_value or breadth_regime
             elimination_reason = elimination_reason or "market_breadth_bear_confirmed_no_new_longs"
         earnings_days = macro_event_context.get("earnings_days_away")
-        macro_failed = (earnings_days is not None and earnings_days <= 5 and not has_position) or macro_event_context.get("is_expiry_day")
-        macro_reason = "earnings_lockout" if earnings_days is not None and earnings_days <= 5 else "expiry_day_no_new_longs" if macro_event_context.get("is_expiry_day") else None
+        earnings_block = earnings_days is not None and 0 <= int(earnings_days) <= 5 and not has_position
+        monthly_expiry_block = bool(
+            macro_event_context.get("is_monthly_expiry_day")
+            or macro_event_context.get("is_monthly_expiry_eve")
+            or (macro_event_context.get("is_expiry_day") and macro_event_context.get("expiry_type") == "monthly")
+        ) and not has_position
+        macro_failed = earnings_block or monthly_expiry_block
+        macro_reason = (
+            "earnings_lockout"
+            if earnings_block
+            else "monthly_expiry_no_new_longs"
+            if macro_event_context.get("is_monthly_expiry_day") or macro_event_context.get("is_expiry_day")
+            else "monthly_expiry_eve_no_new_longs"
+            if monthly_expiry_block
+            else None
+        )
         gates.append({"gate": "earnings_gate", "passed": not macro_failed, "value": macro_event_context})
         if macro_failed:
             buy_blocked = True
@@ -633,6 +660,7 @@ class StrategyEngine:
             "decision_gate_context": context.get("decision_gate_context"),
             "portfolio_correlation_gate": context.get("portfolio_correlation_gate"),
             "sizing_grade": context.get("sizing_grade"),
+            "llm_primary_fallback": context.get("llm_primary_fallback"),
         }
         if has_position:
             position = context.get("position") or {}
@@ -663,6 +691,7 @@ class StrategyEngine:
                 "score_breakdown": score_breakdown,
                 "pre_filter": context.get("pre_filter"),
                 "sizing_grade": context.get("sizing_grade"),
+                "llm_primary_fallback": context.get("llm_primary_fallback"),
                 "risk_gates": gates,
                 "context": _compact_context(context),
             }
@@ -735,6 +764,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "pre_filter": context.get("pre_filter"),
         "decision_gate_context": context.get("decision_gate_context"),
         "sizing_grade": context.get("sizing_grade"),
+        "llm_primary_fallback": context.get("llm_primary_fallback"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
@@ -772,10 +802,22 @@ def _atr(candles: list[Candle], period: int = 14) -> float | None:
 
 
 def _held_periods_from_position(position: dict[str, Any], candles: list[Candle]) -> int:
-    updated = str(position.get("updated_at") or "")
-    if not updated or not candles:
+    opened_at = _parse_time(position.get("updated_at"))
+    if opened_at is None or not candles:
         return 0
-    return min(len(candles), 16)
+    return sum(1 for candle in candles if (_parse_time(candle.ts) or datetime.min.replace(tzinfo=timezone.utc)) > opened_at)
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def _return_series(candles: list[Candle], periods: int) -> list[float]:

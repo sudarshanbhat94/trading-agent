@@ -95,7 +95,12 @@ class TradingAgentService:
             "market_data",
             "quotes_fetched",
             f"Fetched {len(quotes)} quotes from {self.market_data.source_name}",
-            {"provider": self.market_data.source_name, "quote_count": len(quotes)},
+            {
+                "provider": self.market_data.source_name,
+                "quote_count": len(quotes),
+                "source_counts": _source_counts(quotes),
+                "provider_diagnostics": _market_data_diagnostics(self.market_data),
+            },
         )
         self._cycle_phase = "candles"
         candles = await self.market_data.get_candles(universe)
@@ -286,6 +291,7 @@ class TradingAgentService:
             "sentiment": self.db.latest_sentiment(40),
             "universe_size": len(self.db.get_universe(enabled_only=True)),
             "market_health": self._market_health(quotes),
+            "market_data_health": _market_data_diagnostics(self.market_data),
             "macro_context": self.db.get_state("macro_context", {}),
             "institutional_context": self.db.get_state("institutional_context", {}),
             "market_breadth": self.db.get_state("market_breadth_context", {}),
@@ -494,6 +500,34 @@ def _json_object(value: Any) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _source_counts(items: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items.values():
+        if isinstance(item, dict):
+            source = str(item.get("source") or "unknown")
+        else:
+            source = str(getattr(item, "source", None) or "unknown")
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _market_data_diagnostics(provider: MarketDataProvider) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {"provider": getattr(provider, "source_name", "unknown")}
+    primary = getattr(provider, "primary", None)
+    fallback = getattr(provider, "fallback", None)
+    if primary is not None:
+        diagnostics["primary"] = {
+            "provider": getattr(primary, "source_name", "unknown"),
+            "last_quote_diagnostics": getattr(primary, "last_quote_diagnostics", None),
+        }
+    if fallback is not None:
+        diagnostics["fallback"] = {"provider": getattr(fallback, "source_name", "unknown")}
+    own = getattr(provider, "last_quote_diagnostics", None)
+    if own:
+        diagnostics["last_quote_diagnostics"] = own
+    return diagnostics
 
 
 def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:

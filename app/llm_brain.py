@@ -710,10 +710,11 @@ class LLMBrain:
         retry_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         meta: dict[str, Any] = {}
+        decision_timeout = self._decision_budget_seconds()
         try:
             content, meta = await self._chat_content_with_fallback(
                 payload,
-                self.settings.llm_timeout_seconds,
+                decision_timeout,
                 schema=DECISION_SCHEMA,
                 require_json=True,
             )
@@ -729,7 +730,7 @@ class LLMBrain:
                 try:
                     retry_content, retry_meta = await self._chat_content_with_fallback(
                         retry_payload,
-                        min(max(self.settings.llm_timeout_seconds, 10), 45),
+                        min(max(decision_timeout // 2, 15), 60),
                         schema=DECISION_SCHEMA,
                         require_json=True,
                     )
@@ -764,7 +765,7 @@ class LLMBrain:
                 try:
                     retry_content, retry_meta = await self._chat_content_with_fallback(
                         retry_payload,
-                        min(max(self.settings.llm_timeout_seconds, 10), 45),
+                        min(max(decision_timeout // 2, 15), 60),
                         schema=DECISION_SCHEMA,
                         require_json=True,
                     )
@@ -1129,7 +1130,9 @@ class LLMBrain:
     def _apply_groq_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
         if "max_tokens" in payload:
             payload["max_completion_tokens"] = payload.pop("max_tokens")
-        payload["response_format"] = {"type": "json_object"}
+        model = str(payload.get("model") or self.settings.groq_model).lower()
+        if "qwen" not in model:
+            payload["response_format"] = {"type": "json_object"}
         effort = self.settings.groq_reasoning_effort
         if effort in {"none", "default"}:
             payload["reasoning_effort"] = effort
@@ -1197,9 +1200,9 @@ class LLMBrain:
         configured = int(self.settings.llm_timeout_seconds or 30)
         endpoints = len(self._endpoint_candidates())
         if self.settings.llm_rolling_context_enabled:
-            return max(30, min(max(configured, 60), 90))
+            return max(25, min(max(configured, 35), 45))
         if endpoints > 1:
-            return max(20, min(max(configured, 45), 75))
+            return max(20, min(max(configured, 35), 45))
         return max(8, min(configured, 30))
 
     def _rolling_summary_timeout_seconds(self, chunk_count: int) -> int:
@@ -1445,7 +1448,7 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             "position": context.get("position"),
             "technical_math": context.get("technical_math"),
             "candlestick_analysis": context.get("candlestick_analysis"),
-            "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or [], limit=12 if rich else 6),
+            "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or [], limit=8 if rich else 4),
             "best_strategy": context.get("best_strategy"),
             "sentiment": context.get("sentiment"),
             "global_market_context": _compact_global_context(context.get("global_market_context") or {}, limit=16 if rich else 8),
@@ -1460,53 +1463,10 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             "macro_event_context": context.get("macro_event_context"),
             "sector_rotation": context.get("sector_rotation"),
             "delivery_data": context.get("delivery_data"),
-            "full_spectrum_analysis": {
-                "requirement_coverage": _coverage_summary(full.get("requirement_coverage") or {}) if rich else None,
-                "data_quality": full.get("data_quality"),
-                "primary_filters": full.get("primary_filters"),
-                "signal_plan": full.get("signal_plan"),
-                "trend_context": full.get("trend_context"),
-                "stage_analysis": full.get("stage_analysis"),
-                "entry_quality": full.get("entry_quality"),
-                "breakout_quality": full.get("breakout_quality"),
-                "price_volume_divergence": full.get("price_volume_divergence"),
-                "key_levels": full.get("key_levels"),
-                "fibonacci": full.get("fibonacci") if rich else None,
-                "indicator_suite": _compact_indicators(full.get("indicator_suite") or {}),
-                "liquidity_profile": full.get("liquidity_profile"),
-                "relative_strength": full.get("relative_strength"),
-                "candlestick_v2": full.get("candlestick_v2"),
-                "chart_patterns": full.get("chart_patterns"),
-                "institutional_structure": full.get("institutional_structure"),
-                "fundamental_quality": full.get("fundamental_quality"),
-                "corporate_event_risk": full.get("corporate_event_risk"),
-                "delivery_accumulation": full.get("delivery_accumulation"),
-                "sector_rotation": full.get("sector_rotation"),
-                "market_breadth": full.get("market_breadth"),
-                "macro_event_context": full.get("macro_event_context"),
-                "options_oi": full.get("options_oi"),
-                "backtest_snapshot": full.get("backtest_snapshot"),
-                "signal_conflicts": full.get("signal_conflicts"),
-                "institutional_scorecard": full.get("institutional_scorecard"),
-                "news_sentiment": full.get("news_sentiment") if rich else None,
-                "institutional_flow": {
-                    "available": institutional_flow.get("available"),
-                    "source_quality": institutional_flow.get("source_quality"),
-                    "symbol_flags": institutional_flow.get("symbol_flags"),
-                    "market_bias": institutional_flow.get("market_bias"),
-                    "option_chain_proxy": institutional_flow.get("option_chain_proxy"),
-                    "delivery_proxy": institutional_flow.get("delivery_proxy"),
-                    "data_gaps": _limit_list(institutional_flow.get("data_gaps"), 16 if rich else 8),
-                },
-                "confluence_score": full.get("confluence_score"),
-                "risk_overrides": full.get("risk_overrides"),
-                "trade_plan": full.get("trade_plan"),
-                "monitoring_checklist": _limit_list(full.get("monitoring_checklist"), 12 if rich else 8),
-                "data_gaps": _limit_list(full.get("data_gaps"), 16 if rich else 10),
-            },
+            "full_spectrum_analysis": _compact_full_spectrum_for_llm(full, institutional_flow, rich=rich),
             "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
             "universe_scan": context.get("universe_scan"),
-            "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-(24 if rich else 8):]],
+            "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-(16 if rich else 5):]],
         }
     )
 
@@ -1558,6 +1518,235 @@ def _compact_global_context(global_context: dict[str, Any], limit: int = 8) -> d
             "regime": global_context.get("regime"),
             "signals": _limit_list(global_context.get("signals"), limit),
             "data_gaps": _limit_list(global_context.get("data_gaps"), limit),
+        }
+    )
+
+
+def _compact_full_spectrum_for_llm(
+    full: dict[str, Any],
+    institutional_flow: dict[str, Any],
+    rich: bool = False,
+) -> dict[str, Any]:
+    trend = full.get("trend_context") or {}
+    scorecard = full.get("institutional_scorecard") or {}
+    confluence = full.get("confluence_score") or {}
+    trade_plan = full.get("trade_plan") or {}
+    risk_overrides = full.get("risk_overrides") or {}
+    stage = full.get("stage_analysis") or {}
+    entry = full.get("entry_quality") or {}
+    breakout = full.get("breakout_quality") or {}
+    divergence = full.get("price_volume_divergence") or {}
+    sector = full.get("sector_rotation") or {}
+    breadth = full.get("market_breadth") or {}
+    delivery = full.get("delivery_accumulation") or {}
+    macro_event = full.get("macro_event_context") or {}
+    indicators = full.get("indicator_suite") or {}
+    return _prune_empty(
+        {
+            "decision_gates": _prune_empty(
+                {
+                    "stage": stage.get("stage"),
+                    "stage_confidence": stage.get("stage_confidence"),
+                    "stage_buy_permitted": stage.get("buy_permitted"),
+                    "entry_grade": entry.get("entry_grade"),
+                    "breakout_quality": breakout.get("breakout_quality"),
+                    "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+                    "climax_volume_top": divergence.get("climax_volume_top"),
+                    "timeframe_alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
+                    "sector_tailwind": sector.get("sector_tailwind"),
+                    "sector_headwind": sector.get("sector_headwind"),
+                    "breadth_regime": breadth.get("breadth_regime"),
+                    "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+                    "expiry_day": macro_event.get("is_expiry_day"),
+                    "earnings_days_away": macro_event.get("earnings_days_away"),
+                    "no_new_longs": risk_overrides.get("no_new_longs"),
+                    "risk_flags": _limit_list(risk_overrides.get("flags"), 10),
+                }
+            ),
+            "scores": _prune_empty(
+                {
+                    "confluence_total": confluence.get("total"),
+                    "confluence_max": confluence.get("max"),
+                    "confluence_tier": confluence.get("tier"),
+                    "institutional_total": scorecard.get("total_score"),
+                    "institutional_normalized": scorecard.get("normalized_score"),
+                    "institutional_buy_ready": scorecard.get("buy_ready"),
+                    "institutional_verdict": scorecard.get("verdict"),
+                    "delivery_score": delivery.get("delivery_score"),
+                    "sector_rotation_score": sector.get("sector_rotation_score"),
+                    "breadth_score": breadth.get("breadth_score"),
+                    "divergence_score": divergence.get("divergence_score"),
+                    "entry_quality_score": entry.get("quality_score"),
+                }
+            ),
+            "technical_state": _compact_technical_state(trend, indicators, full),
+            "entry_and_levels": _compact_entry_levels(entry, breakout, full.get("key_levels") or {}),
+            "risk_and_events": _compact_risk_events(risk_overrides, full, macro_event),
+            "institutional_context": _compact_institutional_for_llm(
+                scorecard,
+                full.get("institutional_structure") or {},
+                delivery,
+                institutional_flow,
+                rich=rich,
+            ),
+            "market_context": _compact_market_context_for_llm(
+                breadth,
+                sector,
+                full.get("liquidity_profile") or {},
+                full.get("backtest_snapshot") or {},
+            ),
+            "trade_plan": _prune_empty(
+                {
+                    "direction": trade_plan.get("direction"),
+                    "horizon": trade_plan.get("horizon"),
+                    "entry_zone": trade_plan.get("entry_zone"),
+                    "stop_loss": trade_plan.get("stop_loss"),
+                    "targets": _limit_list(trade_plan.get("targets"), 3),
+                    "invalidation": trade_plan.get("invalidation"),
+                    "exit_plan": trade_plan.get("exit_plan"),
+                }
+            ),
+            "data_quality": full.get("data_quality"),
+            "monitoring_checklist": _limit_list(full.get("monitoring_checklist"), 5 if rich else 3),
+            "data_gaps": _limit_list(full.get("data_gaps"), 6 if rich else 3),
+            "requirement_coverage": _coverage_summary(full.get("requirement_coverage") or {}) if rich else None,
+        }
+    )
+
+
+def _compact_technical_state(
+    trend: dict[str, Any],
+    indicators: dict[str, Any],
+    full: dict[str, Any],
+) -> dict[str, Any]:
+    alignment = trend.get("timeframe_alignment") or {}
+    timeframes = alignment.get("timeframes") or {}
+    return _prune_empty(
+        {
+            "trend": trend.get("daily") or trend.get("structure"),
+            "alignment_grade": alignment.get("alignment_grade"),
+            "timeframes": {
+                key: _prune_empty(
+                    {
+                        "direction": value.get("direction"),
+                        "strength": value.get("strength"),
+                        "price_vs_20sma": value.get("price_vs_20sma"),
+                    }
+                )
+                for key, value in timeframes.items()
+                if isinstance(value, dict)
+            },
+            "rsi_14": indicators.get("rsi_14"),
+            "adx": indicators.get("adx"),
+            "atr_pct": indicators.get("atr_pct"),
+            "macd_bias": (indicators.get("macd") or {}).get("bias"),
+            "volume_ratio_20": indicators.get("volume_ratio_20"),
+            "obv_slope": indicators.get("obv_slope"),
+            "cmf_20": indicators.get("cmf_20"),
+            "candles": _prune_empty(
+                {
+                    "patterns": (full.get("candlestick_v2") or {}).get("patterns"),
+                    "score": (full.get("candlestick_v2") or {}).get("score"),
+                    "confirmation": (full.get("candlestick_v2") or {}).get("confirmation"),
+                }
+            ),
+            "relative_strength_bias": (full.get("relative_strength") or {}).get("bias"),
+            "relative_strength_pct": (full.get("relative_strength") or {}).get("relative_strength_pct"),
+        }
+    )
+
+
+def _compact_entry_levels(entry: dict[str, Any], breakout: dict[str, Any], levels: dict[str, Any]) -> dict[str, Any]:
+    return _prune_empty(
+        {
+            "entry_grade": entry.get("entry_grade"),
+            "distance_from_pivot_pct": entry.get("distance_from_pivot_pct"),
+            "volume_confirmation": entry.get("volume_confirmation"),
+            "close_position": entry.get("last_close_position_in_range"),
+            "breakout_quality": breakout.get("breakout_quality"),
+            "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+            "prior_resistance": breakout.get("prior_resistance"),
+            "false_breakout_risk_score": breakout.get("false_breakout_risk_score"),
+            "nearest_support": levels.get("nearest_support"),
+            "nearest_resistance": levels.get("nearest_resistance"),
+            "distance_to_support_pct": levels.get("distance_to_support_pct"),
+            "distance_to_resistance_pct": levels.get("distance_to_resistance_pct"),
+            "risk_reward_from_current": levels.get("risk_reward_from_current"),
+        }
+    )
+
+
+def _compact_risk_events(
+    risk_overrides: dict[str, Any],
+    full: dict[str, Any],
+    macro_event: dict[str, Any],
+) -> dict[str, Any]:
+    conflicts = full.get("signal_conflicts") or {}
+    event_risk = full.get("corporate_event_risk") or {}
+    options_oi = full.get("options_oi") or {}
+    return _prune_empty(
+        {
+            "no_new_longs": risk_overrides.get("no_new_longs"),
+            "risk_flags": _limit_list(risk_overrides.get("flags"), 10),
+            "conflict_severity": conflicts.get("severity"),
+            "conflicts": _limit_list(conflicts.get("conflicts"), 5),
+            "expiry_day": macro_event.get("is_expiry_day"),
+            "event_risk_score": macro_event.get("event_risk_score"),
+            "recommended_action": macro_event.get("recommended_action"),
+            "corporate_event_high_impact": event_risk.get("high_impact_risk"),
+            "options_bias": options_oi.get("bias"),
+            "fno_ban": options_oi.get("fno_ban"),
+        }
+    )
+
+
+def _compact_institutional_for_llm(
+    scorecard: dict[str, Any],
+    structure: dict[str, Any],
+    delivery: dict[str, Any],
+    institutional_flow: dict[str, Any],
+    rich: bool = False,
+) -> dict[str, Any]:
+    return _prune_empty(
+        {
+            "scorecard_reasons": _limit_list(scorecard.get("reasons"), 5 if rich else 3),
+            "wyckoff_phase": structure.get("wyckoff_phase"),
+            "market_structure": structure.get("market_structure"),
+            "liquidity_sweep": structure.get("liquidity_sweep"),
+            "smart_money_bias": structure.get("smart_money_bias"),
+            "delivery_bias": delivery.get("bias"),
+            "delivery_score": delivery.get("delivery_score"),
+            "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+            "flow_quality": institutional_flow.get("source_quality"),
+            "market_bias": institutional_flow.get("market_bias"),
+            "symbol_flags": institutional_flow.get("symbol_flags"),
+            "data_gaps": _limit_list(institutional_flow.get("data_gaps"), 5 if rich else 3),
+        }
+    )
+
+
+def _compact_market_context_for_llm(
+    breadth: dict[str, Any],
+    sector: dict[str, Any],
+    liquidity: dict[str, Any],
+    backtest: dict[str, Any],
+) -> dict[str, Any]:
+    return _prune_empty(
+        {
+            "breadth_regime": breadth.get("breadth_regime"),
+            "pct_above_50dma": breadth.get("pct_above_50dma"),
+            "advance_decline_ratio": breadth.get("advance_decline_ratio"),
+            "breadth_thrust": breadth.get("breadth_thrust"),
+            "sector_rank": sector.get("sector_rank"),
+            "sector_tier": sector.get("sector_tier"),
+            "sector_stage": sector.get("sector_stage"),
+            "sector_tailwind": sector.get("sector_tailwind"),
+            "sector_headwind": sector.get("sector_headwind"),
+            "liquidity_bucket": liquidity.get("liquidity_bucket"),
+            "volume_ratio_20": liquidity.get("volume_ratio_20"),
+            "avg_traded_value_20": liquidity.get("avg_traded_value_20"),
+            "backtest_win_rate": backtest.get("win_rate"),
+            "backtest_expectancy": backtest.get("expectancy"),
         }
     )
 

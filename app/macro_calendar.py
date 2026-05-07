@@ -30,7 +30,10 @@ class MacroCalendarService:
         day = _coerce_date(event_date) or _today_ist()
         monthly_expiry = _last_thursday(day.year, day.month)
         next_weekly = _nearest_weekly_expiry(day)
-        is_expiry_day = day == monthly_expiry or day.weekday() == 3
+        is_monthly_expiry_day = day == monthly_expiry
+        is_monthly_expiry_eve = day == monthly_expiry - timedelta(days=1)
+        is_weekly_expiry_day = day.weekday() == 3 and not is_monthly_expiry_day
+        is_expiry_day = is_monthly_expiry_day
         is_expiry_week = abs((monthly_expiry - day).days) <= 2 or abs((next_weekly - day).days) <= 2
         rbi_dates = [item["date"] for item in _static_events(day.year) + _static_events(day.year + 1) if item["type"] == "rbi_mpc_placeholder"]
         budget_dates = [item["date"] for item in _static_events(day.year) + _static_events(day.year + 1) if item["type"] == "union_budget_placeholder"]
@@ -39,8 +42,12 @@ class MacroCalendarService:
         earnings_date = _coerce_date(self.earnings_calendar.get(str(symbol or "").upper()))
         earnings_days_away = (earnings_date - day).days if earnings_date else None
         event_score = 0.0
-        if is_expiry_day:
+        if is_monthly_expiry_day:
             event_score = max(event_score, 0.4)
+        elif is_monthly_expiry_eve:
+            event_score = max(event_score, 0.35)
+        elif is_weekly_expiry_day:
+            event_score = max(event_score, 0.15)
         elif is_expiry_week:
             event_score = max(event_score, 0.25)
         if is_rbi_week:
@@ -58,11 +65,15 @@ class MacroCalendarService:
             "date": day.isoformat(),
             "symbol": symbol,
             "is_expiry_day": is_expiry_day,
+            "is_monthly_expiry_day": is_monthly_expiry_day,
+            "is_monthly_expiry_eve": is_monthly_expiry_eve,
+            "is_weekly_expiry_day": is_weekly_expiry_day,
             "is_expiry_week": is_expiry_week,
+            "expiry_type": "monthly" if is_monthly_expiry_day else "weekly" if is_weekly_expiry_day else None,
             "is_rbi_week": is_rbi_week,
             "is_budget_week": is_budget_week,
             "earnings_days_away": earnings_days_away,
-            "has_high_impact_event": event_score > 0,
+            "has_high_impact_event": event_score >= 0.3,
             "event_risk_score": round(event_score, 3),
             "recommended_action": recommended,
             "data_gaps": data_gaps,
@@ -79,7 +90,7 @@ class MacroCalendarService:
                 events.append({"date": expiry.isoformat(), "type": "monthly_derivatives_expiry", "scope": "market_wide"})
         cursor = start
         while cursor <= end:
-            if cursor.weekday() == 3:
+            if cursor.weekday() == 3 and cursor != _last_thursday(cursor.year, cursor.month):
                 events.append({"date": cursor.isoformat(), "type": "weekly_expiry", "scope": "market_wide"})
             cursor += timedelta(days=1)
         for symbol, value in self.earnings_calendar.items():
@@ -147,7 +158,11 @@ def _neutral_event(reason: str) -> dict[str, Any]:
     return {
         "enabled": False,
         "is_expiry_day": False,
+        "is_monthly_expiry_day": False,
+        "is_monthly_expiry_eve": False,
+        "is_weekly_expiry_day": False,
         "is_expiry_week": False,
+        "expiry_type": None,
         "is_rbi_week": False,
         "is_budget_week": False,
         "earnings_days_away": None,
