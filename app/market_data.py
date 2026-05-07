@@ -42,17 +42,27 @@ class HistoricalCandleFallbackProvider(MarketDataProvider):
         self.source_name = f"{primary.source_name}+{fallback.source_name}-fallback"
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        primary_error: str | None = None
+        fallback_error: str | None = None
         try:
             primary_quotes = await self.primary.get_quotes(universe)
-        except Exception:
+        except Exception as exc:
             primary_quotes = {}
+            primary_error = _market_data_error_summary(exc)
         missing_rows = [row for row in universe if row["symbol"] not in primary_quotes]
         if not missing_rows:
             return primary_quotes
         try:
             fallback_quotes = await self.fallback.get_quotes(missing_rows)
-        except Exception:
+        except Exception as exc:
             fallback_quotes = {}
+            fallback_error = _market_data_error_summary(exc)
+        if not primary_quotes and not fallback_quotes and universe:
+            raise MarketDataError(
+                f"{self.source_name} returned no quotes. "
+                f"primary={self.primary.source_name}: {primary_error or _provider_diagnostics(self.primary)}; "
+                f"fallback={self.fallback.source_name}: {fallback_error or _provider_diagnostics(self.fallback)}"
+            )
         return {**fallback_quotes, **primary_quotes}
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
@@ -146,6 +156,7 @@ class YahooMarketDataProvider(MarketDataProvider):
     def __init__(self, settings: Settings) -> None:
         self.interval = settings.yahoo_candle_interval
         self.range = settings.yahoo_candle_range
+        self.last_quote_diagnostics: dict[str, Any] = {}
         self.headers = {
             "Accept": "application/json",
             "User-Agent": "OpenTrade/1.0 (+paper-trading-dashboard)",
@@ -155,9 +166,11 @@ class YahooMarketDataProvider(MarketDataProvider):
         symbols = [row.get("yahoo_symbol") or f"{row['symbol']}.NS" for row in universe]
         by_yahoo = dict(zip(symbols, universe))
         quotes: dict[str, Quote] = {}
+        diagnostics: dict[str, Any] = {"requested": len(universe), "chunks": 0, "chunk_errors": [], "chart_errors": 0}
         async with httpx.AsyncClient(timeout=10, headers=self.headers, follow_redirects=True) as client:
             for i in range(0, len(symbols), 40):
                 chunk = symbols[i : i + 40]
+                diagnostics["chunks"] += 1
                 try:
                     response = await client.get(
                         "https://query1.finance.yahoo.com/v7/finance/quote",
@@ -165,7 +178,8 @@ class YahooMarketDataProvider(MarketDataProvider):
                     )
                     response.raise_for_status()
                     data = response.json()
-                except Exception:
+                except Exception as exc:
+                    diagnostics["chunk_errors"].append(_market_data_error_summary(exc))
                     continue
                 for item in data.get("quoteResponse", {}).get("result", []):
                     yahoo_symbol = item.get("symbol")
@@ -192,6 +206,12 @@ class YahooMarketDataProvider(MarketDataProvider):
             for item in fallback:
                 if isinstance(item, Quote):
                     quotes[item.symbol] = item
+                elif isinstance(item, Exception):
+                    diagnostics["chart_errors"] += 1
+        diagnostics["returned"] = len(quotes)
+        diagnostics["missing"] = max(len(universe) - len(quotes), 0)
+        diagnostics["sample_symbols"] = symbols[:5]
+        self.last_quote_diagnostics = diagnostics
         return quotes
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
@@ -211,30 +231,27 @@ class YahooMarketDataProvider(MarketDataProvider):
         return output
 
     async def _quote_from_chart(self, client: httpx.AsyncClient, row: dict[str, Any]) -> Quote | None:
-        try:
-            response = await client.get(self._chart_url(row), params={"range": "1d", "interval": "5m"})
-            response.raise_for_status()
-            result = self._chart_result(response.json())
-            if not result:
-                return None
-            meta = result.get("meta", {})
-            price = meta.get("regularMarketPrice") or meta.get("previousClose")
-            if price is None:
-                return None
-            indicators = result.get("indicators", {}).get("quote", [{}])[0]
-            return Quote(
-                symbol=row["symbol"],
-                price=float(price),
-                source=self.source_name,
-                asof=self._epoch_to_iso(meta.get("regularMarketTime")),
-                open=self._last_value(indicators.get("open")),
-                high=self._last_value(indicators.get("high")),
-                low=self._last_value(indicators.get("low")),
-                close=meta.get("previousClose"),
-                volume=self._last_value(indicators.get("volume")),
-            )
-        except Exception:
+        response = await client.get(self._chart_url(row), params={"range": "1d", "interval": "5m"})
+        response.raise_for_status()
+        result = self._chart_result(response.json())
+        if not result:
             return None
+        meta = result.get("meta", {})
+        price = meta.get("regularMarketPrice") or meta.get("previousClose")
+        if price is None:
+            return None
+        indicators = result.get("indicators", {}).get("quote", [{}])[0]
+        return Quote(
+            symbol=row["symbol"],
+            price=float(price),
+            source=self.source_name,
+            asof=self._epoch_to_iso(meta.get("regularMarketTime")),
+            open=self._last_value(indicators.get("open")),
+            high=self._last_value(indicators.get("high")),
+            low=self._last_value(indicators.get("low")),
+            close=meta.get("previousClose"),
+            volume=self._last_value(indicators.get("volume")),
+        )
 
     async def _candles_from_chart(self, client: httpx.AsyncClient, row: dict[str, Any]) -> list[Candle]:
         try:
@@ -470,11 +487,13 @@ class NubraMarketDataProvider(MarketDataProvider):
         self.lookback_days = settings.nubra_candle_lookback_days
         self.candle_symbols_per_cycle = settings.nubra_candle_symbols_per_cycle
         self.source_name = "nubra-uat" if "uat" in self.base_url.lower() else "nubra-live"
+        self.last_quote_diagnostics: dict[str, Any] = {}
         if not self.session_token or not self.device_id:
             raise MarketDataError("Nubra provider needs NUBRA_SESSION_TOKEN and NUBRA_DEVICE_ID")
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
         quotes: dict[str, Quote] = {}
+        failures: list[str] = []
         semaphore = asyncio.Semaphore(10)
         async with httpx.AsyncClient(timeout=10, headers=self._headers(), follow_redirects=True) as client:
             async def fetch(row: dict[str, Any]) -> Quote | None:
@@ -485,6 +504,19 @@ class NubraMarketDataProvider(MarketDataProvider):
         for item in results:
             if isinstance(item, Quote):
                 quotes[item.symbol] = item
+            elif isinstance(item, Exception):
+                failures.append(_market_data_error_summary(item))
+        self.last_quote_diagnostics = {
+            "requested": len(universe),
+            "returned": len(quotes),
+            "failures": len(failures),
+            "sample_errors": _unique_errors(failures)[:5],
+        }
+        if universe and not quotes and failures:
+            raise MarketDataError(
+                f"Nubra quote failed for all {len(universe)} symbols; "
+                f"sample_errors={self.last_quote_diagnostics['sample_errors']}"
+            )
         return quotes
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
@@ -517,11 +549,18 @@ class NubraMarketDataProvider(MarketDataProvider):
             response = await client.get(f"{self.base_url}/optionchains/{quote(symbol, safe='')}/price", params=params)
             response.raise_for_status()
             data = response.json()
-        except Exception:
-            return None
+        except httpx.HTTPStatusError as exc:
+            raise MarketDataError(
+                f"Nubra quote HTTP {exc.response.status_code} for {row['symbol']} ({symbol}); "
+                f"body={exc.response.text[:180]}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise MarketDataError(f"Nubra quote timeout for {row['symbol']} ({symbol})") from exc
+        except Exception as exc:
+            raise MarketDataError(f"Nubra quote error for {row['symbol']} ({symbol}): {exc.__class__.__name__}: {exc}") from exc
         price = self._scaled(data.get("price"))
         if price is None:
-            return None
+            raise MarketDataError(f"Nubra quote missing/invalid price for {row['symbol']} ({symbol}); keys={list(data)[:8]}")
         return Quote(
             symbol=row["symbol"],
             price=price,
@@ -636,6 +675,31 @@ class NubraMarketDataProvider(MarketDataProvider):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+
+def _market_data_error_summary(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}: {exc.response.text[:160]}"
+    message = str(exc).strip()
+    return f"{exc.__class__.__name__}: {message[:220]}" if message else exc.__class__.__name__
+
+
+def _provider_diagnostics(provider: MarketDataProvider) -> str:
+    diagnostics = getattr(provider, "last_quote_diagnostics", None)
+    if diagnostics:
+        return str(diagnostics)[:700]
+    return "no detailed diagnostics captured"
+
+
+def _unique_errors(errors: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for error in errors:
+        if error in seen:
+            continue
+        seen.add(error)
+        output.append(error)
+    return output
 
 
 def build_market_data_provider(settings: Settings) -> MarketDataProvider:
