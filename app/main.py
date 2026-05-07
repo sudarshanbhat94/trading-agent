@@ -440,8 +440,8 @@ async def reset_demo(request: Request) -> dict[str, Any]:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await hub.connect(websocket)
-    await websocket.send_text(json.dumps(agent.snapshot()))
     try:
+        await websocket.send_text(json.dumps(agent.snapshot()))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

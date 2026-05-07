@@ -656,7 +656,7 @@ class LLMBrain:
             try:
                 content, meta = await self._chat_content_with_fallback(
                     payload,
-                    min(max(self.settings.llm_timeout_seconds, 10), 45),
+                    self._rolling_summary_timeout_seconds(len(selected_chunks)),
                     schema=ROLLING_CONTEXT_SCHEMA,
                     require_json=True,
                 )
@@ -928,6 +928,9 @@ class LLMBrain:
                 break
             endpoint_payload = self._payload_for_endpoint(payload, endpoint, schema=schema)
             attempt_timeout = self._endpoint_attempt_timeout_seconds(endpoint, remaining)
+            endpoints_left = len(endpoints) - index + 1
+            if endpoints_left > 1:
+                attempt_timeout = min(attempt_timeout, max(2.0, remaining / endpoints_left))
             started = perf_counter()
             try:
                 if self._should_stream(endpoint_payload, endpoint):
@@ -1192,7 +1195,20 @@ class LLMBrain:
 
     def _decision_budget_seconds(self) -> int:
         configured = int(self.settings.llm_timeout_seconds or 30)
+        endpoints = len(self._endpoint_candidates())
+        if self.settings.llm_rolling_context_enabled:
+            return max(30, min(max(configured, 60), 90))
+        if endpoints > 1:
+            return max(20, min(max(configured, 45), 75))
         return max(8, min(configured, 30))
+
+    def _rolling_summary_timeout_seconds(self, chunk_count: int) -> int:
+        configured = int(self.settings.llm_timeout_seconds or 30)
+        if chunk_count <= 0:
+            return max(6, min(configured, 10))
+        # Keep map-summary calls bounded so the final decision still has
+        # enough wall-clock budget to use the configured model fallback chain.
+        return max(8, min(max(configured // max(chunk_count + 2, 1), 8), 12))
 
     def _endpoint_attempt_timeout_seconds(self, endpoint: LLMEndpoint, remaining_seconds: float) -> float:
         model = endpoint.model.lower()
