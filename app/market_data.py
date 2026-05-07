@@ -39,13 +39,27 @@ class HistoricalCandleFallbackProvider(MarketDataProvider):
         self.primary = primary
         self.fallback = fallback
         self.min_candles = min_candles
-        self.source_name = f"{primary.source_name}+{fallback.source_name}-candles"
+        self.source_name = f"{primary.source_name}+{fallback.source_name}-fallback"
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
-        return await self.primary.get_quotes(universe)
+        try:
+            primary_quotes = await self.primary.get_quotes(universe)
+        except Exception:
+            primary_quotes = {}
+        missing_rows = [row for row in universe if row["symbol"] not in primary_quotes]
+        if not missing_rows:
+            return primary_quotes
+        try:
+            fallback_quotes = await self.fallback.get_quotes(missing_rows)
+        except Exception:
+            fallback_quotes = {}
+        return {**fallback_quotes, **primary_quotes}
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
-        primary_candles = await self.primary.get_candles(universe)
+        try:
+            primary_candles = await self.primary.get_candles(universe)
+        except Exception:
+            primary_candles = {}
         missing_rows = [
             row
             for row in universe
@@ -54,7 +68,10 @@ class HistoricalCandleFallbackProvider(MarketDataProvider):
         if not missing_rows:
             return primary_candles
 
-        fallback_candles = await self.fallback.get_candles(missing_rows)
+        try:
+            fallback_candles = await self.fallback.get_candles(missing_rows)
+        except Exception:
+            fallback_candles = {}
         merged = dict(primary_candles)
         for row in missing_rows:
             symbol = row["symbol"]

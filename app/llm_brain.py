@@ -2029,25 +2029,44 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
     if action in {"BUY", "SELL"}:
         action = "HOLD"
     snippet = " ".join(text.split())[:500]
+    is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)) or "timeout" in exc.__class__.__name__.lower()
+    if is_timeout:
+        reason = (
+            "LLM timed out before returning a strict decision JSON, so OpenTrade used the safe fallback HOLD. "
+            f"timeout={_error_summary(exc)[:180]}"
+        )
+        checklist = ["llm_timeout", "safe_hold_fallback_used", "deterministic_gates_preserved"]
+        evidence = [
+            "The model endpoint did not finish inside the trading-cycle LLM budget.",
+            "No BUY/SELL is allowed from an incomplete LLM response.",
+        ]
+        risk_checks = ["Timed-out LLM output cannot override deterministic risk gates."]
+        data_gaps = ["llm_timeout_no_final_json"]
+    else:
+        reason = (
+            "LLM returned malformed or non-JSON output, so OpenTrade used the safe fallback HOLD. "
+            f"parse_error={_error_summary(exc)[:180]}"
+        )
+        checklist = ["strict_json_failed", "json_repair_attempted", "safe_hold_fallback_used"]
+        evidence = [
+            "The model endpoint responded, but the response was not a valid decision JSON object.",
+            f"raw_excerpt={snippet}",
+        ]
+        risk_checks = ["No BUY/SELL is allowed from malformed free-form model text."]
+        data_gaps = ["llm_response_not_strict_json"]
     return {
         "action": action,
         "confidence": 0.0,
         "risk": "HIGH",
         "strategy": "",
-        "reason": (
-            "LLM returned malformed or non-JSON output, so OpenTrade used the safe fallback HOLD. "
-            f"parse_error={_error_summary(exc)[:180]}"
-        ),
-        "checklist": ["strict_json_failed", "json_repair_attempted", "safe_hold_fallback_used"],
-        "evidence": [
-            "The model endpoint responded, but the response was not a valid decision JSON object.",
-            f"raw_excerpt={snippet}",
-        ],
-        "risk_checks": ["No BUY/SELL is allowed from malformed free-form model text."],
+        "reason": reason,
+        "checklist": checklist,
+        "evidence": evidence,
+        "risk_checks": risk_checks,
         "invalidators": ["A future cycle returns valid strict JSON with passed policy gates."],
         "signal_plan": {"action": "HOLD", "source": "synthetic_safe_fallback"},
         "confluence_score": {},
         "trade_plan": {},
         "monitoring_checklist": ["Retry next cycle with fresh market data and strict JSON repair."],
-        "data_gaps": ["llm_response_not_strict_json"],
+        "data_gaps": data_gaps,
     }
