@@ -475,6 +475,20 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         )
 
 
+class UpstoxSetupRequiredProvider(MarketDataProvider):
+    source_name = "upstox-not-connected"
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        raise MarketDataError(
+            "Upstox access token is not configured. Connect Upstox from Settings before running market analytics."
+        )
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        raise MarketDataError(
+            "Upstox access token is not configured. Connect Upstox from Settings before running candle analytics."
+        )
+
+
 class NubraMarketDataProvider(MarketDataProvider):
     source_name = "nubra"
 
@@ -719,18 +733,6 @@ def _unique_errors(errors: list[str]) -> list[str]:
 
 
 def build_market_data_provider(settings: Settings) -> MarketDataProvider:
-    provider = settings.market_data_provider
-    if provider == "simulated":
-        return SimulatedMarketDataProvider()
-    if provider == "yahoo":
-        return YahooMarketDataProvider(settings)
-    if provider == "kite":
-        return KiteMarketDataProvider(settings)
-    if provider == "upstox":
-        return UpstoxMarketDataProvider(settings)
-    if provider == "nubra":
-        nubra = NubraMarketDataProvider(settings)
-        if settings.enable_yahoo_candle_fallback:
-            return HistoricalCandleFallbackProvider(nubra, YahooMarketDataProvider(settings))
-        return nubra
-    raise MarketDataError(f"Unsupported MARKET_DATA_PROVIDER={provider!r}")
+    if not settings.upstox_access_token:
+        return UpstoxSetupRequiredProvider()
+    return UpstoxMarketDataProvider(settings)

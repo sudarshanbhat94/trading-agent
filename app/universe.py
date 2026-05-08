@@ -95,6 +95,7 @@ class UniverseService:
             normalized = {_clean_key(key): (value or "").strip() for key, value in raw.items() if key}
             symbol = normalized.get("SYMBOL", "").upper()
             series = normalized.get("SERIES", "").upper()
+            isin = normalized.get("ISIN NUMBER") or normalized.get("ISIN")
             if not symbol or (allowed_series and series not in allowed_series):
                 continue
             rows.append(
@@ -104,7 +105,7 @@ class UniverseService:
                     "exchange": "NSE",
                     "yahoo_symbol": f"{symbol}.NS",
                     "kite_symbol": f"NSE:{symbol}",
-                    "upstox_instrument_key": "",
+                    "upstox_instrument_key": f"NSE_EQ|{isin}" if isin else "",
                     "nubra_symbol": symbol,
                     "sector": "",
                     "base_price": 100,

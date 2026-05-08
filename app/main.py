@@ -34,7 +34,7 @@ from .llm_brain import LLMBrain
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
-from .market_data import YahooMarketDataProvider, build_market_data_provider
+from .market_data import build_market_data_provider
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
 from .paper_broker import PaperBroker
@@ -239,17 +239,12 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         quotes = {}
         candles = {}
 
-    if symbol not in quotes:
-        try:
-            fallback = YahooMarketDataProvider(settings)
-            quotes = await fallback.get_quotes([row])
-            candles = await fallback.get_candles([row])
-        except Exception as exc:
-            provider_error = f"{provider_error or ''} yahoo_fallback={exc.__class__.__name__}: {exc}".strip()
-
     quote = quotes.get(symbol)
     if quote is None:
-        raise HTTPException(status_code=404, detail=f"No market quote found for {symbol}. Check the symbol spelling.")
+        detail = f"No Upstox market quote found for {symbol}. Check the symbol spelling and Upstox instrument key."
+        if provider_error:
+            detail = f"{detail} Provider error: {provider_error}"
+        raise HTTPException(status_code=404, detail=detail)
 
     news = await sentiment.analyze_symbol_news(row)
     db.upsert_quotes(quotes)
@@ -507,173 +502,6 @@ async def upstox_callback(request: Request) -> HTMLResponse:
         else f"<h1>Upstox authorization did not return a code</h1><p>{error or 'No code found in callback URL.'}</p>"
     )
     return HTMLResponse(f"<!doctype html><html><body>{body}</body></html>")
-
-
-@app.post("/api/nubra/send-otp")
-async def nubra_send_otp(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    require_admin(request, settings, db)
-    base_url = str(payload.get("base_url") or settings.nubra_api_base_url).rstrip("/")
-    phone = re.sub(r"\D+", "", str(payload.get("phone") or settings.nubra_phone))
-    device_id = str(payload.get("device_id") or settings.nubra_device_id or "opentrade-local-001").strip()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Enter Nubra phone number before sending OTP.")
-    if not device_id:
-        raise HTTPException(status_code=400, detail="Enter Nubra device id before sending OTP.")
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            response = await client.post(
-                f"{base_url}/sendphoneotp",
-                headers={"Content-Type": "application/json"},
-                json={"phone": phone, "skip_totp": False},
-            )
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=f"Nubra OTP failed: {exc.response.text[:300]}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Nubra OTP failed: {exc.__class__.__name__}: {exc}") from exc
-    temp_token = data.get("temp_token")
-    if not temp_token:
-        raise HTTPException(status_code=502, detail=f"Nubra did not return temp_token. Response keys: {list(data)[:8]}")
-    db.set_state(
-        "nubra_login_temp",
-        {
-            "base_url": base_url,
-            "phone": phone,
-            "device_id": device_id,
-            "temp_token": temp_token,
-            "flow": data.get("flow"),
-            "next": data.get("next"),
-            "email": data.get("email"),
-            "expiry": data.get("expiry"),
-        },
-    )
-    db.insert_agent_log(
-        "INFO",
-        "nubra",
-        "otp_sent",
-        "Nubra OTP sent",
-        {"base_url": base_url, "phone_suffix": phone[-4:], "device_id": device_id, "next": data.get("next")},
-    )
-    return {
-        "ok": True,
-        "message": data.get("message") or "OTP sent",
-        "phone_suffix": phone[-4:],
-        "email": data.get("email"),
-        "expiry": data.get("expiry"),
-        "next": data.get("next"),
-        "temp_token_saved": True,
-    }
-
-
-@app.post("/api/nubra/verify")
-async def nubra_verify(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    require_admin(request, settings, db)
-    state = db.get_state("nubra_login_temp", {})
-    base_url = str(payload.get("base_url") or state.get("base_url") or settings.nubra_api_base_url).rstrip("/")
-    phone = re.sub(r"\D+", "", str(payload.get("phone") or state.get("phone") or settings.nubra_phone))
-    device_id = str(payload.get("device_id") or state.get("device_id") or settings.nubra_device_id or "opentrade-local-001").strip()
-    temp_token = str(payload.get("temp_token") or state.get("temp_token") or "").strip()
-    otp = re.sub(r"\D+", "", str(payload.get("otp") or ""))
-    mpin = str(payload.get("mpin") or settings.nubra_mpin).strip()
-    if not all([base_url, phone, device_id, temp_token, otp, mpin]):
-        raise HTTPException(status_code=400, detail="Nubra verify needs phone, device id, temp token, OTP, and MPIN.")
-    try:
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-            verify_response = await client.post(
-                f"{base_url}/verifyphoneotp",
-                headers={
-                    "x-temp-token": temp_token,
-                    "x-device-id": device_id,
-                    "Content-Type": "application/json",
-                },
-                json={"phone": phone, "otp": otp},
-            )
-            verify_response.raise_for_status()
-            verify_data = verify_response.json()
-            auth_token = verify_data.get("auth_token")
-            if not auth_token:
-                raise HTTPException(status_code=502, detail=f"Nubra verify did not return auth_token. Response keys: {list(verify_data)[:8]}")
-            pin_response = await client.post(
-                f"{base_url}/verifypin",
-                headers={
-                    "x-device-id": device_id,
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {auth_token}",
-                },
-                json={"pin": mpin},
-            )
-            pin_response.raise_for_status()
-            pin_data = pin_response.json()
-    except HTTPException:
-        raise
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=f"Nubra verify failed: {exc.response.text[:300]}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Nubra verify failed: {exc.__class__.__name__}: {exc}") from exc
-    session_token = pin_data.get("session_token")
-    if not session_token:
-        raise HTTPException(status_code=502, detail=f"Nubra PIN login did not return session_token. Response keys: {list(pin_data)[:10]}")
-
-    current_overrides = db.runtime_settings()
-    candidate_overrides = dict(current_overrides)
-    candidate_overrides.update(
-        {
-            "market_data_provider": "nubra",
-            "nubra_api_base_url": base_url,
-            "nubra_phone": phone,
-            "nubra_mpin": mpin,
-            "nubra_device_id": device_id,
-            "nubra_session_token": session_token,
-        }
-    )
-    candidate_settings = settings_from_overrides(Settings(), candidate_overrides)
-    try:
-        candidate_stack = build_agent_stack(candidate_settings)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Nubra session saved but provider failed to initialize: {exc}") from exc
-    result = await _apply_runtime_stack(
-        candidate_overrides=candidate_overrides,
-        candidate_settings=candidate_settings,
-        candidate_stack=candidate_stack,
-        changed_keys=[
-            "market_data_provider",
-            "nubra_api_base_url",
-            "nubra_phone",
-            "nubra_mpin",
-            "nubra_device_id",
-            "nubra_session_token",
-        ],
-        component="nubra",
-        event="connected",
-        message="Nubra session connected and saved",
-    )
-    db.set_state("nubra_login_temp", {})
-    db.insert_agent_log(
-        "INFO",
-        "nubra",
-        "session_saved",
-        "Nubra session token saved",
-        {
-            "base_url": base_url,
-            "phone_suffix": phone[-4:],
-            "device_id": device_id,
-            "client_code": pin_data.get("client_code"),
-            "kyc_status": pin_data.get("kyc_status"),
-        },
-    )
-    return {
-        "ok": True,
-        "message": "Nubra connected. Session token saved and market data provider rebuilt.",
-        "client_code": pin_data.get("client_code"),
-        "name": pin_data.get("name"),
-        "email": pin_data.get("email"),
-        "phone_suffix": phone[-4:],
-        "device_id": device_id,
-        "provider": result["status"].get("provider"),
-        "status": result["status"],
-        "config": result["config"],
-    }
 
 
 @app.post("/api/config")

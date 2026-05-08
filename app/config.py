@@ -63,7 +63,7 @@ class Settings:
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.08)
     daily_loss_limit_pct: float = _float("DAILY_LOSS_LIMIT_PCT", 0.025)
 
-    market_data_provider: str = os.getenv("MARKET_DATA_PROVIDER", "simulated").strip().lower()
+    market_data_provider: str = "upstox"
     kite_api_key: str = os.getenv("KITE_API_KEY", "")
     kite_access_token: str = os.getenv("KITE_ACCESS_TOKEN", "")
     upstox_api_key: str = os.getenv("UPSTOX_API_KEY", "")
@@ -77,7 +77,7 @@ class Settings:
     upstox_candle_lookback_days: int = _int("UPSTOX_CANDLE_LOOKBACK_DAYS", 3)
     yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "15m")
     yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
-    enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", True)
+    enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", False)
     nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
     nubra_phone: str = os.getenv("NUBRA_PHONE", "")
     nubra_mpin: str = os.getenv("NUBRA_MPIN", "")
@@ -167,16 +167,16 @@ SECRET_FIELDS = {
 
 
 CONFIG_SCHEMA: list[dict[str, Any]] = [
-    {"key": "execution_mode", "label": "Execution Mode", "type": "select", "category": "Demo Account", "choices": ["paper", "upstox_sandbox", "upstox_live"]},
-    {"key": "initial_cash_inr", "label": "Demo Cash", "type": "number", "category": "Demo Account", "min": 1000, "step": 1000},
-    {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Demo Account"},
-    {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Demo Account", "min": 5, "step": 1},
-    {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Demo Account", "min": 30, "step": 15},
+    {"key": "execution_mode", "label": "Execution Mode", "type": "select", "category": "Runtime", "choices": ["paper", "upstox_sandbox", "upstox_live"]},
+    {"key": "initial_cash_inr", "label": "Paper Capital", "type": "number", "category": "Runtime", "min": 1000, "step": 1000},
+    {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Agent Cycle"},
+    {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Agent Cycle", "min": 5, "step": 1},
+    {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
     {"key": "admin_password", "label": "Admin Password", "type": "secret", "category": "Access Control"},
     {"key": "admin_username", "label": "Admin Username", "type": "text", "category": "Access Control"},
     {"key": "auth_session_secret", "label": "Session Secret", "type": "secret", "category": "Access Control"},
     {"key": "admin_session_hours", "label": "Session Hours", "type": "number", "category": "Access Control", "min": 1, "step": 1},
-    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["simulated", "yahoo", "kite", "upstox", "nubra"]},
+    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["upstox"]},
     {"key": "universe_source", "label": "Universe Source", "type": "select", "category": "Market Data", "choices": ["csv", "nse_equity"]},
     {"key": "nse_universe_refresh_on_start", "label": "Refresh NSE Universe", "type": "boolean", "category": "Market Data"},
     {"key": "nse_equity_list_url", "label": "NSE Equity List URL", "type": "text", "category": "Market Data"},
@@ -191,24 +191,6 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "upstox_order_base_url", "label": "Upstox Order URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_candle_interval", "label": "Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},
     {"key": "upstox_candle_lookback_days", "label": "Candle Lookback Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
-    {"key": "yahoo_candle_interval", "label": "Yahoo Candle Interval", "type": "select", "category": "Market Data", "choices": ["5m", "15m", "30m", "60m", "1d"]},
-    {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["1d", "5d", "1mo", "3mo"]},
-    {"key": "enable_yahoo_candle_fallback", "label": "Yahoo Candle Fallback", "type": "boolean", "category": "Market Data"},
-    {"key": "kite_api_key", "label": "Kite API Key", "type": "secret", "category": "Market Data"},
-    {"key": "kite_access_token", "label": "Kite Access Token", "type": "secret", "category": "Market Data"},
-    {"key": "nubra_api_base_url", "label": "Nubra API Base URL", "type": "text", "category": "Market Data"},
-    {"key": "nubra_phone", "label": "Nubra Phone", "type": "secret", "category": "Market Data"},
-    {"key": "nubra_mpin", "label": "Nubra MPIN", "type": "secret", "category": "Market Data"},
-    {"key": "nubra_session_token", "label": "Nubra Session Token", "type": "secret", "category": "Market Data"},
-    {"key": "nubra_device_id", "label": "Nubra Device ID", "type": "text", "category": "Market Data"},
-    {"key": "nubra_price_scale", "label": "Nubra Price Scale", "type": "number", "category": "Market Data", "min": 1, "step": 1},
-    {"key": "nubra_candle_interval", "label": "Nubra Candle Interval", "type": "select", "category": "Market Data", "choices": ["1m", "5m", "15m", "30m", "1h", "1d"]},
-    {"key": "nubra_candle_lookback_days", "label": "Nubra Candle Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
-    {"key": "nubra_candle_symbols_per_cycle", "label": "Nubra Candle Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 10},
-    {"key": "nubra_option_chain_endpoint", "label": "Nubra Option Chain Path", "type": "text", "category": "Institutional Feeds"},
-    {"key": "nubra_market_depth_endpoint", "label": "Nubra Depth Path", "type": "text", "category": "Institutional Feeds"},
-    {"key": "nubra_delivery_endpoint", "label": "Nubra Delivery Path", "type": "text", "category": "Institutional Feeds"},
-    {"key": "nubra_oi_endpoint", "label": "Nubra OI Path", "type": "text", "category": "Institutional Feeds"},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "offline"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "deepseek_api_key", "label": "DeepSeek API Key", "type": "secret", "category": "LLM Brain"},
@@ -274,6 +256,8 @@ CONFIG_KEYS = {item["key"] for item in CONFIG_SCHEMA}
 
 
 def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
+    if key == "market_data_provider":
+        return "upstox"
     if key == "llm_provider":
         provider = str(value).strip().lower()
         return provider if provider in {"deepseek", "offline"} else "deepseek"

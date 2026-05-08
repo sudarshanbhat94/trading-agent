@@ -436,7 +436,10 @@ class Database:
                     exchange = excluded.exchange,
                     yahoo_symbol = excluded.yahoo_symbol,
                     kite_symbol = excluded.kite_symbol,
-                    upstox_instrument_key = excluded.upstox_instrument_key,
+                    upstox_instrument_key = case
+                        when excluded.upstox_instrument_key != '' then excluded.upstox_instrument_key
+                        else universe.upstox_instrument_key
+                    end,
                     nubra_symbol = excluded.nubra_symbol,
                     nubra_ref_id = excluded.nubra_ref_id,
                     sector = case when excluded.sector != '' then excluded.sector else universe.sector end,

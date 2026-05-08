@@ -6,6 +6,7 @@ const state = {
   logs: [],
   users: [],
   socket: null,
+  quoteFilter: "",
 };
 
 const money = new Intl.NumberFormat("en-IN", {
@@ -103,10 +104,15 @@ function render(payload) {
   const error = byId("error-box");
   if (payload.last_error) {
     error.hidden = false;
-    error.textContent = payload.last_error;
+    const feedPending = isFeedPending(payload);
+    error.className = `error-box ${feedPending ? "warning" : ""}`;
+    error.textContent = feedPending
+      ? "Market data connection pending. Connect or refresh Upstox when ready; the terminal remains available for account, settings, and audit review."
+      : payload.last_error;
   } else {
     error.hidden = true;
     error.textContent = "";
+    error.className = "error-box";
   }
 
   byId("position-count").textContent = `${positions.length} open`;
@@ -228,10 +234,14 @@ function renderShell(payload = state.latest || {}) {
   byId("top-llm").textContent = llmProvider === "offline" ? "off" : llmModel;
   byId("top-execution").textContent = plainSetting("execution_mode", runtime.execution_mode || "-");
 
-  byId("feed-pill").textContent = `${mode} feed`;
-  byId("feed-pill").className = `pill ${mode === "live" ? "running" : mode === "simulated" ? "stopped" : ""}`;
-  byId("ops-feed").textContent = provider;
-  byId("ops-feed-meta").textContent = `${health.quote_count || 0} quotes · ${fmtAge(health.latest_quote_age_seconds)}`;
+  const feedPending = isFeedPending(payload);
+  const upstoxConnected = String(provider).includes("upstox-live") && !feedPending;
+  byId("feed-pill").textContent = upstoxConnected ? "Upstox live" : "Upstox pending";
+  byId("feed-pill").className = `pill ${upstoxConnected ? "running" : "stopped"}`;
+  byId("ops-feed").textContent = upstoxConnected ? "Upstox live" : "Connect Upstox";
+  byId("ops-feed-meta").textContent = feedPending
+    ? "quotes paused until token/feed is ready"
+    : `${health.quote_count || 0} quotes · ${fmtAge(health.latest_quote_age_seconds)}`;
   byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmProvider;
   byId("ops-llm-meta").textContent = `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
@@ -240,6 +250,12 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · breadth ${escapeHtml(breadth.breadth_regime || "neutral")}`;
   byId("ops-cycle").textContent = payload.running ? "Running" : "Stopped";
   byId("ops-cycle-meta").textContent = payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending";
+}
+
+function isFeedPending(payload = state.latest || {}) {
+  const provider = String(payload.market_health?.provider || payload.provider || payload.runtime?.market_data_provider || "");
+  const error = String(payload.last_error || "");
+  return provider.includes("upstox-not-connected") || /upstox|marketdataerror|no quotes|access token/i.test(error);
 }
 
 function renderAgentConsole(payload) {
@@ -307,8 +323,6 @@ function applyAccessMode() {
     "analyze-btn",
     "upstox-auth-url-btn",
     "upstox-connect-btn",
-    "nubra-send-otp-btn",
-    "nubra-connect-btn",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
@@ -332,11 +346,6 @@ function applyAccessMode() {
     "upstox-api-secret",
     "upstox-redirect-uri",
     "upstox-auth-code",
-    "nubra-base-url",
-    "nubra-phone",
-    "nubra-device-id",
-    "nubra-otp",
-    "nubra-mpin",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
@@ -593,7 +602,6 @@ function renderSettings(config) {
     })
     .join("");
   renderUpstoxConnect(config.settings || {});
-  renderNubraConnect(config.settings || {});
   applyAccessMode();
   renderShell();
 }
@@ -602,18 +610,14 @@ function renderUpstoxConnect(settings) {
   const apiKey = byId("upstox-api-key");
   const apiSecret = byId("upstox-api-secret");
   const redirectUri = byId("upstox-redirect-uri");
+  const status = byId("upstox-connect-status");
   if (apiKey && !apiKey.value) apiKey.placeholder = settings.upstox_api_key?.saved ? "API key saved" : "API Key";
   if (apiSecret && !apiSecret.value) apiSecret.placeholder = settings.upstox_api_secret?.saved ? "API secret saved" : "API Secret";
   if (redirectUri) redirectUri.value = settings.upstox_redirect_uri || `${window.location.origin}/upstox/callback`;
-}
-
-function renderNubraConnect(settings) {
-  const baseUrl = byId("nubra-base-url");
-  const phone = byId("nubra-phone");
-  const deviceId = byId("nubra-device-id");
-  if (baseUrl) baseUrl.value = settings.nubra_api_base_url || "https://uatapi.nubra.io";
-  if (phone && !phone.value) phone.placeholder = settings.nubra_phone?.saved ? "phone saved" : "Phone";
-  if (deviceId) deviceId.value = settings.nubra_device_id || "opentrade-local-001";
+  if (status) {
+    status.textContent = settings.upstox_access_token?.saved ? "connected" : "not connected";
+    status.className = `settings-inline-status ${settings.upstox_access_token?.saved ? "positive" : ""}`;
+  }
 }
 
 function renderField(item, stored) {
@@ -840,92 +844,6 @@ async function connectUpstox() {
   }
 }
 
-function nubraConnectPayload() {
-  return {
-    base_url: byId("nubra-base-url")?.value?.trim(),
-    phone: byId("nubra-phone")?.value?.trim(),
-    device_id: byId("nubra-device-id")?.value?.trim(),
-    otp: byId("nubra-otp")?.value?.trim(),
-    mpin: byId("nubra-mpin")?.value?.trim(),
-  };
-}
-
-async function sendNubraOtp() {
-  const status = byId("nubra-connect-status");
-  const button = byId("nubra-send-otp-btn");
-  status.textContent = "sending Nubra OTP";
-  status.className = "settings-inline-status";
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/nubra/send-otp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(nubraConnectPayload()),
-    });
-    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "OTP failed";
-      status.className = "settings-inline-status negative";
-      showDetails("Nubra OTP", payload);
-      return;
-    }
-    status.textContent = `OTP sent to ******${payload.phone_suffix || ""}${payload.expiry ? ` · expires in ${payload.expiry}m` : ""}`;
-    status.className = "settings-inline-status positive";
-    showDetails("Nubra OTP", payload);
-  } catch (error) {
-    status.textContent = "Nubra OTP failed: backend unreachable";
-    status.className = "settings-inline-status negative";
-    showBackendError(networkErrorMessage(error, "Nubra OTP"), { action: "nubra send otp" });
-  } finally {
-    button.disabled = !(state.auth && state.auth.admin);
-  }
-}
-
-async function connectNubra() {
-  const status = byId("nubra-connect-status");
-  const button = byId("nubra-connect-btn");
-  status.textContent = "verifying Nubra OTP and MPIN";
-  status.className = "settings-inline-status";
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/nubra/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(nubraConnectPayload()),
-    });
-    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "Nubra connect failed";
-      status.className = "settings-inline-status negative";
-      showDetails("Nubra Connect", payload);
-      return;
-    }
-    if (byId("nubra-otp")) byId("nubra-otp").value = "";
-    if (byId("nubra-mpin")) byId("nubra-mpin").value = "";
-    status.textContent = `Nubra connected · ${payload.provider || "provider ready"}`;
-    status.className = "settings-inline-status positive";
-    if (payload.config) renderSettings(payload.config);
-    if (payload.status) render(payload.status);
-    fetchLogs();
-    showDetails("Nubra Connect", {
-      ok: payload.ok,
-      message: payload.message,
-      client_code: payload.client_code,
-      name: payload.name,
-      email: payload.email,
-      phone_suffix: payload.phone_suffix,
-      device_id: payload.device_id,
-      provider: payload.provider,
-    });
-  } catch (error) {
-    status.textContent = "Nubra connect failed: backend unreachable";
-    status.className = "settings-inline-status negative";
-    showBackendError(networkErrorMessage(error, "Nubra connect"), { action: "nubra connect" });
-  } finally {
-    button.disabled = !(state.auth && state.auth.admin);
-  }
-}
-
 async function login(event) {
   if (event) event.preventDefault();
   const username = byId("login-username").value;
@@ -1056,18 +974,21 @@ function renderSuggestions(rows) {
 function renderQuotes(rows) {
   const accountBody = byId("quotes-body");
   const overviewBody = byId("overview-quotes-body");
+  const filter = state.quoteFilter.trim().toUpperCase();
+  const railRows = filter ? rows.filter((row) => String(row.symbol || "").toUpperCase().includes(filter)) : rows;
+  byId("quote-count").textContent = filter ? `${railRows.length}/${rows.length} quotes` : `${rows.length} quotes`;
   const markup = rows
     .slice(0, 160)
     .map((row) => quoteRow(row))
     .join("");
   accountBody.innerHTML = markup || `<tr><td colspan="6">No quotes yet</td></tr>`;
   overviewBody.innerHTML =
-    rows
-      .slice(0, 12)
+    railRows
+      .slice(0, 80)
       .map((row) => quoteRow(row))
       .join("") || `<tr><td colspan="6">No quotes yet</td></tr>`;
   bindRowDetails(accountBody, rows.slice(0, 160), "Quote");
-  bindRowDetails(overviewBody, rows.slice(0, 12), "Quote");
+  bindRowDetails(overviewBody, railRows.slice(0, 80), "Quote");
 }
 
 function quoteRow(row) {
@@ -1093,7 +1014,6 @@ function sourceClass(source) {
   const value = String(source || "");
   if (value.includes("live")) return "live";
   if (value.includes("delayed")) return "delayed";
-  if (value.includes("simulated")) return "simulated";
   return "";
 }
 
@@ -1912,12 +1832,20 @@ function bindControls() {
   byId("test-llm-btn").addEventListener("click", testLlm);
   byId("upstox-auth-url-btn").addEventListener("click", openUpstoxLogin);
   byId("upstox-connect-btn").addEventListener("click", connectUpstox);
-  byId("nubra-send-otp-btn").addEventListener("click", sendNubraOtp);
-  byId("nubra-connect-btn").addEventListener("click", connectNubra);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
+  const quoteFilter = byId("quote-filter");
+  if (quoteFilter) {
+    quoteFilter.addEventListener("input", () => {
+      state.quoteFilter = quoteFilter.value || "";
+      renderQuotes(state.latest?.quotes || []);
+    });
+  }
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
     button.addEventListener("click", () => setView(button.dataset.view));
+  }
+  for (const button of document.querySelectorAll("[data-view-jump]")) {
+    button.addEventListener("click", () => setView(button.dataset.viewJump));
   }
   for (const tile of document.querySelectorAll(".kpi")) {
     tile.addEventListener("click", () => {
