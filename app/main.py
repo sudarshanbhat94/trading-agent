@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
 
+import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +14,18 @@ from starlette.requests import Request
 
 from .account import AccountService
 from .agent import TradingAgentService
-from .auth import is_admin_request, login_admin, logout_admin, require_admin
+from .auth import (
+    auth_status,
+    current_user,
+    hash_password,
+    login_user,
+    logout_user,
+    normalize_role,
+    require_admin,
+    require_user,
+    validate_password,
+    validate_username,
+)
 from .config import CONFIG_KEYS, CONFIG_SCHEMA, SECRET_FIELDS, Settings, public_settings, settings_from_overrides
 from .db import Database
 from .delivery_data import DeliveryDataService
@@ -23,17 +36,21 @@ from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
 from .market_data import YahooMarketDataProvider, build_market_data_provider
 from .order_router import build_order_router
+from .options_intelligence import OptionsIntelligenceService
 from .paper_broker import PaperBroker
 from .sector_rotation import SectorRotationService
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
+from .universe import UniverseService
 
 
 base_settings = Settings()
 db = Database(base_settings.database_path)
 db.init()
 settings = settings_from_overrides(base_settings, db.runtime_settings())
-db.seed_universe(settings.universe_csv)
+if settings.admin_password:
+    db.ensure_default_admin_user(settings.admin_username, hash_password(settings.admin_password))
+db.seed_universe(settings.universe_csv, disable_missing=settings.universe_source == "csv")
 
 
 class WebSocketHub:
@@ -74,7 +91,9 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_market_breadth = MarketBreadthService(new_settings, db)
     new_sector_rotation = SectorRotationService(new_settings, db)
     new_macro_calendar = MacroCalendarService(new_settings, db)
-    new_llm = LLMBrain(new_settings)
+    new_universe_service = UniverseService(new_settings, db)
+    new_options_intelligence = OptionsIntelligenceService(new_settings, db)
+    new_llm = LLMBrain(new_settings, db)
     new_strategy = StrategyEngine(new_settings, new_sentiment, new_llm)
     new_agent = TradingAgentService(
         db=db,
@@ -87,8 +106,10 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         market_breadth=new_market_breadth,
         sector_rotation=new_sector_rotation,
         macro_calendar=new_macro_calendar,
+        options_intelligence=new_options_intelligence,
         interval_seconds=new_settings.agent_interval_seconds,
         cycle_timeout_seconds=new_settings.cycle_timeout_seconds,
+        universe_symbols_per_cycle=new_settings.universe_symbols_per_cycle,
         on_update=hub.broadcast,
     )
     return {
@@ -103,6 +124,8 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         "market_breadth": new_market_breadth,
         "sector_rotation": new_sector_rotation,
         "macro_calendar": new_macro_calendar,
+        "universe_service": new_universe_service,
+        "options_intelligence": new_options_intelligence,
         "llm": new_llm,
         "strategy": new_strategy,
         "agent": new_agent,
@@ -121,6 +144,8 @@ delivery_service = stack["delivery_service"]
 market_breadth = stack["market_breadth"]
 sector_rotation = stack["sector_rotation"]
 macro_calendar = stack["macro_calendar"]
+universe_service = stack["universe_service"]
+options_intelligence = stack["options_intelligence"]
 llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
@@ -132,6 +157,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 @app.on_event("startup")
 async def startup() -> None:
+    await universe_service.refresh_if_enabled()
     delivery_service.start_background_task()
     if settings.auto_start_agent:
         agent.start()
@@ -158,21 +184,29 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/status")
-async def status() -> dict[str, Any]:
+async def status(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return _status_payload()
+
+
+def _status_payload() -> dict[str, Any]:
     snapshot = agent.snapshot()
     snapshot["runtime"] = {
         "market_data_provider": settings.market_data_provider,
         "execution_mode": settings.execution_mode,
         "llm_provider": settings.llm_provider,
         "llm_decision_mode": settings.llm_decision_mode,
-        "llm_model_fallback_enabled": settings.llm_model_fallback_enabled,
+        "llm_model": settings.deepseek_model if settings.llm_provider == "deepseek" else "offline",
+        "llm_thinking_enabled": settings.llm_thinking_enabled,
+        "llm_reasoning_effort": settings.llm_reasoning_effort,
         "llm_rolling_context_enabled": settings.llm_rolling_context_enabled,
     }
     return snapshot
 
 
 @app.get("/api/decisions/{decision_id}")
-async def decision_detail(decision_id: int) -> dict[str, Any]:
+async def decision_detail(decision_id: int, request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
     row = db.decision_by_id(decision_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Decision not found")
@@ -180,7 +214,8 @@ async def decision_detail(decision_id: int) -> dict[str, Any]:
 
 
 @app.get("/api/orders/{order_id}")
-async def order_detail(order_id: int) -> dict[str, Any]:
+async def order_detail(order_id: int, request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
     row = db.order_by_id(order_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -189,7 +224,7 @@ async def order_detail(order_id: int) -> dict[str, Any]:
 
 @app.post("/api/analyze-symbol")
 async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_user(request, settings, db)
     symbol = _normalize_symbol(str(payload.get("symbol", "")))
     if not symbol:
         raise HTTPException(status_code=400, detail="Enter a valid NSE symbol, for example SUZLON or INFY.")
@@ -221,6 +256,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     db.upsert_candles(candles)
     macro_context = db.get_state("macro_context", {})
     institutional_context = db.get_state("institutional_context", {})
+    options_context = db.get_state("options_intelligence_context", {})
     decisions = await strategy.evaluate(
         [row],
         quotes,
@@ -228,6 +264,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         candles,
         macro_context,
         institutional_context,
+        options_context,
         delivery_service,
         db.get_state("market_breadth_context", {}),
         db.get_state("sector_rotation_context", {}),
@@ -266,53 +303,382 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 
 
 @app.get("/api/account")
-async def account_details() -> dict[str, Any]:
+async def account_details(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
     return await account.snapshot()
 
 
 @app.get("/api/config")
-async def get_config() -> dict[str, Any]:
-    return {
-        "schema": CONFIG_SCHEMA,
-        "settings": public_settings(settings),
-    }
+async def get_config(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return _config_payload()
+
+
+def _config_payload() -> dict[str, Any]:
+    return {"schema": CONFIG_SCHEMA, "settings": public_settings(settings)}
 
 
 @app.get("/api/logs")
 async def agent_logs(request: Request, limit: int = 300) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_admin(request, settings, db)
     safe_limit = max(1, min(int(limit), 1000))
     return {"logs": db.latest_agent_logs(safe_limit)}
 
 
 @app.get("/api/market-breadth")
-async def market_breadth_snapshot() -> dict[str, Any]:
+async def market_breadth_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
     return db.get_state("market_breadth_context", {})
 
 
 @app.get("/api/sector-rotation")
-async def sector_rotation_snapshot() -> dict[str, Any]:
+async def sector_rotation_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
     return db.get_state("sector_rotation_context", {})
 
 
+@app.get("/api/options-intelligence")
+async def options_intelligence_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return db.get_state("options_intelligence_context", {})
+
+
 @app.get("/api/macro-calendar")
-async def macro_calendar_snapshot() -> dict[str, Any]:
+async def macro_calendar_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
     context = db.get_state("macro_calendar_context", {})
     if not context:
         return {"enabled": settings.enable_macro_calendar, "events": macro_calendar.upcoming_events(30)}
     return context
 
 
+@app.get("/api/universe")
+async def universe_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return {
+        "settings": {
+            "source": settings.universe_source,
+            "symbols_per_cycle": settings.universe_symbols_per_cycle,
+            "nse_refresh_on_start": settings.nse_universe_refresh_on_start,
+            "nse_series": settings.nse_universe_series,
+        },
+        "summary": db.universe_summary(),
+        "refresh_status": universe_service.status(),
+    }
+
+
+@app.post("/api/universe/refresh")
+async def refresh_universe(request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    status = await universe_service.refresh_nse_equity()
+    return {"status": status, "summary": db.universe_summary()}
+
+
 @app.post("/api/llm/test")
 async def test_llm(request: Request) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_admin(request, settings, db)
     return await llm.test_connection()
+
+
+@app.get("/api/llm/usage")
+async def llm_usage(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return db.llm_usage_summary(100)
+
+
+@app.post("/api/upstox/auth-url")
+async def upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    api_key = str(payload.get("api_key") or settings.upstox_api_key).strip()
+    redirect_uri = str(payload.get("redirect_uri") or settings.upstox_redirect_uri).strip()
+    base_url = str(payload.get("base_url") or settings.upstox_api_base_url).rstrip("/")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Enter and save your Upstox API key first.")
+    if not redirect_uri:
+        raise HTTPException(status_code=400, detail="Enter the exact Upstox redirect URI configured in your Upstox app.")
+    auth_url = f"{base_url}/login/authorization/dialog?{urlencode({'response_type': 'code', 'client_id': api_key, 'redirect_uri': redirect_uri})}"
+    return {
+        "ok": True,
+        "auth_url": auth_url,
+        "message": "Open this URL, login to Upstox, then paste the returned code or full redirect URL into OpenTrade.",
+    }
+
+
+@app.post("/api/upstox/connect")
+async def upstox_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    api_key = str(payload.get("api_key") or settings.upstox_api_key).strip()
+    api_secret = str(payload.get("api_secret") or settings.upstox_api_secret).strip()
+    redirect_uri = str(payload.get("redirect_uri") or settings.upstox_redirect_uri).strip()
+    base_url = str(payload.get("base_url") or settings.upstox_api_base_url).rstrip("/")
+    code = _extract_oauth_code(str(payload.get("code") or ""))
+    if not all([api_key, api_secret, redirect_uri, code]):
+        raise HTTPException(status_code=400, detail="Upstox connect needs API key, API secret, redirect URI, and authorization code.")
+
+    token_url = f"{base_url}/login/authorization/token"
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.post(
+                token_url,
+                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "code": code,
+                    "client_id": api_key,
+                    "client_secret": api_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            response.raise_for_status()
+            token_data = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=f"Upstox token exchange failed: {exc.response.text[:300]}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upstox token exchange failed: {exc.__class__.__name__}: {exc}") from exc
+
+    access_token = str(token_data.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=502, detail=f"Upstox token exchange did not return access_token. Response keys: {list(token_data)[:10]}")
+
+    current_overrides = db.runtime_settings()
+    candidate_overrides = dict(current_overrides)
+    candidate_overrides.update(
+        {
+            "market_data_provider": "upstox",
+            "upstox_api_key": api_key,
+            "upstox_api_secret": api_secret,
+            "upstox_redirect_uri": redirect_uri,
+            "upstox_access_token": access_token,
+            "upstox_api_base_url": base_url,
+        }
+    )
+    candidate_settings = settings_from_overrides(Settings(), candidate_overrides)
+    try:
+        candidate_stack = build_agent_stack(candidate_settings)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Upstox access token saved but provider failed to initialize: {exc}") from exc
+    result = await _apply_runtime_stack(
+        candidate_overrides=candidate_overrides,
+        candidate_settings=candidate_settings,
+        candidate_stack=candidate_stack,
+        changed_keys=[
+            "market_data_provider",
+            "upstox_api_key",
+            "upstox_api_secret",
+            "upstox_redirect_uri",
+            "upstox_access_token",
+            "upstox_api_base_url",
+        ],
+        component="upstox",
+        event="connected",
+        message="Upstox access token connected and saved",
+    )
+    db.insert_agent_log(
+        "INFO",
+        "upstox",
+        "access_token_saved",
+        "Upstox access token saved for market data",
+        {
+            "base_url": base_url,
+            "redirect_uri": redirect_uri,
+            "token_type": token_data.get("token_type"),
+            "user_id": token_data.get("user_id"),
+        },
+    )
+    return {
+        "ok": True,
+        "message": "Upstox connected. Access token saved and market data provider rebuilt.",
+        "provider": result["status"].get("provider"),
+        "token_type": token_data.get("token_type"),
+        "user_id": token_data.get("user_id"),
+        "status": result["status"],
+        "config": result["config"],
+    }
+
+
+@app.get("/upstox/callback", response_class=HTMLResponse)
+async def upstox_callback(request: Request) -> HTMLResponse:
+    code = _extract_oauth_code(str(request.url))
+    error = request.query_params.get("error") or request.query_params.get("error_description")
+    body = (
+        f"<h1>Upstox authorization code received</h1><p>Paste this code into OpenTrade Upstox Connect.</p>"
+        f"<textarea style='width:100%;height:120px'>{code}</textarea>"
+        if code
+        else f"<h1>Upstox authorization did not return a code</h1><p>{error or 'No code found in callback URL.'}</p>"
+    )
+    return HTMLResponse(f"<!doctype html><html><body>{body}</body></html>")
+
+
+@app.post("/api/nubra/send-otp")
+async def nubra_send_otp(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    base_url = str(payload.get("base_url") or settings.nubra_api_base_url).rstrip("/")
+    phone = re.sub(r"\D+", "", str(payload.get("phone") or settings.nubra_phone))
+    device_id = str(payload.get("device_id") or settings.nubra_device_id or "opentrade-local-001").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="Enter Nubra phone number before sending OTP.")
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Enter Nubra device id before sending OTP.")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            response = await client.post(
+                f"{base_url}/sendphoneotp",
+                headers={"Content-Type": "application/json"},
+                json={"phone": phone, "skip_totp": False},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=f"Nubra OTP failed: {exc.response.text[:300]}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Nubra OTP failed: {exc.__class__.__name__}: {exc}") from exc
+    temp_token = data.get("temp_token")
+    if not temp_token:
+        raise HTTPException(status_code=502, detail=f"Nubra did not return temp_token. Response keys: {list(data)[:8]}")
+    db.set_state(
+        "nubra_login_temp",
+        {
+            "base_url": base_url,
+            "phone": phone,
+            "device_id": device_id,
+            "temp_token": temp_token,
+            "flow": data.get("flow"),
+            "next": data.get("next"),
+            "email": data.get("email"),
+            "expiry": data.get("expiry"),
+        },
+    )
+    db.insert_agent_log(
+        "INFO",
+        "nubra",
+        "otp_sent",
+        "Nubra OTP sent",
+        {"base_url": base_url, "phone_suffix": phone[-4:], "device_id": device_id, "next": data.get("next")},
+    )
+    return {
+        "ok": True,
+        "message": data.get("message") or "OTP sent",
+        "phone_suffix": phone[-4:],
+        "email": data.get("email"),
+        "expiry": data.get("expiry"),
+        "next": data.get("next"),
+        "temp_token_saved": True,
+    }
+
+
+@app.post("/api/nubra/verify")
+async def nubra_verify(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    state = db.get_state("nubra_login_temp", {})
+    base_url = str(payload.get("base_url") or state.get("base_url") or settings.nubra_api_base_url).rstrip("/")
+    phone = re.sub(r"\D+", "", str(payload.get("phone") or state.get("phone") or settings.nubra_phone))
+    device_id = str(payload.get("device_id") or state.get("device_id") or settings.nubra_device_id or "opentrade-local-001").strip()
+    temp_token = str(payload.get("temp_token") or state.get("temp_token") or "").strip()
+    otp = re.sub(r"\D+", "", str(payload.get("otp") or ""))
+    mpin = str(payload.get("mpin") or settings.nubra_mpin).strip()
+    if not all([base_url, phone, device_id, temp_token, otp, mpin]):
+        raise HTTPException(status_code=400, detail="Nubra verify needs phone, device id, temp token, OTP, and MPIN.")
+    try:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+            verify_response = await client.post(
+                f"{base_url}/verifyphoneotp",
+                headers={
+                    "x-temp-token": temp_token,
+                    "x-device-id": device_id,
+                    "Content-Type": "application/json",
+                },
+                json={"phone": phone, "otp": otp},
+            )
+            verify_response.raise_for_status()
+            verify_data = verify_response.json()
+            auth_token = verify_data.get("auth_token")
+            if not auth_token:
+                raise HTTPException(status_code=502, detail=f"Nubra verify did not return auth_token. Response keys: {list(verify_data)[:8]}")
+            pin_response = await client.post(
+                f"{base_url}/verifypin",
+                headers={
+                    "x-device-id": device_id,
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {auth_token}",
+                },
+                json={"pin": mpin},
+            )
+            pin_response.raise_for_status()
+            pin_data = pin_response.json()
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=f"Nubra verify failed: {exc.response.text[:300]}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Nubra verify failed: {exc.__class__.__name__}: {exc}") from exc
+    session_token = pin_data.get("session_token")
+    if not session_token:
+        raise HTTPException(status_code=502, detail=f"Nubra PIN login did not return session_token. Response keys: {list(pin_data)[:10]}")
+
+    current_overrides = db.runtime_settings()
+    candidate_overrides = dict(current_overrides)
+    candidate_overrides.update(
+        {
+            "market_data_provider": "nubra",
+            "nubra_api_base_url": base_url,
+            "nubra_phone": phone,
+            "nubra_mpin": mpin,
+            "nubra_device_id": device_id,
+            "nubra_session_token": session_token,
+        }
+    )
+    candidate_settings = settings_from_overrides(Settings(), candidate_overrides)
+    try:
+        candidate_stack = build_agent_stack(candidate_settings)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Nubra session saved but provider failed to initialize: {exc}") from exc
+    result = await _apply_runtime_stack(
+        candidate_overrides=candidate_overrides,
+        candidate_settings=candidate_settings,
+        candidate_stack=candidate_stack,
+        changed_keys=[
+            "market_data_provider",
+            "nubra_api_base_url",
+            "nubra_phone",
+            "nubra_mpin",
+            "nubra_device_id",
+            "nubra_session_token",
+        ],
+        component="nubra",
+        event="connected",
+        message="Nubra session connected and saved",
+    )
+    db.set_state("nubra_login_temp", {})
+    db.insert_agent_log(
+        "INFO",
+        "nubra",
+        "session_saved",
+        "Nubra session token saved",
+        {
+            "base_url": base_url,
+            "phone_suffix": phone[-4:],
+            "device_id": device_id,
+            "client_code": pin_data.get("client_code"),
+            "kyc_status": pin_data.get("kyc_status"),
+        },
+    )
+    return {
+        "ok": True,
+        "message": "Nubra connected. Session token saved and market data provider rebuilt.",
+        "client_code": pin_data.get("client_code"),
+        "name": pin_data.get("name"),
+        "email": pin_data.get("email"),
+        "phone_suffix": phone[-4:],
+        "device_id": device_id,
+        "provider": result["status"].get("provider"),
+        "status": result["status"],
+        "config": result["config"],
+    }
 
 
 @app.post("/api/config")
 async def update_config(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, llm, strategy, agent
-    require_admin(request, settings)
+    require_admin(request, settings, db)
 
     incoming = payload.get("settings", payload)
     if not isinstance(incoming, dict):
@@ -333,17 +699,38 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid configuration: {exc}") from exc
 
+    return await _apply_runtime_stack(
+        candidate_overrides=candidate_overrides,
+        candidate_settings=candidate_settings,
+        candidate_stack=candidate_stack,
+        changed_keys=sorted(key for key in incoming.keys() if key in CONFIG_KEYS),
+        component="admin",
+        event="config_saved",
+        message="Runtime configuration saved",
+    )
+
+
+async def _apply_runtime_stack(
+    candidate_overrides: dict[str, Any],
+    candidate_settings: Settings,
+    candidate_stack: dict[str, Any],
+    changed_keys: list[str],
+    component: str,
+    event: str,
+    message: str,
+) -> dict[str, Any]:
+    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, universe_service, options_intelligence, llm, strategy, agent
     was_running = agent.running
     await agent.stop()
     await delivery_service.stop_background_task()
     db.update_runtime_settings(candidate_overrides)
     db.insert_agent_log(
         "INFO",
-        "admin",
-        "config_saved",
-        "Runtime configuration saved",
+        component,
+        event,
+        message,
         {
-            "changed_keys": sorted(key for key in incoming.keys() if key in CONFIG_KEYS),
+            "changed_keys": changed_keys,
             "was_running": was_running,
         },
     )
@@ -360,39 +747,95 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
     market_breadth = candidate_stack["market_breadth"]
     sector_rotation = candidate_stack["sector_rotation"]
     macro_calendar = candidate_stack["macro_calendar"]
+    universe_service = candidate_stack["universe_service"]
+    options_intelligence = candidate_stack["options_intelligence"]
     llm = candidate_stack["llm"]
     strategy = candidate_stack["strategy"]
     agent = candidate_stack["agent"]
+    await universe_service.refresh_if_enabled()
     delivery_service.start_background_task()
     if was_running:
         agent.start()
 
-    snapshot = await status()
+    snapshot = _status_payload()
     await hub.broadcast(snapshot)
-    return {"config": await get_config(), "status": snapshot}
+    return {"config": _config_payload(), "status": snapshot}
 
 
 @app.get("/api/auth/me")
 async def auth_me(request: Request) -> dict[str, Any]:
-    return {
-        "admin": is_admin_request(request, settings),
-        "admin_configured": bool(settings.admin_password),
-    }
+    return auth_status(request, settings, db)
 
 
 @app.post("/api/auth/login")
 async def auth_login(payload: dict[str, Any], response: Response) -> dict[str, Any]:
-    return login_admin(str(payload.get("username", "")), str(payload.get("password", "")), response, settings)
+    return login_user(str(payload.get("username", "")), str(payload.get("password", "")), response, settings, db)
 
 
 @app.post("/api/auth/logout")
 async def auth_logout(response: Response) -> dict[str, bool]:
-    return logout_admin(response)
+    return logout_user(response)
+
+
+@app.get("/api/users")
+async def list_users(request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    return {"users": db.list_users()}
+
+
+@app.post("/api/users")
+async def create_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    admin = require_admin(request, settings, db)
+    username = validate_username(str(payload.get("username", "")))
+    password = validate_password(str(payload.get("password", "")))
+    role = normalize_role(str(payload.get("role", "user")))
+    active = bool(payload.get("active", True))
+    if db.user_by_username(username):
+        raise HTTPException(status_code=409, detail="Username already exists")
+    user = db.create_user(username, hash_password(password), role=role, active=active)
+    db.insert_agent_log(
+        "INFO",
+        "admin",
+        "user_created",
+        f"Admin created user {username}",
+        {"created_by": admin.get("username"), "username": username, "role": role, "active": active},
+    )
+    return {"ok": True, "user": user, "users": db.list_users()}
+
+
+@app.patch("/api/users/{user_id}")
+async def update_user(user_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    admin = require_admin(request, settings, db)
+    existing = db.user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    role = normalize_role(str(payload["role"])) if "role" in payload else None
+    active = bool(payload["active"]) if "active" in payload else None
+    password_hash = hash_password(validate_password(str(payload["password"]))) if payload.get("password") else None
+    if existing.get("role") == "admin" and db.active_admin_count() <= 1:
+        would_remove_admin = (role is not None and role != "admin") or active is False
+        if would_remove_admin:
+            raise HTTPException(status_code=400, detail="At least one active admin user is required.")
+    user = db.update_user(user_id, role=role, active=active, password_hash=password_hash)
+    db.insert_agent_log(
+        "INFO",
+        "admin",
+        "user_updated",
+        f"Admin updated user {existing.get('username')}",
+        {
+            "updated_by": admin.get("username"),
+            "user_id": user_id,
+            "role_changed": role is not None,
+            "active_changed": active is not None,
+            "password_changed": password_hash is not None,
+        },
+    )
+    return {"ok": True, "user": user, "users": db.list_users()}
 
 
 @app.post("/api/control/start")
 async def start_agent(request: Request) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_admin(request, settings, db)
     db.insert_agent_log("INFO", "admin", "control_start", "Admin requested agent start")
     agent.start()
     snapshot = agent.snapshot()
@@ -402,7 +845,7 @@ async def start_agent(request: Request) -> dict[str, Any]:
 
 @app.post("/api/control/stop")
 async def stop_agent(request: Request) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_admin(request, settings, db)
     db.insert_agent_log("INFO", "admin", "control_stop", "Admin requested agent stop")
     await agent.stop()
     snapshot = agent.snapshot()
@@ -412,14 +855,14 @@ async def stop_agent(request: Request) -> dict[str, Any]:
 
 @app.post("/api/control/run-once")
 async def run_once(request: Request) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_admin(request, settings, db)
     db.insert_agent_log("INFO", "admin", "control_run_once", "Admin requested one manual cycle")
     return await agent.run_once()
 
 
 @app.post("/api/control/reset-demo")
 async def reset_demo(request: Request) -> dict[str, Any]:
-    require_admin(request, settings)
+    require_admin(request, settings, db)
     was_running = agent.running
     await agent.stop()
     db.reset_trading_ledger(settings.initial_cash_inr)
@@ -432,13 +875,16 @@ async def reset_demo(request: Request) -> dict[str, Any]:
     )
     if was_running:
         agent.start()
-    snapshot = await status()
+    snapshot = _status_payload()
     await hub.broadcast(snapshot)
     return snapshot
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    if not current_user(websocket, settings, db):
+        await websocket.close(code=1008)
+        return
     await hub.connect(websocket)
     try:
         await websocket.send_text(json.dumps(agent.snapshot()))
@@ -455,6 +901,19 @@ def _normalize_symbol(value: str) -> str:
     if not re.fullmatch(r"[A-Z0-9&-]{1,24}", symbol):
         return ""
     return symbol
+
+
+def _extract_oauth_code(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    if "code=" in raw:
+        parsed = urlparse(raw)
+        query = parse_qs(parsed.query)
+        code = (query.get("code") or [""])[0]
+        if code:
+            return code.strip()
+    return raw
 
 
 def _manual_universe_row(symbol: str) -> dict[str, Any]:

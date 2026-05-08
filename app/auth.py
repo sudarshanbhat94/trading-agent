@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 from typing import Any
@@ -13,57 +14,151 @@ from fastapi import HTTPException, Request, Response
 from .config import Settings
 
 
-ADMIN_COOKIE = "trading_agent_admin"
+SESSION_COOKIE = "opentrade_session"
+PASSWORD_ITERATIONS = 260_000
 
 
-def admin_available(settings: Settings) -> bool:
-    return bool(settings.admin_password)
+def normalize_username(value: str) -> str:
+    return re.sub(r"\s+", "", (value or "").strip().lower())
 
 
-def is_admin_request(request: Request, settings: Settings) -> bool:
-    token = request.cookies.get(ADMIN_COOKIE)
-    if not token or not admin_available(settings):
+def validate_username(value: str) -> str:
+    username = normalize_username(value)
+    if not re.fullmatch(r"[a-z0-9._-]{3,40}", username):
+        raise HTTPException(status_code=400, detail="Username must be 3-40 characters: letters, numbers, dot, dash, underscore.")
+    return username
+
+
+def validate_password(value: str) -> str:
+    password = value or ""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    return password
+
+
+def normalize_role(value: str) -> str:
+    role = (value or "user").strip().lower()
+    return role if role in {"admin", "user"} else "user"
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
+    return "pbkdf2_sha256${}${}${}".format(
+        PASSWORD_ITERATIONS,
+        base64.urlsafe_b64encode(salt).decode("ascii"),
+        base64.urlsafe_b64encode(digest).decode("ascii"),
+    )
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations_raw, salt_raw, digest_raw = password_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_raw)
+        salt = base64.urlsafe_b64decode(salt_raw.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_raw.encode("ascii"))
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
         return False
-    return _verify_token(token, settings)
 
 
-def require_admin(request: Request, settings: Settings) -> None:
-    if not admin_available(settings):
-        raise HTTPException(status_code=403, detail="Set ADMIN_PASSWORD before using admin controls")
-    if not is_admin_request(request, settings):
-        raise HTTPException(status_code=401, detail="Admin login required")
+def auth_available(db: Any, settings: Settings) -> bool:
+    return bool(db.has_active_users() or settings.admin_password)
 
 
-def login_admin(username: str, password: str, response: Response, settings: Settings) -> dict[str, Any]:
-    if not admin_available(settings):
-        raise HTTPException(status_code=403, detail="Set ADMIN_PASSWORD before admin login")
-    if not hmac.compare_digest(username, settings.admin_username):
-        raise HTTPException(status_code=401, detail="Invalid admin username or password")
-    if not hmac.compare_digest(password, settings.admin_password):
-        raise HTTPException(status_code=401, detail="Invalid admin username or password")
-    token = _make_token(settings)
+def current_user(request: Request, settings: Settings, db: Any) -> dict[str, Any] | None:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    payload = _verify_token(token, settings)
+    if not payload:
+        return None
+    user = db.user_by_id(int(payload.get("uid") or 0))
+    if not user or not user.get("active"):
+        return None
+    return _public_user(user)
+
+
+def is_authenticated_request(request: Request, settings: Settings, db: Any) -> bool:
+    return current_user(request, settings, db) is not None
+
+
+def is_admin_request(request: Request, settings: Settings, db: Any) -> bool:
+    user = current_user(request, settings, db)
+    return bool(user and user.get("role") == "admin")
+
+
+def require_user(request: Request, settings: Settings, db: Any) -> dict[str, Any]:
+    if not auth_available(db, settings):
+        raise HTTPException(status_code=403, detail="Create an admin password before using OpenTrade.")
+    user = current_user(request, settings, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    return user
+
+
+def require_admin(request: Request, settings: Settings, db: Any) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def login_user(username: str, password: str, response: Response, settings: Settings, db: Any) -> dict[str, Any]:
+    if not auth_available(db, settings):
+        raise HTTPException(status_code=403, detail="Create an admin password before login.")
+    normalized = normalize_username(username)
+    user = db.user_by_username(normalized)
+    if not user and settings.admin_password and hmac.compare_digest(normalized, normalize_username(settings.admin_username)):
+        db.ensure_default_admin_user(normalized, hash_password(settings.admin_password))
+        user = db.user_by_username(normalized)
+    if not user or not user.get("active") or not verify_password(password, user.get("password_hash") or ""):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    db.mark_user_login(int(user["id"]))
+    public_user = _public_user(db.user_by_id(int(user["id"])) or user)
     response.set_cookie(
-        ADMIN_COOKIE,
-        token,
+        SESSION_COOKIE,
+        _make_token(public_user, settings),
         max_age=settings.admin_session_hours * 3600,
         httponly=True,
         samesite="lax",
     )
-    return {"admin": True, "admin_configured": True, "session_hours": settings.admin_session_hours}
+    return {
+        "authenticated": True,
+        "admin": public_user["role"] == "admin",
+        "admin_configured": True,
+        "user": public_user,
+        "session_hours": settings.admin_session_hours,
+    }
 
 
-def logout_admin(response: Response) -> dict[str, bool]:
-    response.delete_cookie(ADMIN_COOKIE)
-    return {"admin": False}
+def logout_user(response: Response) -> dict[str, bool]:
+    response.delete_cookie(SESSION_COOKIE)
+    return {"authenticated": False, "admin": False}
+
+
+def auth_status(request: Request, settings: Settings, db: Any) -> dict[str, Any]:
+    user = current_user(request, settings, db)
+    return {
+        "authenticated": bool(user),
+        "admin": bool(user and user.get("role") == "admin"),
+        "admin_configured": auth_available(db, settings),
+        "user": user,
+    }
 
 
 def _secret(settings: Settings) -> bytes:
-    material = settings.auth_session_secret or settings.admin_password
+    material = settings.auth_session_secret or settings.admin_password or "opentrade-local-session"
     return material.encode("utf-8")
 
 
-def _make_token(settings: Settings) -> str:
+def _make_token(user: dict[str, Any], settings: Settings) -> str:
     payload = {
+        "uid": int(user["id"]),
+        "role": user["role"],
         "iat": int(time.time()),
         "nonce": secrets.token_urlsafe(12),
     }
@@ -72,14 +167,28 @@ def _make_token(settings: Settings) -> str:
     return f"{body}.{signature}"
 
 
-def _verify_token(token: str, settings: Settings) -> bool:
+def _verify_token(token: str, settings: Settings) -> dict[str, Any] | None:
     try:
         body, signature = token.split(".", 1)
         expected = hmac.new(_secret(settings), body.encode("ascii"), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
-            return False
+            return None
         payload = json.loads(base64.urlsafe_b64decode(body.encode("ascii")).decode("utf-8"))
         age = time.time() - int(payload["iat"])
-        return 0 <= age <= settings.admin_session_hours * 3600
+        if not 0 <= age <= settings.admin_session_hours * 3600:
+            return None
+        return payload if payload.get("uid") else None
     except Exception:
-        return False
+        return None
+
+
+def _public_user(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(user["id"]),
+        "username": user["username"],
+        "role": user.get("role") or "user",
+        "active": bool(user.get("active")),
+        "created_at": user.get("created_at"),
+        "updated_at": user.get("updated_at"),
+        "last_login_at": user.get("last_login_at"),
+    }

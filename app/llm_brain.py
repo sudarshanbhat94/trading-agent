@@ -12,17 +12,8 @@ import httpx
 
 from .analysis_tools import deterministic_score_breakdown
 from .config import Settings
+from .llm_usage import build_llm_usage_event
 from .models import Decision, utc_now
-
-
-DEFAULT_NVIDIA_MODEL_CHAIN = [
-    "deepseek-ai/deepseek-v4-pro",
-    "moonshotai/kimi-k2.6",
-    "deepseek-ai/deepseek-v4-flash",
-    "z-ai/glm-5.1",
-    "minimaxai/minimax-m2.7",
-    "mistralai/mistral-medium-3.5-128b",
-]
 
 
 @dataclass(frozen=True)
@@ -140,99 +131,45 @@ class LLMResponseError(RuntimeError):
 
 
 class LLMBrain:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, db: Any | None = None) -> None:
         self.settings = settings
+        self.db = db
 
     @property
     def enabled(self) -> bool:
-        if self.settings.llm_provider == "nvidia" and self.settings.llm_model_fallback_enabled:
-            return bool(self.settings.nvidia_api_key or self.settings.groq_api_key)
-        if self.settings.llm_provider == "groq":
-            return bool(self.settings.groq_api_key)
-        if self.settings.llm_provider == "nvidia":
-            return bool(self.settings.nvidia_api_key)
-        if self.settings.llm_provider == "openai_compatible":
-            return bool(self.settings.llm_api_key)
-        return False
+        return self.settings.llm_provider == "deepseek" and bool(self.settings.deepseek_api_key)
 
     @property
     def model(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return self.settings.groq_model
-        if self.settings.llm_provider == "nvidia":
-            return self._nvidia_models()[0]
-        return self.settings.llm_model
+        return self.settings.deepseek_model
 
     @property
     def base_url(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return self.settings.groq_base_url
-        if self.settings.llm_provider == "nvidia":
-            return self.settings.nvidia_base_url
-        return self.settings.llm_base_url
+        return self.settings.deepseek_base_url
 
     @property
     def api_key(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return self.settings.groq_api_key
-        if self.settings.llm_provider == "nvidia":
-            return self.settings.nvidia_api_key
-        return self.settings.llm_api_key
+        return self.settings.deepseek_api_key
 
     def chat_completions_url(self) -> str:
         base_url = self.base_url.rstrip("/")
+        if self.settings.llm_provider == "deepseek":
+            return f"{base_url}/chat/completions"
         if base_url.endswith("/v1"):
             return f"{base_url}/chat/completions"
         return f"{base_url}/v1/chat/completions"
 
-    def _nvidia_models(self) -> list[str]:
-        configured = _split_model_chain(self.settings.nvidia_model_chain)
-        if configured:
-            return configured
-        if self.settings.nvidia_model:
-            return [self.settings.nvidia_model]
-        return list(DEFAULT_NVIDIA_MODEL_CHAIN)
+    def _has_multiple_fallback_endpoints(self) -> bool:
+        return False
 
     def _endpoint_candidates(self) -> list[LLMEndpoint]:
-        endpoints: list[LLMEndpoint] = []
-        if self.settings.llm_provider == "nvidia":
-            if self.settings.nvidia_api_key:
-                models = self._nvidia_models() if self.settings.llm_model_fallback_enabled else [self.settings.nvidia_model]
-                for model in _unique([model for model in models if model]):
-                    endpoints.append(
-                        LLMEndpoint(
-                            provider="nvidia",
-                            model=model,
-                            base_url=self.settings.nvidia_base_url,
-                            api_key=self.settings.nvidia_api_key,
-                        )
-                    )
-            if self.settings.llm_model_fallback_enabled and self.settings.groq_api_key:
-                endpoints.append(
-                    LLMEndpoint(
-                        provider="groq",
-                        model=self.settings.groq_model,
-                        base_url=self.settings.groq_base_url,
-                        api_key=self.settings.groq_api_key,
-                    )
-                )
-            return endpoints
-        if self.settings.llm_provider == "groq" and self.settings.groq_api_key:
+        if self.settings.llm_provider == "deepseek" and self.settings.deepseek_api_key:
             return [
                 LLMEndpoint(
-                    provider="groq",
-                    model=self.settings.groq_model,
-                    base_url=self.settings.groq_base_url,
-                    api_key=self.settings.groq_api_key,
-                )
-            ]
-        if self.settings.llm_provider == "openai_compatible" and self.settings.llm_api_key:
-            return [
-                LLMEndpoint(
-                    provider="openai_compatible",
-                    model=self.settings.llm_model,
-                    base_url=self.settings.llm_base_url,
-                    api_key=self.settings.llm_api_key,
+                    provider="deepseek",
+                    model=self.settings.deepseek_model,
+                    base_url=self.settings.deepseek_base_url,
+                    api_key=self.settings.deepseek_api_key,
                 )
             ]
         return []
@@ -251,6 +188,8 @@ class LLMBrain:
             "temperature": 0,
             "top_p": 0.1,
             "max_tokens": self._test_max_tokens(),
+            "_opentrade_usage_component": "llm_brain",
+            "_opentrade_usage_purpose": "health_check",
             "messages": [
                 {
                     "role": "system",
@@ -331,6 +270,7 @@ class LLMBrain:
                 "provider": self.settings.llm_provider,
                 "model": meta.get("_llm_model", self.model),
                 "actual_provider": meta.get("_llm_provider", self.settings.llm_provider),
+                "configured_model_chain": [endpoint.model for endpoint in self._endpoint_candidates()],
                 "url": url,
                 "latency_ms": latency_ms,
                 "timeout_seconds": timeout_seconds,
@@ -348,6 +288,7 @@ class LLMBrain:
                 "latency_ms": latency_ms,
                 "timeout_seconds": timeout_seconds,
                 "reason": _error_summary(exc),
+                "configured_model_chain": [endpoint.model for endpoint in self._endpoint_candidates()],
                 "attempts": _attempts_from_exception(exc),
                 "raw": getattr(exc, "raw", None),
             }
@@ -373,6 +314,7 @@ class LLMBrain:
                 "url": url,
                 "latency_ms": latency_ms,
                 "timeout_seconds": timeout_seconds,
+                "configured_model_chain": [endpoint.model for endpoint in self._endpoint_candidates()],
                 "reason": (
                     f"Timed out after {timeout_seconds}s. This model/endpoint is too slow or unavailable "
                     "for trading-cycle use. Try Reasoning Effort=none, a faster model, or a higher "
@@ -392,12 +334,14 @@ class LLMBrain:
         if not self.enabled:
             return self._hold_from_context(context, "LLM disabled")
         budget = self._decision_budget_seconds()
+        retry_budget = min(max(budget // 2, 15), 60) if self._has_multiple_fallback_endpoints() else 0
+        outer_budget = budget + retry_budget + 10 if self._has_multiple_fallback_endpoints() else budget
         try:
-            return await asyncio.wait_for(self._decide_inner(context), timeout=budget)
+            return await asyncio.wait_for(self._decide_inner(context), timeout=outer_budget)
         except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
             return self._hold_from_context(
                 context,
-                f"LLM primary timed out after {budget}s; deterministic gates remain active",
+                f"LLM primary timed out after {outer_budget}s; deterministic gates remain active",
                 exc,
             )
 
@@ -411,6 +355,8 @@ class LLMBrain:
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
             "max_tokens": self._decision_max_tokens(),
+            "_opentrade_usage_component": "llm_brain",
+            "_opentrade_usage_purpose": "decision",
             "messages": [
                 {
                     "role": "system",
@@ -422,9 +368,9 @@ class LLMBrain:
                         "You must explicitly use stage_analysis, entry_quality.entry_grade, breakout_quality.two_day_rule_failed, "
                         "price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, "
                         "sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, "
-                        "and delivery_accumulation.institutional_fingerprint. BUY is permitted only in Stage2_Markup; "
+                        "delivery_accumulation.institutional_fingerprint, and options_oi.max_pain_distance_pct. BUY is permitted only in Stage2_Markup; "
                         "entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or "
-                        "bear_confirmed breadth means HOLD. Evidence must state the value checked for each new gate. "
+                        "bear_confirmed breadth means HOLD. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
                         "risk_checks must say whether each new gate passed or failed. If you recommend BUY while any "
                         "new gate conflicts, acknowledge that conflict in reason. "
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
@@ -515,6 +461,8 @@ class LLMBrain:
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
             "max_tokens": self._review_max_tokens(),
+            "_opentrade_usage_component": "llm_brain",
+            "_opentrade_usage_purpose": "review",
             "messages": [
                 {
                     "role": "system",
@@ -628,6 +576,8 @@ class LLMBrain:
                 "temperature": 0,
                 "top_p": 0.1,
                 "max_tokens": max(600, min(self.settings.llm_max_tokens, 1200)),
+                "_opentrade_usage_component": "llm_brain",
+                "_opentrade_usage_purpose": "rolling_summary",
                 "messages": [
                     {
                         "role": "system",
@@ -726,7 +676,14 @@ class LLMBrain:
             return synthetic
         except LLMResponseError as exc:
             initial_attempts = _attempts_from_exception(exc)
-            if retry_payload is not None:
+            should_try_compact_retry = (
+                retry_payload is not None
+                and (
+                    not _all_endpoint_attempts_failed(exc)
+                    or _attempts_have_timeout(initial_attempts)
+                )
+            )
+            if should_try_compact_retry:
                 try:
                     retry_content, retry_meta = await self._chat_content_with_fallback(
                         retry_payload,
@@ -800,13 +757,15 @@ class LLMBrain:
             return normalized
 
     def _compact_decision_retry_payload(self, context: dict[str, Any]) -> dict[str, Any] | None:
-        if self.settings.llm_provider != "nvidia":
+        if self.settings.llm_provider != "deepseek":
             return None
         payload = {
             "model": self.model,
             "temperature": 0,
             "top_p": 0.1,
             "max_tokens": max(500, min(self.settings.llm_max_tokens, 800)),
+            "_opentrade_usage_component": "llm_brain",
+            "_opentrade_usage_purpose": "decision_retry",
             "messages": [
                 {
                     "role": "system",
@@ -821,7 +780,7 @@ class LLMBrain:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(_nvidia_retry_context(context), separators=(",", ":")),
+                    "content": json.dumps(_compact_retry_context(context), separators=(",", ":")),
                 },
             ],
         }
@@ -867,6 +826,8 @@ class LLMBrain:
             "temperature": 0,
             "top_p": 0.1,
             "max_tokens": max(500, min(self.settings.llm_max_tokens, 900)),
+            "_opentrade_usage_component": "llm_brain",
+            "_opentrade_usage_purpose": "json_repair",
             "messages": [
                 {
                     "role": "system",
@@ -983,42 +944,35 @@ class LLMBrain:
         endpoint_payload = copy.deepcopy(payload)
         if "max_completion_tokens" in endpoint_payload and "max_tokens" not in endpoint_payload:
             endpoint_payload["max_tokens"] = endpoint_payload.pop("max_completion_tokens")
-        for key in ("guided_json", "response_format", "chat_template_kwargs", "reasoning_effort", "reasoning_format"):
+        for key in ("guided_json", "response_format", "chat_template_kwargs", "reasoning_effort", "reasoning_format", "thinking"):
             endpoint_payload.pop(key, None)
         endpoint_payload["model"] = endpoint.model
         self._apply_model_options_for_endpoint(endpoint_payload, endpoint, schema=schema)
         return endpoint_payload
 
     async def _chat_content_once(self, payload: dict[str, Any], timeout_seconds: int, endpoint: LLMEndpoint) -> str:
+        api_payload = _api_payload(payload)
         headers = {"Authorization": f"Bearer {endpoint.api_key}"}
+        started = perf_counter()
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
             response = await client.post(
                 _chat_completions_url_for_endpoint(endpoint),
-                json=payload,
+                json=api_payload,
             )
-            if (
-                endpoint.provider == "nvidia"
-                and response.status_code in {400, 422}
-                and "guided_json" in payload
-            ):
-                fallback_payload = dict(payload)
-                fallback_payload.pop("guided_json", None)
-                fallback_payload["response_format"] = {"type": "json_object"}
-                response = await client.post(
-                    _chat_completions_url_for_endpoint(endpoint),
-                    json=fallback_payload,
-                )
             response.raise_for_status()
         data = response.json()
+        latency_ms = round((perf_counter() - started) * 1000)
         choices = data.get("choices") or []
         if not choices:
             raise LLMResponseError("LLM response had no choices", raw=data)
         message = choices[0].get("message") or {}
         content = _first_text(message.get("content"))
         if content:
+            self._record_usage(api_payload, data, content, endpoint, payload, latency_ms)
             return content
         reasoning = _first_text(message.get("reasoning_content"), message.get("reasoning"))
         if reasoning and "{" in reasoning and "}" in reasoning:
+            self._record_usage(api_payload, data, reasoning, endpoint, payload, latency_ms)
             return reasoning
         if reasoning:
             raise LLMResponseError(
@@ -1028,11 +982,12 @@ class LLMBrain:
         raise LLMResponseError("LLM response had no text content", raw=message)
 
     async def _chat_content_stream(self, payload: dict[str, Any], timeout_seconds: int, endpoint: LLMEndpoint) -> str:
-        stream_payload = dict(payload)
+        stream_payload = _api_payload(payload)
         stream_payload["stream"] = True
         headers = {"Authorization": f"Bearer {endpoint.api_key}", "Content-Type": "application/json"}
         chunks: list[str] = []
         reasoning_chunks: list[str] = []
+        started = perf_counter()
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
             async with client.stream("POST", _chat_completions_url_for_endpoint(endpoint), json=stream_payload) as response:
                 if response.status_code >= 400:
@@ -1057,9 +1012,11 @@ class LLMBrain:
                         reasoning_chunks.append(reasoning)
         content = "".join(chunks).strip()
         if content:
+            self._record_usage(stream_payload, None, content, endpoint, payload, round((perf_counter() - started) * 1000))
             return content
         reasoning = "".join(reasoning_chunks).strip()
         if reasoning and "{" in reasoning and "}" in reasoning:
+            self._record_usage(stream_payload, None, reasoning, endpoint, payload, round((perf_counter() - started) * 1000))
             return reasoning
         raise LLMResponseError(
             "LLM stream finished without final content",
@@ -1067,24 +1024,16 @@ class LLMBrain:
         )
 
     def _prompt_context(self, context: dict[str, Any]) -> dict[str, Any]:
-        if self.settings.llm_provider == "nvidia":
-            if "nemotron" in self.model.lower():
-                return _llm_prompt_context(context, profile="compact")
-            return _llm_prompt_context(context, profile="rich")
         return _llm_prompt_context(context, profile="compact")
 
     def _decision_max_tokens(self) -> int:
-        if self.settings.llm_provider == "groq":
-            return max(350, min(self.settings.llm_max_tokens, 700))
-        if self.settings.llm_provider == "nvidia":
-            return max(700, min(self.settings.llm_max_tokens, 2500))
+        if self.settings.llm_provider == "deepseek":
+            return max(900, min(self.settings.llm_max_tokens, 4096))
         return max(350, min(self.settings.llm_max_tokens, 1400))
 
     def _review_max_tokens(self) -> int:
-        if self.settings.llm_provider == "groq":
-            return max(256, min(self.settings.llm_max_tokens, 700))
-        if self.settings.llm_provider == "nvidia":
-            return max(700, min(self.settings.llm_max_tokens, 1800))
+        if self.settings.llm_provider == "deepseek":
+            return max(700, min(self.settings.llm_max_tokens, 3000))
         return max(256, min(self.settings.llm_max_tokens, 1200))
 
     def _apply_model_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
@@ -1105,91 +1054,59 @@ class LLMBrain:
         model: str,
         schema: dict[str, Any] | None = None,
     ) -> None:
-        if provider == "groq":
-            self._apply_groq_options(payload, schema=schema)
-            return
-        if provider == "nvidia":
-            self._apply_nvidia_options(payload, model=model, schema=schema)
+        if provider == "deepseek":
+            self._apply_deepseek_options(payload, schema=schema)
             return
         if schema is not None:
             payload["response_format"] = {"type": "json_object"}
 
-    def _apply_nvidia_options(self, payload: dict[str, Any], model: str | None = None, schema: dict[str, Any] | None = None) -> None:
-        model = model or self.model
-        if self._supports_nvidia_thinking_model(model):
-            chat_template_kwargs: dict[str, Any] = {"thinking": self.settings.llm_thinking_enabled}
-            effort = self.settings.llm_reasoning_effort
-            if self.settings.llm_thinking_enabled and effort in {"high", "max"} and self._is_nvidia_deepseek_v4_model(model):
-                chat_template_kwargs["reasoning_effort"] = effort
-            payload["chat_template_kwargs"] = chat_template_kwargs
+    def _apply_deepseek_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
         if schema is not None:
-            payload["guided_json"] = _nvidia_guided_schema(schema)
-        if not self.settings.llm_thinking_enabled:
-            return
-
-    def _apply_groq_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
-        if "max_tokens" in payload:
-            payload["max_completion_tokens"] = payload.pop("max_tokens")
-        model = str(payload.get("model") or self.settings.groq_model).lower()
-        if "qwen" not in model:
             payload["response_format"] = {"type": "json_object"}
-        effort = self.settings.groq_reasoning_effort
-        if effort in {"none", "default"}:
+        effort = self.settings.llm_reasoning_effort
+        if effort in {"high", "max"}:
             payload["reasoning_effort"] = effort
-        reasoning_format = self.settings.groq_reasoning_format
-        if reasoning_format in {"hidden", "parsed", "raw"}:
-            payload["reasoning_format"] = reasoning_format
-        self._fold_system_messages_into_user(payload)
+        if self.settings.llm_thinking_enabled:
+            payload["thinking"] = {"type": "enabled"}
 
-    def _fold_system_messages_into_user(self, payload: dict[str, Any]) -> None:
-        messages = payload.get("messages")
-        if not isinstance(messages, list):
+    def _record_usage(
+        self,
+        api_payload: dict[str, Any],
+        response_data: dict[str, Any] | None,
+        output_text: str,
+        endpoint: LLMEndpoint,
+        local_payload: dict[str, Any],
+        latency_ms: int,
+    ) -> None:
+        if self.db is None:
             return
-        system_parts = [
-            str(message.get("content", ""))
-            for message in messages
-            if isinstance(message, dict) and message.get("role") == "system"
-        ]
-        if not system_parts:
+        try:
+            event = build_llm_usage_event(
+                component=str(local_payload.get("_opentrade_usage_component") or "llm_brain"),
+                purpose=str(local_payload.get("_opentrade_usage_purpose") or "chat"),
+                provider=endpoint.provider,
+                model=endpoint.model,
+                payload=api_payload,
+                response_data=response_data,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                details={
+                    "response_id": response_data.get("id") if isinstance(response_data, dict) else None,
+                    "api_usage_present": bool(isinstance(response_data, dict) and response_data.get("usage")),
+                },
+            )
+            self.db.insert_llm_usage(event)
+        except Exception:
             return
-        instruction = "\n\n".join(part for part in system_parts if part).strip()
-        folded: list[dict[str, Any]] = []
-        inserted = False
-        for message in messages:
-            if not isinstance(message, dict) or message.get("role") == "system":
-                continue
-            item = dict(message)
-            if not inserted and item.get("role") == "user":
-                item["content"] = f"{instruction}\n\nTask:\n{item.get('content', '')}"
-                inserted = True
-            folded.append(item)
-        if folded:
-            payload["messages"] = folded
-
-    def _is_nvidia_deepseek_v4(self) -> bool:
-        return self.settings.llm_provider == "nvidia" and self._is_nvidia_deepseek_v4_model(self.model)
-
-    def _is_nvidia_deepseek_v4_model(self, model: str) -> bool:
-        return model.startswith("deepseek-ai/deepseek-v4")
-
-    def _supports_nvidia_thinking(self) -> bool:
-        return self.settings.llm_provider == "nvidia" and self._supports_nvidia_thinking_model(self.model)
-
-    def _supports_nvidia_thinking_model(self, model: str) -> bool:
-        return model.startswith(("deepseek-ai/deepseek-v4", "moonshotai/kimi-"))
 
     def _should_stream(self, payload: dict[str, Any] | None = None, endpoint: LLMEndpoint | None = None) -> bool:
         if payload and ("guided_json" in payload or "response_format" in payload):
             return False
         provider = endpoint.provider if endpoint else self.settings.llm_provider
-        return provider == "nvidia" and self.settings.llm_streaming_enabled
+        return provider == "deepseek" and self.settings.llm_streaming_enabled
 
     def _service_name(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return "groq"
-        if self.settings.llm_provider == "nvidia":
-            return "nvidia-nim"
-        return "openai-compatible"
+        return "deepseek"
 
     def _test_max_tokens(self) -> int:
         if self.settings.llm_thinking_enabled:
@@ -1198,27 +1115,19 @@ class LLMBrain:
 
     def _decision_budget_seconds(self) -> int:
         configured = int(self.settings.llm_timeout_seconds or 30)
-        endpoints = len(self._endpoint_candidates())
         if self.settings.llm_rolling_context_enabled:
-            return max(25, min(max(configured, 35), 45))
-        if endpoints > 1:
-            return max(20, min(max(configured, 35), 45))
-        return max(8, min(configured, 30))
+            return max(35, min(max(configured, 60), 120))
+        return max(20, min(max(configured, 45), 120))
 
     def _rolling_summary_timeout_seconds(self, chunk_count: int) -> int:
         configured = int(self.settings.llm_timeout_seconds or 30)
         if chunk_count <= 0:
-            return max(6, min(configured, 10))
-        # Keep map-summary calls bounded so the final decision still has
-        # enough wall-clock budget to use the configured model fallback chain.
-        return max(8, min(max(configured // max(chunk_count + 2, 1), 8), 12))
+            return max(10, min(configured, 20))
+        return max(15, min(max(configured // max(chunk_count + 1, 1), 15), 30))
 
     def _endpoint_attempt_timeout_seconds(self, endpoint: LLMEndpoint, remaining_seconds: float) -> float:
-        model = endpoint.model.lower()
-        if endpoint.provider == "groq":
-            preferred = 8.0
-        elif "flash" in model or "mistral" in model or "glm" in model or "minimax" in model:
-            preferred = 7.0
+        if endpoint.provider == "deepseek":
+            preferred = float(max(int(self.settings.llm_timeout_seconds or 60), 45))
         else:
             preferred = 10.0
         return max(2.0, min(preferred, remaining_seconds))
@@ -1278,6 +1187,17 @@ class LLMBrain:
         confidence_gate_passed: bool,
         policy_gates: list[dict[str, Any]],
     ) -> str:
+        llm_error = None
+        if parsed.get("_json_synthetic") or parsed.get("_llm_timeout") or parsed.get("_json_repair_error") or parsed.get("_json_retry_error"):
+            llm_error = {
+                "error_type": "llm_primary_safe_fallback",
+                "reason": parsed.get("reason"),
+                "json_synthetic": bool(parsed.get("_json_synthetic")),
+                "llm_timeout": bool(parsed.get("_llm_timeout")),
+                "json_repair_error": parsed.get("_json_repair_error"),
+                "json_retry_error": parsed.get("_json_retry_error"),
+                "model_attempts": parsed.get("_llm_attempts", []),
+            }
         return _json_dumps(
             {
                 "audit_version": 1,
@@ -1298,6 +1218,7 @@ class LLMBrain:
                 "json_retry_reason": parsed.get("_json_retry_reason"),
                 "json_synthetic": bool(parsed.get("_json_synthetic")),
                 "llm_timeout": bool(parsed.get("_llm_timeout")),
+                "llm_error": llm_error,
                 "confidence_gate": {
                     "minimum_required": self.settings.llm_primary_min_confidence,
                     "passed": confidence_gate_passed,
@@ -1471,7 +1392,7 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
     )
 
 
-def _nvidia_retry_context(context: dict[str, Any]) -> dict[str, Any]:
+def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
     full = context.get("full_spectrum_analysis") or {}
     confluence = full.get("confluence_score") or {}
     trade_plan = full.get("trade_plan") or {}
@@ -1869,6 +1790,7 @@ def _policy_gate_action(
     breakout = full_spectrum.get("breakout_quality") or {}
     divergence = full_spectrum.get("price_volume_divergence") or {}
     alignment = ((full_spectrum.get("trend_context") or {}).get("timeframe_alignment") or {})
+    options_oi = full_spectrum.get("options_oi") or {}
     confluence_total = int(confluence.get("total", 0) or 0)
     gates: list[dict[str, Any]] = [
         {
@@ -1924,6 +1846,16 @@ def _policy_gate_action(
                     "required": "alignment grade not D",
                 },
                 {
+                    "gate": "options_max_pain_gate",
+                    "passed": not options_oi.get("buy_suppressed"),
+                    "value": {
+                        "source": options_oi.get("audit_label") or options_oi.get("source"),
+                        "max_pain": options_oi.get("max_pain"),
+                        "max_pain_distance_pct": options_oi.get("max_pain_distance_pct"),
+                    },
+                    "required": "max pain not 8% or more below current price",
+                },
+                {
                     "gate": "full_spectrum_confluence",
                     "passed": confluence_total >= 16,
                     "value": confluence_total,
@@ -1974,8 +1906,14 @@ def _json_dumps(value: dict[str, Any]) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
 
 
+def _api_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if not str(key).startswith("_opentrade_")}
+
+
 def _chat_completions_url_for_endpoint(endpoint: LLMEndpoint) -> str:
     base_url = endpoint.base_url.rstrip("/")
+    if endpoint.provider == "deepseek":
+        return f"{base_url}/chat/completions"
     if base_url.endswith("/v1"):
         return f"{base_url}/chat/completions"
     return f"{base_url}/v1/chat/completions"
@@ -1991,6 +1929,20 @@ def _attempts_from_exception(exc: Exception) -> list[dict[str, Any]]:
     if isinstance(raw, dict) and isinstance(raw.get("attempts"), list):
         return raw["attempts"]
     return []
+
+
+def _all_endpoint_attempts_failed(exc: Exception) -> bool:
+    return isinstance(exc, LLMResponseError) and str(exc) == "All configured LLM models failed"
+
+
+def _rate_limited_attempts(attempts: list[dict[str, Any]]) -> bool:
+    errors = " ".join(str(item.get("error") or "") for item in attempts).lower()
+    return "429" in errors or "too many requests" in errors or "rate limit" in errors
+
+
+def _attempts_have_timeout(attempts: list[dict[str, Any]]) -> bool:
+    errors = " ".join(str(item.get("error") or "") for item in attempts).lower()
+    return "timeout" in errors or any(int(item.get("latency_ms") or 0) >= 7500 for item in attempts)
 
 
 def _chunk_text(text: str, chunk_chars: int) -> list[str]:
@@ -2099,25 +2051,6 @@ def _normalize_decision_payload(parsed: dict[str, Any]) -> dict[str, Any]:
         if key in parsed:
             normalized[key] = parsed[key]
     return normalized
-
-
-def _nvidia_guided_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    # NVIDIA guided_json is strong at object shape/enums, but some deployments reject
-    # stricter validation keywords. Keep payload guidance broadly compatible.
-    unsupported = {"maxLength", "minLength", "maxItems", "minItems", "minimum", "maximum"}
-    if not isinstance(schema, dict):
-        return schema
-    output: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key in unsupported:
-            continue
-        if isinstance(value, dict):
-            output[key] = _nvidia_guided_schema(value)
-        elif isinstance(value, list):
-            output[key] = [_nvidia_guided_schema(item) if isinstance(item, dict) else item for item in value]
-        else:
-            output[key] = value
-    return output
 
 
 def _short_list(value: Any, limit: int, length: int = 180) -> list[str]:
@@ -2234,8 +2167,26 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
     if action in {"BUY", "SELL"}:
         action = "HOLD"
     snippet = " ".join(text.split())[:500]
+    attempts = _attempts_from_exception(exc)
     is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)) or "timeout" in exc.__class__.__name__.lower()
-    if is_timeout:
+    if _all_endpoint_attempts_failed(exc):
+        rate_limited = _rate_limited_attempts(attempts)
+        reason = (
+            "LLM provider unavailable/rate-limited, so OpenTrade used the safe fallback HOLD. "
+            f"error={_error_summary(exc)[:180]}"
+        )
+        checklist = [
+            "llm_endpoint_failed",
+            "rate_limited" if rate_limited else "endpoint_timeout_or_unavailable",
+            "safe_hold_fallback_used",
+        ]
+        evidence = [
+            "All configured model endpoints failed before valid JSON was returned.",
+            "No BUY/SELL is allowed without a completed LLM primary decision.",
+        ]
+        risk_checks = ["LLM brain unavailable; deterministic scanner cannot execute new trades in primary mode."]
+        data_gaps = ["llm_provider_rate_limited" if rate_limited else "llm_provider_unavailable"]
+    elif is_timeout:
         reason = (
             "LLM timed out before returning a strict decision JSON, so OpenTrade used the safe fallback HOLD. "
             f"timeout={_error_summary(exc)[:180]}"

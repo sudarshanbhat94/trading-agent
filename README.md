@@ -15,7 +15,7 @@ This defaults to paper trading. Upstox live order routing exists, but it is disa
 - Builds MCP-style tool context with quotes, candles, candlestick facts, exact math indicators, sentiment, position, and risk limits.
 - Scores sentiment from a conservative rotating news RSS scan.
 - Adds global market intelligence from major indices, crude, gold, USD/INR, and global news before each stock decision.
-- Uses NVIDIA NIM or another OpenAI-compatible LLM as the primary analyst, or as a reviewer.
+- Uses direct DeepSeek as the primary analyst, or as a reviewer.
 - Evaluates named strategy presets and tracks their performance in the UI.
 - Enforces dry-money risk rules: max positions, max order size, max position size, stop loss, take profit, and daily drawdown limit.
 - Can optionally mirror allowed paper orders to Upstox live order placement, disabled by default.
@@ -44,7 +44,7 @@ The dashboard includes a **Settings** panel. Use it to change:
 - Demo cash and cycle interval.
 - Execution mode: `paper`, `upstox_sandbox`, or `upstox_live`.
 - Market-data provider and broker credentials.
-- NVIDIA/OpenAI-compatible LLM provider, model, and API key.
+- DeepSeek provider, model, and API key.
 - Risk controls: max positions, order size, stop loss, take profit, and daily loss limit.
 - Sentiment scan settings.
 
@@ -67,7 +67,7 @@ This is evidence and audit data, not hidden chain-of-thought. The app asks the m
 
 ### Admin Access
 
-Read-only dashboard views are public. Settings, start/stop, run-once, and demo reset require admin login.
+OpenTrade now starts with a dedicated login screen. The first admin user is migrated from `ADMIN_USERNAME` and `ADMIN_PASSWORD`, then admins can create additional users from **Users** in the dashboard.
 
 Set this before starting the app:
 
@@ -77,7 +77,7 @@ ADMIN_USERNAME=admin
 AUTH_SESSION_SECRET=choose-a-long-random-string
 ```
 
-If `ADMIN_PASSWORD` is empty, the dashboard stays read-only and admin controls remain locked.
+If `ADMIN_PASSWORD` is empty and no database admin user exists, the dashboard remains locked until an admin password is configured. Admin users can manage settings, broker connections, agent controls, logs, and user creation. Standard users can sign in to view the trading desk and run symbol analysis, while admin-only controls stay locked.
 
 ## Sentiment Intelligence
 
@@ -154,6 +154,9 @@ For exact live Indian equity prices, use an exchange-authorized broker/data API.
 
 ```bash
 MARKET_DATA_PROVIDER=upstox
+UPSTOX_API_KEY=your_api_key
+UPSTOX_API_SECRET=your_api_secret
+UPSTOX_REDIRECT_URI=http://127.0.0.1:8000/upstox/callback
 UPSTOX_ACCESS_TOKEN=your_access_token
 UPSTOX_SANDBOX_ACCESS_TOKEN=your_sandbox_token
 UPSTOX_API_BASE_URL=https://api.upstox.com/v2
@@ -164,15 +167,19 @@ YAHOO_CANDLE_INTERVAL=15m
 YAHOO_CANDLE_RANGE=5d
 ```
 
+If you only have the Upstox API key/secret, open **Settings → Upstox Connect** in the dashboard. Save the API key, API secret, and redirect URI, click **Open Login**, complete the Upstox login, then paste the returned `code` or full redirect URL into **Connect Upstox**. OpenTrade exchanges it for an access token, saves it, switches `MARKET_DATA_PROVIDER` to `upstox`, and rebuilds the running provider.
+
 The universe file includes `upstox_instrument_key` values like `NSE_EQ|INE002A01018`. For all stocks, regenerate `data/universe.csv` from Upstox's instrument master and keep that column accurate.
 
 ### Nubra Market Data
 
-Nubra works well for testing market watch because its REST API exposes current price and historical time-series endpoints. First get a Nubra `session_token` through the Nubra login flow, then save the token and device id:
+Nubra works well for testing market watch because its REST API exposes current price and historical time-series endpoints. The dashboard Settings page has a **Nubra Connect** panel that sends the phone OTP, verifies OTP + MPIN, saves the returned session token, switches `MARKET_DATA_PROVIDER` to `nubra`, and rebuilds the running provider automatically. You can still seed these values from env:
 
 ```bash
 MARKET_DATA_PROVIDER=nubra
 NUBRA_API_BASE_URL=https://uatapi.nubra.io
+NUBRA_PHONE=your_phone
+NUBRA_MPIN=your_mpin
 NUBRA_SESSION_TOKEN=your_session_token
 NUBRA_DEVICE_ID=your_device_id
 NUBRA_PRICE_SCALE=100
@@ -213,78 +220,41 @@ The `yahoo` provider is useful for development and paper testing. It now pulls d
 
 ## LLM Brain
 
-Default mode is deterministic and local:
+OpenTrade now uses one LLM brain: direct DeepSeek. Select either `deepseek-v4-pro` or `deepseek-v4-flash` in Settings.
 
 ```bash
-LLM_PROVIDER=offline
-LLM_DECISION_MODE=offline
-```
-
-To make NVIDIA NIM the primary analyst:
-
-```bash
-LLM_PROVIDER=nvidia
+LLM_PROVIDER=deepseek
 LLM_DECISION_MODE=primary
-NVIDIA_API_KEY=...
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com
-NVIDIA_MODEL=deepseek-ai/deepseek-v4-pro
-NVIDIA_MODEL_CHAIN=deepseek-ai/deepseek-v4-pro,moonshotai/kimi-k2.6,deepseek-ai/deepseek-v4-flash,z-ai/glm-5.1,minimaxai/minimax-m2.7,mistralai/mistral-medium-3.5-128b
-LLM_MODEL_FALLBACK_ENABLED=true
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
 LLM_ROLLING_CONTEXT_ENABLED=true
 LLM_ROLLING_CONTEXT_THRESHOLD_CHARS=16000
 LLM_ROLLING_CONTEXT_CHUNK_CHARS=7000
 LLM_ROLLING_CONTEXT_MAX_CHUNKS=0
 LLM_TEMPERATURE=0.05
 LLM_TOP_P=0.7
-LLM_MAX_TOKENS=1400
+LLM_MAX_TOKENS=4096
 LLM_MAX_SYMBOLS_PER_CYCLE=1
 LLM_PRIMARY_MIN_CONFIDENCE=0.62
-LLM_REASONING_EFFORT=none
-LLM_THINKING_ENABLED=false
-LLM_STREAMING_ENABLED=false
-LLM_TIMEOUT_SECONDS=45
-```
-
-To enable another OpenAI-compatible endpoint:
-
-```bash
-LLM_PROVIDER=openai_compatible
-LLM_DECISION_MODE=primary
-LLM_BASE_URL=https://api.openai.com
-LLM_API_KEY=...
-LLM_MODEL=gpt-4.1-mini
-```
-
-To make Groq Qwen the fast primary analyst:
-
-```bash
-LLM_PROVIDER=groq
-LLM_DECISION_MODE=primary
-GROQ_API_KEY=...
-GROQ_BASE_URL=https://api.groq.com/openai/v1
-GROQ_MODEL=qwen/qwen3-32b
-GROQ_REASONING_EFFORT=none
-GROQ_REASONING_FORMAT=hidden
-LLM_TEMPERATURE=0.05
-LLM_TOP_P=0.7
-LLM_MAX_TOKENS=700
-LLM_MAX_SYMBOLS_PER_CYCLE=1
-LLM_TIMEOUT_SECONDS=20
-```
-
-`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. NVIDIA decisions use the model chain in order, and transport errors, timeouts, empty content, or malformed JSON advance to the next model. If all NVIDIA models fail and `GROQ_API_KEY` is saved, Groq Qwen is used as the final fallback. Every decision audit records the selected provider/model, all model attempts, and whether rolling context was used.
-
-Large context is handled with rolling analysis instead of blunt trimming. When the rich context exceeds `LLM_ROLLING_CONTEXT_THRESHOLD_CHARS`, OpenTrade summarizes each chunk with the same model cascade, then sends a compact core packet plus the chunk evidence summaries for the final decision. `LLM_ROLLING_CONTEXT_MAX_CHUNKS=0` means cover all chunks; set a positive number only when you intentionally want to cap cost/latency on a small VM.
-
-NVIDIA models use schema-guided JSON decisions with a richer context packet and non-streamed structured calls; Groq uses a compact JSON-mode packet to stay under rate/payload limits. For NVIDIA DeepSeek V4 and Kimi models, the app sends `chat_template_kwargs.thinking=false` by default. Turn `LLM_THINKING_ENABLED` on only when you can tolerate slower responses; then `LLM_REASONING_EFFORT=high` or `max` can be used for supported DeepSeek V4 models. If a large model is slow to respond, increase `LLM_TIMEOUT_SECONDS` or keep the fallback chain enabled.
-
-For NVIDIA Kimi K2.6, set:
-
-```bash
-NVIDIA_MODEL=moonshotai/kimi-k2.6
-LLM_STREAMING_ENABLED=true
+LLM_REASONING_EFFORT=high
 LLM_THINKING_ENABLED=true
+LLM_STREAMING_ENABLED=false
+LLM_TIMEOUT_SECONDS=120
 ```
+
+To temporarily turn the brain off, set:
+
+```bash
+LLM_PROVIDER=offline
+LLM_DECISION_MODE=offline
+```
+
+`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks DeepSeek to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks DeepSeek to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. Every decision audit records the selected provider/model, API attempts, and whether rolling context was used.
+
+Large context is handled with rolling analysis instead of blunt trimming. When the rich context exceeds `LLM_ROLLING_CONTEXT_THRESHOLD_CHARS`, OpenTrade summarizes each chunk with DeepSeek, then sends a compact core packet plus the chunk evidence summaries for the final decision. `LLM_ROLLING_CONTEXT_MAX_CHUNKS=0` means cover all chunks; set a positive number only when you intentionally want to cap cost/latency on a small VM.
+
+DeepSeek calls are non-streamed JSON-mode calls. When `LLM_THINKING_ENABLED=true`, OpenTrade sends `thinking={"type":"enabled"}` with `reasoning_effort=high`, matching the direct DeepSeek API style.
 
 ## Strategy Presets
 

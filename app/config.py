@@ -38,6 +38,14 @@ class Settings:
     port: int = _int("PORT", 8000)
     database_path: Path = _path("DATABASE_PATH", "./var/trading_agent.db")
     universe_csv: Path = _path("UNIVERSE_CSV", "./data/universe.csv")
+    universe_source: str = os.getenv("UNIVERSE_SOURCE", "csv").strip().lower()
+    nse_equity_list_url: str = os.getenv(
+        "NSE_EQUITY_LIST_URL",
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+    ).strip()
+    nse_universe_refresh_on_start: bool = _bool("NSE_UNIVERSE_REFRESH_ON_START", False)
+    nse_universe_series: str = os.getenv("NSE_UNIVERSE_SERIES", "EQ").strip().upper()
+    universe_symbols_per_cycle: int = _int("UNIVERSE_SYMBOLS_PER_CYCLE", 0)
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
@@ -58,6 +66,9 @@ class Settings:
     market_data_provider: str = os.getenv("MARKET_DATA_PROVIDER", "simulated").strip().lower()
     kite_api_key: str = os.getenv("KITE_API_KEY", "")
     kite_access_token: str = os.getenv("KITE_ACCESS_TOKEN", "")
+    upstox_api_key: str = os.getenv("UPSTOX_API_KEY", "")
+    upstox_api_secret: str = os.getenv("UPSTOX_API_SECRET", "")
+    upstox_redirect_uri: str = os.getenv("UPSTOX_REDIRECT_URI", "")
     upstox_access_token: str = os.getenv("UPSTOX_ACCESS_TOKEN", "")
     upstox_sandbox_access_token: str = os.getenv("UPSTOX_SANDBOX_ACCESS_TOKEN", "")
     upstox_api_base_url: str = os.getenv("UPSTOX_API_BASE_URL", "https://api.upstox.com/v2").rstrip("/")
@@ -68,6 +79,8 @@ class Settings:
     yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
     enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", True)
     nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
+    nubra_phone: str = os.getenv("NUBRA_PHONE", "")
+    nubra_mpin: str = os.getenv("NUBRA_MPIN", "")
     nubra_session_token: str = os.getenv("NUBRA_SESSION_TOKEN", "")
     nubra_device_id: str = os.getenv("NUBRA_DEVICE_ID", "")
     nubra_price_scale: float = _float("NUBRA_PRICE_SCALE", 100)
@@ -103,6 +116,11 @@ class Settings:
     sector_rotation_cache_seconds: int = _int("SECTOR_ROTATION_CACHE_SECONDS", 300)
     enable_macro_calendar: bool = _bool("ENABLE_MACRO_CALENDAR", True)
     macro_calendar_cache_seconds: int = _int("MACRO_CALENDAR_CACHE_SECONDS", 3600)
+    enable_options_intelligence: bool = _bool("ENABLE_OPTIONS_INTELLIGENCE", True)
+    options_cache_seconds: int = _int("OPTIONS_CACHE_SECONDS", 300)
+    options_symbols_per_cycle: int = _int("OPTIONS_SYMBOLS_PER_CYCLE", 12)
+    options_index_symbols: str = os.getenv("OPTIONS_INDEX_SYMBOLS", "NIFTY,BANKNIFTY")
+    options_max_pain_buy_suppress_pct: float = _float("OPTIONS_MAX_PAIN_BUY_SUPPRESS_PCT", -8.0)
 
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").strip().lower()
     live_trading_enabled: bool = _bool("LIVE_TRADING_ENABLED", False)
@@ -111,48 +129,37 @@ class Settings:
     upstox_order_validity: str = os.getenv("UPSTOX_ORDER_VALIDITY", "DAY")
     upstox_order_type: str = os.getenv("UPSTOX_ORDER_TYPE", "MARKET")
 
-    llm_provider: str = os.getenv("LLM_PROVIDER", "offline").strip().lower()
-    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "offline").strip().lower()
-    llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com").rstrip("/")
-    llm_api_key: str = os.getenv("LLM_API_KEY", "")
-    llm_model: str = os.getenv("LLM_MODEL", "gpt-4.1-mini")
+    llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "primary").strip().lower()
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
     llm_temperature: float = _float("LLM_TEMPERATURE", 0.05)
     llm_top_p: float = _float("LLM_TOP_P", 0.7)
-    llm_max_tokens: int = _int("LLM_MAX_TOKENS", 900)
+    llm_max_tokens: int = _int("LLM_MAX_TOKENS", 4096)
     llm_max_symbols_per_cycle: int = _int("LLM_MAX_SYMBOLS_PER_CYCLE", 1)
     llm_primary_min_confidence: float = _float("LLM_PRIMARY_MIN_CONFIDENCE", 0.62)
-    llm_reasoning_effort: str = os.getenv("LLM_REASONING_EFFORT", "none").strip().lower()
-    llm_thinking_enabled: bool = _bool("LLM_THINKING_ENABLED", False)
+    llm_reasoning_effort: str = os.getenv("LLM_REASONING_EFFORT", "high").strip().lower()
+    llm_thinking_enabled: bool = _bool("LLM_THINKING_ENABLED", True)
     llm_streaming_enabled: bool = _bool("LLM_STREAMING_ENABLED", False)
-    llm_timeout_seconds: int = _int("LLM_TIMEOUT_SECONDS", 30)
-    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
-    nvidia_base_url: str = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com").rstrip("/")
-    nvidia_model: str = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-pro")
-    nvidia_model_chain: str = os.getenv(
-        "NVIDIA_MODEL_CHAIN",
-        "deepseek-ai/deepseek-v4-pro,moonshotai/kimi-k2.6,deepseek-ai/deepseek-v4-flash,z-ai/glm-5.1,minimaxai/minimax-m2.7,mistralai/mistral-medium-3.5-128b",
-    )
-    llm_model_fallback_enabled: bool = _bool("LLM_MODEL_FALLBACK_ENABLED", True)
+    llm_timeout_seconds: int = _int("LLM_TIMEOUT_SECONDS", 120)
     llm_rolling_context_enabled: bool = _bool("LLM_ROLLING_CONTEXT_ENABLED", True)
     llm_rolling_context_threshold_chars: int = _int("LLM_ROLLING_CONTEXT_THRESHOLD_CHARS", 16000)
     llm_rolling_context_chunk_chars: int = _int("LLM_ROLLING_CONTEXT_CHUNK_CHARS", 7000)
     llm_rolling_context_max_chunks: int = _int("LLM_ROLLING_CONTEXT_MAX_CHUNKS", 0)
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    groq_base_url: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
-    groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
-    groq_reasoning_effort: str = os.getenv("GROQ_REASONING_EFFORT", "none").strip().lower()
-    groq_reasoning_format: str = os.getenv("GROQ_REASONING_FORMAT", "hidden").strip().lower()
 
 
 SECRET_FIELDS = {
     "kite_api_key",
     "kite_access_token",
+    "upstox_api_key",
+    "upstox_api_secret",
     "upstox_access_token",
     "upstox_sandbox_access_token",
     "nubra_session_token",
-    "llm_api_key",
-    "nvidia_api_key",
-    "groq_api_key",
+    "nubra_phone",
+    "nubra_mpin",
+    "deepseek_api_key",
     "live_trading_confirm",
     "admin_password",
     "auth_session_secret",
@@ -170,7 +177,15 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "auth_session_secret", "label": "Session Secret", "type": "secret", "category": "Access Control"},
     {"key": "admin_session_hours", "label": "Session Hours", "type": "number", "category": "Access Control", "min": 1, "step": 1},
     {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["simulated", "yahoo", "kite", "upstox", "nubra"]},
+    {"key": "universe_source", "label": "Universe Source", "type": "select", "category": "Market Data", "choices": ["csv", "nse_equity"]},
+    {"key": "nse_universe_refresh_on_start", "label": "Refresh NSE Universe", "type": "boolean", "category": "Market Data"},
+    {"key": "nse_equity_list_url", "label": "NSE Equity List URL", "type": "text", "category": "Market Data"},
+    {"key": "nse_universe_series", "label": "NSE Series", "type": "text", "category": "Market Data"},
+    {"key": "universe_symbols_per_cycle", "label": "Symbols/Cycle (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
     {"key": "upstox_access_token", "label": "Upstox Access Token", "type": "secret", "category": "Market Data"},
+    {"key": "upstox_api_key", "label": "Upstox API Key", "type": "secret", "category": "Market Data"},
+    {"key": "upstox_api_secret", "label": "Upstox API Secret", "type": "secret", "category": "Market Data"},
+    {"key": "upstox_redirect_uri", "label": "Upstox Redirect URI", "type": "text", "category": "Market Data"},
     {"key": "upstox_sandbox_access_token", "label": "Upstox Sandbox Token", "type": "secret", "category": "Market Data"},
     {"key": "upstox_api_base_url", "label": "Upstox Data URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_order_base_url", "label": "Upstox Order URL", "type": "text", "category": "Market Data"},
@@ -182,6 +197,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "kite_api_key", "label": "Kite API Key", "type": "secret", "category": "Market Data"},
     {"key": "kite_access_token", "label": "Kite Access Token", "type": "secret", "category": "Market Data"},
     {"key": "nubra_api_base_url", "label": "Nubra API Base URL", "type": "text", "category": "Market Data"},
+    {"key": "nubra_phone", "label": "Nubra Phone", "type": "secret", "category": "Market Data"},
+    {"key": "nubra_mpin", "label": "Nubra MPIN", "type": "secret", "category": "Market Data"},
     {"key": "nubra_session_token", "label": "Nubra Session Token", "type": "secret", "category": "Market Data"},
     {"key": "nubra_device_id", "label": "Nubra Device ID", "type": "text", "category": "Market Data"},
     {"key": "nubra_price_scale", "label": "Nubra Price Scale", "type": "number", "category": "Market Data", "min": 1, "step": 1},
@@ -192,33 +209,22 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "nubra_market_depth_endpoint", "label": "Nubra Depth Path", "type": "text", "category": "Institutional Feeds"},
     {"key": "nubra_delivery_endpoint", "label": "Nubra Delivery Path", "type": "text", "category": "Institutional Feeds"},
     {"key": "nubra_oi_endpoint", "label": "Nubra OI Path", "type": "text", "category": "Institutional Feeds"},
-    {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["offline", "groq", "nvidia", "openai_compatible"]},
+    {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "offline"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
-    {"key": "groq_api_key", "label": "Groq API Key", "type": "secret", "category": "LLM Brain"},
-    {"key": "groq_base_url", "label": "Groq Base URL", "type": "text", "category": "LLM Brain"},
-    {"key": "groq_model", "label": "Groq Model", "type": "text", "category": "LLM Brain"},
-    {"key": "groq_reasoning_effort", "label": "Groq Reasoning Effort", "type": "select", "category": "LLM Brain", "choices": ["none", "default"]},
-    {"key": "groq_reasoning_format", "label": "Groq Reasoning Format", "type": "select", "category": "LLM Brain", "choices": ["hidden", "parsed", "raw"]},
-    {"key": "nvidia_api_key", "label": "NVIDIA API Key", "type": "secret", "category": "LLM Brain"},
-    {"key": "nvidia_base_url", "label": "NVIDIA Base URL", "type": "text", "category": "LLM Brain"},
-    {"key": "nvidia_model", "label": "NVIDIA Model", "type": "text", "category": "LLM Brain"},
-    {"key": "nvidia_model_chain", "label": "NVIDIA Model Chain", "type": "text", "category": "LLM Brain"},
-    {"key": "llm_model_fallback_enabled", "label": "Model Fallback", "type": "boolean", "category": "LLM Brain"},
+    {"key": "deepseek_api_key", "label": "DeepSeek API Key", "type": "secret", "category": "LLM Brain"},
+    {"key": "deepseek_base_url", "label": "DeepSeek Base URL", "type": "text", "category": "LLM Brain"},
+    {"key": "deepseek_model", "label": "DeepSeek Model", "type": "select", "category": "LLM Brain", "choices": ["deepseek-v4-pro", "deepseek-v4-flash"]},
     {"key": "llm_rolling_context_enabled", "label": "Rolling Context", "type": "boolean", "category": "LLM Brain"},
     {"key": "llm_rolling_context_threshold_chars", "label": "Rolling Threshold Chars", "type": "number", "category": "LLM Brain", "min": 2000, "step": 1000},
     {"key": "llm_rolling_context_chunk_chars", "label": "Rolling Chunk Chars", "type": "number", "category": "LLM Brain", "min": 1000, "step": 500},
     {"key": "llm_rolling_context_max_chunks", "label": "Rolling Max Chunks (0=All)", "type": "number", "category": "LLM Brain", "min": 0, "step": 1},
-    {"key": "llm_base_url", "label": "OpenAI-Compatible URL", "type": "text", "category": "LLM Brain"},
-    {"key": "llm_api_key", "label": "OpenAI-Compatible Key", "type": "secret", "category": "LLM Brain"},
-    {"key": "llm_model", "label": "OpenAI-Compatible Model", "type": "text", "category": "LLM Brain"},
     {"key": "llm_temperature", "label": "LLM Temperature", "type": "number", "category": "LLM Brain", "min": 0, "max": 2, "step": 0.01},
     {"key": "llm_top_p", "label": "LLM Top P", "type": "number", "category": "LLM Brain", "min": 0, "max": 1, "step": 0.01},
     {"key": "llm_max_tokens", "label": "LLM Max Tokens", "type": "number", "category": "LLM Brain", "min": 24, "step": 128},
     {"key": "llm_max_symbols_per_cycle", "label": "LLM Symbols/Cycle", "type": "number", "category": "LLM Brain", "min": 1, "step": 1},
     {"key": "llm_primary_min_confidence", "label": "Min LLM Confidence", "type": "number", "category": "LLM Brain", "min": 0, "max": 1, "step": 0.01},
     {"key": "llm_reasoning_effort", "label": "Reasoning Effort", "type": "select", "category": "LLM Brain", "choices": ["none", "high", "max"]},
-    {"key": "llm_thinking_enabled", "label": "Model Thinking", "type": "boolean", "category": "LLM Brain"},
-    {"key": "llm_streaming_enabled", "label": "Stream Responses", "type": "boolean", "category": "LLM Brain"},
+    {"key": "llm_thinking_enabled", "label": "DeepSeek Thinking", "type": "boolean", "category": "LLM Brain"},
     {"key": "llm_timeout_seconds", "label": "LLM Timeout Seconds", "type": "number", "category": "LLM Brain", "min": 5, "step": 5},
     {"key": "max_positions", "label": "Max Positions", "type": "number", "category": "Risk", "min": 1, "step": 1},
     {"key": "max_position_pct", "label": "Max Position %", "type": "number", "category": "Risk", "min": 0.01, "max": 1, "step": 0.01},
@@ -251,6 +257,11 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "sector_rotation_cache_seconds", "label": "Sector Cache Seconds", "type": "number", "category": "Institutional Feeds", "min": 60, "step": 60},
     {"key": "enable_macro_calendar", "label": "Macro Calendar", "type": "boolean", "category": "Global Intelligence"},
     {"key": "macro_calendar_cache_seconds", "label": "Macro Calendar Cache Seconds", "type": "number", "category": "Global Intelligence", "min": 300, "step": 300},
+    {"key": "enable_options_intelligence", "label": "Options Intelligence", "type": "boolean", "category": "Institutional Feeds"},
+    {"key": "options_cache_seconds", "label": "Options Cache Seconds", "type": "number", "category": "Institutional Feeds", "min": 60, "step": 60},
+    {"key": "options_symbols_per_cycle", "label": "Stock Option Symbols/Cycle", "type": "number", "category": "Institutional Feeds", "min": 0, "step": 1},
+    {"key": "options_index_symbols", "label": "Index Option Symbols", "type": "text", "category": "Institutional Feeds"},
+    {"key": "options_max_pain_buy_suppress_pct", "label": "Max Pain BUY Suppress %", "type": "number", "category": "Institutional Feeds", "min": -50, "max": 0, "step": 0.5},
     {"key": "live_trading_enabled", "label": "Live Trading Enabled", "type": "boolean", "category": "Live Protection"},
     {"key": "live_trading_confirm", "label": "Live Confirm Phrase", "type": "secret", "category": "Live Protection"},
     {"key": "upstox_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["D", "I"]},
@@ -263,6 +274,20 @@ CONFIG_KEYS = {item["key"] for item in CONFIG_SCHEMA}
 
 
 def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
+    if key == "llm_provider":
+        provider = str(value).strip().lower()
+        return provider if provider in {"deepseek", "offline"} else "deepseek"
+    if key == "llm_decision_mode":
+        mode = str(value).strip().lower()
+        return mode if mode in {"offline", "review", "primary"} else "primary"
+    if key == "deepseek_model":
+        model = str(value).strip()
+        return model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else "deepseek-v4-pro"
+    if key == "deepseek_base_url":
+        return str(value).strip().rstrip("/") or "https://api.deepseek.com"
+    if key == "llm_reasoning_effort":
+        effort = str(value).strip().lower()
+        return effort if effort in {"none", "high", "max"} else "high"
     current = getattr(base, key)
     if isinstance(current, bool):
         if isinstance(value, bool):

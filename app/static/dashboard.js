@@ -1,9 +1,11 @@
 const state = {
   latest: null,
   config: null,
-  auth: { admin: false, admin_configured: false },
+  auth: { authenticated: false, admin: false, admin_configured: false, user: null },
   account: null,
   logs: [],
+  users: [],
+  socket: null,
 };
 
 const money = new Intl.NumberFormat("en-IN", {
@@ -21,6 +23,13 @@ const compactNumber = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 1,
 });
 
+const usd = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 6,
+});
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -35,6 +44,10 @@ function fmtNumber(value) {
 
 function fmtCompact(value) {
   return Number.isFinite(Number(value)) ? compactNumber.format(Number(value)) : "-";
+}
+
+function fmtUsd(value) {
+  return Number.isFinite(Number(value)) ? usd.format(Number(value)) : "-";
 }
 
 function fmtPct(value) {
@@ -205,10 +218,11 @@ function renderShell(payload = state.latest || {}) {
   const mode = health.mode || "unknown";
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
-  const nvidiaModel = plainSetting("nvidia_model", "");
-  const nvidiaChain = plainSetting("nvidia_model_chain", "");
-  const groqModel = plainSetting("groq_model", "");
-  const llmModel = llmProvider === "nvidia" ? (nvidiaChain || nvidiaModel).split(",")[0] : llmProvider === "groq" ? groqModel : plainSetting("llm_model", "offline");
+  const llmModel = llmProvider === "deepseek" ? plainSetting("deepseek_model", "deepseek-v4-pro") : "offline";
+  const llmUsage = payload.llm_usage?.today_utc || {};
+  const llmUsageText = llmUsage.calls
+    ? `${fmtCompact(llmUsage.total_tokens)} tok · ${fmtUsd(llmUsage.cost_usd)} today`
+    : `${llmModel || "model unset"}`;
 
   byId("top-provider").textContent = provider;
   byId("top-llm").textContent = llmProvider === "offline" ? "off" : llmModel;
@@ -219,7 +233,7 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-feed").textContent = provider;
   byId("ops-feed-meta").textContent = `${health.quote_count || 0} quotes · ${fmtAge(health.latest_quote_age_seconds)}`;
   byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmProvider;
-  byId("ops-llm-meta").textContent = `${llmMode} · ${llmModel || "model unset"}`;
+  byId("ops-llm-meta").textContent = `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   byId("ops-macro").textContent = macro.regime || "unknown";
@@ -235,10 +249,11 @@ function renderAgentConsole(payload) {
   const positions = payload.positions || [];
   const orders = payload.orders || [];
   const decisions = payload.decisions || [];
+  const universe = payload.universe || {};
   const latestAction = decisions.find((row) => row.action && row.action !== "HOLD");
   const rows = [
     ["Feed mode", health.mode || "unknown", health.provider || payload.provider || "-"],
-    ["Universe", String(payload.universe_size ?? "-"), `${health.quote_count || 0} priced`],
+    ["Universe", `${universe.enabled ?? "-"} enabled`, `${universe.symbols_per_cycle || "all"} per cycle · ${universe.low_price_enabled ?? 0} <= ₹100 priced`],
     ["Exposure", fmtMoney(portfolio.invested), `${positions.length}/${settings.max_positions ?? "-"} positions`],
     ["Risk", fmtPct(Number(settings.daily_loss_limit_pct || 0) * 100), "daily loss limit"],
     ["Execution", settings.execution_mode || payload.runtime?.execution_mode || "-", settings.live_trading_enabled ? "live switch on" : "live switch off"],
@@ -260,29 +275,51 @@ function renderAgentConsole(payload) {
 
 function renderAuth(auth) {
   state.auth = auth;
+  const authenticated = Boolean(auth.authenticated);
+  byId("login-screen").hidden = authenticated;
+  byId("app-shell").classList.toggle("app-hidden", !authenticated);
   const pill = byId("admin-pill");
-  pill.textContent = auth.admin ? "admin" : auth.admin_configured ? "read only" : "admin not set";
+  pill.textContent = auth.admin ? "admin" : "user";
   pill.className = `pill ${auth.admin ? "running" : "stopped"}`;
-  byId("admin-username").hidden = auth.admin;
-  byId("admin-password").hidden = auth.admin;
-  byId("login-btn").hidden = auth.admin;
-  byId("logout-btn").hidden = !auth.admin;
+  const currentUser = auth.user?.username || "signed in";
+  byId("current-user-label").textContent = `${currentUser} · ${auth.user?.role || "user"}`;
+  byId("logout-btn").hidden = !authenticated;
+  for (const item of document.querySelectorAll(".admin-only")) {
+    item.hidden = !auth.admin;
+  }
   applyAccessMode();
   if (auth.admin) fetchLogs();
   else renderLogs([]);
+  if (auth.admin) fetchUsers();
 }
 
 function applyAccessMode() {
+  const authenticated = Boolean(state.auth && state.auth.authenticated);
   const admin = Boolean(state.auth && state.auth.admin);
-  for (const id of ["start-btn", "stop-btn", "run-btn", "save-settings-btn", "reset-demo-btn", "test-llm-btn", "refresh-logs-btn", "analyze-btn"]) {
+  for (const id of [
+    "start-btn",
+    "stop-btn",
+    "run-btn",
+    "save-settings-btn",
+    "reset-demo-btn",
+    "test-llm-btn",
+    "refresh-logs-btn",
+    "analyze-btn",
+    "upstox-auth-url-btn",
+    "upstox-connect-btn",
+    "nubra-send-otp-btn",
+    "nubra-connect-btn",
+  ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
   }
   const analyzeInput = byId("analyze-symbol");
-  if (analyzeInput) analyzeInput.disabled = !admin;
+  if (analyzeInput) analyzeInput.disabled = !authenticated;
+  const analyzeButton = byId("analyze-btn");
+  if (analyzeButton) analyzeButton.disabled = !authenticated;
   const analyzeStatus = byId("analyze-status");
   if (analyzeStatus && !state.latest?.manual_analysis_active) {
-    analyzeStatus.textContent = admin ? "ready" : "admin login required";
+    analyzeStatus.textContent = authenticated ? "ready" : "login required";
   }
   const form = byId("settings-form");
   if (form) {
@@ -290,11 +327,25 @@ function applyAccessMode() {
       input.disabled = !admin;
     }
   }
+  for (const id of [
+    "upstox-api-key",
+    "upstox-api-secret",
+    "upstox-redirect-uri",
+    "upstox-auth-code",
+    "nubra-base-url",
+    "nubra-phone",
+    "nubra-device-id",
+    "nubra-otp",
+    "nubra-mpin",
+  ]) {
+    const element = byId(id);
+    if (element) element.disabled = !admin;
+  }
   byId("settings-status").textContent = admin
     ? "admin controls unlocked"
-    : state.auth.admin_configured
-      ? "read only: login to change settings"
-      : "read only: set ADMIN_PASSWORD in .env";
+    : authenticated
+      ? "user mode: admin required for settings"
+      : "login required";
 }
 
 async function fetchLogs() {
@@ -345,6 +396,124 @@ function renderLogs(rows) {
     })
     .join("");
   bindRowDetails(body, state.logs, "Agent Log");
+}
+
+async function fetchUsers() {
+  if (!state.auth?.admin) {
+    renderUsers([]);
+    return;
+  }
+  try {
+    const response = await fetch("/api/users");
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      byId("users-count").textContent = payload.detail || "users unavailable";
+      return;
+    }
+    renderUsers(payload.users || []);
+  } catch (error) {
+    byId("users-count").textContent = "users unavailable";
+  }
+}
+
+function renderUsers(rows) {
+  state.users = rows || [];
+  const body = byId("users-body");
+  if (!body) return;
+  byId("users-count").textContent = `${state.users.length} users`;
+  byId("nav-users-badge").textContent = String(state.users.length);
+  if (!state.auth?.admin) {
+    body.innerHTML = `<tr><td colspan="5">Admin login required</td></tr>`;
+    return;
+  }
+  if (!state.users.length) {
+    body.innerHTML = `<tr><td colspan="5">No users yet</td></tr>`;
+    return;
+  }
+  body.innerHTML = state.users
+    .map((user) => {
+      const active = Boolean(user.active);
+      return `<tr data-user-id="${user.id}">
+        <td><strong>${escapeHtml(user.username)}</strong></td>
+        <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span></td>
+        <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
+        <td>${escapeHtml(user.last_login_at ? fmtTime(user.last_login_at) : "-")}</td>
+        <td class="row-actions">
+          <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
+          <button type="button" data-user-action="role">${user.role === "admin" ? "Make User" : "Make Admin"}</button>
+        </td>
+      </tr>`;
+    })
+    .join("");
+  body.querySelectorAll("button[data-user-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const row = button.closest("tr");
+      const user = state.users.find((item) => String(item.id) === row?.dataset.userId);
+      if (!user) return;
+      if (button.dataset.userAction === "toggle") {
+        updateUser(user.id, { active: !user.active });
+      } else {
+        updateUser(user.id, { role: user.role === "admin" ? "user" : "admin" });
+      }
+    });
+  });
+  bindRowDetails(body, state.users, "User");
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const status = byId("user-create-status");
+  const payload = {
+    username: byId("new-user-username").value.trim(),
+    password: byId("new-user-password").value,
+    role: byId("new-user-role").value,
+    active: true,
+  };
+  status.textContent = "creating";
+  status.className = "settings-inline-status";
+  try {
+    const response = await fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      status.textContent = data.detail || "create failed";
+      status.className = "settings-inline-status negative";
+      return;
+    }
+    byId("new-user-username").value = "";
+    byId("new-user-password").value = "";
+    byId("new-user-role").value = "user";
+    renderUsers(data.users || []);
+    status.textContent = "user created";
+    status.className = "settings-inline-status positive";
+    fetchLogs();
+  } catch (error) {
+    status.textContent = "create failed: backend unreachable";
+    status.className = "settings-inline-status negative";
+  }
+}
+
+async function updateUser(userId, patch) {
+  try {
+    const response = await fetch(`/api/users/${userId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const data = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      showDetails("User Update", data);
+      return;
+    }
+    renderUsers(data.users || []);
+    fetchLogs();
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "user update"), { action: "user update" });
+  }
 }
 
 function renderAccount(account) {
@@ -423,8 +592,28 @@ function renderSettings(config) {
       </section>`;
     })
     .join("");
+  renderUpstoxConnect(config.settings || {});
+  renderNubraConnect(config.settings || {});
   applyAccessMode();
   renderShell();
+}
+
+function renderUpstoxConnect(settings) {
+  const apiKey = byId("upstox-api-key");
+  const apiSecret = byId("upstox-api-secret");
+  const redirectUri = byId("upstox-redirect-uri");
+  if (apiKey && !apiKey.value) apiKey.placeholder = settings.upstox_api_key?.saved ? "API key saved" : "API Key";
+  if (apiSecret && !apiSecret.value) apiSecret.placeholder = settings.upstox_api_secret?.saved ? "API secret saved" : "API Secret";
+  if (redirectUri) redirectUri.value = settings.upstox_redirect_uri || `${window.location.origin}/upstox/callback`;
+}
+
+function renderNubraConnect(settings) {
+  const baseUrl = byId("nubra-base-url");
+  const phone = byId("nubra-phone");
+  const deviceId = byId("nubra-device-id");
+  if (baseUrl) baseUrl.value = settings.nubra_api_base_url || "https://uatapi.nubra.io";
+  if (phone && !phone.value) phone.placeholder = settings.nubra_phone?.saved ? "phone saved" : "Phone";
+  if (deviceId) deviceId.value = settings.nubra_device_id || "opentrade-local-001";
 }
 
 function renderField(item, stored) {
@@ -567,32 +756,213 @@ async function testLlm() {
   }
 }
 
-async function login() {
-  const username = byId("admin-username").value;
-  const password = byId("admin-password").value;
+function upstoxConnectPayload() {
+  return {
+    api_key: byId("upstox-api-key")?.value?.trim() || byId("setting-upstox_api_key")?.value?.trim(),
+    api_secret: byId("upstox-api-secret")?.value?.trim() || byId("setting-upstox_api_secret")?.value?.trim(),
+    redirect_uri: byId("upstox-redirect-uri")?.value?.trim() || byId("setting-upstox_redirect_uri")?.value?.trim(),
+    base_url: byId("setting-upstox_api_base_url")?.value?.trim(),
+    code: byId("upstox-auth-code")?.value?.trim(),
+  };
+}
+
+async function openUpstoxLogin() {
+  const status = byId("upstox-connect-status");
+  const button = byId("upstox-auth-url-btn");
+  status.textContent = "building Upstox login URL";
+  status.className = "settings-inline-status";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/upstox/auth-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(upstoxConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "Upstox login URL failed";
+      status.className = "settings-inline-status negative";
+      showDetails("Upstox Login", payload);
+      return;
+    }
+    status.textContent = "Upstox login opened. Paste returned code here after login.";
+    status.className = "settings-inline-status positive";
+    window.open(payload.auth_url, "_blank", "noopener");
+    showDetails("Upstox Login", payload);
+  } catch (error) {
+    status.textContent = "Upstox login failed: backend unreachable";
+    status.className = "settings-inline-status negative";
+    showBackendError(networkErrorMessage(error, "Upstox login"), { action: "upstox login" });
+  } finally {
+    button.disabled = !(state.auth && state.auth.admin);
+  }
+}
+
+async function connectUpstox() {
+  const status = byId("upstox-connect-status");
+  const button = byId("upstox-connect-btn");
+  status.textContent = "exchanging Upstox code for access token";
+  status.className = "settings-inline-status";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/upstox/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(upstoxConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "Upstox connect failed";
+      status.className = "settings-inline-status negative";
+      showDetails("Upstox Connect", payload);
+      return;
+    }
+    if (byId("upstox-auth-code")) byId("upstox-auth-code").value = "";
+    if (byId("upstox-api-secret")) byId("upstox-api-secret").value = "";
+    status.textContent = `Upstox connected · ${payload.provider || "provider ready"}`;
+    status.className = "settings-inline-status positive";
+    if (payload.config) renderSettings(payload.config);
+    if (payload.status) render(payload.status);
+    fetchLogs();
+    showDetails("Upstox Connect", {
+      ok: payload.ok,
+      message: payload.message,
+      provider: payload.provider,
+      token_type: payload.token_type,
+      user_id: payload.user_id,
+    });
+  } catch (error) {
+    status.textContent = "Upstox connect failed: backend unreachable";
+    status.className = "settings-inline-status negative";
+    showBackendError(networkErrorMessage(error, "Upstox connect"), { action: "upstox connect" });
+  } finally {
+    button.disabled = !(state.auth && state.auth.admin);
+  }
+}
+
+function nubraConnectPayload() {
+  return {
+    base_url: byId("nubra-base-url")?.value?.trim(),
+    phone: byId("nubra-phone")?.value?.trim(),
+    device_id: byId("nubra-device-id")?.value?.trim(),
+    otp: byId("nubra-otp")?.value?.trim(),
+    mpin: byId("nubra-mpin")?.value?.trim(),
+  };
+}
+
+async function sendNubraOtp() {
+  const status = byId("nubra-connect-status");
+  const button = byId("nubra-send-otp-btn");
+  status.textContent = "sending Nubra OTP";
+  status.className = "settings-inline-status";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/nubra/send-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nubraConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "OTP failed";
+      status.className = "settings-inline-status negative";
+      showDetails("Nubra OTP", payload);
+      return;
+    }
+    status.textContent = `OTP sent to ******${payload.phone_suffix || ""}${payload.expiry ? ` · expires in ${payload.expiry}m` : ""}`;
+    status.className = "settings-inline-status positive";
+    showDetails("Nubra OTP", payload);
+  } catch (error) {
+    status.textContent = "Nubra OTP failed: backend unreachable";
+    status.className = "settings-inline-status negative";
+    showBackendError(networkErrorMessage(error, "Nubra OTP"), { action: "nubra send otp" });
+  } finally {
+    button.disabled = !(state.auth && state.auth.admin);
+  }
+}
+
+async function connectNubra() {
+  const status = byId("nubra-connect-status");
+  const button = byId("nubra-connect-btn");
+  status.textContent = "verifying Nubra OTP and MPIN";
+  status.className = "settings-inline-status";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/nubra/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nubraConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "Nubra connect failed";
+      status.className = "settings-inline-status negative";
+      showDetails("Nubra Connect", payload);
+      return;
+    }
+    if (byId("nubra-otp")) byId("nubra-otp").value = "";
+    if (byId("nubra-mpin")) byId("nubra-mpin").value = "";
+    status.textContent = `Nubra connected · ${payload.provider || "provider ready"}`;
+    status.className = "settings-inline-status positive";
+    if (payload.config) renderSettings(payload.config);
+    if (payload.status) render(payload.status);
+    fetchLogs();
+    showDetails("Nubra Connect", {
+      ok: payload.ok,
+      message: payload.message,
+      client_code: payload.client_code,
+      name: payload.name,
+      email: payload.email,
+      phone_suffix: payload.phone_suffix,
+      device_id: payload.device_id,
+      provider: payload.provider,
+    });
+  } catch (error) {
+    status.textContent = "Nubra connect failed: backend unreachable";
+    status.className = "settings-inline-status negative";
+    showBackendError(networkErrorMessage(error, "Nubra connect"), { action: "nubra connect" });
+  } finally {
+    button.disabled = !(state.auth && state.auth.admin);
+  }
+}
+
+async function login(event) {
+  if (event) event.preventDefault();
+  const username = byId("login-username").value;
+  const password = byId("login-password").value;
+  const status = byId("login-status");
+  status.textContent = "Signing in";
+  status.className = "settings-inline-status";
   try {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok) {
-      byId("settings-status").textContent = payload.detail || "login failed";
+      status.textContent = payload.detail || "login failed";
+      status.className = "settings-inline-status negative";
       return;
     }
-    byId("admin-password").value = "";
+    byId("login-password").value = "";
     renderAuth(payload);
+    await loadAuthenticatedData();
+    openSocket();
   } catch (error) {
-    byId("settings-status").textContent = "login failed: backend unreachable";
-    showBackendError(networkErrorMessage(error, "login"), { action: "login" });
+    status.textContent = "login failed: backend unreachable";
+    status.className = "settings-inline-status negative";
   }
 }
 
 async function logout() {
   try {
     await fetch("/api/auth/logout", { method: "POST" });
-    renderAuth({ admin: false, admin_configured: state.auth.admin_configured });
+    if (state.socket) state.socket.close();
+    state.socket = null;
+    renderAuth({ authenticated: false, admin: false, admin_configured: state.auth.admin_configured, user: null });
+    byId("login-status").textContent = "Signed out.";
+    byId("login-status").className = "settings-inline-status";
   } catch (error) {
     showBackendError(networkErrorMessage(error, "logout"), { action: "logout" });
   }
@@ -1441,8 +1811,9 @@ async function analyzeSymbol(event) {
     byId("analyze-status").textContent = "enter a symbol";
     return;
   }
-  const configuredTimeout = Number(state.config?.settings?.llm_timeout_seconds || 30);
-  const timeoutMs = Math.max(45000, Math.min(70000, configuredTimeout * 1000 + 20000));
+  const configuredTimeout = Number(state.config?.settings?.llm_timeout_seconds || 60);
+  const cycleTimeout = Number(state.config?.settings?.cycle_timeout_seconds || 180);
+  const timeoutMs = Math.max(120000, Math.min(240000, Math.max(configuredTimeout, cycleTimeout) * 1000 + 30000));
   const controller = new AbortController();
   const started = Date.now();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1473,7 +1844,7 @@ async function analyzeSymbol(event) {
     const timeout = error?.name === "AbortError";
     byId("analyze-status").textContent = timeout ? "analysis timed out" : "network error";
     const message = timeout
-      ? "Symbol analysis exceeded the UI wait budget. The backend will now fail safely instead of blocking the desk; try again after the current cycle is idle."
+      ? "Symbol analysis is still taking longer than the UI wait budget. Try again when the cycle is idle, or check Logs for a completed manual analysis entry."
       : networkErrorMessage(error, "symbol analysis");
     byId("analyze-result").innerHTML = `<div class="error-box">${escapeHtml(message)}</div>`;
   } finally {
@@ -1534,9 +1905,15 @@ function bindControls() {
   byId("stop-btn").addEventListener("click", () => postControl("/api/control/stop"));
   byId("run-btn").addEventListener("click", () => postControl("/api/control/run-once"));
   byId("analyze-form").addEventListener("submit", analyzeSymbol);
+  byId("login-form").addEventListener("submit", login);
+  byId("user-create-form").addEventListener("submit", createUser);
   byId("save-settings-btn").addEventListener("click", saveSettings);
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);
+  byId("upstox-auth-url-btn").addEventListener("click", openUpstoxLogin);
+  byId("upstox-connect-btn").addEventListener("click", connectUpstox);
+  byId("nubra-send-otp-btn").addEventListener("click", sendNubraOtp);
+  byId("nubra-connect-btn").addEventListener("click", connectNubra);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
@@ -1564,11 +1941,14 @@ function bindControls() {
         "llm-health": {
           provider: settings.llm_provider,
           mode: settings.llm_decision_mode,
-          model: settings.llm_provider === "nvidia" ? settings.nvidia_model : settings.llm_provider === "groq" ? settings.groq_model : settings.llm_model,
-          nvidia_model_chain: settings.nvidia_model_chain,
-          model_fallback_enabled: settings.llm_model_fallback_enabled,
+          model: settings.deepseek_model,
+          base_url: settings.deepseek_base_url,
+          api_key_saved: Boolean(settings.deepseek_api_key?.saved),
+          reasoning_effort: settings.llm_reasoning_effort,
+          thinking_enabled: settings.llm_thinking_enabled,
           rolling_context_enabled: settings.llm_rolling_context_enabled,
           timeout_seconds: settings.llm_timeout_seconds,
+          usage: state.latest?.llm_usage || {},
         },
         "risk-health": {
           max_positions: settings.max_positions,
@@ -1596,14 +1976,7 @@ function bindControls() {
       showDetails(tile.dataset.detailType, map[tile.dataset.detailType]);
     });
   }
-  byId("login-btn").addEventListener("click", login);
   byId("logout-btn").addEventListener("click", logout);
-  byId("admin-password").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") login();
-  });
-  byId("admin-username").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") login();
-  });
 }
 
 function setView(view) {
@@ -1619,32 +1992,50 @@ function setView(view) {
 
 async function loadInitial() {
   try {
-    const [statusResponse, configResponse, authResponse, accountResponse] = await Promise.all([
+    const authResponse = await fetch("/api/auth/me");
+    const auth = await authResponse.json();
+    renderAuth(auth);
+    if (!auth.authenticated) {
+      return;
+    }
+    await loadAuthenticatedData();
+    openSocket();
+  } catch (error) {
+    byId("login-status").textContent = "Backend unavailable. Start OpenTrade and refresh.";
+    byId("login-status").className = "settings-inline-status negative";
+  }
+}
+
+async function loadAuthenticatedData() {
+  try {
+    const [statusResponse, configResponse, accountResponse] = await Promise.all([
       fetch("/api/status"),
       fetch("/api/config"),
-      fetch("/api/auth/me"),
       fetch("/api/account"),
     ]);
     render(await statusResponse.json());
     renderSettings(await configResponse.json());
-    const auth = await authResponse.json();
-    renderAuth(auth);
     renderAccount(await accountResponse.json());
+    if (state.auth?.admin) fetchUsers();
   } catch (error) {
     showBackendError(networkErrorMessage(error, "initial load"), { action: "initial load" });
   }
 }
 
 function openSocket() {
+  if (!state.auth?.authenticated || state.socket) return;
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
   socket.addEventListener("message", (event) => render(JSON.parse(event.data)));
-  socket.addEventListener("close", () => setTimeout(openSocket, 2000));
+  socket.addEventListener("close", () => {
+    state.socket = null;
+    if (state.auth?.authenticated) setTimeout(openSocket, 2000);
+  });
+  state.socket = socket;
 }
 
 bindControls();
 loadInitial();
-openSocket();
 window.addEventListener("resize", () => {
   if (state.latest) drawEquity(state.latest.equity_curve || []);
 });

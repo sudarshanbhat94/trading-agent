@@ -29,11 +29,32 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "username": row["username"],
+        "role": row.get("role") or "user",
+        "active": bool(row.get("active")),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "last_login_at": row.get("last_login_at"),
+    }
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+
+    @staticmethod
+    def _decode_json(value: Any) -> Any:
+        try:
+            return json.loads(value or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
 
     @contextmanager
     def connect(self):
@@ -157,6 +178,17 @@ class Database:
                     updated_at text not null
                 );
 
+                create table if not exists users (
+                    id integer primary key autoincrement,
+                    username text not null unique,
+                    password_hash text not null,
+                    role text not null default 'user',
+                    active integer not null default 1,
+                    created_at text not null,
+                    updated_at text not null,
+                    last_login_at text
+                );
+
                 create table if not exists sentiment_events (
                     id integer primary key autoincrement,
                     ts text not null,
@@ -175,6 +207,26 @@ class Database:
                     component text not null,
                     event text not null,
                     message text not null,
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists llm_usage_events (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    component text not null,
+                    purpose text not null,
+                    provider text not null,
+                    model text not null,
+                    prompt_tokens integer not null default 0,
+                    completion_tokens integer not null default 0,
+                    total_tokens integer not null default 0,
+                    cache_hit_tokens integer not null default 0,
+                    cache_miss_tokens integer not null default 0,
+                    estimated_tokens integer not null default 0,
+                    input_chars integer not null default 0,
+                    output_chars integer not null default 0,
+                    cost_usd real not null default 0,
+                    latency_ms integer not null default 0,
                     details_json text not null default '{}'
                 );
 
@@ -198,6 +250,12 @@ class Database:
                     on orders(ts);
                 create index if not exists idx_agent_logs_ts
                     on agent_logs(ts);
+                create index if not exists idx_users_username
+                    on users(username);
+                create index if not exists idx_llm_usage_ts
+                    on llm_usage_events(ts);
+                create index if not exists idx_llm_usage_purpose_ts
+                    on llm_usage_events(purpose, ts);
                 create index if not exists idx_delivery_symbol_date
                     on delivery_data(symbol, date);
                 """
@@ -217,18 +275,150 @@ class Database:
             self._ensure_column(conn, "delivery_data", "total_volume", "real")
             self._ensure_column(conn, "delivery_data", "delivery_volume", "real")
             self._ensure_column(conn, "delivery_data", "delivery_pct", "real")
+            self._ensure_column(conn, "llm_usage_events", "cache_hit_tokens", "integer not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "cache_miss_tokens", "integer not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "estimated_tokens", "integer not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "input_chars", "integer not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "output_chars", "integer not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "cost_usd", "real not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "latency_ms", "integer not null default 0")
+            self._ensure_column(conn, "users", "role", "text not null default 'user'")
+            self._ensure_column(conn, "users", "active", "integer not null default 1")
+            self._ensure_column(conn, "users", "created_at", "text not null default ''")
+            self._ensure_column(conn, "users", "updated_at", "text not null default ''")
+            self._ensure_column(conn, "users", "last_login_at", "text")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         rows = conn.execute(f"pragma table_info({table})").fetchall()
         if column not in {row["name"] for row in rows}:
             conn.execute(f"alter table {table} add column {column} {definition}")
 
-    def seed_universe(self, csv_path: Path) -> None:
+    def ensure_default_admin_user(self, username: str, password_hash: str | None) -> None:
+        username = (username or "admin").strip()
+        if not username or not password_hash:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            existing = conn.execute(
+                "select id from users where lower(username) = lower(?)",
+                (username,),
+            ).fetchone()
+            if existing:
+                return
+            count = conn.execute("select count(*) as count from users").fetchone()["count"]
+            if count:
+                return
+            conn.execute(
+                """
+                insert into users (username, password_hash, role, active, created_at, updated_at)
+                values (?, ?, 'admin', 1, ?, ?)
+                """,
+                (username, password_hash, now, now),
+            )
+
+    def has_active_users(self) -> bool:
+        with self.connect() as conn:
+            row = conn.execute("select count(*) as count from users where active = 1").fetchone()
+        return bool(row and row["count"])
+
+    def has_admin_user(self) -> bool:
+        with self.connect() as conn:
+            row = conn.execute("select count(*) as count from users where active = 1 and role = 'admin'").fetchone()
+        return bool(row and row["count"])
+
+    def active_admin_count(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("select count(*) as count from users where active = 1 and role = 'admin'").fetchone()
+        return int(row["count"] or 0) if row else 0
+
+    def user_by_username(self, username: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from users where lower(username) = lower(?)",
+                ((username or "").strip(),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("select * from users where id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select id, username, role, active, created_at, updated_at, last_login_at
+                from users
+                order by role = 'admin' desc, username collate nocase
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_user(self, username: str, password_hash: str, role: str = "user", active: bool = True) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                insert into users (username, password_hash, role, active, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (username.strip(), password_hash, role, 1 if active else 0, now, now),
+            )
+            user_id = int(cursor.lastrowid)
+        user = self.user_by_id(user_id)
+        return _public_user(user) if user else {}
+
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        role: str | None = None,
+        active: bool | None = None,
+        password_hash: str | None = None,
+    ) -> dict[str, Any] | None:
+        assignments: list[str] = []
+        values: list[Any] = []
+        if role is not None:
+            assignments.append("role = ?")
+            values.append(role)
+        if active is not None:
+            assignments.append("active = ?")
+            values.append(1 if active else 0)
+        if password_hash is not None:
+            assignments.append("password_hash = ?")
+            values.append(password_hash)
+        if not assignments:
+            user = self.user_by_id(user_id)
+            return _public_user(user) if user else None
+        assignments.append("updated_at = ?")
+        values.append(utc_now())
+        values.append(user_id)
+        with self.connect() as conn:
+            conn.execute(f"update users set {', '.join(assignments)} where id = ?", values)
+        user = self.user_by_id(user_id)
+        return _public_user(user) if user else None
+
+    def mark_user_login(self, user_id: int) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "update users set last_login_at = ?, updated_at = ? where id = ?",
+                (now, now, user_id),
+            )
+
+    def seed_universe(self, csv_path: Path, disable_missing: bool = True) -> None:
         if not csv_path.exists():
             raise FileNotFoundError(f"Universe CSV not found: {csv_path}")
         with csv_path.open("r", newline="", encoding="utf-8") as handle:
             rows = [self._normalize_universe_row(row) for row in csv.DictReader(handle)]
-        symbols = [row["symbol"] for row in rows]
+        self.upsert_universe_rows(rows, disable_missing=disable_missing)
+
+    def upsert_universe_rows(self, rows: Iterable[dict[str, Any]], disable_missing: bool = False) -> int:
+        normalized = [self._normalize_universe_row(row) for row in rows]
+        if not normalized:
+            return 0
+        symbols = [row["symbol"] for row in normalized]
         with self.connect() as conn:
             conn.executemany(
                 """
@@ -249,19 +439,20 @@ class Database:
                     upstox_instrument_key = excluded.upstox_instrument_key,
                     nubra_symbol = excluded.nubra_symbol,
                     nubra_ref_id = excluded.nubra_ref_id,
-                    sector = excluded.sector,
-                    base_price = excluded.base_price,
+                    sector = case when excluded.sector != '' then excluded.sector else universe.sector end,
+                    base_price = case when excluded.base_price != 100 then excluded.base_price else universe.base_price end,
                     enabled = excluded.enabled
                 """,
-                rows,
+                normalized,
             )
-            if symbols:
+            if disable_missing and symbols:
                 placeholders = ",".join("?" for _ in symbols)
                 conn.execute(f"update universe set enabled = 0 where symbol not in ({placeholders})", symbols)
+        return len(normalized)
 
     def _normalize_universe_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        symbol = str(row.get("symbol", "")).strip()
-        exchange = str(row.get("exchange") or "NSE").strip() or "NSE"
+        symbol = str(row.get("symbol", "")).strip().upper()
+        exchange = str(row.get("exchange") or "NSE").strip().upper() or "NSE"
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -272,8 +463,8 @@ class Database:
             "nubra_symbol": row.get("nubra_symbol") or symbol,
             "nubra_ref_id": _optional_int(row.get("nubra_ref_id")),
             "sector": row.get("sector") or "",
-            "base_price": row.get("base_price") or 100,
-            "enabled": row.get("enabled") if row.get("enabled") not in (None, "") else 1,
+            "base_price": _optional_float(row.get("base_price")) or 100,
+            "enabled": int(float(row.get("enabled"))) if row.get("enabled") not in (None, "") else 1,
         }
 
     def upsert_candles(self, candles_by_symbol: dict[str, list[Candle]]) -> None:
@@ -359,6 +550,31 @@ class Database:
                 output[symbol] = [dict(row) for row in reversed(rows)]
         return output
 
+    def recent_candles_by_symbol(self, symbols: list[str], limit_per_symbol: int = 96) -> dict[str, list[Candle]]:
+        raw = self.candles_for_symbols(symbols, limit_per_symbol=limit_per_symbol)
+        output: dict[str, list[Candle]] = {}
+        for symbol, rows in raw.items():
+            candles: list[Candle] = []
+            for row in rows:
+                try:
+                    candles.append(
+                        Candle(
+                            symbol=str(row["symbol"]),
+                            ts=str(row["ts"]),
+                            open=float(row["open"]),
+                            high=float(row["high"]),
+                            low=float(row["low"]),
+                            close=float(row["close"]),
+                            volume=float(row["volume"] or 0),
+                            source=str(row["source"]),
+                        )
+                    )
+                except (TypeError, ValueError, KeyError):
+                    continue
+            if candles:
+                output[symbol] = candles
+        return output
+
     def get_universe(self, enabled_only: bool = True) -> list[dict[str, Any]]:
         sql = "select * from universe"
         if enabled_only:
@@ -366,6 +582,44 @@ class Database:
         sql += " order by symbol"
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(sql).fetchall()]
+
+    def universe_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            total = conn.execute("select count(*) from universe").fetchone()[0]
+            enabled = conn.execute("select count(*) from universe where enabled = 1").fetchone()[0]
+            priced = conn.execute(
+                """
+                select count(*)
+                from universe u
+                join latest_quotes q on q.symbol = u.symbol
+                where u.enabled = 1
+                """
+            ).fetchone()[0]
+            priced_low = conn.execute(
+                """
+                select count(*)
+                from universe u
+                join latest_quotes q on q.symbol = u.symbol
+                where u.enabled = 1 and q.price <= 100
+                """
+            ).fetchone()[0]
+            sectors = conn.execute(
+                """
+                select coalesce(nullif(sector, ''), 'Unknown') as sector, count(*) as count
+                from universe
+                where enabled = 1
+                group by coalesce(nullif(sector, ''), 'Unknown')
+                order by count desc, sector
+                limit 12
+                """
+            ).fetchall()
+        return {
+            "total": total,
+            "enabled": enabled,
+            "priced_symbols": priced,
+            "low_price_enabled": priced_low,
+            "top_sectors": [dict(row) for row in sectors],
+        }
 
     def universe_row(self, symbol: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -521,6 +775,158 @@ class Database:
                 )
                 """
             )
+
+    def insert_llm_usage(self, event: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into llm_usage_events (
+                    ts, component, purpose, provider, model, prompt_tokens,
+                    completion_tokens, total_tokens, cache_hit_tokens, cache_miss_tokens,
+                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, details_json
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.get("ts") or utc_now(),
+                    event.get("component") or "llm",
+                    event.get("purpose") or "chat",
+                    event.get("provider") or "unknown",
+                    event.get("model") or "unknown",
+                    int(event.get("prompt_tokens") or 0),
+                    int(event.get("completion_tokens") or 0),
+                    int(event.get("total_tokens") or 0),
+                    int(event.get("cache_hit_tokens") or 0),
+                    int(event.get("cache_miss_tokens") or 0),
+                    1 if event.get("estimated_tokens") else 0,
+                    int(event.get("input_chars") or 0),
+                    int(event.get("output_chars") or 0),
+                    float(event.get("cost_usd") or 0),
+                    int(event.get("latency_ms") or 0),
+                    json.dumps(event.get("details") or {}, default=str, separators=(",", ":")),
+                ),
+            )
+
+    def llm_usage_summary(self, recent_limit: int = 25) -> dict[str, Any]:
+        def aggregate(conn: sqlite3.Connection, where: str = "", params: tuple[Any, ...] = ()) -> dict[str, Any]:
+            row = conn.execute(
+                f"""
+                select
+                    count(*) as calls,
+                    coalesce(sum(prompt_tokens), 0) as prompt_tokens,
+                    coalesce(sum(completion_tokens), 0) as completion_tokens,
+                    coalesce(sum(total_tokens), 0) as total_tokens,
+                    coalesce(sum(cache_hit_tokens), 0) as cache_hit_tokens,
+                    coalesce(sum(cache_miss_tokens), 0) as cache_miss_tokens,
+                    coalesce(sum(estimated_tokens), 0) as estimated_calls,
+                    coalesce(sum(input_chars), 0) as input_chars,
+                    coalesce(sum(output_chars), 0) as output_chars,
+                    coalesce(sum(cost_usd), 0) as cost_usd,
+                    coalesce(avg(latency_ms), 0) as avg_latency_ms
+                from llm_usage_events
+                {where}
+                """,
+                params,
+            ).fetchone()
+            return {
+                "calls": int(row["calls"] or 0),
+                "prompt_tokens": int(row["prompt_tokens"] or 0),
+                "completion_tokens": int(row["completion_tokens"] or 0),
+                "total_tokens": int(row["total_tokens"] or 0),
+                "cache_hit_tokens": int(row["cache_hit_tokens"] or 0),
+                "cache_miss_tokens": int(row["cache_miss_tokens"] or 0),
+                "estimated_calls": int(row["estimated_calls"] or 0),
+                "input_chars": int(row["input_chars"] or 0),
+                "output_chars": int(row["output_chars"] or 0),
+                "cost_usd": round(float(row["cost_usd"] or 0), 8),
+                "avg_latency_ms": round(float(row["avg_latency_ms"] or 0), 1),
+            }
+
+        today = utc_now()[:10]
+        with self.connect() as conn:
+            today_summary = aggregate(conn, "where substr(ts, 1, 10) = ?", (today,))
+            all_time_summary = aggregate(conn)
+            recent_rows = conn.execute(
+                """
+                select id, ts, component, purpose, provider, model, prompt_tokens,
+                    completion_tokens, total_tokens, cache_hit_tokens, cache_miss_tokens,
+                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, details_json
+                from llm_usage_events
+                order by id desc
+                limit ?
+                """,
+                (recent_limit,),
+            ).fetchall()
+            by_purpose_rows = conn.execute(
+                """
+                select purpose, count(*) as calls, coalesce(sum(total_tokens), 0) as total_tokens,
+                    coalesce(sum(cost_usd), 0) as cost_usd
+                from llm_usage_events
+                where substr(ts, 1, 10) = ?
+                group by purpose
+                order by cost_usd desc
+                """,
+                (today,),
+            ).fetchall()
+            by_model_rows = conn.execute(
+                """
+                select model, count(*) as calls, coalesce(sum(total_tokens), 0) as total_tokens,
+                    coalesce(sum(cost_usd), 0) as cost_usd
+                from llm_usage_events
+                where substr(ts, 1, 10) = ?
+                group by model
+                order by cost_usd desc
+                """,
+                (today,),
+            ).fetchall()
+
+        return {
+            "updated_at": utc_now(),
+            "token_rule": "fallback estimate uses tokens = english_characters * 0.3",
+            "currency": "USD",
+            "today_utc": today_summary,
+            "all_time": all_time_summary,
+            "by_purpose_today": [
+                {
+                    "purpose": row["purpose"],
+                    "calls": int(row["calls"] or 0),
+                    "total_tokens": int(row["total_tokens"] or 0),
+                    "cost_usd": round(float(row["cost_usd"] or 0), 8),
+                }
+                for row in by_purpose_rows
+            ],
+            "by_model_today": [
+                {
+                    "model": row["model"],
+                    "calls": int(row["calls"] or 0),
+                    "total_tokens": int(row["total_tokens"] or 0),
+                    "cost_usd": round(float(row["cost_usd"] or 0), 8),
+                }
+                for row in by_model_rows
+            ],
+            "recent": [
+                {
+                    "id": row["id"],
+                    "ts": row["ts"],
+                    "component": row["component"],
+                    "purpose": row["purpose"],
+                    "provider": row["provider"],
+                    "model": row["model"],
+                    "prompt_tokens": row["prompt_tokens"],
+                    "completion_tokens": row["completion_tokens"],
+                    "total_tokens": row["total_tokens"],
+                    "cache_hit_tokens": row["cache_hit_tokens"],
+                    "cache_miss_tokens": row["cache_miss_tokens"],
+                    "estimated_tokens": bool(row["estimated_tokens"]),
+                    "input_chars": row["input_chars"],
+                    "output_chars": row["output_chars"],
+                    "cost_usd": round(float(row["cost_usd"] or 0), 8),
+                    "latency_ms": row["latency_ms"],
+                    "details": self._decode_json(row["details_json"]),
+                }
+                for row in recent_rows
+            ],
+        }
 
     def latest_agent_logs(self, limit: int = 300) -> list[dict[str, Any]]:
         with self.connect() as conn:

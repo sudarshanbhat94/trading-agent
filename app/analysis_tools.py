@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from statistics import mean
 from typing import Any
 
@@ -20,6 +21,7 @@ def build_symbol_tool_context(
     institutional_context: dict[str, Any] | None = None,
     sentiment_detail: dict[str, Any] | None = None,
     delivery_data: dict[str, Any] | None = None,
+    options_data: dict[str, Any] | None = None,
     sector_context: dict[str, Any] | None = None,
     market_breadth: dict[str, Any] | None = None,
     macro_event_context: dict[str, Any] | None = None,
@@ -59,6 +61,7 @@ def build_symbol_tool_context(
         institutional_context=normalized_institutional_context,
         risk_limits=risk_limits,
         delivery_data=delivery_data,
+        options_data=options_data,
         sector_context=sector_context,
         market_breadth=market_breadth,
         macro_event_context=macro_event_context,
@@ -70,7 +73,7 @@ def build_symbol_tool_context(
         "sector": row.get("sector"),
         "exchange": row.get("exchange", "NSE"),
         "quote": quote.to_dict(),
-        "position": position or {"qty": 0, "avg_price": 0, "market_price": quote.price},
+        "position": _position_context(position, quote),
         "technical_math": technical_dict,
         "candlestick_analysis": candle_tools,
         "strategy_signals": strategy_signal_dicts,
@@ -79,6 +82,7 @@ def build_symbol_tool_context(
         "global_market_context": normalized_global_context,
         "institutional_context": normalized_institutional_context,
         "delivery_data": delivery_data or {},
+        "options_intelligence": options_data or {},
         "sector_rotation": sector_context or {},
         "market_breadth_context": market_breadth or {},
         "macro_event_context": macro_event_context or {},
@@ -155,6 +159,48 @@ def _sentiment_context(score: float, detail: dict[str, Any] | None) -> dict[str,
         "events": (detail.get("events") or [])[:8],
         "asof": detail.get("asof"),
     }
+
+
+def _position_context(position: dict[str, Any] | None, quote: Quote) -> dict[str, Any]:
+    if not position:
+        return {"qty": 0, "avg_price": 0, "market_price": quote.price}
+
+    output = {
+        "symbol": position.get("symbol", quote.symbol),
+        "qty": position.get("qty", 0),
+        "avg_price": position.get("avg_price", 0),
+        "market_price": position.get("market_price", quote.price),
+        "realized_pnl": position.get("realized_pnl", 0.0),
+        "updated_at": position.get("updated_at"),
+        "strategy": position.get("strategy", "unknown"),
+    }
+    details = _json_object(position.get("details_json"))
+    opened = details.get("opened_from_decision") or details.get("decision") or {}
+    if isinstance(opened, dict):
+        output["opened_action"] = opened.get("action")
+        output["opened_confidence"] = opened.get("confidence")
+        output["opened_reason"] = _short_text(opened.get("reason"), 320)
+    for key in ("exit_plan", "trade_plan", "stop_loss", "take_profit", "trailing_stop"):
+        if key in details:
+            output[key] = details[key]
+    return output
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _short_text(value: Any, limit: int) -> str:
+    text = "" if value is None else str(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _institutional_score(context: dict[str, Any]) -> float:
@@ -262,6 +308,8 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
         score += 0.06
     elif options_oi.get("bias") == "call_heavy_caution":
         score -= 0.1
+    elif options_oi.get("buy_suppressed"):
+        score -= 0.35
     expectancy = backtest.get("expectancy")
     if expectancy is not None:
         score += max(min(float(expectancy) / 10.0, 0.12), -0.12)

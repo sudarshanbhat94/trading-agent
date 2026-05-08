@@ -17,6 +17,7 @@ import httpx
 
 from .config import Settings
 from .db import Database
+from .llm_usage import build_llm_usage_event
 from .models import utc_now
 
 
@@ -140,11 +141,21 @@ class SentimentService:
         if not self.settings.enable_news_sentiment:
             result = SentimentResult(score=0.0, confidence=0.0, headlines=[], events=[])
         else:
-            raw_items = await self._fetch_news_items(row)
-            events = self._dedupe_events([self._classify_item(item) for item in raw_items])
-            if self._llm_sentiment_enabled() and events:
-                events = await self._llm_refine_events(row, events)
-            result = self._aggregate(events)
+            try:
+                raw_items = await self._fetch_news_items(row)
+                events = self._dedupe_events([self._classify_item(item) for item in raw_items])
+                if self._llm_sentiment_enabled() and events:
+                    events = await self._llm_refine_events(row, events)
+                result = self._aggregate(events)
+            except Exception as exc:
+                self.db.insert_agent_log(
+                    "WARN",
+                    "sentiment",
+                    "manual_news_fetch_failed",
+                    f"News sentiment fetch failed for {row['symbol']}; using neutral sentiment",
+                    {"symbol": row["symbol"], "error": f"{exc.__class__.__name__}: {str(exc)[:240]}"},
+                )
+                result = SentimentResult(score=0.0, confidence=0.0, headlines=[], events=[])
         self._cache[row["symbol"]] = (time.monotonic(), result)
         self._persist(row["symbol"], result)
         return self._result_payload(result)
@@ -211,7 +222,10 @@ class SentimentService:
         for response in responses:
             if isinstance(response, Exception):
                 continue
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except Exception:
+                continue
             root = ET.fromstring(response.text)
             for item in root.findall(".//item")[:15]:
                 title = item.findtext("title", default="").strip()
@@ -299,77 +313,106 @@ class SentimentService:
         return unique
 
     async def _llm_refine_events(self, row: dict[str, Any], events: list[NewsEvent]) -> list[NewsEvent]:
-        payload = {
-            "model": self._llm_model(),
-            "temperature": self.settings.llm_temperature,
-            "top_p": self.settings.llm_top_p,
-            "max_tokens": max(256, min(self.settings.llm_max_tokens, 900)),
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify Indian equity news for trading sentiment. Return JSON only with key events. "
-                        "Each event must include index, event_type, score -1..1, confidence 0..1. "
-                        "Prefer HOLD/neutral sentiment when headlines are ambiguous."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "symbol": row["symbol"],
-                            "company": row.get("name"),
-                            "events": [
-                                {"index": index, "title": event.title, "source": event.source}
-                                for index, event in enumerate(events)
-                            ],
-                        },
-                        separators=(",", ":"),
-                    ),
-                },
-            ],
-        }
-        self._apply_llm_model_options(payload)
-        try:
-            async with httpx.AsyncClient(
-                timeout=self.settings.llm_timeout_seconds,
-                headers={"Authorization": f"Bearer {self._llm_key()}"},
-            ) as client:
-                response = await asyncio.wait_for(
-                    client.post(self._llm_chat_completions_url(), json=payload),
+        attempts: list[dict[str, Any]] = []
+        for model in self._llm_model_candidates():
+            payload = {
+                "model": model,
+                "temperature": min(self.settings.llm_temperature, 0.2),
+                "top_p": min(self.settings.llm_top_p, 0.7),
+                "max_tokens": max(256, min(self.settings.llm_max_tokens, 900)),
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Classify Indian equity news for trading sentiment. Return JSON only with key events. "
+                            "Each event must include index, event_type, score -1..1, confidence 0..1. "
+                            "Prefer HOLD/neutral sentiment when headlines are ambiguous."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "symbol": row["symbol"],
+                                "company": row.get("name"),
+                                "events": [
+                                    {"index": index, "title": event.title, "source": event.source}
+                                    for index, event in enumerate(events)
+                                ],
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                ],
+            }
+            self._apply_llm_model_options(payload, model=model)
+            started = time.monotonic()
+            try:
+                async with httpx.AsyncClient(
                     timeout=self.settings.llm_timeout_seconds,
-                )
-                response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(_extract_json(content))
-            by_index = {int(item["index"]): item for item in parsed.get("events", []) if "index" in item}
-            refined: list[NewsEvent] = []
-            for index, event in enumerate(events):
-                update = by_index.get(index)
-                if not update:
-                    refined.append(event)
-                    continue
-                score = max(min(float(update.get("score", event.score)), 1.0), -1.0)
-                confidence = max(min(float(update.get("confidence", event.confidence)), 1.0), 0.0)
-                event_type = str(update.get("event_type", event.event_type))[:40]
-                weighted = score * confidence * event.source_weight * event.recency_weight
-                refined.append(
-                    NewsEvent(
-                        title=event.title,
-                        source=event.source,
-                        url=event.url,
-                        published_at=event.published_at,
-                        event_type=event_type,
-                        score=round(score, 3),
-                        confidence=round(confidence, 3),
-                        source_weight=event.source_weight,
-                        recency_weight=event.recency_weight,
-                        weighted_score=round(weighted, 3),
+                    headers={"Authorization": f"Bearer {self._llm_key()}"},
+                ) as client:
+                    response = await asyncio.wait_for(
+                        client.post(self._llm_chat_completions_url(), json=payload),
+                        timeout=min(max(self.settings.llm_timeout_seconds, 8), 20),
                     )
+                    response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                self._record_llm_usage(
+                    payload=payload,
+                    response_data=data,
+                    output_text=content,
+                    model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000),
+                    symbol=row["symbol"],
                 )
-            return refined
-        except Exception:
-            return events
+                parsed = json.loads(_extract_json(content))
+                by_index = {int(item["index"]): item for item in parsed.get("events", []) if "index" in item}
+                refined: list[NewsEvent] = []
+                for index, event in enumerate(events):
+                    update = by_index.get(index)
+                    if not update:
+                        refined.append(event)
+                        continue
+                    score = max(min(float(update.get("score", event.score)), 1.0), -1.0)
+                    confidence = max(min(float(update.get("confidence", event.confidence)), 1.0), 0.0)
+                    event_type = str(update.get("event_type", event.event_type))[:40]
+                    weighted = score * confidence * event.source_weight * event.recency_weight
+                    refined.append(
+                        NewsEvent(
+                            title=event.title,
+                            source=event.source,
+                            url=event.url,
+                            published_at=event.published_at,
+                            event_type=event_type,
+                            score=round(score, 3),
+                            confidence=round(confidence, 3),
+                            source_weight=event.source_weight,
+                            recency_weight=event.recency_weight,
+                            weighted_score=round(weighted, 3),
+                        )
+                    )
+                attempts.append({"model": model, "status": "ok", "latency_ms": round((time.monotonic() - started) * 1000)})
+                return refined
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "model": model,
+                        "status": "failed",
+                        "latency_ms": round((time.monotonic() - started) * 1000),
+                        "error": f"{exc.__class__.__name__}: {str(exc)[:180]}",
+                    }
+                )
+                continue
+        self.db.insert_agent_log(
+            "WARN",
+            "sentiment",
+            "llm_sentiment_refine_failed",
+            f"LLM sentiment refinement failed for {row['symbol']}; using lexical sentiment",
+            {"symbol": row["symbol"], "attempts": attempts[:8]},
+        )
+        return events
 
     def _aggregate(self, events: list[NewsEvent]) -> SentimentResult:
         if not events:
@@ -427,53 +470,55 @@ class SentimentService:
     def _llm_sentiment_enabled(self) -> bool:
         if not self.settings.enable_llm_sentiment:
             return False
-        if self.settings.llm_provider == "groq":
-            return bool(self.settings.groq_api_key)
-        if self.settings.llm_provider == "nvidia":
-            return bool(self.settings.nvidia_api_key)
-        if self.settings.llm_provider == "openai_compatible":
-            return bool(self.settings.llm_api_key)
-        return False
+        return self.settings.llm_provider == "deepseek" and bool(self.settings.deepseek_api_key)
 
     def _llm_base_url(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return self.settings.groq_base_url
-        return self.settings.nvidia_base_url if self.settings.llm_provider == "nvidia" else self.settings.llm_base_url
+        return self.settings.deepseek_base_url
 
     def _llm_chat_completions_url(self) -> str:
         base_url = self._llm_base_url().rstrip("/")
-        if base_url.endswith("/v1"):
-            return f"{base_url}/chat/completions"
-        return f"{base_url}/v1/chat/completions"
+        return f"{base_url}/chat/completions"
 
     def _llm_model(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return self.settings.groq_model
-        return self.settings.nvidia_model if self.settings.llm_provider == "nvidia" else self.settings.llm_model
+        return self.settings.deepseek_model
+
+    def _llm_model_candidates(self) -> list[str]:
+        return [self.settings.deepseek_model]
 
     def _llm_key(self) -> str:
-        if self.settings.llm_provider == "groq":
-            return self.settings.groq_api_key
-        return self.settings.nvidia_api_key if self.settings.llm_provider == "nvidia" else self.settings.llm_api_key
+        return self.settings.deepseek_api_key
 
-    def _apply_llm_model_options(self, payload: dict[str, Any]) -> None:
-        model = self._llm_model()
-        if self.settings.llm_provider == "groq":
-            if "max_tokens" in payload:
-                payload["max_completion_tokens"] = payload.pop("max_tokens")
-            payload["response_format"] = {"type": "json_object"}
-            if self.settings.groq_reasoning_effort in {"none", "default"}:
-                payload["reasoning_effort"] = self.settings.groq_reasoning_effort
-            if self.settings.groq_reasoning_format in {"hidden", "parsed", "raw"}:
-                payload["reasoning_format"] = self.settings.groq_reasoning_format
-            return
-        if self.settings.llm_provider == "nvidia" and model.startswith(("deepseek-ai/deepseek-v4", "moonshotai/kimi-")):
-            chat_template_kwargs: dict[str, Any] = {"thinking": self.settings.llm_thinking_enabled}
-            effort = self.settings.llm_reasoning_effort
-            if self.settings.llm_thinking_enabled and effort in {"high", "max"} and model.startswith("deepseek-ai/deepseek-v4"):
-                chat_template_kwargs["reasoning_effort"] = effort
-            payload["chat_template_kwargs"] = chat_template_kwargs
-        if not self.settings.llm_thinking_enabled:
+    def _apply_llm_model_options(self, payload: dict[str, Any], model: str | None = None) -> None:
+        payload["response_format"] = {"type": "json_object"}
+
+    def _record_llm_usage(
+        self,
+        *,
+        payload: dict[str, Any],
+        response_data: dict[str, Any],
+        output_text: str,
+        model: str,
+        latency_ms: int,
+        symbol: str,
+    ) -> None:
+        try:
+            event = build_llm_usage_event(
+                component="sentiment",
+                purpose="sentiment_refine",
+                provider="deepseek",
+                model=model,
+                payload=payload,
+                response_data=response_data,
+                output_text=output_text,
+                latency_ms=latency_ms,
+                details={
+                    "symbol": symbol,
+                    "api_usage_present": bool(response_data.get("usage")),
+                    "response_id": response_data.get("id"),
+                },
+            )
+            self.db.insert_llm_usage(event)
+        except Exception:
             return
 
     def _persist(self, symbol: str, result: SentimentResult) -> None:

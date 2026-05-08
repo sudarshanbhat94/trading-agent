@@ -7,7 +7,27 @@
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <section id="login-screen" class="login-screen">
+      <div class="login-card">
+        <div class="login-brand">
+          <div class="mark">OT</div>
+          <div>
+            <h1>OpenTrade</h1>
+            <p>Institutional trading intelligence</p>
+          </div>
+        </div>
+        <form id="login-form" class="login-form">
+          <label for="login-username">Username</label>
+          <input id="login-username" type="text" autocomplete="username" placeholder="admin" />
+          <label for="login-password">Password</label>
+          <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" />
+          <button id="login-btn" class="primary" type="submit">Sign in</button>
+          <p id="login-status" class="settings-inline-status">Sign in to open the trading desk.</p>
+        </form>
+      </div>
+    </section>
+
+    <div id="app-shell" class="app-shell app-hidden">
       <aside class="sidebar">
         <div class="brand">
           <div class="mark">OT</div>
@@ -26,6 +46,7 @@
           <button class="nav-item" type="button" data-view="sentiment"><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="logs"><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
           <button class="nav-item" type="button" data-view="account"><span>Account</span><strong>paper</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="users"><span>Users</span><strong id="nav-users-badge">admin</strong></button>
           <button class="nav-item" type="button" data-view="settings"><span>Settings</span><strong>admin</strong></button>
         </nav>
         <div class="sidebar-foot">
@@ -46,9 +67,7 @@
             </p>
           </div>
           <div class="controls">
-            <input id="admin-username" class="admin-input" type="text" placeholder="Admin user" autocomplete="username" />
-            <input id="admin-password" class="admin-input" type="password" placeholder="Admin password" autocomplete="current-password" />
-            <button id="login-btn" type="button">Login</button>
+            <span id="current-user-label" class="user-chip">signed in</span>
             <button id="logout-btn" type="button">Logout</button>
             <button id="start-btn" class="primary" type="button">Start</button>
             <button id="stop-btn" type="button">Stop</button>
@@ -407,6 +426,49 @@
             </div>
           </section>
 
+          <section id="users-view" class="view">
+            <div class="admin-layout">
+              <div class="panel">
+                <div class="panel-head">
+                  <h3>Create User</h3>
+                  <span id="user-create-status">admin only</span>
+                </div>
+                <form id="user-create-form" class="user-form">
+                  <label for="new-user-username">Username</label>
+                  <input id="new-user-username" type="text" autocomplete="off" placeholder="trader01" />
+                  <label for="new-user-password">Password</label>
+                  <input id="new-user-password" type="password" autocomplete="new-password" placeholder="Minimum 8 characters" />
+                  <label for="new-user-role">Role</label>
+                  <select id="new-user-role">
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <button class="primary" type="submit">Create User</button>
+                </form>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h3>Users</h3>
+                  <span id="users-count">0 users</span>
+                </div>
+                <div class="table-wrap page-table compact">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Last Login</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="users-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section id="settings-view" class="view">
             <section id="settings-panel" class="settings-panel" aria-label="Agent settings">
               <div class="panel-head">
@@ -422,6 +484,35 @@
                     <tbody id="macro-events-body"></tbody>
                   </table>
                 </div>
+              </section>
+              <section class="settings-macro-events">
+                <h3>Upstox Connect</h3>
+                <div class="manual-form compact-form">
+                  <input id="upstox-api-key" type="password" placeholder="API Key" autocomplete="off" />
+                  <input id="upstox-api-secret" type="password" placeholder="API Secret" autocomplete="off" />
+                  <input id="upstox-redirect-uri" type="text" placeholder="Redirect URI" autocomplete="off" />
+                  <button id="upstox-auth-url-btn" type="button">Open Login</button>
+                </div>
+                <div class="manual-form compact-form">
+                  <input id="upstox-auth-code" type="text" placeholder="Paste code or full redirect URL" autocomplete="off" />
+                  <button id="upstox-connect-btn" type="button">Connect Upstox</button>
+                </div>
+                <p id="upstox-connect-status" class="settings-inline-status">Upstox connect not started</p>
+              </section>
+              <section class="settings-macro-events">
+                <h3>Nubra Connect</h3>
+                <div class="manual-form compact-form">
+                  <input id="nubra-base-url" type="text" placeholder="https://uatapi.nubra.io" autocomplete="off" />
+                  <input id="nubra-phone" type="text" placeholder="Phone" autocomplete="tel" />
+                  <input id="nubra-device-id" type="text" placeholder="Device ID" autocomplete="off" />
+                  <button id="nubra-send-otp-btn" type="button">Send OTP</button>
+                </div>
+                <div class="manual-form compact-form">
+                  <input id="nubra-otp" type="text" placeholder="OTP" inputmode="numeric" autocomplete="one-time-code" />
+                  <input id="nubra-mpin" type="password" placeholder="MPIN" autocomplete="current-password" />
+                  <button id="nubra-connect-btn" type="button">Connect Nubra</button>
+                </div>
+                <p id="nubra-connect-status" class="settings-inline-status">Nubra connect not started</p>
               </section>
               <div class="settings-actions">
                 <span id="llm-test-status" class="settings-inline-status">LLM test not run</span>

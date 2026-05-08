@@ -488,6 +488,7 @@ class NubraMarketDataProvider(MarketDataProvider):
         self.candle_symbols_per_cycle = settings.nubra_candle_symbols_per_cycle
         self.source_name = "nubra-uat" if "uat" in self.base_url.lower() else "nubra-live"
         self.last_quote_diagnostics: dict[str, Any] = {}
+        self._candle_cursor = 0
         if not self.session_token or not self.device_id:
             raise MarketDataError("Nubra provider needs NUBRA_SESSION_TOKEN and NUBRA_DEVICE_ID")
 
@@ -522,7 +523,7 @@ class NubraMarketDataProvider(MarketDataProvider):
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
         if self.candle_symbols_per_cycle <= 0:
             return {}
-        selected = universe[: self.candle_symbols_per_cycle]
+        selected = self._select_candle_universe(universe)
         output: dict[str, list[Candle]] = {}
         by_exchange: dict[str, list[dict[str, Any]]] = {}
         for row in selected:
@@ -531,13 +532,28 @@ class NubraMarketDataProvider(MarketDataProvider):
         async with httpx.AsyncClient(timeout=20, headers=self._headers(), follow_redirects=True) as client:
             tasks = []
             for exchange, rows in by_exchange.items():
-                for index in range(0, len(rows), 40):
-                    tasks.append(self._candles_for_chunk(client, exchange, rows[index : index + 40]))
+                # Nubra's chart endpoint accepts large symbol lists for some
+                # accounts but may return an empty result for wider batches.
+                # Small chunks keep the candle feed reliable and still allow
+                # concurrent history refreshes across the enabled universe.
+                for index in range(0, len(rows), 5):
+                    tasks.append(self._candles_for_chunk(client, exchange, rows[index : index + 5]))
             results = await asyncio.gather(*tasks, return_exceptions=True)
         for item in results:
             if isinstance(item, dict):
                 output.update(item)
         return output
+
+    def _select_candle_universe(self, universe: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        limit = self.candle_symbols_per_cycle
+        if limit <= 0 or limit >= len(universe):
+            return universe
+        if not universe:
+            return []
+        start = self._candle_cursor % len(universe)
+        selected = [universe[(start + index) % len(universe)] for index in range(limit)]
+        self._candle_cursor = (start + limit) % len(universe)
+        return selected
 
     async def _current_price(self, client: httpx.AsyncClient, row: dict[str, Any]) -> Quote | None:
         symbol = self._nubra_symbol(row)

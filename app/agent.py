@@ -31,8 +31,10 @@ class TradingAgentService:
         market_breadth: Any | None,
         sector_rotation: Any | None,
         macro_calendar: Any | None,
+        options_intelligence: Any | None,
         interval_seconds: int,
         cycle_timeout_seconds: int,
+        universe_symbols_per_cycle: int = 0,
         on_update: UpdateCallback | None = None,
     ) -> None:
         self.db = db
@@ -45,8 +47,10 @@ class TradingAgentService:
         self.market_breadth = market_breadth
         self.sector_rotation = sector_rotation
         self.macro_calendar = macro_calendar
+        self.options_intelligence = options_intelligence
         self.interval_seconds = interval_seconds
         self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
+        self.universe_symbols_per_cycle = max(0, int(universe_symbols_per_cycle or 0))
         self.on_update = on_update
         self._task: asyncio.Task | None = None
         self._running = False
@@ -55,6 +59,7 @@ class TradingAgentService:
         self._cycle_started_at: str | None = None
         self._cycle_phase = "idle"
         self._last_cycle_duration_seconds: float | None = None
+        self._universe_cursor = 0
 
     @property
     def running(self) -> bool:
@@ -85,8 +90,20 @@ class TradingAgentService:
         started = datetime.now(timezone.utc)
         self._cycle_started_at = started.isoformat()
         self._cycle_phase = "market_quotes"
-        universe = self.db.get_universe(enabled_only=True)
-        self._log("INFO", "cycle", "cycle_start", "Agent cycle started", {"universe_size": len(universe)})
+        full_universe = self.db.get_universe(enabled_only=True)
+        pre_positions = self.broker.positions_by_symbol()
+        universe = self._cycle_universe(full_universe, pre_positions)
+        self._log(
+            "INFO",
+            "cycle",
+            "cycle_start",
+            "Agent cycle started",
+            {
+                "enabled_universe_size": len(full_universe),
+                "cycle_universe_size": len(universe),
+                "symbols_per_cycle": self.universe_symbols_per_cycle,
+            },
+        )
         quotes = await self.market_data.get_quotes(universe)
         if not quotes:
             raise MarketDataError(f"{self.market_data.source_name} returned no quotes for the enabled universe")
@@ -103,20 +120,20 @@ class TradingAgentService:
             },
         )
         self._cycle_phase = "candles"
-        candles = await self.market_data.get_candles(universe)
-        candle_counts = {symbol: len(items) for symbol, items in candles.items()}
+        fresh_candles = await self.market_data.get_candles(universe)
+        candle_counts = {symbol: len(items) for symbol, items in fresh_candles.items()}
         candle_sources: dict[str, int] = {}
-        for items in candles.values():
+        for items in fresh_candles.values():
             for candle in items[:1]:
                 candle_sources[candle.source] = candle_sources.get(candle.source, 0) + 1
         self._log(
             "INFO",
             "market_data",
             "candles_fetched",
-            f"Fetched candles for {len(candles)} symbols",
+            f"Fetched candles for {len(fresh_candles)} symbols",
             {
                 "provider": self.market_data.source_name,
-                "symbols_with_candles": len(candles),
+                "symbols_with_candles": len(fresh_candles),
                 "total_candles": sum(candle_counts.values()),
                 "source_counts": candle_sources,
                 "sample_counts": dict(list(candle_counts.items())[:10]),
@@ -124,7 +141,8 @@ class TradingAgentService:
         )
         self._cycle_phase = "persist_market_data"
         self.db.upsert_quotes(quotes)
-        self.db.upsert_candles(candles)
+        self.db.upsert_candles(fresh_candles)
+        candles = self.db.recent_candles_by_symbol([row["symbol"] for row in universe], limit_per_symbol=96)
         self.broker.sync_marks(quotes)
         portfolio = self.broker.snapshot()
         positions = self.broker.positions_by_symbol()
@@ -167,6 +185,13 @@ class TradingAgentService:
                 "data_gaps": institutional_context.get("data_gaps", [])[:8],
             },
         )
+        self._cycle_phase = "options_intelligence"
+        options_context = (
+            await self.options_intelligence.context_for_cycle(universe, quotes)
+            if self.options_intelligence
+            else {}
+        )
+        self.db.set_state("options_intelligence_context", options_context)
         self._cycle_phase = "delivery_data"
         delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else {}
         self.db.set_state("delivery_data_status", delivery_status)
@@ -199,6 +224,7 @@ class TradingAgentService:
             candles,
             macro_context,
             institutional_context,
+            options_context,
             self.delivery_service,
             market_breadth_context,
             sector_rotation_context,
@@ -212,7 +238,7 @@ class TradingAgentService:
             audit = _json_object(decision.details_json)
             path = str(audit.get("decision_path") or "unknown")
             decision_paths[path] = decision_paths.get(path, 0) + 1
-            if audit.get("llm_error"):
+            if audit.get("llm_error") or audit.get("json_synthetic") or audit.get("llm_timeout"):
                 llm_error_count += 1
         self._log(
             "INFO",
@@ -253,6 +279,27 @@ class TradingAgentService:
             await self.on_update(snapshot)
         return snapshot
 
+    def _cycle_universe(
+        self,
+        full_universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        limit = self.universe_symbols_per_cycle
+        if limit <= 0 or limit >= len(full_universe):
+            return full_universe
+        if not full_universe:
+            return []
+        start = self._universe_cursor % len(full_universe)
+        selected = [full_universe[(start + index) % len(full_universe)] for index in range(limit)]
+        self._universe_cursor = (start + limit) % len(full_universe)
+        selected_symbols = {row["symbol"] for row in selected}
+        if positions:
+            for row in full_universe:
+                if row["symbol"] in positions and row["symbol"] not in selected_symbols:
+                    selected.append(row)
+                    selected_symbols.add(row["symbol"])
+        return selected
+
     def snapshot(self) -> dict[str, Any]:
         quotes = self.db.latest_quotes()
         decisions = _with_detail_urls(self.db.latest_decision_summaries(80), "decisions")
@@ -261,11 +308,19 @@ class TradingAgentService:
         order_audit_history = self.db.latest_orders(240)
         positions = self._positions_with_exit_plans(self.db.positions(), order_audit_history)
         suggestions = self._suggestions(suggestion_decisions)
+        universe_summary = self.db.universe_summary()
+        options_context = self.db.get_state("options_intelligence_context", {})
         return {
             "running": self.running,
             "provider": self.market_data.source_name,
             "last_error": self._last_error,
             "last_cycle_at": self._last_cycle_at,
+            "universe": {
+                "enabled": universe_summary.get("enabled"),
+                "total": universe_summary.get("total"),
+                "low_price_enabled": universe_summary.get("low_price_enabled"),
+                "symbols_per_cycle": self.universe_symbols_per_cycle,
+            },
             "cycle": {
                 "phase": self._cycle_phase,
                 "started_at": self._cycle_started_at,
@@ -296,7 +351,9 @@ class TradingAgentService:
             "institutional_context": self.db.get_state("institutional_context", {}),
             "market_breadth": self.db.get_state("market_breadth_context", {}),
             "sector_rotation_context": _sector_rotation_summary(self.db.get_state("sector_rotation_context", {})),
+            "options_intelligence": _options_intelligence_summary(options_context),
             "upcoming_macro_events": (self.db.get_state("macro_calendar_context", {}) or {}).get("next_10", []),
+            "llm_usage": self.db.llm_usage_summary(),
         }
 
     def _suggestions(self, decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -551,6 +608,33 @@ def _sector_rotation_summary(context: dict[str, Any]) -> dict[str, Any]:
             "top": (leaderboard.get("top") or [])[:3],
             "bottom": (leaderboard.get("bottom") or [])[:3],
         },
+    }
+
+
+def _options_intelligence_summary(context: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    symbols = context.get("symbols") or {}
+    indices = context.get("indices") or {}
+    suppressed = [
+        {
+            "symbol": symbol,
+            "max_pain": item.get("max_pain"),
+            "max_pain_distance_pct": item.get("max_pain_distance_pct"),
+        }
+        for symbol, item in symbols.items()
+        if isinstance(item, dict) and item.get("buy_suppressed")
+    ]
+    return {
+        "enabled": context.get("enabled"),
+        "source": context.get("source"),
+        "index_source": context.get("index_source"),
+        "updated_at": context.get("updated_at"),
+        "stock_symbols_checked": len(symbols),
+        "stock_symbols_ok": sum(1 for item in symbols.values() if isinstance(item, dict) and item.get("status") == "ok"),
+        "index_symbols_ok": sum(1 for item in indices.values() if isinstance(item, dict) and item.get("status") == "ok"),
+        "buy_suppressed": suppressed[:10],
+        "indices": indices,
     }
 
 

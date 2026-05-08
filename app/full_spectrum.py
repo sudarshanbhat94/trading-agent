@@ -19,6 +19,7 @@ def full_spectrum_analysis(
     institutional_context: dict[str, Any],
     risk_limits: dict[str, Any],
     delivery_data: dict[str, Any] | None = None,
+    options_data: dict[str, Any] | None = None,
     sector_context: dict[str, Any] | None = None,
     market_breadth: dict[str, Any] | None = None,
     macro_event_context: dict[str, Any] | None = None,
@@ -48,7 +49,7 @@ def full_spectrum_analysis(
     delivery = _delivery_accumulation(flow, candles, delivery_data)
     sector_rotation = _sector_rotation_layer(sector_context)
     relative_strength = _relative_strength(closes, global_context)
-    options_oi = _options_oi_layer(flow)
+    options_oi = _options_oi_layer(flow, options_data, quote.price)
     backtest = _backtest_snapshot(candles)
     filters = _primary_filters(quote.price, indicators, key_levels, volumes, technical, liquidity, corporate_risk)
     confluence = _confluence_score(
@@ -80,7 +81,7 @@ def full_spectrum_analysis(
         corporate_risk=corporate_risk,
         options_oi=options_oi,
     )
-    trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits, liquidity, backtest)
+    trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits, liquidity, backtest, options_oi)
     scorecard = _institutional_scorecard(
         price=quote.price,
         data_quality=data_quality,
@@ -118,6 +119,7 @@ def full_spectrum_analysis(
         entry_quality,
         breakout_quality,
         macro_event_context or {},
+        options_oi,
     )
     signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides, scorecard)
     monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides, scorecard)
@@ -859,6 +861,7 @@ def _risk_overrides(
     entry_quality: dict[str, Any],
     breakout_quality: dict[str, Any],
     macro_event_context: dict[str, Any],
+    options_oi: dict[str, Any],
 ) -> dict[str, Any]:
     atr_pct = indicators.get("atr_pct")
     flags = []
@@ -900,6 +903,8 @@ def _risk_overrides(
         flags.append("false_breakout_risk_no_new_longs")
     if float(macro_event_context.get("event_risk_score") or 0.0) > 0.6:
         flags.append("high_macro_event_risk")
+    if options_oi.get("buy_suppressed"):
+        flags.append("options_max_pain_8pct_below_no_new_longs")
     symbol_flags = institutional_flow.get("symbol_flags", {})
     if symbol_flags.get("asm"):
         flags.append("asm_surveillance_no_new_longs")
@@ -935,7 +940,9 @@ def _trade_plan(
     risk_limits: dict[str, Any],
     liquidity: dict[str, Any],
     backtest: dict[str, Any],
+    options_oi: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    options_oi = options_oi or {}
     atr = indicators.get("atr") or price * 0.02
     stop_pct = min(max(float(risk_limits.get("stop_loss_pct", 0.035) or 0.035), 0.005), 0.04)
     stop = min(price - atr * 1.2, price * (1 - stop_pct))
@@ -953,6 +960,9 @@ def _trade_plan(
         if structure_target and structure_target < target_2
         else "3.5R ladder target"
     )
+    option_zones = options_oi.get("oi_concentration_zones") or {}
+    option_resistance = (option_zones.get("resistance") or [])[:3]
+    option_support = (option_zones.get("support") or [])[:3]
     return {
         "direction": "LONG" if confluence.get("total", 0) >= 14 else "WATCH" if confluence.get("total", 0) >= 10 else "NO_SIGNAL",
         "horizon": "swing_3_to_7_days",
@@ -973,6 +983,15 @@ def _trade_plan(
             "chart": _round(stop),
             "macro": "risk-off regime or high-impact event within 48h",
             "news": "strong negative regulatory/credit/promoter pledge event",
+            "options": "BUY suppressed if stock-level max pain sits 8% or more below current price",
+        },
+        "options_intelligence": {
+            "source": options_oi.get("audit_label") or options_oi.get("source"),
+            "max_pain": options_oi.get("max_pain"),
+            "max_pain_distance_pct": options_oi.get("max_pain_distance_pct"),
+            "support_zones_from_put_oi": option_support,
+            "resistance_zones_from_call_oi": option_resistance,
+            "note": "OI concentration zones are used as derivatives support/resistance when stock option-chain data is available",
         },
         "position_sizing": {
             "method": "atr_stop_risk",
@@ -1228,7 +1247,41 @@ def _relative_strength(closes: list[float], global_context: dict[str, Any]) -> d
     }
 
 
-def _options_oi_layer(flow: dict[str, Any]) -> dict[str, Any]:
+def _options_oi_layer(
+    flow: dict[str, Any],
+    options_data: dict[str, Any] | None = None,
+    current_price: float | None = None,
+) -> dict[str, Any]:
+    options_data = options_data or {}
+    if options_data.get("status") == "ok":
+        max_pain_distance = options_data.get("max_pain_distance_pct")
+        if options_data.get("buy_suppressed"):
+            bias = "max_pain_bearish_suppression"
+        elif max_pain_distance is not None and float(max_pain_distance) > 3:
+            bias = "max_pain_above_supportive"
+        elif max_pain_distance is not None and float(max_pain_distance) < -3:
+            bias = "max_pain_below_caution"
+        else:
+            bias = "balanced"
+        return {
+            "available": True,
+            "source": options_data.get("source", "nse_option_chain_stock_level"),
+            "audit_label": options_data.get("audit_label", "nse_option_chain_stock_level"),
+            "status": "ok",
+            "underlying_price": options_data.get("underlying_price") or _round(current_price),
+            "pcr_oi": options_data.get("pcr_oi"),
+            "market_pcr_proxy": options_data.get("pcr_oi"),
+            "max_pain": options_data.get("max_pain"),
+            "max_pain_distance_pct": max_pain_distance,
+            "buy_suppressed": bool(options_data.get("buy_suppressed")),
+            "buy_suppression_reason": options_data.get("buy_suppression_reason"),
+            "oi_concentration_zones": options_data.get("oi_concentration_zones") or {},
+            "strike_pcr": options_data.get("strike_pcr") or [],
+            "top_oi_change": options_data.get("top_oi_change") or {},
+            "bias": bias,
+            "fno_ban": flow.get("fno_ban"),
+            "data_gap": None,
+        }
     pcr_feed = flow.get("pcr_oi") or {}
     items = pcr_feed.get("items") if isinstance(pcr_feed, dict) else None
     pcr_values = []
@@ -1247,10 +1300,14 @@ def _options_oi_layer(flow: dict[str, Any]) -> dict[str, Any]:
         bias = "balanced"
     return {
         "available": avg_pcr is not None,
+        "source": options_data.get("source") or "market_index_pcr_proxy",
+        "audit_label": options_data.get("source") or "market_index_pcr_proxy",
         "market_pcr_proxy": _round(avg_pcr),
         "bias": bias,
         "fno_ban": flow.get("fno_ban"),
-        "data_gap": None if avg_pcr is not None else "stock-level OI/PCR/IV/max-pain not connected",
+        "stock_option_status": options_data.get("status"),
+        "stock_option_error": options_data.get("error"),
+        "data_gap": None if avg_pcr is not None else "stock-level OI/PCR/IV/max-pain unavailable",
     }
 
 

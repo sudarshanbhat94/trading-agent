@@ -28,6 +28,7 @@ class StrategyEngine:
         candles_by_symbol: dict[str, list[Candle]] | None = None,
         global_context: dict[str, Any] | None = None,
         institutional_context: dict[str, Any] | None = None,
+        options_context: dict[str, Any] | None = None,
         delivery_service: Any | None = None,
         market_breadth: dict[str, Any] | None = None,
         sector_rotation_context: dict[str, Any] | None = None,
@@ -74,6 +75,7 @@ class StrategyEngine:
                 else {}
             )
             delivery_data = self._delivery_context(symbol, delivery_service)
+            options_data = ((options_context or {}).get("symbols") or {}).get(symbol, {})
             sector_context = ((sector_rotation_context or {}).get("symbols") or {}).get(symbol, {})
             pre_filter = self._pre_filter_context(
                 symbol=symbol,
@@ -97,6 +99,7 @@ class StrategyEngine:
                 institutional_context=institutional_context,
                 sentiment_detail=self.sentiment.latest_for_symbol(symbol),
                 delivery_data=delivery_data,
+                options_data=options_data,
                 sector_context=sector_context,
                 market_breadth=market_breadth,
                 macro_event_context=macro_event_context,
@@ -154,17 +157,15 @@ class StrategyEngine:
                 llm_decision = await self.llm.decide(context)
                 llm_reviews += 1
                 llm_audit = _json_object(llm_decision.details_json)
-                llm_failed = bool(llm_audit.get("llm_error") or llm_audit.get("json_synthetic"))
-                if not llm_failed or item["action"] == "HOLD":
-                    decisions.append(llm_decision)
-                    continue
-                context["llm_primary_fallback"] = {
-                    "reason": "llm_failed_deterministic_action_preserved",
+                context["llm_primary_review"] = {
+                    "reviewed": True,
                     "llm_action": llm_decision.action,
                     "llm_reason": llm_decision.reason,
                     "llm_error": llm_audit.get("llm_error"),
-                    "preserved_action": item["action"],
+                    "json_synthetic": bool(llm_audit.get("json_synthetic")),
                 }
+                decisions.append(llm_decision)
+                continue
 
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
@@ -193,11 +194,25 @@ class StrategyEngine:
                 reason = f"{reason}, failed_gates={failed_gate_names}"
             if context.get("llm_primary_fallback"):
                 reason = f"{reason}, llm_failed_deterministic_action_preserved"
+            action = item["action"]
+            confidence = item["confidence"]
             decision_path = "deterministic_after_full_universe_scan"
+            if llm_primary and item["action"] != "HOLD":
+                context["llm_primary_gate"] = {
+                    "required": True,
+                    "reviewed": item["symbol"] in llm_candidate_symbols,
+                    "original_action": item["action"],
+                    "final_action": "HOLD",
+                    "reason": "llm_primary_required_no_unreviewed_trade",
+                }
+                action = "HOLD"
+                confidence = 0.0
+                reason = f"{reason}, llm_primary_required_no_unreviewed_trade"
+                decision_path = "llm_primary_required_hold"
             decision = Decision(
                 symbol=item["symbol"],
-                action=item["action"],
-                confidence=round(item["confidence"], 3),
+                action=action,
+                confidence=round(confidence, 3),
                 price=item["quote"].price,
                 technical_score=round(item["technical"].score, 3),
                 sentiment_score=round(item["sentiment_score"], 3),
@@ -206,7 +221,7 @@ class StrategyEngine:
                 strategy=best_strategy["name"],
                 details_json=self._decision_details_json(
                     context=context,
-                    action=item["action"],
+                    action=action,
                     decision_path=decision_path,
                     score_breakdown=item["score_breakdown"],
                     action_reason=reason,
@@ -311,6 +326,7 @@ class StrategyEngine:
         breakout = full_spectrum.get("breakout_quality") or {}
         divergence = full_spectrum.get("price_volume_divergence") or {}
         alignment = ((full_spectrum.get("trend_context") or {}).get("timeframe_alignment") or {})
+        options_oi = full_spectrum.get("options_oi") or {}
         sector = full_spectrum.get("sector_rotation") or {}
         market_breadth = context.get("market_breadth_context") or {}
         pre_filter = context.get("pre_filter") or {}
@@ -337,6 +353,16 @@ class StrategyEngine:
             fail("climax_volume_gate", True, "climax_top_detected_no_new_longs")
         if alignment.get("alignment_grade") == "D":
             fail("timeframe_alignment_gate", "D", "timeframe_alignment_conflict")
+        if options_oi.get("buy_suppressed"):
+            fail(
+                "options_max_pain_gate",
+                {
+                    "source": options_oi.get("audit_label") or options_oi.get("source"),
+                    "max_pain": options_oi.get("max_pain"),
+                    "max_pain_distance_pct": options_oi.get("max_pain_distance_pct"),
+                },
+                "options_max_pain_8pct_below_no_new_longs",
+            )
         if sector.get("sector_tier") == "bottom_quartile" and sector.get("sector_stage") == "distribution" and confluence_total <= 20:
             fail("sector_rotation_gate", sector, "bottom_quartile_distribution")
         correlation_gate = self._portfolio_correlation_gate(symbol, positions, candles_by_symbol or {})
@@ -365,6 +391,7 @@ class StrategyEngine:
             {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed"), "value": breakout},
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
             {"gate": "alignment_gate", "passed": alignment.get("alignment_grade") != "D", "value": alignment.get("alignment_grade")},
+            {"gate": "options_max_pain_gate", "passed": not options_oi.get("buy_suppressed"), "value": options_oi},
         ]
         context["decision_gate_context"] = {
             "buy_threshold": threshold,
@@ -514,9 +541,9 @@ class StrategyEngine:
             reverse=True,
         )
         action_candidates = [item for item in ranked if item["action"] != "HOLD"]
-        add(open_positions)
+        add(action_candidates)
         if len(selected) < limit:
-            add(action_candidates)
+            add(open_positions)
         if len(selected) < limit:
             add(ranked)
         return set(selected)
@@ -765,6 +792,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "decision_gate_context": context.get("decision_gate_context"),
         "sizing_grade": context.get("sizing_grade"),
         "llm_primary_fallback": context.get("llm_primary_fallback"),
+        "llm_primary_gate": context.get("llm_primary_gate"),
+        "llm_primary_review": context.get("llm_primary_review"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
