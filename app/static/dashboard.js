@@ -86,6 +86,260 @@ function pnlClass(value) {
   return "";
 }
 
+function humanLabel(value) {
+  return String(value || "-")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function compactSentence(text, fallback = "-") {
+  const value = String(text || "").trim();
+  if (!value) return fallback;
+  return value.endsWith(".") || value.endsWith("!") ? value : `${value}.`;
+}
+
+function reasonFromSnakeCase(value, fallback = "-") {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  const mapped = {
+    pre_filter_stage2_distribution: "Delivery data shows distribution, so OpenTrade is avoiding a fresh BUY.",
+    market_breadth_bear_confirmed_no_new_longs: "The broader market is in a confirmed bearish breadth regime, so fresh BUY signals are blocked.",
+    expiry_day_no_new_longs: "It is expiry day, so OpenTrade is waiting instead of opening a fresh long.",
+    monthly_expiry_no_new_longs: "Monthly expiry risk is active, so OpenTrade is waiting for cleaner confirmation.",
+    monthly_expiry_eve_no_new_longs: "Monthly expiry is close, so OpenTrade is reducing event risk and avoiding fresh longs.",
+    earnings_lockout: "Earnings are too close, so OpenTrade is waiting for clarity.",
+    extended_entry_no_new_longs: "The entry is extended from the ideal breakout zone, so OpenTrade is waiting for a better price.",
+    false_breakout_two_day_rule_failed: "The breakout failed confirmation and closed back below resistance.",
+    stage_analysis_not_stage2_markup: "The stock is not in a clean Stage 2 markup trend, so fresh BUY is blocked.",
+    climax_top_detected_no_new_longs: "Price-volume action looks like a possible climax top, so OpenTrade is not buying.",
+    timeframe_alignment_conflict: "Weekly, daily, and short-term trends are not aligned enough for a BUY.",
+    options_max_pain_8pct_below_no_new_longs: "Options Max Pain is far below the current price, so upside risk/reward is weak for a new BUY.",
+    risk_override_no_new_longs: "Risk overrides are active, so OpenTrade is not opening a new long.",
+    portfolio_concentration_correlation_too_high: "The portfolio already has too much correlated exposure, so this BUY is blocked.",
+    bottom_quartile_distribution: "The sector is weak and in distribution, so the stock needs exceptional confirmation before buying.",
+    llm_failed_or_timed_out_deterministic_trade_preserved: "The LLM did not return a clean answer in time, so OpenTrade preserved the deterministic risk decision.",
+    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current LLM review limit, so deterministic rules handled it.",
+    time_stop_no_progress_15_sessions: "The position has not moved enough after 15 sessions, so OpenTrade is exiting dead capital.",
+  };
+  if (mapped[text]) return mapped[text];
+  return compactSentence(humanLabel(text).toLowerCase());
+}
+
+function gateValueText(gateName, value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value !== "object") return String(value);
+  if (gateName === "stage_gate") {
+    return `price ${fmtMoney(value.price)}, 30-period SMA ${fmtMoney(value.sma30)}, slope ${fmtNumber(value.slope)}`;
+  }
+  if (gateName === "sector_gate" || gateName === "sector_rotation_gate") {
+    return `${value.sector_tier || "sector tier unknown"} · ${value.sector_stage || "stage unknown"}`;
+  }
+  if (gateName === "options_max_pain_gate") {
+    return `Max Pain ${fmtMoney(value.max_pain)}, distance ${fmtPct(value.max_pain_distance_pct)}, source ${value.source || "-"}`;
+  }
+  if (gateName === "macro_calendar_gate" || gateName === "earnings_gate") {
+    const event = value.recommended_action || value.expiry_type || value.event_type || value.type || "event risk";
+    const risk = value.event_risk_score !== undefined ? ` · risk ${fmtNumber(value.event_risk_score)}` : "";
+    return `${event}${risk}`;
+  }
+  if (gateName === "breakout_gate" || gateName === "breakout_quality_gate") {
+    return `${value.breakout_quality || "breakout quality unknown"} · two-day failed ${Boolean(value.two_day_rule_failed)}`;
+  }
+  if (gateName === "divergence_gate" || gateName === "climax_volume_gate") {
+    return `divergence ${fmtNumber(value.divergence_score)} · climax top ${Boolean(value.climax_volume_top)}`;
+  }
+  if (gateName === "portfolio_correlation_gate") {
+    const symbols = (value.correlated_positions || []).map((item) => item.symbol).filter(Boolean);
+    return symbols.length ? `correlated with ${symbols.join(", ")}` : shortValue(value, 120);
+  }
+  return shortValue(value, 120);
+}
+
+function humanizeGateFailure(gate) {
+  const gateName = String(gate?.gate || gate?.name || "gate");
+  const reason = String(gate?.reason || "");
+  const value = gateValueText(gateName, gate?.value);
+  const messages = {
+    stage_gate: "Trend gate is weak or bearish",
+    delivery_gate: "Delivery data points to distribution",
+    breadth_gate: "Market breadth does not support new longs",
+    earnings_gate: "Event or earnings risk is too close",
+    macro_calendar_gate: "Macro calendar risk is elevated",
+    sector_gate: "Sector rotation is not supportive",
+    sector_rotation_gate: "Sector rotation is not supportive",
+    entry_grade_gate: "Entry grade is too extended",
+    breakout_gate: "Breakout confirmation failed",
+    breakout_quality_gate: "Breakout confirmation failed",
+    stage_buy_permitted: "Stage analysis does not allow a fresh BUY",
+    divergence_gate: "Price-volume divergence is warning against a BUY",
+    climax_volume_gate: "Climax-volume risk is warning against a BUY",
+    alignment_gate: "Timeframes are not aligned",
+    timeframe_alignment_gate: "Timeframes are not aligned",
+    options_max_pain_gate: "Options Max Pain is against a fresh BUY",
+    risk_overrides: "Risk overrides blocked new longs",
+    portfolio_correlation_gate: "Portfolio correlation risk is too high",
+    pre_filter: "Pre-filter blocked the setup",
+  };
+  const base = messages[gateName] || humanLabel(gateName);
+  const reasonText = reason ? reasonFromSnakeCase(reason) : "";
+  const parts = [base];
+  if (value && value !== "-") parts.push(value);
+  if (reasonText && !parts.join(" ").toLowerCase().includes(reasonText.toLowerCase().replace(/\.$/, ""))) {
+    parts.push(reasonText);
+  }
+  return compactSentence(parts.filter(Boolean).join(": "));
+}
+
+function failedGatesFromAudit(audit = {}, context = {}) {
+  const gateContext = audit.risk_gates?.decision_gate_context || context.decision_gate_context || {};
+  const failed = gateContext.failed_gates || [];
+  const evaluated = gateContext.evaluated_gates || [];
+  const explicit = Array.isArray(failed) ? failed : [];
+  const evaluatedFails = Array.isArray(evaluated) ? evaluated.filter((gate) => gate && gate.passed === false) : [];
+  return [...explicit, ...evaluatedFails].filter((gate, index, list) => {
+    const key = `${gate?.gate || gate?.name}-${JSON.stringify(gate?.value ?? "")}`;
+    return list.findIndex((item) => `${item?.gate || item?.name}-${JSON.stringify(item?.value ?? "")}` === key) === index;
+  });
+}
+
+function deterministicReasonFromText(text, action = "HOLD") {
+  const technical = text.match(/technical=([-0-9.]+)\s*\(([^)]*)\)/i);
+  const confluence = text.match(/confluence=([^,]+)/i);
+  const combined = text.match(/combined=([-0-9.]+)/i);
+  const sentiment = text.match(/sentiment=([-0-9.]+)/i);
+  const global = text.match(/global=([-0-9.]+)\s*\(([^)]*)\)/i);
+  const rank = text.match(/universe_rank=([^,\s]+)/i);
+  const gateMatch = text.match(/failed_gates=\[([^\]]*)\]/i);
+  const gates = gateMatch
+    ? gateMatch[1]
+        .split(",")
+        .map((item) => item.replaceAll("'", "").replaceAll('"', "").trim())
+        .filter(Boolean)
+        .map((gate) => humanizeGateFailure({ gate }))
+    : [];
+  const actionText = String(action || "HOLD").toUpperCase();
+  const lead =
+    actionText === "BUY"
+      ? "OpenTrade found a BUY setup that passed the main score and risk checks"
+      : actionText === "SELL"
+        ? "OpenTrade found exit pressure on an existing position"
+        : "OpenTrade held because the setup did not pass every BUY requirement";
+  const facts = [];
+  if (combined) facts.push(`combined score ${fmtNumber(combined[1])}`);
+  if (confluence) facts.push(`confluence ${confluence[1].trim()}`);
+  if (technical) facts.push(`technical trend ${technical[2]} (${fmtNumber(technical[1])})`);
+  if (sentiment) facts.push(`sentiment ${fmtNumber(sentiment[1])}`);
+  if (global) facts.push(`global risk ${fmtNumber(global[1])} (${global[2]})`);
+  if (rank) facts.push(`universe rank ${rank[1]}`);
+  const blocker = gates.length ? ` Main blocker: ${gates.slice(0, 2).join(" ")}` : "";
+  return compactSentence(`${lead}. ${facts.length ? facts.join(", ") : "No score details were available"}.${blocker}`);
+}
+
+function humanizeReasonText(text, action = "HOLD") {
+  const value = String(text || "").trim();
+  if (!value) return "-";
+  if (/tools\s+technical=/i.test(value)) return deterministicReasonFromText(value, action);
+  if (/^[a-z0-9_]+$/i.test(value)) return reasonFromSnakeCase(value);
+  return value
+    .replace(/llm_primary_required_no_unreviewed_trade/g, "LLM approval was required before trading")
+    .replace(/llm_failed_deterministic_action_preserved/g, "LLM failed, deterministic decision preserved")
+    .replace(/failed_gates=\[([^\]]*)\]/gi, (_, gates) => {
+      const readable = gates
+        .split(",")
+        .map((item) => item.replaceAll("'", "").replaceAll('"', "").trim())
+        .filter(Boolean)
+        .map((gate) => humanLabel(gate).toLowerCase())
+        .join(", ");
+      return readable ? `blocked by ${readable}` : "";
+    });
+}
+
+function decisionAudit(row = {}) {
+  if (row.details && typeof row.details === "object") return row.details;
+  return parseJsonObject(row.details_json);
+}
+
+function decisionFullSpectrum(audit = {}) {
+  return audit.context?.full_spectrum_analysis || audit.decision?.details?.context?.full_spectrum_analysis || {};
+}
+
+function readableDecisionReason(row = {}) {
+  const audit = decisionAudit(row);
+  const context = audit.context || {};
+  const action = String(audit.final_action || row.action || row.suggestion || "HOLD").toUpperCase();
+  const failed = failedGatesFromAudit(audit, context);
+  const pre = audit.pre_filter || context.pre_filter || {};
+  const score = audit.score_breakdown || {};
+  const full = decisionFullSpectrum(audit);
+  const confluence = full.confluence_score || {};
+  const scorecard = full.institutional_scorecard || {};
+  const threshold = audit.risk_gates?.decision_gate_context?.buy_threshold || pre.buy_threshold || 0.35;
+  const combinedValue = score.combined ?? row.combined_score;
+  const confluenceValue = confluence.total ?? row.confluence;
+  const confluenceTier = confluence.tier || row.tier || "tier pending";
+  if (failed.length) {
+    return `No fresh BUY: ${failed.slice(0, 2).map(humanizeGateFailure).join(" ")}`;
+  }
+  if (pre.elimination_reason) {
+    return reasonFromSnakeCase(pre.elimination_reason);
+  }
+  if (audit.llm_error) {
+    return `LLM did not return a usable decision, so OpenTrade used the safe ${action} result.`;
+  }
+  if (action === "BUY") {
+    return `BUY candidate: combined score ${fmtNumber(combinedValue)} vs ${fmtNumber(threshold)} required, confluence ${confluenceValue ?? "-"}/26 (${confluenceTier}), and institutional readiness is ${scorecard.buy_ready ? "clear" : "being monitored"}.`;
+  }
+  if (action === "SELL") {
+    return humanizeReasonText(audit.action_reason || row.reason || "Exit rule triggered.", action);
+  }
+  if (combinedValue !== undefined || confluenceValue !== undefined || scorecard.buy_ready !== undefined) {
+    const blockers = [];
+    if (combinedValue !== undefined) blockers.push(`combined score ${fmtNumber(combinedValue)} vs BUY threshold ${fmtNumber(threshold)}`);
+    if (confluenceValue !== undefined) blockers.push(`confluence ${confluenceValue}/26`);
+    if (scorecard.buy_ready === false) blockers.push(`institutional scorecard not buy-ready`);
+    return compactSentence(`HOLD because the setup is not strong enough yet: ${blockers.join(", ") || "BUY requirements were not met"}`);
+  }
+  return humanizeReasonText(audit.action_reason || row.reason || "-", action);
+}
+
+function decisionReasonHighlights(row = {}) {
+  const audit = decisionAudit(row);
+  const context = audit.context || {};
+  const full = decisionFullSpectrum(audit);
+  const gateHighlights = failedGatesFromAudit(audit, context).slice(0, 6).map(humanizeGateFailure);
+  if (gateHighlights.length) return gateHighlights;
+  const highlights = [];
+  const score = audit.score_breakdown || {};
+  const confluence = full.confluence_score || {};
+  const scorecard = full.institutional_scorecard || {};
+  const stage = full.stage_analysis || {};
+  const entry = full.entry_quality || {};
+  const alignment = (full.trend_context || {}).timeframe_alignment || {};
+  const combinedValue = score.combined ?? row.combined_score;
+  const confluenceValue = confluence.total ?? row.confluence;
+  if (combinedValue !== undefined) highlights.push(`Combined score: ${fmtNumber(combinedValue)}`);
+  if (confluenceValue !== undefined) highlights.push(`Confluence: ${confluenceValue}/26 (${confluence.tier || row.tier || "tier pending"})`);
+  if (scorecard.total_score !== undefined) {
+    highlights.push(`Institutional scorecard: ${scorecard.total_score}/100, ${scorecard.buy_ready ? "buy-ready" : "not buy-ready"}`);
+  }
+  if (stage.stage) highlights.push(`Stage analysis: ${stage.stage} (${stage.buy_permitted ? "BUY permitted" : "BUY blocked"})`);
+  if (entry.entry_grade) highlights.push(`Entry quality: grade ${entry.entry_grade}, ${fmtPct(entry.distance_from_pivot_pct)} from pivot`);
+  if (alignment.alignment_grade) highlights.push(`Timeframe alignment: grade ${alignment.alignment_grade}`);
+  return highlights.length ? highlights : [readableDecisionReason(row)];
+}
+
+function readableOrderReason(row = {}) {
+  const raw = String(row.reason || "").trim();
+  const stop = raw.match(/risk exit: price ([0-9.]+) <= stop ([0-9.]+)/i);
+  if (stop) return `Sold for risk control: price ${fmtMoney(stop[1])} reached the stop level ${fmtMoney(stop[2])}.`;
+  const tier2 = raw.match(/profit tier2: price ([0-9.]+) >= target2 ([0-9.]+)/i);
+  if (tier2) return `Booked profit at Target 2: price ${fmtMoney(tier2[1])} reached ${fmtMoney(tier2[2])}.`;
+  const tier1 = raw.match(/profit tier1: price ([0-9.]+) >= target1 ([0-9.]+)/i);
+  if (tier1) return `Booked partial profit at Target 1: price ${fmtMoney(tier1[1])} reached ${fmtMoney(tier1[2])}, and the stop should tighten toward break-even.`;
+  return humanizeReasonText(raw, row.side);
+}
+
 function render(payload) {
   state.latest = payload;
   const portfolio = payload.portfolio || {};
@@ -294,24 +548,54 @@ function renderAgentConsole(payload) {
   const universe = payload.universe || {};
   const latestAction = decisions.find((row) => row.action && row.action !== "HOLD");
   const rows = [
-    ["Feed mode", health.mode || "unknown", health.provider || payload.provider || "-"],
-    ["Universe", `${universe.enabled ?? "-"} enabled`, `${universe.symbols_per_cycle || "all"} per cycle · ${universe.low_price_enabled ?? 0} <= ₹100 priced`],
-    ["Exposure", fmtMoney(portfolio.invested), `${positions.length}/${settings.max_positions ?? "-"} positions`],
-    ["Risk", fmtPct(Number(settings.daily_loss_limit_pct || 0) * 100), "daily loss limit"],
-    ["Execution", settings.execution_mode || payload.runtime?.execution_mode || "-", settings.live_trading_enabled ? "live switch on" : "live switch off"],
-    ["Latest action", latestAction ? `${latestAction.action} ${latestAction.symbol}` : "No trade action", `${orders.length} orders tracked`],
+    {
+      label: "Feed mode",
+      value: health.mode || "unknown",
+      note: health.provider || payload.provider || "-",
+      onClick: () => openSettingsTab("broker"),
+    },
+    {
+      label: "Universe",
+      value: `${universe.enabled ?? "-"} enabled`,
+      note: `${universe.symbols_per_cycle || "all"} per cycle · ${universe.low_price_enabled ?? 0} <= ₹100 priced`,
+      onClick: () => setView("account"),
+    },
+    {
+      label: "Exposure",
+      value: fmtMoney(portfolio.invested),
+      note: `${positions.length}/${settings.max_positions ?? "-"} positions`,
+      onClick: () => setView("positions"),
+    },
+    {
+      label: "Risk",
+      value: fmtPct(Number(settings.daily_loss_limit_pct || 0) * 100),
+      note: "daily loss limit",
+      onClick: () => openSettingsTab("risk"),
+    },
+    {
+      label: "Execution",
+      value: settings.execution_mode || payload.runtime?.execution_mode || "-",
+      note: settings.live_trading_enabled ? "live switch on" : "live switch off",
+      onClick: () => openSettingsTab("broker"),
+    },
+    {
+      label: "Latest action",
+      value: latestAction ? `${latestAction.action} ${latestAction.symbol}` : "No trade action",
+      note: `${orders.length} orders tracked`,
+      onClick: () => (latestAction ? showDetails("Decision", latestAction) : setView("decisions")),
+    },
   ];
   byId("agent-console").innerHTML = rows
     .map(
-      ([label, value, note]) => `<button class="console-row" type="button">
-        <span>${escapeHtml(label)}</span>
-        <strong>${escapeHtml(value)}</strong>
-        <small>${escapeHtml(note)}</small>
+      (row) => `<button class="console-row" type="button">
+        <span>${escapeHtml(row.label)}</span>
+        <strong>${escapeHtml(row.value)}</strong>
+        <small>${escapeHtml(row.note)}</small>
       </button>`,
     )
     .join("");
   [...byId("agent-console").querySelectorAll(".console-row")].forEach((button, index) => {
-    button.addEventListener("click", () => showDetails(rows[index][0], rows[index]));
+    button.addEventListener("click", rows[index].onClick);
   });
 }
 
@@ -1019,7 +1303,7 @@ function renderSuggestions(rows) {
           <span>SL ${fmtMoney(row.stop_loss)}</span>
           <span>T1 ${fmtMoney(t1.price)}</span>
         </div>
-        <p>${escapeHtml(shortValue(row.reason || "-", 190))}</p>
+        <p>${escapeHtml(shortValue(readableDecisionReason(row), 210))}</p>
       </button>`;
     })
     .join("");
@@ -1091,7 +1375,7 @@ function renderDecisions(rows) {
         <td class="num">${fmtMoney(row.price)}</td>
         <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
         <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
-        <td class="reason">${escapeHtml(row.reason)}</td>
+        <td class="reason">${escapeHtml(readableDecisionReason(row))}</td>
       </tr>`;
     })
     .join("")
@@ -1178,6 +1462,13 @@ function detailHtml(value) {
   if (!value || typeof value !== "object") {
     return `<pre>${escapeHtml(value)}</pre>`;
   }
+  if (Array.isArray(value)) {
+    return `<section class="audit-section">
+      <h4>Summary</h4>
+      <p>${escapeHtml(value.length ? `${value.length} records are available. Open the matching tab to work with the list.` : "No records available.")}</p>
+    </section>
+    <details class="raw-audit"><summary>Technical raw data</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
+  }
   if (value.suggestion) {
     return suggestionDetailHtml(value);
   }
@@ -1196,9 +1487,14 @@ function detailHtml(value) {
     .join("");
   const jsonBlocks = Object.entries(value)
     .filter(([key]) => key.endsWith("_json"))
-    .map(([key, item]) => `<h4>${escapeHtml(key)}</h4><pre>${escapeHtml(prettyJson(item))}</pre>`)
+    .map(([key, item]) => `<details class="raw-audit"><summary>${escapeHtml(humanLabel(key))}</summary><pre>${escapeHtml(prettyJson(item))}</pre></details>`)
     .join("");
-  return `<div class="detail-list">${rows}</div>${jsonBlocks}<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+  return `<section class="audit-section">
+    <h4>Readable Summary</h4>
+    <div class="detail-list">${rows || `<div><span>Status</span><strong>No summary fields available</strong></div>`}</div>
+  </section>
+  ${jsonBlocks}
+  <details class="raw-audit"><summary>Full technical data</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
 }
 
 function suggestionDetailHtml(row) {
@@ -1214,7 +1510,8 @@ function suggestionDetailHtml(row) {
     })}
     <section class="audit-section">
       <h4>Why Suggested</h4>
-      <p>${escapeHtml(row.reason || "-")}</p>
+      <p>${escapeHtml(readableDecisionReason(row))}</p>
+      ${auditList("Main Reasons", decisionReasonHighlights(row))}
       <div class="audit-chips">
         <span>Readiness: ${escapeHtml(row.decision_readiness || "-")}</span>
         <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
@@ -1268,10 +1565,11 @@ function decisionDetailHtml(row) {
     })}
     <section class="audit-section">
       <h4>Why ${escapeHtml(row.action)}</h4>
-      <p>${escapeHtml(audit.action_reason || row.reason || "-")}</p>
+      <p>${escapeHtml(readableDecisionReason(row))}</p>
+      ${auditList("Main Reasons", decisionReasonHighlights(row))}
       <div class="audit-chips">
         <span>Strategy: ${escapeHtml(row.strategy || context.best_strategy?.name || "-")}</span>
-        <span>Path: ${escapeHtml(audit.decision_path || "-")}</span>
+        <span>Path: ${escapeHtml(humanLabel(audit.decision_path || "-"))}</span>
         <span>At: ${escapeHtml(fmtTime(row.ts))}</span>
       </div>
     </section>
@@ -1305,7 +1603,7 @@ function orderDetailHtml(row) {
     })}
     <section class="audit-section">
       <h4>Why Order ${escapeHtml(row.status)}</h4>
-      <p>${escapeHtml(row.reason || "-")}</p>
+      <p>${escapeHtml(readableOrderReason(row))}</p>
       <div class="audit-chips">
         <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
         <span>Price: ${fmtMoney(row.price)}</span>
@@ -1435,12 +1733,12 @@ function preFilterHtml(audit, context) {
     <h4>Pre-Filter Gates</h4>
     <div class="audit-cards">
       ${gates.map((gate) => `<div class="audit-card">
-        <span>${escapeHtml(labelize(gate.gate || "gate"))}</span>
-        <strong class="${gate.passed === false ? "negative" : "positive"}">${gate.passed === false ? "fail" : "pass"}</strong>
-        <small>${escapeHtml(shortValue(gate.value ?? gate.reason ?? "-", 160))}</small>
+        <span>${escapeHtml(humanLabel(gate.gate || "gate"))}</span>
+        <strong class="${gate.passed === false ? "negative" : "positive"}">${gate.passed === false ? "needs attention" : "clear"}</strong>
+        <small>${escapeHtml(gate.passed === false ? humanizeGateFailure(gate) : gateValueText(gate.gate, gate.value) || "passed")}</small>
       </div>`).join("")}
     </div>
-    ${pre.elimination_reason ? `<p class="negative">${escapeHtml(pre.elimination_reason)}</p>` : ""}
+    ${pre.elimination_reason ? `<p class="negative">${escapeHtml(reasonFromSnakeCase(pre.elimination_reason))}</p>` : ""}
   </section>`;
 }
 
@@ -1486,8 +1784,23 @@ function llmOutputHtml(llm, audit) {
 
 function riskGateHtml(audit) {
   const gates = audit.risk_gates || {};
-  const confidence = audit.confidence_gate ? { confidence_gate: audit.confidence_gate } : {};
-  return objectCardsHtml("Risk Gates", { ...confidence, ...gates });
+  const gateContext = gates.decision_gate_context || {};
+  const failed = failedGatesFromAudit(audit, audit.context || {});
+  const scorecard = gates.institutional_scorecard || {};
+  const scorecardStatus =
+    scorecard.buy_ready === true ? "clear" : scorecard.buy_ready === false ? "not clear" : "not evaluated";
+  const scorecardClass = scorecard.buy_ready === true ? "positive" : scorecard.buy_ready === false ? "negative" : "";
+  return `<section class="audit-section">
+    <h4>Risk Gates</h4>
+    <div class="audit-cards">
+      <div class="audit-card"><span>BUY Threshold</span><strong>${fmtNumber(gateContext.buy_threshold ?? gates.buy_combined_threshold)}</strong><small>combined score required before a fresh long</small></div>
+      <div class="audit-card"><span>Open Position</span><strong>${gates.has_existing_position ? "yes" : "no"}</strong><small>${fmtNumber(gates.current_open_positions)} / ${fmtNumber(gates.max_positions)} positions used</small></div>
+      <div class="audit-card"><span>Institutional Gate</span><strong class="${scorecardClass}">${scorecardStatus}</strong><small>${escapeHtml((scorecard.failed || []).map(reasonFromSnakeCase).join(" ") || "must-pass checks clear")}</small></div>
+      <div class="audit-card"><span>LLM Review</span><strong>${gates.llm_deep_review_selected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(gates.llm_candidate_limit ?? "-")}</small></div>
+    </div>
+    ${auditList("Failed Gates", failed.length ? failed.map(humanizeGateFailure) : ["No hard gate failed."])}
+    <details class="raw-audit"><summary>Technical risk-gate data</summary><pre>${escapeHtml(JSON.stringify(gates, null, 2))}</pre></details>
+  </section>`;
 }
 
 function marketContextHtml(context) {
@@ -1652,8 +1965,9 @@ function strategySignalsHtml(signals) {
 function nestedDecisionHtml(decision) {
   return `<section class="audit-section">
     <h4>Linked Decision</h4>
-    <p>${escapeHtml(decision.reason || decision.action_reason || "-")}</p>
-    <pre>${escapeHtml(JSON.stringify(decision, null, 2))}</pre>
+    <p>${escapeHtml(readableDecisionReason(decision))}</p>
+    ${auditList("Main Reasons", decisionReasonHighlights(decision))}
+    <details class="raw-audit"><summary>Linked decision raw data</summary><pre>${escapeHtml(JSON.stringify(decision, null, 2))}</pre></details>
   </section>`;
 }
 
@@ -1893,7 +2207,8 @@ function renderManualAnalysis(payload) {
     </div>
     <section class="audit-section manual-summary">
       <h4>Reason</h4>
-      <p>${escapeHtml(decision.reason || "-")}</p>
+      <p>${escapeHtml(readableDecisionReason(decision))}</p>
+      ${auditList("Main Reasons", decisionReasonHighlights(decision))}
       ${auditList("Latest News", headlines.slice(0, 6))}
       ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
       <button id="manual-detail-btn" type="button">Open Full Analysis</button>
@@ -1935,42 +2250,42 @@ function bindControls() {
   for (const tile of document.querySelectorAll(".kpi")) {
     tile.addEventListener("click", () => {
       const portfolio = state.latest?.portfolio || {};
-      const map = {
-        portfolio,
-        cash: { cash: portfolio.cash, equity: portfolio.equity },
-        invested: { invested: portfolio.invested, market_value: portfolio.market_value },
-        pnl: { unrealized_pnl: portfolio.unrealized_pnl, realized_pnl: portfolio.realized_pnl },
-        "positions-summary": state.latest?.positions || [],
-        "decision-summary": state.latest?.decisions || [],
-      };
-      showDetails(tile.dataset.detailType, map[tile.dataset.detailType]);
+      const target = tile.dataset.detailType;
+      if (target === "positions-summary") {
+        setView("positions");
+        return;
+      }
+      if (target === "decision-summary") {
+        setView("decisions");
+        return;
+      }
+      if (["portfolio", "cash", "invested", "pnl"].includes(target)) {
+        setView("account");
+        return;
+      }
+      showDetails("Portfolio", portfolio);
     });
   }
   for (const tile of document.querySelectorAll(".ops-card")) {
     tile.addEventListener("click", () => {
-      const settings = currentSettings();
+      const target = tile.dataset.detailType;
+      if (target === "feed-health") {
+        openSettingsTab("broker");
+        return;
+      }
+      if (target === "llm-health") {
+        openSettingsTab("ai");
+        return;
+      }
+      if (target === "risk-health") {
+        openSettingsTab("risk");
+        return;
+      }
+      if (target === "cycle-health") {
+        setView("logs");
+        return;
+      }
       const map = {
-        "feed-health": state.latest?.market_health || {},
-        "llm-health": {
-          provider: settings.llm_provider,
-          mode: settings.llm_decision_mode,
-          model: settings.deepseek_model,
-          base_url: settings.deepseek_base_url,
-          api_key_saved: Boolean(settings.deepseek_api_key?.saved),
-          reasoning_effort: settings.llm_reasoning_effort,
-          thinking_enabled: settings.llm_thinking_enabled,
-          rolling_context_enabled: settings.llm_rolling_context_enabled,
-          timeout_seconds: settings.llm_timeout_seconds,
-          usage: state.latest?.llm_usage || {},
-        },
-        "risk-health": {
-          max_positions: settings.max_positions,
-          max_position_pct: settings.max_position_pct,
-          max_order_value_pct: settings.max_order_value_pct,
-          stop_loss_pct: settings.stop_loss_pct,
-          take_profit_pct: settings.take_profit_pct,
-          daily_loss_limit_pct: settings.daily_loss_limit_pct,
-        },
         "macro-health": {
           global: state.latest?.macro_context || {},
           institutional: state.latest?.institutional_context || {},
@@ -1978,21 +2293,16 @@ function bindControls() {
           sector_rotation: state.latest?.sector_rotation_context || {},
           upcoming_macro_events: state.latest?.upcoming_macro_events || [],
         },
-        "cycle-health": {
-          running: state.latest?.running,
-          last_cycle_at: state.latest?.last_cycle_at,
-          cycle: state.latest?.cycle,
-          interval_seconds: settings.agent_interval_seconds,
-          last_error: state.latest?.last_error,
-        },
       };
-      showDetails(tile.dataset.detailType, map[tile.dataset.detailType]);
+      showDetails("Global Risk", map[target]);
     });
   }
   byId("logout-btn").addEventListener("click", logout);
 }
 
 function setView(view) {
+  const drawer = byId("detail-drawer");
+  if (drawer) drawer.classList.remove("open");
   for (const item of document.querySelectorAll(".nav-item")) {
     item.classList.toggle("active", item.dataset.view === view);
   }
@@ -2001,6 +2311,11 @@ function setView(view) {
   }
   const label = document.querySelector(`.nav-item[data-view="${view}"] span`)?.textContent || "Overview";
   byId("view-title").textContent = label;
+}
+
+function openSettingsTab(tabName) {
+  setView("settings");
+  setSettingsTab(tabName || "broker");
 }
 
 async function loadInitial() {
