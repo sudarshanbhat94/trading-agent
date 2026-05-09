@@ -1697,28 +1697,42 @@ function drawEquity(rows) {
   const canvas = byId("equity-chart");
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth;
-  const height = canvas.clientHeight;
+  const width = canvas.clientWidth || 720;
+  const height = canvas.clientHeight || 320;
   canvas.width = width * dpr;
   canvas.height = height * dpr;
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, width, height);
 
-  const pad = 24;
-  ctx.strokeStyle = "#d9e0e8";
+  const pad = 28;
+  ctx.strokeStyle = "rgba(126, 146, 170, 0.18)";
   ctx.lineWidth = 1;
-  for (let i = 0; i < 4; i += 1) {
-    const y = pad + ((height - pad * 2) * i) / 3;
+  for (let i = 0; i < 5; i += 1) {
+    const y = pad + ((height - pad * 2) * i) / 4;
     ctx.beginPath();
     ctx.moveTo(pad, y);
     ctx.lineTo(width - pad, y);
     ctx.stroke();
   }
+  for (let i = 0; i < 7; i += 1) {
+    const x = pad + ((width - pad * 2) * i) / 6;
+    ctx.beginPath();
+    ctx.moveTo(x, pad);
+    ctx.lineTo(x, height - pad);
+    ctx.stroke();
+  }
 
   if (rows.length < 2) {
-    ctx.fillStyle = "#667085";
+    ctx.strokeStyle = "rgba(0, 201, 139, 0.3)";
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath();
+    ctx.moveTo(pad, height / 2);
+    ctx.lineTo(width - pad, height / 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#7f8da0";
     ctx.font = "13px system-ui";
-    ctx.fillText("Waiting for portfolio snapshots", pad, height / 2);
+    ctx.fillText("Waiting for portfolio snapshots", pad, height / 2 - 12);
     return;
   }
 
@@ -1735,11 +1749,15 @@ function drawEquity(rows) {
     if (index === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = values[values.length - 1] >= values[0] ? "#15803d" : "#b42318";
+  const up = values[values.length - 1] >= values[0];
+  const gradient = ctx.createLinearGradient(0, 0, width, 0);
+  gradient.addColorStop(0, up ? "#00c98b" : "#ff6470");
+  gradient.addColorStop(1, up ? "#76f7bf" : "#ff9aa2");
+  ctx.strokeStyle = gradient;
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  ctx.fillStyle = "#667085";
+  ctx.fillStyle = "#8b98aa";
   ctx.font = "12px system-ui";
   ctx.fillText(fmtMoney(max), pad, pad - 6);
   ctx.fillText(fmtMoney(min), pad, height - 8);

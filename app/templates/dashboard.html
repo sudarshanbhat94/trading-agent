@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenTrade</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=terminal-desk-3" />
   </head>
   <body>
     <section id="login-screen" class="login-screen">
@@ -33,7 +33,7 @@
           <div class="mark">OT</div>
           <div>
             <h1>OpenTrade</h1>
-            <p>Indian equity terminal</p>
+            <p>Upstox market terminal</p>
           </div>
         </div>
         <nav class="nav" aria-label="OpenTrade views">
@@ -100,93 +100,102 @@
           <div class="workspace-head">
             <div>
               <h2 id="view-title">Dashboard</h2>
-              <p>Portfolio, market watch, signal audit, and controls in one trading workspace.</p>
+              <p>Live NSE universe · paper risk desk · audited AI decisions</p>
             </div>
             <div id="last-cycle" class="cycle-stamp">waiting</div>
           </div>
           <div id="error-box" class="error-box" hidden></div>
 
           <section id="overview-view" class="view active">
-            <section class="kpis" aria-label="Portfolio summary">
-              <button class="kpi" type="button" data-detail-type="portfolio"><span>Equity</span><strong id="kpi-equity">-</strong></button>
-              <button class="kpi" type="button" data-detail-type="cash"><span>Cash</span><strong id="kpi-cash">-</strong></button>
-              <button class="kpi" type="button" data-detail-type="invested"><span>Deployed</span><strong id="kpi-invested">-</strong></button>
-              <button class="kpi" type="button" data-detail-type="pnl"><span>Unrealized P&amp;L</span><strong id="kpi-unrealized">-</strong></button>
-              <button class="kpi" type="button" data-detail-type="positions-summary"><span>Positions</span><strong id="kpi-positions">-</strong></button>
-              <button class="kpi" type="button" data-detail-type="decision-summary"><span>Decisions</span><strong id="kpi-decisions">-</strong></button>
-            </section>
+            <div class="market-board">
+              <section class="terminal-main">
+                <section class="kpis portfolio-strip" aria-label="Portfolio summary">
+                  <button class="kpi" type="button" data-detail-type="portfolio"><span>Equity</span><strong id="kpi-equity">-</strong></button>
+                  <button class="kpi" type="button" data-detail-type="cash"><span>Cash</span><strong id="kpi-cash">-</strong></button>
+                  <button class="kpi" type="button" data-detail-type="invested"><span>Deployed</span><strong id="kpi-invested">-</strong></button>
+                  <button class="kpi" type="button" data-detail-type="pnl"><span>Unrealized P&amp;L</span><strong id="kpi-unrealized">-</strong></button>
+                  <button class="kpi" type="button" data-detail-type="positions-summary"><span>Positions</span><strong id="kpi-positions">-</strong></button>
+                  <button class="kpi" type="button" data-detail-type="decision-summary"><span>Decisions</span><strong id="kpi-decisions">-</strong></button>
+                </section>
 
-            <section class="ops-grid" aria-label="Operating state">
-              <button class="ops-card" type="button" data-detail-type="feed-health"><span>Market Feed</span><strong id="ops-feed">-</strong><small id="ops-feed-meta">waiting</small></button>
-              <button class="ops-card" type="button" data-detail-type="llm-health"><span>LLM Brain</span><strong id="ops-llm">-</strong><small id="ops-llm-meta">decision mode</small></button>
-              <button class="ops-card" type="button" data-detail-type="risk-health"><span>Risk Guard</span><strong id="ops-risk">-</strong><small id="ops-risk-meta">position rules</small></button>
-              <button class="ops-card" type="button" data-detail-type="macro-health"><span>Global Risk</span><strong id="ops-macro">-</strong><small id="ops-macro-meta">macro context</small></button>
-              <button class="ops-card" type="button" data-detail-type="cycle-health"><span>Agent Cycle</span><strong id="ops-cycle">-</strong><small id="ops-cycle-meta">not run yet</small></button>
-            </section>
+                <div class="panel panel-chart terminal-chart">
+                  <div class="panel-head">
+                    <div>
+                      <h3>Equity Curve</h3>
+                      <span>Paper ledger</span>
+                    </div>
+                    <div class="chart-pills" aria-label="Chart context">
+                      <span>NSE</span>
+                      <span>EQ</span>
+                      <span>LIVE</span>
+                    </div>
+                  </div>
+                  <canvas id="equity-chart" width="920" height="360"></canvas>
+                </div>
 
-            <section class="desk-grid">
-              <div class="panel panel-chart">
-                <div class="panel-head">
-                  <h3>Equity Curve</h3>
-                  <span>Paper ledger</span>
-                </div>
-                <canvas id="equity-chart" width="720" height="260"></canvas>
-              </div>
+                <section class="desk-grid lower terminal-bottom">
+                  <div class="panel">
+                    <div class="panel-head">
+                      <h3>Recent Decisions</h3>
+                      <span id="overview-decision-count">0 decisions</span>
+                    </div>
+                    <div class="table-wrap">
+                      <table>
+                        <thead><tr><th>Symbol</th><th>Action</th><th>Conf.</th><th>Tech</th><th>Sent.</th></tr></thead>
+                        <tbody id="overview-decisions-body"></tbody>
+                      </table>
+                    </div>
+                  </div>
 
-              <div class="panel">
-                <div class="panel-head">
-                  <h3>Agent Console</h3>
-                  <span id="console-status">monitoring</span>
-                </div>
-                <div id="agent-console" class="console-grid"></div>
-              </div>
-            </section>
+                  <div class="panel">
+                    <div class="panel-head">
+                      <h3>Market Breadth</h3>
+                      <span id="breadth-status">neutral</span>
+                    </div>
+                    <div id="market-breadth-panel" class="breadth-panel"></div>
+                  </div>
+                </section>
+              </section>
 
-            <section class="desk-grid lower">
-              <div class="panel">
-                <div class="panel-head">
-                  <h3>Market Breadth</h3>
-                  <span id="breadth-status">neutral</span>
-                </div>
-                <div id="market-breadth-panel" class="breadth-panel"></div>
-              </div>
+              <aside class="signal-rail" aria-label="Signal and risk rail">
+                <section class="ops-grid" aria-label="Operating state">
+                  <button class="ops-card" type="button" data-detail-type="feed-health"><span>Market Feed</span><strong id="ops-feed">-</strong><small id="ops-feed-meta">waiting</small></button>
+                  <button class="ops-card" type="button" data-detail-type="llm-health"><span>LLM Brain</span><strong id="ops-llm">-</strong><small id="ops-llm-meta">decision mode</small></button>
+                  <button class="ops-card" type="button" data-detail-type="risk-health"><span>Risk Guard</span><strong id="ops-risk">-</strong><small id="ops-risk-meta">position rules</small></button>
+                  <button class="ops-card" type="button" data-detail-type="macro-health"><span>Global Risk</span><strong id="ops-macro">-</strong><small id="ops-macro-meta">macro context</small></button>
+                  <button class="ops-card" type="button" data-detail-type="cycle-health"><span>Agent Cycle</span><strong id="ops-cycle">-</strong><small id="ops-cycle-meta">not run yet</small></button>
+                </section>
 
-              <div class="panel">
-                <div class="panel-head">
-                  <h3>Sector Rotation</h3>
-                  <span id="sector-status">waiting</span>
+                <div class="panel">
+                  <div class="panel-head">
+                    <h3>Agent Console</h3>
+                    <span id="console-status">monitoring</span>
+                  </div>
+                  <div id="agent-console" class="console-grid"></div>
                 </div>
-                <div id="sector-rotation-panel" class="sector-panel"></div>
-              </div>
-            </section>
 
-            <section class="desk-grid lower">
-              <div class="panel">
-                <div class="panel-head">
-                  <h3>Recent Decisions</h3>
-                  <span id="overview-decision-count">0 decisions</span>
+                <div class="panel">
+                  <div class="panel-head">
+                    <h3>Sector Rotation</h3>
+                    <span id="sector-status">waiting</span>
+                  </div>
+                  <div id="sector-rotation-panel" class="sector-panel"></div>
                 </div>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>Symbol</th><th>Action</th><th>Conf.</th><th>Tech</th><th>Sent.</th></tr></thead>
-                    <tbody id="overview-decisions-body"></tbody>
-                  </table>
-                </div>
-              </div>
 
-              <div class="panel">
-                <div class="panel-head">
-                  <h3>Strategy Tracking</h3>
-                  <span id="strategy-count">0 strategies</span>
+                <div class="panel">
+                  <div class="panel-head">
+                    <h3>Strategy Tracking</h3>
+                    <span id="strategy-count">0 strategies</span>
+                  </div>
+                  <div class="table-wrap strategy-mini">
+                    <table>
+                      <thead><tr><th>Strategy</th><th>Open</th><th>Exposure</th><th>Unrealized</th><th>Realized</th><th>Orders</th></tr></thead>
+                      <tbody id="strategies-body"></tbody>
+                    </table>
+                  </div>
                 </div>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>Strategy</th><th>Open</th><th>Exposure</th><th>Unrealized</th><th>Realized</th><th>Orders</th></tr></thead>
-                    <tbody id="strategies-body"></tbody>
-                  </table>
-                </div>
-              </div>
-            </section>
+              </aside>
+            </div>
           </section>
 
           <section id="suggestions-view" class="view">
@@ -412,6 +421,6 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
-    <script src="/static/dashboard.js"></script>
+    <script src="/static/dashboard.js?v=terminal-desk-3"></script>
   </body>
 </html>
