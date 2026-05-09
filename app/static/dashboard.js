@@ -7,6 +7,15 @@ const state = {
   users: [],
   socket: null,
   quoteFilter: "",
+  activeSettingsTab: "broker",
+};
+
+const SETTINGS_TAB_CATEGORIES = {
+  broker: new Set(["Market Data", "Live Protection"]),
+  runtime: new Set(["Runtime", "Agent Cycle"]),
+  ai: new Set(["LLM Brain", "Sentiment", "Global Intelligence", "Institutional Feeds"]),
+  risk: new Set(["Risk"]),
+  access: new Set(["Access Control"]),
 };
 
 const money = new Intl.NumberFormat("en-IN", {
@@ -584,7 +593,10 @@ function escapeHtml(value) {
 
 function renderSettings(config) {
   state.config = config;
-  const form = byId("settings-form");
+  for (const tabName of ["broker", "runtime", "ai", "risk", "access"]) {
+    const target = byId(`settings-fields-${tabName}`);
+    if (target) target.innerHTML = "";
+  }
   const groups = new Map();
   for (const item of config.schema) {
     const group = groups.get(item.category) || [];
@@ -592,18 +604,47 @@ function renderSettings(config) {
     groups.set(item.category, group);
   }
 
-  form.innerHTML = [...groups.entries()]
-    .map(([category, items]) => {
-      const fields = items.map((item) => renderField(item, config.settings[item.key])).join("");
-      return `<section class="settings-group">
+  for (const [category, items] of groups.entries()) {
+    const tabName = settingsTabForCategory(category);
+    const target = byId(`settings-fields-${tabName}`);
+    if (!target) continue;
+    const fields = items.map((item) => renderField(item, config.settings[item.key])).join("");
+    target.insertAdjacentHTML(
+      "beforeend",
+      `<section class="settings-group">
         <h3>${category}</h3>
         ${fields}
-      </section>`;
-    })
-    .join("");
+      </section>`,
+    );
+  }
+  for (const tabName of ["broker", "runtime", "ai", "risk", "access"]) {
+    const target = byId(`settings-fields-${tabName}`);
+    if (target && !target.innerHTML.trim()) {
+      target.innerHTML = `<div class="empty-state">No settings in this tab.</div>`;
+    }
+  }
   renderUpstoxConnect(config.settings || {});
+  setSettingsTab(state.activeSettingsTab || "broker");
   applyAccessMode();
   renderShell();
+}
+
+function settingsTabForCategory(category) {
+  for (const [tabName, categories] of Object.entries(SETTINGS_TAB_CATEGORIES)) {
+    if (categories.has(category)) return tabName;
+  }
+  return "ai";
+}
+
+function setSettingsTab(tabName) {
+  const next = tabName || "broker";
+  state.activeSettingsTab = next;
+  for (const button of document.querySelectorAll(".settings-tab")) {
+    button.classList.toggle("active", button.dataset.settingsTab === next);
+  }
+  for (const panel of document.querySelectorAll(".settings-tab-panel")) {
+    panel.classList.toggle("active", panel.dataset.settingsPanel === next);
+  }
 }
 
 function renderUpstoxConnect(settings) {
@@ -1846,6 +1887,9 @@ function bindControls() {
   }
   for (const button of document.querySelectorAll("[data-view-jump]")) {
     button.addEventListener("click", () => setView(button.dataset.viewJump));
+  }
+  for (const button of document.querySelectorAll(".settings-tab")) {
+    button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab));
   }
   for (const tile of document.querySelectorAll(".kpi")) {
     tile.addEventListener("click", () => {
