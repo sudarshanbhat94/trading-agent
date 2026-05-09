@@ -163,7 +163,9 @@ class PaperBroker:
         cash_before = self.cash
         sizing_plan = _sizing_plan_from_decision(decision, portfolio_equity, max_order_value)
         spend = min(max_order_value, max_position_value - current_value, cash_before, sizing_plan["max_notional"])
-        qty = min(int(spend // decision.price), int(sizing_plan["risk_qty"]))
+        fill_price = _paper_fill_price(decision.price, "BUY", self.settings)
+        unit_cash_required = fill_price * (1 + (_fee_bps(self.settings) / 10_000))
+        qty = min(int(spend // unit_cash_required), int(sizing_plan["risk_qty"]))
         if qty <= 0:
             self.db.insert_order(
                 decision.symbol,
@@ -183,10 +185,15 @@ class PaperBroker:
                         "max_position_value_remaining": round(max_position_value - current_value, 2),
                         "planned_spend": round(spend, 2),
                         "price": decision.price,
+                        "fill_price_after_slippage": round(fill_price, 4),
+                        "unit_cash_required_with_costs": round(unit_cash_required, 4),
                     },
                 ),
             )
             return False
+        gross_notional = qty * fill_price
+        estimated_costs = _trade_cost(gross_notional, self.settings)
+        cash_after = cash_before - gross_notional - estimated_costs
 
         with self.db.connect() as conn:
             existing = conn.execute(
@@ -195,14 +202,14 @@ class PaperBroker:
             ).fetchone()
             if existing:
                 new_qty = existing["qty"] + qty
-                new_avg = ((existing["qty"] * existing["avg_price"]) + (qty * decision.price)) / new_qty
+                new_avg = ((existing["qty"] * existing["avg_price"]) + (qty * fill_price)) / new_qty
                 conn.execute(
                     """
                     update positions
                     set strategy = ?, qty = ?, avg_price = ?, market_price = ?, updated_at = ?, details_json = ?
                     where symbol = ?
                     """,
-                    (decision.strategy, new_qty, new_avg, decision.price, utc_now(), _position_details_json(decision), decision.symbol),
+                    (decision.strategy, new_qty, new_avg, fill_price, utc_now(), _position_details_json(decision), decision.symbol),
                 )
             else:
                 conn.execute(
@@ -210,20 +217,20 @@ class PaperBroker:
                     insert into positions (symbol, strategy, qty, avg_price, market_price, realized_pnl, updated_at, details_json)
                     values (?, ?, ?, ?, ?, 0, ?, ?)
                     """,
-                    (decision.symbol, decision.strategy, qty, decision.price, decision.price, utc_now(), _position_details_json(decision)),
+                    (decision.symbol, decision.strategy, qty, fill_price, fill_price, utc_now(), _position_details_json(decision)),
                 )
             conn.execute(
                 """
                 insert into agent_state (key, value) values ('cash', ?)
                 on conflict(key) do update set value = excluded.value
                 """,
-                (str(cash_before - (qty * decision.price)),),
+                (str(cash_after),),
             )
         self.db.insert_order(
             decision.symbol,
             "BUY",
             qty,
-            decision.price,
+            fill_price,
             "FILLED",
             decision.reason,
             decision.strategy,
@@ -238,7 +245,7 @@ class PaperBroker:
                     "sizing": {
                         "portfolio_equity": round(portfolio_equity, 2),
                         "cash_before": round(cash_before, 2),
-                        "cash_after": round(cash_before - (qty * decision.price), 2),
+                        "cash_after": round(cash_after, 2),
                         "current_position_value_before": round(current_value, 2),
                         "max_position_pct": max_position_pct,
                         "max_position_value": round(max_position_value, 2),
@@ -248,7 +255,10 @@ class PaperBroker:
                         "sizing_grade": sizing_grade,
                         "planned_spend": round(spend, 2),
                         "filled_qty": qty,
-                        "filled_notional": round(qty * decision.price, 2),
+                        "decision_price": decision.price,
+                        "filled_notional": round(gross_notional, 2),
+                        "estimated_costs": round(estimated_costs, 2),
+                        "cost_model": _cost_model(self.settings),
                     },
                 },
             ),
@@ -279,28 +289,31 @@ class PaperBroker:
 
             qty = int(row["qty"])
             strategy = row["strategy"] or decision.strategy
-            proceeds = qty * decision.price
-            realized = row["realized_pnl"] + (decision.price - row["avg_price"]) * qty
+            fill_price = _paper_fill_price(decision.price, "SELL", self.settings)
+            proceeds = qty * fill_price
+            estimated_costs = _trade_cost(proceeds, self.settings)
+            net_proceeds = proceeds - estimated_costs
+            realized = row["realized_pnl"] + (fill_price - row["avg_price"]) * qty - estimated_costs
             conn.execute(
                 """
                 update positions
                 set qty = 0, market_price = ?, realized_pnl = ?, updated_at = ?
                 where symbol = ?
                 """,
-                (decision.price, realized, utc_now(), decision.symbol),
+                (fill_price, realized, utc_now(), decision.symbol),
             )
             conn.execute(
                 """
                 insert into agent_state (key, value) values ('cash', ?)
                 on conflict(key) do update set value = excluded.value
                 """,
-                (str(cash_before + proceeds),),
+                (str(cash_before + net_proceeds),),
             )
         self.db.insert_order(
             decision.symbol,
             "SELL",
             qty,
-            decision.price,
+            fill_price,
             "FILLED",
             decision.reason,
             strategy,
@@ -310,11 +323,14 @@ class PaperBroker:
                     "risk_checks": {"long_position_exists": True},
                     "sizing": {
                         "cash_before": round(cash_before, 2),
-                        "cash_after": round(cash_before + proceeds, 2),
+                        "cash_after": round(cash_before + net_proceeds, 2),
                         "filled_qty": qty,
                         "avg_price": round(float(row["avg_price"]), 2),
-                        "filled_price": decision.price,
+                        "decision_price": decision.price,
+                        "filled_price": fill_price,
                         "filled_notional": round(proceeds, 2),
+                        "estimated_costs": round(estimated_costs, 2),
+                        "cost_model": _cost_model(self.settings),
                         "realized_pnl_after": round(realized, 2),
                     },
                 },
@@ -347,16 +363,19 @@ class PaperBroker:
         pct = max(min(float(pct_of_position), 1.0), 0.0)
         cash_before = self.cash
         price = float(decision.price if decision else 0.0)
+        fill_price = _paper_fill_price(price, "SELL", self.settings) if price > 0 else 0.0
         with self.db.connect() as conn:
             row = conn.execute("select * from positions where symbol = ?", (symbol,)).fetchone()
-            if not row or row["qty"] <= 0 or price <= 0:
+            if not row or row["qty"] <= 0 or fill_price <= 0:
                 self.db.insert_order(symbol, "SELL", 0, price, "VETOED", "partial sell unavailable", strategy, "{}")
                 return False
             qty = max(int(int(row["qty"]) * pct), 1)
             qty = min(qty, int(row["qty"]))
             remaining = int(row["qty"]) - qty
-            proceeds = qty * price
-            realized = row["realized_pnl"] + (price - row["avg_price"]) * qty
+            proceeds = qty * fill_price
+            estimated_costs = _trade_cost(proceeds, self.settings)
+            net_proceeds = proceeds - estimated_costs
+            realized = row["realized_pnl"] + (fill_price - row["avg_price"]) * qty - estimated_costs
             details = _json_object(row["details_json"])
             if pct <= 0.34 and not details.get("tier1_hit"):
                 details["tier1_hit"] = True
@@ -369,20 +388,20 @@ class PaperBroker:
                 set qty = ?, market_price = ?, realized_pnl = ?, updated_at = ?, details_json = ?
                 where symbol = ?
                 """,
-                (remaining, price, realized, utc_now(), json.dumps(details, default=str, separators=(",", ":")), symbol),
+                (remaining, fill_price, realized, utc_now(), json.dumps(details, default=str, separators=(",", ":")), symbol),
             )
             conn.execute(
                 """
                 insert into agent_state (key, value) values ('cash', ?)
                 on conflict(key) do update set value = excluded.value
                 """,
-                (str(cash_before + proceeds),),
+                (str(cash_before + net_proceeds),),
             )
         self.db.insert_order(
             symbol,
             "SELL",
             qty,
-            price,
+            fill_price,
             "FILLED",
             reason,
             strategy,
@@ -393,10 +412,13 @@ class PaperBroker:
                     "partial_sell": True,
                     "pct_of_position": pct,
                     "cash_before": round(cash_before, 2),
-                    "cash_after": round(cash_before + proceeds, 2),
+                    "cash_after": round(cash_before + net_proceeds, 2),
                     "remaining_qty": remaining,
                     "filled_qty": qty,
                     "filled_notional": round(proceeds, 2),
+                    "decision_price": price,
+                    "estimated_costs": round(estimated_costs, 2),
+                    "cost_model": _cost_model(self.settings),
                 },
             ),
         )
@@ -507,7 +529,12 @@ def _sizing_plan_from_decision(decision: Decision, portfolio_equity: float, max_
 
 def _sizing_grade_from_decision(decision: Decision) -> dict[str, Any]:
     details = _json_object(decision.details_json)
-    sizing = details.get("sizing_grade") or (details.get("risk_gates") or {}).get("sizing_grade") or {}
+    sizing = (
+        details.get("sizing_grade")
+        or (details.get("risk_gates") or {}).get("sizing_grade")
+        or (details.get("context") or {}).get("sizing_grade")
+        or {}
+    )
     return sizing if isinstance(sizing, dict) else {}
 
 
@@ -550,6 +577,34 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _paper_fill_price(price: float, side: str, settings: Settings) -> float:
+    slippage = max(float(settings.slippage_bps or 0.0), 0.0) / 10_000
+    multiplier = 1 + slippage if side.upper() == "BUY" else 1 - slippage
+    return round(max(float(price) * multiplier, 0.01), 4)
+
+
+def _fee_bps(settings: Settings) -> float:
+    return (
+        max(float(settings.brokerage_bps or 0.0), 0.0)
+        + max(float(settings.taxes_bps or 0.0), 0.0)
+        + max(float(settings.stt_bps or 0.0), 0.0)
+    )
+
+
+def _trade_cost(notional: float, settings: Settings) -> float:
+    return max(float(notional), 0.0) * (_fee_bps(settings) / 10_000)
+
+
+def _cost_model(settings: Settings) -> dict[str, float]:
+    return {
+        "brokerage_bps": float(settings.brokerage_bps or 0.0),
+        "slippage_bps": float(settings.slippage_bps or 0.0),
+        "taxes_bps": float(settings.taxes_bps or 0.0),
+        "stt_bps": float(settings.stt_bps or 0.0),
+        "fee_bps_charged_on_notional": round(_fee_bps(settings), 4),
+    }
 
 
 def _decision_summary(decision: Decision) -> dict[str, Any]:

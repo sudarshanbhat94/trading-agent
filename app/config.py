@@ -75,6 +75,11 @@ class Settings:
     upstox_order_base_url: str = os.getenv("UPSTOX_ORDER_BASE_URL", "https://api-hft.upstox.com/v2").rstrip("/")
     upstox_candle_interval: str = os.getenv("UPSTOX_CANDLE_INTERVAL", "30minute")
     upstox_candle_lookback_days: int = _int("UPSTOX_CANDLE_LOOKBACK_DAYS", 3)
+    enable_upstox_multi_timeframe_candles: bool = _bool("ENABLE_UPSTOX_MULTI_TIMEFRAME_CANDLES", True)
+    upstox_daily_candle_lookback_days: int = _int("UPSTOX_DAILY_CANDLE_LOOKBACK_DAYS", 420)
+    upstox_weekly_candle_lookback_days: int = _int("UPSTOX_WEEKLY_CANDLE_LOOKBACK_DAYS", 1100)
+    upstox_candle_concurrency: int = _int("UPSTOX_CANDLE_CONCURRENCY", 10)
+    upstox_candle_fetch_timeout_seconds: int = _int("UPSTOX_CANDLE_FETCH_TIMEOUT_SECONDS", 35)
     yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "15m")
     yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
     enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", False)
@@ -128,9 +133,13 @@ class Settings:
     upstox_order_product: str = os.getenv("UPSTOX_ORDER_PRODUCT", "D")
     upstox_order_validity: str = os.getenv("UPSTOX_ORDER_VALIDITY", "DAY")
     upstox_order_type: str = os.getenv("UPSTOX_ORDER_TYPE", "MARKET")
+    brokerage_bps: float = _float("BROKERAGE_BPS", 0.0)
+    slippage_bps: float = _float("SLIPPAGE_BPS", 5.0)
+    taxes_bps: float = _float("TAXES_BPS", 1.0)
+    stt_bps: float = _float("STT_BPS", 10.0)
 
     llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
-    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "primary").strip().lower()
+    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "review").strip().lower()
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
@@ -191,6 +200,11 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "upstox_order_base_url", "label": "Upstox Order URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_candle_interval", "label": "Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},
     {"key": "upstox_candle_lookback_days", "label": "Candle Lookback Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "enable_upstox_multi_timeframe_candles", "label": "Multi-Timeframe Candles", "type": "boolean", "category": "Market Data"},
+    {"key": "upstox_daily_candle_lookback_days", "label": "Daily Lookback Days", "type": "number", "category": "Market Data", "min": 30, "step": 30},
+    {"key": "upstox_weekly_candle_lookback_days", "label": "Weekly Lookback Days", "type": "number", "category": "Market Data", "min": 180, "step": 30},
+    {"key": "upstox_candle_concurrency", "label": "Candle Fetch Concurrency", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "upstox_candle_fetch_timeout_seconds", "label": "Candle Fetch Timeout", "type": "number", "category": "Market Data", "min": 5, "step": 5},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "offline"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "deepseek_api_key", "label": "DeepSeek API Key", "type": "secret", "category": "LLM Brain"},
@@ -215,6 +229,10 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "stop_loss_pct", "label": "Stop Loss %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},
     {"key": "take_profit_pct", "label": "Take Profit %", "type": "number", "category": "Risk", "min": 0, "max": 2, "step": 0.005},
     {"key": "daily_loss_limit_pct", "label": "Daily Loss Limit %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},
+    {"key": "brokerage_bps", "label": "Brokerage Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
+    {"key": "slippage_bps", "label": "Slippage Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
+    {"key": "taxes_bps", "label": "Taxes/Fees Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
+    {"key": "stt_bps", "label": "STT Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
     {"key": "enable_news_sentiment", "label": "News Sentiment", "type": "boolean", "category": "Sentiment"},
     {"key": "enable_llm_sentiment", "label": "LLM Sentiment", "type": "boolean", "category": "Sentiment"},
     {"key": "news_cache_seconds", "label": "News Cache Seconds", "type": "number", "category": "Sentiment", "min": 60, "step": 60},
@@ -263,7 +281,7 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return provider if provider in {"deepseek", "offline"} else "deepseek"
     if key == "llm_decision_mode":
         mode = str(value).strip().lower()
-        return mode if mode in {"offline", "review", "primary"} else "primary"
+        return mode if mode in {"offline", "review", "primary"} else "review"
     if key == "deepseek_model":
         model = str(value).strip()
         return model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else "deepseek-v4-pro"

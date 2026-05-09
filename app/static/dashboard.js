@@ -151,10 +151,27 @@ function render(payload) {
   renderOrders(orders);
   renderMarketBreadth(payload.market_breadth || {});
   renderSectorRotation(payload.sector_rotation_context || {});
+  renderPerformance(payload.performance || {});
   renderMacroEvents(payload.upcoming_macro_events || []);
   renderAgentConsole(payload);
   renderShell(payload);
   drawEquity(payload.equity_curve || []);
+}
+
+function renderPerformance(performance) {
+  const panel = byId("performance-panel");
+  if (!panel) return;
+  const orders = performance.orders || {};
+  const pnl = performance.pnl || {};
+  const positions = performance.positions || {};
+  byId("performance-status").textContent = `${orders.filled || 0} fills`;
+  panel.innerHTML = `
+    <button type="button" data-performance-detail="fills"><span>Filled</span><strong>${fmtNumber(orders.filled)}</strong><small>${fmtNumber(orders.vetoed)} vetoed</small></button>
+    <button type="button" data-performance-detail="win"><span>Win Rate</span><strong>${fmtPct(Number(pnl.win_rate || 0) * 100)}</strong><small>${fmtNumber(positions.closed)} closed</small></button>
+    <button type="button" data-performance-detail="realized"><span>Realized</span><strong class="${pnlClass(pnl.realized)}">${fmtMoney(pnl.realized)}</strong><small>${fmtMoney(pnl.expectancy_per_closed_trade)} expectancy</small></button>
+    <button type="button" data-performance-detail="dd"><span>Max DD</span><strong class="${pnlClass(pnl.max_drawdown_pct)}">${fmtPct(pnl.max_drawdown_pct)}</strong><small>equity curve</small></button>
+  `;
+  panel.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => showDetails("Trade Scoreboard", performance)));
 }
 
 function renderMarketBreadth(breadth) {
@@ -1509,6 +1526,9 @@ function fullSpectrumHtml(analysis) {
   const liquidity = analysis.liquidity_profile || {};
   const conflicts = analysis.signal_conflicts || {};
   const scorecard = analysis.institutional_scorecard || {};
+  const timeframeData = analysis.timeframe_data || {};
+  const backtest = analysis.backtest_snapshot || {};
+  const bestBacktest = backtest.best_strategy_backtest || {};
   const stage = analysis.stage_analysis || {};
   const entry = analysis.entry_quality || {};
   const breakout = analysis.breakout_quality || {};
@@ -1524,6 +1544,8 @@ function fullSpectrumHtml(analysis) {
       <div class="audit-card"><span>PV Divergence</span><strong class="${pnlClass(divergence.divergence_score)}">${fmtNumber(divergence.divergence_score)}</strong><small>climax ${escapeHtml(String(Boolean(divergence.climax_volume_top)))}</small></div>
       <div class="audit-card"><span>MTF Alignment</span><strong class="grade-${escapeHtml(alignment.alignment_grade || "D")}">${escapeHtml(alignment.alignment_grade || "-")}</strong><small>${escapeHtml(shortValue(alignment.timeframes || {}, 120))}</small></div>
       <div class="audit-card"><span>Sector</span><strong class="${sector.sector_tailwind ? "positive" : sector.sector_headwind ? "negative" : ""}">${escapeHtml(sector.sector_tier || "-")}</strong><small>${escapeHtml(`${sector.sector_stage || "-"} · rank ${sector.sector_rank || "-"}`)}</small></div>
+      <div class="audit-card"><span>Timeframes</span><strong>${fmtNumber(timeframeData.daily_candle_count)}D/${fmtNumber(timeframeData.weekly_candle_count)}W</strong><small>${escapeHtml(timeframeData.analysis_source || "-")}</small></div>
+      <div class="audit-card"><span>Best Backtest</span><strong>${escapeHtml(bestBacktest.strategy || "-")}</strong><small>${fmtNumber(bestBacktest.expectancy_pct)}% exp · ${fmtNumber(bestBacktest.trades)} trades</small></div>
       <div class="audit-card"><span>Confluence</span><strong>${escapeHtml(confluence.total ?? "-")}/26</strong><small>${escapeHtml(confluence.tier || "-")}</small></div>
       <div class="audit-card"><span>Institutional Score</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(`${scorecard.grade || "-"} · ${scorecard.buy_ready ? "buy ready" : "not ready"}`)}</small></div>
       <div class="audit-card"><span>Daily Trend</span><strong>${escapeHtml(trend.daily || "-")}</strong><small>${escapeHtml(trend.structure || "-")}</small></div>
@@ -1537,6 +1559,7 @@ function fullSpectrumHtml(analysis) {
     ${objectCardsHtml("Breakout Quality", breakout)}
     ${objectCardsHtml("Price-Volume Divergence", divergence)}
     ${objectCardsHtml("Multi-Timeframe Alignment", alignment)}
+    ${objectCardsHtml("Timeframe Data", timeframeData)}
     ${objectCardsHtml("Sector Rotation", sector)}
     ${objectCardsHtml("Confluence Breakdown", confluence.breakdown)}
     ${objectCardsHtml("Prompt v2 Requirement Coverage", analysis.requirement_coverage)}

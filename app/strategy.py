@@ -33,12 +33,15 @@ class StrategyEngine:
         market_breadth: dict[str, Any] | None = None,
         sector_rotation_context: dict[str, Any] | None = None,
         macro_calendar: Any | None = None,
+        timeframe_candles_by_symbol: dict[str, dict[str, list[Candle]]] | None = None,
+        portfolio_equity: float | None = None,
     ) -> list[Decision]:
         sentiment_scores = await self.sentiment.scores_for_cycle(universe)
         decisions: list[Decision] = []
         llm_reviews = 0
         llm_primary = self.settings.llm_decision_mode == "primary" and self.llm.enabled
         candles_by_symbol = candles_by_symbol or {}
+        timeframe_candles_by_symbol = timeframe_candles_by_symbol or {}
         risk_limits = {
             "max_positions": self.settings.max_positions,
             "max_position_pct": self.settings.max_position_pct,
@@ -50,6 +53,8 @@ class StrategyEngine:
             "global_risk_weight": self.settings.global_risk_weight,
             "institutional_risk_weight": self.settings.institutional_risk_weight,
             "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
+            "portfolio_equity": portfolio_equity or 0.0,
+            "execution_cost_bps": _execution_cost_bps(self.settings),
         }
 
         scan_items: list[dict[str, Any]] = []
@@ -63,7 +68,12 @@ class StrategyEngine:
                 continue
             self._history[symbol].append(quote.price)
             sentiment_score = sentiment_scores.get(symbol, 0.0)
-            candles = candles_by_symbol.get(symbol, [])
+            timeframe_candles = timeframe_candles_by_symbol.get(symbol, {})
+            candles = (
+                timeframe_candles.get("analysis")
+                or timeframe_candles.get("daily")
+                or candles_by_symbol.get(symbol, [])
+            )
             if candles:
                 history = [candle.close for candle in candles]
             else:
@@ -103,6 +113,7 @@ class StrategyEngine:
                 sector_context=sector_context,
                 market_breadth=market_breadth,
                 macro_event_context=macro_event_context,
+                timeframe_candles=timeframe_candles,
             )
             context["pre_filter"] = pre_filter
             combined = deterministic_score(context)
@@ -157,15 +168,24 @@ class StrategyEngine:
                 llm_decision = await self.llm.decide(context)
                 llm_reviews += 1
                 llm_audit = _json_object(llm_decision.details_json)
+                llm_failed = bool(llm_audit.get("llm_error")) or llm_audit.get("decision_path") == "safe_hold"
                 context["llm_primary_review"] = {
                     "reviewed": True,
                     "llm_action": llm_decision.action,
                     "llm_reason": llm_decision.reason,
                     "llm_error": llm_audit.get("llm_error"),
                     "json_synthetic": bool(llm_audit.get("json_synthetic")),
+                    "deterministic_action_preserved": llm_failed and item["action"] != "HOLD",
                 }
-                decisions.append(llm_decision)
-                continue
+                if not (llm_failed and item["action"] != "HOLD"):
+                    decisions.append(llm_decision)
+                    continue
+                context["llm_primary_fallback"] = {
+                    "preserved_deterministic_action": item["action"],
+                    "llm_action": llm_decision.action,
+                    "llm_reason": llm_decision.reason,
+                    "reason": "llm_failed_or_timed_out_deterministic_trade_preserved",
+                }
 
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
@@ -202,13 +222,12 @@ class StrategyEngine:
                     "required": True,
                     "reviewed": item["symbol"] in llm_candidate_symbols,
                     "original_action": item["action"],
-                    "final_action": "HOLD",
-                    "reason": "llm_primary_required_no_unreviewed_trade",
+                    "final_action": item["action"],
+                    "reason": "deterministic_action_allowed_when_llm_not_selected_or_unavailable",
                 }
-                action = "HOLD"
-                confidence = 0.0
-                reason = f"{reason}, llm_primary_required_no_unreviewed_trade"
-                decision_path = "llm_primary_required_hold"
+                if item["symbol"] not in llm_candidate_symbols:
+                    reason = f"{reason}, llm_not_selected_due_candidate_limit_deterministic_action_allowed"
+                    decision_path = "deterministic_llm_not_selected"
             decision = Decision(
                 symbol=item["symbol"],
                 action=action,
@@ -786,6 +805,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "institutional_context": context.get("institutional_context"),
         "market_breadth_context": context.get("market_breadth_context"),
         "macro_event_context": context.get("macro_event_context"),
+        "timeframe_data": context.get("timeframe_data"),
         "sector_rotation": context.get("sector_rotation"),
         "delivery_data": context.get("delivery_data"),
         "pre_filter": context.get("pre_filter"),
@@ -819,6 +839,16 @@ def _round(value: Any, digits: int = 4) -> float | None:
         return round(float(value), digits)
     except (TypeError, ValueError):
         return None
+
+
+def _execution_cost_bps(settings: Settings) -> float:
+    return round(
+        max(float(settings.brokerage_bps or 0.0), 0.0)
+        + max(float(settings.slippage_bps or 0.0), 0.0)
+        + max(float(settings.taxes_bps or 0.0), 0.0)
+        + max(float(settings.stt_bps or 0.0), 0.0),
+        4,
+    )
 
 
 def _atr(candles: list[Candle], period: int = 14) -> float | None:

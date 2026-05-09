@@ -25,14 +25,20 @@ def build_symbol_tool_context(
     sector_context: dict[str, Any] | None = None,
     market_breadth: dict[str, Any] | None = None,
     macro_event_context: dict[str, Any] | None = None,
+    timeframe_candles: dict[str, list[Candle]] | None = None,
 ) -> dict[str, Any]:
-    closes = [candle.close for candle in candles] or [quote.price]
-    highs = [candle.high for candle in candles]
-    lows = [candle.low for candle in candles]
-    volumes = [candle.volume for candle in candles]
+    timeframe_candles = timeframe_candles or {}
+    analysis_candles = timeframe_candles.get("analysis") or timeframe_candles.get("daily") or candles
+    intraday_candles = timeframe_candles.get("intraday") or []
+    daily_candles = timeframe_candles.get("daily") or analysis_candles
+    weekly_candles = timeframe_candles.get("weekly") or []
+    closes = [candle.close for candle in analysis_candles] or [quote.price]
+    highs = [candle.high for candle in analysis_candles]
+    lows = [candle.low for candle in analysis_candles]
+    volumes = [candle.volume for candle in analysis_candles]
     technical = technical_snapshot(closes, highs, lows, volumes)
-    candle_tools = _candle_tools(candles)
-    strategy_signals = evaluate_strategy_presets(candles, quote.price)
+    candle_tools = _candle_tools(analysis_candles)
+    strategy_signals = evaluate_strategy_presets(analysis_candles, quote.price)
     best_strategy = choose_best_strategy(strategy_signals)
     normalized_global_context = global_context or {
         "enabled": False,
@@ -52,7 +58,7 @@ def build_symbol_tool_context(
     full_spectrum = full_spectrum_analysis(
         row=row,
         quote=quote,
-        candles=candles,
+        candles=analysis_candles,
         technical=technical_dict,
         candle_tools=candle_tools,
         strategy_signals=strategy_signal_dicts,
@@ -65,6 +71,12 @@ def build_symbol_tool_context(
         sector_context=sector_context,
         market_breadth=market_breadth,
         macro_event_context=macro_event_context,
+        timeframe_candles={
+            "intraday": intraday_candles,
+            "daily": daily_candles,
+            "weekly": weekly_candles,
+            "analysis": analysis_candles,
+        },
     )
     return {
         "tool_protocol": "mcp-style-json-context",
@@ -86,9 +98,19 @@ def build_symbol_tool_context(
         "sector_rotation": sector_context or {},
         "market_breadth_context": market_breadth or {},
         "macro_event_context": macro_event_context or {},
+        "timeframe_data": {
+            "analysis_candle_count": len(analysis_candles),
+            "intraday_candle_count": len(intraday_candles),
+            "daily_candle_count": len(daily_candles),
+            "weekly_candle_count": len(weekly_candles),
+            "analysis_source": analysis_candles[-1].source if analysis_candles else None,
+            "intraday_source": intraday_candles[-1].source if intraday_candles else None,
+            "daily_source": daily_candles[-1].source if daily_candles else None,
+            "weekly_source": weekly_candles[-1].source if weekly_candles else None,
+        },
         "full_spectrum_analysis": full_spectrum,
         "risk_limits": risk_limits,
-        "recent_candles": [candle.to_dict() for candle in candles[-24:]],
+        "recent_candles": [candle.to_dict() for candle in analysis_candles[-24:]],
     }
 
 

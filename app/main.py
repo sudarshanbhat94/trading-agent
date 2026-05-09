@@ -249,6 +249,11 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     news = await sentiment.analyze_symbol_news(row)
     db.upsert_quotes(quotes)
     db.upsert_candles(candles)
+    candle_sets = db.recent_candle_sets_by_symbol([symbol])
+    analysis_candles = {
+        item_symbol: sets.get("analysis") or sets.get("daily") or sets.get("intraday") or []
+        for item_symbol, sets in candle_sets.items()
+    }
     macro_context = db.get_state("macro_context", {})
     institutional_context = db.get_state("institutional_context", {})
     options_context = db.get_state("options_intelligence_context", {})
@@ -256,7 +261,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         [row],
         quotes,
         broker.positions_by_symbol(),
-        candles,
+        analysis_candles,
         macro_context,
         institutional_context,
         options_context,
@@ -264,6 +269,8 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         db.get_state("market_breadth_context", {}),
         db.get_state("sector_rotation_context", {}),
         macro_calendar,
+        candle_sets,
+        (db.latest_portfolio() or {}).get("equity"),
     )
     if not decisions:
         raise HTTPException(status_code=500, detail=f"Analysis produced no decision for {symbol}.")
@@ -289,7 +296,11 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         "message": "Analysis completed. This does not place an order; autonomous cycles still handle trading.",
         "symbol": symbol,
         "quote": quote.to_dict(),
-        "candle_count": len(candles.get(symbol, [])),
+        "candle_count": len(analysis_candles.get(symbol, [])),
+        "timeframe_candle_counts": {
+            key: len(value)
+            for key, value in (candle_sets.get(symbol) or {}).items()
+        },
         "news": news,
         "provider": quote.source,
         "provider_error": provider_error,
@@ -301,6 +312,12 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 async def account_details(request: Request) -> dict[str, Any]:
     require_user(request, settings, db)
     return await account.snapshot()
+
+
+@app.get("/api/performance")
+async def performance_summary(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return db.performance_summary()
 
 
 @app.get("/api/config")

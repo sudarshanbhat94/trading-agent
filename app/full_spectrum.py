@@ -5,6 +5,7 @@ from statistics import mean, pstdev
 from typing import Any
 
 from .models import Candle, Quote
+from .strategy_backtest import strategy_backtest_snapshot
 
 
 def full_spectrum_analysis(
@@ -23,7 +24,14 @@ def full_spectrum_analysis(
     sector_context: dict[str, Any] | None = None,
     market_breadth: dict[str, Any] | None = None,
     macro_event_context: dict[str, Any] | None = None,
+    timeframe_candles: dict[str, list[Candle]] | None = None,
 ) -> dict[str, Any]:
+    timeframe_candles = timeframe_candles or {}
+    intraday_candles = timeframe_candles.get("intraday") or []
+    daily_candles = timeframe_candles.get("daily") or candles
+    weekly_candles = timeframe_candles.get("weekly") or []
+    analysis_candles = timeframe_candles.get("analysis") or daily_candles or candles
+    candles = analysis_candles
     closes = [candle.close for candle in candles]
     highs = [candle.high for candle in candles]
     lows = [candle.low for candle in candles]
@@ -32,9 +40,20 @@ def full_spectrum_analysis(
     indicators = _indicator_suite(candles)
     key_levels = _key_levels(candles, quote.price)
     trend_context = _trend_context(closes, highs, lows, indicators)
-    timeframe_alignment = _multi_timeframe_alignment(candles, technical)
+    timeframe_alignment = _multi_timeframe_alignment(
+        weekly_candles=weekly_candles,
+        daily_candles=daily_candles,
+        intraday_candles=intraday_candles,
+        fallback_candles=candles,
+    )
     trend_context["timeframe_alignment"] = timeframe_alignment
-    stage_analysis = _stage_analysis(candles, quote.price, technical)
+    stage_analysis = _stage_analysis(
+        candles=candles,
+        quote_price=quote.price,
+        technical=technical,
+        weekly_candles=weekly_candles,
+        daily_candles=daily_candles,
+    )
     price_volume_divergence = _price_volume_divergence(candles, technical)
     entry_quality = _entry_grade(candles, quote.price, indicators)
     breakout_quality = _false_breakout_filter(candles, quote.price)
@@ -50,7 +69,7 @@ def full_spectrum_analysis(
     sector_rotation = _sector_rotation_layer(sector_context)
     relative_strength = _relative_strength(closes, global_context)
     options_oi = _options_oi_layer(flow, options_data, quote.price)
-    backtest = _backtest_snapshot(candles)
+    backtest = _backtest_snapshot(candles, strategy_signals, risk_limits)
     filters = _primary_filters(quote.price, indicators, key_levels, volumes, technical, liquidity, corporate_risk)
     confluence = _confluence_score(
         trend_context=trend_context,
@@ -126,6 +145,16 @@ def full_spectrum_analysis(
     return {
         "version": "opentrade-full-spectrum-v2",
         "symbol": row.get("symbol"),
+        "timeframe_data": {
+            "analysis_candle_count": len(candles),
+            "intraday_candle_count": len(intraday_candles),
+            "daily_candle_count": len(daily_candles),
+            "weekly_candle_count": len(weekly_candles),
+            "analysis_source": candles[-1].source if candles else None,
+            "intraday_source": intraday_candles[-1].source if intraday_candles else None,
+            "daily_source": daily_candles[-1].source if daily_candles else None,
+            "weekly_source": weekly_candles[-1].source if weekly_candles else None,
+        },
         "requirement_coverage": _requirement_coverage(data_quality, global_context, institutional_context),
         "data_quality": data_quality,
         "primary_filters": filters,
@@ -288,8 +317,18 @@ def _trend_context(closes: list[float], highs: list[float], lows: list[float], i
     }
 
 
-def _stage_analysis(candles: list[Candle], quote_price: float, technical: dict[str, Any]) -> dict[str, Any]:
-    if len(candles) < 30:
+def _stage_analysis(
+    candles: list[Candle],
+    quote_price: float,
+    technical: dict[str, Any],
+    weekly_candles: list[Candle] | None = None,
+    daily_candles: list[Candle] | None = None,
+) -> dict[str, Any]:
+    weekly_candles = weekly_candles or []
+    daily_candles = daily_candles or candles
+    source_timeframe = "weekly" if len(weekly_candles) >= 30 else "daily" if len(daily_candles) >= 30 else "fallback"
+    stage_candles = weekly_candles if source_timeframe == "weekly" else daily_candles if source_timeframe == "daily" else candles
+    if len(stage_candles) < 30:
         return {
             "stage": "Stage1_Base",
             "stage_confidence": "low",
@@ -297,18 +336,22 @@ def _stage_analysis(candles: list[Candle], quote_price: float, technical: dict[s
             "sma_slope_pct": None,
             "volume_pattern": "insufficient_history",
             "buy_permitted": False,
+            "source_timeframe": source_timeframe,
             "stage_note": "Need at least 30 candles for Weinstein stage proxy.",
         }
-    proxy = candles[::5] if len(candles) >= 150 else candles[-30:]
+    if source_timeframe == "weekly":
+        proxy = stage_candles
+    else:
+        proxy = stage_candles[::5] if len(stage_candles) >= 150 else stage_candles[-30:]
     closes = [c.close for c in proxy]
     sma = mean(closes[-30:]) if len(closes) >= 30 else mean(closes)
     prior_slice = closes[-35:-5] if len(closes) >= 35 else closes[: max(len(closes) - 5, 1)]
     prior_sma = mean(prior_slice) if prior_slice else sma
     slope_pct = ((sma - prior_sma) / prior_sma) * 100 / 5 if prior_sma else 0.0
-    recent_high = max(c.high for c in candles[-30:])
-    volume_pattern = _stage_volume_pattern(candles)
-    down_volume_days = sum(1 for candle in candles[-10:] if candle.close < candle.open and candle.volume)
-    up_volume_days = sum(1 for candle in candles[-10:] if candle.close > candle.open and candle.volume)
+    recent_high = max(c.high for c in stage_candles[-30:])
+    volume_pattern = _stage_volume_pattern(stage_candles)
+    down_volume_days = sum(1 for candle in stage_candles[-10:] if candle.close < candle.open and candle.volume)
+    up_volume_days = sum(1 for candle in stage_candles[-10:] if candle.close > candle.open and candle.volume)
     near_sma = abs(quote_price - sma) / sma <= 0.05 if sma else False
     near_high = quote_price >= recent_high * 0.92 if recent_high else False
     if quote_price < sma and slope_pct < 0:
@@ -330,27 +373,52 @@ def _stage_analysis(candles: list[Candle], quote_price: float, technical: dict[s
         "sma_slope_pct": _round(slope_pct),
         "volume_pattern": volume_pattern,
         "buy_permitted": stage == "Stage2_Markup",
+        "source_timeframe": source_timeframe,
         "stage_note": f"{stage} from price vs 30-week proxy, slope, and {volume_pattern}.",
     }
 
 
-def _multi_timeframe_alignment(candles: list[Candle], technical: dict[str, Any]) -> dict[str, Any]:
-    weekly = _timeframe_view([c.close for c in candles[::5] if c.close], candles[::5])
-    daily = _timeframe_view([c.close for c in candles if c.close], candles)
-    intraday = _timeframe_view([c.close for c in candles[-16:] if c.close], candles[-16:])
+def _multi_timeframe_alignment(
+    weekly_candles: list[Candle] | None,
+    daily_candles: list[Candle] | None,
+    intraday_candles: list[Candle] | None,
+    fallback_candles: list[Candle],
+) -> dict[str, Any]:
+    weekly_source = weekly_candles or _coarsen_candles(daily_candles or fallback_candles, 5)
+    daily_source = daily_candles or fallback_candles
+    intraday_source = intraday_candles or fallback_candles[-16:]
+    weekly = _timeframe_view([c.close for c in weekly_source if c.close], weekly_source)
+    daily = _timeframe_view([c.close for c in daily_source if c.close], daily_source)
+    intraday = _timeframe_view([c.close for c in intraday_source[-16:] if c.close], intraday_source[-16:])
     views = {"weekly_proxy": weekly, "daily": daily, "intraday_proxy": intraday}
-    up_count = sum(1 for item in views.values() if item.get("direction") == "up")
-    sideways_count = sum(1 for item in views.values() if item.get("direction") == "sideways")
-    down_count = sum(1 for item in views.values() if item.get("direction") == "down")
+    usable_views = {
+        key: value
+        for key, value in views.items()
+        if value.get("direction") not in {None, "unavailable"}
+    }
+    up_count = sum(1 for item in usable_views.values() if item.get("direction") == "up")
+    sideways_count = sum(1 for item in usable_views.values() if item.get("direction") == "sideways")
+    down_count = sum(1 for item in usable_views.values() if item.get("direction") == "down")
+    usable_count = len(usable_views)
     if up_count == 3:
         grade = "A"
-    elif up_count == 2 and sideways_count == 1:
+    elif usable_count >= 2 and up_count >= 2 and down_count == 0:
         grade = "B"
-    elif up_count == 2 and down_count == 1:
+    elif usable_count >= 2 and up_count >= 1 and down_count <= 1:
         grade = "C"
     else:
         grade = "D"
-    return {"timeframes": views, "alignment_score": up_count, "alignment_grade": grade}
+    return {
+        "timeframes": views,
+        "alignment_score": up_count,
+        "alignment_grade": grade,
+        "usable_timeframes": usable_count,
+        "source_counts": {
+            "weekly": len(weekly_source),
+            "daily": len(daily_source),
+            "intraday": len(intraday_source),
+        },
+    }
 
 
 def _price_volume_divergence(candles: list[Candle], technical: dict[str, Any]) -> dict[str, Any]:
@@ -502,7 +570,7 @@ def _stage_volume_pattern(candles: list[Candle]) -> str:
 
 def _timeframe_view(closes: list[float], candles: list[Candle]) -> dict[str, Any]:
     if len(closes) < 5:
-        return {"direction": "sideways", "strength": "weak", "price_vs_20sma": "unknown"}
+        return {"direction": "unavailable", "strength": "weak", "price_vs_20sma": "unknown", "candle_count": len(closes)}
     sma5 = mean(closes[-5:])
     sma20 = mean(closes[-20:]) if len(closes) >= 20 else mean(closes)
     distance = ((sma5 - sma20) / sma20) * 100 if sma20 else 0.0
@@ -515,7 +583,33 @@ def _timeframe_view(closes: list[float], candles: list[Candle]) -> dict[str, Any
         "sma5": _round(sma5),
         "sma20": _round(sma20),
         "adx_proxy": _round(adx_proxy),
+        "candle_count": len(closes),
     }
+
+
+def _coarsen_candles(candles: list[Candle], step: int) -> list[Candle]:
+    if step <= 1 or len(candles) < step:
+        return candles
+    output: list[Candle] = []
+    for index in range(0, len(candles), step):
+        bucket = candles[index : index + step]
+        if not bucket:
+            continue
+        first = bucket[0]
+        last = bucket[-1]
+        output.append(
+            Candle(
+                symbol=first.symbol,
+                ts=last.ts,
+                open=first.open,
+                high=max(item.high for item in bucket),
+                low=min(item.low for item in bucket),
+                close=last.close,
+                volume=sum(float(item.volume or 0) for item in bucket),
+                source=f"{first.source}:coarsened_{step}",
+            )
+        )
+    return output
 
 
 def _obv_series(closes: list[float], volumes: list[float]) -> list[float]:
@@ -1311,9 +1405,15 @@ def _options_oi_layer(
     }
 
 
-def _backtest_snapshot(candles: list[Candle]) -> dict[str, Any]:
+def _backtest_snapshot(
+    candles: list[Candle],
+    strategy_signals: list[dict[str, Any]] | None = None,
+    risk_limits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if len(candles) < 40:
         return {"available": False, "reason": "need at least 40 candles"}
+    cost_bps = float((risk_limits or {}).get("execution_cost_bps") or 0.0)
+    strategy_snapshot = strategy_backtest_snapshot(candles, execution_cost_bps=cost_bps)
     closes = [candle.close for candle in candles]
     trades = []
     position: dict[str, Any] | None = None
@@ -1340,7 +1440,16 @@ def _backtest_snapshot(candles: list[Candle]) -> dict[str, Any]:
             trades.append({"pnl_pct": pnl_pct, "exit": exit_reason})
             position = None
     if not trades:
-        return {"available": True, "trades": 0, "expectancy": 0.0, "win_rate": 0.0, "max_drawdown_proxy": 0.0}
+        return {
+            "available": True,
+            "engine": "per_strategy_daily_backtest_plus_legacy_proxy",
+            "trades": 0,
+            "expectancy": 0.0,
+            "win_rate": 0.0,
+            "max_drawdown_proxy": 0.0,
+            "execution_cost_bps": cost_bps,
+            **strategy_snapshot,
+        }
     wins = [trade for trade in trades if trade["pnl_pct"] > 0]
     expectancy = mean([trade["pnl_pct"] for trade in trades])
     equity = 0.0
@@ -1352,12 +1461,14 @@ def _backtest_snapshot(candles: list[Candle]) -> dict[str, Any]:
         max_drawdown = min(max_drawdown, equity - peak)
     return {
         "available": True,
-        "engine": "simple_sma20_volume_breakout_proxy",
+        "engine": "per_strategy_daily_backtest_plus_legacy_proxy",
         "trades": len(trades),
         "win_rate": _round(len(wins) / len(trades)),
         "expectancy": _round(expectancy),
         "max_drawdown_proxy": _round(max_drawdown),
         "last_5_trades": [{"pnl_pct": _round(trade["pnl_pct"]), "exit": trade["exit"]} for trade in trades[-5:]],
+        "execution_cost_bps": cost_bps,
+        **strategy_snapshot,
     }
 
 
@@ -1714,7 +1825,8 @@ def _fundamental_section(fundamental: dict[str, Any], corporate_risk: dict[str, 
     if bucket == "event_positive":
         score += 4
     elif bucket == "unknown":
-        score += 2
+        score += 1
+        evidence.append("real fundamental ratios unavailable; neutral placeholder capped")
     evidence.append(f"fundamental bucket {bucket or 'unknown'}")
     if not corporate_risk.get("high_impact_risk"):
         score += 2
@@ -1731,9 +1843,13 @@ def _backtest_section(backtest: dict[str, Any]) -> dict[str, Any]:
         return _score_section("backtest_expectancy", "Backtest Snapshot", score, 8, evidence)
     expectancy = float(backtest.get("expectancy") or 0.0)
     win_rate = float(backtest.get("win_rate") or 0.0)
+    best_strategy = backtest.get("best_strategy_backtest") or {}
+    if best_strategy.get("trades"):
+        expectancy = max(expectancy, float(best_strategy.get("expectancy_pct") or 0.0))
+        win_rate = max(win_rate, float(best_strategy.get("win_rate") or 0.0))
     if expectancy > 0:
         score += 4
-        evidence.append("positive expectancy proxy")
+        evidence.append("positive expectancy after cost/slippage")
     elif expectancy == 0:
         score += 2
         evidence.append("flat expectancy proxy")
@@ -1746,6 +1862,8 @@ def _backtest_section(backtest: dict[str, Any]) -> dict[str, Any]:
     if float(backtest.get("max_drawdown_proxy") or 0.0) >= -8:
         score += 2
         evidence.append("drawdown proxy within tolerance")
+    if best_strategy.get("strategy"):
+        evidence.append(f"best tested strategy {best_strategy.get('strategy')}")
     return _score_section("backtest_expectancy", "Backtest Snapshot", score, 8, evidence)
 
 

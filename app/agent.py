@@ -124,7 +124,7 @@ class TradingAgentService:
         candle_counts = {symbol: len(items) for symbol, items in fresh_candles.items()}
         candle_sources: dict[str, int] = {}
         for items in fresh_candles.values():
-            for candle in items[:1]:
+            for candle in items:
                 candle_sources[candle.source] = candle_sources.get(candle.source, 0) + 1
         self._log(
             "INFO",
@@ -137,12 +137,17 @@ class TradingAgentService:
                 "total_candles": sum(candle_counts.values()),
                 "source_counts": candle_sources,
                 "sample_counts": dict(list(candle_counts.items())[:10]),
+                "provider_diagnostics": _market_data_diagnostics(self.market_data),
             },
         )
         self._cycle_phase = "persist_market_data"
         self.db.upsert_quotes(quotes)
         self.db.upsert_candles(fresh_candles)
-        candles = self.db.recent_candles_by_symbol([row["symbol"] for row in universe], limit_per_symbol=96)
+        candle_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
+        candles = {
+            symbol: sets.get("analysis") or sets.get("daily") or sets.get("intraday") or []
+            for symbol, sets in candle_sets.items()
+        }
         self.broker.sync_marks(quotes)
         portfolio = self.broker.snapshot()
         positions = self.broker.positions_by_symbol()
@@ -229,6 +234,8 @@ class TradingAgentService:
             market_breadth_context,
             sector_rotation_context,
             self.macro_calendar,
+            candle_sets,
+            portfolio.get("equity"),
         )
         action_counts: dict[str, int] = {}
         decision_paths: dict[str, int] = {}
@@ -343,6 +350,7 @@ class TradingAgentService:
             "orders": orders,
             "equity_curve": self.db.recent_equity(120),
             "strategy_metrics": self.db.strategy_metrics(),
+            "performance": self.db.performance_summary(),
             "sentiment": self.db.latest_sentiment(40),
             "universe_size": len(self.db.get_universe(enabled_only=True)),
             "market_health": self._market_health(quotes),
@@ -578,12 +586,16 @@ def _market_data_diagnostics(provider: MarketDataProvider) -> dict[str, Any]:
         diagnostics["primary"] = {
             "provider": getattr(primary, "source_name", "unknown"),
             "last_quote_diagnostics": getattr(primary, "last_quote_diagnostics", None),
+            "last_candle_diagnostics": getattr(primary, "last_candle_diagnostics", None),
         }
     if fallback is not None:
         diagnostics["fallback"] = {"provider": getattr(fallback, "source_name", "unknown")}
     own = getattr(provider, "last_quote_diagnostics", None)
     if own:
         diagnostics["last_quote_diagnostics"] = own
+    candle_own = getattr(provider, "last_candle_diagnostics", None)
+    if candle_own:
+        diagnostics["last_candle_diagnostics"] = candle_own
     return diagnostics
 
 

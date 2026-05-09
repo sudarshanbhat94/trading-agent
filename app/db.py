@@ -535,26 +535,76 @@ class Database:
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
-    def candles_for_symbols(self, symbols: list[str], limit_per_symbol: int = 80) -> dict[str, list[dict[str, Any]]]:
+    def candles_for_symbols(
+        self,
+        symbols: list[str],
+        limit_per_symbol: int = 80,
+        source: str | None = None,
+        source_like: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
         if not symbols:
             return {}
         output: dict[str, list[dict[str, Any]]] = {}
         with self.connect() as conn:
             for symbol in symbols:
+                where = "where symbol = ?"
+                params: list[Any] = [symbol]
+                if source is not None:
+                    where += " and source = ?"
+                    params.append(source)
+                elif source_like is not None:
+                    where += " and source like ?"
+                    params.append(source_like)
+                params.append(limit_per_symbol)
                 rows = conn.execute(
-                    """
+                    f"""
                     select * from candles
-                    where symbol = ?
+                    {where}
                     order by ts desc
                     limit ?
                     """,
-                    (symbol, limit_per_symbol),
+                    params,
                 ).fetchall()
                 output[symbol] = [dict(row) for row in reversed(rows)]
         return output
 
-    def recent_candles_by_symbol(self, symbols: list[str], limit_per_symbol: int = 96) -> dict[str, list[Candle]]:
-        raw = self.candles_for_symbols(symbols, limit_per_symbol=limit_per_symbol)
+    def recent_candles_by_symbol(
+        self,
+        symbols: list[str],
+        limit_per_symbol: int = 96,
+        source: str | None = None,
+        source_like: str | None = None,
+    ) -> dict[str, list[Candle]]:
+        raw = self.candles_for_symbols(
+            symbols,
+            limit_per_symbol=limit_per_symbol,
+            source=source,
+            source_like=source_like,
+        )
+        return self._candle_rows_to_models(raw)
+
+    def recent_candle_sets_by_symbol(self, symbols: list[str]) -> dict[str, dict[str, list[Candle]]]:
+        if not symbols:
+            return {}
+        intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source_like="upstox-live:%minute")
+        legacy_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source="upstox-live")
+        daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=260, source="upstox-live:day")
+        weekly = self.recent_candles_by_symbol(symbols, limit_per_symbol=160, source="upstox-live:week")
+        output: dict[str, dict[str, list[Candle]]] = {}
+        for symbol in symbols:
+            intraday_candles = intraday.get(symbol) or legacy_intraday.get(symbol) or []
+            daily_candles = daily.get(symbol) or self._resample_daily(intraday_candles)
+            weekly_candles = weekly.get(symbol) or self._resample_weekly(daily_candles)
+            analysis_candles = daily_candles or intraday_candles
+            output[symbol] = {
+                "intraday": intraday_candles,
+                "daily": daily_candles,
+                "weekly": weekly_candles,
+                "analysis": analysis_candles,
+            }
+        return output
+
+    def _candle_rows_to_models(self, raw: dict[str, list[dict[str, Any]]]) -> dict[str, list[Candle]]:
         output: dict[str, list[Candle]] = {}
         for symbol, rows in raw.items():
             candles: list[Candle] = []
@@ -577,6 +627,53 @@ class Database:
             if candles:
                 output[symbol] = candles
         return output
+
+    def _resample_daily(self, candles: list[Candle]) -> list[Candle]:
+        return self._resample_candles(candles, "day")
+
+    def _resample_weekly(self, candles: list[Candle]) -> list[Candle]:
+        return self._resample_candles(candles, "week")
+
+    def _resample_candles(self, candles: list[Candle], timeframe: str) -> list[Candle]:
+        grouped: dict[str, list[Candle]] = {}
+        for candle in candles:
+            key = self._candle_bucket(candle.ts, timeframe)
+            if not key:
+                continue
+            grouped.setdefault(key, []).append(candle)
+        output: list[Candle] = []
+        for key in sorted(grouped):
+            bucket = sorted(grouped[key], key=lambda item: item.ts)
+            first = bucket[0]
+            last = bucket[-1]
+            output.append(
+                Candle(
+                    symbol=first.symbol,
+                    ts=key,
+                    open=first.open,
+                    high=max(candle.high for candle in bucket),
+                    low=min(candle.low for candle in bucket),
+                    close=last.close,
+                    volume=sum(float(candle.volume or 0) for candle in bucket),
+                    source=f"{first.source}:resampled_{timeframe}",
+                )
+            )
+        return output
+
+    def _candle_bucket(self, ts: str, timeframe: str) -> str | None:
+        value = str(ts or "")
+        if not value:
+            return None
+        try:
+            from datetime import datetime
+
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if timeframe == "week":
+                year, week, _ = parsed.isocalendar()
+                return f"{year}-W{week:02d}"
+            return parsed.date().isoformat()
+        except ValueError:
+            return value[:10] if timeframe == "day" else None
 
     def get_universe(self, enabled_only: bool = True) -> list[dict[str, Any]]:
         sql = "select * from universe"
@@ -1132,6 +1229,73 @@ class Database:
             )
             metrics["realized_pnl"] = round(row["realized_pnl"] or 0, 2)
         return sorted(by_strategy.values(), key=lambda item: abs(item["unrealized_pnl"]), reverse=True)
+
+    def performance_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            orders = conn.execute(
+                """
+                select
+                    count(*) as total_orders,
+                    sum(case when status = 'FILLED' then 1 else 0 end) as filled_orders,
+                    sum(case when status = 'VETOED' then 1 else 0 end) as vetoed_orders,
+                    sum(case when status = 'FILLED' and side = 'BUY' then 1 else 0 end) as buy_fills,
+                    sum(case when status = 'FILLED' and side = 'SELL' then 1 else 0 end) as sell_fills,
+                    sum(case when status = 'FILLED' then notional else 0 end) as filled_notional
+                from orders
+                """
+            ).fetchone()
+            positions = conn.execute(
+                """
+                select
+                    count(*) as tracked_positions,
+                    sum(case when qty > 0 then 1 else 0 end) as open_positions,
+                    sum(realized_pnl) as realized_pnl,
+                    sum((market_price - avg_price) * qty) as unrealized_pnl,
+                    sum(case when qty = 0 and realized_pnl > 0 then 1 else 0 end) as closed_winners,
+                    sum(case when qty = 0 and realized_pnl < 0 then 1 else 0 end) as closed_losers
+                from positions
+                """
+            ).fetchone()
+            equity_rows = conn.execute(
+                "select equity from portfolio_snapshots order by id asc"
+            ).fetchall()
+        order_data = dict(orders) if orders else {}
+        position_data = dict(positions) if positions else {}
+        equity_values = [float(row["equity"]) for row in equity_rows if row["equity"] is not None]
+        max_drawdown = 0.0
+        peak = equity_values[0] if equity_values else 0.0
+        for equity in equity_values:
+            peak = max(peak, equity)
+            if peak > 0:
+                max_drawdown = min(max_drawdown, (equity - peak) / peak)
+        winners = int(position_data.get("closed_winners") or 0)
+        losers = int(position_data.get("closed_losers") or 0)
+        closed = winners + losers
+        realized = float(position_data.get("realized_pnl") or 0.0)
+        return {
+            "orders": {
+                "total": int(order_data.get("total_orders") or 0),
+                "filled": int(order_data.get("filled_orders") or 0),
+                "vetoed": int(order_data.get("vetoed_orders") or 0),
+                "buy_fills": int(order_data.get("buy_fills") or 0),
+                "sell_fills": int(order_data.get("sell_fills") or 0),
+                "filled_notional": round(float(order_data.get("filled_notional") or 0.0), 2),
+            },
+            "positions": {
+                "tracked": int(position_data.get("tracked_positions") or 0),
+                "open": int(position_data.get("open_positions") or 0),
+                "closed": closed,
+                "closed_winners": winners,
+                "closed_losers": losers,
+            },
+            "pnl": {
+                "realized": round(realized, 2),
+                "unrealized": round(float(position_data.get("unrealized_pnl") or 0.0), 2),
+                "win_rate": round(winners / closed, 4) if closed else 0.0,
+                "expectancy_per_closed_trade": round(realized / closed, 2) if closed else 0.0,
+                "max_drawdown_pct": round(max_drawdown * 100, 4),
+            },
+        }
 
     def latest_sentiment(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:

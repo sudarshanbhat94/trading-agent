@@ -526,27 +526,41 @@ class LLMBrain:
             )
             return reviewed
         except Exception as exc:
+            original = _decision_summary(decision)
+            original["llm_review_error"] = _error_summary(exc)
             return Decision(
                 symbol=decision.symbol,
-                action="HOLD",
-                confidence=0.0,
+                action=decision.action,
+                confidence=decision.confidence,
                 price=decision.price,
                 technical_score=decision.technical_score,
                 sentiment_score=decision.sentiment_score,
-                reason=f"LLM review failed; held safely: {_error_summary(exc)}",
+                reason=f"{decision.reason} | LLM review failed, deterministic action preserved: {_error_summary(exc)}"[:700],
                 asof=decision.asof,
                 strategy=decision.strategy,
                 details_json=_json_dumps(
                     {
                         "audit_version": 1,
                         "decision_path": "llm_review_failed",
-                        "final_action": "HOLD",
-                        "action_reason": f"LLM review failed safely: {_error_summary(exc)}",
-                        "candidate_decision": _decision_summary(decision),
+                        "final_action": decision.action,
+                        "action_reason": "LLM review failed, deterministic action preserved.",
+                        "candidate_decision": original,
                         "context": _compact_context(context),
+                        "sizing_grade": context.get("sizing_grade"),
+                        "risk_gates": {
+                            "llm_review_failed": True,
+                            "deterministic_action_preserved": True,
+                            "sizing_grade": context.get("sizing_grade"),
+                        },
                         "error_type": exc.__class__.__name__,
                         "error": str(exc)[:500],
                         "raw_response": getattr(exc, "raw", None),
+                        "score_breakdown": deterministic_score_breakdown(context),
+                        "llm_error": {
+                            "error_type": exc.__class__.__name__,
+                            "error": str(exc)[:500],
+                            "raw_response": getattr(exc, "raw", None),
+                        },
                     }
                 ),
             )
@@ -1226,6 +1240,7 @@ class LLMBrain:
                 },
                 "policy_gates": policy_gates,
                 "score_breakdown": deterministic_score_breakdown(context),
+                "sizing_grade": context.get("sizing_grade"),
                 "llm_output": {
                     "risk": parsed.get("risk"),
                     "strategy": parsed.get("strategy"),
@@ -1254,6 +1269,7 @@ class LLMBrain:
                     "long_only": True,
                     "no_leverage": True,
                     "llm_policy_gates_passed": all(gate.get("passed", False) for gate in policy_gates),
+                    "sizing_grade": context.get("sizing_grade"),
                     "broker_checks_after_decision": [
                         "daily_loss_limit",
                         "max_positions",
@@ -1297,6 +1313,11 @@ class LLMBrain:
                 "action_reason": parsed.get("reason", original.reason),
                 "policy_gates": policy_gates,
                 "score_breakdown": deterministic_score_breakdown(context),
+                "sizing_grade": context.get("sizing_grade"),
+                "risk_gates": {
+                    "llm_policy_gates_passed": all(gate.get("passed", False) for gate in policy_gates),
+                    "sizing_grade": context.get("sizing_grade"),
+                },
                 "llm_output": {
                     "risk": parsed.get("risk"),
                     "reason": parsed.get("reason"),
@@ -1341,6 +1362,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "institutional_context": context.get("institutional_context"),
         "market_breadth_context": context.get("market_breadth_context"),
         "macro_event_context": context.get("macro_event_context"),
+        "timeframe_data": context.get("timeframe_data"),
         "sector_rotation": context.get("sector_rotation"),
         "delivery_data": context.get("delivery_data"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
@@ -1382,6 +1404,7 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             },
             "market_breadth_context": context.get("market_breadth_context"),
             "macro_event_context": context.get("macro_event_context"),
+            "timeframe_data": context.get("timeframe_data"),
             "sector_rotation": context.get("sector_rotation"),
             "delivery_data": context.get("delivery_data"),
             "full_spectrum_analysis": _compact_full_spectrum_for_llm(full, institutional_flow, rich=rich),

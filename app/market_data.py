@@ -386,6 +386,12 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         self.base_url = settings.upstox_api_base_url
         self.interval = settings.upstox_candle_interval
         self.lookback_days = settings.upstox_candle_lookback_days
+        self.multi_timeframe = settings.enable_upstox_multi_timeframe_candles
+        self.daily_lookback_days = settings.upstox_daily_candle_lookback_days
+        self.weekly_lookback_days = settings.upstox_weekly_candle_lookback_days
+        self.candle_concurrency = max(1, int(settings.upstox_candle_concurrency or 10))
+        self.candle_fetch_timeout_seconds = max(5, int(settings.upstox_candle_fetch_timeout_seconds or 35))
+        self.last_candle_diagnostics: dict[str, Any] = {}
         if not self.access_token:
             raise MarketDataError("Upstox provider needs UPSTOX_ACCESS_TOKEN")
 
@@ -425,20 +431,107 @@ class UpstoxMarketDataProvider(MarketDataProvider):
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
         universe = [row for row in universe if row.get("upstox_instrument_key")]
         output: dict[str, list[Candle]] = {}
-        to_date = date.today()
-        from_date = to_date - timedelta(days=self.lookback_days)
+        diagnostics: dict[str, Any] = {
+            "requested_symbols": len(universe),
+            "multi_timeframe": self.multi_timeframe,
+            "intervals": [],
+            "completed_requests": 0,
+            "failed_requests": 0,
+            "timed_out": False,
+            "sample_errors": [],
+        }
+        specs = self._candle_specs()
+        diagnostics["intervals"] = [spec["interval"] for spec in specs]
+        semaphore = asyncio.Semaphore(self.candle_concurrency)
         async with httpx.AsyncClient(timeout=12, headers=self._headers()) as client:
-            for row in universe:
-                instrument = quote(self._instrument_key(row), safe="")
-                url = f"{self.base_url}/historical-candle/{instrument}/{self.interval}/{to_date.isoformat()}/{from_date.isoformat()}"
-                try:
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    raw_candles = response.json().get("data", {}).get("candles", [])
-                except Exception:
-                    raw_candles = []
-                output[row["symbol"]] = [self._parse_candle(row["symbol"], candle) for candle in reversed(raw_candles)]
+            tasks = [
+                asyncio.create_task(self._fetch_candle_series(client, semaphore, row, spec))
+                for row in universe
+                for spec in specs
+            ]
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=self.candle_fetch_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                diagnostics["timed_out"] = True
+                for task in tasks:
+                    task.cancel()
+                results = []
+                for task in tasks:
+                    if task.done() and not task.cancelled():
+                        try:
+                            results.append(task.result())
+                        except Exception as exc:
+                            results.append(exc)
+            for item in results:
+                if isinstance(item, Exception):
+                    diagnostics["failed_requests"] += 1
+                    if len(diagnostics["sample_errors"]) < 5:
+                        diagnostics["sample_errors"].append(_market_data_error_summary(item))
+                    continue
+                if not item:
+                    diagnostics["failed_requests"] += 1
+                    continue
+                symbol, candles = item
+                diagnostics["completed_requests"] += 1
+                if candles:
+                    output.setdefault(symbol, []).extend(candles)
+        diagnostics["symbols_with_candles"] = len(output)
+        diagnostics["total_candles"] = sum(len(items) for items in output.values())
+        self.last_candle_diagnostics = diagnostics
         return output
+
+    def _candle_specs(self) -> list[dict[str, Any]]:
+        specs: list[dict[str, Any]] = [
+            {
+                "interval": self.interval,
+                "lookback_days": self.lookback_days,
+                "source": f"{self.source_name}:{self.interval}",
+            }
+        ]
+        if not self.multi_timeframe:
+            return specs
+        seen = {self.interval}
+        for interval, lookback_days in (
+            ("day", self.daily_lookback_days),
+            ("week", self.weekly_lookback_days),
+        ):
+            if interval in seen:
+                continue
+            specs.append(
+                {
+                    "interval": interval,
+                    "lookback_days": lookback_days,
+                    "source": f"{self.source_name}:{interval}",
+                }
+            )
+            seen.add(interval)
+        return specs
+
+    async def _fetch_candle_series(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        row: dict[str, Any],
+        spec: dict[str, Any],
+    ) -> tuple[str, list[Candle]] | None:
+        async with semaphore:
+            to_date = date.today()
+            from_date = to_date - timedelta(days=int(spec["lookback_days"]))
+            instrument = quote(self._instrument_key(row), safe="")
+            url = f"{self.base_url}/historical-candle/{instrument}/{spec['interval']}/{to_date.isoformat()}/{from_date.isoformat()}"
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                raw_candles = response.json().get("data", {}).get("candles", [])
+            except Exception:
+                raw_candles = []
+            return row["symbol"], [
+                self._parse_candle(row["symbol"], candle, str(spec["source"]))
+                for candle in reversed(raw_candles)
+            ]
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -462,7 +555,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             return next(iter(data.values()))
         return None
 
-    def _parse_candle(self, symbol: str, candle: list[Any]) -> Candle:
+    def _parse_candle(self, symbol: str, candle: list[Any], source: str | None = None) -> Candle:
         return Candle(
             symbol=symbol,
             ts=str(candle[0]),
@@ -471,7 +564,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             low=float(candle[3]),
             close=float(candle[4]),
             volume=float(candle[5] or 0),
-            source=self.source_name,
+            source=source or self.source_name,
         )
 
 
