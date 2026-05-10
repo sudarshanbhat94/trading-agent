@@ -383,7 +383,7 @@ function render(payload) {
   byId("account-quote-count").textContent = `${quotes.length} quotes`;
   byId("decision-count").textContent = `${decisions.length} decisions`;
   byId("overview-decision-count").textContent = `${decisions.length} decisions`;
-  byId("suggestion-count").textContent = `${suggestions.length} candidates`;
+  byId("suggestion-count").textContent = suggestions.length ? `${suggestions.length} full-audit ideas` : "0 ideas";
   byId("order-count").textContent = `${orders.length} orders`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
   byId("sentiment-count").textContent = `${sentiment.length} events`;
@@ -1286,24 +1286,48 @@ function renderSuggestions(rows) {
     .slice(0, 5)
     .map((row, index) => {
       const action = String(row.suggestion || "WATCH").toLowerCase();
-      const t1 = (row.targets || [])[0] || {};
-      return `<button class="suggestion-card" type="button" data-index="${index}">
-        <div class="suggestion-top">
-          <span class="rank">#${index + 1}</span>
-          <strong>${escapeHtml(row.symbol)}</strong>
-          <span class="tag ${action}">${escapeHtml(row.suggestion)}</span>
+      const targets = row.targets || [];
+      const t1 = targets[0] || {};
+      const t2 = targets[1] || {};
+      const riskFlags = Array.isArray(row.risk_flags) ? row.risk_flags.slice(0, 3) : [];
+      const institutionalFlags = row.institutional_flags && typeof row.institutional_flags === "object"
+        ? Object.entries(row.institutional_flags)
+            .filter(([, value]) => Boolean(value))
+            .slice(0, 3)
+            .map(([key]) => humanLabel(key))
+        : [];
+      const readiness = humanLabel(row.decision_readiness || "monitor_only");
+      const confidence = Number(row.confidence || 0) * 100;
+      return `<button class="suggestion-card ${index === 0 ? "featured" : ""}" type="button" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} idea audit">
+        <div class="suggestion-signal">
+          <span class="rank">Idea #${index + 1}</span>
+          <div class="suggestion-symbol-line">
+            <strong>${escapeHtml(row.symbol)}</strong>
+            <span class="tag ${action}">${escapeHtml(row.suggestion)}</span>
+          </div>
+          <small>${fmtMoney(row.price)} · ${escapeHtml(row.strategy || "-")}</small>
         </div>
         <div class="suggestion-score">
+          <div><span>Signal</span><strong>${escapeHtml(readiness)}</strong><small>${fmtNumber(confidence)}% confidence</small></div>
           <div><span>Confluence</span><strong>${escapeHtml(row.confluence ?? "-")}/26</strong><small>${escapeHtml(row.tier || "-")}</small></div>
-          <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>${escapeHtml(row.decision_readiness || "-")}</small></div>
-          <div><span>Inst.</span><strong class="${pnlClass(row.institutional_bias)}">${fmtNumber(row.institutional_bias)}</strong><small>${escapeHtml(shortValue(row.institutional_flags || {}, 46))}</small></div>
+          <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>score after gates</small></div>
+          <div><span>Institutional</span><strong class="${pnlClass(row.institutional_bias)}">${fmtNumber(row.institutional_bias)}</strong><small>${escapeHtml(institutionalFlags.join(", ") || "neutral")}</small></div>
         </div>
         <div class="suggestion-plan">
-          <span>Entry ${formatZone(row.entry_zone)}</span>
-          <span>SL ${fmtMoney(row.stop_loss)}</span>
-          <span>T1 ${fmtMoney(t1.price)}</span>
+          <span><small>Entry</small><strong>${formatZone(row.entry_zone)}</strong></span>
+          <span><small>Stop</small><strong class="negative">${fmtMoney(row.stop_loss)}</strong></span>
+          <span><small>Target 1</small><strong class="positive">${fmtMoney(t1.price)}</strong></span>
+          <span><small>Target 2</small><strong class="positive">${fmtMoney(t2.price)}</strong></span>
         </div>
-        <p>${escapeHtml(shortValue(readableDecisionReason(row), 210))}</p>
+        <div class="suggestion-reason">
+          <span>Why</span>
+          <p>${escapeHtml(shortValue(readableDecisionReason(row), 240))}</p>
+        </div>
+        <div class="suggestion-flags">
+          <span>Full audit</span>
+          <span>${escapeHtml(row.id ? `Decision #${row.id}` : "Decision audit")}</span>
+          ${riskFlags.map((flag) => `<span class="warning">${escapeHtml(humanLabel(flag))}</span>`).join("")}
+        </div>
       </button>`;
     })
     .join("");
