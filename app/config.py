@@ -101,7 +101,7 @@ class Settings:
     enable_llm_sentiment: bool = _bool("ENABLE_LLM_SENTIMENT", False)
     news_cache_seconds: int = _int("NEWS_CACHE_SECONDS", 1800)
     news_lookback_days: int = _int("NEWS_LOOKBACK_DAYS", 7)
-    news_symbols_per_cycle: int = _int("NEWS_SYMBOLS_PER_CYCLE", 2)
+    news_symbols_per_cycle: int = _int("NEWS_SYMBOLS_PER_CYCLE", 10)
     enable_global_intelligence: bool = _bool("ENABLE_GLOBAL_INTELLIGENCE", True)
     global_cache_seconds: int = _int("GLOBAL_CACHE_SECONDS", 900)
     global_news_lookback_days: int = _int("GLOBAL_NEWS_LOOKBACK_DAYS", 2)

@@ -415,11 +415,13 @@ class UpstoxMarketDataProvider(MarketDataProvider):
                     if price is None:
                         continue
                     ohlc = item.get("ohlc") or {}
+                    asof = _upstox_quote_asof(item)
+                    quote_source = self.source_name if _is_nse_regular_session_now() and not _is_stale_quote(asof) else "upstox-last-traded"
                     quotes[row["symbol"]] = Quote(
                         symbol=row["symbol"],
                         price=float(price),
-                        source=self.source_name,
-                        asof=utc_now(),
+                        source=quote_source,
+                        asof=asof,
                         open=ohlc.get("open"),
                         high=ohlc.get("high"),
                         low=ohlc.get("low"),
@@ -566,6 +568,65 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             volume=float(candle[5] or 0),
             source=source or self.source_name,
         )
+
+
+def _upstox_quote_asof(item: dict[str, Any]) -> str:
+    for key in (
+        "last_trade_time",
+        "last_traded_time",
+        "ltt",
+        "exchange_timestamp",
+        "timestamp",
+    ):
+        value = item.get(key)
+        if value is None:
+            continue
+        parsed = _parse_market_timestamp(value)
+        if parsed:
+            return parsed.isoformat()
+    return utc_now()
+
+
+def _parse_market_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)):
+        return _parse_epoch(float(value))
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _parse_epoch(float(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _parse_epoch(value: float) -> datetime | None:
+    try:
+        if value > 10_000_000_000:
+            value = value / 1000.0
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _is_stale_quote(asof: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(asof.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).total_seconds() > 900
+
+
+def _is_nse_regular_session_now() -> bool:
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if now_ist.weekday() >= 5:
+        return False
+    current_minutes = now_ist.hour * 60 + now_ist.minute
+    return (9 * 60 + 15) <= current_minutes <= (15 * 60 + 30)
 
 
 class UpstoxSetupRequiredProvider(MarketDataProvider):

@@ -119,16 +119,7 @@ class StrategyEngine:
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
             action = self._action_from_context(symbol, combined, positions, context, candles_by_symbol)
-            confidence = min(abs(combined), 0.99)
-            if action == "BUY":
-                if market_breadth and market_breadth.get("breadth_regime") == "bear_warning":
-                    confidence = max(confidence - 0.25, 0.0)
-                if market_breadth and market_breadth.get("breadth_regime") == "bull_confirmed":
-                    confidence = min(confidence + 0.10, 0.99)
-                if market_breadth and market_breadth.get("breadth_thrust"):
-                    confidence = min(confidence + 0.15, 0.99)
-                if float(macro_event_context.get("event_risk_score") or 0.0) > 0.6:
-                    confidence = max(confidence - 0.20, 0.0)
+            confidence = self._confidence_for_action(action, combined, macro_event_context, market_breadth)
             scan_items.append(
                 {
                     "row": row,
@@ -136,6 +127,13 @@ class StrategyEngine:
                     "quote": quote,
                     "technical": technical,
                     "sentiment_score": sentiment_score,
+                    "sentiment_detail": self.sentiment.latest_for_symbol(symbol),
+                    "candles": candles,
+                    "timeframe_candles": timeframe_candles,
+                    "delivery_data": delivery_data,
+                    "options_data": options_data,
+                    "sector_context": sector_context,
+                    "macro_event_context": macro_event_context,
                     "context": context,
                     "combined": combined,
                     "score_breakdown": score_breakdown,
@@ -143,7 +141,10 @@ class StrategyEngine:
                     "confidence": confidence,
                 }
             )
+            if len(scan_items) % 5 == 0:
+                await asyncio.sleep(0)
 
+        await self._refresh_candidate_sentiment(scan_items, positions, candles_by_symbol, risk_limits, global_context, institutional_context, market_breadth)
         ranked = sorted(scan_items, key=self._scan_priority, reverse=True)
         for rank, item in enumerate(ranked, start=1):
             context = item["context"]
@@ -257,6 +258,8 @@ class StrategyEngine:
                 decision = await self.llm.review(decision, context)
                 llm_reviews += 1
             decisions.append(decision)
+            if len(decisions) % 5 == 0:
+                await asyncio.sleep(0)
         return decisions
 
     def stop_or_take_profit_exits(
@@ -349,7 +352,26 @@ class StrategyEngine:
         sector = full_spectrum.get("sector_rotation") or {}
         market_breadth = context.get("market_breadth_context") or {}
         pre_filter = context.get("pre_filter") or {}
-        confluence_total = int(confluence.get("total", 0) or 0)
+        confluence_total = float(confluence.get("total", 0) or 0.0)
+        scorecard_total = float(scorecard.get("total_score") or scorecard.get("score") or 0.0)
+        alignment_grade = alignment.get("alignment_grade")
+        entry_grade = entry.get("entry_grade")
+        delivery = full_spectrum.get("delivery_accumulation") or context.get("delivery_data") or {}
+        delivery_bias = str(
+            delivery.get("net_bias")
+            or delivery.get("trend_direction")
+            or delivery.get("bias")
+            or ""
+        ).lower()
+        delivery_is_distribution = delivery_bias == "distribution"
+        exceptional_setup = (
+            confluence_total >= 22
+            and scorecard_total >= 85
+            and alignment_grade == "A"
+            and entry_grade in {"A", "B"}
+            and not breakout.get("two_day_rule_failed")
+            and not divergence.get("climax_volume_top")
+        )
         threshold = float(pre_filter.get("buy_threshold") or 0.35)
         if market_breadth.get("breadth_regime") == "bear_warning":
             threshold = max(threshold, 0.45)
@@ -362,16 +384,46 @@ class StrategyEngine:
 
         if pre_filter.get("buy_blocked") and not has_position:
             fail(pre_filter.get("block_gate", "pre_filter"), pre_filter.get("block_value"), pre_filter.get("elimination_reason", "pre_filter_block"))
-        if entry.get("entry_grade") == "D":
-            fail("entry_grade_gate", entry.get("entry_grade"), "extended_entry_no_new_longs")
+        if entry_grade == "D":
+            fail("entry_grade_gate", entry_grade, "extended_entry_no_new_longs")
+        if entry_grade == "WATCH" and not exceptional_setup:
+            fail(
+                "entry_grade_gate",
+                {"entry_grade": entry_grade, "confluence": confluence_total, "scorecard": scorecard_total, "alignment": alignment_grade},
+                "watch_entry_needs_exceptional_confirmation",
+            )
         if breakout.get("two_day_rule_failed"):
             fail("breakout_quality_gate", True, "false_breakout_two_day_rule_failed")
         if stage and not stage.get("buy_permitted", True):
             fail("stage_buy_permitted", stage.get("stage"), "stage_analysis_not_stage2_markup")
         if divergence.get("climax_volume_top"):
             fail("climax_volume_gate", True, "climax_top_detected_no_new_longs")
-        if alignment.get("alignment_grade") == "D":
+        if alignment_grade == "D":
             fail("timeframe_alignment_gate", "D", "timeframe_alignment_conflict")
+        if alignment_grade == "C" and confluence_total < 20:
+            fail(
+                "timeframe_alignment_gate",
+                {"alignment_grade": alignment_grade, "confluence": confluence_total},
+                "timeframe_alignment_c_needs_higher_confluence",
+            )
+        if delivery_is_distribution and not exceptional_setup:
+            fail(
+                "delivery_distribution_gate",
+                {
+                    "bias": delivery_bias,
+                    "delivery_score": delivery.get("delivery_score"),
+                    "source": delivery.get("source"),
+                    "accumulation_days": delivery.get("accumulation_days"),
+                    "distribution_days": delivery.get("distribution_days"),
+                },
+                "delivery_distribution_no_new_longs",
+            )
+        if breakout.get("breakout_quality") == "suspect" and not exceptional_setup:
+            fail(
+                "breakout_quality_gate",
+                {"breakout_quality": breakout.get("breakout_quality"), "confluence": confluence_total, "alignment": alignment_grade},
+                "suspect_breakout_needs_confirmation",
+            )
         if options_oi.get("buy_suppressed"):
             fail(
                 "options_max_pain_gate",
@@ -384,14 +436,41 @@ class StrategyEngine:
             )
         if sector.get("sector_tier") == "bottom_quartile" and sector.get("sector_stage") == "distribution" and confluence_total <= 20:
             fail("sector_rotation_gate", sector, "bottom_quartile_distribution")
+        fundamental = full_spectrum.get("fundamental_quality") or {}
+        sentiment = context.get("sentiment") or {}
+        if (
+            fundamental.get("quality_bucket") == "unknown"
+            and not delivery.get("institutional_fingerprint")
+            and float(sentiment.get("confidence") or 0.0) <= 0.05
+            and alignment_grade != "A"
+            and not exceptional_setup
+        ):
+            fail(
+                "fundamental_confirmation_gate",
+                {
+                    "fundamental_quality": "unknown",
+                    "sentiment_confidence": sentiment.get("confidence"),
+                    "delivery_fingerprint": delivery.get("institutional_fingerprint"),
+                    "alignment": alignment_grade,
+                },
+                "fundamentals_unknown_needs_news_or_delivery_confirmation",
+            )
         correlation_gate = self._portfolio_correlation_gate(symbol, positions, candles_by_symbol or {})
         if correlation_gate.get("block_buy"):
             fail("portfolio_correlation_gate", correlation_gate, "portfolio_concentration_correlation_too_high")
         context["portfolio_correlation_gate"] = correlation_gate
+        distribution_exit_pressure = has_position and delivery_is_distribution and not exceptional_setup
+        if distribution_exit_pressure:
+            context["delivery_exit_pressure"] = {
+                "reason": "delivery_distribution_exit_review",
+                "delivery": delivery,
+                "exceptional_setup": exceptional_setup,
+            }
         exit_pressure = (
             scorecard.get("hard_veto", {}).get("failed")
             or "sentiment_not_bearish" in (scorecard.get("must_pass_failed") or [])
             or "hard_veto_clear" in (scorecard.get("must_pass_failed") or [])
+            or distribution_exit_pressure
         )
         if risk_overrides.get("no_new_longs") and not has_position:
             fail("risk_overrides", risk_overrides.get("flags", []), "risk_override_no_new_longs")
@@ -406,10 +485,11 @@ class StrategyEngine:
         context["sizing_grade"] = sizing_grade
         evaluated_gates = [
             *list(pre_filter.get("gates") or []),
-            {"gate": "entry_grade_gate", "passed": entry.get("entry_grade") != "D", "value": entry.get("entry_grade")},
-            {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed"), "value": breakout},
+            {"gate": "entry_grade_gate", "passed": entry_grade not in {"D", "WATCH"} or exceptional_setup, "value": entry_grade},
+            {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed") and (breakout.get("breakout_quality") != "suspect" or exceptional_setup), "value": breakout},
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
-            {"gate": "alignment_gate", "passed": alignment.get("alignment_grade") != "D", "value": alignment.get("alignment_grade")},
+            {"gate": "alignment_gate", "passed": alignment_grade != "D" and (alignment_grade != "C" or confluence_total >= 20), "value": alignment_grade},
+            {"gate": "delivery_distribution_gate", "passed": not delivery_is_distribution or exceptional_setup, "value": delivery},
             {"gate": "options_max_pain_gate", "passed": not options_oi.get("buy_suppressed"), "value": options_oi},
         ]
         context["decision_gate_context"] = {
@@ -474,12 +554,30 @@ class StrategyEngine:
         else:
             gates.append({"gate": "stage_gate", "passed": True, "value": "skipped_insufficient_candles"})
         delivery_score = float(delivery_data.get("delivery_score") or 0.0)
-        delivery_failed = delivery_score < -0.4 and not has_position
-        gates.append({"gate": "delivery_gate", "passed": not delivery_failed, "value": delivery_score})
+        delivery_bias = str(
+            delivery_data.get("net_bias")
+            or delivery_data.get("trend_direction")
+            or delivery_data.get("bias")
+            or ""
+        ).lower()
+        official_distribution = bool(delivery_data.get("available")) and delivery_bias == "distribution"
+        delivery_failed = (delivery_score < -0.4 or official_distribution) and not has_position
+        gates.append(
+            {
+                "gate": "delivery_gate",
+                "passed": not delivery_failed,
+                "value": {
+                    "delivery_score": delivery_score,
+                    "bias": delivery_bias or "neutral",
+                    "source": delivery_data.get("source"),
+                    "official_distribution": official_distribution,
+                },
+            }
+        )
         if delivery_failed:
             buy_blocked = True
             block_gate = "delivery_gate"
-            block_value = delivery_score
+            block_value = {"delivery_score": delivery_score, "bias": delivery_bias, "source": delivery_data.get("source")}
             elimination_reason = "pre_filter_stage2_distribution"
         breadth_regime = market_breadth.get("breadth_regime")
         breadth_failed = breadth_regime == "bear_confirmed" and not has_position
@@ -528,6 +626,78 @@ class StrategyEngine:
             "elimination_reason": elimination_reason,
         }
 
+    async def _refresh_candidate_sentiment(
+        self,
+        scan_items: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+        candles_by_symbol: dict[str, list[Candle]],
+        risk_limits: dict[str, Any],
+        global_context: dict[str, Any] | None,
+        institutional_context: dict[str, Any] | None,
+        market_breadth: dict[str, Any] | None,
+    ) -> None:
+        if not self.settings.enable_news_sentiment or not scan_items:
+            return
+        limit = min(max(int(self.settings.news_symbols_per_cycle or 0), 2), 5)
+        candidates = sorted(
+            [
+                item
+                for item in scan_items
+                if item.get("action") == "BUY"
+                or float(item.get("combined") or 0.0) >= 0.25
+                or float(((item.get("context", {}).get("full_spectrum_analysis") or {}).get("confluence_score") or {}).get("total") or 0.0) >= 16
+            ],
+            key=self._scan_priority,
+            reverse=True,
+        )
+        selected: list[dict[str, Any]] = []
+        for item in candidates:
+            sentiment = (item.get("context") or {}).get("sentiment") or {}
+            if sentiment.get("headline_count") or float(sentiment.get("confidence") or 0.0) > 0.05:
+                continue
+            selected.append(item)
+            if len(selected) >= limit:
+                break
+        if not selected:
+            return
+        results = await asyncio.gather(
+            *(self.sentiment.analyze_symbol_news(item["row"]) for item in selected),
+            return_exceptions=True,
+        )
+        for item, result in zip(selected, results):
+            if isinstance(result, Exception) or not isinstance(result, dict):
+                continue
+            try:
+                sentiment_score = float(result.get("score") or 0.0)
+            except (TypeError, ValueError):
+                sentiment_score = 0.0
+            context = build_symbol_tool_context(
+                row=item["row"],
+                quote=item["quote"],
+                candles=item.get("candles") or [],
+                position=positions.get(item["symbol"]),
+                sentiment_score=sentiment_score,
+                risk_limits=risk_limits,
+                global_context=global_context,
+                institutional_context=institutional_context,
+                sentiment_detail=result,
+                delivery_data=item.get("delivery_data") or {},
+                options_data=item.get("options_data") or {},
+                sector_context=item.get("sector_context") or {},
+                market_breadth=market_breadth,
+                macro_event_context=item.get("macro_event_context") or {},
+                timeframe_candles=item.get("timeframe_candles") or {},
+            )
+            context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
+            combined = deterministic_score(context)
+            item["sentiment_score"] = sentiment_score
+            item["sentiment_detail"] = result
+            item["context"] = context
+            item["combined"] = combined
+            item["score_breakdown"] = deterministic_score_breakdown(context)
+            item["action"] = self._action_from_context(item["symbol"], combined, positions, context, candles_by_symbol)
+            item["confidence"] = self._confidence_for_action(item["action"], combined, item.get("macro_event_context") or {}, market_breadth)
+
     def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float]:
         return (
             1.0 if item["action"] != "HOLD" else 0.0,
@@ -540,6 +710,27 @@ class StrategyEngine:
     def _scan_priority_score(self, item: dict[str, Any]) -> float:
         action_boost, combined, strategy, technical, sentiment = self._scan_priority(item)
         return (action_boost * 0.5) + (combined * 0.28) + (strategy * 0.12) + (technical * 0.06) + (sentiment * 0.04)
+
+    def _confidence_for_action(
+        self,
+        action: str,
+        combined: float,
+        macro_event_context: dict[str, Any],
+        market_breadth: dict[str, Any] | None,
+    ) -> float:
+        confidence = min(abs(combined), 0.99)
+        if action != "BUY":
+            return confidence
+        breadth = market_breadth or {}
+        if breadth.get("breadth_regime") == "bear_warning":
+            confidence = max(confidence - 0.25, 0.0)
+        if breadth.get("breadth_regime") == "bull_confirmed":
+            confidence = min(confidence + 0.10, 0.99)
+        if breadth.get("breadth_thrust"):
+            confidence = min(confidence + 0.15, 0.99)
+        if float(macro_event_context.get("event_risk_score") or 0.0) > 0.6:
+            confidence = max(confidence - 0.20, 0.0)
+        return confidence
 
     def _llm_candidate_symbols(self, ranked: list[dict[str, Any]]) -> set[str]:
         limit = max(int(self.settings.llm_max_symbols_per_cycle or 1), 1)

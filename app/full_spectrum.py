@@ -137,6 +137,7 @@ def full_spectrum_analysis(
         price_volume_divergence,
         entry_quality,
         breakout_quality,
+        delivery,
         macro_event_context or {},
         options_oi,
     )
@@ -954,6 +955,7 @@ def _risk_overrides(
     price_volume_divergence: dict[str, Any],
     entry_quality: dict[str, Any],
     breakout_quality: dict[str, Any],
+    delivery: dict[str, Any],
     macro_event_context: dict[str, Any],
     options_oi: dict[str, Any],
 ) -> dict[str, Any]:
@@ -987,6 +989,8 @@ def _risk_overrides(
         flags.append("timeframe_conflict_no_new_longs")
     if price_volume_divergence.get("climax_volume_top"):
         flags.append("climax_top_detected_no_new_longs")
+    if entry_quality.get("entry_grade") == "WATCH":
+        flags.append("watch_entry_needs_confirmation_reduce_size")
     if entry_quality.get("entry_grade") == "D":
         flags.append("extended_entry_no_new_longs")
     if breakout_quality.get("two_day_rule_failed"):
@@ -997,6 +1001,9 @@ def _risk_overrides(
         flags.append("false_breakout_risk_no_new_longs")
     if float(macro_event_context.get("event_risk_score") or 0.0) > 0.6:
         flags.append("high_macro_event_risk")
+    delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
+    if delivery_bias == "distribution":
+        flags.append("delivery_distribution_no_new_longs")
     if options_oi.get("buy_suppressed"):
         flags.append("options_max_pain_8pct_below_no_new_longs")
     symbol_flags = institutional_flow.get("symbol_flags", {})
@@ -1347,6 +1354,24 @@ def _options_oi_layer(
     current_price: float | None = None,
 ) -> dict[str, Any]:
     options_data = options_data or {}
+    if options_data.get("status") == "not_fno_no_stock_options":
+        return {
+            "available": False,
+            "source": options_data.get("source", "nse_equity_non_fno_no_stock_options"),
+            "audit_label": options_data.get("audit_label", "nse_equity_non_fno_no_stock_options"),
+            "status": "not_fno_no_stock_options",
+            "stock_option_status": "not_fno_no_stock_options",
+            "market_pcr_proxy": None,
+            "pcr_oi": None,
+            "max_pain": None,
+            "max_pain_distance_pct": None,
+            "buy_suppressed": False,
+            "oi_concentration_zones": {"support": [], "resistance": []},
+            "bias": "unavailable",
+            "fno_ban": flow.get("fno_ban"),
+            "data_gap": "symbol_not_in_fno_no_stock_options",
+            "note": options_data.get("note") or "No stock-level options chain exists for this non-F&O equity.",
+        }
     if options_data.get("status") == "ok":
         max_pain_distance = options_data.get("max_pain_distance_pct")
         if options_data.get("buy_suppressed"):
@@ -1540,6 +1565,8 @@ def _institutional_scorecard(
         hard_veto.append("possible_circuit_risk")
     if corporate_risk.get("high_impact_risk"):
         hard_veto.append("high_impact_corporate_event")
+    if fundamental.get("quality_bucket") == "event_risk":
+        hard_veto.append("fundamental_event_risk")
     if conflicts.get("severity") == "high":
         hard_veto.append("high_signal_conflict")
     if sentiment_score <= -0.45:
@@ -1802,6 +1829,13 @@ def _derivatives_section(options_oi: dict[str, Any], institutional_flow: dict[st
     if institutional_flow.get("fno_ban"):
         evidence.append("F&O ban flag")
         return _score_section("derivatives_positioning", "Derivatives Positioning", 0, 6, evidence)
+    if options_oi.get("status") == "not_fno_no_stock_options":
+        evidence.append("stock is not in NSE F&O; stock-level PCR/Max Pain unavailable")
+        score += 2
+        if not institutional_flow.get("fno_ban"):
+            score += 1
+            evidence.append("not flagged in F&O ban feed")
+        return _score_section("derivatives_positioning", "Derivatives Positioning", score, 6, evidence)
     bias = options_oi.get("bias")
     if bias == "put_heavy_supportive":
         score += 5

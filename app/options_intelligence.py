@@ -151,14 +151,30 @@ class OptionsIntelligenceService:
                 source="nse_option_chain_index_level" if is_index else "nse_option_chain_stock_level",
                 suppress_threshold=self.settings.options_max_pain_buy_suppress_pct,
             )
+        except ValueError as exc:
+            if not is_index:
+                context = _not_fno_context(symbol, exc)
+            else:
+                context = {
+                    "status": "unavailable",
+                    "available": False,
+                    "source": "nse_option_chain_index_level",
+                    "audit_label": "nse_option_chain_index_level",
+                    "symbol": symbol,
+                    "updated_at": utc_now(),
+                    "error": f"{exc.__class__.__name__}: {str(exc)[:220]}",
+                    "data_gap": "index_option_chain_unavailable",
+                }
         except Exception as exc:
             context = {
-                "status": "unavailable_or_not_fno" if not is_index else "unavailable",
+                "status": "unavailable" if is_index else "option_chain_unavailable",
+                "available": False,
                 "source": "nse_option_chain_index_level" if is_index else "nse_option_chain_stock_level",
+                "audit_label": "nse_option_chain_index_level" if is_index else "nse_option_chain_stock_level_unavailable",
                 "symbol": symbol,
                 "updated_at": utc_now(),
                 "error": f"{exc.__class__.__name__}: {str(exc)[:220]}",
-                "data_gap": "option_chain_unavailable_or_symbol_not_in_fno",
+                "data_gap": "option_chain_unavailable",
             }
         self._cache[cache_key] = (now, context)
         return context
@@ -231,6 +247,7 @@ def _analyze_option_chain(
     buy_suppressed = max_pain_distance is not None and max_pain_distance <= suppress_threshold
     return {
         "status": "ok",
+        "available": True,
         "source": source,
         "symbol": symbol,
         "updated_at": utc_now(),
@@ -249,6 +266,25 @@ def _analyze_option_chain(
         "strike_pcr": around_price,
         "top_oi_change": _top_oi_change(strikes),
         "audit_label": source,
+    }
+
+
+def _not_fno_context(symbol: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "status": "not_fno_no_stock_options",
+        "available": False,
+        "source": "nse_equity_non_fno_no_stock_options",
+        "audit_label": "nse_equity_non_fno_no_stock_options",
+        "stock_option_status": "not_fno_no_stock_options",
+        "symbol": symbol,
+        "updated_at": utc_now(),
+        "error": f"{exc.__class__.__name__}: {str(exc)[:220]}",
+        "data_gap": "symbol_not_in_fno_no_stock_options",
+        "note": "No stock-level PCR, Max Pain, or OI concentration is available because this equity is not in NSE F&O.",
+        "buy_suppressed": False,
+        "max_pain": None,
+        "max_pain_distance_pct": None,
+        "oi_concentration_zones": {"support": [], "resistance": []},
     }
 
 

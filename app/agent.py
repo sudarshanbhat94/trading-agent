@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .db import Database
@@ -542,7 +542,13 @@ class TradingAgentService:
                 latest_age = age
                 latest_ts = str(ts)
         provider = self.market_data.source_name
-        if "live" in provider:
+        quote_sources = _source_counts({str(index): quote for index, quote in enumerate(quotes)})
+        market_open = _is_nse_regular_session_now()
+        if "upstox" in provider and not market_open:
+            mode = "last_traded"
+        elif latest_age is not None and latest_age > 900 and "live" in provider:
+            mode = "stale"
+        elif "live" in provider:
             mode = "live"
         elif "delayed" in provider:
             mode = "delayed"
@@ -553,7 +559,10 @@ class TradingAgentService:
         return {
             "provider": provider,
             "mode": mode,
+            "display_label": "Last traded" if mode == "last_traded" else "Stale quote" if mode == "stale" else mode,
+            "is_market_open": market_open,
             "quote_count": len(quotes),
+            "quote_sources": quote_sources,
             "latest_quote_at": latest_ts,
             "latest_quote_age_seconds": round(latest_age, 1) if latest_age is not None else None,
         }
@@ -597,6 +606,14 @@ def _market_data_diagnostics(provider: MarketDataProvider) -> dict[str, Any]:
     if candle_own:
         diagnostics["last_candle_diagnostics"] = candle_own
     return diagnostics
+
+
+def _is_nse_regular_session_now() -> bool:
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if now_ist.weekday() >= 5:
+        return False
+    current_minutes = now_ist.hour * 60 + now_ist.minute
+    return (9 * 60 + 15) <= current_minutes <= (15 * 60 + 30)
 
 
 def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:

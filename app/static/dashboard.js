@@ -502,6 +502,7 @@ function renderShell(payload = state.latest || {}) {
   const runtime = payload.runtime || {};
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
   const mode = health.mode || "unknown";
+  const feedLabel = health.display_label || (mode === "last_traded" ? "Last traded" : mode === "stale" ? "Stale quote" : "Upstox live");
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
   const llmModel = llmProvider === "deepseek" ? plainSetting("deepseek_model", "deepseek-v4-pro") : "offline";
@@ -515,13 +516,14 @@ function renderShell(payload = state.latest || {}) {
   byId("top-execution").textContent = plainSetting("execution_mode", runtime.execution_mode || "-");
 
   const feedPending = isFeedPending(payload);
-  const upstoxConnected = String(provider).includes("upstox-live") && !feedPending;
-  byId("feed-pill").textContent = upstoxConnected ? "Upstox live" : "Upstox pending";
-  byId("feed-pill").className = `pill ${upstoxConnected ? "running" : "stopped"}`;
-  byId("ops-feed").textContent = upstoxConnected ? "Upstox live" : "Connect Upstox";
+  const upstoxConnected = String(provider).includes("upstox") && !feedPending;
+  const feedIsFresh = upstoxConnected && mode === "live";
+  byId("feed-pill").textContent = upstoxConnected ? feedLabel : "Upstox pending";
+  byId("feed-pill").className = `pill ${feedIsFresh ? "running" : upstoxConnected ? "warning" : "stopped"}`;
+  byId("ops-feed").textContent = upstoxConnected ? feedLabel : "Connect Upstox";
   byId("ops-feed-meta").textContent = feedPending
     ? "quotes paused until token/feed is ready"
-    : `${health.quote_count || 0} quotes · ${fmtAge(health.latest_quote_age_seconds)}`;
+    : `${health.quote_count || 0} quotes · ${health.is_market_open ? "market open" : "market closed"} · ${fmtAge(health.latest_quote_age_seconds)}`;
   byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmProvider;
   byId("ops-llm-meta").textContent = `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;

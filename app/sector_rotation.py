@@ -9,6 +9,22 @@ from .db import Database
 from .models import Candle, Quote, utc_now
 
 
+SECTOR_FALLBACKS = {
+    "CEIGALL": "Infrastructure & Construction",
+    "HAPPYFORGE": "Industrials & Auto Ancillary",
+    "KERNEX": "Rail & Transport Technology",
+    "KRISHANA": "Chemicals & Fertilizers",
+    "NATCOPHARM": "Pharmaceuticals",
+    "RADICO": "Consumer Alcohol",
+    "RICOAUTO": "Auto Ancillary",
+    "RISHABH": "Electrical Equipment",
+    "RPEL": "Industrial Materials",
+    "SENORES": "Pharmaceuticals",
+    "SPARC": "Pharmaceuticals",
+    "UNIPARTS": "Auto Ancillary",
+}
+
+
 class SectorRotationService:
     def __init__(self, settings: Settings, db: Database) -> None:
         self.settings = settings
@@ -43,11 +59,17 @@ class SectorRotationService:
         symbol_context = symbols.get(str(symbol).upper())
         if symbol_context:
             return symbol_context
-        sector_context = sectors.get(sector or "")
+        sector_text = str(sector or "").strip()
+        normalized_sector = (
+            sector_text
+            if sector_text and sector_text.lower() not in {"unclassified", "unknown", "na", "n/a", "-"}
+            else SECTOR_FALLBACKS.get(str(symbol).upper())
+        )
+        sector_context = sectors.get(normalized_sector or "")
         if not sector_context:
             return {
                 "available": False,
-                "sector": sector or "unknown",
+                "sector": normalized_sector or sector or "unknown",
                 "sector_tailwind": False,
                 "sector_headwind": False,
                 "sector_rotation_score": 0.0,
@@ -65,7 +87,7 @@ class SectorRotationService:
         universe_returns_20: list[float] = []
         for row in universe:
             symbol = row["symbol"]
-            sector = row.get("sector") or "Unclassified"
+            sector = _sector_for_row(row)
             candles = candles_by_symbol.get(symbol) or []
             quote = quotes.get(symbol)
             item = _symbol_returns(symbol, candles, float(quote.price) if quote else None)
@@ -124,7 +146,7 @@ class SectorRotationService:
         symbols: dict[str, dict[str, Any]] = {}
         for row in universe:
             symbol = str(row["symbol"]).upper()
-            symbols[symbol] = _symbol_context(symbol, sectors.get(row.get("sector") or "Unclassified", {}))
+            symbols[symbol] = _symbol_context(symbol, sectors.get(_sector_for_row(row), {}))
         context = {
             "enabled": True,
             "updated_at": utc_now(),
@@ -156,6 +178,27 @@ def _symbol_returns(symbol: str, candles: list[Candle], quote_price: float | Non
     advanced = len(closes) >= 2 and closes[-1] > closes[-2]
     declined = len(closes) >= 2 and closes[-1] < closes[-2]
     return {"symbol": symbol, "return_5d": ret_5, "return_20d": ret_20, "advanced": advanced, "declined": declined}
+
+
+def _sector_for_row(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    sector = str(row.get("sector") or "").strip()
+    if sector and sector.lower() not in {"unclassified", "unknown", "na", "n/a", "-"}:
+        return sector
+    industry = str(row.get("industry") or row.get("macro") or "").lower()
+    if "pharma" in industry:
+        return "Pharmaceuticals"
+    if "auto" in industry or "component" in industry:
+        return "Auto Ancillary"
+    if "construction" in industry or "civil" in industry or "infra" in industry:
+        return "Infrastructure & Construction"
+    if "fertil" in industry or "chemical" in industry:
+        return "Chemicals & Fertilizers"
+    if "electrical" in industry or "equipment" in industry:
+        return "Electrical Equipment"
+    if "brew" in industry or "distiller" in industry or "alcohol" in industry:
+        return "Consumer Alcohol"
+    return SECTOR_FALLBACKS.get(symbol, "Unclassified")
 
 
 def _return(closes: list[float], price: float | None, periods: int) -> float | None:
