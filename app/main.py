@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -38,6 +39,7 @@ from .market_data import build_market_data_provider
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
 from .paper_broker import PaperBroker
+from .request_context import current_user_id
 from .sector_rotation import SectorRotationService
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
@@ -224,20 +226,37 @@ async def order_detail(order_id: int, request: Request) -> dict[str, Any]:
 
 @app.post("/api/analyze-symbol")
 async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
+    user = _require_signal_user(request)
+    user_id = int(user["id"])
+    estimated_charge = db.average_signal_credit_charge()
+    can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
+    if not can_spend:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "Insufficient credits or daily credit budget for this analysis. "
+                f"Estimated need: {estimated_charge:.4f} credits."
+            ),
+        )
     symbol = _normalize_symbol(str(payload.get("symbol", "")))
     if not symbol:
         raise HTTPException(status_code=400, detail="Enter a valid NSE symbol, for example SUZLON or INFY.")
 
     row = db.universe_row(symbol) or _manual_universe_row(symbol)
+    user_market_data = _market_data_provider_for_user(user)
+    user_strategy, budget_policy = _strategy_for_user_budget(user, credit_before, estimated_charge)
     provider_error: str | None = None
+    usage_after_id = db.latest_llm_usage_id()
+    context_token = current_user_id.set(user_id)
     try:
-        quotes = await market_data.get_quotes([row])
-        candles = await market_data.get_candles([row])
+        quotes = await user_market_data.get_quotes([row])
+        candles = await user_market_data.get_candles([row])
     except Exception as exc:
         provider_error = f"{exc.__class__.__name__}: {exc}"
         quotes = {}
         candles = {}
+    finally:
+        current_user_id.reset(context_token)
 
     quote = quotes.get(symbol)
     if quote is None:
@@ -246,7 +265,11 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             detail = f"{detail} Provider error: {provider_error}"
         raise HTTPException(status_code=404, detail=detail)
 
-    news = await sentiment.analyze_symbol_news(row)
+    context_token = current_user_id.set(user_id)
+    try:
+        news = await sentiment.analyze_symbol_news(row)
+    finally:
+        current_user_id.reset(context_token)
     db.upsert_quotes(quotes)
     db.upsert_candles(candles)
     candle_sets = db.recent_candle_sets_by_symbol([symbol])
@@ -257,27 +280,55 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     macro_context = db.get_state("macro_context", {})
     institutional_context = db.get_state("institutional_context", {})
     options_context = db.get_state("options_intelligence_context", {})
-    decisions = await strategy.evaluate(
-        [row],
-        quotes,
-        broker.positions_by_symbol(),
-        analysis_candles,
-        macro_context,
-        institutional_context,
-        options_context,
-        delivery_service,
-        db.get_state("market_breadth_context", {}),
-        db.get_state("sector_rotation_context", {}),
-        macro_calendar,
-        candle_sets,
-        (db.latest_portfolio() or {}).get("equity"),
-    )
+    context_token = current_user_id.set(user_id)
+    try:
+        decisions = await user_strategy.evaluate(
+            [row],
+            quotes,
+            broker.positions_by_symbol(),
+            analysis_candles,
+            macro_context,
+            institutional_context,
+            options_context,
+            delivery_service,
+            db.get_state("market_breadth_context", {}),
+            db.get_state("sector_rotation_context", {}),
+            macro_calendar,
+            candle_sets,
+            (db.latest_portfolio() or {}).get("equity"),
+        )
+    finally:
+        current_user_id.reset(context_token)
     if not decisions:
         raise HTTPException(status_code=500, detail=f"Analysis produced no decision for {symbol}.")
 
-    decision = decisions[0]
+    usage = db.llm_usage_cost_since(user_id, usage_after_id)
+    try:
+        credit_after = db.charge_user_credits(
+            user_id,
+            usage["cost_usd"],
+            f"Symbol analysis {symbol}",
+            {
+                "symbol": symbol,
+                "llm_usage": usage,
+                "provider": quote.source,
+                "estimated_credit_before": estimated_charge,
+                "budget_policy": budget_policy,
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "The analysis completed, but the final LLM charge exceeded the user's available credits. "
+                "Add credits or raise the daily budget before running another signal."
+            ),
+        ) from exc
+    decision = _attach_user_to_decision(decisions[0], user, credit_after, budget_policy)
     decision_payload = decision.to_dict()
     decision_payload["details"] = _json_object(decision.details_json)
+    public_credit_before = _public_credit_summary(credit_before)
+    public_credit_after = _public_credit_summary(credit_after)
     db.insert_agent_log(
         "INFO",
         "manual_analysis",
@@ -288,6 +339,8 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             "action": decision.action,
             "confidence": decision.confidence,
             "provider_error": provider_error,
+            "credit_charge": round(max(float(credit_before.get("credit_balance", 0.0)) - float(credit_after.get("credit_balance", 0.0)), 0.0), 6),
+            "budget_policy": budget_policy,
         },
     )
     return {
@@ -304,7 +357,133 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         "news": news,
         "provider": quote.source,
         "provider_error": provider_error,
+        "credit_usage": {
+            "before": public_credit_before,
+            "after": public_credit_after,
+            "llm_usage": _public_llm_usage(usage),
+            "budget_policy": budget_policy,
+        },
         "decision": decision_payload,
+    }
+
+
+@app.get("/api/me/credits")
+async def my_credit_summary(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    summary = db.user_credit_summary(int(user["id"]))
+    return {
+        "ok": True,
+        "credits": _public_credit_summary(summary),
+        "usage_policy": {
+            "daily_limit": summary.get("daily_credit_limit", 0.0),
+            "daily_remaining": summary.get("daily_credits_remaining", 0.0),
+            "estimated_signal_credit": db.average_signal_credit_charge(),
+            "low_budget_mode": "OpenTrade automatically uses a leaner analysis path when today's remaining credits are tight.",
+        },
+    }
+
+
+@app.post("/api/me/credits/daily-limit")
+async def set_my_daily_credit_limit(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    daily_limit = _positive_float(payload.get("daily_credit_limit"), field="daily_credit_limit")
+    summary = db.update_user_daily_credit_limit(int(user["id"]), daily_limit)
+    db.insert_agent_log(
+        "INFO",
+        "credits",
+        "user_daily_limit_updated",
+        f"{user['username']} updated daily credit budget",
+        {"user_id": user["id"], "daily_credit_limit": daily_limit},
+    )
+    return {"ok": True, "credits": _public_credit_summary(summary)}
+
+
+@app.post("/api/me/upstox/auth-url")
+async def my_upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    stored = db.user_by_id(int(user["id"])) or {}
+    api_key = str(payload.get("api_key") or stored.get("upstox_api_key") or "").strip()
+    redirect_uri = str(payload.get("redirect_uri") or stored.get("upstox_redirect_uri") or f"{str(request.base_url).rstrip('/')}/upstox/callback").strip()
+    base_url = str(payload.get("base_url") or stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Enter your Upstox API key first.")
+    if not redirect_uri:
+        raise HTTPException(status_code=400, detail="Enter the exact Upstox redirect URI configured in your Upstox app.")
+    auth_url = f"{base_url}/login/authorization/dialog?{urlencode({'response_type': 'code', 'client_id': api_key, 'redirect_uri': redirect_uri})}"
+    return {
+        "ok": True,
+        "auth_url": auth_url,
+        "message": "Open this URL, login to Upstox, then paste the returned code or full redirect URL into OpenTrade.",
+    }
+
+
+@app.post("/api/me/upstox/connect")
+async def my_upstox_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    stored = db.user_by_id(int(user["id"])) or {}
+    api_key = str(payload.get("api_key") or stored.get("upstox_api_key") or "").strip()
+    api_secret = str(payload.get("api_secret") or stored.get("upstox_api_secret") or "").strip()
+    redirect_uri = str(payload.get("redirect_uri") or stored.get("upstox_redirect_uri") or "").strip()
+    base_url = str(payload.get("base_url") or stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/")
+    code = _extract_oauth_code(str(payload.get("code") or ""))
+    if not all([api_key, api_secret, redirect_uri, code]):
+        raise HTTPException(status_code=400, detail="Upstox connect needs API key, API secret, redirect URI, and authorization code.")
+
+    token_data = await _exchange_upstox_code(api_key, api_secret, redirect_uri, base_url, code)
+    access_token = str(token_data.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=502, detail=f"Upstox token exchange did not return access_token. Response keys: {list(token_data)[:10]}")
+    updated_user = db.update_user_broker(
+        int(user["id"]),
+        {
+            "upstox_api_key": api_key,
+            "upstox_api_secret": api_secret,
+            "upstox_redirect_uri": redirect_uri,
+            "upstox_access_token": access_token,
+            "upstox_api_base_url": base_url,
+        },
+    )
+    db.insert_agent_log(
+        "INFO",
+        "upstox",
+        "user_upstox_connected",
+        f"Upstox connected for user {user['username']}",
+        {"user_id": user["id"], "username": user["username"], "base_url": base_url, "token_type": token_data.get("token_type")},
+    )
+    return {
+        "ok": True,
+        "message": "Upstox connected for this user. Symbol analysis will use this user's market feed.",
+        "user": updated_user,
+        "token_type": token_data.get("token_type"),
+        "upstox_user_id": token_data.get("user_id"),
+    }
+
+
+@app.post("/api/me/kite/connect")
+async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    api_key = str(payload.get("api_key") or "").strip()
+    access_token = str(payload.get("access_token") or "").strip()
+    if not all([api_key, access_token]):
+        raise HTTPException(status_code=400, detail="Kite connect needs API key and access token.")
+    updated_user = db.update_user_broker(
+        int(user["id"]),
+        {
+            "kite_api_key": api_key,
+            "kite_access_token": access_token,
+        },
+    )
+    db.insert_agent_log(
+        "INFO",
+        "kite",
+        "user_kite_saved",
+        f"Kite credentials saved for user {user['username']}",
+        {"user_id": user["id"], "username": user["username"]},
+    )
+    return {
+        "ok": True,
+        "message": "Kite credentials saved. Upstox is still required for full candle analytics in this build.",
+        "user": updated_user,
     }
 
 
@@ -427,27 +606,7 @@ async def upstox_connect(payload: dict[str, Any], request: Request) -> dict[str,
     if not all([api_key, api_secret, redirect_uri, code]):
         raise HTTPException(status_code=400, detail="Upstox connect needs API key, API secret, redirect URI, and authorization code.")
 
-    token_url = f"{base_url}/login/authorization/token"
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            response = await client.post(
-                token_url,
-                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
-                data={
-                    "code": code,
-                    "client_id": api_key,
-                    "client_secret": api_secret,
-                    "redirect_uri": redirect_uri,
-                    "grant_type": "authorization_code",
-                },
-            )
-            response.raise_for_status()
-            token_data = response.json()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=f"Upstox token exchange failed: {exc.response.text[:300]}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Upstox token exchange failed: {exc.__class__.__name__}: {exc}") from exc
-
+    token_data = await _exchange_upstox_code(api_key, api_secret, redirect_uri, base_url, code)
     access_token = str(token_data.get("access_token") or "").strip()
     if not access_token:
         raise HTTPException(status_code=502, detail=f"Upstox token exchange did not return access_token. Response keys: {list(token_data)[:10]}")
@@ -635,17 +794,37 @@ async def create_user(payload: dict[str, Any], request: Request) -> dict[str, An
     password = validate_password(str(payload.get("password", "")))
     role = normalize_role(str(payload.get("role", "user")))
     active = bool(payload.get("active", True))
+    starting_credits = _positive_float(payload.get("starting_credits", payload.get("credit_balance", 0)), field="starting_credits")
+    daily_credit_limit = _positive_float(payload.get("daily_credit_limit", 0), field="daily_credit_limit")
     if db.user_by_username(username):
         raise HTTPException(status_code=409, detail="Username already exists")
     user = db.create_user(username, hash_password(password), role=role, active=active)
+    if daily_credit_limit:
+        db.update_user_daily_credit_limit(int(user["id"]), daily_credit_limit)
+    if starting_credits:
+        db.adjust_user_credits(
+            int(user["id"]),
+            starting_credits,
+            f"Initial credit allocation for {username}",
+            {"created_by": admin.get("username"), "source": "create_user"},
+        )
+    users = db.list_users()
+    public_user = next((item for item in users if int(item["id"]) == int(user["id"])), user)
     db.insert_agent_log(
         "INFO",
         "admin",
         "user_created",
         f"Admin created user {username}",
-        {"created_by": admin.get("username"), "username": username, "role": role, "active": active},
+        {
+            "created_by": admin.get("username"),
+            "username": username,
+            "role": role,
+            "active": active,
+            "starting_credits": starting_credits,
+            "daily_credit_limit": daily_credit_limit,
+        },
     )
-    return {"ok": True, "user": user, "users": db.list_users()}
+    return {"ok": True, "user": public_user, "users": users}
 
 
 @app.patch("/api/users/{user_id}")
@@ -657,11 +836,15 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
     role = normalize_role(str(payload["role"])) if "role" in payload else None
     active = bool(payload["active"]) if "active" in payload else None
     password_hash = hash_password(validate_password(str(payload["password"]))) if payload.get("password") else None
+    daily_credit_limit = _positive_float(payload["daily_credit_limit"], field="daily_credit_limit") if "daily_credit_limit" in payload else None
     if existing.get("role") == "admin" and db.active_admin_count() <= 1:
         would_remove_admin = (role is not None and role != "admin") or active is False
         if would_remove_admin:
             raise HTTPException(status_code=400, detail="At least one active admin user is required.")
     user = db.update_user(user_id, role=role, active=active, password_hash=password_hash)
+    if daily_credit_limit is not None:
+        db.update_user_daily_credit_limit(user_id, daily_credit_limit)
+        user = next((item for item in db.list_users() if int(item["id"]) == user_id), user)
     db.insert_agent_log(
         "INFO",
         "admin",
@@ -673,9 +856,70 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
             "role_changed": role is not None,
             "active_changed": active is not None,
             "password_changed": password_hash is not None,
+            "daily_credit_limit_changed": daily_credit_limit is not None,
         },
     )
     return {"ok": True, "user": user, "users": db.list_users()}
+
+
+@app.get("/api/admin/credits")
+async def admin_credit_summary(request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    return db.admin_credit_usage_summary()
+
+
+@app.post("/api/users/{user_id}/credits")
+async def adjust_user_credit_balance(user_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    admin = require_admin(request, settings, db)
+    existing = db.user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    amount = _float_value(payload.get("amount"), field="amount")
+    if amount == 0:
+        raise HTTPException(status_code=400, detail="Credit amount cannot be zero.")
+    description = str(payload.get("description") or "Admin credit adjustment").strip()
+    summary = db.adjust_user_credits(
+        user_id,
+        amount,
+        description,
+        {"updated_by": admin.get("username"), "username": existing.get("username")},
+        entry_type="allocation" if amount > 0 else "adjustment",
+    )
+    db.insert_agent_log(
+        "INFO",
+        "credits",
+        "admin_credit_adjustment",
+        f"Admin adjusted credits for {existing.get('username')}",
+        {"updated_by": admin.get("username"), "user_id": user_id, "amount": amount},
+    )
+    return {"ok": True, "credits": summary, "admin": db.admin_credit_usage_summary(), "users": db.list_users()}
+
+
+@app.post("/api/users/{user_id}/assign-runtime-upstox")
+async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any]:
+    admin = require_admin(request, settings, db)
+    existing = db.user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    runtime_settings = db.runtime_settings()
+    runtime_upstox = {
+        "upstox_api_key": (runtime_settings.get("upstox_api_key") or settings.upstox_api_key),
+        "upstox_api_secret": (runtime_settings.get("upstox_api_secret") or settings.upstox_api_secret),
+        "upstox_redirect_uri": (runtime_settings.get("upstox_redirect_uri") or settings.upstox_redirect_uri),
+        "upstox_access_token": (runtime_settings.get("upstox_access_token") or settings.upstox_access_token),
+        "upstox_api_base_url": (runtime_settings.get("upstox_api_base_url") or settings.upstox_api_base_url),
+    }
+    if not runtime_upstox["upstox_access_token"]:
+        raise HTTPException(status_code=400, detail="No runtime Upstox access token is available to assign.")
+    updated_user = db.assign_runtime_upstox_to_user(user_id, runtime_upstox)
+    db.insert_agent_log(
+        "INFO",
+        "upstox",
+        "runtime_upstox_assigned",
+        f"Admin assigned runtime Upstox credentials to {existing.get('username')}",
+        {"updated_by": admin.get("username"), "user_id": user_id, "username": existing.get("username")},
+    )
+    return {"ok": True, "user": updated_user, "users": db.list_users()}
 
 
 @app.post("/api/control/start")
@@ -746,6 +990,181 @@ def _normalize_symbol(value: str) -> str:
     if not re.fullmatch(r"[A-Z0-9&-]{1,24}", symbol):
         return ""
     return symbol
+
+
+def _require_signal_user(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    if user.get("role") == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin manages users, credits, and broker connections only. Use a user account for signals and trading.",
+        )
+    return user
+
+
+def _market_data_provider_for_user(user: dict[str, Any]):
+    stored = db.user_by_id(int(user["id"])) or {}
+    if stored.get("upstox_access_token"):
+        user_settings = replace(
+            settings,
+            market_data_provider="upstox",
+            upstox_api_key=str(stored.get("upstox_api_key") or ""),
+            upstox_api_secret=str(stored.get("upstox_api_secret") or ""),
+            upstox_redirect_uri=str(stored.get("upstox_redirect_uri") or settings.upstox_redirect_uri),
+            upstox_access_token=str(stored.get("upstox_access_token") or ""),
+            upstox_api_base_url=str(stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/"),
+        )
+        return build_market_data_provider(user_settings)
+    if stored.get("kite_access_token"):
+        raise HTTPException(
+            status_code=400,
+            detail="Kite is saved for this user, but full analytics currently require Upstox candles. Connect Upstox or ask admin to assign the runtime Upstox feed.",
+        )
+    raise HTTPException(
+        status_code=400,
+        detail="No Upstox account is connected for this user. Connect Upstox from Account or ask admin to assign the runtime Upstox feed.",
+    )
+
+
+def _strategy_for_user_budget(
+    user: dict[str, Any],
+    credit_summary: dict[str, Any],
+    estimated_charge: float,
+) -> tuple[StrategyEngine, dict[str, Any]]:
+    daily_remaining = float(credit_summary.get("daily_credits_remaining") or 0.0)
+    balance = float(credit_summary.get("credit_balance") or 0.0)
+    available = min(daily_remaining, balance)
+    threshold = max(float(estimated_charge or 0.01) * 3.0, 0.03)
+    policy = {
+        "mode": "full_context",
+        "model": settings.deepseek_model,
+        "daily_credits_remaining": round(daily_remaining, 6),
+        "estimated_signal_credit": round(float(estimated_charge or 0.0), 6),
+    }
+    if settings.deepseek_model != "deepseek-v4-flash" and 0 < available <= threshold:
+        budget_settings = replace(
+            settings,
+            deepseek_model="deepseek-v4-flash",
+            llm_max_tokens=min(int(settings.llm_max_tokens or 4096), 2048),
+            llm_rolling_context_max_chunks=1 if int(settings.llm_rolling_context_max_chunks or 0) == 0 else min(int(settings.llm_rolling_context_max_chunks), 1),
+        )
+        policy.update(
+            {
+                "mode": "low_credit_guard",
+                "model": budget_settings.deepseek_model,
+                "reason": "daily credit budget is close to the estimated signal cost",
+            }
+        )
+        return StrategyEngine(budget_settings, sentiment, LLMBrain(budget_settings, db)), policy
+    return strategy, policy
+
+
+def _attach_user_to_decision(
+    decision: Any,
+    user: dict[str, Any],
+    credit_summary: dict[str, Any],
+    budget_policy: dict[str, Any],
+) -> Any:
+    details = _json_object(decision.details_json)
+    details["signal_user"] = {
+        "user_id": int(user["id"]),
+        "username": user.get("username"),
+        "credit_usage": _public_credit_summary(credit_summary),
+        "budget_policy": budget_policy,
+    }
+    return replace(decision, details_json=json.dumps(details, default=str, separators=(",", ":")))
+
+
+async def _exchange_upstox_code(
+    api_key: str,
+    api_secret: str,
+    redirect_uri: str,
+    base_url: str,
+    code: str,
+) -> dict[str, Any]:
+    token_url = f"{base_url}/login/authorization/token"
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.post(
+                token_url,
+                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "code": code,
+                    "client_id": api_key,
+                    "client_secret": api_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=f"Upstox token exchange failed: {exc.response.text[:300]}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upstox token exchange failed: {exc.__class__.__name__}: {exc}") from exc
+
+
+def _public_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    output = {
+        "user_id": summary.get("user_id"),
+        "username": summary.get("username"),
+        "credit_balance": summary.get("credit_balance", 0.0),
+        "daily_credit_limit": summary.get("daily_credit_limit", 0.0),
+        "credits_used_today": summary.get("credits_used_today", 0.0),
+        "daily_credits_remaining": summary.get("daily_credits_remaining", 0.0),
+        "today": {
+            "credits_used": (summary.get("today") or {}).get("credits_used", 0.0),
+            "entries": (summary.get("today") or {}).get("entries", 0),
+        },
+        "all_time": {
+            "credits_used": (summary.get("all_time") or {}).get("credits_used", 0.0),
+            "entries": (summary.get("all_time") or {}).get("entries", 0),
+        },
+    }
+    if "ledger" in summary:
+        output["ledger"] = [
+            {
+                "id": row.get("id"),
+                "ts": row.get("ts"),
+                "entry_type": row.get("entry_type"),
+                "amount": row.get("amount"),
+                "balance_after": row.get("balance_after"),
+                "description": row.get("description"),
+                "details": _public_credit_details(row.get("details") or {}),
+            }
+            for row in summary.get("ledger", [])
+        ]
+    return output
+
+
+def _public_credit_details(details: dict[str, Any]) -> dict[str, Any]:
+    output = dict(details)
+    if isinstance(output.get("llm_usage"), dict):
+        output["llm_usage"] = _public_llm_usage(output["llm_usage"])
+    return output
+
+
+def _public_llm_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "calls": int(usage.get("calls") or 0),
+        "total_tokens": int(usage.get("total_tokens") or 0),
+        "input_chars": int(usage.get("input_chars") or 0),
+        "output_chars": int(usage.get("output_chars") or 0),
+    }
+
+
+def _positive_float(value: Any, *, field: str) -> float:
+    numeric = _float_value(value, field=field)
+    if numeric < 0:
+        raise HTTPException(status_code=400, detail=f"{field} cannot be negative.")
+    return numeric
+
+
+def _float_value(value: Any, *, field: str) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be a number.") from exc
 
 
 def _extract_oauth_code(value: str) -> str:

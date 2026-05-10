@@ -188,6 +188,22 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "username": user["username"],
         "role": user.get("role") or "user",
         "active": bool(user.get("active")),
+        "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),
+        "daily_credit_limit": round(float(user.get("daily_credit_limit") or 0.0), 6),
+        "broker_accounts": {
+            "upstox": {
+                "connected": bool(user.get("upstox_access_token")),
+                "api_key_saved": bool(user.get("upstox_api_key")),
+                "api_secret_saved": bool(user.get("upstox_api_secret")),
+                "access_token_saved": bool(user.get("upstox_access_token")),
+                "redirect_uri_saved": bool(user.get("upstox_redirect_uri")),
+            },
+            "kite": {
+                "connected": bool(user.get("kite_access_token")),
+                "api_key_saved": bool(user.get("kite_api_key")),
+                "access_token_saved": bool(user.get("kite_access_token")),
+            },
+        },
         "created_at": user.get("created_at"),
         "updated_at": user.get("updated_at"),
         "last_login_at": user.get("last_login_at"),

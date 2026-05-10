@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenTrade</title>
-    <link rel="stylesheet" href="/static/styles.css?v=terminal-desk-3" />
+    <link rel="stylesheet" href="/static/styles.css?v=user-modes-2" />
   </head>
   <body>
     <section id="login-screen" class="login-screen">
@@ -45,19 +45,20 @@
           <button class="nav-item" type="button" data-view="decisions"><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="sentiment"><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="account"><span>Account</span><strong>paper</strong></button>
-          <button class="nav-item" type="button" data-view="logs"><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="logs"><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
           <button class="nav-item admin-only" type="button" data-view="users"><span>Users</span><strong id="nav-users-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="settings"><span>Settings</span><strong>admin</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="settings"><span>Settings</span><strong>admin</strong></button>
         </nav>
         <div class="top-actions">
           <span id="status-pill" class="pill">connecting</span>
           <span id="feed-pill" class="pill">Upstox</span>
           <span id="admin-pill" class="pill">user</span>
+          <span id="credit-pill" class="pill">0 credits</span>
           <span id="current-user-label" class="user-chip">signed in</span>
           <button id="logout-btn" type="button">Logout</button>
-          <button id="start-btn" class="primary" type="button">Start</button>
-          <button id="stop-btn" type="button">Stop</button>
-          <button id="run-btn" type="button">Run Once</button>
+          <button id="start-btn" class="primary admin-only" type="button">Start</button>
+          <button id="stop-btn" class="admin-only" type="button">Stop</button>
+          <button id="run-btn" class="admin-only" type="button">Run Once</button>
         </div>
       </header>
 
@@ -228,7 +229,7 @@
             <div class="panel full">
               <div class="panel-head">
                 <h3>Symbol Analysis</h3>
-                <span id="analyze-status">admin login required</span>
+                <span id="analyze-status">user login required</span>
               </div>
               <div class="symbol-lab">
                 <form id="analyze-form" class="symbol-search">
@@ -297,6 +298,46 @@
                 <div id="account-body" class="account-body"></div>
               </div>
               <div class="panel">
+                <div class="panel-head"><h3>My Credits</h3><span id="credits-status">loading</span></div>
+                <div id="credits-body" class="account-body"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-head"><h3>Broker Link</h3><span id="user-broker-status">user feed</span></div>
+                <div class="account-body">
+                  <div class="connect-card">
+                    <div class="connect-card-head">
+                      <div>
+                        <h4>User Upstox</h4>
+                        <p>Used for this user's live quotes, candles, and symbol analysis.</p>
+                      </div>
+                      <span id="my-upstox-status">not connected</span>
+                    </div>
+                    <div class="connect-grid">
+                      <input id="my-upstox-api-key" type="password" placeholder="Upstox API Key" autocomplete="off" />
+                      <input id="my-upstox-api-secret" type="password" placeholder="Upstox API Secret" autocomplete="off" />
+                      <input id="my-upstox-redirect-uri" type="text" placeholder="Redirect URI" autocomplete="off" />
+                      <button id="my-upstox-auth-url-btn" type="button">Open Login</button>
+                      <input id="my-upstox-auth-code" type="text" placeholder="Paste code or full redirect URL" autocomplete="off" />
+                      <button id="my-upstox-connect-btn" class="primary" type="button">Connect Upstox</button>
+                    </div>
+                  </div>
+                  <div class="connect-card">
+                    <div class="connect-card-head">
+                      <div>
+                        <h4>User Kite</h4>
+                        <p>Credentials are stored for this user. Upstox powers full candle analytics in this build.</p>
+                      </div>
+                      <span id="my-kite-status">not connected</span>
+                    </div>
+                    <div class="connect-grid">
+                      <input id="my-kite-api-key" type="password" placeholder="Kite API Key" autocomplete="off" />
+                      <input id="my-kite-access-token" type="password" placeholder="Kite Access Token" autocomplete="off" />
+                      <button id="my-kite-connect-btn" type="button">Save Kite</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
                 <div class="panel-head"><h3>All Quotes</h3><span id="account-quote-count">0 quotes</span></div>
                 <div class="table-wrap page-table compact">
                   <table>
@@ -334,17 +375,25 @@
                   <input id="new-user-password" type="password" autocomplete="new-password" placeholder="Minimum 8 characters" />
                   <label for="new-user-role">Role</label>
                   <select id="new-user-role"><option value="user">User</option><option value="admin">Admin</option></select>
+                  <label for="new-user-credits">Starting Credits</label>
+                  <input id="new-user-credits" type="number" min="0" step="0.01" placeholder="100" />
+                  <label for="new-user-daily-limit">Daily Credit Budget</label>
+                  <input id="new-user-daily-limit" type="number" min="0" step="0.01" placeholder="10" />
                   <button class="primary" type="submit">Create User</button>
                 </form>
               </div>
               <div class="panel">
-                <div class="panel-head"><h3>Users</h3><span id="users-count">0 users</span></div>
-                <div class="table-wrap page-table compact">
-                  <table>
-                    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead>
-                    <tbody id="users-body"></tbody>
-                  </table>
-                </div>
+                <div class="panel-head"><h3>Credit Usage</h3><span id="admin-credits-status">admin only</span></div>
+                <div id="admin-credits-body" class="mini-grid"></div>
+              </div>
+            </div>
+            <div class="panel user-list-panel">
+              <div class="panel-head"><h3>Users</h3><span id="users-count">0 users</span></div>
+              <div class="table-wrap page-table compact">
+                <table>
+                  <thead><tr><th>User</th><th>Role</th><th>Credits</th><th>Today</th><th>Broker</th><th>Status</th><th>Actions</th></tr></thead>
+                  <tbody id="users-body"></tbody>
+                </table>
               </div>
             </div>
           </section>
@@ -437,6 +486,6 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
-    <script src="/static/dashboard.js?v=terminal-desk-3"></script>
+    <script src="/static/dashboard.js?v=user-modes-2"></script>
   </body>
 </html>

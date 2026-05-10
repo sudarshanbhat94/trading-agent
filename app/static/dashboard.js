@@ -3,9 +3,12 @@ const state = {
   config: null,
   auth: { authenticated: false, admin: false, admin_configured: false, user: null },
   account: null,
+  credits: null,
+  adminCredits: null,
   logs: [],
   users: [],
   socket: null,
+  socketReconnectTimer: null,
   quoteFilter: "",
   activeSettingsTab: "broker",
 };
@@ -40,6 +43,10 @@ const usd = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 6,
 });
 
+const creditsFmt = new Intl.NumberFormat("en-IN", {
+  maximumFractionDigits: 4,
+});
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -58,6 +65,10 @@ function fmtCompact(value) {
 
 function fmtUsd(value) {
   return Number.isFinite(Number(value)) ? usd.format(Number(value)) : "-";
+}
+
+function fmtCredits(value) {
+  return Number.isFinite(Number(value)) ? creditsFmt.format(Number(value)) : "-";
 }
 
 function fmtPct(value) {
@@ -658,14 +669,22 @@ function renderAuth(auth) {
   pill.className = `pill ${auth.admin ? "running" : "stopped"}`;
   const currentUser = auth.user?.username || "signed in";
   byId("current-user-label").textContent = `${currentUser} · ${auth.user?.role || "user"}`;
+  byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "admin";
   byId("logout-btn").hidden = !authenticated;
+  renderUserBrokerStatus();
   for (const item of document.querySelectorAll(".admin-only")) {
     item.hidden = !auth.admin;
+  }
+  if (authenticated && !auth.admin && ["logs", "users", "settings"].includes(currentViewName())) {
+    setView("overview");
   }
   applyAccessMode();
   if (auth.admin) fetchLogs();
   else renderLogs([]);
-  if (auth.admin) fetchUsers();
+  if (auth.admin) {
+    fetchUsers();
+    fetchAdminCredits();
+  }
 }
 
 function applyAccessMode() {
@@ -687,12 +706,12 @@ function applyAccessMode() {
     if (element) element.disabled = !admin;
   }
   const analyzeInput = byId("analyze-symbol");
-  if (analyzeInput) analyzeInput.disabled = !authenticated;
+  if (analyzeInput) analyzeInput.disabled = !authenticated || admin;
   const analyzeButton = byId("analyze-btn");
-  if (analyzeButton) analyzeButton.disabled = !authenticated;
+  if (analyzeButton) analyzeButton.disabled = !authenticated || admin;
   const analyzeStatus = byId("analyze-status");
   if (analyzeStatus && !state.latest?.manual_analysis_active) {
-    analyzeStatus.textContent = authenticated ? "ready" : "login required";
+    analyzeStatus.textContent = authenticated ? (admin ? "sign in as a user to run signals" : "ready") : "login required";
   }
   const form = byId("settings-form");
   if (form) {
@@ -709,11 +728,165 @@ function applyAccessMode() {
     const element = byId(id);
     if (element) element.disabled = !admin;
   }
+  for (const id of [
+    "my-upstox-api-key",
+    "my-upstox-api-secret",
+    "my-upstox-redirect-uri",
+    "my-upstox-auth-code",
+    "my-upstox-auth-url-btn",
+    "my-upstox-connect-btn",
+    "my-kite-api-key",
+    "my-kite-access-token",
+    "my-kite-connect-btn",
+    "daily-credit-limit-input",
+    "save-daily-credit-limit-btn",
+  ]) {
+    const element = byId(id);
+    if (element) element.disabled = !authenticated || admin;
+  }
   byId("settings-status").textContent = admin
     ? "admin controls unlocked"
     : authenticated
       ? "user mode: admin required for settings"
       : "login required";
+}
+
+async function fetchCredits() {
+  if (!state.auth?.authenticated) {
+    renderCreditSummary(null);
+    return;
+  }
+  try {
+    const response = await fetch("/api/me/credits");
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      byId("credits-status").textContent = payload.detail || "credits unavailable";
+      return;
+    }
+    renderCreditSummary(payload.credits || null, payload.usage_policy || {});
+  } catch (error) {
+    byId("credits-status").textContent = "credits unavailable";
+  }
+}
+
+function renderCreditSummary(credits, policy = {}) {
+  state.credits = credits;
+  const body = byId("credits-body");
+  if (!body) return;
+  if (!state.auth?.authenticated) {
+    byId("credits-status").textContent = "login required";
+    body.innerHTML = `<div class="empty-state">Login to view credit usage.</div>`;
+    return;
+  }
+  if (state.auth?.admin) {
+    byId("credits-status").textContent = "admin view";
+    body.innerHTML = `<div class="account-note"><strong>Admin mode</strong><span>Admins allocate credits and monitor usage from the Users tab. Signals run from user accounts only.</span></div>`;
+    byId("credit-pill").textContent = "admin";
+    return;
+  }
+  const balance = Number(credits?.credit_balance || 0);
+  const dailyLimit = Number(credits?.daily_credit_limit || 0);
+  const usedToday = Number(credits?.credits_used_today || 0);
+  const remaining = Number(credits?.daily_credits_remaining || 0);
+  byId("credits-status").textContent = `${fmtCredits(remaining)} left today`;
+  byId("credit-pill").textContent = `${fmtCredits(balance)} credits`;
+  body.innerHTML = `
+    <div class="account-metrics">
+      <div><span>Balance</span><strong>${fmtCredits(balance)}</strong></div>
+      <div><span>Daily Budget</span><strong>${dailyLimit > 0 ? fmtCredits(dailyLimit) : "No cap"}</strong></div>
+      <div><span>Used Today</span><strong>${fmtCredits(usedToday)}</strong></div>
+      <div><span>Available Today</span><strong>${fmtCredits(remaining)}</strong></div>
+    </div>
+    <form id="daily-credit-limit-form" class="symbol-search">
+      <input id="daily-credit-limit-input" type="number" min="0" step="0.01" value="${dailyLimit || ""}" placeholder="Daily credits to spend" />
+      <button id="save-daily-credit-limit-btn" type="submit">Save Budget</button>
+    </form>
+    <div class="account-note">
+      <strong>Credit transparency</strong>
+      <span>Each symbol analysis shows the calls and tokens consumed. OpenTrade automatically uses a leaner path when today's remaining credits are tight.</span>
+      <span>Estimated signal cost: ${fmtCredits(policy.estimated_signal_credit || 0)} credits.</span>
+    </div>
+    <div class="table-wrap compact credit-ledger">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Credits</th><th>Balance</th><th>Description</th></tr></thead>
+        <tbody>${(credits?.ledger || []).slice(0, 12).map((row) => `<tr>
+          <td>${fmtTime(row.ts)}</td>
+          <td>${escapeHtml(humanLabel(row.entry_type))}</td>
+          <td class="num ${pnlClass(row.amount)}">${fmtCredits(row.amount)}</td>
+          <td class="num">${fmtCredits(row.balance_after)}</td>
+          <td>${escapeHtml(row.description || "-")}</td>
+        </tr>`).join("") || `<tr><td colspan="5">No credit activity yet</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+  byId("daily-credit-limit-form").addEventListener("submit", saveDailyCreditLimit);
+  applyAccessMode();
+}
+
+async function saveDailyCreditLimit(event) {
+  event.preventDefault();
+  const value = Number(byId("daily-credit-limit-input")?.value || 0);
+  byId("credits-status").textContent = "saving";
+  try {
+    const response = await fetch("/api/me/credits/daily-limit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ daily_credit_limit: value }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      byId("credits-status").textContent = payload.detail || "save failed";
+      return;
+    }
+    renderCreditSummary(payload.credits || null);
+  } catch (error) {
+    byId("credits-status").textContent = "save failed";
+  }
+}
+
+async function fetchAdminCredits() {
+  if (!state.auth?.admin) {
+    renderAdminCredits(null);
+    return;
+  }
+  try {
+    const response = await fetch("/api/admin/credits");
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      byId("admin-credits-status").textContent = payload.detail || "usage unavailable";
+      return;
+    }
+    renderAdminCredits(payload);
+  } catch (error) {
+    byId("admin-credits-status").textContent = "usage unavailable";
+  }
+}
+
+function renderAdminCredits(summary) {
+  state.adminCredits = summary;
+  const body = byId("admin-credits-body");
+  if (!body) return;
+  if (!summary) {
+    body.innerHTML = `<div class="empty-state">Admin credit usage will appear here.</div>`;
+    return;
+  }
+  const users = summary.users || [];
+  const totals = users.reduce(
+    (acc, user) => {
+      acc.today += Number(user.today_credits_used || 0);
+      acc.margin += Number(user.today_platform_margin || 0);
+      acc.all += Number(user.all_time_credits_used || 0);
+      return acc;
+    },
+    { today: 0, margin: 0, all: 0 },
+  );
+  byId("admin-credits-status").textContent = `${users.length} users`;
+  body.innerHTML = `
+    <button type="button"><span>Users</span><strong>${users.length}</strong></button>
+    <button type="button"><span>Credits Today</span><strong>${fmtCredits(totals.today)}</strong></button>
+    <button type="button"><span>Platform Margin Today</span><strong>${fmtCredits(totals.margin)}</strong></button>
+    <button type="button"><span>All-Time Usage</span><strong>${fmtCredits(totals.all)}</strong></button>
+  `;
 }
 
 async function fetchLogs() {
@@ -791,24 +964,31 @@ function renderUsers(rows) {
   byId("users-count").textContent = `${state.users.length} users`;
   byId("nav-users-badge").textContent = String(state.users.length);
   if (!state.auth?.admin) {
-    body.innerHTML = `<tr><td colspan="5">Admin login required</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7">Admin login required</td></tr>`;
     return;
   }
   if (!state.users.length) {
-    body.innerHTML = `<tr><td colspan="5">No users yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7">No users yet</td></tr>`;
     return;
   }
   body.innerHTML = state.users
     .map((user) => {
       const active = Boolean(user.active);
+      const credits = user.credit_usage || {};
+      const upstox = user.broker_accounts?.upstox || {};
+      const kite = user.broker_accounts?.kite || {};
       return `<tr data-user-id="${user.id}">
         <td><strong>${escapeHtml(user.username)}</strong></td>
         <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span></td>
+        <td><strong>${fmtCredits(user.credit_balance || credits.credit_balance || 0)}</strong><br><small>daily ${fmtCredits(user.daily_credit_limit || credits.daily_credit_limit || 0)}</small></td>
+        <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
+        <td><span class="tag ${upstox.connected ? "open" : "watch"}">Upstox ${upstox.connected ? "on" : "off"}</span><br><small>Kite ${kite.connected ? "on" : "off"}</small></td>
         <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
-        <td>${escapeHtml(user.last_login_at ? fmtTime(user.last_login_at) : "-")}</td>
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
           <button type="button" data-user-action="role">${user.role === "admin" ? "Make User" : "Make Admin"}</button>
+          <button type="button" data-user-action="credits">Credits</button>
+          <button type="button" data-user-action="assign-upstox">Assign Upstox</button>
         </td>
       </tr>`;
     })
@@ -821,12 +1001,60 @@ function renderUsers(rows) {
       if (!user) return;
       if (button.dataset.userAction === "toggle") {
         updateUser(user.id, { active: !user.active });
-      } else {
+      } else if (button.dataset.userAction === "role") {
         updateUser(user.id, { role: user.role === "admin" ? "user" : "admin" });
+      } else if (button.dataset.userAction === "credits") {
+        openCreditAdjust(user);
+      } else if (button.dataset.userAction === "assign-upstox") {
+        assignRuntimeUpstox(user.id);
       }
     });
   });
   bindRowDetails(body, state.users, "User");
+}
+
+function openCreditAdjust(user) {
+  const amountRaw = window.prompt(`Credits to add/remove for ${user.username}`, "100");
+  if (amountRaw === null) return;
+  const amount = Number(amountRaw);
+  if (!Number.isFinite(amount) || amount === 0) return;
+  adjustUserCredits(user.id, amount);
+}
+
+async function adjustUserCredits(userId, amount) {
+  try {
+    const response = await fetch(`/api/users/${userId}/credits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount, description: "Admin credit allocation" }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      showDetails("Credit Adjustment", payload);
+      return;
+    }
+    renderUsers(payload.users || []);
+    renderAdminCredits(payload.admin || null);
+    fetchLogs();
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "credit adjustment"), { action: "credit adjustment" });
+  }
+}
+
+async function assignRuntimeUpstox(userId) {
+  try {
+    const response = await fetch(`/api/users/${userId}/assign-runtime-upstox`, { method: "POST" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      showDetails("Assign Runtime Upstox", payload);
+      return;
+    }
+    renderUsers(payload.users || []);
+    fetchLogs();
+    showDetails("Assign Runtime Upstox", { ok: true, message: "Runtime Upstox credentials assigned to user." });
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "assign Upstox"), { action: "assign Upstox" });
+  }
 }
 
 async function createUser(event) {
@@ -837,6 +1065,8 @@ async function createUser(event) {
     password: byId("new-user-password").value,
     role: byId("new-user-role").value,
     active: true,
+    starting_credits: Number(byId("new-user-credits").value || 0),
+    daily_credit_limit: Number(byId("new-user-daily-limit").value || 0),
   };
   status.textContent = "creating";
   status.className = "settings-inline-status";
@@ -855,7 +1085,10 @@ async function createUser(event) {
     byId("new-user-username").value = "";
     byId("new-user-password").value = "";
     byId("new-user-role").value = "user";
+    byId("new-user-credits").value = "";
+    byId("new-user-daily-limit").value = "";
     renderUsers(data.users || []);
+    fetchAdminCredits();
     status.textContent = "user created";
     status.className = "settings-inline-status positive";
     fetchLogs();
@@ -889,20 +1122,21 @@ function renderAccount(account) {
   const paper = account.paper || {};
   const upstox = account.upstox || {};
   const portfolio = paper.portfolio || {};
-  byId("account-status").textContent = upstox.connected ? "paper + upstox" : "paper demo";
+  const userUpstox = state.auth?.user?.broker_accounts?.upstox || {};
+  byId("account-status").textContent = userUpstox.connected ? "user upstox connected" : upstox.connected ? "runtime upstox" : "paper demo";
   byId("account-body").innerHTML = `
     <div class="account-metrics">
       <div><span>Mode</span><strong>${paper.mode || "-"}</strong></div>
       <div><span>Paper Cash</span><strong>${fmtMoney(paper.cash)}</strong></div>
       <div><span>Paper Equity</span><strong>${fmtMoney(portfolio.equity ?? paper.cash)}</strong></div>
-      <div><span>Upstox</span><strong>${upstox.connected ? "connected" : "not connected"}</strong></div>
+      <div><span>User Feed</span><strong>${userUpstox.connected ? "Upstox connected" : "not connected"}</strong></div>
     </div>
     <div class="account-note">
-      <strong>Runtime ledger</strong>
-      <span>Paper execution stays internal unless live protection is explicitly enabled.</span>
+      <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
+      <span>${state.auth?.admin ? "Admins manage users, credits, and runtime broker connections. Signals are run from user accounts." : "Signals and symbol analysis consume this user's credits and use this user's broker feed when connected."}</span>
     </div>
-    <pre>${escapeHtml(JSON.stringify({ upstox }, null, 2))}</pre>
   `;
+  renderUserBrokerStatus();
 }
 
 function renderSentiment(rows) {
@@ -1009,6 +1243,28 @@ function renderUpstoxConnect(settings) {
     status.textContent = settings.upstox_access_token?.saved ? "connected" : "not connected";
     status.className = `settings-inline-status ${settings.upstox_access_token?.saved ? "positive" : ""}`;
   }
+}
+
+function renderUserBrokerStatus() {
+  const user = state.auth?.user || {};
+  const upstox = user.broker_accounts?.upstox || {};
+  const kite = user.broker_accounts?.kite || {};
+  const upstoxStatus = byId("my-upstox-status");
+  const kiteStatus = byId("my-kite-status");
+  const brokerStatus = byId("user-broker-status");
+  if (upstoxStatus) {
+    upstoxStatus.textContent = upstox.connected ? "connected" : upstox.api_key_saved ? "key saved" : "not connected";
+    upstoxStatus.className = `settings-inline-status ${upstox.connected ? "positive" : ""}`;
+  }
+  if (kiteStatus) {
+    kiteStatus.textContent = kite.connected ? "connected" : kite.api_key_saved ? "key saved" : "not connected";
+    kiteStatus.className = `settings-inline-status ${kite.connected ? "positive" : ""}`;
+  }
+  if (brokerStatus) {
+    brokerStatus.textContent = upstox.connected ? "upstox connected" : "connect user feed";
+  }
+  const redirect = byId("my-upstox-redirect-uri");
+  if (redirect && !redirect.value) redirect.value = `${window.location.origin}/upstox/callback`;
 }
 
 function renderField(item, stored) {
@@ -1161,6 +1417,112 @@ function upstoxConnectPayload() {
   };
 }
 
+function myUpstoxConnectPayload() {
+  return {
+    api_key: byId("my-upstox-api-key")?.value?.trim(),
+    api_secret: byId("my-upstox-api-secret")?.value?.trim(),
+    redirect_uri: byId("my-upstox-redirect-uri")?.value?.trim() || `${window.location.origin}/upstox/callback`,
+    base_url: state.config?.settings?.upstox_api_base_url || "https://api.upstox.com/v2",
+    code: byId("my-upstox-auth-code")?.value?.trim(),
+  };
+}
+
+async function openMyUpstoxLogin() {
+  const status = byId("my-upstox-status");
+  const button = byId("my-upstox-auth-url-btn");
+  status.textContent = "building login URL";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/me/upstox/auth-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(myUpstoxConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "login URL failed";
+      status.className = "settings-inline-status negative";
+      showDetails("User Upstox Login", payload);
+      return;
+    }
+    status.textContent = "login opened";
+    status.className = "settings-inline-status positive";
+    window.open(payload.auth_url, "_blank", "noopener");
+  } catch (error) {
+    status.textContent = "login failed";
+    status.className = "settings-inline-status negative";
+  } finally {
+    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
+  }
+}
+
+async function connectMyUpstox() {
+  const status = byId("my-upstox-status");
+  const button = byId("my-upstox-connect-btn");
+  status.textContent = "connecting";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/me/upstox/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(myUpstoxConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "connect failed";
+      status.className = "settings-inline-status negative";
+      showDetails("User Upstox Connect", payload);
+      return;
+    }
+    if (byId("my-upstox-api-secret")) byId("my-upstox-api-secret").value = "";
+    if (byId("my-upstox-auth-code")) byId("my-upstox-auth-code").value = "";
+    state.auth.user = payload.user || state.auth.user;
+    renderUserBrokerStatus();
+    status.textContent = "connected";
+    status.className = "settings-inline-status positive";
+    showDetails("User Upstox Connect", { ok: payload.ok, message: payload.message, upstox_user_id: payload.upstox_user_id });
+  } catch (error) {
+    status.textContent = "connect failed";
+    status.className = "settings-inline-status negative";
+  } finally {
+    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
+  }
+}
+
+async function connectMyKite() {
+  const status = byId("my-kite-status");
+  const button = byId("my-kite-connect-btn");
+  status.textContent = "saving";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/me/kite/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: byId("my-kite-api-key")?.value?.trim(),
+        access_token: byId("my-kite-access-token")?.value?.trim(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "save failed";
+      status.className = "settings-inline-status negative";
+      showDetails("User Kite Connect", payload);
+      return;
+    }
+    if (byId("my-kite-access-token")) byId("my-kite-access-token").value = "";
+    state.auth.user = payload.user || state.auth.user;
+    renderUserBrokerStatus();
+    status.textContent = "saved";
+    status.className = "settings-inline-status positive";
+  } catch (error) {
+    status.textContent = "save failed";
+    status.className = "settings-inline-status negative";
+  } finally {
+    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
+  }
+}
+
 async function openUpstoxLogin() {
   const status = byId("upstox-connect-status");
   const button = byId("upstox-auth-url-btn");
@@ -1267,6 +1629,8 @@ async function login(event) {
 async function logout() {
   try {
     await fetch("/api/auth/logout", { method: "POST" });
+    if (state.socketReconnectTimer) clearTimeout(state.socketReconnectTimer);
+    state.socketReconnectTimer = null;
     if (state.socket) state.socket.close();
     state.socket = null;
     renderAuth({ authenticated: false, admin: false, admin_configured: state.auth.admin_configured, user: null });
@@ -2276,6 +2640,10 @@ function renderManualAnalysis(payload) {
   const path = details.decision_path || decision.strategy || "-";
   const news = payload.news || {};
   const headlines = news.headlines || [];
+  const creditUsage = payload.credit_usage || {};
+  const beforeBalance = Number(creditUsage.before?.credit_balance || 0);
+  const afterBalance = Number(creditUsage.after?.credit_balance || 0);
+  const creditCharge = Math.max(beforeBalance - afterBalance, 0);
   byId("analyze-result").innerHTML = `
     <div class="manual-analysis-card">
       <div>
@@ -2303,6 +2671,11 @@ function renderManualAnalysis(payload) {
         <strong class="${pnlClass(news.score)}">${fmtNumber(news.score)}</strong>
         <small>${headlines.length} latest items · ${fmtNumber(Number(news.confidence || 0) * 100)}% conf</small>
       </div>
+      <div>
+        <span>Credits Used</span>
+        <strong>${fmtCredits(creditCharge)}</strong>
+        <small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small>
+      </div>
     </div>
     <section class="audit-section manual-summary">
       <h4>Reason</h4>
@@ -2314,6 +2687,7 @@ function renderManualAnalysis(payload) {
     </section>
   `;
   byId("manual-detail-btn").addEventListener("click", () => showDetails("Manual Analysis", decision));
+  if (creditUsage.after) renderCreditSummary(creditUsage.after);
 }
 
 function bindControls() {
@@ -2328,6 +2702,9 @@ function bindControls() {
   byId("test-llm-btn").addEventListener("click", testLlm);
   byId("upstox-auth-url-btn").addEventListener("click", openUpstoxLogin);
   byId("upstox-connect-btn").addEventListener("click", connectUpstox);
+  byId("my-upstox-auth-url-btn").addEventListener("click", openMyUpstoxLogin);
+  byId("my-upstox-connect-btn").addEventListener("click", connectMyUpstox);
+  byId("my-kite-connect-btn").addEventListener("click", connectMyKite);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
   const quoteFilter = byId("quote-filter");
   if (quoteFilter) {
@@ -2412,6 +2789,11 @@ function setView(view) {
   byId("view-title").textContent = label;
 }
 
+function currentViewName() {
+  const active = document.querySelector(".view.active");
+  return active?.id?.replace(/-view$/, "") || "overview";
+}
+
 function openSettingsTab(tabName) {
   setView("settings");
   setSettingsTab(tabName || "broker");
@@ -2443,7 +2825,11 @@ async function loadAuthenticatedData() {
     render(await statusResponse.json());
     renderSettings(await configResponse.json());
     renderAccount(await accountResponse.json());
-    if (state.auth?.admin) fetchUsers();
+    fetchCredits();
+    if (state.auth?.admin) {
+      fetchUsers();
+      fetchAdminCredits();
+    }
   } catch (error) {
     showBackendError(networkErrorMessage(error, "initial load"), { action: "initial load" });
   }
@@ -2451,12 +2837,22 @@ async function loadAuthenticatedData() {
 
 function openSocket() {
   if (!state.auth?.authenticated || state.socket) return;
+  if (state.socketReconnectTimer) {
+    clearTimeout(state.socketReconnectTimer);
+    state.socketReconnectTimer = null;
+  }
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
   socket.addEventListener("message", (event) => render(JSON.parse(event.data)));
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     state.socket = null;
-    if (state.auth?.authenticated) setTimeout(openSocket, 2000);
+    if (event.code === 1008) return;
+    if (state.auth?.authenticated) {
+      state.socketReconnectTimer = setTimeout(() => {
+        state.socketReconnectTimer = null;
+        openSocket();
+      }, 2000);
+    }
   });
   state.socket = socket;
 }

@@ -1113,6 +1113,12 @@ class LLMBrain:
                     "api_usage_present": bool(isinstance(response_data, dict) and response_data.get("usage")),
                 },
             )
+            try:
+                from .request_context import current_user_id
+
+                event["user_id"] = current_user_id.get()
+            except Exception:
+                event["user_id"] = None
             self.db.insert_llm_usage(event)
         except Exception:
             return

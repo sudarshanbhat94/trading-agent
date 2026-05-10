@@ -32,11 +32,31 @@ def _optional_float(value: Any) -> float | None:
 def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
+    broker_accounts = {
+        "upstox": {
+            "api_key_saved": bool(row.get("upstox_api_key")),
+            "api_secret_saved": bool(row.get("upstox_api_secret")),
+            "access_token_saved": bool(row.get("upstox_access_token")),
+            "redirect_uri_saved": bool(row.get("upstox_redirect_uri")),
+            "connected": bool(row.get("upstox_access_token")),
+            "base_url": row.get("upstox_api_base_url") or "",
+            "updated_at": row.get("broker_updated_at"),
+        },
+        "kite": {
+            "api_key_saved": bool(row.get("kite_api_key")),
+            "access_token_saved": bool(row.get("kite_access_token")),
+            "connected": bool(row.get("kite_access_token")),
+            "updated_at": row.get("broker_updated_at"),
+        },
+    }
     return {
         "id": int(row["id"]),
         "username": row["username"],
         "role": row.get("role") or "user",
         "active": bool(row.get("active")),
+        "credit_balance": round(float(row.get("credit_balance") or 0.0), 6),
+        "daily_credit_limit": round(float(row.get("daily_credit_limit") or 0.0), 6),
+        "broker_accounts": broker_accounts,
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "last_login_at": row.get("last_login_at"),
@@ -185,9 +205,33 @@ class Database:
                     password_hash text not null,
                     role text not null default 'user',
                     active integer not null default 1,
+                    credit_balance real not null default 0,
+                    daily_credit_limit real not null default 0,
+                    upstox_api_key text not null default '',
+                    upstox_api_secret text not null default '',
+                    upstox_redirect_uri text not null default '',
+                    upstox_access_token text not null default '',
+                    upstox_api_base_url text not null default '',
+                    kite_api_key text not null default '',
+                    kite_access_token text not null default '',
+                    broker_updated_at text,
                     created_at text not null,
                     updated_at text not null,
                     last_login_at text
+                );
+
+                create table if not exists user_credit_ledger (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    user_id integer not null,
+                    entry_type text not null,
+                    amount real not null,
+                    balance_after real not null,
+                    base_cost real not null default 0,
+                    platform_margin real not null default 0,
+                    description text not null,
+                    details_json text not null default '{}',
+                    foreign key(user_id) references users(id)
                 );
 
                 create table if not exists sentiment_events (
@@ -228,6 +272,7 @@ class Database:
                     output_chars integer not null default 0,
                     cost_usd real not null default 0,
                     latency_ms integer not null default 0,
+                    user_id integer,
                     details_json text not null default '{}'
                 );
 
@@ -257,6 +302,8 @@ class Database:
                     on llm_usage_events(ts);
                 create index if not exists idx_llm_usage_purpose_ts
                     on llm_usage_events(purpose, ts);
+                create index if not exists idx_user_credit_ledger_user_ts
+                    on user_credit_ledger(user_id, ts);
                 create index if not exists idx_delivery_symbol_date
                     on delivery_data(symbol, date);
                 """
@@ -284,8 +331,25 @@ class Database:
             self._ensure_column(conn, "llm_usage_events", "output_chars", "integer not null default 0")
             self._ensure_column(conn, "llm_usage_events", "cost_usd", "real not null default 0")
             self._ensure_column(conn, "llm_usage_events", "latency_ms", "integer not null default 0")
+            self._ensure_column(conn, "llm_usage_events", "user_id", "integer")
+            conn.execute(
+                """
+                create index if not exists idx_llm_usage_user_ts
+                    on llm_usage_events(user_id, ts)
+                """
+            )
             self._ensure_column(conn, "users", "role", "text not null default 'user'")
             self._ensure_column(conn, "users", "active", "integer not null default 1")
+            self._ensure_column(conn, "users", "credit_balance", "real not null default 0")
+            self._ensure_column(conn, "users", "daily_credit_limit", "real not null default 0")
+            self._ensure_column(conn, "users", "upstox_api_key", "text not null default ''")
+            self._ensure_column(conn, "users", "upstox_api_secret", "text not null default ''")
+            self._ensure_column(conn, "users", "upstox_redirect_uri", "text not null default ''")
+            self._ensure_column(conn, "users", "upstox_access_token", "text not null default ''")
+            self._ensure_column(conn, "users", "upstox_api_base_url", "text not null default ''")
+            self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
+            self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
+            self._ensure_column(conn, "users", "broker_updated_at", "text")
             self._ensure_column(conn, "users", "created_at", "text not null default ''")
             self._ensure_column(conn, "users", "updated_at", "text not null default ''")
             self._ensure_column(conn, "users", "last_login_at", "text")
@@ -350,12 +414,17 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                select id, username, role, active, created_at, updated_at, last_login_at
+                select *
                 from users
                 order by role = 'admin' desc, username collate nocase
                 """
             ).fetchall()
-        return [dict(row) for row in rows]
+        users = []
+        for row in rows:
+            public = _public_user(dict(row)) or {}
+            public["credit_usage"] = self.user_credit_summary(int(row["id"]), include_ledger=False)
+            users.append(public)
+        return users
 
     def create_user(self, username: str, password_hash: str, role: str = "user", active: bool = True) -> dict[str, Any]:
         now = utc_now()
@@ -408,6 +477,307 @@ class Database:
                 "update users set last_login_at = ?, updated_at = ? where id = ?",
                 (now, now, user_id),
             )
+
+    def update_user_daily_credit_limit(self, user_id: int, daily_credit_limit: float) -> dict[str, Any]:
+        limit = max(float(daily_credit_limit or 0.0), 0.0)
+        with self.connect() as conn:
+            conn.execute(
+                "update users set daily_credit_limit = ?, updated_at = ? where id = ?",
+                (limit, utc_now(), user_id),
+            )
+        return self.user_credit_summary(user_id)
+
+    def adjust_user_credits(
+        self,
+        user_id: int,
+        amount: float,
+        description: str,
+        details: Any | None = None,
+        entry_type: str = "allocation",
+    ) -> dict[str, Any]:
+        delta = float(amount or 0.0)
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute("select credit_balance from users where id = ?", (user_id,)).fetchone()
+            if row is None:
+                raise ValueError("user not found")
+            balance = max(float(row["credit_balance"] or 0.0) + delta, 0.0)
+            conn.execute(
+                "update users set credit_balance = ?, updated_at = ? where id = ?",
+                (balance, now, user_id),
+            )
+            conn.execute(
+                """
+                insert into user_credit_ledger
+                    (ts, user_id, entry_type, amount, balance_after, base_cost, platform_margin, description, details_json)
+                values (?, ?, ?, ?, ?, 0, 0, ?, ?)
+                """,
+                (now, user_id, entry_type, delta, balance, description, json.dumps(details or {}, default=str, separators=(",", ":"))),
+            )
+        return self.user_credit_summary(user_id)
+
+    def charge_user_credits(
+        self,
+        user_id: int,
+        base_cost: float,
+        description: str,
+        details: Any | None = None,
+        *,
+        margin_pct: float = 0.20,
+        minimum_charge: float = 0.01,
+    ) -> dict[str, Any]:
+        base = max(float(base_cost or 0.0), 0.0)
+        charge = max(base * (1.0 + max(float(margin_pct or 0.0), 0.0)), float(minimum_charge or 0.0))
+        platform_margin = max(charge - base, 0.0)
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute("select credit_balance from users where id = ?", (user_id,)).fetchone()
+            if row is None:
+                raise ValueError("user not found")
+            balance = float(row["credit_balance"] or 0.0)
+            if balance + 1e-9 < charge:
+                raise ValueError("insufficient user credits")
+            balance_after = balance - charge
+            conn.execute(
+                "update users set credit_balance = ?, updated_at = ? where id = ?",
+                (balance_after, now, user_id),
+            )
+            conn.execute(
+                """
+                insert into user_credit_ledger
+                    (ts, user_id, entry_type, amount, balance_after, base_cost, platform_margin, description, details_json)
+                values (?, ?, 'usage', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    user_id,
+                    -charge,
+                    balance_after,
+                    base,
+                    platform_margin,
+                    description,
+                    json.dumps(details or {}, default=str, separators=(",", ":")),
+                ),
+            )
+        return self.user_credit_summary(user_id)
+
+    def user_credit_summary(self, user_id: int, include_ledger: bool = True, ledger_limit: int = 80) -> dict[str, Any]:
+        today = utc_now()[:10]
+        with self.connect() as conn:
+            user = conn.execute(
+                "select id, username, credit_balance, daily_credit_limit from users where id = ?",
+                (user_id,),
+            ).fetchone()
+            if user is None:
+                return {}
+            usage_today = conn.execute(
+                """
+                select
+                    coalesce(sum(case when amount < 0 then -amount else 0 end), 0) as credits_used,
+                    coalesce(sum(base_cost), 0) as base_cost,
+                    coalesce(sum(platform_margin), 0) as platform_margin,
+                    count(*) as entries
+                from user_credit_ledger
+                where user_id = ? and substr(ts, 1, 10) = ?
+                """,
+                (user_id, today),
+            ).fetchone()
+            usage_all = conn.execute(
+                """
+                select
+                    coalesce(sum(case when amount < 0 then -amount else 0 end), 0) as credits_used,
+                    coalesce(sum(base_cost), 0) as base_cost,
+                    coalesce(sum(platform_margin), 0) as platform_margin,
+                    count(*) as entries
+                from user_credit_ledger
+                where user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            ledger_rows = []
+            if include_ledger:
+                ledger_rows = conn.execute(
+                    """
+                    select id, ts, entry_type, amount, balance_after, description, details_json
+                    from user_credit_ledger
+                    where user_id = ?
+                    order by id desc
+                    limit ?
+                    """,
+                    (user_id, ledger_limit),
+                ).fetchall()
+        balance = float(user["credit_balance"] or 0.0)
+        daily_limit = float(user["daily_credit_limit"] or 0.0)
+        used_today = float(usage_today["credits_used"] or 0.0)
+        daily_remaining = max(daily_limit - used_today, 0.0) if daily_limit > 0 else balance
+        return {
+            "user_id": int(user_id),
+            "username": user["username"],
+            "credit_balance": round(balance, 6),
+            "daily_credit_limit": round(daily_limit, 6),
+            "credits_used_today": round(used_today, 6),
+            "daily_credits_remaining": round(min(balance, daily_remaining), 6),
+            "today": {
+                "credits_used": round(used_today, 6),
+                "base_cost": round(float(usage_today["base_cost"] or 0.0), 8),
+                "platform_margin": round(float(usage_today["platform_margin"] or 0.0), 8),
+                "entries": int(usage_today["entries"] or 0),
+            },
+            "all_time": {
+                "credits_used": round(float(usage_all["credits_used"] or 0.0), 6),
+                "base_cost": round(float(usage_all["base_cost"] or 0.0), 8),
+                "platform_margin": round(float(usage_all["platform_margin"] or 0.0), 8),
+                "entries": int(usage_all["entries"] or 0),
+            },
+            "ledger": [
+                {
+                    "id": row["id"],
+                    "ts": row["ts"],
+                    "entry_type": row["entry_type"],
+                    "amount": round(float(row["amount"] or 0.0), 6),
+                    "balance_after": round(float(row["balance_after"] or 0.0), 6),
+                    "description": row["description"],
+                    "details": self._decode_json(row["details_json"]),
+                }
+                for row in ledger_rows
+            ],
+        }
+
+    def admin_credit_usage_summary(self) -> dict[str, Any]:
+        today = utc_now()[:10]
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select u.id, u.username, u.role, u.active,
+                    u.credit_balance, u.daily_credit_limit,
+                    coalesce(sum(case when l.amount < 0 and substr(l.ts, 1, 10) = ? then -l.amount else 0 end), 0) as today_credits,
+                    coalesce(sum(case when substr(l.ts, 1, 10) = ? then l.base_cost else 0 end), 0) as today_base,
+                    coalesce(sum(case when substr(l.ts, 1, 10) = ? then l.platform_margin else 0 end), 0) as today_margin,
+                    coalesce(sum(case when l.amount < 0 then -l.amount else 0 end), 0) as all_credits,
+                    coalesce(sum(l.base_cost), 0) as all_base,
+                    coalesce(sum(l.platform_margin), 0) as all_margin
+                from users u
+                left join user_credit_ledger l on l.user_id = u.id
+                group by u.id
+                order by today_credits desc, all_credits desc, u.username collate nocase
+                """,
+                (today, today, today),
+            ).fetchall()
+        return {
+            "updated_at": utc_now(),
+            "today_utc": today,
+            "margin_policy": "Admin view includes OpenTrade platform margin.",
+            "users": [
+                {
+                    "id": row["id"],
+                    "username": row["username"],
+                    "role": row["role"],
+                    "active": bool(row["active"]),
+                    "credit_balance": round(float(row["credit_balance"] or 0.0), 6),
+                    "daily_credit_limit": round(float(row["daily_credit_limit"] or 0.0), 6),
+                    "today_credits_used": round(float(row["today_credits"] or 0.0), 6),
+                    "today_base_cost": round(float(row["today_base"] or 0.0), 8),
+                    "today_platform_margin": round(float(row["today_margin"] or 0.0), 8),
+                    "all_time_credits_used": round(float(row["all_credits"] or 0.0), 6),
+                    "all_time_base_cost": round(float(row["all_base"] or 0.0), 8),
+                    "all_time_platform_margin": round(float(row["all_margin"] or 0.0), 8),
+                }
+                for row in rows
+            ],
+        }
+
+    def user_has_credit_for(self, user_id: int, estimated_charge: float) -> tuple[bool, dict[str, Any]]:
+        summary = self.user_credit_summary(user_id, include_ledger=False)
+        charge = max(float(estimated_charge or 0.0), 0.0)
+        ok = (
+            summary.get("credit_balance", 0.0) + 1e-9 >= charge
+            and summary.get("daily_credits_remaining", 0.0) + 1e-9 >= charge
+        )
+        return ok, summary
+
+    def average_signal_credit_charge(self, fallback: float = 0.01) -> float:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select avg(charge) as avg_charge
+                from (
+                    select -amount as charge
+                    from user_credit_ledger
+                    where entry_type = 'usage' and amount < 0
+                    order by id desc
+                    limit 50
+                )
+                """
+            ).fetchone()
+        value = row["avg_charge"] if row else None
+        try:
+            return round(max(float(value or 0.0), fallback), 6)
+        except (TypeError, ValueError):
+            return fallback
+
+    def latest_llm_usage_id(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("select coalesce(max(id), 0) as id from llm_usage_events").fetchone()
+        return int(row["id"] or 0) if row else 0
+
+    def llm_usage_cost_since(self, user_id: int, after_id: int) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select count(*) as calls,
+                    coalesce(sum(cost_usd), 0) as cost_usd,
+                    coalesce(sum(total_tokens), 0) as total_tokens,
+                    coalesce(sum(input_chars), 0) as input_chars,
+                    coalesce(sum(output_chars), 0) as output_chars
+                from llm_usage_events
+                where id > ? and user_id = ?
+                """,
+                (after_id, user_id),
+            ).fetchone()
+        return {
+            "calls": int(row["calls"] or 0),
+            "cost_usd": round(float(row["cost_usd"] or 0.0), 8),
+            "total_tokens": int(row["total_tokens"] or 0),
+            "input_chars": int(row["input_chars"] or 0),
+            "output_chars": int(row["output_chars"] or 0),
+        }
+
+    def update_user_broker(self, user_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        allowed = {
+            "upstox_api_key",
+            "upstox_api_secret",
+            "upstox_redirect_uri",
+            "upstox_access_token",
+            "upstox_api_base_url",
+            "kite_api_key",
+            "kite_access_token",
+        }
+        assignments: list[str] = []
+        params: list[Any] = []
+        for key in allowed:
+            if key in values:
+                assignments.append(f"{key} = ?")
+                params.append(str(values.get(key) or "").strip())
+        if not assignments:
+            return _public_user(self.user_by_id(user_id))
+        assignments.extend(["broker_updated_at = ?", "updated_at = ?"])
+        now = utc_now()
+        params.extend([now, now, user_id])
+        with self.connect() as conn:
+            conn.execute(f"update users set {', '.join(assignments)} where id = ?", params)
+        return _public_user(self.user_by_id(user_id))
+
+    def assign_runtime_upstox_to_user(self, user_id: int, runtime_settings: dict[str, Any]) -> dict[str, Any] | None:
+        return self.update_user_broker(
+            user_id,
+            {
+                "upstox_api_key": runtime_settings.get("upstox_api_key", ""),
+                "upstox_api_secret": runtime_settings.get("upstox_api_secret", ""),
+                "upstox_redirect_uri": runtime_settings.get("upstox_redirect_uri", ""),
+                "upstox_access_token": runtime_settings.get("upstox_access_token", ""),
+                "upstox_api_base_url": runtime_settings.get("upstox_api_base_url", ""),
+            },
+        )
 
     def seed_universe(self, csv_path: Path, disable_missing: bool = True) -> None:
         if not csv_path.exists():
@@ -887,9 +1257,9 @@ class Database:
                 insert into llm_usage_events (
                     ts, component, purpose, provider, model, prompt_tokens,
                     completion_tokens, total_tokens, cache_hit_tokens, cache_miss_tokens,
-                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, details_json
+                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, user_id, details_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.get("ts") or utc_now(),
@@ -907,6 +1277,7 @@ class Database:
                     int(event.get("output_chars") or 0),
                     float(event.get("cost_usd") or 0),
                     int(event.get("latency_ms") or 0),
+                    _optional_int(event.get("user_id")),
                     json.dumps(event.get("details") or {}, default=str, separators=(",", ":")),
                 ),
             )
@@ -954,7 +1325,7 @@ class Database:
                 """
                 select id, ts, component, purpose, provider, model, prompt_tokens,
                     completion_tokens, total_tokens, cache_hit_tokens, cache_miss_tokens,
-                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, details_json
+                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, user_id, details_json
                 from llm_usage_events
                 order by id desc
                 limit ?
@@ -1026,6 +1397,7 @@ class Database:
                     "output_chars": row["output_chars"],
                     "cost_usd": round(float(row["cost_usd"] or 0), 8),
                     "latency_ms": row["latency_ms"],
+                    "user_id": row["user_id"],
                     "details": self._decode_json(row["details_json"]),
                 }
                 for row in recent_rows
