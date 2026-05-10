@@ -157,6 +157,7 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     ]
     raw = sum(component["score"] * component["weight"] for component in components)
     combined = max(min(raw, 1.0), -1.0)
+    score_percent = round(((combined + 1.0) / 2.0) * 100.0, 1)
     return {
         "formula": "technical_math*scaled_0.20 + candlestick_analysis*scaled_0.10 + best_strategy*scaled_0.15 + sentiment*scaled_0.09 + full_spectrum_layers*scaled_0.10 + delivery_score*scaled_0.08 + sector_rotation_score*scaled_0.07 + stage_score*scaled_0.10 + divergence_score*scaled_0.06 + entry_quality_score*scaled_0.05 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
         "components": [
@@ -168,6 +169,8 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
         ],
         "raw": round(raw, 4),
         "combined": combined,
+        "score_percent": score_percent,
+        "score_percent_note": "0% is strongly avoid, 50% is neutral, 100% is strongest deterministic setup before hard gates.",
         "clamped": combined != raw,
     }
 

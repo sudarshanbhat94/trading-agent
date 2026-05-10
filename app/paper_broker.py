@@ -92,6 +92,21 @@ class PaperBroker:
         return row
 
     def _buy(self, decision: Decision, portfolio_equity: float) -> bool:
+        if self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline":
+            approval = _llm_primary_approval_from_decision(decision)
+            if not approval["approved"]:
+                self.db.insert_order(
+                    decision.symbol,
+                    "BUY",
+                    0,
+                    decision.price,
+                    "VETOED",
+                    "llm_primary_approval_required",
+                    decision.strategy,
+                    _order_details_json(decision, {"veto_gate": "llm_primary_approval_required", "llm_primary_approval": approval}),
+                )
+                return False
+
         positions = self.db.positions()
         dynamic_position_limit = min(self.settings.max_positions, capital_position_limit(portfolio_equity))
         if len(positions) >= dynamic_position_limit:
@@ -581,6 +596,33 @@ def _partial_sell_pct_from_decision(decision: Decision) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _llm_primary_approval_from_decision(decision: Decision) -> dict[str, Any]:
+    details = _json_object(decision.details_json)
+    risk_gates = details.get("risk_gates") or {}
+    confidence_gate = details.get("confidence_gate") or {}
+    approved = (
+        details.get("decision_path") == "llm_primary"
+        and details.get("final_action") == "BUY"
+        and decision.action == "BUY"
+        and not details.get("llm_error")
+        and not details.get("json_synthetic")
+        and not details.get("llm_timeout")
+        and confidence_gate.get("passed", True) is not False
+        and risk_gates.get("llm_policy_gates_passed", True) is not False
+    )
+    return {
+        "approved": bool(approved),
+        "decision_path": details.get("decision_path"),
+        "final_action": details.get("final_action"),
+        "provider": details.get("provider"),
+        "model": details.get("model"),
+        "confidence_gate_passed": confidence_gate.get("passed"),
+        "policy_gates_passed": risk_gates.get("llm_policy_gates_passed"),
+        "llm_error_present": bool(details.get("llm_error")),
+        "reason": "completed_llm_primary_buy" if approved else "BUY requires a completed LLM primary decision with all LLM policy gates passed.",
+    }
 
 
 def _position_details_json(decision: Decision) -> str:

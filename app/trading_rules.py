@@ -147,7 +147,7 @@ def evaluate_rules_for_context(
         and sentiment_audit["status"] != "DATA_MISSING"
     )
 
-    return {
+    audit = {
         "rule_version": 1,
         "hard_blocked": bool(hard_blocks),
         "hard_blocks": hard_blocks,
@@ -172,6 +172,9 @@ def evaluate_rules_for_context(
         "allocation_cap_multiplier": round(max(min(allocation_cap, 1.0), 0.0), 4),
         "institutional_quality_allowed": institutional_quality_allowed,
     }
+    audit["overall_score_pct"] = rule_quality_score_pct(audit)
+    audit["overall_grade"] = _score_grade(audit["overall_score_pct"])
+    return audit
 
 
 def price_integrity(quote: dict[str, Any], market_health: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -362,6 +365,8 @@ def build_position_summary(
         "price_source": audit["price"]["source"],
         "price_timestamp": audit["price"]["timestamp"],
         "active_flags": audit["active_flags"],
+        "overall_score_pct": audit.get("overall_score_pct"),
+        "overall_grade": audit.get("overall_grade"),
         "recommended_action": action,
         "reason": reason,
         "rule_audit": audit,
@@ -386,8 +391,20 @@ def build_self_audit(
     total = len(summaries)
     speculative = sum(1 for item in summaries if item.get("classification") == "SPECULATIVE")
     position_limit = capital_position_limit(equity)
+    overall_scores = [
+        float(item.get("overall_score_pct"))
+        for item in summaries
+        if item.get("overall_score_pct") is not None
+    ]
+    portfolio_score = round(sum(overall_scores) / len(overall_scores), 1) if overall_scores else 100.0
+    if total > position_limit:
+        portfolio_score = max(portfolio_score - 12.0, 0.0)
+    if speculative == total and total:
+        portfolio_score = max(portfolio_score - 10.0, 0.0)
     return {
         "updated_at": datetime.now(timezone.utc).isoformat(),
+        "overall_score_pct": round(portfolio_score, 1),
+        "overall_grade": _score_grade(portfolio_score),
         "grade_violation_count": sum(1 for item in summaries if "GRADE_VIOLATION" in (item.get("active_flags") or [])),
         "delivery_conflict_count": sum(1 for item in summaries if "DELIVERY_CONFLICT" in (item.get("active_flags") or [])),
         "price_mismatch_count": sum(1 for item in summaries if "PRICE_MISMATCH" in (item.get("active_flags") or [])),
@@ -435,8 +452,99 @@ def _position_reason(action: str, audit: dict[str, Any]) -> str:
     if action == "EXIT":
         return "Delivery conflict has persisted for 3 sessions; exit recommendation is triggered."
     if action == "REVIEW":
-        return "Position has rule flags that require review before any fresh allocation."
+        flags = set(audit.get("active_flags") or [])
+        reasons: list[str] = []
+        if "GRADE_VIOLATION" in flags:
+            reasons.append("entry grade is WATCH or missing")
+        if "EARNINGS_CALENDAR_STALE" in flags:
+            reasons.append("earnings date is not reliable during result season")
+        if "SECTOR_MISSING" in flags:
+            reasons.append("sector or industry classification is missing")
+        if "SUSPECT_BREAKOUT" in flags:
+            reasons.append("breakout confirmation is suspect")
+        if (audit.get("sentiment") or {}).get("status") == "DATA_MISSING":
+            reasons.append("sentiment data is missing")
+        if (audit.get("classification") or {}).get("classification") == "SPECULATIVE":
+            reasons.append("fundamental proof is missing or weak")
+        if reasons:
+            return "Review required: " + "; ".join(reasons[:3]) + "."
+        return "Review required before any fresh allocation."
     return "No hard block detected; continue monitoring stop, targets, and event risk."
+
+
+def rule_quality_score_pct(audit: dict[str, Any]) -> float:
+    """Human-readable production readiness score, not a profit probability."""
+    score = 100.0
+    flags = set(audit.get("active_flags") or [])
+    flag_penalties = {
+        "PRICE_MISMATCH": 50.0,
+        "GRADE_VIOLATION": 35.0,
+        "DELIVERY_CONFLICT": 25.0,
+        "SUSPECT_BREAKOUT": 15.0,
+        "EARNINGS_CALENDAR_STALE": 15.0,
+        "SECTOR_MISSING": 10.0,
+        "MTF_HARD_BLOCK": 30.0,
+        "EARNINGS_LOCKOUT": 35.0,
+        "POSITION_COUNT_LIMIT": 25.0,
+    }
+    for flag in flags:
+        score -= flag_penalties.get(flag, 8.0)
+    if audit.get("hard_blocked"):
+        score -= 20.0
+
+    classification = (audit.get("classification") or {}).get("classification")
+    if classification == "SPECULATIVE":
+        score -= 25.0
+    elif classification == "MOMENTUM":
+        score -= 12.0
+
+    sentiment = audit.get("sentiment") or {}
+    if sentiment.get("status") == "DATA_MISSING":
+        score -= 12.0
+
+    entry = audit.get("entry") or {}
+    effective_entry = entry.get("effective_entry_grade")
+    if effective_entry == "A":
+        score += 4.0
+    elif effective_entry == "C":
+        score -= 8.0
+    elif effective_entry == "WATCH":
+        score -= 20.0
+    elif not effective_entry:
+        score -= 18.0
+
+    mtf = (audit.get("mtf") or {}).get("alignment_grade")
+    if mtf == "A":
+        score += 4.0
+    elif mtf == "C":
+        score -= 8.0
+    elif mtf == "D":
+        score -= 25.0
+    elif not mtf:
+        score -= 6.0
+
+    delivery = audit.get("delivery") or {}
+    if delivery.get("bias") == "accumulation":
+        score += 4.0
+    elif delivery.get("bias") == "distribution":
+        score -= 12.0
+
+    if audit.get("institutional_quality_allowed"):
+        score += 8.0
+    return round(max(min(score, 100.0), 0.0), 1)
+
+
+def _score_grade(score: float | int | None) -> str:
+    value = float(score or 0.0)
+    if value >= 85:
+        return "A"
+    if value >= 70:
+        return "B"
+    if value >= 55:
+        return "C"
+    if value >= 40:
+        return "D"
+    return "F"
 
 
 def _delivery_distribution_sessions(delivery: dict[str, Any]) -> int:

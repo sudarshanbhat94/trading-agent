@@ -234,6 +234,8 @@ class TradingAgentService:
             "self_audit_completed",
             "System rule self-audit completed before strategy evaluation",
             {
+                "overall_score_pct": self_audit.get("overall_score_pct"),
+                "overall_grade": self_audit.get("overall_grade"),
                 "grade_violation_count": self_audit.get("grade_violation_count"),
                 "delivery_conflict_count": self_audit.get("delivery_conflict_count"),
                 "price_mismatch_count": self_audit.get("price_mismatch_count"),
@@ -350,13 +352,15 @@ class TradingAgentService:
         suggestions = self._suggestions(suggestion_decisions)
         universe_summary = self.db.universe_summary()
         options_context = self.db.get_state("options_intelligence_context", {})
-        self_audit = self.db.get_state("self_audit") or build_self_audit(
-            raw_positions,
-            quotes,
-            portfolio,
-            market_health,
-            macro_calendar_context,
-        )
+        self_audit = self.db.get_state("self_audit")
+        if not self_audit or "overall_score_pct" not in self_audit:
+            self_audit = build_self_audit(
+                raw_positions,
+                quotes,
+                portfolio,
+                market_health,
+                macro_calendar_context,
+            )
         return {
             "running": self.running,
             "provider": self.market_data.source_name,
@@ -407,6 +411,7 @@ class TradingAgentService:
             audit = _json_object(decision.get("details_json"))
             context = audit.get("context") or {}
             full = context.get("full_spectrum_analysis") or {}
+            system_audit = audit.get("system_gate_audit") or context.get("system_gate_audit") or {}
             confluence = full.get("confluence_score") or {}
             trade_plan = full.get("trade_plan") or {}
             signal_plan = full.get("signal_plan") or {}
@@ -430,6 +435,8 @@ class TradingAgentService:
                     "strategy": decision.get("strategy"),
                     "confidence": decision.get("confidence"),
                     "combined_score": round(combined, 4),
+                    "overall_score_pct": system_audit.get("overall_score_pct"),
+                    "overall_grade": system_audit.get("overall_grade"),
                     "confluence": confluence_total,
                     "tier": confluence.get("tier", "NO_SIGNAL"),
                     "decision_readiness": signal_plan.get("decision_readiness", "monitor_only"),

@@ -125,9 +125,14 @@ function reasonFromSnakeCase(value, fallback = "-") {
     risk_override_no_new_longs: "Risk overrides are active, so OpenTrade is not opening a new long.",
     portfolio_concentration_correlation_too_high: "The portfolio already has too much correlated exposure, so this BUY is blocked.",
     bottom_quartile_distribution: "The sector is weak and in distribution, so the stock needs exceptional confirmation before buying.",
-    llm_failed_or_timed_out_deterministic_trade_preserved: "The LLM did not return a clean answer in time, so OpenTrade preserved the deterministic risk decision.",
-    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current LLM review limit, so deterministic rules handled it.",
+    llm_primary_failed_safe_hold: "The LLM did not return a clean answer in time, so OpenTrade forced HOLD and did not trade.",
+    llm_buy_blocked_by_system_rules: "The LLM wanted to buy, but hard system rules blocked the trade.",
+    llm_primary_unavailable_no_trade: "Primary LLM approval is required, but the LLM is unavailable, so OpenTrade forced HOLD.",
+    llm_primary_required_no_unreviewed_trade: "The symbol was not reviewed by the primary LLM in this cycle, so OpenTrade forced HOLD.",
+    llm_failed_or_timed_out_deterministic_trade_preserved: "The LLM did not return a clean answer in time, so OpenTrade forced HOLD and did not trade.",
+    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current LLM review limit; new trades now require LLM approval, so this should be HOLD.",
     time_stop_no_progress_15_sessions: "The position has not moved enough after 15 sessions, so OpenTrade is exiting dead capital.",
+    overall_score_below_55_no_new_longs: "The production-readiness score is below 55%, so OpenTrade is not opening a fresh long.",
   };
   if (mapped[text]) return mapped[text];
   return compactSentence(humanLabel(text).toLowerCase());
@@ -159,6 +164,9 @@ function gateValueText(gateName, value) {
   if (gateName === "portfolio_correlation_gate") {
     const symbols = (value.correlated_positions || []).map((item) => item.symbol).filter(Boolean);
     return symbols.length ? `correlated with ${symbols.join(", ")}` : shortValue(value, 120);
+  }
+  if (gateName === "overall_quality_gate") {
+    return `overall score ${fmtPct(value.overall_score_pct || 0)} · grade ${value.overall_grade || "-"}`;
   }
   if (gateName === "system_rule_gates" || gateName.startsWith("system_rule_")) {
     const blocks = Array.isArray(value) ? value : value ? [value] : [];
@@ -192,6 +200,7 @@ function humanizeGateFailure(gate) {
     options_max_pain_gate: "Options Max Pain is against a fresh BUY",
     risk_overrides: "Risk overrides blocked new longs",
     portfolio_correlation_gate: "Portfolio correlation risk is too high",
+    overall_quality_gate: "Overall production-readiness score is too low",
     system_rule_gates: "System trading rules blocked the action",
     pre_filter: "Pre-filter blocked the setup",
   };
@@ -256,8 +265,10 @@ function humanizeReasonText(text, action = "HOLD") {
   if (/tools\s+technical=/i.test(value)) return deterministicReasonFromText(value, action);
   if (/^[a-z0-9_]+$/i.test(value)) return reasonFromSnakeCase(value);
   return value
-    .replace(/llm_primary_required_no_unreviewed_trade/g, "LLM approval was required before trading")
-    .replace(/llm_failed_deterministic_action_preserved/g, "LLM failed, deterministic decision preserved")
+    .replace(/llm_primary_required_no_unreviewed_trade/g, "LLM approval was required before trading, so OpenTrade held")
+    .replace(/llm_primary_failed_safe_hold/g, "LLM failed, so OpenTrade held safely")
+    .replace(/llm_primary_unavailable_no_trade/g, "LLM was unavailable, so OpenTrade held safely")
+    .replace(/llm_failed_deterministic_action_preserved/g, "LLM failed, so OpenTrade held safely")
     .replace(/failed_gates=\[([^\]]*)\]/gi, (_, gates) => {
       const readable = gates
         .split(",")
@@ -431,8 +442,9 @@ function renderSelfAudit(audit = {}) {
   const panel = byId("self-audit-panel");
   if (!panel) return;
   const ok = audit.capital_pool_within_position_count_rule !== false && !Number(audit.price_mismatch_count || 0);
-  byId("self-audit-status").textContent = audit.updated_at ? (ok ? "clear" : "flags") : "pending";
+  byId("self-audit-status").textContent = audit.updated_at ? `${fmtPct(audit.overall_score_pct ?? 0)} · ${audit.overall_grade || (ok ? "clear" : "flags")}` : "pending";
   panel.innerHTML = [
+    { label: "Overall Score", value: `${fmtPct(audit.overall_score_pct ?? 0)}`, note: `${audit.overall_grade || "-"} production readiness` },
     { label: "Grade Violations", value: audit.grade_violation_count ?? 0, note: "WATCH/undefined entries" },
     { label: "Delivery Conflicts", value: audit.delivery_conflict_count ?? 0, note: "distribution vs long" },
     { label: "Price Mismatch", value: audit.price_mismatch_count ?? 0, note: ">1% source gap" },
@@ -1290,7 +1302,7 @@ function renderStrategies(rows) {
 function renderPositions(rows) {
   const body = byId("positions-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="8">No open positions</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9">No open positions</td></tr>`;
     return;
   }
   body.innerHTML = rows
@@ -1301,6 +1313,7 @@ function renderPositions(rows) {
       const flags = summary.active_flags || [];
       return `<tr>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
+        <td class="num"><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><br><small>${escapeHtml(summary.overall_grade || "-")}</small></td>
         <td><span class="tag ${String(summary.classification || "").toLowerCase()}">${escapeHtml(summary.classification || "-")}</span><br><small>${escapeHtml(row.strategy || "-")}</small></td>
         <td><small>Entry ${escapeHtml(summary.entry_grade || "-")} · MTF ${escapeHtml(summary.mtf_grade || "-")} · Delivery ${escapeHtml(summary.delivery_bias || "-")}</small><br>${flags.length ? flags.map((flag) => `<span class="tag watch">${escapeHtml(flag)}</span>`).join(" ") : `<span class="tag open">CLEAR</span>`}</td>
         <td class="num">${row.qty}</td>
@@ -1347,6 +1360,7 @@ function renderSuggestions(rows) {
         </div>
         <div class="suggestion-score">
           <div><span>Signal</span><strong>${escapeHtml(readiness)}</strong><small>${fmtNumber(confidence)}% confidence</small></div>
+          <div><span>Overall</span><strong>${fmtPct(row.overall_score_pct ?? 0)}</strong><small>${escapeHtml(row.overall_grade || "-")} readiness</small></div>
           <div><span>Confluence</span><strong>${escapeHtml(row.confluence ?? "-")}/26</strong><small>${escapeHtml(row.tier || "-")}</small></div>
           <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>score after gates</small></div>
           <div><span>Institutional</span><strong class="${pnlClass(row.institutional_bias)}">${fmtNumber(row.institutional_bias)}</strong><small>${escapeHtml(institutionalFlags.join(", ") || "neutral")}</small></div>
@@ -1621,6 +1635,7 @@ function positionSummaryHtml(summary = {}) {
       <h4>Rules Summary</h4>
       <div class="audit-cards">
         <div class="audit-card"><span>Classification</span><strong>${escapeHtml(summary.classification || "-")}</strong><small>${escapeHtml(summary.symbol || "")}</small></div>
+        <div class="audit-card"><span>Overall Score</span><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><small>${escapeHtml(summary.overall_grade || "-")} production readiness</small></div>
         <div class="audit-card"><span>Entry / MTF / Delivery</span><strong>${escapeHtml(`${summary.entry_grade || "-"} / ${summary.mtf_grade || "-"} / ${summary.delivery_bias || "-"}`)}</strong><small>effective ${escapeHtml(summary.effective_entry_grade || "-")}</small></div>
         <div class="audit-card"><span>Sentiment</span><strong>${escapeHtml(summary.sentiment_status === "DATA_MISSING" ? "DATA_MISSING" : fmtNumber(summary.sentiment_score))}</strong><small>0.0 is not neutral</small></div>
         <div class="audit-card"><span>Price</span><strong>${escapeHtml(summary.price_label || "-")}</strong><small>${escapeHtml(summary.price_source || "-")} · ${escapeHtml(summary.price_timestamp || "-")}</small></div>
@@ -1790,6 +1805,9 @@ function scoreBreakdownHtml(score) {
   if (!score || !Array.isArray(score.components)) return "";
   return `<section class="audit-section">
     <h4>Score Breakdown</h4>
+    <div class="audit-cards">
+      <div class="audit-card"><span>Deterministic Score</span><strong>${fmtPct(score.score_percent ?? ((Number(score.combined || 0) + 1) * 50))}</strong><small>${escapeHtml(score.score_percent_note || "50% is neutral before hard gates")}</small></div>
+    </div>
     <div class="audit-cards">
       ${score.components
         .map(

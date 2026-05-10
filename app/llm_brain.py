@@ -371,7 +371,7 @@ class LLMBrain:
                         "delivery_accumulation.institutional_fingerprint, and options_oi.max_pain_distance_pct. BUY is permitted only in Stage2_Markup; "
                         "entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or "
                         "bear_confirmed breadth means HOLD. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
-                        "system_gate_audit is mandatory and absolute: if hard_blocked is true, your action must be HOLD for new entries. "
+                        "system_gate_audit is mandatory and absolute: if hard_blocked is true or overall_score_pct is below 55, your action must be HOLD for new entries. "
                         "Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
                         "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true. "
                         "risk_checks must say whether each new gate passed or failed. If you recommend BUY while any "
@@ -533,26 +533,27 @@ class LLMBrain:
             original["llm_review_error"] = _error_summary(exc)
             return Decision(
                 symbol=decision.symbol,
-                action=decision.action,
-                confidence=decision.confidence,
+                action="HOLD",
+                confidence=0.0,
                 price=decision.price,
                 technical_score=decision.technical_score,
                 sentiment_score=decision.sentiment_score,
-                reason=f"{decision.reason} | LLM review failed, deterministic action preserved: {_error_summary(exc)}"[:700],
+                reason=f"LLM review failed, so OpenTrade forced HOLD and did not preserve the deterministic trade: {_error_summary(exc)}"[:700],
                 asof=decision.asof,
                 strategy=decision.strategy,
                 details_json=_json_dumps(
                     {
                         "audit_version": 1,
                         "decision_path": "llm_review_failed",
-                        "final_action": decision.action,
-                        "action_reason": "LLM review failed, deterministic action preserved.",
+                        "final_action": "HOLD",
+                        "action_reason": "LLM review failed, so OpenTrade forced HOLD.",
                         "candidate_decision": original,
                         "context": _compact_context(context),
                         "sizing_grade": context.get("sizing_grade"),
                         "risk_gates": {
                             "llm_review_failed": True,
-                            "deterministic_action_preserved": True,
+                            "deterministic_action_preserved": False,
+                            "deterministic_action_blocked": True,
                             "sizing_grade": context.get("sizing_grade"),
                         },
                         "error_type": exc.__class__.__name__,
@@ -1864,6 +1865,15 @@ def _policy_gate_action(
                         "effective_entry_grade": (system_gate_audit.get("entry") or {}).get("effective_entry_grade"),
                     },
                     "required": "effective entry grade A, B, or C; WATCH/D/missing blocked",
+                },
+                {
+                    "gate": "overall_quality_gate",
+                    "passed": float(system_gate_audit.get("overall_score_pct") or 0.0) >= 55.0,
+                    "value": {
+                        "overall_score_pct": system_gate_audit.get("overall_score_pct"),
+                        "overall_grade": system_gate_audit.get("overall_grade"),
+                    },
+                    "required": "overall production-readiness score >= 55%",
                 },
                 {
                     "gate": "breakout_quality_gate",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -40,7 +41,8 @@ class StrategyEngine:
         sentiment_scores = await self.sentiment.scores_for_cycle(universe)
         decisions: list[Decision] = []
         llm_reviews = 0
-        llm_primary = self.settings.llm_decision_mode == "primary" and self.llm.enabled
+        llm_primary_required = self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline"
+        llm_primary = llm_primary_required and self.llm.enabled
         candles_by_symbol = candles_by_symbol or {}
         timeframe_candles_by_symbol = timeframe_candles_by_symbol or {}
         risk_limits = {
@@ -166,6 +168,8 @@ class StrategyEngine:
 
         for item in scan_items:
             context = item["context"]
+            blocked_by_llm_primary = False
+            llm_block_reason: str | None = None
             if llm_primary and item["symbol"] in llm_candidate_symbols:
                 llm_decision = await self.llm.decide(context)
                 llm_reviews += 1
@@ -177,7 +181,8 @@ class StrategyEngine:
                     "llm_reason": llm_decision.reason,
                     "llm_error": llm_audit.get("llm_error"),
                     "json_synthetic": bool(llm_audit.get("json_synthetic")),
-                    "deterministic_action_preserved": llm_failed and item["action"] != "HOLD",
+                    "deterministic_action_preserved": False,
+                    "deterministic_action_blocked": llm_failed and item["action"] != "HOLD",
                 }
                 llm_rule_blocked = (
                     llm_decision.action == "BUY"
@@ -190,17 +195,42 @@ class StrategyEngine:
                         "hard_blocks": (context.get("system_gate_audit") or {}).get("hard_blocks", []),
                     }
                     llm_failed = True
-                if llm_rule_blocked:
-                    pass
-                elif not (llm_failed and item["action"] != "HOLD"):
+                    llm_block_reason = "llm_buy_blocked_by_system_rules"
+                if not llm_failed:
                     decisions.append(llm_decision)
                     continue
+                blocked_by_llm_primary = item["action"] != "HOLD"
+                llm_block_reason = llm_block_reason or "llm_primary_failed_safe_hold"
                 context["llm_primary_fallback"] = {
-                    "preserved_deterministic_action": item["action"],
+                    "blocked_deterministic_action": item["action"],
                     "llm_action": llm_decision.action,
                     "llm_reason": llm_decision.reason,
-                    "reason": "llm_failed_or_timed_out_deterministic_trade_preserved",
+                    "reason": llm_block_reason,
+                    "effect": "forced_hold_no_trade",
                 }
+            elif llm_primary_required and item["action"] != "HOLD":
+                blocked_by_llm_primary = True
+                llm_block_reason = (
+                    "llm_primary_unavailable_no_trade"
+                    if not self.llm.enabled
+                    else "llm_primary_required_no_unreviewed_trade"
+                )
+                context["llm_primary_gate"] = {
+                    "required": True,
+                    "reviewed": False,
+                    "original_action": item["action"],
+                    "final_action": "HOLD",
+                    "reason": llm_block_reason,
+                    "effect": "forced_hold_no_trade",
+                }
+            if blocked_by_llm_primary:
+                item["action"] = "HOLD"
+                item["confidence"] = self._confidence_for_action(
+                    "HOLD",
+                    item["combined"],
+                    item.get("macro_event_context") or {},
+                    context.get("market_breadth_context") or {},
+                )
 
             candle_summary = context["candlestick_analysis"]
             best_strategy = context["best_strategy"]
@@ -228,21 +258,16 @@ class StrategyEngine:
             if failed_gate_names:
                 reason = f"{reason}, failed_gates={failed_gate_names}"
             if context.get("llm_primary_fallback"):
-                reason = f"{reason}, llm_failed_deterministic_action_preserved"
+                reason = f"{reason}, {context['llm_primary_fallback'].get('reason', 'llm_primary_failed_safe_hold')}"
+            if context.get("llm_primary_gate", {}).get("effect") == "forced_hold_no_trade":
+                reason = f"{reason}, {context['llm_primary_gate'].get('reason', 'llm_primary_required_no_unreviewed_trade')}"
             action = item["action"]
             confidence = item["confidence"]
             decision_path = "deterministic_after_full_universe_scan"
-            if llm_primary and item["action"] != "HOLD":
-                context["llm_primary_gate"] = {
-                    "required": True,
-                    "reviewed": item["symbol"] in llm_candidate_symbols,
-                    "original_action": item["action"],
-                    "final_action": item["action"],
-                    "reason": "deterministic_action_allowed_when_llm_not_selected_or_unavailable",
-                }
-                if item["symbol"] not in llm_candidate_symbols:
-                    reason = f"{reason}, llm_not_selected_due_candidate_limit_deterministic_action_allowed"
-                    decision_path = "deterministic_llm_not_selected"
+            if context.get("llm_primary_fallback"):
+                decision_path = "llm_primary_failed_safe_hold"
+            elif context.get("llm_primary_gate", {}).get("effect") == "forced_hold_no_trade":
+                decision_path = "llm_primary_required_safe_hold"
             decision = Decision(
                 symbol=item["symbol"],
                 action=action,
@@ -436,6 +461,13 @@ class StrategyEngine:
             fail("timeframe_alignment_gate", "D", "timeframe_alignment_conflict")
         if alignment_grade == "C":
             context["mtf_c_speculative_size_only"] = True
+        overall_score_pct = float(rule_audit.get("overall_score_pct") or 0.0)
+        if not has_position and overall_score_pct < 55:
+            fail(
+                "overall_quality_gate",
+                {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")},
+                "overall_score_below_55_no_new_longs",
+            )
         if delivery_is_distribution and not exceptional_setup:
             fail(
                 "delivery_distribution_gate",
@@ -518,6 +550,7 @@ class StrategyEngine:
             {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed"), "value": breakout},
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
             {"gate": "alignment_gate", "passed": alignment_grade != "D", "value": alignment_grade},
+            {"gate": "overall_quality_gate", "passed": has_position or overall_score_pct >= 55, "value": {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")}},
             {"gate": "delivery_distribution_gate", "passed": not delivery_is_distribution or exceptional_setup, "value": delivery},
             {"gate": "options_max_pain_gate", "passed": not options_oi.get("buy_suppressed"), "value": options_oi},
         ]
@@ -971,6 +1004,8 @@ class StrategyEngine:
                     "HOLD": "score/action gates did not permit a trade",
                 },
                 "score_breakdown": score_breakdown,
+                "overall_score_pct": (context.get("system_gate_audit") or {}).get("overall_score_pct"),
+                "overall_grade": (context.get("system_gate_audit") or {}).get("overall_grade"),
                 "pre_filter": context.get("pre_filter"),
                 "system_gate_audit": context.get("system_gate_audit"),
                 "sizing_grade": context.get("sizing_grade"),

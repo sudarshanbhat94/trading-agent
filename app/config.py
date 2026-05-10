@@ -139,7 +139,7 @@ class Settings:
     stt_bps: float = _float("STT_BPS", 10.0)
 
     llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
-    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "review").strip().lower()
+    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "primary").strip().lower()
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
@@ -281,7 +281,7 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return provider if provider in {"deepseek", "offline"} else "deepseek"
     if key == "llm_decision_mode":
         mode = str(value).strip().lower()
-        return mode if mode in {"offline", "review", "primary"} else "review"
+        return mode if mode in {"offline", "review", "primary"} else "primary"
     if key == "deepseek_model":
         model = str(value).strip()
         return model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else "deepseek-v4-pro"
