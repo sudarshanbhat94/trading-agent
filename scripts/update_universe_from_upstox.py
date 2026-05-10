@@ -41,6 +41,7 @@ def main() -> None:
                 "kite_symbol",
                 "upstox_instrument_key",
                 "sector",
+                "industry",
                 "base_price",
                 "enabled",
             ],
@@ -74,7 +75,8 @@ def _rows_for_exchange(exchange: str) -> list[dict[str, Any]]:
                 "yahoo_symbol": f"{trading_symbol}.{yahoo_suffix}",
                 "kite_symbol": f"{exchange}:{trading_symbol}",
                 "upstox_instrument_key": instrument_key,
-                "sector": "",
+                "sector": str(item.get("sector") or "").strip(),
+                "industry": str(item.get("industry") or "").strip(),
                 "base_price": _base_price(item),
                 "enabled": 1,
             }

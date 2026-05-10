@@ -11,6 +11,7 @@ from .indicators import technical_snapshot
 from .llm_brain import LLMBrain
 from .models import Candle, Decision, Quote, utc_now
 from .sentiment import SentimentService
+from .trading_rules import evaluate_rules_for_context
 
 
 class StrategyEngine:
@@ -178,7 +179,20 @@ class StrategyEngine:
                     "json_synthetic": bool(llm_audit.get("json_synthetic")),
                     "deterministic_action_preserved": llm_failed and item["action"] != "HOLD",
                 }
-                if not (llm_failed and item["action"] != "HOLD"):
+                llm_rule_blocked = (
+                    llm_decision.action == "BUY"
+                    and bool((context.get("system_gate_audit") or {}).get("hard_blocked"))
+                )
+                if llm_rule_blocked:
+                    context["llm_primary_rule_blocked"] = {
+                        "llm_action": llm_decision.action,
+                        "reason": "system_rules_hard_blocked_llm_buy",
+                        "hard_blocks": (context.get("system_gate_audit") or {}).get("hard_blocks", []),
+                    }
+                    llm_failed = True
+                if llm_rule_blocked:
+                    pass
+                elif not (llm_failed and item["action"] != "HOLD"):
                     decisions.append(llm_decision)
                     continue
                 context["llm_primary_fallback"] = {
@@ -352,10 +366,17 @@ class StrategyEngine:
         sector = full_spectrum.get("sector_rotation") or {}
         market_breadth = context.get("market_breadth_context") or {}
         pre_filter = context.get("pre_filter") or {}
+        rule_audit = evaluate_rules_for_context(
+            context,
+            positions,
+            context.get("risk_limits", {}).get("portfolio_equity", 0.0),
+        )
+        context["system_gate_audit"] = rule_audit
         confluence_total = float(confluence.get("total", 0) or 0.0)
         scorecard_total = float(scorecard.get("total_score") or scorecard.get("score") or 0.0)
         alignment_grade = alignment.get("alignment_grade")
         entry_grade = entry.get("entry_grade")
+        effective_entry_grade = (rule_audit.get("entry") or {}).get("effective_entry_grade") or entry_grade
         delivery = full_spectrum.get("delivery_accumulation") or context.get("delivery_data") or {}
         delivery_bias = str(
             delivery.get("net_bias")
@@ -368,7 +389,7 @@ class StrategyEngine:
             confluence_total >= 22
             and scorecard_total >= 85
             and alignment_grade == "A"
-            and entry_grade in {"A", "B"}
+            and effective_entry_grade in {"A", "B"}
             and not breakout.get("two_day_rule_failed")
             and not divergence.get("climax_volume_top")
         )
@@ -384,12 +405,25 @@ class StrategyEngine:
 
         if pre_filter.get("buy_blocked") and not has_position:
             fail(pre_filter.get("block_gate", "pre_filter"), pre_filter.get("block_value"), pre_filter.get("elimination_reason", "pre_filter_block"))
+        for block in rule_audit.get("hard_blocks") or []:
+            fail(
+                f"system_rule_{block.get('flag', 'hard_block')}",
+                block.get("value"),
+                block.get("reason") or str(block.get("flag") or "hard_block"),
+            )
         if entry_grade == "D":
             fail("entry_grade_gate", entry_grade, "extended_entry_no_new_longs")
-        if entry_grade == "WATCH" and not exceptional_setup:
+        if effective_entry_grade == "WATCH":
             fail(
                 "entry_grade_gate",
-                {"entry_grade": entry_grade, "confluence": confluence_total, "scorecard": scorecard_total, "alignment": alignment_grade},
+                {
+                    "entry_grade": entry_grade,
+                    "effective_entry_grade": effective_entry_grade,
+                    "confluence": confluence_total,
+                    "scorecard": scorecard_total,
+                    "alignment": alignment_grade,
+                    "sentiment": rule_audit.get("sentiment"),
+                },
                 "watch_entry_needs_exceptional_confirmation",
             )
         if breakout.get("two_day_rule_failed"):
@@ -400,12 +434,8 @@ class StrategyEngine:
             fail("climax_volume_gate", True, "climax_top_detected_no_new_longs")
         if alignment_grade == "D":
             fail("timeframe_alignment_gate", "D", "timeframe_alignment_conflict")
-        if alignment_grade == "C" and confluence_total < 20:
-            fail(
-                "timeframe_alignment_gate",
-                {"alignment_grade": alignment_grade, "confluence": confluence_total},
-                "timeframe_alignment_c_needs_higher_confluence",
-            )
+        if alignment_grade == "C":
+            context["mtf_c_speculative_size_only"] = True
         if delivery_is_distribution and not exceptional_setup:
             fail(
                 "delivery_distribution_gate",
@@ -418,12 +448,8 @@ class StrategyEngine:
                 },
                 "delivery_distribution_no_new_longs",
             )
-        if breakout.get("breakout_quality") == "suspect" and not exceptional_setup:
-            fail(
-                "breakout_quality_gate",
-                {"breakout_quality": breakout.get("breakout_quality"), "confluence": confluence_total, "alignment": alignment_grade},
-                "suspect_breakout_needs_confirmation",
-            )
+        if breakout.get("breakout_quality") == "suspect":
+            context["suspect_breakout_size_reduction"] = True
         if options_oi.get("buy_suppressed"):
             fail(
                 "options_max_pain_gate",
@@ -459,12 +485,14 @@ class StrategyEngine:
         if correlation_gate.get("block_buy"):
             fail("portfolio_correlation_gate", correlation_gate, "portfolio_concentration_correlation_too_high")
         context["portfolio_correlation_gate"] = correlation_gate
-        distribution_exit_pressure = has_position and delivery_is_distribution and not exceptional_setup
-        if distribution_exit_pressure:
+        distribution_sessions = _delivery_distribution_sessions(delivery)
+        distribution_exit_pressure = has_position and delivery_is_distribution and distribution_sessions >= 3
+        if has_position and delivery_is_distribution:
             context["delivery_exit_pressure"] = {
-                "reason": "delivery_distribution_exit_review",
+                "reason": "delivery_distribution_exit_review" if distribution_sessions < 3 else "delivery_distribution_persisted_3_sessions_exit",
                 "delivery": delivery,
-                "exceptional_setup": exceptional_setup,
+                "distribution_sessions": distribution_sessions,
+                "recommended_action": "TRAIL STOP" if distribution_sessions < 3 else "EXIT",
             }
         exit_pressure = (
             scorecard.get("hard_veto", {}).get("failed")
@@ -485,10 +513,11 @@ class StrategyEngine:
         context["sizing_grade"] = sizing_grade
         evaluated_gates = [
             *list(pre_filter.get("gates") or []),
-            {"gate": "entry_grade_gate", "passed": entry_grade not in {"D", "WATCH"} or exceptional_setup, "value": entry_grade},
-            {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed") and (breakout.get("breakout_quality") != "suspect" or exceptional_setup), "value": breakout},
+            {"gate": "system_rule_gates", "passed": not rule_audit.get("hard_blocked"), "value": rule_audit.get("hard_blocks")},
+            {"gate": "entry_grade_gate", "passed": effective_entry_grade in {"A", "B", "C"}, "value": {"entry_grade": entry_grade, "effective_entry_grade": effective_entry_grade}},
+            {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed"), "value": breakout},
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
-            {"gate": "alignment_gate", "passed": alignment_grade != "D" and (alignment_grade != "C" or confluence_total >= 20), "value": alignment_grade},
+            {"gate": "alignment_gate", "passed": alignment_grade != "D", "value": alignment_grade},
             {"gate": "delivery_distribution_gate", "passed": not delivery_is_distribution or exceptional_setup, "value": delivery},
             {"gate": "options_max_pain_gate", "passed": not options_oi.get("buy_suppressed"), "value": options_oi},
         ]
@@ -499,6 +528,7 @@ class StrategyEngine:
             "pre_filter": pre_filter,
             "breadth_regime": market_breadth.get("breadth_regime"),
             "breadth_thrust": market_breadth.get("breadth_thrust"),
+            "system_gate_audit": rule_audit,
         }
         if failed_gates and not has_position:
             return "HOLD"
@@ -589,8 +619,12 @@ class StrategyEngine:
             block_gate = block_gate or "breadth_gate"
             block_value = block_value or breadth_regime
             elimination_reason = elimination_reason or "market_breadth_bear_confirmed_no_new_longs"
+        earnings_trading_days = macro_event_context.get("earnings_trading_days_away")
         earnings_days = macro_event_context.get("earnings_days_away")
-        earnings_block = earnings_days is not None and 0 <= int(earnings_days) <= 5 and not has_position
+        if earnings_trading_days is not None:
+            earnings_block = 0 <= int(earnings_trading_days) <= 10 and not has_position
+        else:
+            earnings_block = earnings_days is not None and 0 <= int(earnings_days) <= 14 and not has_position
         monthly_expiry_block = bool(
             macro_event_context.get("is_monthly_expiry_day")
             or macro_event_context.get("is_monthly_expiry_eve")
@@ -806,6 +840,8 @@ class StrategyEngine:
         indicators = full.get("indicator_suite") or {}
         sector = full.get("sector_rotation") or {}
         breadth = context.get("market_breadth_context") or {}
+        rule_audit = context.get("system_gate_audit") or {}
+        classification = rule_audit.get("classification") or {}
         tier = confluence.get("tier", "NO_SIGNAL")
         base = {
             "MAXIMUM_CONVICTION": 1.5,
@@ -816,9 +852,14 @@ class StrategyEngine:
         }.get(tier, 0.0)
         multiplier = base
         modifiers: list[str] = [f"base_from_confluence={tier}:{base}"]
-        entry_mod = {"A": 1.0, "B": 0.85, "C": 0.65}.get(entry.get("entry_grade"), 1.0)
+        effective_entry_grade = (rule_audit.get("entry") or {}).get("effective_entry_grade") or entry.get("entry_grade")
+        entry_mod = {"A": 1.0, "B": 0.85, "C": 0.65, "WATCH": 0.0}.get(effective_entry_grade, 0.0)
         multiplier *= entry_mod
-        modifiers.append(f"entry_grade={entry.get('entry_grade')} x{entry_mod}")
+        modifiers.append(f"effective_entry_grade={effective_entry_grade} x{entry_mod}")
+        allocation_cap = float(rule_audit.get("allocation_cap_multiplier") if rule_audit else 1.0)
+        if allocation_cap < 1.0:
+            multiplier = min(multiplier, allocation_cap)
+            modifiers.append(f"classification_gate={classification.get('classification', 'unknown')} cap {allocation_cap}")
         atr_pct = indicators.get("atr_pct")
         if atr_pct is not None and float(atr_pct) > 4:
             multiplier *= 0.6
@@ -844,6 +885,8 @@ class StrategyEngine:
             "recommended_max_position_pct": round(recommended, 6),
             "portfolio_equity": portfolio_equity,
             "open_positions": len([row for row in positions.values() if row.get("qty", 0) > 0]),
+            "classification": classification,
+            "rule_allocation_cap_multiplier": allocation_cap,
         }
 
     def _log_pre_filter(self, event: str, details: dict[str, Any]) -> None:
@@ -897,7 +940,9 @@ class StrategyEngine:
             "decision_gate_context": context.get("decision_gate_context"),
             "portfolio_correlation_gate": context.get("portfolio_correlation_gate"),
             "sizing_grade": context.get("sizing_grade"),
+            "system_gate_audit": context.get("system_gate_audit"),
             "llm_primary_fallback": context.get("llm_primary_fallback"),
+            "llm_primary_rule_blocked": context.get("llm_primary_rule_blocked"),
         }
         if has_position:
             position = context.get("position") or {}
@@ -927,6 +972,7 @@ class StrategyEngine:
                 },
                 "score_breakdown": score_breakdown,
                 "pre_filter": context.get("pre_filter"),
+                "system_gate_audit": context.get("system_gate_audit"),
                 "sizing_grade": context.get("sizing_grade"),
                 "llm_primary_fallback": context.get("llm_primary_fallback"),
                 "risk_gates": gates,
@@ -999,10 +1045,12 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "timeframe_data": context.get("timeframe_data"),
         "sector_rotation": context.get("sector_rotation"),
         "delivery_data": context.get("delivery_data"),
+        "system_gate_audit": context.get("system_gate_audit"),
         "pre_filter": context.get("pre_filter"),
         "decision_gate_context": context.get("decision_gate_context"),
         "sizing_grade": context.get("sizing_grade"),
         "llm_primary_fallback": context.get("llm_primary_fallback"),
+        "llm_primary_rule_blocked": context.get("llm_primary_rule_blocked"),
         "llm_primary_gate": context.get("llm_primary_gate"),
         "llm_primary_review": context.get("llm_primary_review"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
@@ -1056,6 +1104,23 @@ def _held_periods_from_position(position: dict[str, Any], candles: list[Candle])
     if opened_at is None or not candles:
         return 0
     return sum(1 for candle in candles if (_parse_time(candle.ts) or datetime.min.replace(tzinfo=timezone.utc)) > opened_at)
+
+
+def _delivery_distribution_sessions(delivery: dict[str, Any]) -> int:
+    payload = delivery.get("score_payload") if isinstance(delivery.get("score_payload"), dict) else {}
+    nested_trend = payload.get("trend") if isinstance(payload.get("trend"), dict) else {}
+    candidates = [
+        payload.get("distribution_streak"),
+        delivery.get("distribution_streak"),
+        delivery.get("distribution_days"),
+        nested_trend.get("distribution_days"),
+    ]
+    for value in candidates:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            continue
+    return 1 if str(delivery.get("bias") or "").lower() == "distribution" else 0
 
 
 def _parse_time(value: Any) -> datetime | None:

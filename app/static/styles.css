@@ -352,7 +352,8 @@ select:disabled {
 .pill.running,
 .source.live,
 .tag.buy,
-.tag.open {
+.tag.open,
+.tag.fundamental {
   border-color: #b5dfc8;
   background: var(--green-soft);
   color: var(--green);
@@ -362,13 +363,15 @@ select:disabled {
 .pill.warning,
 .source.delayed,
 .tag.hold,
-.tag.watch {
+.tag.watch,
+.tag.momentum {
   border-color: #f0d6a7;
   background: var(--amber-soft);
   color: var(--amber);
 }
 
-.tag.sell {
+.tag.sell,
+.tag.speculative {
   border-color: #efb4b4;
   background: var(--red-soft);
   color: var(--red);
@@ -1616,7 +1619,8 @@ tbody tr:hover {
 .pill.running,
 .source.live,
 .tag.buy,
-.tag.open {
+.tag.open,
+.tag.fundamental {
   border-color: rgba(0, 192, 118, 0.42);
   background: rgba(0, 192, 118, 0.13);
   color: #6ff0b0;
@@ -1626,13 +1630,15 @@ tbody tr:hover {
 .pill.warning,
 .source.delayed,
 .tag.hold,
-.tag.watch {
+.tag.watch,
+.tag.momentum {
   border-color: rgba(255, 176, 32, 0.42);
   background: rgba(255, 176, 32, 0.13);
   color: #ffd089;
 }
 
-.tag.sell {
+.tag.sell,
+.tag.speculative {
   border-color: rgba(255, 93, 93, 0.46);
   background: rgba(255, 93, 93, 0.13);
   color: #ff9b9b;

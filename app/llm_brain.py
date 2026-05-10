@@ -371,6 +371,9 @@ class LLMBrain:
                         "delivery_accumulation.institutional_fingerprint, and options_oi.max_pain_distance_pct. BUY is permitted only in Stage2_Markup; "
                         "entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or "
                         "bear_confirmed breadth means HOLD. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
+                        "system_gate_audit is mandatory and absolute: if hard_blocked is true, your action must be HOLD for new entries. "
+                        "Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
+                        "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true. "
                         "risk_checks must say whether each new gate passed or failed. If you recommend BUY while any "
                         "new gate conflicts, acknowledge that conflict in reason. "
                         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
@@ -1365,6 +1368,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "timeframe_data": context.get("timeframe_data"),
         "sector_rotation": context.get("sector_rotation"),
         "delivery_data": context.get("delivery_data"),
+        "system_gate_audit": context.get("system_gate_audit"),
         "full_spectrum_analysis": context.get("full_spectrum_analysis"),
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
@@ -1407,6 +1411,7 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             "timeframe_data": context.get("timeframe_data"),
             "sector_rotation": context.get("sector_rotation"),
             "delivery_data": context.get("delivery_data"),
+            "system_gate_audit": context.get("system_gate_audit"),
             "full_spectrum_analysis": _compact_full_spectrum_for_llm(full, institutional_flow, rich=rich),
             "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
             "universe_scan": context.get("universe_scan"),
@@ -1814,6 +1819,7 @@ def _policy_gate_action(
     divergence = full_spectrum.get("price_volume_divergence") or {}
     alignment = ((full_spectrum.get("trend_context") or {}).get("timeframe_alignment") or {})
     options_oi = full_spectrum.get("options_oi") or {}
+    system_gate_audit = context.get("system_gate_audit") or {}
     confluence_total = int(confluence.get("total", 0) or 0)
     gates: list[dict[str, Any]] = [
         {
@@ -1839,6 +1845,12 @@ def _policy_gate_action(
         gates.extend(
             [
                 {
+                    "gate": "system_hard_blocks",
+                    "passed": not system_gate_audit.get("hard_blocked"),
+                    "value": system_gate_audit.get("hard_blocks", []),
+                    "required": "no hard blocks from data, entry, earnings, delivery, MTF, or capital rules",
+                },
+                {
                     "gate": "stage_buy_permitted",
                     "passed": bool(stage.get("buy_permitted")),
                     "value": stage.get("stage"),
@@ -1846,9 +1858,12 @@ def _policy_gate_action(
                 },
                 {
                     "gate": "entry_grade_gate",
-                    "passed": entry.get("entry_grade") != "D",
-                    "value": entry.get("entry_grade"),
-                    "required": "entry grade not D",
+                    "passed": (system_gate_audit.get("entry") or {}).get("effective_entry_grade") in {"A", "B", "C"},
+                    "value": {
+                        "entry_grade": entry.get("entry_grade"),
+                        "effective_entry_grade": (system_gate_audit.get("entry") or {}).get("effective_entry_grade"),
+                    },
+                    "required": "effective entry grade A, B, or C; WATCH/D/missing blocked",
                 },
                 {
                     "gate": "breakout_quality_gate",
@@ -1866,7 +1881,7 @@ def _policy_gate_action(
                     "gate": "timeframe_alignment_gate",
                     "passed": alignment.get("alignment_grade") != "D",
                     "value": alignment.get("alignment_grade"),
-                    "required": "alignment grade not D",
+                    "required": "alignment grade B+ for standard entries; C only at speculative size; D blocked",
                 },
                 {
                     "gate": "options_max_pain_gate",

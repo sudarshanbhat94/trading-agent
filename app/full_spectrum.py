@@ -1963,7 +1963,9 @@ def _target_rr(trade_plan: dict[str, Any]) -> float:
 
 
 def _news_sentiment(sentiment_score: float) -> dict[str, Any]:
-    if sentiment_score > 0.2:
+    if abs(float(sentiment_score or 0.0)) < 1e-12:
+        bias = "DATA_MISSING"
+    elif sentiment_score > 0.2:
         bias = "bullish"
     elif sentiment_score < -0.2:
         bias = "bearish"
@@ -1973,6 +1975,7 @@ def _news_sentiment(sentiment_score: float) -> dict[str, Any]:
         "aggregate_score": _round(sentiment_score),
         "bias": bias,
         "source": "OpenTrade rotating news sentiment service",
+        "note": "0.0 means DATA_MISSING, not neutral" if bias == "DATA_MISSING" else None,
     }
 
 

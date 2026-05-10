@@ -7,6 +7,7 @@ from .config import Settings
 from .db import Database
 from .models import Decision, Quote, utc_now
 from .order_router import OrderRouter
+from .trading_rules import capital_position_limit
 
 
 class PaperBroker:
@@ -92,7 +93,8 @@ class PaperBroker:
 
     def _buy(self, decision: Decision, portfolio_equity: float) -> bool:
         positions = self.db.positions()
-        if len(positions) >= self.settings.max_positions:
+        dynamic_position_limit = min(self.settings.max_positions, capital_position_limit(portfolio_equity))
+        if len(positions) >= dynamic_position_limit:
             self.db.insert_order(
                 decision.symbol,
                 "BUY",
@@ -106,7 +108,10 @@ class PaperBroker:
                     {
                         "veto_gate": "max_positions",
                         "open_positions": len(positions),
-                        "max_positions": self.settings.max_positions,
+                        "max_positions": dynamic_position_limit,
+                        "settings_max_positions": self.settings.max_positions,
+                        "capital_pool_position_limit": capital_position_limit(portfolio_equity),
+                        "portfolio_equity": portfolio_equity,
                     },
                 ),
             )
@@ -132,7 +137,23 @@ class PaperBroker:
                 current_value = row["qty"] * row["market_price"]
                 break
         sizing_grade = _sizing_grade_from_decision(decision)
+        rule_audit = _rule_audit_from_decision(decision)
+        if rule_audit.get("hard_blocked"):
+            self.db.insert_order(
+                decision.symbol,
+                "BUY",
+                0,
+                decision.price,
+                "VETOED",
+                "system_rule_hard_block",
+                decision.strategy,
+                _order_details_json(decision, {"veto_gate": "system_rule_hard_block", "system_gate_audit": rule_audit}),
+            )
+            return False
         max_position_pct = sizing_grade.get("recommended_max_position_pct") or self.settings.max_position_pct
+        allocation_cap = rule_audit.get("allocation_cap_multiplier")
+        if allocation_cap is not None:
+            max_position_pct = min(float(max_position_pct), self.settings.max_position_pct * float(allocation_cap))
         absolute_cap = self.settings.max_position_pct * 1.5
         max_position_pct = min(float(max_position_pct), absolute_cap)
         max_position_value = portfolio_equity * max_position_pct
@@ -433,6 +454,9 @@ class PaperBroker:
             audit = {}
         context = audit.get("context") or {}
         sector = context.get("sector")
+        rule_audit = audit.get("system_gate_audit") or context.get("system_gate_audit") or {}
+        if "SECTOR_MISSING" in (rule_audit.get("active_flags") or []):
+            return {"veto": False, "skipped": True, "reason": "sector_missing_excluded_from_sector_concentration"}
         if not sector:
             return {"veto": False}
         exposure = 0.0
@@ -538,6 +562,17 @@ def _sizing_grade_from_decision(decision: Decision) -> dict[str, Any]:
     return sizing if isinstance(sizing, dict) else {}
 
 
+def _rule_audit_from_decision(decision: Decision) -> dict[str, Any]:
+    details = _json_object(decision.details_json)
+    audit = (
+        details.get("system_gate_audit")
+        or (details.get("risk_gates") or {}).get("system_gate_audit")
+        or (details.get("context") or {}).get("system_gate_audit")
+        or {}
+    )
+    return audit if isinstance(audit, dict) else {}
+
+
 def _partial_sell_pct_from_decision(decision: Decision) -> float | None:
     details = _json_object(decision.details_json)
     gates = details.get("risk_gates") or {}
@@ -556,6 +591,7 @@ def _position_details_json(decision: Decision) -> str:
             "opened_from_decision": decision.to_dict(),
             "trade_plan": full.get("trade_plan") or {},
             "sizing_grade": details.get("sizing_grade") or {},
+            "system_gate_audit": details.get("system_gate_audit") or {},
             "tier1_hit": False,
             "tier2_hit": False,
         },

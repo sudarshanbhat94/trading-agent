@@ -13,6 +13,7 @@ from .market_data import MarketDataError, MarketDataProvider
 from .models import Decision, utc_now
 from .paper_broker import PaperBroker
 from .strategy import StrategyEngine
+from .trading_rules import build_position_summary, build_self_audit
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -221,6 +222,26 @@ class TradingAgentService:
             else {}
         )
         self.db.set_state("macro_calendar_context", macro_calendar_context)
+        self._cycle_phase = "self_audit"
+        quote_rows = [quote.to_dict() for quote in quotes.values()]
+        market_health = self._market_health(quote_rows)
+        market_health["portfolio_equity"] = portfolio.get("equity")
+        self_audit = build_self_audit(list(positions.values()), quote_rows, portfolio, market_health, macro_calendar_context)
+        self.db.set_state("self_audit", self_audit)
+        self._log(
+            "INFO",
+            "rules",
+            "self_audit_completed",
+            "System rule self-audit completed before strategy evaluation",
+            {
+                "grade_violation_count": self_audit.get("grade_violation_count"),
+                "delivery_conflict_count": self_audit.get("delivery_conflict_count"),
+                "price_mismatch_count": self_audit.get("price_mismatch_count"),
+                "earnings_calendar_last_updated": self_audit.get("earnings_calendar_last_updated"),
+                "speculative_pct_of_open_positions": self_audit.get("speculative_pct_of_open_positions"),
+                "capital_pool_within_position_count_rule": self_audit.get("capital_pool_within_position_count_rule"),
+            },
+        )
         self._cycle_phase = "strategy_and_llm"
         decisions = await self.strategy.evaluate(
             universe,
@@ -313,10 +334,29 @@ class TradingAgentService:
         suggestion_decisions = self.db.latest_decisions(240)
         orders = _with_detail_urls(self.db.latest_order_summaries(80), "orders")
         order_audit_history = self.db.latest_orders(240)
-        positions = self._positions_with_exit_plans(self.db.positions(), order_audit_history)
+        raw_positions = self.db.positions()
+        portfolio = self.db.latest_portfolio() or {
+            "cash": self.broker.cash,
+            "invested": 0,
+            "market_value": 0,
+            "equity": self.broker.cash,
+            "realized_pnl": 0,
+            "unrealized_pnl": 0,
+        }
+        market_health = self._market_health(quotes)
+        market_health["portfolio_equity"] = portfolio.get("equity")
+        macro_calendar_context = self.db.get_state("macro_calendar_context", {})
+        positions = self._positions_with_exit_plans(raw_positions, order_audit_history, quotes, market_health, macro_calendar_context)
         suggestions = self._suggestions(suggestion_decisions)
         universe_summary = self.db.universe_summary()
         options_context = self.db.get_state("options_intelligence_context", {})
+        self_audit = self.db.get_state("self_audit") or build_self_audit(
+            raw_positions,
+            quotes,
+            portfolio,
+            market_health,
+            macro_calendar_context,
+        )
         return {
             "running": self.running,
             "provider": self.market_data.source_name,
@@ -334,15 +374,7 @@ class TradingAgentService:
                 "timeout_seconds": self.cycle_timeout_seconds,
                 "last_duration_seconds": self._last_cycle_duration_seconds,
             },
-            "portfolio": self.db.latest_portfolio()
-            or {
-                "cash": self.broker.cash,
-                "invested": 0,
-                "market_value": 0,
-                "equity": self.broker.cash,
-                "realized_pnl": 0,
-                "unrealized_pnl": 0,
-            },
+            "portfolio": portfolio,
             "positions": positions,
             "quotes": quotes,
             "decisions": decisions,
@@ -353,14 +385,15 @@ class TradingAgentService:
             "performance": self.db.performance_summary(),
             "sentiment": self.db.latest_sentiment(40),
             "universe_size": len(self.db.get_universe(enabled_only=True)),
-            "market_health": self._market_health(quotes),
+            "market_health": market_health,
             "market_data_health": _market_data_diagnostics(self.market_data),
             "macro_context": self.db.get_state("macro_context", {}),
             "institutional_context": self.db.get_state("institutional_context", {}),
             "market_breadth": self.db.get_state("market_breadth_context", {}),
             "sector_rotation_context": _sector_rotation_summary(self.db.get_state("sector_rotation_context", {})),
             "options_intelligence": _options_intelligence_summary(options_context),
-            "upcoming_macro_events": (self.db.get_state("macro_calendar_context", {}) or {}).get("next_10", []),
+            "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
+            "self_audit": self_audit,
             "llm_usage": self.db.llm_usage_summary(),
         }
 
@@ -428,7 +461,11 @@ class TradingAgentService:
         self,
         positions: list[dict[str, Any]],
         orders: list[dict[str, Any]],
+        quotes: list[dict[str, Any]] | None = None,
+        market_health: dict[str, Any] | None = None,
+        macro_calendar_context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        quote_map = {str(row.get("symbol")): row for row in (quotes or [])}
         exit_plans: dict[str, dict[str, Any]] = {}
         for order in orders:
             if order.get("side") != "BUY" or order.get("status") != "FILLED":
@@ -443,7 +480,19 @@ class TradingAgentService:
                     order["symbol"],
                     _exit_plan_from_trade_plan(trade_plan, full.get("monitoring_checklist", [])),
                 )
-        return [{**position, "exit_plan": exit_plans.get(position["symbol"], {})} for position in positions]
+        return [
+            {
+                **position,
+                "exit_plan": exit_plans.get(position["symbol"], {}),
+                "position_summary": build_position_summary(
+                    position,
+                    quote_map.get(str(position.get("symbol"))),
+                    market_health,
+                    macro_calendar_context,
+                ),
+            }
+            for position in positions
+        ]
 
     async def _loop(self) -> None:
         while self._running:
@@ -528,7 +577,7 @@ class TradingAgentService:
         latest_age: float | None = None
         latest_ts: str | None = None
         for quote in quotes:
-            ts = quote.get("ts")
+            ts = quote.get("ts") or quote.get("asof")
             if not ts:
                 continue
             try:

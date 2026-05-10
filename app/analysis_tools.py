@@ -83,6 +83,7 @@ def build_symbol_tool_context(
         "symbol": row["symbol"],
         "company": row.get("name"),
         "sector": row.get("sector"),
+        "industry": row.get("industry"),
         "exchange": row.get("exchange", "NSE"),
         "quote": quote.to_dict(),
         "position": _position_context(position, quote),
@@ -173,11 +174,15 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
 
 def _sentiment_context(score: float, detail: dict[str, Any] | None) -> dict[str, Any]:
     detail = detail or {}
+    confidence = float(detail.get("confidence", 0.0) or 0.0)
+    headlines = detail.get("headlines") or []
+    status = "DATA_MISSING" if abs(float(score or 0.0)) < 1e-12 or (confidence <= 0.0 and not headlines) else "AVAILABLE"
     return {
         "score": score,
-        "confidence": detail.get("confidence", 0.0),
-        "headline_count": len(detail.get("headlines") or []),
-        "headlines": (detail.get("headlines") or [])[:8],
+        "status": status,
+        "confidence": confidence,
+        "headline_count": len(headlines),
+        "headlines": headlines[:8],
         "events": (detail.get("events") or [])[:8],
         "asof": detail.get("asof"),
     }

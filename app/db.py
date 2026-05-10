@@ -81,6 +81,7 @@ class Database:
                     nubra_symbol text,
                     nubra_ref_id integer,
                     sector text,
+                    industry text,
                     base_price real not null default 100,
                     enabled integer not null default 1
                 );
@@ -263,6 +264,7 @@ class Database:
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
             self._ensure_column(conn, "universe", "nubra_symbol", "text")
             self._ensure_column(conn, "universe", "nubra_ref_id", "integer")
+            self._ensure_column(conn, "universe", "industry", "text")
             self._ensure_column(conn, "decisions", "strategy", "text not null default 'unknown'")
             self._ensure_column(conn, "decisions", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "orders", "strategy", "text not null default 'unknown'")
@@ -425,11 +427,11 @@ class Database:
                 insert into universe (
                     symbol, name, exchange, yahoo_symbol, kite_symbol, upstox_instrument_key,
                     nubra_symbol, nubra_ref_id,
-                    sector, base_price, enabled
+                    sector, industry, base_price, enabled
                 ) values (
                     :symbol, :name, :exchange, :yahoo_symbol, :kite_symbol, :upstox_instrument_key,
                     :nubra_symbol, :nubra_ref_id,
-                    :sector, :base_price, :enabled
+                    :sector, :industry, :base_price, :enabled
                 )
                 on conflict(symbol) do update set
                     name = excluded.name,
@@ -443,6 +445,7 @@ class Database:
                     nubra_symbol = excluded.nubra_symbol,
                     nubra_ref_id = excluded.nubra_ref_id,
                     sector = case when excluded.sector != '' then excluded.sector else universe.sector end,
+                    industry = case when excluded.industry != '' then excluded.industry else universe.industry end,
                     base_price = case when excluded.base_price != 100 then excluded.base_price else universe.base_price end,
                     enabled = excluded.enabled
                 """,
@@ -466,6 +469,7 @@ class Database:
             "nubra_symbol": row.get("nubra_symbol") or symbol,
             "nubra_ref_id": _optional_int(row.get("nubra_ref_id")),
             "sector": row.get("sector") or "",
+            "industry": row.get("industry") or "",
             "base_price": _optional_float(row.get("base_price")) or 100,
             "enabled": int(float(row.get("enabled"))) if row.get("enabled") not in (None, "") else 1,
         }

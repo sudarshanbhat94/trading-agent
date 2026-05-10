@@ -41,6 +41,7 @@ class MacroCalendarService:
         is_budget_week = any(abs((_coerce_date(value) - day).days) <= 5 for value in budget_dates if _coerce_date(value))
         earnings_date = _coerce_date(self.earnings_calendar.get(str(symbol or "").upper()))
         earnings_days_away = (earnings_date - day).days if earnings_date else None
+        earnings_trading_days_away = _trading_days_between(day, earnings_date) if earnings_date else None
         event_score = 0.0
         if is_monthly_expiry_day:
             event_score = max(event_score, 0.4)
@@ -54,7 +55,7 @@ class MacroCalendarService:
             event_score = max(event_score, 0.6)
         if is_budget_week:
             event_score = max(event_score, 0.7)
-        if earnings_days_away is not None and 0 <= earnings_days_away <= 5:
+        if earnings_trading_days_away is not None and 0 <= earnings_trading_days_away <= 10:
             event_score = max(event_score, 0.9)
         recommended = "hold_for_clarity" if event_score > 0.5 else "reduce_size" if 0.3 <= event_score <= 0.5 else "normal"
         data_gaps = []
@@ -73,6 +74,7 @@ class MacroCalendarService:
             "is_rbi_week": is_rbi_week,
             "is_budget_week": is_budget_week,
             "earnings_days_away": earnings_days_away,
+            "earnings_trading_days_away": earnings_trading_days_away,
             "has_high_impact_event": event_score >= 0.3,
             "event_risk_score": round(event_score, 3),
             "recommended_action": recommended,
@@ -154,6 +156,19 @@ def _coerce_date(value: Any) -> date | None:
         return None
 
 
+def _trading_days_between(start: date, end: date | None) -> int | None:
+    if end is None:
+        return None
+    step = 1 if end >= start else -1
+    cursor = start
+    days = 0
+    while cursor != end:
+        cursor += timedelta(days=step)
+        if cursor.weekday() < 5:
+            days += step
+    return days
+
+
 def _neutral_event(reason: str) -> dict[str, Any]:
     return {
         "enabled": False,
@@ -166,6 +181,7 @@ def _neutral_event(reason: str) -> dict[str, Any]:
         "is_rbi_week": False,
         "is_budget_week": False,
         "earnings_days_away": None,
+        "earnings_trading_days_away": None,
         "has_high_impact_event": False,
         "event_risk_score": 0.0,
         "recommended_action": "normal",

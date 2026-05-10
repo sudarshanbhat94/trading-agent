@@ -71,6 +71,13 @@ function fmtTime(value) {
   return date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function fmtDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 function fmtAge(seconds) {
   const value = Number(seconds);
   if (!Number.isFinite(value)) return "no ticks yet";
@@ -153,6 +160,12 @@ function gateValueText(gateName, value) {
     const symbols = (value.correlated_positions || []).map((item) => item.symbol).filter(Boolean);
     return symbols.length ? `correlated with ${symbols.join(", ")}` : shortValue(value, 120);
   }
+  if (gateName === "system_rule_gates" || gateName.startsWith("system_rule_")) {
+    const blocks = Array.isArray(value) ? value : value ? [value] : [];
+    return blocks
+      .map((block) => `${block.flag || "hard block"}: ${block.reason || "-"}`)
+      .join("; ");
+  }
   return shortValue(value, 120);
 }
 
@@ -179,9 +192,10 @@ function humanizeGateFailure(gate) {
     options_max_pain_gate: "Options Max Pain is against a fresh BUY",
     risk_overrides: "Risk overrides blocked new longs",
     portfolio_correlation_gate: "Portfolio correlation risk is too high",
+    system_rule_gates: "System trading rules blocked the action",
     pre_filter: "Pre-filter blocked the setup",
   };
-  const base = messages[gateName] || humanLabel(gateName);
+  const base = messages[gateName] || (gateName.startsWith("system_rule_") ? "System trading rule failed" : humanLabel(gateName));
   const reasonText = reason ? reasonFromSnakeCase(reason) : "";
   const parts = [base];
   if (value && value !== "-") parts.push(value);
@@ -408,8 +422,29 @@ function render(payload) {
   renderPerformance(payload.performance || {});
   renderMacroEvents(payload.upcoming_macro_events || []);
   renderAgentConsole(payload);
+  renderSelfAudit(payload.self_audit || {});
   renderShell(payload);
   drawEquity(payload.equity_curve || []);
+}
+
+function renderSelfAudit(audit = {}) {
+  const panel = byId("self-audit-panel");
+  if (!panel) return;
+  const ok = audit.capital_pool_within_position_count_rule !== false && !Number(audit.price_mismatch_count || 0);
+  byId("self-audit-status").textContent = audit.updated_at ? (ok ? "clear" : "flags") : "pending";
+  panel.innerHTML = [
+    { label: "Grade Violations", value: audit.grade_violation_count ?? 0, note: "WATCH/undefined entries" },
+    { label: "Delivery Conflicts", value: audit.delivery_conflict_count ?? 0, note: "distribution vs long" },
+    { label: "Price Mismatch", value: audit.price_mismatch_count ?? 0, note: ">1% source gap" },
+    { label: "Earnings Calendar", value: audit.earnings_calendar_last_updated ? fmtDate(audit.earnings_calendar_last_updated) : "missing", note: "last updated" },
+    { label: "Speculative", value: `${fmtNumber(audit.speculative_pct_of_open_positions || 0)}%`, note: `${audit.speculative_positions || 0}/${audit.open_positions || 0} positions` },
+    { label: "Capital Rule", value: audit.capital_pool_within_position_count_rule === false ? "over limit" : "within limit", note: `${audit.open_positions || 0}/${audit.position_limit || "-"} positions` },
+  ]
+    .map((item) => `<button type="button" data-detail-type="self-audit"><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong><small>${escapeHtml(item.note)}</small></button>`)
+    .join("");
+  for (const button of panel.querySelectorAll("[data-detail-type='self-audit']")) {
+    button.addEventListener("click", () => showDetails("Self Audit", audit));
+  }
 }
 
 function renderPerformance(performance) {
@@ -1262,16 +1297,17 @@ function renderPositions(rows) {
     .map((row) => {
       const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
       const marketValue = Number(row.market_price) * Number(row.qty);
-      const exit = row.exit_plan || {};
+      const summary = row.position_summary || {};
+      const flags = summary.active_flags || [];
       return `<tr>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
-        <td>${escapeHtml(row.strategy || "-")}</td>
+        <td><span class="tag ${String(summary.classification || "").toLowerCase()}">${escapeHtml(summary.classification || "-")}</span><br><small>${escapeHtml(row.strategy || "-")}</small></td>
+        <td><small>Entry ${escapeHtml(summary.entry_grade || "-")} · MTF ${escapeHtml(summary.mtf_grade || "-")} · Delivery ${escapeHtml(summary.delivery_bias || "-")}</small><br>${flags.length ? flags.map((flag) => `<span class="tag watch">${escapeHtml(flag)}</span>`).join(" ") : `<span class="tag open">CLEAR</span>`}</td>
         <td class="num">${row.qty}</td>
-        <td class="num">${fmtMoney(row.avg_price)}</td>
-        <td class="num">${fmtMoney(row.market_price)}</td>
+        <td class="num">${fmtMoney(row.market_price)}<br><small>${escapeHtml(summary.price_label || "LTP")}</small></td>
         <td class="num">${fmtMoney(marketValue)}</td>
         <td class="num ${pnlClass(pnl)}">${fmtMoney(pnl)}</td>
-        <td>${exitPlanMini(exit)}</td>
+        <td><strong>${escapeHtml(summary.recommended_action || "HOLD")}</strong><br><small>${escapeHtml(summary.reason || "-")}</small></td>
       </tr>`;
     })
     .join("");
@@ -1553,14 +1589,16 @@ function suggestionDetailHtml(row) {
 
 function positionDetailHtml(row) {
   const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
+  const summary = row.position_summary || {};
   return `
     ${auditHero({
       label: "Position",
       symbol: row.symbol,
-      action: pnl >= 0 ? "OPEN" : "WATCH",
-      status: row.strategy || "-",
+      action: summary.recommended_action || (pnl >= 0 ? "OPEN" : "WATCH"),
+      status: summary.classification || row.strategy || "-",
       meta: `${row.qty} qty · ${fmtMoney(pnl)} unrealized`,
     })}
+    ${positionSummaryHtml(summary)}
     ${objectCardsHtml("Position", {
       qty: row.qty,
       avg_price: fmtMoney(row.avg_price),
@@ -1572,6 +1610,23 @@ function positionDetailHtml(row) {
     <section class="audit-section">
       <h4>Full Position JSON</h4>
       <pre>${escapeHtml(JSON.stringify(row, null, 2))}</pre>
+    </section>
+  `;
+}
+
+function positionSummaryHtml(summary = {}) {
+  const flags = summary.active_flags || [];
+  return `
+    <section class="audit-section">
+      <h4>Rules Summary</h4>
+      <div class="audit-cards">
+        <div class="audit-card"><span>Classification</span><strong>${escapeHtml(summary.classification || "-")}</strong><small>${escapeHtml(summary.symbol || "")}</small></div>
+        <div class="audit-card"><span>Entry / MTF / Delivery</span><strong>${escapeHtml(`${summary.entry_grade || "-"} / ${summary.mtf_grade || "-"} / ${summary.delivery_bias || "-"}`)}</strong><small>effective ${escapeHtml(summary.effective_entry_grade || "-")}</small></div>
+        <div class="audit-card"><span>Sentiment</span><strong>${escapeHtml(summary.sentiment_status === "DATA_MISSING" ? "DATA_MISSING" : fmtNumber(summary.sentiment_score))}</strong><small>0.0 is not neutral</small></div>
+        <div class="audit-card"><span>Price</span><strong>${escapeHtml(summary.price_label || "-")}</strong><small>${escapeHtml(summary.price_source || "-")} · ${escapeHtml(summary.price_timestamp || "-")}</small></div>
+        <div class="audit-card"><span>Flags</span><strong>${escapeHtml(flags.length ? flags.join(", ") : "CLEAR")}</strong><small>hard/soft rule state</small></div>
+        <div class="audit-card"><span>Action</span><strong>${escapeHtml(summary.recommended_action || "-")}</strong><small>${escapeHtml(summary.reason || "-")}</small></div>
+      </div>
     </section>
   `;
 }
