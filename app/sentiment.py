@@ -517,6 +517,12 @@ class SentimentService:
                     "response_id": response_data.get("id"),
                 },
             )
+            try:
+                from .request_context import current_user_id
+
+                event["user_id"] = current_user_id.get()
+            except Exception:
+                event["user_id"] = None
             self.db.insert_llm_usage(event)
         except Exception:
             return

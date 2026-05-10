@@ -377,7 +377,12 @@ function readableOrderReason(row = {}) {
 }
 
 function render(payload) {
+  if (!payload.user_signal_session && !state.auth?.admin && state.latest?.user_signal_session) {
+    payload = { ...payload, user_signal_session: state.latest.user_signal_session };
+  }
   state.latest = payload;
+  const userSession = payload.user_signal_session || {};
+  const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const portfolio = payload.portfolio || {};
   const positions = payload.positions || [];
   const quotes = payload.quotes || [];
@@ -394,20 +399,23 @@ function render(payload) {
   byId("kpi-unrealized").className = pnlClass(portfolio.unrealized_pnl);
   byId("kpi-positions").textContent = String(positions.length);
   byId("kpi-decisions").textContent = String(decisions.length);
-  byId("last-cycle").textContent = payload.last_cycle_at ? `Last cycle ${fmtTime(payload.last_cycle_at)}` : "waiting";
+  byId("last-cycle").textContent = state.auth?.admin
+    ? (payload.last_cycle_at ? `Last cycle ${fmtTime(payload.last_cycle_at)}` : "waiting")
+    : (userSession.last_cycle_at ? `Your signal cycle ${fmtTime(userSession.last_cycle_at)}` : "signals waiting");
 
   const pill = byId("status-pill");
-  pill.textContent = payload.running ? "running" : "stopped";
-  pill.className = `pill ${payload.running ? "running" : "stopped"}`;
+  pill.textContent = controlRunning ? (state.auth?.admin ? "running" : "signals on") : "stopped";
+  pill.className = `pill ${controlRunning ? "running" : "stopped"}`;
 
   const error = byId("error-box");
-  if (payload.last_error) {
+  const displayError = state.auth?.admin ? payload.last_error : userSession.last_error;
+  if (displayError) {
     error.hidden = false;
     const feedPending = isFeedPending(payload);
     error.className = `error-box ${feedPending ? "warning" : ""}`;
     error.textContent = feedPending
       ? "Market data connection pending. Connect or refresh Upstox when ready; the terminal remains available for account, settings, and audit review."
-      : payload.last_error;
+      : displayError;
   } else {
     error.hidden = true;
     error.textContent = "";
@@ -429,7 +437,7 @@ function render(payload) {
   byId("nav-orders-badge").textContent = String(orders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
   byId("nav-logs-badge").textContent = state.auth?.admin ? String(state.logs.length) : "admin";
-  byId("nav-overview-badge").textContent = payload.running ? "on" : "off";
+  byId("nav-overview-badge").textContent = controlRunning ? "on" : "off";
 
   renderPositions(positions);
   renderStrategies(strategies);
@@ -558,6 +566,8 @@ function renderShell(payload = state.latest || {}) {
   const macro = payload.macro_context || {};
   const breadth = payload.market_breadth || {};
   const runtime = payload.runtime || {};
+  const userSession = payload.user_signal_session || {};
+  const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
   const mode = health.mode || "unknown";
   const feedLabel = health.display_label || (mode === "last_traded" ? "Last traded" : mode === "stale" ? "Stale quote" : "Upstox live");
@@ -588,8 +598,12 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   byId("ops-macro").textContent = macro.regime || "unknown";
   byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · breadth ${escapeHtml(breadth.breadth_regime || "neutral")}`;
-  byId("ops-cycle").textContent = payload.running ? "Running" : "Stopped";
-  byId("ops-cycle-meta").textContent = payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending";
+  byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Signals On") : "Stopped";
+  byId("ops-cycle-meta").textContent = state.auth?.admin
+    ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending")
+    : (userSession.last_cycle_at
+      ? `${fmtTime(userSession.last_cycle_at)} · ${fmtCredits(userSession.last_credit_charge || 0)} credits`
+      : `${userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30} symbols per cycle`);
 }
 
 function isFeedPending(payload = state.latest || {}) {
@@ -690,9 +704,11 @@ function renderAuth(auth) {
 function applyAccessMode() {
   const authenticated = Boolean(state.auth && state.auth.authenticated);
   const admin = Boolean(state.auth && state.auth.admin);
+  for (const id of ["start-btn", "stop-btn"]) {
+    const element = byId(id);
+    if (element) element.disabled = !authenticated;
+  }
   for (const id of [
-    "start-btn",
-    "stop-btn",
     "run-btn",
     "save-settings-btn",
     "reset-demo-btn",
@@ -2575,7 +2591,8 @@ async function postControl(path) {
       return;
     }
     render(payload);
-    fetchLogs();
+    fetchCredits();
+    if (state.auth?.admin) fetchLogs();
   } catch (error) {
     showBackendError(networkErrorMessage(error, "control request"), { path });
   }

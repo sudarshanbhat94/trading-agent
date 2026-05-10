@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import replace
@@ -35,7 +36,8 @@ from .llm_brain import LLMBrain
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
-from .market_data import build_market_data_provider
+from .market_data import MarketDataError, build_market_data_provider
+from .models import utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
 from .paper_broker import PaperBroker
@@ -79,6 +81,157 @@ class WebSocketHub:
 
 
 hub = WebSocketHub()
+
+
+class UserSignalSessionManager:
+    def __init__(self) -> None:
+        self._tasks: dict[int, asyncio.Task] = {}
+        self._status: dict[int, dict[str, Any]] = {}
+        self._cursors: dict[int, int] = {}
+
+    def is_running(self, user_id: int) -> bool:
+        task = self._tasks.get(user_id)
+        return bool(task and not task.done())
+
+    def status(self, user_id: int) -> dict[str, Any]:
+        status = dict(self._status.get(user_id) or {})
+        status.setdefault("running", self.is_running(user_id))
+        status.setdefault("phase", "idle")
+        status.setdefault("started_at", None)
+        status.setdefault("last_cycle_at", None)
+        status.setdefault("last_error", None)
+        status.setdefault("last_credit_charge", 0.0)
+        status.setdefault("last_llm_calls", 0)
+        status.setdefault("last_decision_count", 0)
+        status.setdefault("symbols_per_cycle", self._symbol_limit({}, db.average_signal_credit_charge()))
+        status["running"] = self.is_running(user_id)
+        return status
+
+    def admin_summary(self) -> dict[str, Any]:
+        active = [user_id for user_id in self._tasks if self.is_running(user_id)]
+        return {
+            "running_users": len(active),
+            "active_user_ids": active,
+            "sessions": {str(user_id): self.status(user_id) for user_id in active},
+        }
+
+    async def start(self, user: dict[str, Any]) -> dict[str, Any]:
+        user_id = int(user["id"])
+        if self.is_running(user_id):
+            return _status_payload(user)
+        estimated_charge = db.average_signal_credit_charge()
+        can_spend, credit_summary = db.user_has_credit_for(user_id, estimated_charge)
+        if not can_spend:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits or daily budget to start signals. Estimated need: {estimated_charge:.4f} credits.",
+            )
+        _market_data_provider_for_user(user)
+        self._status[user_id] = {
+            "running": True,
+            "phase": "starting",
+            "started_at": utc_now(),
+            "last_cycle_at": None,
+            "last_error": None,
+            "last_credit_charge": 0.0,
+            "last_llm_calls": 0,
+            "last_decision_count": 0,
+            "symbols_per_cycle": self._symbol_limit(credit_summary, estimated_charge),
+        }
+        self._tasks[user_id] = asyncio.create_task(self._loop(user_id))
+        db.insert_agent_log(
+            "INFO",
+            "user_session",
+            "user_signal_start",
+            f"User signal session started for {user.get('username')}",
+            {"user_id": user_id, "username": user.get("username"), "estimated_credit": estimated_charge},
+        )
+        return _status_payload(user)
+
+    async def stop(self, user: dict[str, Any]) -> dict[str, Any]:
+        user_id = int(user["id"])
+        task = self._tasks.get(user_id)
+        if task and not task.done():
+            task.cancel()
+        self._tasks.pop(user_id, None)
+        status = self.status(user_id)
+        status.update({"running": False, "phase": "idle", "stopped_at": utc_now()})
+        self._status[user_id] = status
+        db.insert_agent_log(
+            "INFO",
+            "user_session",
+            "user_signal_stop",
+            f"User signal session stopped for {user.get('username')}",
+            {"user_id": user_id, "username": user.get("username")},
+        )
+        return _status_payload(user)
+
+    async def stop_all(self) -> None:
+        tasks = list(self._tasks.items())
+        for user_id, task in tasks:
+            if task and not task.done():
+                task.cancel()
+        for user_id, task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            self._status[user_id] = {**self.status(user_id), "running": False, "phase": "idle", "stopped_at": utc_now()}
+        self._tasks.clear()
+
+    def select_universe(self, user_id: int, full_universe: list[dict[str, Any]], credit_summary: dict[str, Any], estimated_charge: float) -> list[dict[str, Any]]:
+        if not full_universe:
+            return []
+        limit = self._symbol_limit(credit_summary, estimated_charge)
+        if limit >= len(full_universe):
+            return full_universe
+        start = self._cursors.get(user_id, 0) % len(full_universe)
+        selected = [full_universe[(start + index) % len(full_universe)] for index in range(limit)]
+        self._cursors[user_id] = (start + limit) % len(full_universe)
+        return selected
+
+    def _symbol_limit(self, credit_summary: dict[str, Any], estimated_charge: float) -> int:
+        base = int(settings.universe_symbols_per_cycle or 30)
+        base = max(5, min(base, 50))
+        remaining = float(credit_summary.get("daily_credits_remaining") or credit_summary.get("credit_balance") or 0.0)
+        estimated = max(float(estimated_charge or 0.01), 0.01)
+        if remaining and remaining <= estimated * 3:
+            return min(base, 5)
+        if remaining and remaining <= estimated * 8:
+            return min(base, 10)
+        if remaining and remaining <= estimated * 15:
+            return min(base, 20)
+        return base
+
+    async def _loop(self, user_id: int) -> None:
+        try:
+            while True:
+                status = self.status(user_id)
+                status.update({"running": True, "phase": "cycle"})
+                self._status[user_id] = status
+                try:
+                    result = await _run_user_signal_cycle(user_id)
+                    self._status[user_id] = {**self.status(user_id), **result, "running": True, "phase": "sleep", "last_error": None}
+                    await hub.broadcast(_status_payload())
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    message = f"{exc.__class__.__name__}: {exc}"
+                    self._status[user_id] = {**self.status(user_id), "running": False, "phase": "idle", "last_error": message}
+                    self._tasks.pop(user_id, None)
+                    db.insert_agent_log(
+                        "ERROR",
+                        "user_session",
+                        "user_signal_error",
+                        f"User signal session stopped: {message}",
+                        {"user_id": user_id, "error_type": exc.__class__.__name__},
+                    )
+                    await hub.broadcast(_status_payload())
+                    return
+                await asyncio.sleep(max(30, int(settings.agent_interval_seconds or 180)))
+        finally:
+            if self._tasks.get(user_id) and self._tasks[user_id].done():
+                self._tasks.pop(user_id, None)
 
 
 def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
@@ -151,6 +304,7 @@ options_intelligence = stack["options_intelligence"]
 llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
+user_signal_sessions = UserSignalSessionManager()
 
 app = FastAPI(title="OpenTrade")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -168,6 +322,7 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     await agent.stop()
+    await user_signal_sessions.stop_all()
     await delivery_service.stop_background_task()
 
 
@@ -187,11 +342,11 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 @app.get("/api/status")
 async def status(request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
-    return _status_payload()
+    user = require_user(request, settings, db)
+    return _status_payload(user)
 
 
-def _status_payload() -> dict[str, Any]:
+def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot = agent.snapshot()
     snapshot["runtime"] = {
         "market_data_provider": settings.market_data_provider,
@@ -203,6 +358,10 @@ def _status_payload() -> dict[str, Any]:
         "llm_reasoning_effort": settings.llm_reasoning_effort,
         "llm_rolling_context_enabled": settings.llm_rolling_context_enabled,
     }
+    if user and user.get("role") != "admin":
+        snapshot["user_signal_session"] = user_signal_sessions.status(int(user["id"]))
+    else:
+        snapshot["user_signal_sessions"] = user_signal_sessions.admin_summary()
     return snapshot
 
 
@@ -924,22 +1083,26 @@ async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any
 
 @app.post("/api/control/start")
 async def start_agent(request: Request) -> dict[str, Any]:
-    require_admin(request, settings, db)
+    user = require_user(request, settings, db)
+    if user.get("role") != "admin":
+        return await user_signal_sessions.start(user)
     db.insert_agent_log("INFO", "admin", "control_start", "Admin requested agent start")
     agent.start()
     snapshot = agent.snapshot()
     await hub.broadcast(snapshot)
-    return snapshot
+    return _status_payload(user)
 
 
 @app.post("/api/control/stop")
 async def stop_agent(request: Request) -> dict[str, Any]:
-    require_admin(request, settings, db)
+    user = require_user(request, settings, db)
+    if user.get("role") != "admin":
+        return await user_signal_sessions.stop(user)
     db.insert_agent_log("INFO", "admin", "control_stop", "Admin requested agent stop")
     await agent.stop()
     snapshot = agent.snapshot()
     await hub.broadcast(snapshot)
-    return snapshot
+    return _status_payload(user)
 
 
 @app.post("/api/control/run-once")
@@ -971,12 +1134,13 @@ async def reset_demo(request: Request) -> dict[str, Any]:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    if not current_user(websocket, settings, db):
+    user = current_user(websocket, settings, db)
+    if not user:
         await websocket.close(code=1008)
         return
     await hub.connect(websocket)
     try:
-        await websocket.send_text(json.dumps(agent.snapshot()))
+        await websocket.send_text(json.dumps(_status_payload(user)))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -1073,6 +1237,126 @@ def _attach_user_to_decision(
         "budget_policy": budget_policy,
     }
     return replace(decision, details_json=json.dumps(details, default=str, separators=(",", ":")))
+
+
+async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
+    user = db.user_by_id(user_id)
+    if not user or not user.get("active") or user.get("role") == "admin":
+        raise RuntimeError("user signal session requires an active non-admin user")
+
+    estimated_charge = db.average_signal_credit_charge()
+    can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
+    if not can_spend:
+        raise RuntimeError(f"insufficient credits or daily budget; estimated need {estimated_charge:.4f} credits")
+
+    full_universe = db.get_universe(enabled_only=True)
+    universe = user_signal_sessions.select_universe(user_id, full_universe, credit_before, estimated_charge)
+    if not universe:
+        raise RuntimeError("no enabled universe symbols available for user signal session")
+
+    user_market_data = _market_data_provider_for_user(user)
+    user_strategy, budget_policy = _strategy_for_user_budget(user, credit_before, estimated_charge)
+    usage_after_id = db.latest_llm_usage_id()
+    usage: dict[str, Any] = {"calls": 0, "cost_usd": 0.0, "total_tokens": 0, "input_chars": 0, "output_chars": 0}
+    credit_after = credit_before
+    decisions: list[Any] = []
+    cycle_error: BaseException | None = None
+    context_token = current_user_id.set(user_id)
+    try:
+        quotes = await user_market_data.get_quotes(universe)
+        if not quotes:
+            raise MarketDataError(f"{user_market_data.source_name} returned no quotes for user signal session")
+        candles_fresh = await user_market_data.get_candles(universe)
+        db.upsert_quotes(quotes)
+        db.upsert_candles(candles_fresh)
+        candle_sets = db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
+        candles = {
+            symbol: sets.get("analysis") or sets.get("daily") or sets.get("intraday") or []
+            for symbol, sets in candle_sets.items()
+        }
+        decisions = await user_strategy.evaluate(
+            universe,
+            quotes,
+            {},
+            candles,
+            db.get_state("macro_context", {}),
+            db.get_state("institutional_context", {}),
+            db.get_state("options_intelligence_context", {}),
+            delivery_service,
+            db.get_state("market_breadth_context", {}),
+            db.get_state("sector_rotation_context", {}),
+            macro_calendar,
+            candle_sets,
+            (db.latest_portfolio() or {}).get("equity"),
+        )
+    except BaseException as exc:
+        cycle_error = exc
+    finally:
+        current_user_id.reset(context_token)
+
+    usage = db.llm_usage_cost_since(user_id, usage_after_id)
+    if usage.get("calls"):
+        credit_after = db.charge_user_credits(
+            user_id,
+            usage["cost_usd"],
+            "Autonomous signal cycle",
+            {
+                "symbols": [row["symbol"] for row in universe],
+                "symbol_count": len(universe),
+                "llm_usage": usage,
+                "provider": user_market_data.source_name,
+                "estimated_credit_before": estimated_charge,
+                "budget_policy": budget_policy,
+            },
+        )
+    if cycle_error is not None:
+        raise cycle_error
+
+    tagged_decisions = [
+        _attach_user_to_decision(decision, user, credit_after, budget_policy)
+        for decision in decisions
+    ]
+    if tagged_decisions:
+        db.insert_decisions(tagged_decisions)
+
+    action_counts: dict[str, int] = {}
+    for decision in tagged_decisions:
+        action_counts[decision.action] = action_counts.get(decision.action, 0) + 1
+    credit_charge = round(
+        max(float(credit_before.get("credit_balance", 0.0)) - float(credit_after.get("credit_balance", 0.0)), 0.0),
+        6,
+    )
+    db.insert_agent_log(
+        "INFO",
+        "user_session",
+        "user_signal_cycle",
+        f"User signal cycle completed for {user.get('username')}",
+        {
+            "user_id": user_id,
+            "username": user.get("username"),
+            "symbols": len(universe),
+            "decisions": len(tagged_decisions),
+            "action_counts": action_counts,
+            "llm_calls": usage.get("calls", 0),
+            "llm_tokens": usage.get("total_tokens", 0),
+            "credit_charge": credit_charge,
+            "daily_credits_remaining": credit_after.get("daily_credits_remaining"),
+            "budget_policy": budget_policy,
+        },
+    )
+    return {
+        "last_cycle_at": utc_now(),
+        "last_error": None,
+        "last_credit_charge": credit_charge,
+        "last_llm_calls": usage.get("calls", 0),
+        "last_llm_tokens": usage.get("total_tokens", 0),
+        "last_decision_count": len(tagged_decisions),
+        "last_action_counts": action_counts,
+        "symbols_per_cycle": len(universe),
+        "credit_balance": credit_after.get("credit_balance"),
+        "daily_credits_remaining": credit_after.get("daily_credits_remaining"),
+        "budget_policy": budget_policy,
+    }
 
 
 async def _exchange_upstox_code(
