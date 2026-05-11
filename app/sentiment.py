@@ -470,26 +470,43 @@ class SentimentService:
     def _llm_sentiment_enabled(self) -> bool:
         if not self.settings.enable_llm_sentiment:
             return False
-        return self.settings.llm_provider == "deepseek" and bool(self.settings.deepseek_api_key)
+        if self.settings.llm_provider == "deepseek":
+            return bool(self.settings.deepseek_api_key)
+        if self.settings.llm_provider == "groq":
+            return bool(self.settings.groq_api_key)
+        return False
 
     def _llm_base_url(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_base_url
         return self.settings.deepseek_base_url
 
     def _llm_chat_completions_url(self) -> str:
         base_url = self._llm_base_url().rstrip("/")
+        if self.settings.llm_provider == "groq":
+            if base_url.endswith("/v1"):
+                return f"{base_url}/chat/completions"
+            return f"{base_url}/v1/chat/completions"
         return f"{base_url}/chat/completions"
 
     def _llm_model(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_model
         return self.settings.deepseek_model
 
     def _llm_model_candidates(self) -> list[str]:
-        return [self.settings.deepseek_model]
+        return [self._llm_model()]
 
     def _llm_key(self) -> str:
+        if self.settings.llm_provider == "groq":
+            return self.settings.groq_api_key
         return self.settings.deepseek_api_key
 
     def _apply_llm_model_options(self, payload: dict[str, Any], model: str | None = None) -> None:
         payload["response_format"] = {"type": "json_object"}
+        if self.settings.llm_provider == "groq":
+            payload["reasoning_effort"] = "default"
+            payload["reasoning_format"] = "hidden"
 
     def _record_llm_usage(
         self,
@@ -505,7 +522,7 @@ class SentimentService:
             event = build_llm_usage_event(
                 component="sentiment",
                 purpose="sentiment_refine",
-                provider="deepseek",
+                provider=self.settings.llm_provider,
                 model=model,
                 payload=payload,
                 response_data=response_data,

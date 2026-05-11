@@ -1009,6 +1009,56 @@ td.reason {
   min-height: 40px;
 }
 
+.provider-key-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px 14px 0;
+}
+
+.provider-key-card {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.45fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 10px;
+}
+
+.provider-key-card div {
+  display: grid;
+  gap: 2px;
+}
+
+.provider-key-card strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.provider-key-card span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.provider-key-card input,
+.model-default-grid select,
+.model-default-grid input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0a0f16;
+  color: var(--ink);
+  padding: 0 11px;
+}
+
+.model-default-grid {
+  grid-template-columns: minmax(150px, 0.75fr) minmax(180px, 1fr) minmax(150px, 0.75fr) auto;
+}
+
 .settings-group {
   display: grid;
   align-content: start;
@@ -1216,6 +1266,78 @@ td.reason {
   grid-column: 1 / 4;
   gap: 7px;
   padding-top: 2px;
+}
+
+.suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / 4;
+  gap: 8px;
+}
+
+.suggestion-actions button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 800;
+  padding: 0 12px;
+}
+
+.suggestion-actions button:hover {
+  border-color: var(--accent);
+}
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.plan-card {
+  display: grid;
+  gap: 10px;
+  min-height: 210px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 14px;
+  text-align: left;
+}
+
+.plan-card span,
+.plan-card small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.plan-card strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.plan-card p {
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.plan-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.plan-stats span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 7px;
 }
 
 .suggestion-flags span {
@@ -1918,6 +2040,18 @@ pre {
   }
 }
 
+@media (max-width: 1180px) {
+  .plan-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .plan-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Trading desk v3: make the product feel like a real chart terminal, not a card dashboard. */
 :root {
   --terminal-bg: #05080d;
@@ -2546,6 +2680,15 @@ td {
     min-width: 112px;
     justify-content: center;
   }
+
+  .provider-key-grid,
+  .model-default-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-key-card {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2604,5 +2747,476 @@ td {
   .suggestion-score,
   .suggestion-plan {
     grid-template-columns: 1fr;
+  }
+
+  .plan-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Product polish: signal history and strategy plans use isolated classes so older card styles cannot collide. */
+#suggestions-view.view.active {
+  gap: 12px;
+}
+
+#suggestions-view .panel.full {
+  min-height: auto;
+}
+
+.signal-history-list,
+.strategy-plan-grid,
+.tracked-ideas-list {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.signal-history-card {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--terminal-line);
+  border-left: 3px solid #46566c;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(14, 22, 32, 0.96), rgba(8, 13, 20, 0.98));
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.signal-history-card:hover {
+  border-color: var(--terminal-line-bright);
+  background:
+    linear-gradient(180deg, rgba(18, 28, 40, 0.98), rgba(9, 15, 23, 0.98));
+  transform: translateY(-1px);
+}
+
+.signal-history-card.featured {
+  border-left-color: var(--terminal-green);
+}
+
+.signal-history-card.signal-buy,
+.signal-history-card.signal-actionable {
+  border-left-color: var(--terminal-green);
+}
+
+.signal-history-card.signal-sell,
+.signal-history-card.signal-exit {
+  border-left-color: var(--terminal-red);
+}
+
+.signal-history-card.signal-watch,
+.signal-history-card.signal-hold {
+  border-left-color: var(--terminal-amber);
+}
+
+.signal-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.signal-card-title {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 11px;
+  min-width: 0;
+}
+
+.signal-rank {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border: 1px solid var(--terminal-line);
+  border-radius: 999px;
+  background: #0a111a;
+  color: #8fa0b5;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.signal-symbol-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.signal-symbol-row strong {
+  color: #f5f9ff;
+  font-size: 22px;
+  line-height: 1.05;
+}
+
+.signal-card-title small,
+.signal-metric-strip small,
+.signal-trade-strip small,
+.signal-reason-row span,
+.signal-audit-row span {
+  color: #93a2b7;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.signal-followed {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid rgba(0, 201, 139, 0.36);
+  border-radius: 999px;
+  background: rgba(0, 201, 139, 0.1);
+  color: #83efc8;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 0 8px;
+}
+
+.signal-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.signal-card-actions button {
+  min-height: 32px;
+  border-color: var(--terminal-line-bright);
+  background: #101824;
+  color: #dfe8f5;
+  font-size: 12px;
+  padding: 0 11px;
+}
+
+.signal-card-actions button:first-child {
+  border-color: rgba(0, 201, 139, 0.42);
+  background: rgba(0, 201, 139, 0.11);
+  color: #8df4c7;
+}
+
+.signal-card-actions button:hover {
+  border-color: var(--terminal-green);
+  background: rgba(0, 201, 139, 0.16);
+}
+
+.signal-metric-strip,
+.signal-trade-strip {
+  display: grid;
+  gap: 8px;
+}
+
+.signal-metric-strip {
+  grid-template-columns: repeat(5, minmax(112px, 1fr));
+}
+
+.signal-trade-strip {
+  grid-template-columns: repeat(4, minmax(112px, 1fr));
+}
+
+.signal-metric-strip div,
+.signal-trade-strip span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid var(--terminal-line);
+  border-radius: 8px;
+  background: #0a111a;
+  padding: 9px 10px;
+}
+
+.signal-metric-strip strong,
+.signal-trade-strip strong {
+  color: #f2f6fc;
+  font-size: 17px;
+  line-height: 1.05;
+}
+
+.signal-trade-strip strong {
+  font-size: 14px;
+}
+
+.signal-reason-row {
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid var(--terminal-line);
+  padding-top: 10px;
+}
+
+.signal-reason-row p {
+  max-width: 920px;
+  color: #d6dfec;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.signal-audit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.signal-audit-row span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--terminal-line);
+  border-radius: 999px;
+  background: #0a111a;
+  font-weight: 800;
+  padding: 0 8px;
+}
+
+.signal-audit-row .warning {
+  border-color: rgba(255, 189, 74, 0.38);
+  background: rgba(255, 189, 74, 0.11);
+  color: #ffd58b;
+}
+
+.tag.actionable {
+  border-color: rgba(0, 201, 139, 0.42);
+  background: rgba(0, 201, 139, 0.13);
+  color: #8df4c7;
+}
+
+.strategy-plan-grid {
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.strategy-plan-card {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  min-height: 215px;
+  border: 1px solid var(--terminal-line);
+  border-top: 3px solid #637189;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 34, 0.96), rgba(8, 13, 20, 0.98));
+  color: var(--terminal-text);
+  padding: 14px;
+  text-align: left;
+  align-content: start;
+}
+
+.strategy-plan-card:hover {
+  border-color: var(--terminal-line-bright);
+  border-top-color: var(--terminal-green);
+  background:
+    linear-gradient(180deg, rgba(18, 28, 40, 0.98), rgba(9, 15, 23, 0.98));
+}
+
+.strategy-plan-card.risk-high {
+  border-top-color: var(--terminal-red);
+}
+
+.strategy-plan-card.risk-medium-high {
+  border-top-color: var(--terminal-amber);
+}
+
+.strategy-plan-card.risk-defensive,
+.strategy-plan-card.risk-low {
+  border-top-color: var(--blue);
+}
+
+.strategy-plan-top {
+  display: grid;
+  gap: 7px;
+}
+
+.strategy-risk-pill {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  min-height: 23px;
+  border: 1px solid var(--terminal-line-bright);
+  border-radius: 999px;
+  background: #0a111a;
+  color: #9fb0c6;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 0 8px;
+}
+
+.strategy-plan-top strong {
+  color: #f5f9ff;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.strategy-plan-card p {
+  color: #aab7c9;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.strategy-plan-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.strategy-plan-stats span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--terminal-line);
+  border-radius: 8px;
+  background: #0a111a;
+  padding: 8px;
+}
+
+.strategy-plan-stats small,
+.strategy-capital-rule {
+  color: #91a1b8;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.strategy-plan-stats strong {
+  color: #f2f6fc;
+  font-size: 16px;
+  line-height: 1.05;
+}
+
+.strategy-capital-rule {
+  border-top: 1px solid var(--terminal-line);
+  padding-top: 10px;
+  font-weight: 750;
+}
+
+.tracked-ideas-list {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.tracked-idea-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--terminal-line);
+  border-left: 3px solid var(--terminal-green);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(14, 22, 32, 0.96), rgba(8, 13, 20, 0.98));
+  padding: 13px;
+  cursor: pointer;
+}
+
+.tracked-idea-card:hover {
+  border-color: var(--terminal-line-bright);
+  border-left-color: #8df4c7;
+}
+
+.tracked-idea-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.tracked-idea-main > div:first-child {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tracked-idea-main strong {
+  color: #f5f9ff;
+  font-size: 19px;
+  line-height: 1.05;
+}
+
+.tracked-idea-main small,
+.tracked-metrics small {
+  color: #93a2b7;
+  font-size: 11px;
+}
+
+.tracked-return {
+  text-align: right;
+}
+
+.tracked-return strong {
+  font-size: 18px;
+}
+
+.tracked-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.tracked-metrics span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--terminal-line);
+  border-radius: 8px;
+  background: #0a111a;
+  padding: 8px;
+}
+
+.tracked-metrics strong {
+  color: #f2f6fc;
+  font-size: 14px;
+}
+
+@media (max-width: 760px) {
+  .signal-history-list,
+  .strategy-plan-grid,
+  .tracked-ideas-list {
+    padding: 10px;
+  }
+
+  .signal-card-title {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-card-main {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-card-actions {
+    justify-content: flex-start;
+  }
+
+  .signal-symbol-row strong {
+    font-size: 19px;
+  }
+
+  .signal-metric-strip,
+  .signal-trade-strip,
+  .strategy-plan-grid,
+  .tracked-ideas-list {
+    grid-template-columns: 1fr;
+  }
+
+  .tracked-idea-main,
+  .tracked-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .tracked-return {
+    text-align: left;
+  }
+
+  .signal-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .signal-card-actions button {
+    width: 100%;
+    padding: 0 6px;
   }
 }

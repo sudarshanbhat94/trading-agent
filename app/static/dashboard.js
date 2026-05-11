@@ -9,6 +9,7 @@ const state = {
   users: [],
   socket: null,
   socketReconnectTimer: null,
+  statusRefreshInFlight: false,
   quoteFilter: "",
   activeSettingsTab: "broker",
 };
@@ -104,11 +105,30 @@ function pnlClass(value) {
   return "";
 }
 
+function flowBiasText(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "flow unknown";
+  if (numeric >= 0.25) return `strong positive flow (${fmtNumber(numeric)})`;
+  if (numeric > 0.05) return `mild positive flow (${fmtNumber(numeric)})`;
+  if (numeric <= -0.25) return `strong negative flow (${fmtNumber(numeric)})`;
+  if (numeric < -0.05) return `mild negative flow (${fmtNumber(numeric)})`;
+  return `neutral flow (${fmtNumber(numeric)})`;
+}
+
 function humanLabel(value) {
   return String(value || "-")
     .replaceAll("_", " ")
     .replaceAll("-", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function cssToken(value, fallback = "neutral") {
+  const token = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return token || fallback;
 }
 
 function compactSentence(text, fallback = "-") {
@@ -144,6 +164,9 @@ function reasonFromSnakeCase(value, fallback = "-") {
     llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current LLM review limit; new trades now require LLM approval, so this should be HOLD.",
     time_stop_no_progress_15_sessions: "The position has not moved enough after 15 sessions, so OpenTrade is exiting dead capital.",
     overall_score_below_55_no_new_longs: "The production-readiness score is below 55%, so OpenTrade is not opening a fresh long.",
+    fundamentals_unknown_needs_news_or_delivery_confirmation: "Fundamentals are still unknown, news/sentiment is missing, and delivery accumulation is not confirmed.",
+    watch_entry_needs_exceptional_confirmation: "The setup is only WATCH grade, so it needs exceptional confirmation before a BUY.",
+    delivery_distribution_no_new_longs: "Delivery data shows distribution, so OpenTrade is avoiding a fresh BUY.",
   };
   if (mapped[text]) return mapped[text];
   return compactSentence(humanLabel(text).toLowerCase());
@@ -157,6 +180,17 @@ function gateValueText(gateName, value) {
   }
   if (gateName === "sector_gate" || gateName === "sector_rotation_gate") {
     return `${value.sector_tier || "sector tier unknown"} · ${value.sector_stage || "stage unknown"}`;
+  }
+  if (gateName === "fundamental_confirmation_gate") {
+    const sentiment = Number(value.sentiment_confidence || 0);
+    const delivery = value.delivery_fingerprint ? "delivery accumulation confirmed" : "no delivery fingerprint";
+    const alignment = value.alignment || "unknown";
+    return `fundamentals unknown · sentiment/news confidence ${fmtNumber(sentiment)} · ${delivery} · alignment ${alignment}`;
+  }
+  if (gateName === "delivery_distribution_gate") {
+    const bias = value.bias || value.net_bias || "unknown";
+    const source = value.source || "delivery data";
+    return `${bias} bias from ${source} · score ${fmtNumber(value.delivery_score)}`;
   }
   if (gateName === "options_max_pain_gate") {
     return `Max Pain ${fmtMoney(value.max_pain)}, distance ${fmtPct(value.max_pain_distance_pct)}, source ${value.source || "-"}`;
@@ -212,6 +246,8 @@ function humanizeGateFailure(gate) {
     risk_overrides: "Risk overrides blocked new longs",
     portfolio_correlation_gate: "Portfolio correlation risk is too high",
     overall_quality_gate: "Overall production-readiness score is too low",
+    fundamental_confirmation_gate: "Fundamental confirmation is missing",
+    delivery_distribution_gate: "Delivery bias is not supportive",
     system_rule_gates: "System trading rules blocked the action",
     pre_filter: "Pre-filter blocked the setup",
   };
@@ -275,6 +311,15 @@ function humanizeReasonText(text, action = "HOLD") {
   if (!value) return "-";
   if (/tools\s+technical=/i.test(value)) return deterministicReasonFromText(value, action);
   if (/^[a-z0-9_]+$/i.test(value)) return reasonFromSnakeCase(value);
+  if (/Fundamental Confirmation Gate:\s*\{/i.test(value)) {
+    const jsonMatch = value.match(/Fundamental Confirmation Gate:\s*(\{.*?\})(?::|$)/i);
+    const gateValue = jsonMatch ? parseJsonObject(jsonMatch[1]) : {};
+    return humanizeGateFailure({
+      gate: "fundamental_confirmation_gate",
+      value: gateValue,
+      reason: "fundamentals_unknown_needs_news_or_delivery_confirmation",
+    });
+  }
   return value
     .replace(/llm_primary_required_no_unreviewed_trade/g, "LLM approval was required before trading, so OpenTrade held")
     .replace(/llm_primary_failed_safe_hold/g, "LLM failed, so OpenTrade held safely")
@@ -388,8 +433,10 @@ function render(payload) {
   const quotes = payload.quotes || [];
   const decisions = payload.decisions || [];
   const suggestions = payload.suggestions || [];
+  const trackedIdeas = payload.tracked_ideas || [];
   const orders = payload.orders || [];
   const strategies = payload.strategy_metrics || [];
+  const strategyPlans = payload.strategy_plans || [];
   const sentiment = payload.sentiment || [];
 
   byId("kpi-equity").textContent = fmtMoney(portfolio.equity);
@@ -401,10 +448,12 @@ function render(payload) {
   byId("kpi-decisions").textContent = String(decisions.length);
   byId("last-cycle").textContent = state.auth?.admin
     ? (payload.last_cycle_at ? `Last cycle ${fmtTime(payload.last_cycle_at)}` : "waiting")
-    : (userSession.last_cycle_at ? `Your signal cycle ${fmtTime(userSession.last_cycle_at)}` : "signals waiting");
+    : userSession.shared_backend
+      ? (payload.last_cycle_at ? `Shared backend ${fmtTime(payload.last_cycle_at)}` : "shared backend waiting")
+      : (userSession.last_cycle_at ? `Your signal cycle ${fmtTime(userSession.last_cycle_at)}` : "signals waiting");
 
   const pill = byId("status-pill");
-  pill.textContent = controlRunning ? (state.auth?.admin ? "running" : "signals on") : "stopped";
+  pill.textContent = controlRunning ? (state.auth?.admin ? "running" : "shared engine on") : "stopped";
   pill.className = `pill ${controlRunning ? "running" : "stopped"}`;
 
   const error = byId("error-box");
@@ -430,6 +479,10 @@ function render(payload) {
   byId("suggestion-count").textContent = suggestions.length ? `${suggestions.length} full-audit ideas` : "0 ideas";
   byId("order-count").textContent = `${orders.length} orders`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
+  const planCount = byId("strategy-plan-count");
+  if (planCount) planCount.textContent = `${strategyPlans.length} plans`;
+  const trackedCount = byId("tracked-count");
+  if (trackedCount) trackedCount.textContent = trackedIdeas.length ? `${trackedIdeas.length} active` : "0 active";
   byId("sentiment-count").textContent = `${sentiment.length} events`;
   byId("nav-positions-badge").textContent = String(positions.length);
   byId("nav-suggestions-badge").textContent = String(suggestions.length);
@@ -441,6 +494,8 @@ function render(payload) {
 
   renderPositions(positions);
   renderStrategies(strategies);
+  renderStrategyPlans(strategyPlans);
+  renderTrackedIdeas(trackedIdeas);
   renderSentiment(sentiment);
   renderQuotes(quotes);
   renderSuggestions(suggestions);
@@ -573,8 +628,16 @@ function renderShell(payload = state.latest || {}) {
   const feedLabel = health.display_label || (mode === "last_traded" ? "Last traded" : mode === "stale" ? "Stale quote" : "Upstox live");
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
-  const llmModel = llmProvider === "deepseek" ? plainSetting("deepseek_model", "deepseek-v4-pro") : "offline";
+  const llmModel = llmProvider === "deepseek"
+    ? plainSetting("deepseek_model", "deepseek-v4-pro")
+    : llmProvider === "groq"
+      ? plainSetting("groq_model", "qwen/qwen3-32b")
+      : llmProvider === "assigned"
+        ? "OpenTrade Brain"
+      : "offline";
+  const llmDisplay = llmProvider === "assigned" ? "OpenTrade Brain" : llmProvider;
   const llmUsage = payload.llm_usage?.today_utc || {};
+  const llmActivity = userSession.last_llm_activity || {};
   const llmUsageText = llmUsage.calls
     ? `${fmtCompact(llmUsage.total_tokens)} tok · ${fmtUsd(llmUsage.cost_usd)} today`
     : `${llmModel || "model unset"}`;
@@ -592,16 +655,20 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-feed-meta").textContent = feedPending
     ? "quotes paused until token/feed is ready"
     : `${health.quote_count || 0} quotes · ${health.is_market_open ? "market open" : "market closed"} · ${fmtAge(health.latest_quote_age_seconds)}`;
-  byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmProvider;
-  byId("ops-llm-meta").textContent = `${llmMode} · ${llmUsageText}`;
+  byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmDisplay;
+  byId("ops-llm-meta").textContent = !state.auth?.admin && llmActivity.message
+    ? `${llmMode} · ${llmActivity.billable_calls || 0} calls · ${fmtCredits(llmActivity.credits_charged || 0)} credits`
+    : `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   byId("ops-macro").textContent = macro.regime || "unknown";
   byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · breadth ${escapeHtml(breadth.breadth_regime || "neutral")}`;
-  byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Signals On") : "Stopped";
+  byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Shared Engine") : "Stopped";
   byId("ops-cycle-meta").textContent = state.auth?.admin
     ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending")
-    : (userSession.last_cycle_at
+    : (userSession.shared_backend
+      ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · admin controlled` : "admin controlled")
+      : userSession.last_cycle_at
       ? `${fmtTime(userSession.last_cycle_at)} · ${fmtCredits(userSession.last_credit_charge || 0)} credits`
       : `${userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30} symbols per cycle`);
 }
@@ -684,6 +751,8 @@ function renderAuth(auth) {
   const currentUser = auth.user?.username || "signed in";
   byId("current-user-label").textContent = `${currentUser} · ${auth.user?.role || "user"}`;
   byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "admin";
+  byId("start-btn").textContent = auth.admin ? "Start" : "Refresh";
+  byId("stop-btn").textContent = auth.admin ? "Stop" : "Admin Controlled";
   byId("logout-btn").hidden = !authenticated;
   renderUserBrokerStatus();
   for (const item of document.querySelectorAll(".admin-only")) {
@@ -701,12 +770,30 @@ function renderAuth(auth) {
   }
 }
 
+function handleUnauthorized(message = "Session expired. Sign in again.") {
+  if (state.socketReconnectTimer) clearTimeout(state.socketReconnectTimer);
+  state.socketReconnectTimer = null;
+  if (state.socket) state.socket.close();
+  state.socket = null;
+  renderAuth({
+    authenticated: false,
+    admin: false,
+    admin_configured: state.auth?.admin_configured,
+    user: null,
+  });
+  const status = byId("login-status");
+  if (status) {
+    status.textContent = message;
+    status.className = "settings-inline-status negative";
+  }
+}
+
 function applyAccessMode() {
   const authenticated = Boolean(state.auth && state.auth.authenticated);
   const admin = Boolean(state.auth && state.auth.admin);
   for (const id of ["start-btn", "stop-btn"]) {
     const element = byId(id);
-    if (element) element.disabled = !authenticated;
+    if (element) element.disabled = !authenticated || (!admin && id === "stop-btn");
   }
   for (const id of [
     "run-btn",
@@ -745,6 +832,8 @@ function applyAccessMode() {
     if (element) element.disabled = !admin;
   }
   for (const id of [
+    "my-upstox-access-token",
+    "my-upstox-token-save-btn",
     "my-upstox-api-key",
     "my-upstox-api-secret",
     "my-upstox-redirect-uri",
@@ -804,6 +893,7 @@ function renderCreditSummary(credits, policy = {}) {
   const dailyLimit = Number(credits?.daily_credit_limit || 0);
   const usedToday = Number(credits?.credits_used_today || 0);
   const remaining = Number(credits?.daily_credits_remaining || 0);
+  const llmActivity = state.latest?.user_signal_session?.last_llm_activity || {};
   byId("credits-status").textContent = `${fmtCredits(remaining)} left today`;
   byId("credit-pill").textContent = `${fmtCredits(balance)} credits`;
   body.innerHTML = `
@@ -814,13 +904,15 @@ function renderCreditSummary(credits, policy = {}) {
       <div><span>Available Today</span><strong>${fmtCredits(remaining)}</strong></div>
     </div>
     <form id="daily-credit-limit-form" class="symbol-search">
-      <input id="daily-credit-limit-input" type="number" min="0" step="0.01" value="${dailyLimit || ""}" placeholder="Daily credits to spend" />
+      <input id="daily-credit-limit-input" type="number" min="0" step="1" value="${dailyLimit || ""}" placeholder="Daily credits to spend" />
       <button id="save-daily-credit-limit-btn" type="submit">Save Budget</button>
     </form>
     <div class="account-note">
       <strong>Credit transparency</strong>
-      <span>Each symbol analysis shows the calls and tokens consumed. OpenTrade automatically uses a leaner path when today's remaining credits are tight.</span>
+      <span>Each symbol analysis shows the calls and tokens consumed. ${fmtCredits(policy.tokens_per_credit || 10)} LLM tokens = 1 credit.</span>
+      <span>OpenTrade automatically uses a leaner path when today's remaining credits are tight.</span>
       <span>Estimated signal cost: ${fmtCredits(policy.estimated_signal_credit || 0)} credits.</span>
+      ${llmActivity.message ? `<span>Last cycle: ${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</span>` : ""}
     </div>
     <div class="table-wrap compact credit-ledger">
       <table>
@@ -887,6 +979,7 @@ function renderAdminCredits(summary) {
     return;
   }
   const users = summary.users || [];
+  const policy = summary.credit_policy || {};
   const totals = users.reduce(
     (acc, user) => {
       acc.today += Number(user.today_credits_used || 0);
@@ -902,6 +995,7 @@ function renderAdminCredits(summary) {
     <button type="button"><span>Credits Today</span><strong>${fmtCredits(totals.today)}</strong></button>
     <button type="button"><span>Platform Margin Today</span><strong>${fmtCredits(totals.margin)}</strong></button>
     <button type="button"><span>All-Time Usage</span><strong>${fmtCredits(totals.all)}</strong></button>
+    <button type="button"><span>Credit Rule</span><strong>${fmtCredits(policy.tokens_per_credit || 10)} tokens</strong></button>
   `;
 }
 
@@ -993,9 +1087,10 @@ function renderUsers(rows) {
       const credits = user.credit_usage || {};
       const upstox = user.broker_accounts?.upstox || {};
       const kite = user.broker_accounts?.kite || {};
+      const assigned = user.assigned_llm || {};
       return `<tr data-user-id="${user.id}">
         <td><strong>${escapeHtml(user.username)}</strong></td>
-        <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span></td>
+        <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span><br><small>${escapeHtml(assigned.provider || "default")} · ${escapeHtml(assigned.model || "default")}</small></td>
         <td><strong>${fmtCredits(user.credit_balance || credits.credit_balance || 0)}</strong><br><small>daily ${fmtCredits(user.daily_credit_limit || credits.daily_credit_limit || 0)}</small></td>
         <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
         <td><span class="tag ${upstox.connected ? "open" : "watch"}">Upstox ${upstox.connected ? "on" : "off"}</span><br><small>Kite ${kite.connected ? "on" : "off"}</small></td>
@@ -1003,6 +1098,7 @@ function renderUsers(rows) {
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
           <button type="button" data-user-action="role">${user.role === "admin" ? "Make User" : "Make Admin"}</button>
+          <button type="button" data-user-action="model">Model</button>
           <button type="button" data-user-action="credits">Credits</button>
           <button type="button" data-user-action="assign-upstox">Assign Upstox</button>
         </td>
@@ -1019,6 +1115,8 @@ function renderUsers(rows) {
         updateUser(user.id, { active: !user.active });
       } else if (button.dataset.userAction === "role") {
         updateUser(user.id, { role: user.role === "admin" ? "user" : "admin" });
+      } else if (button.dataset.userAction === "model") {
+        openModelAssign(user);
       } else if (button.dataset.userAction === "credits") {
         openCreditAdjust(user);
       } else if (button.dataset.userAction === "assign-upstox") {
@@ -1029,8 +1127,25 @@ function renderUsers(rows) {
   bindRowDetails(body, state.users, "User");
 }
 
+function openModelAssign(user) {
+  const current = user.assigned_llm || {};
+  const raw = window.prompt(
+    `Assign LLM for ${user.username}\nUse provider:model`,
+    `${current.provider || "groq"}:${current.model || "qwen/qwen3-32b"}`,
+  );
+  if (raw === null) return;
+  const [providerRaw, ...modelParts] = raw.split(":");
+  const provider = (providerRaw || "").trim().toLowerCase();
+  const model = modelParts.join(":").trim();
+  if (!["groq", "deepseek", "offline"].includes(provider)) {
+    showDetails("Assign Model", { detail: "Provider must be groq, deepseek, or offline." });
+    return;
+  }
+  updateUser(user.id, { assigned_llm_provider: provider, assigned_llm_model: model || "offline" });
+}
+
 function openCreditAdjust(user) {
-  const amountRaw = window.prompt(`Credits to add/remove for ${user.username}`, "100");
+  const amountRaw = window.prompt(`Credits to add/remove for ${user.username}`, "100000");
   if (amountRaw === null) return;
   const amount = Number(amountRaw);
   if (!Number.isFinite(amount) || amount === 0) return;
@@ -1080,6 +1195,7 @@ async function createUser(event) {
     username: byId("new-user-username").value.trim(),
     password: byId("new-user-password").value,
     role: byId("new-user-role").value,
+    ...llmAssignmentFromSelect(byId("new-user-llm").value),
     active: true,
     starting_credits: Number(byId("new-user-credits").value || 0),
     daily_credit_limit: Number(byId("new-user-daily-limit").value || 0),
@@ -1101,6 +1217,7 @@ async function createUser(event) {
     byId("new-user-username").value = "";
     byId("new-user-password").value = "";
     byId("new-user-role").value = "user";
+    byId("new-user-llm").value = "groq:qwen/qwen3-32b";
     byId("new-user-credits").value = "";
     byId("new-user-daily-limit").value = "";
     renderUsers(data.users || []);
@@ -1112,6 +1229,14 @@ async function createUser(event) {
     status.textContent = "create failed: backend unreachable";
     status.className = "settings-inline-status negative";
   }
+}
+
+function llmAssignmentFromSelect(value) {
+  const [providerRaw, ...modelParts] = String(value || "groq:qwen/qwen3-32b").split(":");
+  return {
+    assigned_llm_provider: providerRaw || "groq",
+    assigned_llm_model: modelParts.join(":") || "qwen/qwen3-32b",
+  };
 }
 
 async function updateUser(userId, patch) {
@@ -1138,6 +1263,7 @@ function renderAccount(account) {
   const paper = account.paper || {};
   const upstox = account.upstox || {};
   const portfolio = paper.portfolio || {};
+  const trackedIdeas = account.tracked_ideas || [];
   const userUpstox = state.auth?.user?.broker_accounts?.upstox || {};
   byId("account-status").textContent = userUpstox.connected ? "user upstox connected" : upstox.connected ? "runtime upstox" : "paper demo";
   byId("account-body").innerHTML = `
@@ -1146,6 +1272,8 @@ function renderAccount(account) {
       <div><span>Paper Cash</span><strong>${fmtMoney(paper.cash)}</strong></div>
       <div><span>Paper Equity</span><strong>${fmtMoney(portfolio.equity ?? paper.cash)}</strong></div>
       <div><span>User Feed</span><strong>${userUpstox.connected ? "Upstox connected" : "not connected"}</strong></div>
+      <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
+      <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
     </div>
     <div class="account-note">
       <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
@@ -1223,10 +1351,30 @@ function renderSettings(config) {
       target.innerHTML = `<div class="empty-state">No settings in this tab.</div>`;
     }
   }
+  renderProviderKeysPanel(config.settings || {});
   renderUpstoxConnect(config.settings || {});
   setSettingsTab(state.activeSettingsTab || "broker");
   applyAccessMode();
   renderShell();
+}
+
+function renderProviderKeysPanel(settings) {
+  const deepseekSaved = Boolean(settings.deepseek_api_key?.saved);
+  const groqSaved = Boolean(settings.groq_api_key?.saved);
+  const deepseekState = byId("deepseek-key-state");
+  const groqState = byId("groq-key-state");
+  const status = byId("llm-keys-status");
+  if (deepseekState) deepseekState.textContent = deepseekSaved ? "saved" : "not saved";
+  if (groqState) groqState.textContent = groqSaved ? "saved" : "not saved";
+  if (status) {
+    status.textContent = `${deepseekSaved ? "DeepSeek saved" : "DeepSeek missing"} · ${groqSaved ? "Groq saved" : "Groq missing"}`;
+    status.className = `settings-inline-status ${deepseekSaved || groqSaved ? "positive" : ""}`;
+  }
+  if (byId("admin-deepseek-key")) byId("admin-deepseek-key").placeholder = deepseekSaved ? "DeepSeek key saved" : "DeepSeek API Key";
+  if (byId("admin-groq-key")) byId("admin-groq-key").placeholder = groqSaved ? "Groq key saved" : "Groq API Key";
+  if (byId("admin-default-user-provider")) byId("admin-default-user-provider").value = plainSetting("user_default_llm_provider", "groq");
+  if (byId("admin-default-user-model")) byId("admin-default-user-model").value = plainSetting("user_default_llm_model", "qwen/qwen3-32b");
+  if (byId("admin-runtime-provider")) byId("admin-runtime-provider").value = plainSetting("llm_provider", "deepseek");
 }
 
 function settingsTabForCategory(category) {
@@ -1325,7 +1473,21 @@ function collectSettings() {
       values[input.name] = input.value;
     }
   }
+  mergeProviderKeyPanelSettings(values);
   return values;
+}
+
+function mergeProviderKeyPanelSettings(values) {
+  const deepseekKey = byId("admin-deepseek-key")?.value?.trim();
+  const groqKey = byId("admin-groq-key")?.value?.trim();
+  const defaultProvider = byId("admin-default-user-provider")?.value;
+  const defaultModel = byId("admin-default-user-model")?.value?.trim();
+  const runtimeProvider = byId("admin-runtime-provider")?.value;
+  if (deepseekKey) values.deepseek_api_key = deepseekKey;
+  if (groqKey) values.groq_api_key = groqKey;
+  if (defaultProvider) values.user_default_llm_provider = defaultProvider;
+  if (defaultModel) values.user_default_llm_model = defaultModel;
+  if (runtimeProvider) values.llm_provider = runtimeProvider;
 }
 
 function networkErrorMessage(error, action = "request") {
@@ -1435,12 +1597,53 @@ function upstoxConnectPayload() {
 
 function myUpstoxConnectPayload() {
   return {
+    access_token: byId("my-upstox-access-token")?.value?.trim(),
     api_key: byId("my-upstox-api-key")?.value?.trim(),
     api_secret: byId("my-upstox-api-secret")?.value?.trim(),
     redirect_uri: byId("my-upstox-redirect-uri")?.value?.trim() || `${window.location.origin}/upstox/callback`,
     base_url: state.config?.settings?.upstox_api_base_url || "https://api.upstox.com/v2",
     code: byId("my-upstox-auth-code")?.value?.trim(),
   };
+}
+
+async function saveMyUpstoxToken() {
+  const status = byId("my-upstox-status");
+  const button = byId("my-upstox-token-save-btn");
+  const token = byId("my-upstox-access-token")?.value?.trim();
+  if (!token) {
+    status.textContent = "paste token first";
+    status.className = "settings-inline-status negative";
+    return;
+  }
+  status.textContent = "saving token";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/me/upstox/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        access_token: token,
+        base_url: state.config?.settings?.upstox_api_base_url || "https://api.upstox.com/v2",
+      }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      status.textContent = payload.detail || "token save failed";
+      status.className = "settings-inline-status negative";
+      showDetails("User Upstox Token", payload);
+      return;
+    }
+    byId("my-upstox-access-token").value = "";
+    state.auth.user = payload.user || state.auth.user;
+    renderUserBrokerStatus();
+    status.textContent = "token saved";
+    status.className = "settings-inline-status positive";
+  } catch (error) {
+    status.textContent = "token save failed";
+    status.className = "settings-inline-status negative";
+  } finally {
+    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
+  }
 }
 
 async function openMyUpstoxLogin() {
@@ -1491,6 +1694,7 @@ async function connectMyUpstox() {
       return;
     }
     if (byId("my-upstox-api-secret")) byId("my-upstox-api-secret").value = "";
+    if (byId("my-upstox-access-token")) byId("my-upstox-access-token").value = "";
     if (byId("my-upstox-auth-code")) byId("my-upstox-auth-code").value = "";
     state.auth.user = payload.user || state.auth.user;
     renderUserBrokerStatus();
@@ -1679,6 +1883,37 @@ function renderStrategies(rows) {
   bindRowDetails(body, rows.slice(0, 80), "Strategy");
 }
 
+function renderStrategyPlans(rows) {
+  const body = byId("strategy-plans-body");
+  if (!body) return;
+  if (!rows.length) {
+    body.innerHTML = `<div class="empty-state">No strategy plans loaded.</div>`;
+    return;
+  }
+  body.innerHTML = rows
+    .slice(0, 5)
+    .map((row) => {
+      const risk = humanLabel(row.risk_level || "Medium");
+      return `<button class="strategy-plan-card risk-${escapeHtml(cssToken(row.risk_level))}" type="button" data-plan="${escapeHtml(row.code)}">
+      <div class="strategy-plan-top">
+        <span class="strategy-risk-pill">${escapeHtml(risk)}</span>
+        <strong>${escapeHtml(row.name || row.code || "-")}</strong>
+      </div>
+      <p>${escapeHtml(row.description || "-")}</p>
+      <div class="strategy-plan-stats">
+        <span><small>Holding</small><strong>${escapeHtml(row.holding_period || "-")}</strong></span>
+        <span><small>Ideas</small><strong>${fmtNumber(row.idea_count || 0)}</strong></span>
+        <span><small>Since Signals</small><strong class="${pnlClass(row.avg_return_pct)}">${fmtPct(row.avg_return_pct || 0)}</strong></span>
+      </div>
+      <div class="strategy-capital-rule">${escapeHtml(row.capital_rule || "")}</div>
+    </button>`;
+    })
+    .join("");
+  [...body.querySelectorAll(".strategy-plan-card")].forEach((button, index) => {
+    button.addEventListener("click", () => showDetails("Strategy Plan", rows[index]));
+  });
+}
+
 function renderPositions(rows) {
   const body = byId("positions-body");
   if (!rows.length) {
@@ -1695,7 +1930,7 @@ function renderPositions(rows) {
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
         <td class="num"><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><br><small>${escapeHtml(summary.overall_grade || "-")}</small></td>
         <td><span class="tag ${String(summary.classification || "").toLowerCase()}">${escapeHtml(summary.classification || "-")}</span><br><small>${escapeHtml(row.strategy || "-")}</small></td>
-        <td><small>Entry ${escapeHtml(summary.entry_grade || "-")} · MTF ${escapeHtml(summary.mtf_grade || "-")} · Delivery ${escapeHtml(summary.delivery_bias || "-")}</small><br>${flags.length ? flags.map((flag) => `<span class="tag watch">${escapeHtml(flag)}</span>`).join(" ") : `<span class="tag open">CLEAR</span>`}</td>
+        <td><small>Entry ${escapeHtml(summary.entry_grade || "-")} · MTF ${escapeHtml(summary.mtf_grade || "-")} · Delivery ${escapeHtml(summary.delivery_bias || "-")}</small><br>${flags.length ? flags.map((flag) => `<span class="tag watch">${escapeHtml(humanLabel(flag))}</span>`).join(" ") : `<span class="tag open">CLEAR</span>`}</td>
         <td class="num">${row.qty}</td>
         <td class="num">${fmtMoney(row.market_price)}<br><small>${escapeHtml(summary.price_label || "LTP")}</small></td>
         <td class="num">${fmtMoney(marketValue)}</td>
@@ -1707,6 +1942,50 @@ function renderPositions(rows) {
   bindRowDetails(body, rows, "Position");
 }
 
+function renderTrackedIdeas(rows) {
+  const body = byId("tracked-ideas-body");
+  if (!body) return;
+  if (!rows.length) {
+    body.innerHTML = `<div class="empty-state">No tracked ideas yet. Use Track or Paper on any signal to keep its live P&L here.</div>`;
+    return;
+  }
+  body.innerHTML = rows
+    .slice(0, 20)
+    .map((row, index) => {
+      const mode = String(row.mode || row.user_follow?.mode || "TRACK").toUpperCase();
+      const qty = Number(row.qty || row.user_follow?.qty || 0);
+      const entry = Number(row.follow_entry_price || row.user_follow?.entry_price || row.entry_price || 0);
+      const latest = Number(row.follow_latest_price || row.user_follow?.latest_price || row.latest_price || 0);
+      const invested = Number(row.invested_amount || row.user_follow?.invested_amount || 0);
+      const pnl = Number(row.unrealized_pnl || row.user_follow?.unrealized_pnl || 0);
+      const returnPct = Number(row.return_pct || row.user_follow?.return_pct || 0);
+      return `<article class="tracked-idea-card" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} tracked idea">
+        <div class="tracked-idea-main">
+          <div>
+            <span class="signal-rank">${escapeHtml(mode)}</span>
+            <strong>${escapeHtml(row.symbol || "-")}</strong>
+            <small>${escapeHtml(row.strategy || "-")} · followed ${fmtTime(row.followed_at || row.user_follow?.created_at)}</small>
+          </div>
+          <div class="tracked-return ${pnlClass(returnPct)}">
+            <strong>${fmtPct(returnPct)}</strong>
+            <small>${fmtMoney(pnl)} unrealized</small>
+          </div>
+        </div>
+        <div class="tracked-metrics">
+          <span><small>Qty</small><strong>${fmtNumber(qty)}</strong></span>
+          <span><small>Entry</small><strong>${fmtMoney(entry)}</strong></span>
+          <span><small>LTP</small><strong>${fmtMoney(latest)}</strong></span>
+          <span><small>Invested</small><strong>${fmtMoney(invested)}</strong></span>
+        </div>
+      </article>`;
+    })
+    .join("");
+  [...body.querySelectorAll(".tracked-idea-card")].forEach((card) => {
+    const row = rows[Number(card.dataset.index)];
+    card.addEventListener("click", () => showDetails("Tracked Idea", row));
+  });
+}
+
 function renderSuggestions(rows) {
   const body = byId("suggestions-body");
   if (!rows.length) {
@@ -1714,7 +1993,7 @@ function renderSuggestions(rows) {
     return;
   }
   body.innerHTML = rows
-    .slice(0, 5)
+    .slice(0, 20)
     .map((row, index) => {
       const action = String(row.suggestion || "WATCH").toLowerCase();
       const targets = row.targets || [];
@@ -1729,44 +2008,106 @@ function renderSuggestions(rows) {
         : [];
       const readiness = humanLabel(row.decision_readiness || "monitor_only");
       const confidence = Number(row.confidence || 0) * 100;
-      return `<button class="suggestion-card ${index === 0 ? "featured" : ""}" type="button" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} idea audit">
-        <div class="suggestion-signal">
-          <span class="rank">Idea #${index + 1}</span>
-          <div class="suggestion-symbol-line">
-            <strong>${escapeHtml(row.symbol)}</strong>
-            <span class="tag ${action}">${escapeHtml(row.suggestion)}</span>
+      const currentReturn = Number(row.current_return_pct || 0);
+      const peakReturn = Number(row.peak_return_pct || 0);
+      const worstReturn = Number(row.worst_return_pct || 0);
+      const followed = row.user_follow || null;
+      return `<article class="signal-history-card signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} idea audit">
+        <div class="signal-card-main">
+          <div class="signal-card-title">
+            <span class="signal-rank">Idea #${row.id || index + 1}</span>
+            <div>
+              <div class="signal-symbol-row">
+                <strong>${escapeHtml(row.symbol)}</strong>
+                <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(row.suggestion || "WATCH")}</span>
+                ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
+              </div>
+              <small>${fmtMoney(row.price || row.latest_price)} · ${escapeHtml(row.strategy || "-")} · first seen ${fmtTime(row.first_seen_at)}</small>
+            </div>
           </div>
-          <small>${fmtMoney(row.price)} · ${escapeHtml(row.strategy || "-")}</small>
+          <div class="signal-card-actions">
+            <button type="button" data-idea-action="track" data-idea-id="${escapeHtml(row.id)}">Track</button>
+            <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}">Paper</button>
+            <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}">Live</button>
+          </div>
         </div>
-        <div class="suggestion-score">
+        <div class="signal-metric-strip">
           <div><span>Signal</span><strong>${escapeHtml(readiness)}</strong><small>${fmtNumber(confidence)}% confidence</small></div>
           <div><span>Overall</span><strong>${fmtPct(row.overall_score_pct ?? 0)}</strong><small>${escapeHtml(row.overall_grade || "-")} readiness</small></div>
           <div><span>Confluence</span><strong>${escapeHtml(row.confluence ?? "-")}/26</strong><small>${escapeHtml(row.tier || "-")}</small></div>
-          <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>score after gates</small></div>
-          <div><span>Institutional</span><strong class="${pnlClass(row.institutional_bias)}">${fmtNumber(row.institutional_bias)}</strong><small>${escapeHtml(institutionalFlags.join(", ") || "neutral")}</small></div>
+          <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>after gates</small></div>
+          <div><span>Since Signal</span><strong class="${pnlClass(currentReturn)}">${fmtPct(currentReturn)}</strong><small>best ${fmtPct(peakReturn)} · worst ${fmtPct(worstReturn)}</small></div>
         </div>
-        <div class="suggestion-plan">
+        <div class="signal-trade-strip">
           <span><small>Entry</small><strong>${formatZone(row.entry_zone)}</strong></span>
           <span><small>Stop</small><strong class="negative">${fmtMoney(row.stop_loss)}</strong></span>
           <span><small>Target 1</small><strong class="positive">${fmtMoney(t1.price)}</strong></span>
           <span><small>Target 2</small><strong class="positive">${fmtMoney(t2.price)}</strong></span>
         </div>
-        <div class="suggestion-reason">
-          <span>Why</span>
-          <p>${escapeHtml(shortValue(readableDecisionReason(row), 240))}</p>
+        <div class="signal-reason-row">
+          <span>Reason</span>
+          <p>${escapeHtml(shortValue(readableDecisionReason(row), 220))}</p>
         </div>
-        <div class="suggestion-flags">
+        <div class="signal-audit-row">
           <span>Full audit</span>
-          <span>${escapeHtml(row.id ? `Decision #${row.id}` : "Decision audit")}</span>
+          <span>${escapeHtml(row.latest_decision_id ? `Decision #${row.latest_decision_id}` : "Decision audit")}</span>
           ${riskFlags.map((flag) => `<span class="warning">${escapeHtml(humanLabel(flag))}</span>`).join("")}
+          ${institutionalFlags.map((flag) => `<span>${escapeHtml(flag)}</span>`).join("")}
         </div>
-      </button>`;
+      </article>`;
     })
     .join("");
-  [...body.querySelectorAll(".suggestion-card")].forEach((button) => {
+  [...body.querySelectorAll(".signal-history-card")].forEach((button) => {
     const row = rows[Number(button.dataset.index)];
-    button.addEventListener("click", () => showDetails("Suggestion", row));
+    button.addEventListener("click", (event) => {
+      if (event.target.closest("[data-idea-action]")) return;
+      showDetails("Suggestion", row);
+    });
   });
+  [...body.querySelectorAll("[data-idea-action]")].forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      followIdea(Number(button.dataset.ideaId), button.dataset.ideaAction);
+    });
+  });
+}
+
+async function followIdea(ideaId, action) {
+  if (!ideaId) return;
+  const mode = action === "paper" ? "PAPER" : action === "live" ? "LIVE" : "TRACK";
+  const amount = mode === "PAPER" ? Number(prompt("Paper amount to allocate", "1000") || 0) : 0;
+  try {
+    const response = await fetch(`/api/ideas/${ideaId}/follow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, amount }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(payload.detail || "Could not update idea tracking");
+      return;
+    }
+    if (Array.isArray(payload.ideas)) {
+      state.latest = {
+        ...(state.latest || {}),
+        suggestions: payload.ideas,
+        signal_ideas: payload.ideas,
+        tracked_ideas: payload.tracked_ideas || state.latest?.tracked_ideas || [],
+        positions: payload.positions || state.latest?.positions || [],
+      };
+      renderSuggestions(payload.ideas);
+      renderTrackedIdeas(state.latest.tracked_ideas || []);
+      renderPositions(state.latest.positions || []);
+      byId("kpi-positions").textContent = String((state.latest.positions || []).length);
+      byId("nav-positions-badge").textContent = String((state.latest.positions || []).length);
+      byId("position-count").textContent = `${(state.latest.positions || []).length} open`;
+      const trackedCount = byId("tracked-count");
+      if (trackedCount) trackedCount.textContent = `${(state.latest.tracked_ideas || []).length} active`;
+      await refreshStatusOnly();
+    }
+  } catch (error) {
+    alert(networkErrorMessage(error, "idea tracking"));
+  }
 }
 
 function renderQuotes(rows) {
@@ -1971,7 +2312,7 @@ function suggestionDetailHtml(row) {
       <div class="audit-chips">
         <span>Readiness: ${escapeHtml(row.decision_readiness || "-")}</span>
         <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
-        <span>Institutional: ${fmtNumber(row.institutional_bias)}</span>
+        <span>Institutional: ${escapeHtml(flowBiasText(row.institutional_bias))}</span>
       </div>
     </section>
     ${exitPlanHtml(row.exit_plan)}
@@ -2222,6 +2563,7 @@ function preFilterHtml(audit, context) {
 }
 
 function llmOutputHtml(llm, audit) {
+  const admin = Boolean(state.auth?.admin);
   return `<section class="audit-section">
     <h4>LLM Evidence</h4>
     <div class="audit-cards two">
@@ -2232,8 +2574,8 @@ function llmOutputHtml(llm, audit) {
       </div>
       <div class="audit-card">
         <span>Analysed By</span>
-        <strong>${escapeHtml(audit.model || llm.model || "-")}</strong>
-        <small>${escapeHtml(audit.provider || llm.provider || "-")} · ${escapeHtml(audit.analysis_mode || llm.analysis_mode || "single_context")}</small>
+        <strong>${admin ? escapeHtml(audit.model || llm.model || "-") : "OpenTrade Brain"}</strong>
+        <small>${admin ? `${escapeHtml(audit.provider || llm.provider || "-")} · ` : ""}${escapeHtml(audit.analysis_mode || llm.analysis_mode || "single_context")}</small>
       </div>
       <div class="audit-card">
         <span>Confidence Gate</span>
@@ -2241,15 +2583,15 @@ function llmOutputHtml(llm, audit) {
         <small>minimum ${fmtNumber(Number(audit.confidence_gate?.minimum_required || 0) * 100)}%</small>
       </div>
     </div>
-    ${objectCardsHtml("LLM Routing", {
+    ${admin ? objectCardsHtml("LLM Routing", {
       configured_provider: audit.configured_provider,
       configured_model: audit.configured_model,
       selected_provider: audit.provider,
       selected_model: audit.model,
       analysis_mode: audit.analysis_mode,
       rolling_context: audit.rolling_context,
-    })}
-    ${auditList("Model Attempts", (audit.model_attempts || []).map((item) => `${item.status}: ${item.provider}/${item.model} ${item.latency_ms || 0}ms ${item.error || ""}`))}
+    }) : ""}
+    ${admin ? auditList("Model Attempts", (audit.model_attempts || []).map((item) => `${item.status}: ${item.provider}/${item.model} ${item.latency_ms || 0}ms ${item.error || ""}`)) : ""}
     ${auditList("Evidence", llm.evidence)}
     ${auditList("Checklist", llm.checklist)}
     ${auditList("Risk Checks", llm.risk_checks)}
@@ -2583,6 +2925,10 @@ async function postControl(path) {
   try {
     const response = await fetch(path, { method: "POST" });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (response.status === 401) {
+      handleUnauthorized(payload.detail || "Session expired. Sign in again.");
+      return;
+    }
     if (!response.ok) {
       showDetails("Control Error", payload);
       const error = byId("error-box");
@@ -2658,15 +3004,20 @@ function renderManualAnalysis(payload) {
   const news = payload.news || {};
   const headlines = news.headlines || [];
   const creditUsage = payload.credit_usage || {};
+  const llmActivity = creditUsage.llm_activity || {};
   const beforeBalance = Number(creditUsage.before?.credit_balance || 0);
   const afterBalance = Number(creditUsage.after?.credit_balance || 0);
   const creditCharge = Math.max(beforeBalance - afterBalance, 0);
+  const resolvedNote =
+    payload.requested_symbol && payload.symbol && String(payload.requested_symbol).toUpperCase() !== String(payload.symbol).toUpperCase()
+      ? `resolved from ${payload.requested_symbol}`
+      : `${payload.provider || "-"} · ${payload.candle_count || 0} candles`;
   byId("analyze-result").innerHTML = `
     <div class="manual-analysis-card">
       <div>
         <span>Symbol</span>
         <strong>${escapeHtml(payload.symbol || decision.symbol || "-")}</strong>
-        <small>${escapeHtml(payload.provider || "-")} · ${payload.candle_count || 0} candles</small>
+        <small>${escapeHtml(resolvedNote)}</small>
       </div>
       <div>
         <span>Decision</span>
@@ -2691,7 +3042,7 @@ function renderManualAnalysis(payload) {
       <div>
         <span>Credits Used</span>
         <strong>${fmtCredits(creditCharge)}</strong>
-        <small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small>
+        <small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today · ${llmActivity.billable_calls || 0} brain calls</small>
       </div>
     </div>
     <section class="audit-section manual-summary">
@@ -2699,6 +3050,7 @@ function renderManualAnalysis(payload) {
       <p>${escapeHtml(readableDecisionReason(decision))}</p>
       ${auditList("Main Reasons", decisionReasonHighlights(decision))}
       ${auditList("Latest News", headlines.slice(0, 6))}
+      ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
       ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
       <button id="manual-detail-btn" type="button">Open Full Analysis</button>
     </section>
@@ -2715,11 +3067,13 @@ function bindControls() {
   byId("login-form").addEventListener("submit", login);
   byId("user-create-form").addEventListener("submit", createUser);
   byId("save-settings-btn").addEventListener("click", saveSettings);
+  byId("save-provider-keys-btn").addEventListener("click", saveSettings);
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);
   byId("upstox-auth-url-btn").addEventListener("click", openUpstoxLogin);
   byId("upstox-connect-btn").addEventListener("click", connectUpstox);
   byId("my-upstox-auth-url-btn").addEventListener("click", openMyUpstoxLogin);
+  byId("my-upstox-token-save-btn").addEventListener("click", saveMyUpstoxToken);
   byId("my-upstox-connect-btn").addEventListener("click", connectMyUpstox);
   byId("my-kite-connect-btn").addEventListener("click", connectMyKite);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
@@ -2839,6 +3193,18 @@ async function loadAuthenticatedData() {
       fetch("/api/config"),
       fetch("/api/account"),
     ]);
+    if ([statusResponse, configResponse, accountResponse].some((response) => response.status === 401)) {
+      handleUnauthorized("Session expired. Sign in again.");
+      return;
+    }
+    if (!statusResponse.ok || !configResponse.ok || !accountResponse.ok) {
+      showBackendError("Initial load failed. Refresh after the backend is healthy.", {
+        status: statusResponse.status,
+        config: configResponse.status,
+        account: accountResponse.status,
+      });
+      return;
+    }
     render(await statusResponse.json());
     renderSettings(await configResponse.json());
     renderAccount(await accountResponse.json());
@@ -2852,6 +3218,24 @@ async function loadAuthenticatedData() {
   }
 }
 
+async function refreshStatusOnly() {
+  if (state.statusRefreshInFlight) return;
+  state.statusRefreshInFlight = true;
+  try {
+    const response = await fetch("/api/status");
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (response.status === 401) {
+      handleUnauthorized(payload.detail || "Session expired. Sign in again.");
+      return;
+    }
+    if (response.ok) render(payload);
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "status refresh"), { action: "status refresh" });
+  } finally {
+    state.statusRefreshInFlight = false;
+  }
+}
+
 function openSocket() {
   if (!state.auth?.authenticated || state.socket) return;
   if (state.socketReconnectTimer) {
@@ -2860,7 +3244,13 @@ function openSocket() {
   }
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
-  socket.addEventListener("message", (event) => render(JSON.parse(event.data)));
+  socket.addEventListener("message", (event) => {
+    if (state.auth?.admin) {
+      render(JSON.parse(event.data));
+      return;
+    }
+    refreshStatusOnly();
+  });
   socket.addEventListener("close", (event) => {
     state.socket = null;
     if (event.code === 1008) return;

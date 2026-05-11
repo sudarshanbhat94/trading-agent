@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from statistics import mean
 from typing import Any
 
 from .models import Candle
 from .strategy_presets import evaluate_strategy_presets
+
+
+def _mean(values: Any) -> float:
+    items = list(values)
+    return sum(items) / len(items) if items else 0.0
 
 
 def strategy_backtest_snapshot(
@@ -107,10 +111,10 @@ def _summarize_strategy(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]
         "strategy": name,
         "trades": len(rows),
         "win_rate": round(len(wins) / len(rows), 4),
-        "expectancy_pct": round(mean(row["pnl_pct"] for row in rows), 4),
+        "expectancy_pct": round(_mean(row["pnl_pct"] for row in rows), 4),
         "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else round(gross_win, 4),
         "max_drawdown_pct": round(max_drawdown, 4),
-        "avg_hold_periods": round(mean(row["hold_periods"] for row in rows), 2),
+        "avg_hold_periods": round(_mean(row["hold_periods"] for row in rows), 2),
         "last_5": [
             {"pnl_pct": round(row["pnl_pct"], 4), "exit": row["exit"], "hold_periods": row["hold_periods"]}
             for row in rows[-5:]

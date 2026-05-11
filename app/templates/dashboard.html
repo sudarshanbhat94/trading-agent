@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenTrade</title>
-    <link rel="stylesheet" href="/static/styles.css?v=user-modes-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=product-polish-2" />
   </head>
   <body>
     <section id="login-screen" class="login-screen">
@@ -218,10 +218,24 @@
           <section id="suggestions-view" class="view">
             <div class="panel full">
               <div class="panel-head">
-                <h3>Top 5 Trade Ideas</h3>
+                <h3>5 Auto-Trade Plans</h3>
+                <span id="strategy-plan-count">0 plans</span>
+              </div>
+              <div class="strategy-plan-grid" id="strategy-plans-body"></div>
+            </div>
+            <div class="panel full">
+              <div class="panel-head">
+                <h3>My Tracks</h3>
+                <span id="tracked-count">0 active</span>
+              </div>
+              <div class="tracked-ideas-list" id="tracked-ideas-body"></div>
+            </div>
+            <div class="panel full">
+              <div class="panel-head">
+                <h3>Signal History</h3>
                 <span id="suggestion-count">0 candidates</span>
               </div>
-              <div class="suggestion-grid" id="suggestions-body"></div>
+              <div class="signal-history-list" id="suggestions-body"></div>
             </div>
           </section>
 
@@ -313,6 +327,8 @@
                       <span id="my-upstox-status">not connected</span>
                     </div>
                     <div class="connect-grid">
+                      <input id="my-upstox-access-token" type="password" placeholder="Paste Upstox Analytics Token" autocomplete="off" />
+                      <button id="my-upstox-token-save-btn" class="primary" type="button">Save Token</button>
                       <input id="my-upstox-api-key" type="password" placeholder="Upstox API Key" autocomplete="off" />
                       <input id="my-upstox-api-secret" type="password" placeholder="Upstox API Secret" autocomplete="off" />
                       <input id="my-upstox-redirect-uri" type="text" placeholder="Redirect URI" autocomplete="off" />
@@ -375,10 +391,17 @@
                   <input id="new-user-password" type="password" autocomplete="new-password" placeholder="Minimum 8 characters" />
                   <label for="new-user-role">Role</label>
                   <select id="new-user-role"><option value="user">User</option><option value="admin">Admin</option></select>
+                  <label for="new-user-llm">Assigned LLM</label>
+                  <select id="new-user-llm">
+                    <option value="groq:qwen/qwen3-32b">Groq · Qwen3 32B</option>
+                    <option value="deepseek:deepseek-v4-pro">DeepSeek · V4 Pro</option>
+                    <option value="deepseek:deepseek-v4-flash">DeepSeek · V4 Flash</option>
+                    <option value="offline:offline">Offline</option>
+                  </select>
                   <label for="new-user-credits">Starting Credits</label>
-                  <input id="new-user-credits" type="number" min="0" step="0.01" placeholder="100" />
+                  <input id="new-user-credits" type="number" min="0" step="1" placeholder="100000" />
                   <label for="new-user-daily-limit">Daily Credit Budget</label>
-                  <input id="new-user-daily-limit" type="number" min="0" step="0.01" placeholder="10" />
+                  <input id="new-user-daily-limit" type="number" min="0" step="1" placeholder="100000" />
                   <button class="primary" type="submit">Create User</button>
                 </form>
               </div>
@@ -440,6 +463,45 @@
                   <div id="settings-fields-runtime" class="settings-fields-grid"></div>
                 </section>
                 <section class="settings-tab-panel" data-settings-panel="ai">
+                  <div class="connect-card">
+                    <div class="connect-card-head">
+                      <div>
+                        <h4>LLM Provider Keys</h4>
+                        <p>Admin-only keys. Users see OpenTrade Brain, not provider or model names.</p>
+                      </div>
+                      <span id="llm-keys-status" class="settings-inline-status">keys not checked</span>
+                    </div>
+                    <div class="provider-key-grid">
+                      <div class="provider-key-card">
+                        <div>
+                          <strong>DeepSeek</strong>
+                          <span id="deepseek-key-state">not saved</span>
+                        </div>
+                        <input id="admin-deepseek-key" type="password" placeholder="DeepSeek API Key" autocomplete="off" />
+                      </div>
+                      <div class="provider-key-card">
+                        <div>
+                          <strong>Groq</strong>
+                          <span id="groq-key-state">not saved</span>
+                        </div>
+                        <input id="admin-groq-key" type="password" placeholder="Groq API Key" autocomplete="off" />
+                      </div>
+                    </div>
+                    <div class="connect-grid model-default-grid">
+                      <select id="admin-default-user-provider">
+                        <option value="groq">Default users: Groq</option>
+                        <option value="deepseek">Default users: DeepSeek</option>
+                        <option value="offline">Default users: Offline</option>
+                      </select>
+                      <input id="admin-default-user-model" type="text" placeholder="Default user model, e.g. qwen/qwen3-32b" />
+                      <select id="admin-runtime-provider">
+                        <option value="deepseek">Runtime: DeepSeek</option>
+                        <option value="groq">Runtime: Groq</option>
+                        <option value="offline">Runtime: Offline</option>
+                      </select>
+                      <button id="save-provider-keys-btn" class="primary" type="button">Save Provider Keys</button>
+                    </div>
+                  </div>
                   <div id="settings-fields-ai" class="settings-fields-grid"></div>
                 </section>
                 <section class="settings-tab-panel" data-settings-panel="risk">
@@ -486,6 +548,6 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
-    <script src="/static/dashboard.js?v=user-modes-2"></script>
+    <script src="/static/dashboard.js?v=product-polish-2"></script>
   </body>
 </html>

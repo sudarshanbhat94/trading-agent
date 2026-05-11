@@ -8,6 +8,9 @@ from .models import utc_now
 
 
 TOKEN_PER_ENGLISH_CHAR = 0.3
+DEFAULT_TOKENS_PER_CREDIT = 10
+DEFAULT_CREDIT_PLATFORM_MARGIN_PCT = 0.20
+DEFAULT_SIGNAL_TOKEN_ESTIMATE = 7_000
 
 
 DEEPSEEK_PRICING_PER_1M_USD: dict[str, dict[str, float | str]] = {
@@ -22,6 +25,16 @@ DEEPSEEK_PRICING_PER_1M_USD: dict[str, dict[str, float | str]] = {
         "input_cache_miss": 0.435,
         "output": 0.87,
         "note": "User supplied DeepSeek V4 Pro 75% discount pricing, valid until DeepSeek changes it.",
+    },
+}
+
+
+GROQ_PRICING_PER_1M_USD: dict[str, dict[str, float | str]] = {
+    "qwen/qwen3-32b": {
+        "input_cache_hit": 0.29,
+        "input_cache_miss": 0.29,
+        "output": 0.59,
+        "note": "Groq published pricing for Qwen3-32B.",
     },
 }
 
@@ -83,7 +96,8 @@ def build_llm_usage_event(
         else:
             cache_miss_tokens = prompt_tokens
     total_tokens = _optional_int(usage.get("total_tokens")) or prompt_tokens + completion_tokens
-    cost = estimate_deepseek_cost_usd(
+    cost = estimate_llm_cost_usd(
+        provider=provider,
         model=model,
         input_cache_hit_tokens=cache_hit_tokens,
         input_cache_miss_tokens=cache_miss_tokens,
@@ -109,16 +123,36 @@ def build_llm_usage_event(
         "details": {
             "token_rule": "fallback estimate uses tokens = english_characters * 0.3",
             "raw_usage": usage,
-            "pricing_per_1m_usd": pricing_for_model(model),
+            "pricing_per_1m_usd": pricing_for_model(model, provider=provider),
             **(details or {}),
         },
     }
 
 
-def pricing_for_model(model: str) -> dict[str, Any]:
+def pricing_for_model(model: str, provider: str = "deepseek") -> dict[str, Any]:
+    provider_key = str(provider or "").strip().lower()
     key = str(model or "").strip().lower()
+    if provider_key == "groq":
+        pricing = GROQ_PRICING_PER_1M_USD.get(key) or GROQ_PRICING_PER_1M_USD["qwen/qwen3-32b"]
+        return dict(pricing)
     pricing = DEEPSEEK_PRICING_PER_1M_USD.get(key) or DEEPSEEK_PRICING_PER_1M_USD["deepseek-v4-pro"]
     return dict(pricing)
+
+
+def estimate_llm_cost_usd(
+    *,
+    provider: str,
+    model: str,
+    input_cache_hit_tokens: int,
+    input_cache_miss_tokens: int,
+    output_tokens: int,
+) -> float:
+    pricing = pricing_for_model(model, provider=provider)
+    return (
+        (max(input_cache_hit_tokens, 0) / 1_000_000) * float(pricing["input_cache_hit"])
+        + (max(input_cache_miss_tokens, 0) / 1_000_000) * float(pricing["input_cache_miss"])
+        + (max(output_tokens, 0) / 1_000_000) * float(pricing["output"])
+    )
 
 
 def estimate_deepseek_cost_usd(
@@ -128,12 +162,36 @@ def estimate_deepseek_cost_usd(
     input_cache_miss_tokens: int,
     output_tokens: int,
 ) -> float:
-    pricing = pricing_for_model(model)
-    return (
-        (max(input_cache_hit_tokens, 0) / 1_000_000) * float(pricing["input_cache_hit"])
-        + (max(input_cache_miss_tokens, 0) / 1_000_000) * float(pricing["input_cache_miss"])
-        + (max(output_tokens, 0) / 1_000_000) * float(pricing["output"])
+    return estimate_llm_cost_usd(
+        provider="deepseek",
+        model=model,
+        input_cache_hit_tokens=input_cache_hit_tokens,
+        input_cache_miss_tokens=input_cache_miss_tokens,
+        output_tokens=output_tokens,
     )
+
+
+def credit_breakdown_for_usage(
+    usage: dict[str, Any],
+    *,
+    tokens_per_credit: float = DEFAULT_TOKENS_PER_CREDIT,
+    margin_pct: float = DEFAULT_CREDIT_PLATFORM_MARGIN_PCT,
+) -> dict[str, Any]:
+    tokens = max(_optional_int(usage.get("total_tokens")) or 0, 0)
+    rate = max(float(tokens_per_credit or DEFAULT_TOKENS_PER_CREDIT), 1.0)
+    margin = max(float(margin_pct or 0.0), 0.0)
+    charged_credits = tokens / rate
+    base_credits = charged_credits / (1.0 + margin) if margin else charged_credits
+    platform_margin_credits = max(charged_credits - base_credits, 0.0)
+    return {
+        "tokens_per_credit": rate,
+        "total_tokens": tokens,
+        "charged_credits": round(charged_credits, 6),
+        "base_credits": round(base_credits, 6),
+        "platform_margin_pct": round(margin, 6),
+        "platform_margin_credits": round(platform_margin_credits, 6),
+        "api_cost_usd": round(float(usage.get("cost_usd") or 0.0), 8),
+    }
 
 
 def _char_count(value: Any) -> int:

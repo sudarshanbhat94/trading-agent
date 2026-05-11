@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from statistics import mean
 from typing import Any
 
 from .config import Settings
@@ -23,6 +22,10 @@ SECTOR_FALLBACKS = {
     "SPARC": "Pharmaceuticals",
     "UNIPARTS": "Auto Ancillary",
 }
+
+
+def _mean(values: list[float] | tuple[float, ...]) -> float:
+    return sum(values) / len(values) if values else 0.0
 
 
 class SectorRotationService:
@@ -94,7 +97,7 @@ class SectorRotationService:
             grouped.setdefault(sector, []).append(item)
             if item["return_20d"] is not None:
                 universe_returns_20.append(item["return_20d"])
-        nifty_proxy = mean(universe_returns_20) if universe_returns_20 else 0.0
+        nifty_proxy = _mean(universe_returns_20) if universe_returns_20 else 0.0
         previous = self.db.get_state("sector_rotation_history", [])
         if not isinstance(previous, list):
             previous = []
@@ -108,8 +111,8 @@ class SectorRotationService:
             returns_20 = [item["return_20d"] for item in items if item["return_20d"] is not None]
             adv = sum(1 for item in items if item.get("advanced"))
             dec = sum(1 for item in items if item.get("declined"))
-            sector_return_5d = mean(returns_5) if returns_5 else 0.0
-            sector_return_20d = mean(returns_20) if returns_20 else 0.0
+            sector_return_5d = _mean(returns_5) if returns_5 else 0.0
+            sector_return_20d = _mean(returns_20) if returns_20 else 0.0
             rs = sector_return_20d - nifty_proxy
             prior_rs = [float(value) for value in previous_by_sector.get(sector, []) if value is not None]
             rising = len(prior_rs) >= 2 and rs > prior_rs[-1] > prior_rs[0]

@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
+from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 
 
@@ -53,6 +54,10 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "id": int(row["id"]),
         "username": row["username"],
         "role": row.get("role") or "user",
+        "assigned_llm": {
+            "provider": row.get("assigned_llm_provider") or "",
+            "model": row.get("assigned_llm_model") or "",
+        },
         "active": bool(row.get("active")),
         "credit_balance": round(float(row.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(row.get("daily_credit_limit") or 0.0), 6),
@@ -188,6 +193,61 @@ class Database:
                     unrealized_pnl real not null
                 );
 
+                create table if not exists signal_ideas (
+                    id integer primary key autoincrement,
+                    first_seen_at text not null,
+                    last_seen_at text not null,
+                    symbol text not null,
+                    strategy text not null,
+                    plan_code text not null default '',
+                    signal_type text not null,
+                    status text not null default 'ACTIVE',
+                    entry_price real not null,
+                    latest_price real not null,
+                    current_return_pct real not null default 0,
+                    peak_return_pct real not null default 0,
+                    worst_return_pct real not null default 0,
+                    confidence real not null default 0,
+                    combined_score real not null default 0,
+                    confluence real not null default 0,
+                    overall_score_pct real not null default 0,
+                    overall_grade text not null default '',
+                    decision_id integer,
+                    latest_decision_id integer,
+                    reason text not null default '',
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists user_idea_follows (
+                    id integer primary key autoincrement,
+                    user_id integer not null,
+                    idea_id integer not null,
+                    mode text not null default 'TRACK',
+                    status text not null default 'ACTIVE',
+                    qty integer not null default 0,
+                    entry_price real not null default 0,
+                    latest_price real not null default 0,
+                    invested_amount real not null default 0,
+                    unrealized_pnl real not null default 0,
+                    return_pct real not null default 0,
+                    created_at text not null,
+                    updated_at text not null,
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists strategy_plans (
+                    id integer primary key autoincrement,
+                    code text not null unique,
+                    name text not null,
+                    description text not null,
+                    risk_level text not null,
+                    holding_period text not null,
+                    capital_rule text not null,
+                    enabled integer not null default 1,
+                    created_at text not null,
+                    updated_at text not null
+                );
+
                 create table if not exists agent_state (
                     key text primary key,
                     value text not null
@@ -204,6 +264,9 @@ class Database:
                     username text not null unique,
                     password_hash text not null,
                     role text not null default 'user',
+                    account_plan text not null default 'standard',
+                    assigned_llm_provider text not null default '',
+                    assigned_llm_model text not null default '',
                     active integer not null default 1,
                     credit_balance real not null default 0,
                     daily_credit_limit real not null default 0,
@@ -273,6 +336,7 @@ class Database:
                     cost_usd real not null default 0,
                     latency_ms integer not null default 0,
                     user_id integer,
+                    scope_id text not null default '',
                     details_json text not null default '{}'
                 );
 
@@ -306,6 +370,10 @@ class Database:
                     on user_credit_ledger(user_id, ts);
                 create index if not exists idx_delivery_symbol_date
                     on delivery_data(symbol, date);
+                create index if not exists idx_signal_ideas_symbol_status
+                    on signal_ideas(symbol, status);
+                create index if not exists idx_user_idea_follows_user
+                    on user_idea_follows(user_id, status);
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
@@ -318,6 +386,13 @@ class Database:
             self._ensure_column(conn, "orders", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "positions", "strategy", "text not null default 'unknown'")
             self._ensure_column(conn, "positions", "details_json", "text not null default '{}'")
+            self._ensure_column(conn, "signal_ideas", "latest_decision_id", "integer")
+            self._ensure_column(conn, "signal_ideas", "plan_code", "text not null default ''")
+            self._ensure_column(conn, "signal_ideas", "current_return_pct", "real not null default 0")
+            self._ensure_column(conn, "signal_ideas", "peak_return_pct", "real not null default 0")
+            self._ensure_column(conn, "signal_ideas", "worst_return_pct", "real not null default 0")
+            self._ensure_column(conn, "signal_ideas", "details_json", "text not null default '{}'")
+            self._ensure_column(conn, "user_idea_follows", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
             self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
             self._ensure_column(conn, "delivery_data", "close", "real")
@@ -332,13 +407,23 @@ class Database:
             self._ensure_column(conn, "llm_usage_events", "cost_usd", "real not null default 0")
             self._ensure_column(conn, "llm_usage_events", "latency_ms", "integer not null default 0")
             self._ensure_column(conn, "llm_usage_events", "user_id", "integer")
+            self._ensure_column(conn, "llm_usage_events", "scope_id", "text not null default ''")
             conn.execute(
                 """
                 create index if not exists idx_llm_usage_user_ts
                     on llm_usage_events(user_id, ts)
                 """
             )
+            conn.execute(
+                """
+                create index if not exists idx_llm_usage_scope
+                    on llm_usage_events(scope_id)
+                """
+            )
             self._ensure_column(conn, "users", "role", "text not null default 'user'")
+            self._ensure_column(conn, "users", "account_plan", "text not null default 'standard'")
+            self._ensure_column(conn, "users", "assigned_llm_provider", "text not null default ''")
+            self._ensure_column(conn, "users", "assigned_llm_model", "text not null default ''")
             self._ensure_column(conn, "users", "active", "integer not null default 1")
             self._ensure_column(conn, "users", "credit_balance", "real not null default 0")
             self._ensure_column(conn, "users", "daily_credit_limit", "real not null default 0")
@@ -350,6 +435,8 @@ class Database:
             self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
             self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
             self._ensure_column(conn, "users", "broker_updated_at", "text")
+            self._seed_strategy_plans(conn)
+            self._backfill_signal_plan_codes(conn)
             self._ensure_column(conn, "users", "created_at", "text not null default ''")
             self._ensure_column(conn, "users", "updated_at", "text not null default ''")
             self._ensure_column(conn, "users", "last_login_at", "text")
@@ -358,6 +445,82 @@ class Database:
         rows = conn.execute(f"pragma table_info({table})").fetchall()
         if column not in {row["name"] for row in rows}:
             conn.execute(f"alter table {table} add column {column} {definition}")
+
+    def _seed_strategy_plans(self, conn: sqlite3.Connection) -> None:
+        now = utc_now()
+        plans = [
+            (
+                "institutional_quality_swing",
+                "Institutional Quality Swing",
+                "Stage 2 stocks with A/B/C entry, clean market breadth, no hard rule flags, and delivery accumulation or neutral bias.",
+                "Medium",
+                "5-20 sessions",
+                "Normal allocation only when classification is FUNDAMENTAL; MOMENTUM capped at 60%.",
+            ),
+            (
+                "confirmed_breakout",
+                "Confirmed Breakout",
+                "Pivot breakout with volume expansion, two-day rule intact, no climax top, and resistance/support reward above 2:1.",
+                "Medium-High",
+                "3-15 sessions",
+                "Start half size until follow-through confirms; never buy D-grade extended entries.",
+            ),
+            (
+                "pullback_to_strength",
+                "Pullback To Strength",
+                "Uptrend pullback near 20DMA/50DMA support where MTF is B or better and selling pressure is fading.",
+                "Medium",
+                "5-25 sessions",
+                "Scale only after price reclaims strength; stop below support or ATR hard stop.",
+            ),
+            (
+                "smallcap_momentum",
+                "Smallcap Momentum",
+                "Low-capital ideas with strong price/volume action, strict liquidity check, and speculative sizing caps.",
+                "High",
+                "1-10 sessions",
+                "SPECULATIVE cap is 30% of normal allocation; exit quickly on delivery distribution or failed breakout.",
+            ),
+            (
+                "defensive_exit_manager",
+                "Defensive Exit Manager",
+                "Protects open positions with ATR stops, time stops, delivery conflicts, and market breadth risk-off gates.",
+                "Defensive",
+                "Continuous",
+                "No fresh capital; trail stops, partial exits, or full exit when hard gates fail.",
+            ),
+        ]
+        conn.executemany(
+            """
+            insert into strategy_plans (
+                code, name, description, risk_level, holding_period, capital_rule, enabled, created_at, updated_at
+            )
+            values (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            on conflict(code) do update set
+                name = excluded.name,
+                description = excluded.description,
+                risk_level = excluded.risk_level,
+                holding_period = excluded.holding_period,
+                capital_rule = excluded.capital_rule,
+                updated_at = excluded.updated_at
+            """,
+            [(code, name, description, risk, hold, capital, now, now) for code, name, description, risk, hold, capital in plans],
+        )
+
+    def _backfill_signal_plan_codes(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            update signal_ideas
+            set plan_code = case
+                when upper(signal_type) = 'EXIT' then 'defensive_exit_manager'
+                when lower(strategy) like '%breakout%' or lower(strategy) like '%darvas%' or lower(strategy) like '%vcp%' then 'confirmed_breakout'
+                when lower(strategy) like '%pullback%' or lower(strategy) like '%ema%' or lower(strategy) like '%continuation%' then 'pullback_to_strength'
+                when latest_price > 0 and latest_price <= 250 then 'smallcap_momentum'
+                else 'institutional_quality_swing'
+            end
+            where coalesce(plan_code, '') = ''
+            """
+        )
 
     def ensure_default_admin_user(self, username: str, password_hash: str | None) -> None:
         username = (username or "admin").strip()
@@ -376,8 +539,8 @@ class Database:
                 return
             conn.execute(
                 """
-                insert into users (username, password_hash, role, active, created_at, updated_at)
-                values (?, ?, 'admin', 1, ?, ?)
+                insert into users (username, password_hash, role, account_plan, active, created_at, updated_at)
+                values (?, ?, 'admin', 'standard', 1, ?, ?)
                 """,
                 (username, password_hash, now, now),
             )
@@ -426,15 +589,32 @@ class Database:
             users.append(public)
         return users
 
-    def create_user(self, username: str, password_hash: str, role: str = "user", active: bool = True) -> dict[str, Any]:
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: str = "user",
+        active: bool = True,
+        assigned_llm_provider: str = "",
+        assigned_llm_model: str = "",
+    ) -> dict[str, Any]:
         now = utc_now()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
-                insert into users (username, password_hash, role, active, created_at, updated_at)
-                values (?, ?, ?, ?, ?, ?)
+                insert into users (username, password_hash, role, account_plan, assigned_llm_provider, assigned_llm_model, active, created_at, updated_at)
+                values (?, ?, ?, 'standard', ?, ?, ?, ?, ?)
                 """,
-                (username.strip(), password_hash, role, 1 if active else 0, now, now),
+                (
+                    username.strip(),
+                    password_hash,
+                    role,
+                    str(assigned_llm_provider or "").strip().lower(),
+                    str(assigned_llm_model or "").strip(),
+                    1 if active else 0,
+                    now,
+                    now,
+                ),
             )
             user_id = int(cursor.lastrowid)
         user = self.user_by_id(user_id)
@@ -445,6 +625,8 @@ class Database:
         user_id: int,
         *,
         role: str | None = None,
+        assigned_llm_provider: str | None = None,
+        assigned_llm_model: str | None = None,
         active: bool | None = None,
         password_hash: str | None = None,
     ) -> dict[str, Any] | None:
@@ -453,6 +635,12 @@ class Database:
         if role is not None:
             assignments.append("role = ?")
             values.append(role)
+        if assigned_llm_provider is not None:
+            assignments.append("assigned_llm_provider = ?")
+            values.append(str(assigned_llm_provider or "").strip().lower())
+        if assigned_llm_model is not None:
+            assignments.append("assigned_llm_model = ?")
+            values.append(str(assigned_llm_model or "").strip())
         if active is not None:
             assignments.append("active = ?")
             values.append(1 if active else 0)
@@ -695,9 +883,16 @@ class Database:
         )
         return ok, summary
 
-    def average_signal_credit_charge(self, fallback: float = 0.01) -> float:
+    def average_signal_credit_charge(
+        self,
+        fallback: float | None = None,
+        *,
+        tokens_per_credit: float = DEFAULT_TOKENS_PER_CREDIT,
+    ) -> float:
+        rate = max(float(tokens_per_credit or DEFAULT_TOKENS_PER_CREDIT), 1.0)
+        fallback_value = float(fallback) if fallback is not None else DEFAULT_SIGNAL_TOKEN_ESTIMATE / rate
         with self.connect() as conn:
-            row = conn.execute(
+            ledger_row = conn.execute(
                 """
                 select avg(charge) as avg_charge
                 from (
@@ -709,11 +904,35 @@ class Database:
                 )
                 """
             ).fetchone()
-        value = row["avg_charge"] if row else None
+            token_row = conn.execute(
+                """
+                select avg(total_tokens) as avg_tokens
+                from (
+                    select total_tokens
+                    from llm_usage_events
+                    where user_id is not null and total_tokens > 0
+                    order by id desc
+                    limit 50
+                )
+                """
+            ).fetchone()
+        ledger_value = ledger_row["avg_charge"] if ledger_row else None
+        token_value = token_row["avg_tokens"] if token_row else None
+        values: list[float] = []
         try:
-            return round(max(float(value or 0.0), fallback), 6)
+            if ledger_value is not None and float(ledger_value) > fallback_value * 0.25:
+                values.append(float(ledger_value))
         except (TypeError, ValueError):
-            return fallback
+            pass
+        try:
+            if token_value is not None:
+                values.append(max(float(token_value), 0.0) / rate)
+        except (TypeError, ValueError):
+            pass
+        try:
+            return round(max(values or [fallback_value]), 6)
+        except (TypeError, ValueError):
+            return round(fallback_value, 6)
 
     def latest_llm_usage_id(self) -> int:
         with self.connect() as conn:
@@ -733,6 +952,30 @@ class Database:
                 where id > ? and user_id = ?
                 """,
                 (after_id, user_id),
+            ).fetchone()
+        return {
+            "calls": int(row["calls"] or 0),
+            "cost_usd": round(float(row["cost_usd"] or 0.0), 8),
+            "total_tokens": int(row["total_tokens"] or 0),
+            "input_chars": int(row["input_chars"] or 0),
+            "output_chars": int(row["output_chars"] or 0),
+        }
+
+    def llm_usage_cost_for_scope(self, user_id: int, scope_id: str, after_id: int = 0) -> dict[str, Any]:
+        if not scope_id:
+            return self.llm_usage_cost_since(user_id, after_id)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select count(*) as calls,
+                    coalesce(sum(cost_usd), 0) as cost_usd,
+                    coalesce(sum(total_tokens), 0) as total_tokens,
+                    coalesce(sum(input_chars), 0) as input_chars,
+                    coalesce(sum(output_chars), 0) as output_chars
+                from llm_usage_events
+                where id > ? and user_id = ? and scope_id = ?
+                """,
+                (after_id, user_id, scope_id),
             ).fetchone()
         return {
             "calls": int(row["calls"] or 0),
@@ -1150,6 +1393,353 @@ class Database:
                 rows,
             )
 
+    def upsert_signal_ideas_from_decisions(self, decisions: Iterable[Decision]) -> None:
+        rows = [decision.to_dict() for decision in decisions]
+        if not rows:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            for row in rows:
+                idea = _signal_idea_from_decision(row)
+                if idea is None:
+                    continue
+                latest_decision = conn.execute(
+                    """
+                    select id from decisions
+                    where symbol = ? and strategy = ? and action = ?
+                    order by id desc
+                    limit 1
+                    """,
+                    (idea["symbol"], idea["strategy"], row.get("action")),
+                ).fetchone()
+                latest_decision_id = int(latest_decision["id"]) if latest_decision else None
+                existing = conn.execute(
+                    """
+                    select * from signal_ideas
+                    where symbol = ? and strategy = ? and status in ('ACTIVE','WATCH','MONITORING')
+                    order by id desc
+                    limit 1
+                    """,
+                    (idea["symbol"], idea["strategy"]),
+                ).fetchone()
+                latest_price = float(idea["latest_price"])
+                if existing:
+                    entry_price = float(existing["entry_price"] or latest_price or 0.0)
+                    current_return = _return_pct(entry_price, latest_price)
+                    peak_return = max(float(existing["peak_return_pct"] or 0.0), current_return)
+                    worst_return = min(float(existing["worst_return_pct"] or 0.0), current_return)
+                    status = idea["status"]
+                    if row.get("action") == "SELL":
+                        status = "EXIT_SIGNAL"
+                    conn.execute(
+                        """
+                        update signal_ideas
+                        set last_seen_at = ?, plan_code = ?, signal_type = ?, status = ?, latest_price = ?,
+                            current_return_pct = ?, peak_return_pct = ?, worst_return_pct = ?,
+                            confidence = ?, combined_score = ?, confluence = ?, overall_score_pct = ?,
+                            overall_grade = ?, latest_decision_id = ?, reason = ?, details_json = ?
+                        where id = ?
+                        """,
+                        (
+                            now,
+                            idea["plan_code"],
+                            idea["signal_type"],
+                            status,
+                            latest_price,
+                            current_return,
+                            peak_return,
+                            worst_return,
+                            idea["confidence"],
+                            idea["combined_score"],
+                            idea["confluence"],
+                            idea["overall_score_pct"],
+                            idea["overall_grade"],
+                            latest_decision_id,
+                            idea["reason"],
+                            json.dumps(idea["details"], default=str, separators=(",", ":")),
+                            existing["id"],
+                        ),
+                    )
+                else:
+                    entry_price = latest_price
+                    current_return = 0.0
+                    conn.execute(
+                        """
+                        insert into signal_ideas (
+                            first_seen_at, last_seen_at, symbol, strategy, plan_code, signal_type, status,
+                            entry_price, latest_price, current_return_pct, peak_return_pct,
+                            worst_return_pct, confidence, combined_score, confluence,
+                            overall_score_pct, overall_grade, decision_id, latest_decision_id,
+                            reason, details_json
+                        )
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            now,
+                            now,
+                            idea["symbol"],
+                            idea["strategy"],
+                            idea["plan_code"],
+                            idea["signal_type"],
+                            idea["status"],
+                            entry_price,
+                            latest_price,
+                            current_return,
+                            current_return,
+                            current_return,
+                            idea["confidence"],
+                            idea["combined_score"],
+                            idea["confluence"],
+                            idea["overall_score_pct"],
+                            idea["overall_grade"],
+                            latest_decision_id,
+                            latest_decision_id,
+                            idea["reason"],
+                            json.dumps(idea["details"], default=str, separators=(",", ":")),
+                        ),
+                    )
+            self._refresh_user_follow_marks(conn)
+
+    def refresh_signal_idea_marks(self) -> None:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select i.*, q.price as quote_price
+                from signal_ideas i
+                left join latest_quotes q on q.symbol = i.symbol
+                where i.status in ('ACTIVE','WATCH','MONITORING')
+                """
+            ).fetchall()
+            for row in rows:
+                latest_price = _optional_float(row["quote_price"]) or float(row["latest_price"] or row["entry_price"] or 0)
+                entry_price = float(row["entry_price"] or latest_price or 0)
+                current_return = _return_pct(entry_price, latest_price)
+                peak_return = max(float(row["peak_return_pct"] or 0.0), current_return)
+                worst_return = min(float(row["worst_return_pct"] or 0.0), current_return)
+                conn.execute(
+                    """
+                    update signal_ideas
+                    set latest_price = ?, current_return_pct = ?, peak_return_pct = ?, worst_return_pct = ?, last_seen_at = ?
+                    where id = ?
+                    """,
+                    (latest_price, current_return, peak_return, worst_return, utc_now(), row["id"]),
+                )
+            self._refresh_user_follow_marks(conn)
+
+    def latest_signal_ideas(self, limit: int = 20, user_id: int | None = None) -> list[dict[str, Any]]:
+        self.refresh_signal_idea_marks()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from signal_ideas
+                order by
+                    case status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
+                    signal_type = 'BUY' desc,
+                    current_return_pct desc,
+                    combined_score desc,
+                    confluence desc,
+                    last_seen_at desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+            follow_rows: list[sqlite3.Row] = []
+            if user_id is not None:
+                follow_rows = conn.execute(
+                    """
+                    select *
+                    from user_idea_follows
+                    where user_id = ? and idea_id in ({})
+                    order by id desc
+                    """.format(",".join("?" for _ in rows) or "0"),
+                    (user_id, *[row["id"] for row in rows]) if rows else (user_id,),
+                ).fetchall() if rows else []
+        follows_by_idea: dict[int, dict[str, Any]] = {}
+        for follow in follow_rows:
+            follows_by_idea.setdefault(int(follow["idea_id"]), _row_dict(follow))
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_dict(row)
+            item["details"] = self._decode_json(item.pop("details_json", "{}"))
+            item["targets"] = item["details"].get("targets", [])
+            item["entry_zone"] = item["details"].get("entry_zone")
+            item["stop_loss"] = item["details"].get("stop_loss")
+            item["risk_flags"] = item["details"].get("risk_flags", [])
+            item["decision_readiness"] = item["details"].get("decision_readiness", "monitor_only")
+            item["tier"] = item["details"].get("tier", "")
+            item["suggestion"] = item.get("signal_type")
+            item["price"] = item.get("latest_price")
+            item["id"] = int(item["id"])
+            if item.get("latest_decision_id"):
+                item["detail_url"] = f"/api/decisions/{item['latest_decision_id']}"
+            item["user_follow"] = follows_by_idea.get(int(item["id"]))
+            output.append(item)
+        return output
+
+    def user_followed_signal_ideas(self, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                """
+                select
+                    f.id as follow_id,
+                    f.user_id,
+                    f.idea_id,
+                    f.mode,
+                    f.status as follow_status,
+                    f.qty,
+                    f.entry_price as follow_entry_price,
+                    f.latest_price as follow_latest_price,
+                    f.invested_amount,
+                    f.unrealized_pnl,
+                    f.return_pct,
+                    f.created_at as followed_at,
+                    f.updated_at as follow_updated_at,
+                    f.details_json as follow_details_json,
+                    i.*
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED')
+                order by f.updated_at desc, f.id desc
+                limit ?
+                """,
+                (int(user_id), max(1, min(int(limit), 200))),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_dict(row)
+            idea_details = self._decode_json(item.pop("details_json", "{}"))
+            follow_details = self._decode_json(item.pop("follow_details_json", "{}"))
+            item["details"] = idea_details
+            item["follow_details"] = follow_details
+            item["id"] = int(item["idea_id"])
+            item["suggestion"] = item.get("signal_type")
+            item["price"] = item.get("latest_price")
+            item["targets"] = idea_details.get("targets", [])
+            item["entry_zone"] = idea_details.get("entry_zone")
+            item["stop_loss"] = idea_details.get("stop_loss")
+            item["risk_flags"] = idea_details.get("risk_flags", [])
+            item["decision_readiness"] = idea_details.get("decision_readiness", "monitor_only")
+            item["tier"] = idea_details.get("tier", "")
+            if item.get("latest_decision_id"):
+                item["detail_url"] = f"/api/decisions/{item['latest_decision_id']}"
+            item["user_follow"] = {
+                "id": item.get("follow_id"),
+                "user_id": item.get("user_id"),
+                "idea_id": item.get("idea_id"),
+                "mode": item.get("mode"),
+                "status": item.get("follow_status"),
+                "qty": item.get("qty"),
+                "entry_price": item.get("follow_entry_price"),
+                "latest_price": item.get("follow_latest_price"),
+                "invested_amount": item.get("invested_amount"),
+                "unrealized_pnl": item.get("unrealized_pnl"),
+                "return_pct": item.get("return_pct"),
+                "created_at": item.get("followed_at"),
+                "updated_at": item.get("follow_updated_at"),
+            }
+            output.append(item)
+        return output
+
+    def strategy_plans(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select p.*,
+                    count(i.id) as idea_count,
+                    coalesce(avg(i.current_return_pct), 0) as avg_return_pct,
+                    coalesce(max(i.peak_return_pct), 0) as best_return_pct,
+                    coalesce(min(i.worst_return_pct), 0) as worst_return_pct
+                from strategy_plans p
+                left join signal_ideas i on i.plan_code = p.code
+                group by p.id
+                order by p.id
+                """
+            ).fetchall()
+        return [_row_dict(row) for row in rows]
+
+    def follow_signal_idea(
+        self,
+        user_id: int,
+        idea_id: int,
+        mode: str = "TRACK",
+        amount: float = 0.0,
+        qty: int = 0,
+    ) -> dict[str, Any]:
+        mode = str(mode or "TRACK").strip().upper()
+        if mode not in {"TRACK", "PAPER", "LIVE"}:
+            mode = "TRACK"
+        with self.connect() as conn:
+            idea = conn.execute("select * from signal_ideas where id = ?", (idea_id,)).fetchone()
+            if idea is None:
+                raise ValueError("idea not found")
+            latest_price = float(idea["latest_price"] or idea["entry_price"] or 0.0)
+            if qty <= 0 and amount > 0 and latest_price > 0:
+                qty = int(float(amount) // latest_price)
+            if mode in {"PAPER", "LIVE"} and qty <= 0:
+                raise ValueError("amount is too small for one share at the current idea price")
+            invested = float(qty * latest_price)
+            status = "ACTIVE" if mode != "LIVE" else "LIVE_REQUESTED"
+            details = {
+                "symbol": idea["symbol"],
+                "strategy": idea["strategy"],
+                "signal_type": idea["signal_type"],
+                "note": "Live orders require live routing to be enabled; otherwise this is tracked as a live request.",
+            }
+            now = utc_now()
+            conn.execute(
+                """
+                insert into user_idea_follows (
+                    user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                    invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    idea_id,
+                    mode,
+                    status,
+                    qty,
+                    latest_price,
+                    latest_price,
+                    invested,
+                    now,
+                    now,
+                    json.dumps(details, default=str, separators=(",", ":")),
+                ),
+            )
+            self._refresh_user_follow_marks(conn)
+            row = conn.execute("select * from user_idea_follows where id = last_insert_rowid()").fetchone()
+        return _row_dict(row) if row else {}
+
+    def _refresh_user_follow_marks(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            select f.id, f.qty, f.entry_price, f.invested_amount, i.latest_price
+            from user_idea_follows f
+            join signal_ideas i on i.id = f.idea_id
+            where f.status in ('ACTIVE','LIVE_REQUESTED')
+            """
+        ).fetchall()
+        now = utc_now()
+        for row in rows:
+            latest_price = float(row["latest_price"] or row["entry_price"] or 0.0)
+            entry_price = float(row["entry_price"] or latest_price or 0.0)
+            qty = int(row["qty"] or 0)
+            invested = float(row["invested_amount"] or (qty * entry_price))
+            pnl = (latest_price - entry_price) * qty
+            return_pct = _return_pct(entry_price, latest_price)
+            conn.execute(
+                """
+                update user_idea_follows
+                set latest_price = ?, invested_amount = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?
+                where id = ?
+                """,
+                (latest_price, invested, round(pnl, 2), return_pct, now, row["id"]),
+            )
+
     def insert_order(
         self,
         symbol: str,
@@ -1257,9 +1847,9 @@ class Database:
                 insert into llm_usage_events (
                     ts, component, purpose, provider, model, prompt_tokens,
                     completion_tokens, total_tokens, cache_hit_tokens, cache_miss_tokens,
-                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, user_id, details_json
+                    estimated_tokens, input_chars, output_chars, cost_usd, latency_ms, user_id, scope_id, details_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.get("ts") or utc_now(),
@@ -1278,6 +1868,7 @@ class Database:
                     float(event.get("cost_usd") or 0),
                     int(event.get("latency_ms") or 0),
                     _optional_int(event.get("user_id")),
+                    str(event.get("scope_id") or ""),
                     json.dumps(event.get("details") or {}, default=str, separators=(",", ":")),
                 ),
             )
@@ -1684,3 +2275,104 @@ class Database:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+def _row_dict(row: sqlite3.Row | None) -> dict[str, Any]:
+    return dict(row) if row is not None else {}
+
+
+def _return_pct(entry_price: float, latest_price: float) -> float:
+    try:
+        entry = float(entry_price)
+        latest = float(latest_price)
+    except (TypeError, ValueError):
+        return 0.0
+    if entry <= 0:
+        return 0.0
+    return round(((latest - entry) / entry) * 100, 4)
+
+
+def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        audit = json.loads(row.get("details_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        audit = {}
+    context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
+    full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+    confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
+    trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
+    signal_plan = full.get("signal_plan") if isinstance(full.get("signal_plan"), dict) else {}
+    risk = full.get("risk_overrides") if isinstance(full.get("risk_overrides"), dict) else {}
+    score_breakdown = audit.get("score_breakdown") if isinstance(audit.get("score_breakdown"), dict) else {}
+    system_audit = audit.get("system_gate_audit") or context.get("system_gate_audit") or {}
+    if not isinstance(system_audit, dict):
+        system_audit = {}
+    action = str(row.get("action") or "HOLD").upper()
+    combined = float(score_breakdown.get("combined") or 0.0)
+    confluence_total = float(confluence.get("total") or 0.0)
+    hard_blocked = bool(system_audit.get("hard_blocked"))
+    signal_type = "NO_TRADE"
+    status = "MONITORING"
+    if action == "BUY" and not hard_blocked:
+        signal_type = "BUY"
+        status = "ACTIVE"
+    elif confluence_total >= 10 and combined >= 0 and action != "SELL":
+        signal_type = "WATCH"
+        status = "WATCH"
+    elif action == "SELL":
+        signal_type = "EXIT"
+        status = "EXIT_SIGNAL"
+    else:
+        return None
+    price = _optional_float(row.get("price")) or 0.0
+    targets = trade_plan.get("targets")
+    if not isinstance(targets, list):
+        targets = []
+    details = {
+        "action": action,
+        "tier": confluence.get("tier"),
+        "decision_readiness": signal_plan.get("decision_readiness", "monitor_only"),
+        "entry_zone": trade_plan.get("entry_zone"),
+        "stop_loss": trade_plan.get("stop_loss"),
+        "targets": targets,
+        "risk_flags": risk.get("flags", []),
+        "overall_score_pct": system_audit.get("overall_score_pct"),
+        "overall_grade": system_audit.get("overall_grade"),
+        "reason": audit.get("action_reason") or row.get("reason"),
+    }
+    plan_code = _strategy_plan_code(str(row.get("strategy") or ""), action, price, full, system_audit)
+    return {
+        "symbol": str(row.get("symbol") or "").upper(),
+        "strategy": str(row.get("strategy") or "unknown"),
+        "plan_code": plan_code,
+        "signal_type": signal_type,
+        "status": status,
+        "latest_price": price,
+        "confidence": float(row.get("confidence") or 0.0),
+        "combined_score": combined,
+        "confluence": confluence_total,
+        "overall_score_pct": float(system_audit.get("overall_score_pct") or 0.0),
+        "overall_grade": str(system_audit.get("overall_grade") or ""),
+        "reason": str(audit.get("action_reason") or row.get("reason") or "")[:1000],
+        "details": details,
+    }
+
+
+def _strategy_plan_code(
+    strategy: str,
+    action: str,
+    price: float,
+    full: dict[str, Any],
+    system_audit: dict[str, Any],
+) -> str:
+    name = str(strategy or "").lower()
+    classification = ((system_audit.get("classification") or {}) if isinstance(system_audit.get("classification"), dict) else {}).get("classification")
+    if action == "SELL" or "exit" in name or "risk" in name:
+        return "defensive_exit_manager"
+    if "breakout" in name or "darvas" in name or "vcp" in name:
+        return "confirmed_breakout"
+    if "pullback" in name or "ema" in name or "continuation" in name:
+        return "pullback_to_strength"
+    if str(classification or "").upper() == "SPECULATIVE" or (0 < float(price or 0) <= 250):
+        return "smallcap_momentum"
+    return "institutional_quality_swing"

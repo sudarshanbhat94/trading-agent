@@ -165,9 +165,37 @@ class StrategyEngine:
         llm_candidate_symbols: set[str] = set()
         if llm_primary:
             llm_candidate_symbols = self._llm_candidate_symbols(ranked)
+            self._log_pre_filter(
+                "llm_candidates_selected",
+                {
+                    "enabled": True,
+                    "mode": self.settings.llm_decision_mode,
+                    "limit": self.settings.llm_max_symbols_per_cycle,
+                    "symbols": sorted(llm_candidate_symbols),
+                    "symbols_scanned": len(scan_items),
+                    "provider": self.settings.llm_provider,
+                    "model": self.llm.model,
+                },
+            )
+        elif llm_primary_required:
+            self._log_pre_filter(
+                "llm_primary_unavailable",
+                {
+                    "enabled": False,
+                    "mode": self.settings.llm_decision_mode,
+                    "provider": self.settings.llm_provider,
+                    "symbols_scanned": len(scan_items),
+                },
+            )
 
         for item in scan_items:
             context = item["context"]
+            context["llm_primary_selection"] = {
+                "required": llm_primary_required,
+                "enabled": llm_primary,
+                "selected": item["symbol"] in llm_candidate_symbols,
+                "candidate_limit": self.settings.llm_max_symbols_per_cycle,
+            }
             blocked_by_llm_primary = False
             llm_block_reason: str | None = None
             if llm_primary and item["symbol"] in llm_candidate_symbols:
@@ -1084,6 +1112,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "pre_filter": context.get("pre_filter"),
         "decision_gate_context": context.get("decision_gate_context"),
         "sizing_grade": context.get("sizing_grade"),
+        "llm_primary_selection": context.get("llm_primary_selection"),
         "llm_primary_fallback": context.get("llm_primary_fallback"),
         "llm_primary_rule_blocked": context.get("llm_primary_rule_blocked"),
         "llm_primary_gate": context.get("llm_primary_gate"),

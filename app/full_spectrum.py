@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import re
-from statistics import mean, pstdev
 from typing import Any
 
 from .models import Candle, Quote
 from .strategy_backtest import strategy_backtest_snapshot
+
+
+def _mean(values: list[float] | tuple[float, ...] | Any) -> float:
+    items = list(values)
+    return sum(items) / len(items) if items else 0.0
+
+
+def _pstdev(values: list[float] | tuple[float, ...] | Any) -> float:
+    items = list(values)
+    if not items:
+        return 0.0
+    avg = _mean(items)
+    return (sum((value - avg) ** 2 for value in items) / len(items)) ** 0.5
 
 
 def full_spectrum_analysis(
@@ -345,9 +357,9 @@ def _stage_analysis(
     else:
         proxy = stage_candles[::5] if len(stage_candles) >= 150 else stage_candles[-30:]
     closes = [c.close for c in proxy]
-    sma = mean(closes[-30:]) if len(closes) >= 30 else mean(closes)
+    sma = _mean(closes[-30:]) if len(closes) >= 30 else _mean(closes)
     prior_slice = closes[-35:-5] if len(closes) >= 35 else closes[: max(len(closes) - 5, 1)]
-    prior_sma = mean(prior_slice) if prior_slice else sma
+    prior_sma = _mean(prior_slice) if prior_slice else sma
     slope_pct = ((sma - prior_sma) / prior_sma) * 100 / 5 if prior_sma else 0.0
     recent_high = max(c.high for c in stage_candles[-30:])
     volume_pattern = _stage_volume_pattern(stage_candles)
@@ -434,7 +446,7 @@ def _price_volume_divergence(candles: list[Candle], technical: dict[str, Any]) -
     price_new_high = max(highs[-5:]) >= max(highs[-20:])
     obv_price_divergence = price_new_high and max(obv[-5:]) < max(obv[-20:])
     ad_price_divergence = len(ad_line) >= 11 and closes[-1] > closes[-11] and ad_line[-1] < ad_line[-11]
-    avg_volume_20 = mean([v for v in volumes[-20:] if v]) if any(volumes[-20:]) else 0.0
+    avg_volume_20 = _mean([v for v in volumes[-20:] if v]) if any(volumes[-20:]) else 0.0
     climax_volume_top = any(c.volume > avg_volume_20 * 4 and c.high >= max(highs[-52:] or highs) for c in candles[-3:]) if avg_volume_20 else False
     rsi = technical.get("rsi")
     panic_volume_bottom = any(
@@ -481,7 +493,7 @@ def _entry_grade(candles: list[Candle], quote_price: float, indicators: dict[str
         grade = "D"
     position = (last.close - last.low) / max(last.high - last.low, 0.01)
     volumes = [c.volume for c in candles[-21:-1] if c.volume]
-    avg_volume = mean(volumes) if volumes else 0.0
+    avg_volume = _mean(volumes) if volumes else 0.0
     volume_confirmation = bool(avg_volume and last.volume > avg_volume * 1.5)
     quality = {"A": 1.0, "B": 0.7, "C": 0.4, "D": 0.0, "WATCH": 0.0}.get(grade, 0.0)
     return {
@@ -503,7 +515,7 @@ def _false_breakout_filter(candles: list[Candle], quote_price: float) -> dict[st
     candle_pos = (last.close - last.low) / max(last.high - last.low, 0.01)
     is_attempt = 0 <= ((quote_price - prior_resistance) / prior_resistance) * 100 <= 3 if prior_resistance else False
     volumes = [c.volume for c in candles[-21:-1] if c.volume]
-    avg_volume = mean(volumes) if volumes else 0.0
+    avg_volume = _mean(volumes) if volumes else 0.0
     close_in_upper_range = candle_pos >= 0.75
     volume_expansion = bool(avg_volume and last.volume > avg_volume * 1.5)
     breakout_quality = "not_breakout"
@@ -558,8 +570,8 @@ def _stage_volume_pattern(candles: list[Candle]) -> str:
     down_volumes = [c.volume for c in recent if c.close < c.open and c.volume]
     first_half = recent[: len(recent) // 2]
     second_half = recent[len(recent) // 2 :]
-    first_avg = mean([c.volume for c in first_half if c.volume] or [0])
-    second_avg = mean([c.volume for c in second_half if c.volume] or [0])
+    first_avg = _mean([c.volume for c in first_half if c.volume] or [0])
+    second_avg = _mean([c.volume for c in second_half if c.volume] or [0])
     if second_avg <= first_avg * 1.1:
         return "neutral"
     if sum(up_volumes) > sum(down_volumes) * 1.2:
@@ -572,8 +584,8 @@ def _stage_volume_pattern(candles: list[Candle]) -> str:
 def _timeframe_view(closes: list[float], candles: list[Candle]) -> dict[str, Any]:
     if len(closes) < 5:
         return {"direction": "unavailable", "strength": "weak", "price_vs_20sma": "unknown", "candle_count": len(closes)}
-    sma5 = mean(closes[-5:])
-    sma20 = mean(closes[-20:]) if len(closes) >= 20 else mean(closes)
+    sma5 = _mean(closes[-5:])
+    sma20 = _mean(closes[-20:]) if len(closes) >= 20 else _mean(closes)
     distance = ((sma5 - sma20) / sma20) * 100 if sma20 else 0.0
     direction = "up" if distance > 0.4 else "down" if distance < -0.4 else "sideways"
     adx_proxy = _adx(candles, 14) if len(candles) >= 15 else None
@@ -1201,7 +1213,7 @@ def _liquidity_profile(candles: list[Candle], price: float) -> dict[str, Any]:
         }
     volumes = [float(candle.volume or 0) for candle in candles if candle.volume is not None]
     recent = candles[-20:]
-    avg_volume = mean([float(candle.volume or 0) for candle in recent]) if recent else 0.0
+    avg_volume = _mean([float(candle.volume or 0) for candle in recent]) if recent else 0.0
     avg_traded_value = avg_volume * price
     last = candles[-1]
     day_move_pct = ((last.close - last.open) / last.open) * 100 if last.open else 0.0
@@ -1408,7 +1420,7 @@ def _options_oi_layer(
         for item in items.values():
             if isinstance(item, dict) and item.get("pcr_oi") is not None:
                 pcr_values.append(float(item["pcr_oi"]))
-    avg_pcr = mean(pcr_values) if pcr_values else None
+    avg_pcr = _mean(pcr_values) if pcr_values else None
     if avg_pcr is None:
         bias = "unavailable"
     elif avg_pcr > 1.2:
@@ -1444,7 +1456,7 @@ def _backtest_snapshot(
     position: dict[str, Any] | None = None
     for index in range(20, len(candles)):
         price = closes[index]
-        sma20 = mean(closes[index - 20 : index])
+        sma20 = _mean(closes[index - 20 : index])
         volume_ratio = _volume_ratio([candle.volume for candle in candles[: index + 1]], 20)
         if position is None and price > sma20 and (volume_ratio or 0) >= 1.1:
             stop = price * 0.96
@@ -1476,7 +1488,7 @@ def _backtest_snapshot(
             **strategy_snapshot,
         }
     wins = [trade for trade in trades if trade["pnl_pct"] > 0]
-    expectancy = mean([trade["pnl_pct"] for trade in trades])
+    expectancy = _mean([trade["pnl_pct"] for trade in trades])
     equity = 0.0
     peak = 0.0
     max_drawdown = 0.0
@@ -2211,7 +2223,7 @@ def _range_contraction(candles: list[Candle]) -> bool:
     if len(candles) < 30:
         return False
     ranges = [(candle.high - candle.low) / candle.close for candle in candles[-30:] if candle.close]
-    return bool(ranges) and mean(ranges[-10:]) < mean(ranges[:10]) * 0.7
+    return bool(ranges) and _mean(ranges[-10:]) < _mean(ranges[:10]) * 0.7
 
 
 def _macd(values: list[float]) -> tuple[float | None, float | None, float | None]:
@@ -2239,15 +2251,15 @@ def _stochastic(
         high = max(highs[index - window + 1 : index + 1])
         low = min(lows[index - window + 1 : index + 1])
         k_values.append(50.0 if high == low else ((closes[index] - low) / (high - low)) * 100)
-    return k_values[-1], mean(k_values[-3:]) if len(k_values) >= 3 else None
+    return k_values[-1], _mean(k_values[-3:]) if len(k_values) >= 3 else None
 
 
 def _cci(candles: list[Candle], window: int = 20) -> float | None:
     if len(candles) < window:
         return None
     typical_prices = [(candle.high + candle.low + candle.close) / 3 for candle in candles[-window:]]
-    typical_mean = mean(typical_prices)
-    mean_deviation = mean(abs(price - typical_mean) for price in typical_prices)
+    typical_mean = _mean(typical_prices)
+    mean_deviation = _mean(abs(price - typical_mean) for price in typical_prices)
     if mean_deviation == 0:
         return 0.0
     return (typical_prices[-1] - typical_mean) / (0.015 * mean_deviation)
@@ -2349,8 +2361,8 @@ def _bollinger(values: list[float]) -> dict[str, Any]:
     if len(values) < 20:
         return {"available": False}
     recent = values[-20:]
-    basis = mean(recent)
-    sigma = pstdev(recent) if len(recent) > 1 else 0
+    basis = _mean(recent)
+    sigma = _pstdev(recent) if len(recent) > 1 else 0
     upper = basis + (2 * sigma)
     lower = basis - (2 * sigma)
     width_pct = ((upper - lower) / basis) * 100 if basis else None
@@ -2389,7 +2401,7 @@ def _atr(candles: list[Candle], window: int) -> float | None:
         max(current.high - current.low, abs(current.high - previous.close), abs(current.low - previous.close))
         for previous, current in zip(candles[-(window + 1) :], candles[-window:])
     ]
-    return mean(ranges) if ranges else None
+    return _mean(ranges) if ranges else None
 
 
 def _cmf(highs: list[float], lows: list[float], closes: list[float], volumes: list[float], window: int) -> float | None:
@@ -2424,7 +2436,7 @@ def _obv_slope(closes: list[float], volumes: list[float]) -> float | None:
 def _volume_ratio(volumes: list[float], window: int) -> float | None:
     if len(volumes) < window + 1:
         return None
-    average = mean(volumes[-(window + 1) : -1])
+    average = _mean(volumes[-(window + 1) : -1])
     return volumes[-1] / average if average else None
 
 
@@ -2444,8 +2456,8 @@ def _rsi(values: list[float], window: int) -> float | None:
         change = current - previous
         gains.append(max(change, 0))
         losses.append(abs(min(change, 0)))
-    avg_gain = mean(gains)
-    avg_loss = mean(losses)
+    avg_gain = _mean(gains)
+    avg_loss = _mean(losses)
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -2453,7 +2465,7 @@ def _rsi(values: list[float], window: int) -> float | None:
 
 
 def _sma(values: list[float], window: int) -> float | None:
-    return mean(values[-window:]) if len(values) >= window else None
+    return _mean(values[-window:]) if len(values) >= window else None
 
 
 def _ema(values: list[float], window: int) -> float | None:
@@ -2465,7 +2477,7 @@ def _ema_series(values: list[float], window: int) -> list[float]:
     if len(values) < window:
         return []
     alpha = 2 / (window + 1)
-    ema = mean(values[:window])
+    ema = _mean(values[:window])
     series = [ema]
     for value in values[window:]:
         ema = (value * alpha) + (ema * (1 - alpha))

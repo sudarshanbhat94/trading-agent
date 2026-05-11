@@ -15,7 +15,7 @@ This defaults to paper trading. Upstox live order routing exists, but it is disa
 - Builds MCP-style tool context with quotes, candles, candlestick facts, exact math indicators, sentiment, position, and risk limits.
 - Scores sentiment from a conservative rotating news RSS scan.
 - Adds global market intelligence from major indices, crude, gold, USD/INR, and global news before each stock decision.
-- Uses direct DeepSeek as the primary analyst, or as a reviewer.
+- Uses an admin-assigned LLM per user: DeepSeek or Groq Qwen can act as the primary analyst or reviewer.
 - Evaluates named strategy presets and tracks their performance in the UI.
 - Enforces dry-money risk rules: max positions, max order size, max position size, stop loss, take profit, and daily drawdown limit.
 - Can optionally mirror allowed paper orders to Upstox live order placement, disabled by default.
@@ -44,7 +44,7 @@ The dashboard includes a **Settings** panel. Use it to change:
 - Demo cash and cycle interval.
 - Execution mode: `paper`, `upstox_sandbox`, or `upstox_live`.
 - Market-data provider and broker credentials.
-- DeepSeek provider, model, and API key.
+- DeepSeek/Groq provider, model, and API keys.
 - Risk controls: max positions, order size, stop loss, take profit, and daily loss limit.
 - Sentiment scan settings.
 
@@ -220,7 +220,7 @@ The `yahoo` provider is useful for development and paper testing. It now pulls d
 
 ## LLM Brain
 
-OpenTrade now uses one LLM brain: direct DeepSeek. Select either `deepseek-v4-pro` or `deepseek-v4-flash` in Settings.
+OpenTrade supports admin-assigned LLM lanes per user. Users spend the same token-based credits regardless of the assigned model, and normal users do not see the underlying provider/model. Admins can assign Groq Qwen, DeepSeek Pro, DeepSeek Flash, or offline mode from the Users panel.
 
 ```bash
 LLM_PROVIDER=deepseek
@@ -241,6 +241,12 @@ LLM_REASONING_EFFORT=high
 LLM_THINKING_ENABLED=true
 LLM_STREAMING_ENABLED=false
 LLM_TIMEOUT_SECONDS=120
+
+GROQ_API_KEY=...
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=qwen/qwen3-32b
+USER_DEFAULT_LLM_PROVIDER=groq
+USER_DEFAULT_LLM_MODEL=qwen/qwen3-32b
 ```
 
 To temporarily turn the brain off, set:
@@ -250,7 +256,7 @@ LLM_PROVIDER=offline
 LLM_DECISION_MODE=offline
 ```
 
-`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks DeepSeek to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks DeepSeek to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. Every decision audit records the selected provider/model, API attempts, and whether rolling context was used.
+`LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the assigned LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the assigned LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. Admin audit records the selected provider/model, API attempts, and whether rolling context was used; standard user audit hides model routing.
 
 Large context is handled with rolling analysis instead of blunt trimming. When the rich context exceeds `LLM_ROLLING_CONTEXT_THRESHOLD_CHARS`, OpenTrade summarizes each chunk with DeepSeek, then sends a compact core packet plus the chunk evidence summaries for the final decision. `LLM_ROLLING_CONTEXT_MAX_CHUNKS=0` means cover all chunks; set a positive number only when you intentionally want to cap cost/latency on a small VM.
 

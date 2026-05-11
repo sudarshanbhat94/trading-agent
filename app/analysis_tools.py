@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
-from statistics import mean
 from typing import Any
 
 from .full_spectrum import full_spectrum_analysis
 from .indicators import technical_snapshot
 from .models import Candle, Quote
 from .strategy_presets import choose_best_strategy, evaluate_strategy_presets
+
+
+def _mean(values: list[float] | tuple[float, ...] | Any) -> float:
+    items = list(values)
+    return sum(items) / len(items) if items else 0.0
 
 
 def build_symbol_tool_context(
@@ -400,10 +404,10 @@ def _candle_tools(candles: list[Candle]) -> dict[str, Any]:
         max(candle.high - candle.low, abs(candle.high - prev.close), abs(candle.low - prev.close))
         for prev, candle in zip(recent, recent[1:])
     ]
-    atr = mean(true_ranges) if true_ranges else 0.0
+    atr = _mean(true_ranges) if true_ranges else 0.0
     atr_pct = (atr / last.close) * 100 if last.close else 0.0
     volumes = [candle.volume for candle in recent[:-1] if candle.volume]
-    volume_ratio = last.volume / mean(volumes) if volumes else None
+    volume_ratio = last.volume / _mean(volumes) if volumes else None
     if volume_ratio and volume_ratio > 1.8 and last.close > last.open:
         patterns.append("bullish-volume-expansion")
         score += 0.16

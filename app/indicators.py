@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-from statistics import mean, pstdev
-
 from .models import TechnicalSnapshot
+
+
+def _mean(values: list[float] | tuple[float, ...]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _pstdev(values: list[float] | tuple[float, ...]) -> float:
+    if not values:
+        return 0.0
+    avg = _mean(values)
+    return (sum((value - avg) ** 2 for value in values) / len(values)) ** 0.5
 
 
 def _round(value: float | None, digits: int = 4) -> float | None:
@@ -67,8 +76,8 @@ def _bollinger(values: list[float], window: int = 20) -> tuple[float | None, flo
     if len(values) < window:
         return None, None
     recent = values[-window:]
-    middle = mean(recent)
-    deviation = pstdev(recent)
+    middle = _mean(recent)
+    deviation = _pstdev(recent)
     if deviation == 0:
         return 0.5, 0.0
     upper = middle + (2 * deviation)
@@ -91,7 +100,7 @@ def _atr_pct(highs: list[float], lows: list[float], closes: list[float], window:
                 abs(lows[index] - closes[index - 1]),
             )
         )
-    atr = mean(true_ranges[-window:]) if len(true_ranges) >= window else None
+    atr = _mean(true_ranges[-window:]) if len(true_ranges) >= window else None
     return (atr / closes[-1]) * 100 if atr and closes[-1] else None
 
 
@@ -123,7 +132,7 @@ def _adx(highs: list[float], lows: list[float], closes: list[float], window: int
         denominator = plus_di + minus_di
         if denominator:
             dx_values.append(100 * abs(plus_di - minus_di) / denominator)
-    return mean(dx_values[-window:]) if len(dx_values) >= window else None
+    return _mean(dx_values[-window:]) if len(dx_values) >= window else None
 
 
 def _stochastic(highs: list[float], lows: list[float], closes: list[float], window: int = 14) -> tuple[float | None, float | None]:
@@ -135,14 +144,14 @@ def _stochastic(highs: list[float], lows: list[float], closes: list[float], wind
         low = min(lows[index - window + 1 : index + 1])
         k_values.append(50.0 if high == low else ((closes[index] - low) / (high - low)) * 100)
     k = k_values[-1] if k_values else None
-    d = mean(k_values[-3:]) if len(k_values) >= 3 else None
+    d = _mean(k_values[-3:]) if len(k_values) >= 3 else None
     return k, d
 
 
 def _volume_ratio(volumes: list[float], window: int = 20) -> float | None:
     if len(volumes) <= window:
         return None
-    baseline = mean(volumes[-(window + 1) : -1])
+    baseline = _mean(volumes[-(window + 1) : -1])
     return volumes[-1] / baseline if baseline else None
 
 
@@ -157,7 +166,7 @@ def _obv_slope(closes: list[float], volumes: list[float], window: int = 10) -> f
             obv.append(obv[-1] - volume)
         else:
             obv.append(obv[-1])
-    avg_volume = mean(volumes[-window:]) or 1
+    avg_volume = _mean(volumes[-window:]) or 1
     return (obv[-1] - obv[-window]) / (avg_volume * window)
 
 

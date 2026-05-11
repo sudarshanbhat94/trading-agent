@@ -6,6 +6,7 @@ import re
 from dataclasses import replace
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -33,6 +34,7 @@ from .db import Database
 from .delivery_data import DeliveryDataService
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_brain import LLMBrain
+from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
@@ -41,7 +43,7 @@ from .models import utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
 from .paper_broker import PaperBroker
-from .request_context import current_user_id
+from .request_context import current_llm_usage_scope, current_user_id
 from .sector_rotation import SectorRotationService
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
@@ -83,6 +85,40 @@ class WebSocketHub:
 hub = WebSocketHub()
 
 
+def _estimated_signal_credit_charge() -> float:
+    return db.average_signal_credit_charge(tokens_per_credit=settings.credit_tokens_per_credit)
+
+
+def _credit_billing_for_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    return credit_breakdown_for_usage(
+        usage,
+        tokens_per_credit=settings.credit_tokens_per_credit,
+        margin_pct=settings.credit_platform_margin_pct,
+    )
+
+
+def _exception_message(exc: BaseException) -> str:
+    text = str(exc).strip()
+    return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
+
+
+def _is_recoverable_user_signal_exception(exc: BaseException) -> bool:
+    original = exc.original if isinstance(exc, UserSignalCycleError) else exc
+    if isinstance(original, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, MarketDataError)):
+        return True
+    name = original.__class__.__name__.lower()
+    return "timeout" in name or "connect" in name
+
+
+class UserSignalCycleError(RuntimeError):
+    def __init__(self, phase: str, original: BaseException, details: dict[str, Any] | None = None) -> None:
+        self.phase = phase
+        self.original = original
+        self.details = details or {}
+        self.recoverable = _is_recoverable_user_signal_exception(original)
+        super().__init__(f"{phase}: {_exception_message(original)}")
+
+
 class UserSignalSessionManager:
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
@@ -102,8 +138,9 @@ class UserSignalSessionManager:
         status.setdefault("last_error", None)
         status.setdefault("last_credit_charge", 0.0)
         status.setdefault("last_llm_calls", 0)
+        status.setdefault("last_llm_activity", {})
         status.setdefault("last_decision_count", 0)
-        status.setdefault("symbols_per_cycle", self._symbol_limit({}, db.average_signal_credit_charge()))
+        status.setdefault("symbols_per_cycle", self._symbol_limit({}, _estimated_signal_credit_charge()))
         status["running"] = self.is_running(user_id)
         return status
 
@@ -115,11 +152,23 @@ class UserSignalSessionManager:
             "sessions": {str(user_id): self.status(user_id) for user_id in active},
         }
 
+    def update_phase(self, user_id: int, phase: str, details: dict[str, Any] | None = None) -> None:
+        status = self.status(user_id)
+        status.update(
+            {
+                "running": self.is_running(user_id) or bool(status.get("running")),
+                "phase": phase,
+                "phase_details": details or {},
+                "phase_updated_at": utc_now(),
+            }
+        )
+        self._status[user_id] = status
+
     async def start(self, user: dict[str, Any]) -> dict[str, Any]:
         user_id = int(user["id"])
         if self.is_running(user_id):
             return _status_payload(user)
-        estimated_charge = db.average_signal_credit_charge()
+        estimated_charge = _estimated_signal_credit_charge()
         can_spend, credit_summary = db.user_has_credit_for(user_id, estimated_charge)
         if not can_spend:
             raise HTTPException(
@@ -135,6 +184,7 @@ class UserSignalSessionManager:
             "last_error": None,
             "last_credit_charge": 0.0,
             "last_llm_calls": 0,
+            "last_llm_activity": {},
             "last_decision_count": 0,
             "symbols_per_cycle": self._symbol_limit(credit_summary, estimated_charge),
         }
@@ -216,18 +266,55 @@ class UserSignalSessionManager:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    message = f"{exc.__class__.__name__}: {exc}"
-                    self._status[user_id] = {**self.status(user_id), "running": False, "phase": "idle", "last_error": message}
-                    self._tasks.pop(user_id, None)
-                    db.insert_agent_log(
-                        "ERROR",
-                        "user_session",
-                        "user_signal_error",
-                        f"User signal session stopped: {message}",
-                        {"user_id": user_id, "error_type": exc.__class__.__name__},
-                    )
-                    await hub.broadcast(_status_payload())
-                    return
+                    message = _exception_message(exc)
+                    recoverable = _is_recoverable_user_signal_exception(exc)
+                    error_details: dict[str, Any] = {
+                        "user_id": user_id,
+                        "error_type": exc.__class__.__name__,
+                        "recoverable": recoverable,
+                    }
+                    if isinstance(exc, UserSignalCycleError):
+                        error_details.update(
+                            {
+                                "phase": exc.phase,
+                                "original_error_type": exc.original.__class__.__name__,
+                                "original_error": str(exc.original)[:300],
+                                "cycle_details": exc.details,
+                            }
+                        )
+                    if recoverable:
+                        self._status[user_id] = {
+                            **self.status(user_id),
+                            "running": True,
+                            "phase": "sleep",
+                            "last_error": message,
+                            "last_cycle_failed_at": utc_now(),
+                        }
+                        db.insert_agent_log(
+                            "WARN",
+                            "user_session",
+                            "user_signal_retry_scheduled",
+                            f"User signal cycle had a transient error and will retry: {message}",
+                            error_details,
+                        )
+                        await hub.broadcast(_status_payload())
+                    else:
+                        self._status[user_id] = {
+                            **self.status(user_id),
+                            "running": False,
+                            "phase": "idle",
+                            "last_error": message,
+                        }
+                        self._tasks.pop(user_id, None)
+                        db.insert_agent_log(
+                            "ERROR",
+                            "user_session",
+                            "user_signal_error",
+                            f"User signal session stopped: {message}",
+                            error_details,
+                        )
+                        await hub.broadcast(_status_payload())
+                        return
                 await asyncio.sleep(max(30, int(settings.agent_interval_seconds or 180)))
         finally:
             if self._tasks.get(user_id) and self._tasks[user_id].done():
@@ -239,7 +326,14 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_order_router = build_order_router(new_settings, db)
     new_broker = PaperBroker(new_settings, db, new_order_router)
     new_account = AccountService(new_settings, db)
-    new_sentiment = SentimentService(new_settings, db)
+    monitor_settings = replace(
+        new_settings,
+        llm_provider="offline",
+        llm_decision_mode="offline",
+        enable_llm_sentiment=False,
+    )
+    strategy_settings = replace(new_settings, enable_llm_sentiment=False)
+    new_sentiment = SentimentService(monitor_settings, db)
     new_macro = GlobalIntelligenceService(new_settings)
     new_institutional_feeds = FreeInstitutionalFeedsService(new_settings)
     new_delivery_service = DeliveryDataService(new_settings, db)
@@ -248,8 +342,9 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_macro_calendar = MacroCalendarService(new_settings, db)
     new_universe_service = UniverseService(new_settings, db)
     new_options_intelligence = OptionsIntelligenceService(new_settings, db)
-    new_llm = LLMBrain(new_settings, db)
-    new_strategy = StrategyEngine(new_settings, new_sentiment, new_llm)
+    monitor_llm = LLMBrain(strategy_settings, db)
+    admin_llm = LLMBrain(new_settings, db)
+    new_strategy = StrategyEngine(strategy_settings, new_sentiment, monitor_llm)
     new_agent = TradingAgentService(
         db=db,
         market_data=new_market_data,
@@ -265,6 +360,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         interval_seconds=new_settings.agent_interval_seconds,
         cycle_timeout_seconds=new_settings.cycle_timeout_seconds,
         universe_symbols_per_cycle=new_settings.universe_symbols_per_cycle,
+        execute_trades=False,
         on_update=hub.broadcast,
     )
     return {
@@ -281,7 +377,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         "macro_calendar": new_macro_calendar,
         "universe_service": new_universe_service,
         "options_intelligence": new_options_intelligence,
-        "llm": new_llm,
+        "llm": admin_llm,
         "strategy": new_strategy,
         "agent": new_agent,
     }
@@ -309,6 +405,16 @@ user_signal_sessions = UserSignalSessionManager()
 app = FastAPI(title="OpenTrade")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+
+COMMON_SYMBOL_ALIASES = {
+    "SBI": "SBIN",
+    "STATEBANK": "SBIN",
+    "STATEBANKOFINDIA": "SBIN",
+    "STATEBANKINDIA": "SBIN",
+    "M&M": "M&M",
+    "MM": "M&M",
+}
 
 
 @app.on_event("startup")
@@ -348,38 +454,145 @@ async def status(request: Request) -> dict[str, Any]:
 
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot = agent.snapshot()
+    is_admin = bool(user and user.get("role") == "admin")
     snapshot["runtime"] = {
         "market_data_provider": settings.market_data_provider,
         "execution_mode": settings.execution_mode,
-        "llm_provider": settings.llm_provider,
+        "llm_provider": settings.llm_provider if is_admin else "assigned",
         "llm_decision_mode": settings.llm_decision_mode,
-        "llm_model": settings.deepseek_model if settings.llm_provider == "deepseek" else "offline",
-        "llm_thinking_enabled": settings.llm_thinking_enabled,
-        "llm_reasoning_effort": settings.llm_reasoning_effort,
-        "llm_rolling_context_enabled": settings.llm_rolling_context_enabled,
     }
-    if user and user.get("role") != "admin":
-        snapshot["user_signal_session"] = user_signal_sessions.status(int(user["id"]))
+    if is_admin:
+        snapshot["runtime"].update(
+            {
+                "llm_model": _model_name_for_settings(settings),
+                "llm_thinking_enabled": settings.llm_thinking_enabled,
+                "llm_reasoning_effort": settings.llm_reasoning_effort,
+                "llm_rolling_context_enabled": settings.llm_rolling_context_enabled,
+            }
+        )
     else:
+        snapshot["llm_usage"] = _public_llm_usage_summary(snapshot.get("llm_usage", {}))
+    if user and not is_admin:
+        user_id = int(user["id"])
+        tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
+        user_positions = _user_follow_positions(tracked_ideas)
+        snapshot["suggestions"] = db.latest_signal_ideas(20, user_id=user_id)
+        snapshot["signal_ideas"] = snapshot["suggestions"]
+        snapshot["tracked_ideas"] = tracked_ideas
+        snapshot["positions"] = user_positions
+        snapshot["portfolio"] = _user_follow_portfolio(tracked_ideas, snapshot.get("portfolio", {}))
+        snapshot["strategy_plans"] = db.strategy_plans()
+        shared_status = user_signal_sessions.status(user_id)
+        shared_status.update(
+            {
+                "running": bool(snapshot.get("running")),
+                "phase": snapshot.get("cycle", {}).get("phase", "shared_backend"),
+                "last_cycle_at": snapshot.get("last_cycle_at"),
+                "last_error": snapshot.get("last_error"),
+                "shared_backend": True,
+                "message": "Signals come from the shared backend engine. Admin start/stop controls the engine.",
+            }
+        )
+        snapshot["user_signal_session"] = _sanitize_private_llm_metadata(shared_status)
+    else:
+        snapshot["suggestions"] = db.latest_signal_ideas(20)
+        snapshot["signal_ideas"] = snapshot["suggestions"]
+        snapshot["tracked_ideas"] = []
+        snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["user_signal_sessions"] = user_signal_sessions.admin_summary()
     return snapshot
 
 
+def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    positions: list[dict[str, Any]] = []
+    for item in tracked_ideas:
+        mode = str(item.get("mode") or "").upper()
+        qty = int(item.get("qty") or 0)
+        if mode not in {"PAPER", "LIVE"} or qty <= 0:
+            continue
+        entry_price = float(item.get("follow_entry_price") or item.get("entry_price") or 0.0)
+        latest_price = float(item.get("follow_latest_price") or item.get("latest_price") or entry_price)
+        position_summary = {
+            "symbol": item.get("symbol"),
+            "classification": "PAPER" if mode == "PAPER" else "LIVE_REQUEST",
+            "overall_score_pct": item.get("overall_score_pct", 0),
+            "overall_grade": item.get("overall_grade", "-"),
+            "entry_grade": item.get("details", {}).get("full_spectrum", {}).get("entry_quality", {}).get("entry_grade", "-"),
+            "mtf_grade": item.get("details", {}).get("full_spectrum", {}).get("trend_context", {}).get("timeframe_alignment", {}).get("alignment_grade", "-"),
+            "delivery_bias": item.get("details", {}).get("full_spectrum", {}).get("delivery_accumulation", {}).get("net_bias", "-"),
+            "active_flags": item.get("risk_flags", []),
+            "recommended_action": "TRACK",
+            "reason": "User paper-tracked idea; live engine will keep marking P&L against latest price.",
+            "price_label": "LTP",
+            "price_source": "signal_idea_follow",
+            "price_timestamp": item.get("follow_updated_at"),
+        }
+        positions.append(
+            {
+                "symbol": item.get("symbol"),
+                "qty": qty,
+                "avg_price": entry_price,
+                "market_price": latest_price,
+                "realized_pnl": 0.0,
+                "updated_at": item.get("follow_updated_at"),
+                "strategy": item.get("strategy"),
+                "details_json": json.dumps(
+                    {
+                        "source": "user_idea_follow",
+                        "follow_id": item.get("follow_id"),
+                        "idea_id": item.get("idea_id"),
+                        "mode": mode,
+                        "return_pct": item.get("return_pct", 0),
+                    },
+                    separators=(",", ":"),
+                ),
+                "position_summary": position_summary,
+            }
+        )
+    return positions
+
+
+def _user_follow_portfolio(tracked_ideas: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
+    base_cash = float(settings.initial_cash_inr or fallback.get("cash") or 0.0)
+    paper_items = [
+        item
+        for item in tracked_ideas
+        if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"} and int(item.get("qty") or 0) > 0
+    ]
+    invested = sum(float(item.get("invested_amount") or 0.0) for item in paper_items)
+    market_value = sum(float(item.get("follow_latest_price") or item.get("latest_price") or 0.0) * int(item.get("qty") or 0) for item in paper_items)
+    unrealized = sum(float(item.get("unrealized_pnl") or 0.0) for item in paper_items)
+    cash = max(base_cash - invested, 0.0)
+    return {
+        **(fallback or {}),
+        "cash": round(cash, 2),
+        "invested": round(invested, 2),
+        "market_value": round(market_value, 2),
+        "equity": round(cash + market_value, 2),
+        "realized_pnl": round(float((fallback or {}).get("realized_pnl") or 0.0), 2),
+        "unrealized_pnl": round(unrealized, 2),
+    }
+
+
 @app.get("/api/decisions/{decision_id}")
 async def decision_detail(decision_id: int, request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
+    user = require_user(request, settings, db)
     row = db.decision_by_id(decision_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Decision not found")
+    if user.get("role") != "admin":
+        row = _sanitize_decision_row_for_user(row)
     return row
 
 
 @app.get("/api/orders/{order_id}")
 async def order_detail(order_id: int, request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
+    user = require_user(request, settings, db)
     row = db.order_by_id(order_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    if user.get("role") != "admin":
+        row = _sanitize_order_row_for_user(row)
     return row
 
 
@@ -387,7 +600,7 @@ async def order_detail(order_id: int, request: Request) -> dict[str, Any]:
 async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
     user_id = int(user["id"])
-    estimated_charge = db.average_signal_credit_charge()
+    estimated_charge = _estimated_signal_credit_charge()
     can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
     if not can_spend:
         raise HTTPException(
@@ -397,15 +610,17 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
                 f"Estimated need: {estimated_charge:.4f} credits."
             ),
         )
-    symbol = _normalize_symbol(str(payload.get("symbol", "")))
+    requested_input = str(payload.get("symbol", ""))
+    symbol, row, resolution = _resolve_analysis_symbol(requested_input)
     if not symbol:
-        raise HTTPException(status_code=400, detail="Enter a valid NSE symbol, for example SUZLON or INFY.")
+        raise HTTPException(status_code=400, detail="Enter a valid NSE symbol or company name, for example SBIN, SUZLON, or INFY.")
 
-    row = db.universe_row(symbol) or _manual_universe_row(symbol)
     user_market_data = _market_data_provider_for_user(user)
     user_strategy, budget_policy = _strategy_for_user_budget(user, credit_before, estimated_charge)
     provider_error: str | None = None
     usage_after_id = db.latest_llm_usage_id()
+    usage_scope = f"manual_analysis:{user_id}:{uuid4().hex}"
+    scope_token = current_llm_usage_scope.set(usage_scope)
     context_token = current_user_id.set(user_id)
     try:
         quotes = await user_market_data.get_quotes([row])
@@ -419,14 +634,19 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 
     quote = quotes.get(symbol)
     if quote is None:
-        detail = f"No Upstox market quote found for {symbol}. Check the symbol spelling and Upstox instrument key."
+        suggestions = _symbol_suggestions(requested_input, limit=3)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = " Try " + ", ".join(f"{item['symbol']} ({item['name']})" for item in suggestions[:3]) + "."
+        detail = f"No Upstox market quote found for {symbol}.{suggestion_text} Check the symbol spelling and Upstox instrument key."
         if provider_error:
             detail = f"{detail} Provider error: {provider_error}"
         raise HTTPException(status_code=404, detail=detail)
 
     context_token = current_user_id.set(user_id)
     try:
-        news = await sentiment.analyze_symbol_news(row)
+        user_sentiment = SentimentService(_llm_settings_for_user(db.user_by_id(user_id) or user), db)
+        news = await user_sentiment.analyze_symbol_news(row)
     finally:
         current_user_id.reset(context_token)
     db.upsert_quotes(quotes)
@@ -441,40 +661,62 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     options_context = db.get_state("options_intelligence_context", {})
     context_token = current_user_id.set(user_id)
     try:
-        decisions = await user_strategy.evaluate(
-            [row],
-            quotes,
-            broker.positions_by_symbol(),
-            analysis_candles,
-            macro_context,
-            institutional_context,
-            options_context,
-            delivery_service,
-            db.get_state("market_breadth_context", {}),
-            db.get_state("sector_rotation_context", {}),
-            macro_calendar,
-            candle_sets,
-            (db.latest_portfolio() or {}).get("equity"),
+        decisions = await asyncio.to_thread(
+            lambda: asyncio.run(
+                user_strategy.evaluate(
+                    [row],
+                    quotes,
+                    broker.positions_by_symbol(),
+                    analysis_candles,
+                    macro_context,
+                    institutional_context,
+                    options_context,
+                    delivery_service,
+                    db.get_state("market_breadth_context", {}),
+                    db.get_state("sector_rotation_context", {}),
+                    macro_calendar,
+                    candle_sets,
+                    (db.latest_portfolio() or {}).get("equity"),
+                )
+            )
         )
     finally:
         current_user_id.reset(context_token)
     if not decisions:
         raise HTTPException(status_code=500, detail=f"Analysis produced no decision for {symbol}.")
 
-    usage = db.llm_usage_cost_since(user_id, usage_after_id)
+    usage = db.llm_usage_cost_for_scope(user_id, usage_scope, usage_after_id)
+    llm_activity = _llm_activity_from_decisions(decisions, usage)
+    billing = _credit_billing_for_usage(usage)
     try:
-        credit_after = db.charge_user_credits(
-            user_id,
-            usage["cost_usd"],
-            f"Symbol analysis {symbol}",
-            {
-                "symbol": symbol,
-                "llm_usage": usage,
-                "provider": quote.source,
-                "estimated_credit_before": estimated_charge,
-                "budget_policy": budget_policy,
-            },
-        )
+        credit_after = credit_before
+        if usage.get("calls"):
+            credit_after = db.charge_user_credits(
+                user_id,
+                billing["base_credits"],
+                f"Symbol analysis {symbol}",
+                {
+                    "symbol": symbol,
+                    "llm_usage": usage,
+                    "llm_activity": llm_activity,
+                    "provider": quote.source,
+                    "estimated_credit_before": estimated_charge,
+                    "budget_policy": budget_policy,
+                    "credit_billing": {
+                        "tokens_per_credit": billing["tokens_per_credit"],
+                        "total_tokens": billing["total_tokens"],
+                        "charged_credits": billing["charged_credits"],
+                    },
+                    "admin_billing": {
+                        "base_credits": billing["base_credits"],
+                        "platform_margin_pct": billing["platform_margin_pct"],
+                        "platform_margin_credits": billing["platform_margin_credits"],
+                        "api_cost_usd": billing["api_cost_usd"],
+                    },
+                },
+                margin_pct=billing["platform_margin_pct"],
+                minimum_charge=0.0,
+            )
     except ValueError as exc:
         raise HTTPException(
             status_code=402,
@@ -486,6 +728,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     decision = _attach_user_to_decision(decisions[0], user, credit_after, budget_policy)
     decision_payload = decision.to_dict()
     decision_payload["details"] = _json_object(decision.details_json)
+    decision_payload = _sanitize_decision_payload_for_user(decision_payload)
     public_credit_before = _public_credit_summary(credit_before)
     public_credit_after = _public_credit_summary(credit_after)
     db.insert_agent_log(
@@ -498,15 +741,20 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             "action": decision.action,
             "confidence": decision.confidence,
             "provider_error": provider_error,
+            "llm_activity": llm_activity,
             "credit_charge": round(max(float(credit_before.get("credit_balance", 0.0)) - float(credit_after.get("credit_balance", 0.0)), 0.0), 6),
             "budget_policy": budget_policy,
+            "usage_scope": usage_scope,
         },
     )
+    current_llm_usage_scope.reset(scope_token)
     return {
         "ok": True,
         "manual_only": True,
         "message": "Analysis completed. This does not place an order; autonomous cycles still handle trading.",
         "symbol": symbol,
+        "requested_symbol": resolution.get("requested_symbol"),
+        "resolved_from": resolution.get("resolved_from"),
         "quote": quote.to_dict(),
         "candle_count": len(analysis_candles.get(symbol, [])),
         "timeframe_candle_counts": {
@@ -520,7 +768,8 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             "before": public_credit_before,
             "after": public_credit_after,
             "llm_usage": _public_llm_usage(usage),
-            "budget_policy": budget_policy,
+            "llm_activity": llm_activity,
+            "budget_policy": _public_budget_policy(budget_policy),
         },
         "decision": decision_payload,
     }
@@ -536,7 +785,8 @@ async def my_credit_summary(request: Request) -> dict[str, Any]:
         "usage_policy": {
             "daily_limit": summary.get("daily_credit_limit", 0.0),
             "daily_remaining": summary.get("daily_credits_remaining", 0.0),
-            "estimated_signal_credit": db.average_signal_credit_charge(),
+            "estimated_signal_credit": _estimated_signal_credit_charge(),
+            "tokens_per_credit": settings.credit_tokens_per_credit,
             "low_budget_mode": "OpenTrade automatically uses a leaner analysis path when today's remaining credits are tight.",
         },
     }
@@ -580,10 +830,32 @@ async def my_upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[
 async def my_upstox_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
     stored = db.user_by_id(int(user["id"])) or {}
+    direct_token = str(payload.get("access_token") or payload.get("token") or "").strip()
+    base_url = str(payload.get("base_url") or stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/")
+    if direct_token:
+        updated_user = db.update_user_broker(
+            int(user["id"]),
+            {
+                "upstox_access_token": direct_token,
+                "upstox_api_base_url": base_url,
+            },
+        )
+        db.insert_agent_log(
+            "INFO",
+            "upstox",
+            "user_upstox_token_saved",
+            f"Upstox analytics token saved for user {user['username']}",
+            {"user_id": user["id"], "username": user["username"], "base_url": base_url},
+        )
+        return {
+            "ok": True,
+            "message": "Upstox token saved for this user. Symbol analysis will use this user's market feed.",
+            "user": updated_user,
+            "token_type": "analytics_token",
+        }
     api_key = str(payload.get("api_key") or stored.get("upstox_api_key") or "").strip()
     api_secret = str(payload.get("api_secret") or stored.get("upstox_api_secret") or "").strip()
     redirect_uri = str(payload.get("redirect_uri") or stored.get("upstox_redirect_uri") or "").strip()
-    base_url = str(payload.get("base_url") or stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/")
     code = _extract_oauth_code(str(payload.get("code") or ""))
     if not all([api_key, api_secret, redirect_uri, code]):
         raise HTTPException(status_code=400, detail="Upstox connect needs API key, API secret, redirect URI, and authorization code.")
@@ -648,8 +920,16 @@ async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str
 
 @app.get("/api/account")
 async def account_details(request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
-    return await account.snapshot()
+    user = require_user(request, settings, db)
+    payload = await account.snapshot()
+    if user.get("role") != "admin":
+        tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+        user_portfolio = _user_follow_portfolio(tracked_ideas, payload["paper"].get("portfolio", {}))
+        payload["tracked_ideas"] = tracked_ideas
+        payload["paper"]["positions"] = _user_follow_positions(tracked_ideas)
+        payload["paper"]["portfolio"] = user_portfolio
+        payload["paper"]["cash"] = user_portfolio["cash"]
+    return payload
 
 
 @app.get("/api/performance")
@@ -660,12 +940,24 @@ async def performance_summary(request: Request) -> dict[str, Any]:
 
 @app.get("/api/config")
 async def get_config(request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
-    return _config_payload()
+    user = require_user(request, settings, db)
+    return _config_payload() if user.get("role") == "admin" else _public_config_payload()
 
 
 def _config_payload() -> dict[str, Any]:
     return {"schema": CONFIG_SCHEMA, "settings": public_settings(settings)}
+
+
+def _public_config_payload() -> dict[str, Any]:
+    return {
+        "schema": [],
+        "settings": {
+            "agent_interval_seconds": settings.agent_interval_seconds,
+            "cycle_timeout_seconds": settings.cycle_timeout_seconds,
+            "llm_timeout_seconds": settings.llm_timeout_seconds,
+            "credit_tokens_per_credit": settings.credit_tokens_per_credit,
+        },
+    }
 
 
 @app.get("/api/logs")
@@ -732,8 +1024,9 @@ async def test_llm(request: Request) -> dict[str, Any]:
 
 @app.get("/api/llm/usage")
 async def llm_usage(request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
-    return db.llm_usage_summary(100)
+    user = require_user(request, settings, db)
+    summary = db.llm_usage_summary(100)
+    return summary if user.get("role") == "admin" else _public_llm_usage_summary(summary)
 
 
 @app.post("/api/upstox/auth-url")
@@ -952,12 +1245,20 @@ async def create_user(payload: dict[str, Any], request: Request) -> dict[str, An
     username = validate_username(str(payload.get("username", "")))
     password = validate_password(str(payload.get("password", "")))
     role = normalize_role(str(payload.get("role", "user")))
+    assigned_provider, assigned_model = _assigned_llm_from_payload(payload)
     active = bool(payload.get("active", True))
     starting_credits = _positive_float(payload.get("starting_credits", payload.get("credit_balance", 0)), field="starting_credits")
     daily_credit_limit = _positive_float(payload.get("daily_credit_limit", 0), field="daily_credit_limit")
     if db.user_by_username(username):
         raise HTTPException(status_code=409, detail="Username already exists")
-    user = db.create_user(username, hash_password(password), role=role, active=active)
+    user = db.create_user(
+        username,
+        hash_password(password),
+        role=role,
+        active=active,
+        assigned_llm_provider=assigned_provider,
+        assigned_llm_model=assigned_model,
+    )
     if daily_credit_limit:
         db.update_user_daily_credit_limit(int(user["id"]), daily_credit_limit)
     if starting_credits:
@@ -978,6 +1279,8 @@ async def create_user(payload: dict[str, Any], request: Request) -> dict[str, An
             "created_by": admin.get("username"),
             "username": username,
             "role": role,
+            "assigned_llm_provider": assigned_provider,
+            "assigned_llm_model": assigned_model,
             "active": active,
             "starting_credits": starting_credits,
             "daily_credit_limit": daily_credit_limit,
@@ -993,6 +1296,14 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
     if not existing:
         raise HTTPException(status_code=404, detail="User not found")
     role = normalize_role(str(payload["role"])) if "role" in payload else None
+    assigned_provider = assigned_model = None
+    if "assigned_llm_provider" in payload or "assigned_llm_model" in payload:
+        assigned_provider, assigned_model = _assigned_llm_from_payload(
+            {
+                "assigned_llm_provider": payload.get("assigned_llm_provider", existing.get("assigned_llm_provider", "")),
+                "assigned_llm_model": payload.get("assigned_llm_model", existing.get("assigned_llm_model", "")),
+            }
+        )
     active = bool(payload["active"]) if "active" in payload else None
     password_hash = hash_password(validate_password(str(payload["password"]))) if payload.get("password") else None
     daily_credit_limit = _positive_float(payload["daily_credit_limit"], field="daily_credit_limit") if "daily_credit_limit" in payload else None
@@ -1000,7 +1311,14 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
         would_remove_admin = (role is not None and role != "admin") or active is False
         if would_remove_admin:
             raise HTTPException(status_code=400, detail="At least one active admin user is required.")
-    user = db.update_user(user_id, role=role, active=active, password_hash=password_hash)
+    user = db.update_user(
+        user_id,
+        role=role,
+        assigned_llm_provider=assigned_provider,
+        assigned_llm_model=assigned_model,
+        active=active,
+        password_hash=password_hash,
+    )
     if daily_credit_limit is not None:
         db.update_user_daily_credit_limit(user_id, daily_credit_limit)
         user = next((item for item in db.list_users() if int(item["id"]) == user_id), user)
@@ -1013,6 +1331,7 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
             "updated_by": admin.get("username"),
             "user_id": user_id,
             "role_changed": role is not None,
+            "llm_assignment_changed": assigned_provider is not None or assigned_model is not None,
             "active_changed": active is not None,
             "password_changed": password_hash is not None,
             "daily_credit_limit_changed": daily_credit_limit is not None,
@@ -1024,7 +1343,13 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
 @app.get("/api/admin/credits")
 async def admin_credit_summary(request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)
-    return db.admin_credit_usage_summary()
+    summary = db.admin_credit_usage_summary()
+    summary["credit_policy"] = {
+        "tokens_per_credit": settings.credit_tokens_per_credit,
+        "platform_margin_pct": settings.credit_platform_margin_pct,
+        "user_rule": f"{settings.credit_tokens_per_credit} LLM tokens = 1 credit",
+    }
+    return summary
 
 
 @app.post("/api/users/{user_id}/credits")
@@ -1085,7 +1410,14 @@ async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any
 async def start_agent(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     if user.get("role") != "admin":
-        return await user_signal_sessions.start(user)
+        db.insert_agent_log(
+            "INFO",
+            "user_session",
+            "shared_signal_view",
+            f"{user.get('username')} opened shared signal tracking",
+            {"user_id": user.get("id"), "shared_backend_running": agent.running},
+        )
+        return _status_payload(user)
     db.insert_agent_log("INFO", "admin", "control_start", "Admin requested agent start")
     agent.start()
     snapshot = agent.snapshot()
@@ -1097,7 +1429,14 @@ async def start_agent(request: Request) -> dict[str, Any]:
 async def stop_agent(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     if user.get("role") != "admin":
-        return await user_signal_sessions.stop(user)
+        db.insert_agent_log(
+            "INFO",
+            "user_session",
+            "shared_signal_stop_ignored",
+            "User stop does not stop the shared backend engine; admin controls global analysis.",
+            {"user_id": user.get("id")},
+        )
+        return _status_payload(user)
     db.insert_agent_log("INFO", "admin", "control_stop", "Admin requested agent stop")
     await agent.stop()
     snapshot = agent.snapshot()
@@ -1132,6 +1471,53 @@ async def reset_demo(request: Request) -> dict[str, Any]:
     return snapshot
 
 
+@app.get("/api/ideas")
+async def ideas(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    user_id = int(user["id"]) if user.get("role") != "admin" else None
+    tracked_ideas = db.user_followed_signal_ideas(user_id, 100) if user_id is not None else []
+    return {
+        "ok": True,
+        "ideas": db.latest_signal_ideas(50, user_id=user_id),
+        "tracked_ideas": tracked_ideas,
+        "positions": _user_follow_positions(tracked_ideas),
+        "strategy_plans": db.strategy_plans(),
+        "shared_backend": {
+            "running": agent.running,
+            "last_cycle_at": agent.snapshot().get("last_cycle_at"),
+            "admin_controls_engine": True,
+        },
+    }
+
+
+@app.post("/api/ideas/{idea_id}/follow")
+async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    mode = str(payload.get("mode") or "TRACK")
+    amount = _positive_float(payload.get("amount", 0), field="amount")
+    qty = int(_positive_float(payload.get("qty", 0), field="qty"))
+    try:
+        follow = db.follow_signal_idea(int(user["id"]), idea_id, mode=mode, amount=amount, qty=qty)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    db.insert_agent_log(
+        "INFO",
+        "ideas",
+        "idea_followed",
+        f"{user.get('username')} followed idea #{idea_id}",
+        {"user_id": user.get("id"), "idea_id": idea_id, "mode": mode, "amount": amount, "qty": qty},
+    )
+    tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    return {
+        "ok": True,
+        "follow": follow,
+        "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
+        "tracked_ideas": tracked_ideas,
+        "positions": _user_follow_positions(tracked_ideas),
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     user = current_user(websocket, settings, db)
@@ -1154,6 +1540,87 @@ def _normalize_symbol(value: str) -> str:
     if not re.fullmatch(r"[A-Z0-9&-]{1,24}", symbol):
         return ""
     return symbol
+
+
+def _resolve_analysis_symbol(value: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    requested = _normalize_symbol(value)
+    search_text = str(value or "").strip()
+    if requested:
+        aliased = COMMON_SYMBOL_ALIASES.get(requested, requested)
+        row = db.universe_row(aliased)
+        if row:
+            return aliased, row, {"requested_symbol": requested, "resolved_from": "alias" if aliased != requested else "symbol"}
+        suggestions = _symbol_suggestions(requested, limit=1)
+        if suggestions:
+            symbol = str(suggestions[0]["symbol"])
+            row = db.universe_row(symbol)
+            if row:
+                return symbol, row, {"requested_symbol": requested, "resolved_from": "universe_search"}
+        return requested, _manual_universe_row(requested), {"requested_symbol": requested, "resolved_from": "manual"}
+
+    suggestions = _symbol_suggestions(search_text, limit=1)
+    if suggestions:
+        symbol = str(suggestions[0]["symbol"])
+        row = db.universe_row(symbol)
+        if row:
+            return symbol, row, {"requested_symbol": search_text, "resolved_from": "company_search"}
+    return "", {}, {"requested_symbol": search_text, "resolved_from": "invalid"}
+
+
+def _symbol_suggestions(value: str, limit: int = 5) -> list[dict[str, Any]]:
+    raw = str(value or "").strip()
+    normalized = _normalize_symbol(raw)
+    alias = COMMON_SYMBOL_ALIASES.get(normalized or _compact_search_text(raw))
+    candidates: list[dict[str, Any]] = []
+    if alias:
+        row = db.universe_row(alias)
+        if row:
+            candidates.append({"symbol": row.get("symbol"), "name": row.get("name"), "sector": row.get("sector")})
+    compact = _compact_search_text(raw)
+    if not compact and not normalized:
+        return candidates[:limit]
+    like = f"%{raw.upper()}%" if raw else "%"
+    compact_like = f"%{compact}%"
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                select symbol, name, sector
+                from universe
+                where enabled = 1
+                  and (
+                    upper(symbol) like ?
+                    or upper(name) like ?
+                    or replace(replace(replace(upper(name), ' ', ''), '.', ''), '&', '') like ?
+                  )
+                order by
+                  case
+                    when upper(symbol) = ? then 0
+                    when replace(replace(replace(upper(name), ' ', ''), '.', ''), '&', '') = ? then 1
+                    when upper(symbol) like ? then 2
+                    else 3
+                  end,
+                  symbol
+                limit ?
+                """,
+                (like, like, compact_like, normalized, compact, f"{normalized}%", limit * 2),
+            ).fetchall()
+    except Exception:
+        rows = []
+    seen = {str(item.get("symbol")) for item in candidates}
+    for row in rows:
+        symbol = str(row["symbol"])
+        if symbol in seen:
+            continue
+        candidates.append({"symbol": symbol, "name": row["name"], "sector": row["sector"]})
+        seen.add(symbol)
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _compact_search_text(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
 
 
 def _require_signal_user(request: Request) -> dict[str, Any]:
@@ -1190,24 +1657,40 @@ def _market_data_provider_for_user(user: dict[str, Any]):
     )
 
 
+def _assigned_llm_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    provider = str(payload.get("assigned_llm_provider") or payload.get("llm_provider") or settings.user_default_llm_provider or "groq").strip().lower()
+    if provider not in {"groq", "deepseek", "offline"}:
+        provider = "groq"
+    model = str(payload.get("assigned_llm_model") or payload.get("llm_model") or "").strip()
+    if provider == "groq":
+        return provider, model or settings.groq_model or "qwen/qwen3-32b"
+    if provider == "deepseek":
+        return provider, model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else settings.deepseek_model
+    return "offline", "offline"
+
+
 def _strategy_for_user_budget(
     user: dict[str, Any],
     credit_summary: dict[str, Any],
     estimated_charge: float,
 ) -> tuple[StrategyEngine, dict[str, Any]]:
+    stored_user = db.user_by_id(int(user["id"])) or user
+    active_settings = _llm_settings_for_user(stored_user)
     daily_remaining = float(credit_summary.get("daily_credits_remaining") or 0.0)
     balance = float(credit_summary.get("credit_balance") or 0.0)
     available = min(daily_remaining, balance)
     threshold = max(float(estimated_charge or 0.01) * 3.0, 0.03)
     policy = {
         "mode": "full_context",
-        "model": settings.deepseek_model,
+        "provider": active_settings.llm_provider,
+        "model": _model_name_for_settings(active_settings),
         "daily_credits_remaining": round(daily_remaining, 6),
         "estimated_signal_credit": round(float(estimated_charge or 0.0), 6),
+        "tokens_per_credit": settings.credit_tokens_per_credit,
     }
-    if settings.deepseek_model != "deepseek-v4-flash" and 0 < available <= threshold:
+    if active_settings.llm_provider == "deepseek" and active_settings.deepseek_model != "deepseek-v4-flash" and 0 < available <= threshold:
         budget_settings = replace(
-            settings,
+            active_settings,
             deepseek_model="deepseek-v4-flash",
             llm_max_tokens=min(int(settings.llm_max_tokens or 4096), 2048),
             llm_rolling_context_max_chunks=1 if int(settings.llm_rolling_context_max_chunks or 0) == 0 else min(int(settings.llm_rolling_context_max_chunks), 1),
@@ -1219,8 +1702,38 @@ def _strategy_for_user_budget(
                 "reason": "daily credit budget is close to the estimated signal cost",
             }
         )
-        return StrategyEngine(budget_settings, sentiment, LLMBrain(budget_settings, db)), policy
-    return strategy, policy
+        return StrategyEngine(budget_settings, SentimentService(budget_settings, db), LLMBrain(budget_settings, db)), policy
+    return StrategyEngine(active_settings, SentimentService(active_settings, db), LLMBrain(active_settings, db)), policy
+
+
+def _llm_settings_for_user(user: dict[str, Any]) -> Settings:
+    provider = str(user.get("assigned_llm_provider") or settings.user_default_llm_provider or settings.llm_provider).strip().lower()
+    model = str(user.get("assigned_llm_model") or settings.user_default_llm_model or "").strip()
+    if provider == "groq":
+        if not settings.groq_api_key:
+            return replace(settings, llm_provider="offline", llm_decision_mode="offline")
+        return replace(
+            settings,
+            llm_provider="groq",
+            groq_model=model or settings.groq_model,
+            llm_max_tokens=min(int(settings.llm_max_tokens or 4096), 2048),
+            llm_timeout_seconds=min(max(int(settings.llm_timeout_seconds or 45), 30), 60),
+            llm_rolling_context_max_chunks=1 if int(settings.llm_rolling_context_max_chunks or 0) == 0 else min(int(settings.llm_rolling_context_max_chunks), 1),
+        )
+    if provider == "deepseek":
+        if not settings.deepseek_api_key:
+            return replace(settings, llm_provider="offline", llm_decision_mode="offline")
+        deepseek_model = model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else settings.deepseek_model
+        return replace(settings, llm_provider="deepseek", deepseek_model=deepseek_model)
+    return replace(settings, llm_provider="offline", llm_decision_mode="offline")
+
+
+def _model_name_for_settings(active_settings: Settings) -> str:
+    if active_settings.llm_provider == "groq":
+        return active_settings.groq_model
+    if active_settings.llm_provider == "deepseek":
+        return active_settings.deepseek_model
+    return "offline"
 
 
 def _attach_user_to_decision(
@@ -1240,11 +1753,19 @@ def _attach_user_to_decision(
 
 
 async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
+    phase = "prepare"
+
+    def set_phase(name: str, details: dict[str, Any] | None = None) -> None:
+        nonlocal phase
+        phase = name
+        user_signal_sessions.update_phase(user_id, name, details)
+
+    set_phase("prepare")
     user = db.user_by_id(user_id)
     if not user or not user.get("active") or user.get("role") == "admin":
         raise RuntimeError("user signal session requires an active non-admin user")
 
-    estimated_charge = db.average_signal_credit_charge()
+    estimated_charge = _estimated_signal_credit_charge()
     can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
     if not can_spend:
         raise RuntimeError(f"insufficient credits or daily budget; estimated need {estimated_charge:.4f} credits")
@@ -1253,20 +1774,47 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     universe = user_signal_sessions.select_universe(user_id, full_universe, credit_before, estimated_charge)
     if not universe:
         raise RuntimeError("no enabled universe symbols available for user signal session")
+    set_phase(
+        "market_quotes",
+        {
+            "symbol_count": len(universe),
+            "symbols_sample": [row.get("symbol") for row in universe[:10]],
+        },
+    )
 
     user_market_data = _market_data_provider_for_user(user)
     user_strategy, budget_policy = _strategy_for_user_budget(user, credit_before, estimated_charge)
     usage_after_id = db.latest_llm_usage_id()
+    usage_scope = f"user_signal_cycle:{user_id}:{uuid4().hex}"
     usage: dict[str, Any] = {"calls": 0, "cost_usd": 0.0, "total_tokens": 0, "input_chars": 0, "output_chars": 0}
     credit_after = credit_before
     decisions: list[Any] = []
     cycle_error: BaseException | None = None
+    phase_at_error = phase
     context_token = current_user_id.set(user_id)
+    scope_token = current_llm_usage_scope.set(usage_scope)
     try:
         quotes = await user_market_data.get_quotes(universe)
         if not quotes:
             raise MarketDataError(f"{user_market_data.source_name} returned no quotes for user signal session")
+        set_phase(
+            "candles",
+            {
+                "symbol_count": len(universe),
+                "quote_count": len(quotes),
+                "provider": user_market_data.source_name,
+            },
+        )
         candles_fresh = await user_market_data.get_candles(universe)
+        set_phase(
+            "persist_market_data",
+            {
+                "symbol_count": len(universe),
+                "quote_count": len(quotes),
+                "symbols_with_candles": len(candles_fresh),
+                "provider": user_market_data.source_name,
+            },
+        )
         db.upsert_quotes(quotes)
         db.upsert_candles(candles_fresh)
         candle_sets = db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
@@ -1274,44 +1822,96 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
             symbol: sets.get("analysis") or sets.get("daily") or sets.get("intraday") or []
             for symbol, sets in candle_sets.items()
         }
-        decisions = await user_strategy.evaluate(
-            universe,
-            quotes,
-            {},
-            candles,
-            db.get_state("macro_context", {}),
-            db.get_state("institutional_context", {}),
-            db.get_state("options_intelligence_context", {}),
-            delivery_service,
-            db.get_state("market_breadth_context", {}),
-            db.get_state("sector_rotation_context", {}),
-            macro_calendar,
-            candle_sets,
-            (db.latest_portfolio() or {}).get("equity"),
+        set_phase(
+            "strategy_and_llm",
+            {
+                "symbol_count": len(universe),
+                "provider": user_market_data.source_name,
+                "llm_provider": budget_policy.get("provider"),
+                "llm_model": budget_policy.get("model"),
+            },
         )
+        decisions = await asyncio.to_thread(
+            lambda: asyncio.run(
+                user_strategy.evaluate(
+                    universe,
+                    quotes,
+                    {},
+                    candles,
+                    db.get_state("macro_context", {}),
+                    db.get_state("institutional_context", {}),
+                    db.get_state("options_intelligence_context", {}),
+                    delivery_service,
+                    db.get_state("market_breadth_context", {}),
+                    db.get_state("sector_rotation_context", {}),
+                    macro_calendar,
+                    candle_sets,
+                    (db.latest_portfolio() or {}).get("equity"),
+                )
+            )
+        )
+    except asyncio.CancelledError:
+        raise
     except BaseException as exc:
+        phase_at_error = phase
         cycle_error = exc
     finally:
         current_user_id.reset(context_token)
+        current_llm_usage_scope.reset(scope_token)
 
-    usage = db.llm_usage_cost_since(user_id, usage_after_id)
+    set_phase(
+        "billing",
+        {
+            "symbol_count": len(universe),
+            "decision_count": len(decisions),
+            "cycle_error": _exception_message(cycle_error) if cycle_error else None,
+        },
+    )
+    usage = db.llm_usage_cost_for_scope(user_id, usage_scope, usage_after_id)
+    llm_activity = _llm_activity_from_decisions(decisions, usage)
     if usage.get("calls"):
+        billing = _credit_billing_for_usage(usage)
         credit_after = db.charge_user_credits(
             user_id,
-            usage["cost_usd"],
+            billing["base_credits"],
             "Autonomous signal cycle",
             {
                 "symbols": [row["symbol"] for row in universe],
                 "symbol_count": len(universe),
                 "llm_usage": usage,
+                "llm_activity": llm_activity,
                 "provider": user_market_data.source_name,
                 "estimated_credit_before": estimated_charge,
                 "budget_policy": budget_policy,
+                "usage_scope": usage_scope,
+                "credit_billing": {
+                    "tokens_per_credit": billing["tokens_per_credit"],
+                    "total_tokens": billing["total_tokens"],
+                    "charged_credits": billing["charged_credits"],
+                },
+                "admin_billing": {
+                    "base_credits": billing["base_credits"],
+                    "platform_margin_pct": billing["platform_margin_pct"],
+                    "platform_margin_credits": billing["platform_margin_credits"],
+                    "api_cost_usd": billing["api_cost_usd"],
+                },
             },
+            margin_pct=billing["platform_margin_pct"],
+            minimum_charge=0.0,
         )
     if cycle_error is not None:
-        raise cycle_error
+        raise UserSignalCycleError(
+            phase_at_error,
+            cycle_error,
+            {
+                "symbol_count": len(universe),
+                "provider": user_market_data.source_name,
+                "llm_provider": budget_policy.get("provider"),
+                "llm_model": budget_policy.get("model"),
+            },
+        ) from cycle_error
 
+    set_phase("persist_decisions", {"symbol_count": len(universe), "decision_count": len(decisions)})
     tagged_decisions = [
         _attach_user_to_decision(decision, user, credit_after, budget_policy)
         for decision in decisions
@@ -1339,17 +1939,20 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
             "action_counts": action_counts,
             "llm_calls": usage.get("calls", 0),
             "llm_tokens": usage.get("total_tokens", 0),
+            "llm_activity": llm_activity,
             "credit_charge": credit_charge,
             "daily_credits_remaining": credit_after.get("daily_credits_remaining"),
             "budget_policy": budget_policy,
         },
     )
+    set_phase("sleep", {"last_decision_count": len(tagged_decisions), "last_llm_calls": usage.get("calls", 0), "llm_activity": llm_activity})
     return {
         "last_cycle_at": utc_now(),
         "last_error": None,
         "last_credit_charge": credit_charge,
         "last_llm_calls": usage.get("calls", 0),
         "last_llm_tokens": usage.get("total_tokens", 0),
+        "last_llm_activity": llm_activity,
         "last_decision_count": len(tagged_decisions),
         "last_action_counts": action_counts,
         "symbols_per_cycle": len(universe),
@@ -1423,18 +2026,171 @@ def _public_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
 
 def _public_credit_details(details: dict[str, Any]) -> dict[str, Any]:
     output = dict(details)
+    output.pop("admin_billing", None)
+    if isinstance(output.get("budget_policy"), dict):
+        output["budget_policy"] = _public_budget_policy(output["budget_policy"])
     if isinstance(output.get("llm_usage"), dict):
         output["llm_usage"] = _public_llm_usage(output["llm_usage"])
     return output
 
 
+def _public_budget_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": "credit_managed_analysis" if policy.get("mode") != "low_credit_guard" else "low_credit_guard",
+        "daily_credits_remaining": policy.get("daily_credits_remaining", 0.0),
+        "estimated_signal_credit": policy.get("estimated_signal_credit", 0.0),
+        "tokens_per_credit": policy.get("tokens_per_credit", settings.credit_tokens_per_credit),
+        "reason": "OpenTrade selected the analysis lane assigned by admin.",
+    }
+
+
+def _public_llm_usage_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    output = dict(summary or {})
+    output.pop("by_model_today", None)
+    output.pop("recent", None)
+    return output
+
+
+def _sanitize_decision_row_for_user(row: dict[str, Any]) -> dict[str, Any]:
+    output = dict(row)
+    details = _json_object(output.get("details_json"))
+    details = _sanitize_private_llm_metadata(details)
+    output["details_json"] = json.dumps(details, default=str, separators=(",", ":"))
+    return output
+
+
+def _sanitize_order_row_for_user(row: dict[str, Any]) -> dict[str, Any]:
+    output = dict(row)
+    details = _json_object(output.get("details_json"))
+    details = _sanitize_private_llm_metadata(details)
+    output["details_json"] = json.dumps(details, default=str, separators=(",", ":"))
+    return output
+
+
+def _sanitize_decision_payload_for_user(payload: dict[str, Any]) -> dict[str, Any]:
+    output = dict(payload)
+    if isinstance(output.get("details"), dict):
+        output["details"] = _sanitize_private_llm_metadata(output["details"])
+    return output
+
+
+def _sanitize_private_llm_metadata(value: Any) -> Any:
+    private_keys = {
+        "configured_provider",
+        "configured_model",
+        "selected_provider",
+        "selected_model",
+        "model_attempts",
+        "_llm_provider",
+        "_llm_model",
+        "_llm_attempts",
+        "llm_provider",
+        "llm_model",
+    }
+    if isinstance(value, dict):
+        llm_scoped = bool(
+            {"decision_path", "analysis_mode", "llm_output", "json_repaired", "json_retry", "llm_timeout"}
+            & set(value.keys())
+        ) or ({"provider", "model"} <= set(value.keys()) and bool({"reason", "risk", "strategy", "evidence", "risk_checks"} & set(value.keys())))
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in private_keys or (llm_scoped and key in {"provider", "model"}):
+                continue
+            if key == "budget_policy" and isinstance(item, dict):
+                sanitized[key] = _public_budget_policy(item)
+                continue
+            sanitized[key] = _sanitize_private_llm_metadata(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_private_llm_metadata(item) for item in value]
+    return value
+
+
 def _public_llm_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    tokens = int(usage.get("total_tokens") or 0)
+    rate = max(float(settings.credit_tokens_per_credit or 10), 1.0)
     return {
         "calls": int(usage.get("calls") or 0),
-        "total_tokens": int(usage.get("total_tokens") or 0),
+        "total_tokens": tokens,
+        "tokens_per_credit": rate,
+        "estimated_credits": round(tokens / rate, 6),
         "input_chars": int(usage.get("input_chars") or 0),
         "output_chars": int(usage.get("output_chars") or 0),
     }
+
+
+def _llm_activity_from_decisions(decisions: list[Any], usage: dict[str, Any]) -> dict[str, Any]:
+    selected = 0
+    attempted = 0
+    failed = 0
+    latest_reason = ""
+    for decision in decisions:
+        details_value = getattr(decision, "details_json", None)
+        if details_value is None and isinstance(decision, dict):
+            details_value = decision.get("details_json")
+        details = _json_object(details_value)
+        decision_path = str(details.get("decision_path") or "")
+        risk_gates = details.get("risk_gates") or {}
+        context = details.get("context") or {}
+        if (
+            decision_path.startswith("llm_")
+            or risk_gates.get("llm_deep_review_selected")
+            or (context.get("llm_primary_selection") or {}).get("selected")
+        ):
+            selected += 1
+        review = context.get("llm_primary_review") or {}
+        error = review.get("llm_error")
+        attempts = []
+        if isinstance(error, dict):
+            attempts = error.get("model_attempts") or []
+        if attempts or review.get("reviewed") or decision_path.startswith("llm_"):
+            attempted += 1
+        if error:
+            failed += 1
+            latest_reason = _public_llm_failure_reason(error) or latest_reason
+        fallback = details.get("llm_primary_fallback") or context.get("llm_primary_fallback") or {}
+        if fallback and not latest_reason:
+            latest_reason = _public_llm_failure_reason({"reason": fallback.get("llm_reason") or fallback.get("reason")})
+    calls = int(usage.get("calls") or 0)
+    if calls:
+        status = "completed_billable"
+        message = f"OpenTrade Brain completed {calls} billable call(s); credits were charged from returned token usage."
+    elif attempted:
+        status = "attempted_no_billable_tokens"
+        message = "OpenTrade Brain was selected and attempted analysis, but the provider returned no billable token usage. No credits were charged."
+    elif selected:
+        status = "selected_not_attempted"
+        message = "OpenTrade Brain was selected, but no provider attempt was completed in this cycle. No credits were charged."
+    else:
+        status = "not_selected"
+        message = "No symbol reached the OpenTrade Brain review lane in this cycle. No LLM credits were used."
+    return {
+        "status": status,
+        "message": message,
+        "selected_symbols": selected,
+        "attempted_symbols": attempted,
+        "failed_symbols": failed,
+        "billable_calls": calls,
+        "billable_tokens": int(usage.get("total_tokens") or 0),
+        "credits_charged": _public_llm_usage(usage)["estimated_credits"],
+        "latest_failure": latest_reason,
+    }
+
+
+def _public_llm_failure_reason(error: dict[str, Any]) -> str:
+    text = str(error.get("reason") or error.get("error") or "").strip()
+    attempts = error.get("model_attempts") if isinstance(error.get("model_attempts"), list) else []
+    attempt_errors = " ".join(str(item.get("error") or "") for item in attempts if isinstance(item, dict))
+    combined = f"{text} {attempt_errors}".lower()
+    if "413" in combined or "request too large" in combined or "tokens per minute" in combined or "tpm" in combined:
+        return "The provider rejected the request because it was too large for the assigned model's token-per-minute limit."
+    if "429" in combined or "too many requests" in combined or "rate limit" in combined:
+        return "The provider rate-limited the request before returning a billable response."
+    if "timeout" in combined:
+        return "The provider timed out before returning a usable decision."
+    if text:
+        return "The provider did not return a usable decision."
+    return ""
 
 
 def _positive_float(value: Any, *, field: str) -> float:

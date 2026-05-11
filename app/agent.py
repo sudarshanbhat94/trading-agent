@@ -36,6 +36,7 @@ class TradingAgentService:
         interval_seconds: int,
         cycle_timeout_seconds: int,
         universe_symbols_per_cycle: int = 0,
+        execute_trades: bool = True,
         on_update: UpdateCallback | None = None,
     ) -> None:
         self.db = db
@@ -52,6 +53,7 @@ class TradingAgentService:
         self.interval_seconds = interval_seconds
         self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
         self.universe_symbols_per_cycle = max(0, int(universe_symbols_per_cycle or 0))
+        self.execute_trades = execute_trades
         self.on_update = on_update
         self._task: asyncio.Task | None = None
         self._running = False
@@ -85,7 +87,7 @@ class TradingAgentService:
             self._task = None
 
     async def run_once(self) -> dict[str, Any]:
-        return await asyncio.wait_for(self._run_once_inner(), timeout=self.cycle_timeout_seconds)
+        return await self._run_once_inner()
 
     async def _run_once_inner(self) -> dict[str, Any]:
         started = datetime.now(timezone.utc)
@@ -245,20 +247,24 @@ class TradingAgentService:
             },
         )
         self._cycle_phase = "strategy_and_llm"
-        decisions = await self.strategy.evaluate(
-            universe,
-            quotes,
-            positions,
-            candles,
-            macro_context,
-            institutional_context,
-            options_context,
-            self.delivery_service,
-            market_breadth_context,
-            sector_rotation_context,
-            self.macro_calendar,
-            candle_sets,
-            portfolio.get("equity"),
+        decisions = await asyncio.to_thread(
+            lambda: asyncio.run(
+                self.strategy.evaluate(
+                    universe,
+                    quotes,
+                    positions,
+                    candles,
+                    macro_context,
+                    institutional_context,
+                    options_context,
+                    self.delivery_service,
+                    market_breadth_context,
+                    sector_rotation_context,
+                    self.macro_calendar,
+                    candle_sets,
+                    portfolio.get("equity"),
+                )
+            )
         )
         action_counts: dict[str, int] = {}
         decision_paths: dict[str, int] = {}
@@ -285,7 +291,16 @@ class TradingAgentService:
         risk_exits = self.strategy.stop_or_take_profit_exits(quotes, positions, candles)
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
-        executed_count = self._execute_top_decisions(decisions, portfolio["equity"])
+        self.db.upsert_signal_ideas_from_decisions(decisions)
+        executed_count = self._execute_top_decisions(decisions, portfolio["equity"]) if self.execute_trades else 0
+        if not self.execute_trades:
+            self._log(
+                "INFO",
+                "execution",
+                "admin_execution_disabled",
+                "Global admin cycle is analysis-only; users own signal execution.",
+                {"decisions": len(decisions)},
+            )
         portfolio = self.broker.snapshot()
         self._last_cycle_at = utc_now()
         self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
@@ -349,7 +364,7 @@ class TradingAgentService:
         market_health["portfolio_equity"] = portfolio.get("equity")
         macro_calendar_context = self.db.get_state("macro_calendar_context", {})
         positions = self._positions_with_exit_plans(raw_positions, order_audit_history, quotes, market_health, macro_calendar_context)
-        suggestions = self._suggestions(suggestion_decisions)
+        suggestions = self.db.latest_signal_ideas(20)
         universe_summary = self.db.universe_summary()
         options_context = self.db.get_state("options_intelligence_context", {})
         self_audit = self.db.get_state("self_audit")
@@ -383,6 +398,8 @@ class TradingAgentService:
             "quotes": quotes,
             "decisions": decisions,
             "suggestions": suggestions,
+            "signal_ideas": suggestions,
+            "strategy_plans": self.db.strategy_plans(),
             "orders": orders,
             "equity_curve": self.db.recent_equity(120),
             "strategy_metrics": self.db.strategy_metrics(),

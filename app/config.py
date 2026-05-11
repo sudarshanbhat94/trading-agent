@@ -53,6 +53,8 @@ class Settings:
     admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
     auth_session_secret: str = os.getenv("AUTH_SESSION_SECRET", "")
     admin_session_hours: int = _int("ADMIN_SESSION_HOURS", 12)
+    credit_tokens_per_credit: int = _int("CREDIT_TOKENS_PER_CREDIT", 10)
+    credit_platform_margin_pct: float = _float("CREDIT_PLATFORM_MARGIN_PCT", 0.20)
 
     initial_cash_inr: float = _float("INITIAL_CASH_INR", 10_000)
     max_positions: int = _int("MAX_POSITIONS", 5)
@@ -143,6 +145,11 @@ class Settings:
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_base_url: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+    groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
+    user_default_llm_provider: str = os.getenv("USER_DEFAULT_LLM_PROVIDER", "groq").strip().lower()
+    user_default_llm_model: str = os.getenv("USER_DEFAULT_LLM_MODEL", "qwen/qwen3-32b")
     llm_temperature: float = _float("LLM_TEMPERATURE", 0.05)
     llm_top_p: float = _float("LLM_TOP_P", 0.7)
     llm_max_tokens: int = _int("LLM_MAX_TOKENS", 4096)
@@ -169,6 +176,7 @@ SECRET_FIELDS = {
     "nubra_phone",
     "nubra_mpin",
     "deepseek_api_key",
+    "groq_api_key",
     "live_trading_confirm",
     "admin_password",
     "auth_session_secret",
@@ -185,6 +193,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "admin_username", "label": "Admin Username", "type": "text", "category": "Access Control"},
     {"key": "auth_session_secret", "label": "Session Secret", "type": "secret", "category": "Access Control"},
     {"key": "admin_session_hours", "label": "Session Hours", "type": "number", "category": "Access Control", "min": 1, "step": 1},
+    {"key": "credit_tokens_per_credit", "label": "Tokens Per Credit", "type": "number", "category": "User Credits", "min": 1, "step": 1},
+    {"key": "credit_platform_margin_pct", "label": "Platform Margin %", "type": "number", "category": "User Credits", "min": 0, "max": 1, "step": 0.01},
     {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["upstox"]},
     {"key": "universe_source", "label": "Universe Source", "type": "select", "category": "Market Data", "choices": ["csv", "nse_equity"]},
     {"key": "nse_universe_refresh_on_start", "label": "Refresh NSE Universe", "type": "boolean", "category": "Market Data"},
@@ -205,11 +215,16 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "upstox_weekly_candle_lookback_days", "label": "Weekly Lookback Days", "type": "number", "category": "Market Data", "min": 180, "step": 30},
     {"key": "upstox_candle_concurrency", "label": "Candle Fetch Concurrency", "type": "number", "category": "Market Data", "min": 1, "step": 1},
     {"key": "upstox_candle_fetch_timeout_seconds", "label": "Candle Fetch Timeout", "type": "number", "category": "Market Data", "min": 5, "step": 5},
-    {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "offline"]},
+    {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "groq", "offline"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "deepseek_api_key", "label": "DeepSeek API Key", "type": "secret", "category": "LLM Brain"},
     {"key": "deepseek_base_url", "label": "DeepSeek Base URL", "type": "text", "category": "LLM Brain"},
     {"key": "deepseek_model", "label": "DeepSeek Model", "type": "select", "category": "LLM Brain", "choices": ["deepseek-v4-pro", "deepseek-v4-flash"]},
+    {"key": "groq_api_key", "label": "Groq API Key", "type": "secret", "category": "LLM Brain"},
+    {"key": "groq_base_url", "label": "Groq Base URL", "type": "text", "category": "LLM Brain"},
+    {"key": "groq_model", "label": "Groq Model", "type": "text", "category": "LLM Brain"},
+    {"key": "user_default_llm_provider", "label": "Default User LLM", "type": "select", "category": "User Credits", "choices": ["groq", "deepseek", "offline"]},
+    {"key": "user_default_llm_model", "label": "Default User Model", "type": "text", "category": "User Credits"},
     {"key": "llm_rolling_context_enabled", "label": "Rolling Context", "type": "boolean", "category": "LLM Brain"},
     {"key": "llm_rolling_context_threshold_chars", "label": "Rolling Threshold Chars", "type": "number", "category": "LLM Brain", "min": 2000, "step": 1000},
     {"key": "llm_rolling_context_chunk_chars", "label": "Rolling Chunk Chars", "type": "number", "category": "LLM Brain", "min": 1000, "step": 500},
@@ -278,7 +293,10 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return "upstox"
     if key == "llm_provider":
         provider = str(value).strip().lower()
-        return provider if provider in {"deepseek", "offline"} else "deepseek"
+        return provider if provider in {"deepseek", "groq", "offline"} else "deepseek"
+    if key == "user_default_llm_provider":
+        provider = str(value).strip().lower()
+        return provider if provider in {"groq", "deepseek", "offline"} else "groq"
     if key == "llm_decision_mode":
         mode = str(value).strip().lower()
         return mode if mode in {"offline", "review", "primary"} else "primary"
@@ -287,6 +305,10 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else "deepseek-v4-pro"
     if key == "deepseek_base_url":
         return str(value).strip().rstrip("/") or "https://api.deepseek.com"
+    if key == "groq_base_url":
+        return str(value).strip().rstrip("/") or "https://api.groq.com/openai/v1"
+    if key in {"groq_model", "user_default_llm_model"}:
+        return str(value).strip() or "qwen/qwen3-32b"
     if key == "llm_reasoning_effort":
         effort = str(value).strip().lower()
         return effort if effort in {"none", "high", "max"} else "high"

@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from statistics import mean, pstdev
 from typing import Any
 
 from .models import Candle
+
+
+def _mean(values: list[float] | tuple[float, ...] | Any) -> float:
+    items = list(values)
+    return sum(items) / len(items) if items else 0.0
+
+
+def _pstdev(values: list[float] | tuple[float, ...] | Any) -> float:
+    items = list(values)
+    if not items:
+        return 0.0
+    avg = _mean(items)
+    return (sum((value - avg) ** 2 for value in items) / len(items)) ** 0.5
 
 
 @dataclass(frozen=True)
@@ -97,9 +109,9 @@ def _minervini_trend_template(closes: list[float], quote_price: float) -> Strate
 def _vcp_breakout(candles: list[Candle], quote_price: float) -> StrategySignal:
     ranges = [((candle.high - candle.low) / candle.close) for candle in candles[-30:] if candle.close]
     volumes = [candle.volume for candle in candles[-30:]]
-    early_range = mean(ranges[:10])
-    late_range = mean(ranges[-10:])
-    volume_dryup = mean(volumes[-5:]) < mean(volumes[:15]) * 0.75 if len(volumes) >= 20 else False
+    early_range = _mean(ranges[:10])
+    late_range = _mean(ranges[-10:])
+    volume_dryup = _mean(volumes[-5:]) < _mean(volumes[:15]) * 0.75 if len(volumes) >= 20 else False
     pivot = max(candle.high for candle in candles[-15:-1])
     breakout = quote_price > pivot
     score = 0.0
@@ -127,7 +139,8 @@ def _darvas_box_breakout(
     box_high = max(highs[-20:-1])
     box_low = min(lows[-20:-1])
     box_width_pct = ((box_high - box_low) / box_low) * 100 if box_low else 100
-    volume_ratio = volumes[-1] / mean(volumes[-20:-1]) if mean(volumes[-20:-1]) else 1
+    baseline_volume = _mean(volumes[-20:-1])
+    volume_ratio = volumes[-1] / baseline_volume if baseline_volume else 1
     score = 0.0
     notes: list[str] = []
     if box_width_pct <= 12:
@@ -163,15 +176,16 @@ def _ema_pullback_continuation(closes: list[float], quote_price: float) -> Strat
 
 def _bollinger_squeeze_breakout(closes: list[float], quote_price: float) -> StrategySignal:
     recent = closes[-20:]
-    basis = mean(recent)
-    sigma = pstdev(recent) if len(recent) > 1 else 0
+    basis = _mean(recent)
+    sigma = _pstdev(recent) if len(recent) > 1 else 0
     upper = basis + (2 * sigma)
     width_pct = ((upper - (basis - (2 * sigma))) / basis) * 100 if basis else 100
     prior_widths = []
     for i in range(max(20, len(closes) - 80), len(closes) - 20):
         sample = closes[i : i + 20]
-        if len(sample) == 20 and mean(sample):
-            prior_widths.append(((4 * pstdev(sample)) / mean(sample)) * 100)
+        sample_mean = _mean(sample) if len(sample) == 20 else 0.0
+        if sample_mean:
+            prior_widths.append(((4 * _pstdev(sample)) / sample_mean) * 100)
     squeeze = bool(prior_widths) and width_pct <= sorted(prior_widths)[max(0, int(len(prior_widths) * 0.2) - 1)]
     score = 0.0
     notes: list[str] = []
@@ -211,7 +225,7 @@ def _donchian_momentum_breakout(
 ) -> StrategySignal:
     channel_high = max(highs[-55:-1]) if len(highs) >= 56 else max(highs[:-1])
     channel_low = min(lows[-55:-1]) if len(lows) >= 56 else min(lows[:-1])
-    average_volume = mean(volumes[-20:-1]) if len(volumes) >= 21 else mean(volumes[:-1])
+    average_volume = _mean(volumes[-20:-1]) if len(volumes) >= 21 else _mean(volumes[:-1])
     volume_ratio = volumes[-1] / average_volume if average_volume else 1.0
     trend = _sma(closes, 20) and _sma(closes, 50) and _sma(closes, 20) > _sma(closes, 50)
     score = 0.0
@@ -248,7 +262,7 @@ def _volume_price_accumulation(candles: list[Candle], quote_price: float) -> Str
     if _ema(closes, 10) and _ema(closes, 21) and _ema(closes, 10) > _ema(closes, 21):
         score += 0.2
         notes.append("10 EMA above 21 EMA")
-    if len(recent) >= 2 and recent[-1].close > recent[-1].open and recent[-1].volume > mean([c.volume for c in recent[:-1]]) * 1.15:
+    if len(recent) >= 2 and recent[-1].close > recent[-1].open and recent[-1].volume > _mean([c.volume for c in recent[:-1]]) * 1.15:
         score += 0.16
         notes.append("fresh demand candle")
     direction = "BUY" if score >= 0.58 else "HOLD"
@@ -268,7 +282,7 @@ def _failed_breakdown_reversal(candles: list[Candle], quote_price: float) -> Str
     if last.close > last.open:
         score += 0.14
         notes.append("bullish reclaim candle")
-    if last.volume > mean([candle.volume for candle in recent[:-1]]) * 1.2:
+    if last.volume > _mean([candle.volume for candle in recent[:-1]]) * 1.2:
         score += 0.18
         notes.append("reversal volume")
     if _rsi([candle.close for candle in candles], 14) and _rsi([candle.close for candle in candles], 14) < 45:
@@ -281,14 +295,14 @@ def _failed_breakdown_reversal(candles: list[Candle], quote_price: float) -> Str
 def _sma(values: list[float], window: int) -> float | None:
     if len(values) < window:
         return None
-    return mean(values[-window:])
+    return _mean(values[-window:])
 
 
 def _ema(values: list[float], window: int) -> float | None:
     if len(values) < window:
         return None
     alpha = 2 / (window + 1)
-    ema = mean(values[:window])
+    ema = _mean(values[:window])
     for value in values[window:]:
         ema = (value * alpha) + (ema * (1 - alpha))
     return ema
@@ -303,8 +317,8 @@ def _rsi(values: list[float], window: int) -> float | None:
         change = current - previous
         gains.append(max(change, 0))
         losses.append(abs(min(change, 0)))
-    average_gain = mean(gains)
-    average_loss = mean(losses)
+    average_gain = _mean(gains)
+    average_loss = _mean(losses)
     if average_loss == 0:
         return 100.0
     rs = average_gain / average_loss
