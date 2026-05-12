@@ -15,8 +15,8 @@ class AccountService:
 
     async def snapshot(self) -> dict[str, Any]:
         paper = self._paper_account()
-        upstox = await self._upstox_account() if self.settings.upstox_access_token else {"connected": False}
-        return {"paper": paper, "upstox": upstox}
+        indstocks = self._indstocks_account()
+        return {"paper": paper, "indstocks": indstocks}
 
     def _paper_account(self) -> dict[str, Any]:
         portfolio = self.db.latest_portfolio()
@@ -25,6 +25,13 @@ class AccountService:
             "cash": self.db.get_state("cash", self.settings.initial_cash_inr),
             "portfolio": portfolio,
             "positions": self.db.positions(),
+        }
+
+    def _indstocks_account(self) -> dict[str, Any]:
+        return {
+            "connected": bool(self.settings.indstocks_access_token),
+            "base_url": self.settings.indstocks_api_base_url,
+            "provider": "indstocks",
         }
 
     async def _upstox_account(self) -> dict[str, Any]:

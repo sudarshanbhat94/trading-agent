@@ -5,11 +5,36 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
+from .market_regions import INDIA_EXCHANGES, normalize_market_region
+
+
+def _market_region_case(alias: str = "u") -> str:
+    india_values = ",".join(f"'{exchange}'" for exchange in sorted(INDIA_EXCHANGES))
+    return (
+        f"case "
+        f"when upper(coalesce({alias}.exchange,'')) in ({india_values}) then 'IN' "
+        f"when {alias}.exchange is null then 'IN' "
+        f"else 'US' end"
+    )
+
+
+def _market_region_where(alias: str, market_region: str | None) -> tuple[str, list[Any]]:
+    region = normalize_market_region(market_region or "BOTH", default="BOTH")
+    if region == "BOTH":
+        return "", []
+    placeholders = ",".join("?" for _ in INDIA_EXCHANGES)
+    if region == "IN":
+        return f"upper(coalesce({alias}.exchange,'')) in ({placeholders})", sorted(INDIA_EXCHANGES)
+    return (
+        f"{alias}.exchange is not null and upper(coalesce({alias}.exchange,'')) not in ({placeholders})",
+        sorted(INDIA_EXCHANGES),
+    )
 
 
 def _optional_int(value: Any) -> int | None:
@@ -30,10 +55,170 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _plan_max_days(plan_code: str, fallback_status: str = "") -> int:
+    code = str(plan_code or "").lower()
+    status = str(fallback_status or "").upper()
+    if status in {"WATCH", "MONITORING"}:
+        return 7
+    if code == "smallcap_momentum":
+        return 10
+    if code == "confirmed_breakout":
+        return 15
+    if code == "pullback_to_strength":
+        return 20
+    if code == "defensive_exit_manager":
+        return 5
+    return 25
+
+
+def _normalize_targets(targets: Any) -> list[dict[str, Any]]:
+    if not isinstance(targets, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for index, target in enumerate(targets[:3], start=1):
+        if isinstance(target, dict):
+            price = _optional_float(target.get("price"))
+            label = str(target.get("label") or f"T{index}")
+            payload = dict(target)
+        else:
+            price = _optional_float(target)
+            label = f"T{index}"
+            payload = {"price": price}
+        if price is None or price <= 0:
+            continue
+        payload["label"] = label
+        payload["price"] = price
+        normalized.append(payload)
+    return normalized
+
+
+def _refresh_idea_lifecycle(
+    previous_details: dict[str, Any] | None,
+    incoming_details: dict[str, Any] | None,
+    entry_price: float,
+    latest_price: float,
+    status: str,
+    now_iso: str,
+    plan_code: str,
+    first_seen_at: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    details: dict[str, Any] = {}
+    if isinstance(previous_details, dict):
+        details.update(previous_details)
+    if isinstance(incoming_details, dict):
+        details.update(incoming_details)
+
+    targets = _normalize_targets(details.get("targets"))
+    details["targets"] = targets
+    previous_statuses = {
+        str(item.get("label") or "").upper(): item
+        for item in details.get("target_status", [])
+        if isinstance(item, dict)
+    }
+    target_status: list[dict[str, Any]] = []
+    highest_hit = ""
+    for target in targets:
+        label = str(target.get("label") or "").upper()
+        price = float(target.get("price") or 0.0)
+        previous = previous_statuses.get(label, {})
+        hit = bool(previous.get("hit")) or (latest_price >= price > 0)
+        if hit:
+            highest_hit = label
+        target_status.append(
+            {
+                "label": label,
+                "price": price,
+                "hit": hit,
+                "hit_at": previous.get("hit_at") or (now_iso if hit else None),
+                "distance_pct": _return_pct(latest_price, price) if latest_price > 0 else 0.0,
+            }
+        )
+
+    stop_loss = _optional_float(details.get("stop_loss"))
+    stop_hit = bool(details.get("stop_status", {}).get("hit")) if isinstance(details.get("stop_status"), dict) else False
+    if stop_loss is not None and stop_loss > 0 and latest_price > 0:
+        stop_hit = stop_hit or latest_price <= stop_loss
+    stop_status = {
+        "price": stop_loss,
+        "hit": bool(stop_hit),
+        "hit_at": (
+            details.get("stop_status", {}).get("hit_at")
+            if isinstance(details.get("stop_status"), dict)
+            else None
+        )
+        or (now_iso if stop_hit else None),
+    }
+
+    first_seen = _parse_dt(first_seen_at) or _parse_dt(details.get("generated_at")) or _parse_dt(now_iso) or datetime.now(timezone.utc)
+    expires_at = details.get("expires_at")
+    if not expires_at:
+        expires_at = (first_seen + timedelta(days=_plan_max_days(plan_code, status))).isoformat()
+    expires_dt = _parse_dt(expires_at)
+    now_dt = _parse_dt(now_iso) or datetime.now(timezone.utc)
+    expired = bool(expires_dt and now_dt >= expires_dt)
+    days_left = max(0, int((expires_dt - now_dt).total_seconds() // 86400)) if expires_dt else None
+
+    lifecycle_status = "active"
+    new_status = str(status or "ACTIVE")
+    if stop_status["hit"]:
+        lifecycle_status = "stopped"
+        new_status = "STOP_HIT"
+    elif highest_hit == "T3":
+        lifecycle_status = "target_3_hit"
+        new_status = "TARGET_3_HIT"
+    elif highest_hit == "T2":
+        lifecycle_status = "target_2_hit"
+    elif highest_hit == "T1":
+        lifecycle_status = "target_1_hit"
+    elif expired:
+        lifecycle_status = "expired"
+        new_status = "EXPIRED"
+    elif str(status or "").upper() in {"WATCH", "MONITORING"}:
+        lifecycle_status = str(status).lower()
+
+    details.update(
+        {
+            "generated_at": details.get("generated_at") or first_seen.isoformat(),
+            "expires_at": expires_at,
+            "days_to_expiry": days_left,
+            "target_status": target_status,
+            "highest_target_hit": highest_hit or "NONE",
+            "stop_status": stop_status,
+            "lifecycle_status": lifecycle_status,
+            "timeline": {
+                "plan_code": plan_code,
+                "max_days": _plan_max_days(plan_code, status),
+                "started_at": first_seen.isoformat(),
+                "expires_at": expires_at,
+                "days_left": days_left,
+            },
+        }
+    )
+    return new_status, details
+
+
 def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
     broker_accounts = {
+        "indstocks": {
+            "access_token_saved": bool(row.get("indstocks_access_token")),
+            "connected": bool(row.get("indstocks_access_token")),
+            "base_url": row.get("indstocks_api_base_url") or "",
+            "updated_at": row.get("broker_updated_at"),
+        },
         "upstox": {
             "api_key_saved": bool(row.get("upstox_api_key")),
             "api_secret_saved": bool(row.get("upstox_api_secret")),
@@ -102,6 +287,8 @@ class Database:
                     exchange text not null default 'NSE',
                     yahoo_symbol text,
                     kite_symbol text,
+                    indstocks_scrip_code text,
+                    indstocks_security_id text,
                     upstox_instrument_key text,
                     nubra_symbol text,
                     nubra_ref_id integer,
@@ -275,6 +462,8 @@ class Database:
                     upstox_redirect_uri text not null default '',
                     upstox_access_token text not null default '',
                     upstox_api_base_url text not null default '',
+                    indstocks_access_token text not null default '',
+                    indstocks_api_base_url text not null default '',
                     kite_api_key text not null default '',
                     kite_access_token text not null default '',
                     broker_updated_at text,
@@ -377,6 +566,8 @@ class Database:
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
+            self._ensure_column(conn, "universe", "indstocks_scrip_code", "text")
+            self._ensure_column(conn, "universe", "indstocks_security_id", "text")
             self._ensure_column(conn, "universe", "nubra_symbol", "text")
             self._ensure_column(conn, "universe", "nubra_ref_id", "integer")
             self._ensure_column(conn, "universe", "industry", "text")
@@ -432,6 +623,8 @@ class Database:
             self._ensure_column(conn, "users", "upstox_redirect_uri", "text not null default ''")
             self._ensure_column(conn, "users", "upstox_access_token", "text not null default ''")
             self._ensure_column(conn, "users", "upstox_api_base_url", "text not null default ''")
+            self._ensure_column(conn, "users", "indstocks_access_token", "text not null default ''")
+            self._ensure_column(conn, "users", "indstocks_api_base_url", "text not null default ''")
             self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
             self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
             self._ensure_column(conn, "users", "broker_updated_at", "text")
@@ -987,6 +1180,8 @@ class Database:
 
     def update_user_broker(self, user_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         allowed = {
+            "indstocks_access_token",
+            "indstocks_api_base_url",
             "upstox_api_key",
             "upstox_api_secret",
             "upstox_redirect_uri",
@@ -1022,6 +1217,15 @@ class Database:
             },
         )
 
+    def assign_runtime_indstocks_to_user(self, user_id: int, runtime_settings: dict[str, Any]) -> dict[str, Any] | None:
+        return self.update_user_broker(
+            user_id,
+            {
+                "indstocks_access_token": runtime_settings.get("indstocks_access_token", ""),
+                "indstocks_api_base_url": runtime_settings.get("indstocks_api_base_url", ""),
+            },
+        )
+
     def seed_universe(self, csv_path: Path, disable_missing: bool = True) -> None:
         if not csv_path.exists():
             raise FileNotFoundError(f"Universe CSV not found: {csv_path}")
@@ -1038,11 +1242,13 @@ class Database:
             conn.executemany(
                 """
                 insert into universe (
-                    symbol, name, exchange, yahoo_symbol, kite_symbol, upstox_instrument_key,
+                    symbol, name, exchange, yahoo_symbol, kite_symbol,
+                    indstocks_scrip_code, indstocks_security_id, upstox_instrument_key,
                     nubra_symbol, nubra_ref_id,
                     sector, industry, base_price, enabled
                 ) values (
-                    :symbol, :name, :exchange, :yahoo_symbol, :kite_symbol, :upstox_instrument_key,
+                    :symbol, :name, :exchange, :yahoo_symbol, :kite_symbol,
+                    :indstocks_scrip_code, :indstocks_security_id, :upstox_instrument_key,
                     :nubra_symbol, :nubra_ref_id,
                     :sector, :industry, :base_price, :enabled
                 )
@@ -1051,6 +1257,14 @@ class Database:
                     exchange = excluded.exchange,
                     yahoo_symbol = excluded.yahoo_symbol,
                     kite_symbol = excluded.kite_symbol,
+                    indstocks_scrip_code = case
+                        when excluded.indstocks_scrip_code != '' then excluded.indstocks_scrip_code
+                        else universe.indstocks_scrip_code
+                    end,
+                    indstocks_security_id = case
+                        when excluded.indstocks_security_id != '' then excluded.indstocks_security_id
+                        else universe.indstocks_security_id
+                    end,
                     upstox_instrument_key = case
                         when excluded.upstox_instrument_key != '' then excluded.upstox_instrument_key
                         else universe.upstox_instrument_key
@@ -1072,12 +1286,15 @@ class Database:
     def _normalize_universe_row(self, row: dict[str, Any]) -> dict[str, Any]:
         symbol = str(row.get("symbol", "")).strip().upper()
         exchange = str(row.get("exchange") or "NSE").strip().upper() or "NSE"
+        default_yahoo_symbol = f"{symbol}.NS" if exchange == "NSE" else f"{symbol}.BO" if exchange == "BSE" else symbol
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
             "exchange": exchange,
-            "yahoo_symbol": row.get("yahoo_symbol") or (f"{symbol}.NS" if exchange == "NSE" else ""),
+            "yahoo_symbol": row.get("yahoo_symbol") or default_yahoo_symbol,
             "kite_symbol": row.get("kite_symbol") or f"{exchange}:{symbol}",
+            "indstocks_scrip_code": row.get("indstocks_scrip_code") or row.get("scrip_code") or row.get("scrip-code") or "",
+            "indstocks_security_id": row.get("indstocks_security_id") or row.get("security_id") or "",
             "upstox_instrument_key": row.get("upstox_instrument_key") or "",
             "nubra_symbol": row.get("nubra_symbol") or symbol,
             "nubra_ref_id": _optional_int(row.get("nubra_ref_id")),
@@ -1205,11 +1422,12 @@ class Database:
             return {}
         intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source_like="upstox-live:%minute")
         legacy_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source="upstox-live")
+        yahoo_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="yahoo-delayed")
         daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=260, source="upstox-live:day")
         weekly = self.recent_candles_by_symbol(symbols, limit_per_symbol=160, source="upstox-live:week")
         output: dict[str, dict[str, list[Candle]]] = {}
         for symbol in symbols:
-            intraday_candles = intraday.get(symbol) or legacy_intraday.get(symbol) or []
+            intraday_candles = intraday.get(symbol) or legacy_intraday.get(symbol) or yahoo_intraday.get(symbol) or []
             daily_candles = daily.get(symbol) or self._resample_daily(intraday_candles)
             weekly_candles = weekly.get(symbol) or self._resample_weekly(daily_candles)
             analysis_candles = daily_candles or intraday_candles
@@ -1292,18 +1510,37 @@ class Database:
         except ValueError:
             return value[:10] if timeframe == "day" else None
 
-    def get_universe(self, enabled_only: bool = True) -> list[dict[str, Any]]:
+    def get_universe(self, enabled_only: bool = True, market_region: str | None = None) -> list[dict[str, Any]]:
         sql = "select * from universe"
+        clauses: list[str] = []
+        params: list[Any] = []
         if enabled_only:
-            sql += " where enabled = 1"
+            clauses.append("enabled = 1")
+        region = normalize_market_region(market_region or "BOTH", default="BOTH")
+        if region == "IN":
+            placeholders = ",".join("?" for _ in INDIA_EXCHANGES)
+            clauses.append(f"upper(exchange) in ({placeholders})")
+            params.extend(sorted(INDIA_EXCHANGES))
+        elif region == "US":
+            placeholders = ",".join("?" for _ in INDIA_EXCHANGES)
+            clauses.append(f"upper(exchange) not in ({placeholders})")
+            params.extend(sorted(INDIA_EXCHANGES))
+        if clauses:
+            sql += " where " + " and ".join(clauses)
         sql += " order by symbol"
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute(sql).fetchall()]
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def universe_summary(self) -> dict[str, Any]:
         with self.connect() as conn:
             total = conn.execute("select count(*) from universe").fetchone()[0]
             enabled = conn.execute("select count(*) from universe where enabled = 1").fetchone()[0]
+            india_enabled = conn.execute(
+                "select count(*) from universe where enabled = 1 and upper(exchange) in ('NSE','BSE')"
+            ).fetchone()[0]
+            us_enabled = conn.execute(
+                "select count(*) from universe where enabled = 1 and upper(exchange) not in ('NSE','BSE')"
+            ).fetchone()[0]
             priced = conn.execute(
                 """
                 select count(*)
@@ -1333,14 +1570,23 @@ class Database:
         return {
             "total": total,
             "enabled": enabled,
+            "india_enabled": india_enabled,
+            "us_enabled": us_enabled,
             "priced_symbols": priced,
             "low_price_enabled": priced_low,
             "top_sectors": [dict(row) for row in sectors],
         }
 
-    def universe_row(self, symbol: str) -> dict[str, Any] | None:
+    def universe_row(self, symbol: str, market_region: str | None = None) -> dict[str, Any] | None:
+        region = normalize_market_region(market_region or "BOTH", default="BOTH")
+        clauses = ["symbol = ?"]
+        params: list[Any] = [symbol]
+        if region == "IN":
+            clauses.append("upper(exchange) in ('NSE','BSE')")
+        elif region == "US":
+            clauses.append("upper(exchange) not in ('NSE','BSE')")
         with self.connect() as conn:
-            row = conn.execute("select * from universe where symbol = ?", (symbol,)).fetchone()
+            row = conn.execute(f"select * from universe where {' and '.join(clauses)}", params).fetchone()
         return dict(row) if row else None
 
     def upsert_quotes(self, quotes: dict[str, Quote]) -> None:
@@ -1431,6 +1677,17 @@ class Database:
                     status = idea["status"]
                     if row.get("action") == "SELL":
                         status = "EXIT_SIGNAL"
+                    existing_details = self._decode_json(existing["details_json"])
+                    status, idea_details = _refresh_idea_lifecycle(
+                        existing_details,
+                        idea["details"],
+                        entry_price,
+                        latest_price,
+                        status,
+                        now,
+                        idea["plan_code"],
+                        existing["first_seen_at"],
+                    )
                     conn.execute(
                         """
                         update signal_ideas
@@ -1456,13 +1713,23 @@ class Database:
                             idea["overall_grade"],
                             latest_decision_id,
                             idea["reason"],
-                            json.dumps(idea["details"], default=str, separators=(",", ":")),
+                            json.dumps(idea_details, default=str, separators=(",", ":")),
                             existing["id"],
                         ),
                     )
                 else:
                     entry_price = latest_price
                     current_return = 0.0
+                    status, idea_details = _refresh_idea_lifecycle(
+                        {},
+                        idea["details"],
+                        entry_price,
+                        latest_price,
+                        idea["status"],
+                        now,
+                        idea["plan_code"],
+                        now,
+                    )
                     conn.execute(
                         """
                         insert into signal_ideas (
@@ -1495,7 +1762,7 @@ class Database:
                             latest_decision_id,
                             latest_decision_id,
                             idea["reason"],
-                            json.dumps(idea["details"], default=str, separators=(",", ":")),
+                            json.dumps(idea_details, default=str, separators=(",", ":")),
                         ),
                     )
             self._refresh_user_follow_marks(conn)
@@ -1516,23 +1783,57 @@ class Database:
                 current_return = _return_pct(entry_price, latest_price)
                 peak_return = max(float(row["peak_return_pct"] or 0.0), current_return)
                 worst_return = min(float(row["worst_return_pct"] or 0.0), current_return)
+                details = self._decode_json(row["details_json"])
+                next_status, details = _refresh_idea_lifecycle(
+                    details,
+                    {},
+                    entry_price,
+                    latest_price,
+                    row["status"],
+                    utc_now(),
+                    row["plan_code"],
+                    row["first_seen_at"],
+                )
                 conn.execute(
                     """
                     update signal_ideas
-                    set latest_price = ?, current_return_pct = ?, peak_return_pct = ?, worst_return_pct = ?, last_seen_at = ?
+                    set latest_price = ?, current_return_pct = ?, peak_return_pct = ?, worst_return_pct = ?,
+                        status = ?, details_json = ?, last_seen_at = ?
                     where id = ?
                     """,
-                    (latest_price, current_return, peak_return, worst_return, utc_now(), row["id"]),
+                    (
+                        latest_price,
+                        current_return,
+                        peak_return,
+                        worst_return,
+                        next_status,
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        utc_now(),
+                        row["id"],
+                    ),
                 )
             self._refresh_user_follow_marks(conn)
 
-    def latest_signal_ideas(self, limit: int = 20, user_id: int | None = None) -> list[dict[str, Any]]:
+    def latest_signal_ideas(
+        self,
+        limit: int = 20,
+        user_id: int | None = None,
+        market_region: str | None = None,
+    ) -> list[dict[str, Any]]:
         self.refresh_signal_idea_marks()
+        market_clause, market_params = _market_region_where("u", market_region)
+        where_sql = f"where {market_clause}" if market_clause else ""
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                select *
-                from signal_ideas
+                f"""
+                select i.*, {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name,
+                    u.sector as sector,
+                    u.industry as industry
+                from signal_ideas i
+                left join universe u on u.symbol = i.symbol
+                {where_sql}
                 order by
                     case status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
                     signal_type = 'BUY' desc,
@@ -1542,7 +1843,7 @@ class Database:
                     last_seen_at desc
                 limit ?
                 """,
-                (limit,),
+                (*market_params, limit),
             ).fetchall()
             follow_rows: list[sqlite3.Row] = []
             if user_id is not None:
@@ -1563,6 +1864,13 @@ class Database:
             item = _row_dict(row)
             item["details"] = self._decode_json(item.pop("details_json", "{}"))
             item["targets"] = item["details"].get("targets", [])
+            item["target_status"] = item["details"].get("target_status", [])
+            item["highest_target_hit"] = item["details"].get("highest_target_hit", "NONE")
+            item["lifecycle_status"] = item["details"].get("lifecycle_status", item.get("status"))
+            item["expires_at"] = item["details"].get("expires_at")
+            item["days_to_expiry"] = item["details"].get("days_to_expiry")
+            item["timeline"] = item["details"].get("timeline", {})
+            item["stop_status"] = item["details"].get("stop_status", {})
             item["entry_zone"] = item["details"].get("entry_zone")
             item["stop_loss"] = item["details"].get("stop_loss")
             item["risk_flags"] = item["details"].get("risk_flags", [])
@@ -1577,11 +1885,18 @@ class Database:
             output.append(item)
         return output
 
-    def user_followed_signal_ideas(self, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    def user_followed_signal_ideas(
+        self,
+        user_id: int,
+        limit: int = 50,
+        market_region: str | None = None,
+    ) -> list[dict[str, Any]]:
+        market_clause, market_params = _market_region_where("u", market_region)
+        market_sql = f"and {market_clause}" if market_clause else ""
         with self.connect() as conn:
             self._refresh_user_follow_marks(conn)
             rows = conn.execute(
-                """
+                f"""
                 select
                     f.id as follow_id,
                     f.user_id,
@@ -1597,14 +1912,21 @@ class Database:
                     f.created_at as followed_at,
                     f.updated_at as follow_updated_at,
                     f.details_json as follow_details_json,
-                    i.*
+                    i.*,
+                    {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name,
+                    u.sector as sector,
+                    u.industry as industry
                 from user_idea_follows f
                 join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
                 where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED')
+                {market_sql}
                 order by f.updated_at desc, f.id desc
                 limit ?
                 """,
-                (int(user_id), max(1, min(int(limit), 200))),
+                (int(user_id), *market_params, max(1, min(int(limit), 200))),
             ).fetchall()
         output: list[dict[str, Any]] = []
         for row in rows:
@@ -1617,6 +1939,13 @@ class Database:
             item["suggestion"] = item.get("signal_type")
             item["price"] = item.get("latest_price")
             item["targets"] = idea_details.get("targets", [])
+            item["target_status"] = idea_details.get("target_status", [])
+            item["highest_target_hit"] = idea_details.get("highest_target_hit", "NONE")
+            item["lifecycle_status"] = idea_details.get("lifecycle_status", item.get("status"))
+            item["expires_at"] = idea_details.get("expires_at")
+            item["days_to_expiry"] = idea_details.get("days_to_expiry")
+            item["timeline"] = idea_details.get("timeline", {})
+            item["stop_status"] = idea_details.get("stop_status", {})
             item["entry_zone"] = idea_details.get("entry_zone")
             item["stop_loss"] = idea_details.get("stop_loss")
             item["risk_flags"] = idea_details.get("risk_flags", [])
@@ -1644,7 +1973,7 @@ class Database:
 
     def strategy_plans(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute(
+            plan_rows = conn.execute(
                 """
                 select p.*,
                     count(i.id) as idea_count,
@@ -1657,7 +1986,51 @@ class Database:
                 order by p.id
                 """
             ).fetchall()
-        return [_row_dict(row) for row in rows]
+            idea_rows = conn.execute(
+                f"""
+                select i.id, i.symbol, i.plan_code, i.signal_type, i.status, i.latest_price,
+                    i.current_return_pct, i.peak_return_pct, i.overall_score_pct, i.overall_grade,
+                    i.confluence, i.last_seen_at, i.details_json,
+                    {_market_region_case("u")} as market_region,
+                    u.name as company_name,
+                    u.sector as sector
+                from signal_ideas i
+                left join universe u on u.symbol = i.symbol
+                where i.plan_code != ''
+                order by
+                    case i.status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
+                    i.current_return_pct desc,
+                    i.overall_score_pct desc,
+                    i.last_seen_at desc
+                limit 120
+                """
+            ).fetchall()
+        plans = [_row_dict(row) for row in plan_rows]
+        ideas_by_plan: dict[str, list[dict[str, Any]]] = {}
+        for row in idea_rows:
+            item = _row_dict(row)
+            details = self._decode_json(item.pop("details_json", "{}"))
+            item.update(
+                {
+                    "targets": details.get("targets", []),
+                    "target_status": details.get("target_status", []),
+                    "highest_target_hit": details.get("highest_target_hit", "NONE"),
+                    "lifecycle_status": details.get("lifecycle_status", item.get("status")),
+                    "entry_zone": details.get("entry_zone"),
+                    "stop_loss": details.get("stop_loss"),
+                    "days_to_expiry": details.get("days_to_expiry"),
+                    "expires_at": details.get("expires_at"),
+                    "timeline": details.get("timeline", {}),
+                }
+            )
+            ideas_by_plan.setdefault(str(item.get("plan_code") or ""), []).append(item)
+        for plan in plans:
+            constituents = ideas_by_plan.get(str(plan.get("code") or ""), [])[:6]
+            plan["constituents"] = constituents
+            plan["top_symbols"] = [item.get("symbol") for item in constituents[:5]]
+            plan["active_idea_count"] = len(constituents)
+            plan["timeline"] = plan.get("holding_period")
+        return plans
 
     def follow_signal_idea(
         self,
@@ -1681,6 +2054,16 @@ class Database:
                 raise ValueError("amount is too small for one share at the current idea price")
             invested = float(qty * latest_price)
             status = "ACTIVE" if mode != "LIVE" else "LIVE_REQUESTED"
+            existing_follow = conn.execute(
+                """
+                select *
+                from user_idea_follows
+                where user_id = ? and idea_id = ? and status in ('ACTIVE','LIVE_REQUESTED')
+                order by id desc
+                limit 1
+                """,
+                (user_id, idea_id),
+            ).fetchone()
             details = {
                 "symbol": idea["symbol"],
                 "strategy": idea["strategy"],
@@ -1688,6 +2071,39 @@ class Database:
                 "note": "Live orders require live routing to be enabled; otherwise this is tracked as a live request.",
             }
             now = utc_now()
+            if existing_follow:
+                previous_mode = str(existing_follow["mode"] or "TRACK").upper()
+                next_mode = previous_mode if mode == "TRACK" and previous_mode in {"PAPER", "LIVE"} else mode
+                next_status = "LIVE_REQUESTED" if next_mode == "LIVE" else "ACTIVE"
+                next_qty = qty or int(existing_follow["qty"] or 0)
+                next_entry = (
+                    float(existing_follow["entry_price"] or latest_price)
+                    if int(existing_follow["qty"] or 0) > 0 and next_qty == int(existing_follow["qty"] or 0)
+                    else latest_price
+                )
+                invested = float(next_qty * next_entry)
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set mode = ?, status = ?, qty = ?, entry_price = ?, latest_price = ?,
+                        invested_amount = ?, updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        next_mode,
+                        next_status,
+                        next_qty,
+                        next_entry,
+                        latest_price,
+                        invested,
+                        now,
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        existing_follow["id"],
+                    ),
+                )
+                self._refresh_user_follow_marks(conn)
+                row = conn.execute("select * from user_idea_follows where id = ?", (existing_follow["id"],)).fetchone()
+                return _row_dict(row) if row else {}
             conn.execute(
                 """
                 insert into user_idea_follows (
@@ -2024,8 +2440,10 @@ class Database:
     def latest_quotes(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                select q.*
+                f"""
+                select q.*, {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name
                 from latest_quotes q
                 join universe u on u.symbol = q.symbol
                 where u.enabled = 1
@@ -2037,7 +2455,13 @@ class Database:
     def latest_decisions(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "select * from decisions order by id desc limit ?",
+                f"""
+                select d.*, {_market_region_case("u")} as market_region
+                from decisions d
+                left join universe u on u.symbol = d.symbol
+                order by d.id desc
+                limit ?
+                """,
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -2045,11 +2469,13 @@ class Database:
     def latest_decision_summaries(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                select id, ts, symbol, action, strategy, confidence, price,
-                    technical_score, sentiment_score, reason
-                from decisions
-                order by id desc
+                f"""
+                select d.id, d.ts, d.symbol, d.action, d.strategy, d.confidence, d.price,
+                    d.technical_score, d.sentiment_score, d.reason,
+                    {_market_region_case("u")} as market_region
+                from decisions d
+                left join universe u on u.symbol = d.symbol
+                order by d.id desc
                 limit ?
                 """,
                 (limit,),
@@ -2059,7 +2485,12 @@ class Database:
     def decision_by_id(self, decision_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "select * from decisions where id = ?",
+                f"""
+                select d.*, {_market_region_case("u")} as market_region
+                from decisions d
+                left join universe u on u.symbol = d.symbol
+                where d.id = ?
+                """,
                 (decision_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -2067,7 +2498,13 @@ class Database:
     def latest_orders(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "select * from orders order by id desc limit ?",
+                f"""
+                select o.*, {_market_region_case("u")} as market_region
+                from orders o
+                left join universe u on u.symbol = o.symbol
+                order by o.id desc
+                limit ?
+                """,
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -2075,10 +2512,12 @@ class Database:
     def latest_order_summaries(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                select id, ts, symbol, side, strategy, qty, price, notional, status, reason
-                from orders
-                order by id desc
+                f"""
+                select o.id, o.ts, o.symbol, o.side, o.strategy, o.qty, o.price, o.notional,
+                    o.status, o.reason, {_market_region_case("u")} as market_region
+                from orders o
+                left join universe u on u.symbol = o.symbol
+                order by o.id desc
                 limit ?
                 """,
                 (limit,),
@@ -2088,7 +2527,12 @@ class Database:
     def order_by_id(self, order_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "select * from orders where id = ?",
+                f"""
+                select o.*, {_market_region_case("u")} as market_region
+                from orders o
+                left join universe u on u.symbol = o.symbol
+                where o.id = ?
+                """,
                 (order_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -2096,7 +2540,16 @@ class Database:
     def positions(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "select * from positions where qty != 0 order by symbol"
+                f"""
+                select p.*, {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name,
+                    u.sector as sector
+                from positions p
+                left join universe u on u.symbol = p.symbol
+                where p.qty != 0
+                order by p.symbol
+                """
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -2267,9 +2720,11 @@ class Database:
     def latest_sentiment(self, limit: int = 80) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                select * from sentiment_events
-                order by id desc
+                f"""
+                select s.*, {_market_region_case("u")} as market_region
+                from sentiment_events s
+                left join universe u on u.symbol = s.symbol
+                order by s.id desc
                 limit ?
                 """,
                 (limit,),

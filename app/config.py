@@ -38,7 +38,9 @@ class Settings:
     port: int = _int("PORT", 8000)
     database_path: Path = _path("DATABASE_PATH", "./var/trading_agent.db")
     universe_csv: Path = _path("UNIVERSE_CSV", "./data/universe.csv")
+    us_universe_csv: Path = _path("US_UNIVERSE_CSV", "./data/us_universe.csv")
     universe_source: str = os.getenv("UNIVERSE_SOURCE", "csv").strip().lower()
+    market_region: str = os.getenv("MARKET_REGION", "IN").strip().upper()
     nse_equity_list_url: str = os.getenv(
         "NSE_EQUITY_LIST_URL",
         "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
@@ -65,7 +67,13 @@ class Settings:
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.08)
     daily_loss_limit_pct: float = _float("DAILY_LOSS_LIMIT_PCT", 0.025)
 
-    market_data_provider: str = "upstox"
+    market_data_provider: str = os.getenv("MARKET_DATA_PROVIDER", "indstocks").strip().lower()
+    indstocks_access_token: str = os.getenv("INDSTOCKS_ACCESS_TOKEN", "")
+    indstocks_api_base_url: str = os.getenv("INDSTOCKS_API_BASE_URL", "https://api.indstocks.com").rstrip("/")
+    indstocks_candle_interval: str = os.getenv("INDSTOCKS_CANDLE_INTERVAL", "1day")
+    indstocks_candle_lookback_days: int = _int("INDSTOCKS_CANDLE_LOOKBACK_DAYS", 365)
+    indstocks_candle_concurrency: int = _int("INDSTOCKS_CANDLE_CONCURRENCY", 8)
+    indstocks_fetch_timeout_seconds: int = _int("INDSTOCKS_FETCH_TIMEOUT_SECONDS", 20)
     kite_api_key: str = os.getenv("KITE_API_KEY", "")
     kite_access_token: str = os.getenv("KITE_ACCESS_TOKEN", "")
     upstox_api_key: str = os.getenv("UPSTOX_API_KEY", "")
@@ -82,8 +90,8 @@ class Settings:
     upstox_weekly_candle_lookback_days: int = _int("UPSTOX_WEEKLY_CANDLE_LOOKBACK_DAYS", 1100)
     upstox_candle_concurrency: int = _int("UPSTOX_CANDLE_CONCURRENCY", 10)
     upstox_candle_fetch_timeout_seconds: int = _int("UPSTOX_CANDLE_FETCH_TIMEOUT_SECONDS", 35)
-    yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "15m")
-    yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "5d")
+    yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "1d")
+    yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "1y")
     enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", False)
     nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
     nubra_phone: str = os.getenv("NUBRA_PHONE", "")
@@ -132,6 +140,10 @@ class Settings:
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").strip().lower()
     live_trading_enabled: bool = _bool("LIVE_TRADING_ENABLED", False)
     live_trading_confirm: str = os.getenv("LIVE_TRADING_CONFIRM", "")
+    indstocks_order_product: str = os.getenv("INDSTOCKS_ORDER_PRODUCT", "CNC")
+    indstocks_order_validity: str = os.getenv("INDSTOCKS_ORDER_VALIDITY", "DAY")
+    indstocks_order_type: str = os.getenv("INDSTOCKS_ORDER_TYPE", "MARKET")
+    indstocks_algo_id: str = os.getenv("INDSTOCKS_ALGO_ID", "99999")
     upstox_order_product: str = os.getenv("UPSTOX_ORDER_PRODUCT", "D")
     upstox_order_validity: str = os.getenv("UPSTOX_ORDER_VALIDITY", "DAY")
     upstox_order_type: str = os.getenv("UPSTOX_ORDER_TYPE", "MARKET")
@@ -168,6 +180,7 @@ class Settings:
 SECRET_FIELDS = {
     "kite_api_key",
     "kite_access_token",
+    "indstocks_access_token",
     "upstox_api_key",
     "upstox_api_secret",
     "upstox_access_token",
@@ -184,7 +197,7 @@ SECRET_FIELDS = {
 
 
 CONFIG_SCHEMA: list[dict[str, Any]] = [
-    {"key": "execution_mode", "label": "Execution Mode", "type": "select", "category": "Runtime", "choices": ["paper", "upstox_sandbox", "upstox_live"]},
+    {"key": "execution_mode", "label": "Execution Mode", "type": "select", "category": "Runtime", "choices": ["paper", "indstocks_live"]},
     {"key": "initial_cash_inr", "label": "Paper Capital", "type": "number", "category": "Runtime", "min": 1000, "step": 1000},
     {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Agent Cycle"},
     {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Agent Cycle", "min": 5, "step": 1},
@@ -195,26 +208,22 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "admin_session_hours", "label": "Session Hours", "type": "number", "category": "Access Control", "min": 1, "step": 1},
     {"key": "credit_tokens_per_credit", "label": "Tokens Per Credit", "type": "number", "category": "User Credits", "min": 1, "step": 1},
     {"key": "credit_platform_margin_pct", "label": "Platform Margin %", "type": "number", "category": "User Credits", "min": 0, "max": 1, "step": 0.01},
-    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["upstox"]},
+    {"key": "market_region", "label": "Market Region", "type": "select", "category": "Market Data", "choices": ["IN", "US", "BOTH"]},
+    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["indstocks", "indstocks_yahoo", "yahoo"]},
     {"key": "universe_source", "label": "Universe Source", "type": "select", "category": "Market Data", "choices": ["csv", "nse_equity"]},
+    {"key": "us_universe_csv", "label": "US Universe CSV", "type": "text", "category": "Market Data"},
     {"key": "nse_universe_refresh_on_start", "label": "Refresh NSE Universe", "type": "boolean", "category": "Market Data"},
     {"key": "nse_equity_list_url", "label": "NSE Equity List URL", "type": "text", "category": "Market Data"},
     {"key": "nse_universe_series", "label": "NSE Series", "type": "text", "category": "Market Data"},
     {"key": "universe_symbols_per_cycle", "label": "Symbols/Cycle (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
-    {"key": "upstox_access_token", "label": "Upstox Access Token", "type": "secret", "category": "Market Data"},
-    {"key": "upstox_api_key", "label": "Upstox API Key", "type": "secret", "category": "Market Data"},
-    {"key": "upstox_api_secret", "label": "Upstox API Secret", "type": "secret", "category": "Market Data"},
-    {"key": "upstox_redirect_uri", "label": "Upstox Redirect URI", "type": "text", "category": "Market Data"},
-    {"key": "upstox_sandbox_access_token", "label": "Upstox Sandbox Token", "type": "secret", "category": "Market Data"},
-    {"key": "upstox_api_base_url", "label": "Upstox Data URL", "type": "text", "category": "Market Data"},
-    {"key": "upstox_order_base_url", "label": "Upstox Order URL", "type": "text", "category": "Market Data"},
-    {"key": "upstox_candle_interval", "label": "Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},
-    {"key": "upstox_candle_lookback_days", "label": "Candle Lookback Days", "type": "number", "category": "Market Data", "min": 1, "step": 1},
-    {"key": "enable_upstox_multi_timeframe_candles", "label": "Multi-Timeframe Candles", "type": "boolean", "category": "Market Data"},
-    {"key": "upstox_daily_candle_lookback_days", "label": "Daily Lookback Days", "type": "number", "category": "Market Data", "min": 30, "step": 30},
-    {"key": "upstox_weekly_candle_lookback_days", "label": "Weekly Lookback Days", "type": "number", "category": "Market Data", "min": 180, "step": 30},
-    {"key": "upstox_candle_concurrency", "label": "Candle Fetch Concurrency", "type": "number", "category": "Market Data", "min": 1, "step": 1},
-    {"key": "upstox_candle_fetch_timeout_seconds", "label": "Candle Fetch Timeout", "type": "number", "category": "Market Data", "min": 5, "step": 5},
+    {"key": "indstocks_access_token", "label": "INDstocks Access Token", "type": "secret", "category": "Market Data"},
+    {"key": "indstocks_api_base_url", "label": "INDstocks API URL", "type": "text", "category": "Market Data"},
+    {"key": "indstocks_candle_interval", "label": "INDstocks Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "5minute", "15minute", "30minute", "60minute", "1day", "1week", "1month"]},
+    {"key": "indstocks_candle_lookback_days", "label": "INDstocks Lookback Days", "type": "number", "category": "Market Data", "min": 1, "max": 365, "step": 1},
+    {"key": "indstocks_candle_concurrency", "label": "INDstocks Candle Concurrency", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "indstocks_fetch_timeout_seconds", "label": "INDstocks Fetch Timeout", "type": "number", "category": "Market Data", "min": 5, "step": 5},
+    {"key": "yahoo_candle_interval", "label": "Yahoo Candle Interval", "type": "select", "category": "Market Data", "choices": ["5m", "15m", "30m", "60m", "1d", "1wk"]},
+    {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"]},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "groq", "offline"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "deepseek_api_key", "label": "DeepSeek API Key", "type": "secret", "category": "LLM Brain"},
@@ -279,9 +288,10 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "options_max_pain_buy_suppress_pct", "label": "Max Pain BUY Suppress %", "type": "number", "category": "Institutional Feeds", "min": -50, "max": 0, "step": 0.5},
     {"key": "live_trading_enabled", "label": "Live Trading Enabled", "type": "boolean", "category": "Live Protection"},
     {"key": "live_trading_confirm", "label": "Live Confirm Phrase", "type": "secret", "category": "Live Protection"},
-    {"key": "upstox_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["D", "I"]},
-    {"key": "upstox_order_validity", "label": "Order Validity", "type": "select", "category": "Live Protection", "choices": ["DAY", "IOC"]},
-    {"key": "upstox_order_type", "label": "Order Type", "type": "select", "category": "Live Protection", "choices": ["MARKET", "LIMIT"]},
+    {"key": "indstocks_order_product", "label": "Order Product", "type": "select", "category": "Live Protection", "choices": ["CNC", "INTRADAY", "MARGIN"]},
+    {"key": "indstocks_order_validity", "label": "Order Validity", "type": "select", "category": "Live Protection", "choices": ["DAY", "IOC"]},
+    {"key": "indstocks_order_type", "label": "Order Type", "type": "select", "category": "Live Protection", "choices": ["MARKET", "LIMIT"]},
+    {"key": "indstocks_algo_id", "label": "INDstocks Algo ID", "type": "text", "category": "Live Protection"},
 ]
 
 
@@ -289,8 +299,31 @@ CONFIG_KEYS = {item["key"] for item in CONFIG_SCHEMA}
 
 
 def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
+    if key == "market_region":
+        region = str(value).strip().upper()
+        return region if region in {"IN", "US", "BOTH"} else "IN"
     if key == "market_data_provider":
-        return "upstox"
+        provider = str(value).strip().lower()
+        if provider in {"upstox", "upstox_yahoo"}:
+            return "indstocks_yahoo"
+        return provider if provider in {"indstocks", "indstocks_yahoo", "yahoo"} else "indstocks"
+    if key == "indstocks_api_base_url":
+        return str(value).strip().rstrip("/") or "https://api.indstocks.com"
+    if key == "indstocks_candle_interval":
+        interval = str(value).strip()
+        choices = {"1minute", "5minute", "15minute", "30minute", "60minute", "1day", "1week", "1month"}
+        return interval if interval in choices else "1day"
+    if key == "execution_mode":
+        mode = str(value).strip().lower()
+        if mode in {"upstox_sandbox", "upstox_live"}:
+            return "indstocks_live"
+        return mode if mode in {"paper", "indstocks_live"} else "paper"
+    if key == "yahoo_candle_interval":
+        interval = str(value).strip()
+        return interval if interval in {"5m", "15m", "30m", "60m", "1d", "1wk"} else "1d"
+    if key == "yahoo_candle_range":
+        candle_range = str(value).strip()
+        return candle_range if candle_range in {"5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"} else "1y"
     if key == "llm_provider":
         provider = str(value).strip().lower()
         return provider if provider in {"deepseek", "groq", "offline"} else "deepseek"

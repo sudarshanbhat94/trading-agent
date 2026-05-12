@@ -11,15 +11,26 @@ const state = {
   socketReconnectTimer: null,
   statusRefreshInFlight: false,
   quoteFilter: "",
+  activeMarket: "IN",
   activeSettingsTab: "broker",
 };
 
+const MARKET_LABELS = {
+  IN: "India",
+  US: "US",
+};
+
+const SETTINGS_TABS = ["broker", "markets", "runtime", "ai", "risk", "users", "calendar", "advanced"];
+
 const SETTINGS_TAB_CATEGORIES = {
-  broker: new Set(["Market Data", "Live Protection"]),
+  broker: new Set(["Live Protection"]),
+  markets: new Set(["Market Data"]),
   runtime: new Set(["Runtime", "Agent Cycle"]),
-  ai: new Set(["LLM Brain", "Sentiment", "Global Intelligence", "Institutional Feeds"]),
+  ai: new Set(["LLM Brain", "Sentiment"]),
   risk: new Set(["Risk"]),
-  access: new Set(["Access Control"]),
+  users: new Set(["Access Control", "User Credits"]),
+  calendar: new Set(["Macro Calendar"]),
+  advanced: new Set(["Global Intelligence", "Institutional Feeds"]),
 };
 
 const money = new Intl.NumberFormat("en-IN", {
@@ -44,6 +55,12 @@ const usd = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 6,
 });
 
+const usdPrice = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+
 const creditsFmt = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 4,
 });
@@ -54,6 +71,40 @@ function byId(id) {
 
 function fmtMoney(value) {
   return Number.isFinite(Number(value)) ? money.format(Number(value)) : "-";
+}
+
+function normalizeUiMarket(value) {
+  return String(value || "IN").toUpperCase() === "US" ? "US" : "IN";
+}
+
+function activeMarketLabel() {
+  return MARKET_LABELS[normalizeUiMarket(state.activeMarket)] || "India";
+}
+
+function rowMarket(row = {}) {
+  const explicit = normalizeUiMarket(row.market_region || row.market || row.marketRegion);
+  if (row.market_region || row.market || row.marketRegion) return explicit;
+  const exchange = String(row.exchange || "").toUpperCase();
+  if (["NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS", "OTC"].includes(exchange)) return "US";
+  if (String(row.source || "").toLowerCase().includes("yahoo")) return "US";
+  return "IN";
+}
+
+function filterRowsByMarket(rows = [], market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  return (rows || []).filter((row) => rowMarket(row) === region);
+}
+
+function payloadRowsForMarket(payload = {}, key, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const byMarket = payload[`${key}_by_market`] || payload[`${key}ByMarket`];
+  if (byMarket && Array.isArray(byMarket[region])) return byMarket[region];
+  return filterRowsByMarket(payload[key] || [], region);
+}
+
+function fmtMarketMoney(value, market = "IN") {
+  if (!Number.isFinite(Number(value))) return "-";
+  return normalizeUiMarket(market) === "US" ? usdPrice.format(Number(value)) : money.format(Number(value));
 }
 
 function fmtNumber(value) {
@@ -426,18 +477,24 @@ function render(payload) {
     payload = { ...payload, user_signal_session: state.latest.user_signal_session };
   }
   state.latest = payload;
+  const activeMarket = normalizeUiMarket(state.activeMarket);
   const userSession = payload.user_signal_session || {};
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const portfolio = payload.portfolio || {};
-  const positions = payload.positions || [];
-  const quotes = payload.quotes || [];
-  const decisions = payload.decisions || [];
-  const suggestions = payload.suggestions || [];
-  const trackedIdeas = payload.tracked_ideas || [];
-  const orders = payload.orders || [];
+  const allPositions = payload.positions || [];
+  const allQuotes = payload.quotes || [];
+  const allDecisions = payload.decisions || [];
+  const allOrders = payload.orders || [];
+  const allSentiment = payload.sentiment || [];
+  const positions = filterRowsByMarket(allPositions, activeMarket);
+  const quotes = filterRowsByMarket(allQuotes, activeMarket);
+  const decisions = filterRowsByMarket(allDecisions, activeMarket);
+  const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
+  const trackedIdeas = payloadRowsForMarket(payload, "tracked_ideas", activeMarket);
+  const orders = filterRowsByMarket(allOrders, activeMarket);
   const strategies = payload.strategy_metrics || [];
   const strategyPlans = payload.strategy_plans || [];
-  const sentiment = payload.sentiment || [];
+  const sentiment = filterRowsByMarket(allSentiment, activeMarket);
 
   byId("kpi-equity").textContent = fmtMoney(portfolio.equity);
   byId("kpi-cash").textContent = fmtMoney(portfolio.cash);
@@ -463,7 +520,7 @@ function render(payload) {
     const feedPending = isFeedPending(payload);
     error.className = `error-box ${feedPending ? "warning" : ""}`;
     error.textContent = feedPending
-      ? "Market data connection pending. Connect or refresh Upstox when ready; the terminal remains available for account, settings, and audit review."
+      ? "Market data connection pending. Connect/refresh the selected market feed when ready; the terminal remains available for account, settings, and audit review."
       : displayError;
   } else {
     error.hidden = true;
@@ -471,11 +528,11 @@ function render(payload) {
     error.className = "error-box";
   }
 
-  byId("position-count").textContent = `${positions.length} open`;
-  byId("quote-count").textContent = `${quotes.length} quotes`;
-  byId("account-quote-count").textContent = `${quotes.length} quotes`;
-  byId("decision-count").textContent = `${decisions.length} decisions`;
-  byId("overview-decision-count").textContent = `${decisions.length} decisions`;
+  byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
+  byId("quote-count").textContent = `${quotes.length}/${allQuotes.length} quotes`;
+  byId("account-quote-count").textContent = `${quotes.length} ${activeMarketLabel()} quotes`;
+  byId("decision-count").textContent = `${decisions.length}/${allDecisions.length} decisions`;
+  byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
   byId("suggestion-count").textContent = suggestions.length ? `${suggestions.length} full-audit ideas` : "0 ideas";
   byId("order-count").textContent = `${orders.length} orders`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
@@ -491,6 +548,7 @@ function render(payload) {
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
   byId("nav-logs-badge").textContent = state.auth?.admin ? String(state.logs.length) : "admin";
   byId("nav-overview-badge").textContent = controlRunning ? "on" : "off";
+  updateMarketWorkspaceLabels(payload);
 
   renderPositions(positions);
   renderStrategies(strategies);
@@ -509,7 +567,10 @@ function render(payload) {
   renderAgentConsole(payload);
   renderSelfAudit(payload.self_audit || {});
   renderShell(payload);
-  drawEquity(payload.equity_curve || []);
+  const equityRows = Array.isArray(payload.equity_curve) && payload.equity_curve.length
+    ? payload.equity_curve
+    : (Number.isFinite(Number(portfolio.equity)) ? [{ equity: Number(portfolio.equity), ts: payload.last_cycle_at || new Date().toISOString() }] : []);
+  drawEquity(equityRows);
 }
 
 function renderSelfAudit(audit = {}) {
@@ -625,7 +686,7 @@ function renderShell(payload = state.latest || {}) {
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
   const mode = health.mode || "unknown";
-  const feedLabel = health.display_label || (mode === "last_traded" ? "Last traded" : mode === "stale" ? "Stale quote" : "Upstox live");
+  const feedLabel = health.display_label || (mode === "last_traded" ? "Last traded" : mode === "stale" ? "Stale quote" : mode);
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
   const llmModel = llmProvider === "deepseek"
@@ -647,17 +708,20 @@ function renderShell(payload = state.latest || {}) {
   byId("top-execution").textContent = plainSetting("execution_mode", runtime.execution_mode || "-");
 
   const feedPending = isFeedPending(payload);
-  const upstoxConnected = String(provider).includes("upstox") && !feedPending;
-  const feedIsFresh = upstoxConnected && mode === "live";
-  byId("feed-pill").textContent = upstoxConnected ? feedLabel : "Upstox pending";
-  byId("feed-pill").className = `pill ${feedIsFresh ? "running" : upstoxConnected ? "warning" : "stopped"}`;
-  byId("ops-feed").textContent = upstoxConnected ? feedLabel : "Connect Upstox";
+  const feedConnected = !feedPending && (health.quote_count || String(provider).includes("indstocks") || String(provider).includes("yahoo"));
+  const feedIsFresh = feedConnected && mode === "live";
+  byId("feed-pill").textContent = feedConnected ? feedLabel : "Feed pending";
+  byId("feed-pill").className = `pill ${feedIsFresh ? "running" : feedConnected ? "warning" : "stopped"}`;
+  byId("ops-feed").textContent = feedConnected ? feedLabel : "Connect feed";
   byId("ops-feed-meta").textContent = feedPending
     ? "quotes paused until token/feed is ready"
     : `${health.quote_count || 0} quotes · ${health.is_market_open ? "market open" : "market closed"} · ${fmtAge(health.latest_quote_age_seconds)}`;
   byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmDisplay;
-  byId("ops-llm-meta").textContent = !state.auth?.admin && llmActivity.message
-    ? `${llmMode} · ${llmActivity.billable_calls || 0} calls · ${fmtCredits(llmActivity.credits_charged || 0)} credits`
+  const userCreditMeta = state.credits
+    ? `${fmtCredits(state.credits.credits_used_today || 0)} credits used today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
+    : `${fmtCredits(llmActivity.credits_charged || 0)} credits last cycle`;
+  byId("ops-llm-meta").textContent = !state.auth?.admin
+    ? userCreditMeta
     : `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
@@ -676,7 +740,45 @@ function renderShell(payload = state.latest || {}) {
 function isFeedPending(payload = state.latest || {}) {
   const provider = String(payload.market_health?.provider || payload.provider || payload.runtime?.market_data_provider || "");
   const error = String(payload.last_error || "");
-  return provider.includes("upstox-not-connected") || /upstox|marketdataerror|no quotes|access token/i.test(error);
+  if (normalizeUiMarket(state.activeMarket) === "US" && filterRowsByMarket(payload.quotes || [], "US").length) return false;
+  return provider.includes("indstocks-not-connected") || /indstocks|marketdataerror|no quotes|access token/i.test(error);
+}
+
+function updateMarketWorkspaceLabels(payload = state.latest || {}) {
+  const market = normalizeUiMarket(state.activeMarket);
+  const label = activeMarketLabel();
+  const quotes = filterRowsByMarket(payload.quotes || [], market);
+  const decisions = filterRowsByMarket(payload.decisions || [], market);
+  const positions = filterRowsByMarket(payload.positions || [], market);
+  for (const button of document.querySelectorAll(".market-workspace-tab")) {
+    const active = button.dataset.marketWorkspace === market;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  const scope = byId("market-scope-label");
+  if (scope) scope.textContent = `${label} workspace`;
+  const currentView = currentViewName();
+  const title = byId("view-title");
+  const navLabel = document.querySelector(`.nav-item[data-view="${currentView}"] span`)?.textContent || "Dashboard";
+  if (title) {
+    title.textContent = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(currentView)
+      ? `${label} ${navLabel}`
+      : navLabel;
+  }
+  const subtitle = byId("view-subtitle");
+  if (subtitle) {
+    subtitle.textContent = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(currentView)
+      ? `${label} market only · ${quotes.length} quotes · ${positions.length} positions · ${decisions.length} decisions`
+      : "Admin controls · split-market routing · runtime settings";
+  }
+  const railLabel = byId("rail-market-label");
+  if (railLabel) railLabel.textContent = `${label} universe`;
+  const ideasTitle = byId("ideas-market-title");
+  if (ideasTitle) ideasTitle.textContent = `${label} Ideas`;
+  const trackedTitle = byId("tracked-market-title");
+  if (trackedTitle) trackedTitle.textContent = `${label} Tracks`;
+  const signalTitle = byId("signals-market-title");
+  if (signalTitle) signalTitle.textContent = `${label} Signal History`;
 }
 
 function renderAgentConsole(payload) {
@@ -698,7 +800,7 @@ function renderAgentConsole(payload) {
     {
       label: "Universe",
       value: `${universe.enabled ?? "-"} enabled`,
-      note: `${universe.symbols_per_cycle || "all"} per cycle · ${universe.low_price_enabled ?? 0} <= ₹100 priced`,
+      note: `${universe.symbols_per_cycle || "all"} per cycle · ${universe.india_enabled ?? 0} IN · ${universe.us_enabled ?? 0} US`,
       onClick: () => setView("account"),
     },
     {
@@ -748,9 +850,11 @@ function renderAuth(auth) {
   const pill = byId("admin-pill");
   pill.textContent = auth.admin ? "admin" : "user";
   pill.className = `pill ${auth.admin ? "running" : "stopped"}`;
+  pill.hidden = true;
   const currentUser = auth.user?.username || "signed in";
   byId("current-user-label").textContent = `${currentUser} · ${auth.user?.role || "user"}`;
-  byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "admin";
+  byId("credit-pill").hidden = Boolean(auth.admin);
+  byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "";
   byId("start-btn").textContent = auth.admin ? "Start" : "Refresh";
   byId("stop-btn").textContent = auth.admin ? "Stop" : "Admin Controlled";
   byId("logout-btn").hidden = !authenticated;
@@ -802,14 +906,16 @@ function applyAccessMode() {
     "test-llm-btn",
     "refresh-logs-btn",
     "analyze-btn",
-    "upstox-auth-url-btn",
-    "upstox-connect-btn",
+    "indstocks-connect-btn",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
   }
   const analyzeInput = byId("analyze-symbol");
   if (analyzeInput) analyzeInput.disabled = !authenticated || admin;
+  for (const tab of document.querySelectorAll(".market-tab")) {
+    tab.disabled = !authenticated || admin;
+  }
   const analyzeButton = byId("analyze-btn");
   if (analyzeButton) analyzeButton.disabled = !authenticated || admin;
   const analyzeStatus = byId("analyze-status");
@@ -823,23 +929,14 @@ function applyAccessMode() {
     }
   }
   for (const id of [
-    "upstox-api-key",
-    "upstox-api-secret",
-    "upstox-redirect-uri",
-    "upstox-auth-code",
+    "indstocks-access-token",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
   }
   for (const id of [
-    "my-upstox-access-token",
-    "my-upstox-token-save-btn",
-    "my-upstox-api-key",
-    "my-upstox-api-secret",
-    "my-upstox-redirect-uri",
-    "my-upstox-auth-code",
-    "my-upstox-auth-url-btn",
-    "my-upstox-connect-btn",
+    "my-indstocks-access-token",
+    "my-indstocks-token-save-btn",
     "my-kite-api-key",
     "my-kite-access-token",
     "my-kite-connect-btn",
@@ -886,7 +983,7 @@ function renderCreditSummary(credits, policy = {}) {
   if (state.auth?.admin) {
     byId("credits-status").textContent = "admin view";
     body.innerHTML = `<div class="account-note"><strong>Admin mode</strong><span>Admins allocate credits and monitor usage from the Users tab. Signals run from user accounts only.</span></div>`;
-    byId("credit-pill").textContent = "admin";
+    byId("credit-pill").hidden = true;
     return;
   }
   const balance = Number(credits?.credit_balance || 0);
@@ -895,6 +992,7 @@ function renderCreditSummary(credits, policy = {}) {
   const remaining = Number(credits?.daily_credits_remaining || 0);
   const llmActivity = state.latest?.user_signal_session?.last_llm_activity || {};
   byId("credits-status").textContent = `${fmtCredits(remaining)} left today`;
+  byId("credit-pill").hidden = false;
   byId("credit-pill").textContent = `${fmtCredits(balance)} credits`;
   body.innerHTML = `
     <div class="account-metrics">
@@ -909,8 +1007,8 @@ function renderCreditSummary(credits, policy = {}) {
     </form>
     <div class="account-note">
       <strong>Credit transparency</strong>
-      <span>Each symbol analysis shows the calls and tokens consumed. ${fmtCredits(policy.tokens_per_credit || 10)} LLM tokens = 1 credit.</span>
-      <span>OpenTrade automatically uses a leaner path when today's remaining credits are tight.</span>
+      <span>Every completed brain review deducts credits from the daily budget and account balance.</span>
+      <span>OpenTrade automatically uses a leaner analysis path when today's remaining credits are tight.</span>
       <span>Estimated signal cost: ${fmtCredits(policy.estimated_signal_credit || 0)} credits.</span>
       ${llmActivity.message ? `<span>Last cycle: ${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</span>` : ""}
     </div>
@@ -1085,7 +1183,7 @@ function renderUsers(rows) {
     .map((user) => {
       const active = Boolean(user.active);
       const credits = user.credit_usage || {};
-      const upstox = user.broker_accounts?.upstox || {};
+      const indstocks = user.broker_accounts?.indstocks || {};
       const kite = user.broker_accounts?.kite || {};
       const assigned = user.assigned_llm || {};
       return `<tr data-user-id="${user.id}">
@@ -1093,14 +1191,14 @@ function renderUsers(rows) {
         <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span><br><small>${escapeHtml(assigned.provider || "default")} · ${escapeHtml(assigned.model || "default")}</small></td>
         <td><strong>${fmtCredits(user.credit_balance || credits.credit_balance || 0)}</strong><br><small>daily ${fmtCredits(user.daily_credit_limit || credits.daily_credit_limit || 0)}</small></td>
         <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
-        <td><span class="tag ${upstox.connected ? "open" : "watch"}">Upstox ${upstox.connected ? "on" : "off"}</span><br><small>Kite ${kite.connected ? "on" : "off"}</small></td>
+        <td><span class="tag ${indstocks.connected ? "open" : "watch"}">INDstocks ${indstocks.connected ? "on" : "off"}</span><br><small>Kite ${kite.connected ? "on" : "off"}</small></td>
         <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
           <button type="button" data-user-action="role">${user.role === "admin" ? "Make User" : "Make Admin"}</button>
           <button type="button" data-user-action="model">Model</button>
           <button type="button" data-user-action="credits">Credits</button>
-          <button type="button" data-user-action="assign-upstox">Assign Upstox</button>
+          <button type="button" data-user-action="assign-indstocks">Assign INDstocks</button>
         </td>
       </tr>`;
     })
@@ -1119,8 +1217,8 @@ function renderUsers(rows) {
         openModelAssign(user);
       } else if (button.dataset.userAction === "credits") {
         openCreditAdjust(user);
-      } else if (button.dataset.userAction === "assign-upstox") {
-        assignRuntimeUpstox(user.id);
+      } else if (button.dataset.userAction === "assign-indstocks") {
+        assignRuntimeIndStocks(user.id);
       }
     });
   });
@@ -1172,19 +1270,19 @@ async function adjustUserCredits(userId, amount) {
   }
 }
 
-async function assignRuntimeUpstox(userId) {
+async function assignRuntimeIndStocks(userId) {
   try {
-    const response = await fetch(`/api/users/${userId}/assign-runtime-upstox`, { method: "POST" });
+    const response = await fetch(`/api/users/${userId}/assign-runtime-indstocks`, { method: "POST" });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok) {
-      showDetails("Assign Runtime Upstox", payload);
+      showDetails("Assign Runtime INDstocks", payload);
       return;
     }
     renderUsers(payload.users || []);
     fetchLogs();
-    showDetails("Assign Runtime Upstox", { ok: true, message: "Runtime Upstox credentials assigned to user." });
+    showDetails("Assign Runtime INDstocks", { ok: true, message: "Runtime INDstocks credentials assigned to user." });
   } catch (error) {
-    showBackendError(networkErrorMessage(error, "assign Upstox"), { action: "assign Upstox" });
+    showBackendError(networkErrorMessage(error, "assign INDstocks"), { action: "assign INDstocks" });
   }
 }
 
@@ -1261,17 +1359,17 @@ async function updateUser(userId, patch) {
 function renderAccount(account) {
   state.account = account;
   const paper = account.paper || {};
-  const upstox = account.upstox || {};
+  const indstocks = account.indstocks || {};
   const portfolio = paper.portfolio || {};
   const trackedIdeas = account.tracked_ideas || [];
-  const userUpstox = state.auth?.user?.broker_accounts?.upstox || {};
-  byId("account-status").textContent = userUpstox.connected ? "user upstox connected" : upstox.connected ? "runtime upstox" : "paper demo";
+  const userIndStocks = state.auth?.user?.broker_accounts?.indstocks || {};
+  byId("account-status").textContent = userIndStocks.connected ? "user INDstocks connected" : indstocks.connected ? "runtime INDstocks" : "paper demo";
   byId("account-body").innerHTML = `
     <div class="account-metrics">
       <div><span>Mode</span><strong>${paper.mode || "-"}</strong></div>
       <div><span>Paper Cash</span><strong>${fmtMoney(paper.cash)}</strong></div>
       <div><span>Paper Equity</span><strong>${fmtMoney(portfolio.equity ?? paper.cash)}</strong></div>
-      <div><span>User Feed</span><strong>${userUpstox.connected ? "Upstox connected" : "not connected"}</strong></div>
+      <div><span>User Feed</span><strong>${userIndStocks.connected ? "INDstocks connected" : "not connected"}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
       <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
     </div>
@@ -1286,7 +1384,7 @@ function renderAccount(account) {
 function renderSentiment(rows) {
   const body = byId("sentiment-body");
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="5">No sentiment events yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="5">No recent verified news has been stored for the selected market yet. Run a symbol analysis or wait for the next backend cycle.</td></tr>`;
     return;
   }
   body.innerHTML = rows
@@ -1300,10 +1398,10 @@ function renderSentiment(rows) {
       }
       return `<tr>
         <td><strong>${row.symbol}</strong></td>
-        <td class="num ${pnlClass(row.score)}">${fmtNumber(row.score)}</td>
+        <td class="num ${Number(row.headline_count || 0) ? pnlClass(row.score) : "muted"}">${Number(row.headline_count || 0) ? fmtNumber(row.score) : "DATA_MISSING"}</td>
         <td class="num">${fmtNumber(row.confidence)}</td>
         <td class="num">${row.headline_count || 0}</td>
-        <td class="reason">${headlines.slice(0, 3).map(escapeHtml).join("<br>")}</td>
+        <td class="reason">${headlines.length ? headlines.slice(0, 3).map(escapeHtml).join("<br>") : "No recent verified headlines from connected news feeds."}</td>
       </tr>`;
     })
     .join("");
@@ -1321,7 +1419,7 @@ function escapeHtml(value) {
 
 function renderSettings(config) {
   state.config = config;
-  for (const tabName of ["broker", "runtime", "ai", "risk", "access"]) {
+  for (const tabName of SETTINGS_TABS) {
     const target = byId(`settings-fields-${tabName}`);
     if (target) target.innerHTML = "";
   }
@@ -1345,14 +1443,17 @@ function renderSettings(config) {
       </section>`,
     );
   }
-  for (const tabName of ["broker", "runtime", "ai", "risk", "access"]) {
+  for (const tabName of SETTINGS_TABS) {
     const target = byId(`settings-fields-${tabName}`);
     if (target && !target.innerHTML.trim()) {
       target.innerHTML = `<div class="empty-state">No settings in this tab.</div>`;
     }
   }
   renderProviderKeysPanel(config.settings || {});
-  renderUpstoxConnect(config.settings || {});
+  renderIndStocksConnect(config.settings || {});
+  const configuredRegion = String(config.settings?.market_region || "IN").toUpperCase();
+  setActiveMarket(configuredRegion === "US" ? "US" : "IN", { rerender: false });
+  setAnalyzeMarket(configuredRegion === "US" ? "US" : "IN");
   setSettingsTab(state.activeSettingsTab || "broker");
   applyAccessMode();
   renderShell();
@@ -1385,7 +1486,8 @@ function settingsTabForCategory(category) {
 }
 
 function setSettingsTab(tabName) {
-  const next = tabName || "broker";
+  const aliases = { access: "users", data: "advanced" };
+  const next = aliases[tabName] || tabName || "broker";
   state.activeSettingsTab = next;
   for (const button of document.querySelectorAll(".settings-tab")) {
     button.classList.toggle("active", button.dataset.settingsTab === next);
@@ -1395,40 +1497,34 @@ function setSettingsTab(tabName) {
   }
 }
 
-function renderUpstoxConnect(settings) {
-  const apiKey = byId("upstox-api-key");
-  const apiSecret = byId("upstox-api-secret");
-  const redirectUri = byId("upstox-redirect-uri");
-  const status = byId("upstox-connect-status");
-  if (apiKey && !apiKey.value) apiKey.placeholder = settings.upstox_api_key?.saved ? "API key saved" : "API Key";
-  if (apiSecret && !apiSecret.value) apiSecret.placeholder = settings.upstox_api_secret?.saved ? "API secret saved" : "API Secret";
-  if (redirectUri) redirectUri.value = settings.upstox_redirect_uri || `${window.location.origin}/upstox/callback`;
+function renderIndStocksConnect(settings) {
+  const token = byId("indstocks-access-token");
+  const status = byId("indstocks-connect-status");
+  if (token && !token.value) token.placeholder = settings.indstocks_access_token?.saved ? "INDstocks token saved" : "Paste INDstocks access token";
   if (status) {
-    status.textContent = settings.upstox_access_token?.saved ? "connected" : "not connected";
-    status.className = `settings-inline-status ${settings.upstox_access_token?.saved ? "positive" : ""}`;
+    status.textContent = settings.indstocks_access_token?.saved ? "connected" : "not connected";
+    status.className = `settings-inline-status ${settings.indstocks_access_token?.saved ? "positive" : ""}`;
   }
 }
 
 function renderUserBrokerStatus() {
   const user = state.auth?.user || {};
-  const upstox = user.broker_accounts?.upstox || {};
+  const indstocks = user.broker_accounts?.indstocks || {};
   const kite = user.broker_accounts?.kite || {};
-  const upstoxStatus = byId("my-upstox-status");
+  const indstocksStatus = byId("my-indstocks-status");
   const kiteStatus = byId("my-kite-status");
   const brokerStatus = byId("user-broker-status");
-  if (upstoxStatus) {
-    upstoxStatus.textContent = upstox.connected ? "connected" : upstox.api_key_saved ? "key saved" : "not connected";
-    upstoxStatus.className = `settings-inline-status ${upstox.connected ? "positive" : ""}`;
+  if (indstocksStatus) {
+    indstocksStatus.textContent = indstocks.connected ? "connected" : "not connected";
+    indstocksStatus.className = `settings-inline-status ${indstocks.connected ? "positive" : ""}`;
   }
   if (kiteStatus) {
     kiteStatus.textContent = kite.connected ? "connected" : kite.api_key_saved ? "key saved" : "not connected";
     kiteStatus.className = `settings-inline-status ${kite.connected ? "positive" : ""}`;
   }
   if (brokerStatus) {
-    brokerStatus.textContent = upstox.connected ? "upstox connected" : "connect user feed";
+    brokerStatus.textContent = indstocks.connected ? "INDstocks connected" : "connect user feed";
   }
-  const redirect = byId("my-upstox-redirect-uri");
-  if (redirect && !redirect.value) redirect.value = `${window.location.origin}/upstox/callback`;
 }
 
 function renderField(item, stored) {
@@ -1585,31 +1681,24 @@ async function testLlm() {
   }
 }
 
-function upstoxConnectPayload() {
+function indStocksConnectPayload() {
   return {
-    api_key: byId("upstox-api-key")?.value?.trim() || byId("setting-upstox_api_key")?.value?.trim(),
-    api_secret: byId("upstox-api-secret")?.value?.trim() || byId("setting-upstox_api_secret")?.value?.trim(),
-    redirect_uri: byId("upstox-redirect-uri")?.value?.trim() || byId("setting-upstox_redirect_uri")?.value?.trim(),
-    base_url: byId("setting-upstox_api_base_url")?.value?.trim(),
-    code: byId("upstox-auth-code")?.value?.trim(),
+    access_token: byId("indstocks-access-token")?.value?.trim() || byId("setting-indstocks_access_token")?.value?.trim(),
+    base_url: byId("setting-indstocks_api_base_url")?.value?.trim() || "https://api.indstocks.com",
   };
 }
 
-function myUpstoxConnectPayload() {
+function myIndStocksConnectPayload() {
   return {
-    access_token: byId("my-upstox-access-token")?.value?.trim(),
-    api_key: byId("my-upstox-api-key")?.value?.trim(),
-    api_secret: byId("my-upstox-api-secret")?.value?.trim(),
-    redirect_uri: byId("my-upstox-redirect-uri")?.value?.trim() || `${window.location.origin}/upstox/callback`,
-    base_url: state.config?.settings?.upstox_api_base_url || "https://api.upstox.com/v2",
-    code: byId("my-upstox-auth-code")?.value?.trim(),
+    access_token: byId("my-indstocks-access-token")?.value?.trim(),
+    base_url: state.config?.settings?.indstocks_api_base_url || "https://api.indstocks.com",
   };
 }
 
-async function saveMyUpstoxToken() {
-  const status = byId("my-upstox-status");
-  const button = byId("my-upstox-token-save-btn");
-  const token = byId("my-upstox-access-token")?.value?.trim();
+async function saveMyIndStocksToken() {
+  const status = byId("my-indstocks-status");
+  const button = byId("my-indstocks-token-save-btn");
+  const token = byId("my-indstocks-access-token")?.value?.trim();
   if (!token) {
     status.textContent = "paste token first";
     status.className = "settings-inline-status negative";
@@ -1618,22 +1707,19 @@ async function saveMyUpstoxToken() {
   status.textContent = "saving token";
   button.disabled = true;
   try {
-    const response = await fetch("/api/me/upstox/connect", {
+    const response = await fetch("/api/me/indstocks/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        access_token: token,
-        base_url: state.config?.settings?.upstox_api_base_url || "https://api.upstox.com/v2",
-      }),
+      body: JSON.stringify(myIndStocksConnectPayload()),
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok || !payload.ok) {
       status.textContent = payload.detail || "token save failed";
       status.className = "settings-inline-status negative";
-      showDetails("User Upstox Token", payload);
+      showDetails("User INDstocks Token", payload);
       return;
     }
-    byId("my-upstox-access-token").value = "";
+    byId("my-indstocks-access-token").value = "";
     state.auth.user = payload.user || state.auth.user;
     renderUserBrokerStatus();
     status.textContent = "token saved";
@@ -1646,66 +1732,42 @@ async function saveMyUpstoxToken() {
   }
 }
 
-async function openMyUpstoxLogin() {
-  const status = byId("my-upstox-status");
-  const button = byId("my-upstox-auth-url-btn");
-  status.textContent = "building login URL";
+async function connectIndStocks() {
+  const status = byId("indstocks-connect-status");
+  const button = byId("indstocks-connect-btn");
+  status.textContent = "connecting INDstocks";
+  status.className = "settings-inline-status";
   button.disabled = true;
   try {
-    const response = await fetch("/api/me/upstox/auth-url", {
+    const response = await fetch("/api/indstocks/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(myUpstoxConnectPayload()),
+      body: JSON.stringify(indStocksConnectPayload()),
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "login URL failed";
+      status.textContent = payload.detail || "INDstocks connect failed";
       status.className = "settings-inline-status negative";
-      showDetails("User Upstox Login", payload);
+      showDetails("INDstocks Connect", payload);
       return;
     }
-    status.textContent = "login opened";
+    if (byId("indstocks-access-token")) byId("indstocks-access-token").value = "";
+    status.textContent = `INDstocks connected · ${payload.provider || "provider ready"}`;
     status.className = "settings-inline-status positive";
-    window.open(payload.auth_url, "_blank", "noopener");
-  } catch (error) {
-    status.textContent = "login failed";
-    status.className = "settings-inline-status negative";
-  } finally {
-    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
-  }
-}
-
-async function connectMyUpstox() {
-  const status = byId("my-upstox-status");
-  const button = byId("my-upstox-connect-btn");
-  status.textContent = "connecting";
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/me/upstox/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(myUpstoxConnectPayload()),
+    if (payload.config) renderSettings(payload.config);
+    if (payload.status) render(payload.status);
+    fetchLogs();
+    showDetails("INDstocks Connect", {
+      ok: payload.ok,
+      message: payload.message,
+      provider: payload.provider,
     });
-    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "connect failed";
-      status.className = "settings-inline-status negative";
-      showDetails("User Upstox Connect", payload);
-      return;
-    }
-    if (byId("my-upstox-api-secret")) byId("my-upstox-api-secret").value = "";
-    if (byId("my-upstox-access-token")) byId("my-upstox-access-token").value = "";
-    if (byId("my-upstox-auth-code")) byId("my-upstox-auth-code").value = "";
-    state.auth.user = payload.user || state.auth.user;
-    renderUserBrokerStatus();
-    status.textContent = "connected";
-    status.className = "settings-inline-status positive";
-    showDetails("User Upstox Connect", { ok: payload.ok, message: payload.message, upstox_user_id: payload.upstox_user_id });
   } catch (error) {
-    status.textContent = "connect failed";
+    status.textContent = "INDstocks connect failed: backend unreachable";
     status.className = "settings-inline-status negative";
+    showBackendError(networkErrorMessage(error, "INDstocks connect"), { action: "INDstocks connect" });
   } finally {
-    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
+    button.disabled = !(state.auth && state.auth.admin);
   }
 }
 
@@ -1740,80 +1802,6 @@ async function connectMyKite() {
     status.className = "settings-inline-status negative";
   } finally {
     button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
-  }
-}
-
-async function openUpstoxLogin() {
-  const status = byId("upstox-connect-status");
-  const button = byId("upstox-auth-url-btn");
-  status.textContent = "building Upstox login URL";
-  status.className = "settings-inline-status";
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/upstox/auth-url", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(upstoxConnectPayload()),
-    });
-    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "Upstox login URL failed";
-      status.className = "settings-inline-status negative";
-      showDetails("Upstox Login", payload);
-      return;
-    }
-    status.textContent = "Upstox login opened. Paste returned code here after login.";
-    status.className = "settings-inline-status positive";
-    window.open(payload.auth_url, "_blank", "noopener");
-    showDetails("Upstox Login", payload);
-  } catch (error) {
-    status.textContent = "Upstox login failed: backend unreachable";
-    status.className = "settings-inline-status negative";
-    showBackendError(networkErrorMessage(error, "Upstox login"), { action: "upstox login" });
-  } finally {
-    button.disabled = !(state.auth && state.auth.admin);
-  }
-}
-
-async function connectUpstox() {
-  const status = byId("upstox-connect-status");
-  const button = byId("upstox-connect-btn");
-  status.textContent = "exchanging Upstox code for access token";
-  status.className = "settings-inline-status";
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/upstox/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(upstoxConnectPayload()),
-    });
-    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "Upstox connect failed";
-      status.className = "settings-inline-status negative";
-      showDetails("Upstox Connect", payload);
-      return;
-    }
-    if (byId("upstox-auth-code")) byId("upstox-auth-code").value = "";
-    if (byId("upstox-api-secret")) byId("upstox-api-secret").value = "";
-    status.textContent = `Upstox connected · ${payload.provider || "provider ready"}`;
-    status.className = "settings-inline-status positive";
-    if (payload.config) renderSettings(payload.config);
-    if (payload.status) render(payload.status);
-    fetchLogs();
-    showDetails("Upstox Connect", {
-      ok: payload.ok,
-      message: payload.message,
-      provider: payload.provider,
-      token_type: payload.token_type,
-      user_id: payload.user_id,
-    });
-  } catch (error) {
-    status.textContent = "Upstox connect failed: backend unreachable";
-    status.className = "settings-inline-status negative";
-    showBackendError(networkErrorMessage(error, "Upstox connect"), { action: "upstox connect" });
-  } finally {
-    button.disabled = !(state.auth && state.auth.admin);
   }
 }
 
@@ -1890,11 +1878,26 @@ function renderStrategyPlans(rows) {
     body.innerHTML = `<div class="empty-state">No strategy plans loaded.</div>`;
     return;
   }
+  const market = normalizeUiMarket(state.activeMarket);
   body.innerHTML = rows
     .slice(0, 5)
     .map((row) => {
       const risk = humanLabel(row.risk_level || "Medium");
-      return `<button class="strategy-plan-card risk-${escapeHtml(cssToken(row.risk_level))}" type="button" data-plan="${escapeHtml(row.code)}">
+      const ideas = (row.constituents || []).filter((idea) => rowMarket(idea) === market).slice(0, 4);
+      const symbolList = ideas.length
+        ? ideas.map((idea) => {
+            const life = ideaLifecycle(idea);
+            return `<span class="plan-symbol ${escapeHtml(life.className)}"><strong>${escapeHtml(idea.symbol || "-")}</strong><small>${escapeHtml(life.label)} · ${fmtPct(idea.current_return_pct || 0)}</small></span>`;
+          }).join("")
+        : `<span class="plan-symbol empty">No ${escapeHtml(activeMarketLabel())} stocks in this plan yet</span>`;
+      const followRow = state.auth?.admin
+        ? `<div class="plan-admin-note">User accounts can follow this plan with a budget. Admin only manages plans, credits, and providers.</div>`
+        : `<div class="plan-follow-row">
+            <input type="number" min="0" step="100" inputmode="decimal" placeholder="Budget" data-plan-budget="${escapeHtml(row.code)}" />
+            <button type="button" class="primary" data-plan-action="paper" data-plan-code="${escapeHtml(row.code)}">Follow Paper</button>
+            <button type="button" data-plan-action="track" data-plan-code="${escapeHtml(row.code)}">Track</button>
+          </div>`;
+      return `<article class="strategy-plan-card risk-${escapeHtml(cssToken(row.risk_level))}" role="button" tabindex="0" data-plan="${escapeHtml(row.code)}">
       <div class="strategy-plan-top">
         <span class="strategy-risk-pill">${escapeHtml(risk)}</span>
         <strong>${escapeHtml(row.name || row.code || "-")}</strong>
@@ -1902,16 +1905,61 @@ function renderStrategyPlans(rows) {
       <p>${escapeHtml(row.description || "-")}</p>
       <div class="strategy-plan-stats">
         <span><small>Holding</small><strong>${escapeHtml(row.holding_period || "-")}</strong></span>
-        <span><small>Ideas</small><strong>${fmtNumber(row.idea_count || 0)}</strong></span>
+        <span><small>${escapeHtml(activeMarketLabel())} Stocks</small><strong>${fmtNumber(ideas.length)}</strong></span>
         <span><small>Since Signals</small><strong class="${pnlClass(row.avg_return_pct)}">${fmtPct(row.avg_return_pct || 0)}</strong></span>
       </div>
+      <div class="plan-symbol-list">${symbolList}</div>
+      ${followRow}
       <div class="strategy-capital-rule">${escapeHtml(row.capital_rule || "")}</div>
-    </button>`;
+    </article>`;
     })
     .join("");
   [...body.querySelectorAll(".strategy-plan-card")].forEach((button, index) => {
-    button.addEventListener("click", () => showDetails("Strategy Plan", rows[index]));
+    button.addEventListener("click", (event) => {
+      if (event.target.closest("[data-plan-action]") || event.target.closest("[data-plan-budget]")) return;
+      showDetails("Strategy Plan", rows[index]);
+    });
   });
+  [...body.querySelectorAll("[data-plan-action]")].forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const code = button.dataset.planCode;
+      const input = body.querySelector(`[data-plan-budget="${CSS.escape(code)}"]`);
+      followPlan(code, button.dataset.planAction, Number(input?.value || 0));
+    });
+  });
+}
+
+async function followPlan(planCode, action, amount = 0) {
+  if (!planCode) return;
+  const mode = action === "paper" ? "PAPER" : action === "live" ? "LIVE" : "TRACK";
+  try {
+    const response = await fetch(`/api/plans/${encodeURIComponent(planCode)}/follow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, amount, market: state.activeMarket, max_symbols: 5 }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(payload.detail || "Could not follow plan");
+      return;
+    }
+    if (Array.isArray(payload.ideas)) {
+      state.latest = {
+        ...(state.latest || {}),
+        suggestions: payload.ideas,
+        signal_ideas: payload.ideas,
+        tracked_ideas: payload.tracked_ideas || state.latest?.tracked_ideas || [],
+        positions: payload.positions || state.latest?.positions || [],
+        strategy_plans: payload.strategy_plans || state.latest?.strategy_plans || [],
+      };
+      render(state.latest);
+    } else {
+      fetchStatus();
+    }
+  } catch (error) {
+    alert(networkErrorMessage(error, "plan follow"));
+  }
 }
 
 function renderPositions(rows) {
@@ -1926,15 +1974,16 @@ function renderPositions(rows) {
       const marketValue = Number(row.market_price) * Number(row.qty);
       const summary = row.position_summary || {};
       const flags = summary.active_flags || [];
+      const market = rowMarket(row);
       return `<tr>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
         <td class="num"><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><br><small>${escapeHtml(summary.overall_grade || "-")}</small></td>
         <td><span class="tag ${String(summary.classification || "").toLowerCase()}">${escapeHtml(summary.classification || "-")}</span><br><small>${escapeHtml(row.strategy || "-")}</small></td>
         <td><small>Entry ${escapeHtml(summary.entry_grade || "-")} · MTF ${escapeHtml(summary.mtf_grade || "-")} · Delivery ${escapeHtml(summary.delivery_bias || "-")}</small><br>${flags.length ? flags.map((flag) => `<span class="tag watch">${escapeHtml(humanLabel(flag))}</span>`).join(" ") : `<span class="tag open">CLEAR</span>`}</td>
         <td class="num">${row.qty}</td>
-        <td class="num">${fmtMoney(row.market_price)}<br><small>${escapeHtml(summary.price_label || "LTP")}</small></td>
-        <td class="num">${fmtMoney(marketValue)}</td>
-        <td class="num ${pnlClass(pnl)}">${fmtMoney(pnl)}</td>
+        <td class="num">${fmtMarketMoney(row.market_price, market)}<br><small>${escapeHtml(summary.price_label || "LTP")}</small></td>
+        <td class="num">${fmtMarketMoney(marketValue, market)}</td>
+        <td class="num ${pnlClass(pnl)}">${fmtMarketMoney(pnl, market)}</td>
         <td><strong>${escapeHtml(summary.recommended_action || "HOLD")}</strong><br><small>${escapeHtml(summary.reason || "-")}</small></td>
       </tr>`;
     })
@@ -1946,7 +1995,7 @@ function renderTrackedIdeas(rows) {
   const body = byId("tracked-ideas-body");
   if (!body) return;
   if (!rows.length) {
-    body.innerHTML = `<div class="empty-state">No tracked ideas yet. Use Track or Paper on any signal to keep its live P&L here.</div>`;
+    body.innerHTML = `<div class="empty-state">No ${escapeHtml(activeMarketLabel())} tracked ideas yet. Use Track or Paper on a signal from this market.</div>`;
     return;
   }
   body.innerHTML = rows
@@ -1959,24 +2008,27 @@ function renderTrackedIdeas(rows) {
       const invested = Number(row.invested_amount || row.user_follow?.invested_amount || 0);
       const pnl = Number(row.unrealized_pnl || row.user_follow?.unrealized_pnl || 0);
       const returnPct = Number(row.return_pct || row.user_follow?.return_pct || 0);
+      const market = rowMarket(row);
+      const lifecycle = ideaLifecycle(row);
       return `<article class="tracked-idea-card" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} tracked idea">
         <div class="tracked-idea-main">
           <div>
             <span class="signal-rank">${escapeHtml(mode)}</span>
-            <strong>${escapeHtml(row.symbol || "-")}</strong>
-            <small>${escapeHtml(row.strategy || "-")} · followed ${fmtTime(row.followed_at || row.user_follow?.created_at)}</small>
+            <div class="tracked-title-row"><strong>${escapeHtml(row.symbol || "-")}</strong><span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span></div>
+            <small>${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))} · followed ${fmtTime(row.followed_at || row.user_follow?.created_at)}</small>
           </div>
           <div class="tracked-return ${pnlClass(returnPct)}">
             <strong>${fmtPct(returnPct)}</strong>
-            <small>${fmtMoney(pnl)} unrealized</small>
+            <small>${fmtMarketMoney(pnl, market)} unrealized</small>
           </div>
         </div>
         <div class="tracked-metrics">
           <span><small>Qty</small><strong>${fmtNumber(qty)}</strong></span>
-          <span><small>Entry</small><strong>${fmtMoney(entry)}</strong></span>
-          <span><small>LTP</small><strong>${fmtMoney(latest)}</strong></span>
-          <span><small>Invested</small><strong>${fmtMoney(invested)}</strong></span>
+          <span><small>Entry</small><strong>${fmtMarketMoney(entry, market)}</strong></span>
+          <span><small>LTP</small><strong>${fmtMarketMoney(latest, market)}</strong></span>
+          <span><small>Invested</small><strong>${fmtMarketMoney(invested, market)}</strong></span>
         </div>
+        ${targetLadderHtml(row, market, true)}
       </article>`;
     })
     .join("");
@@ -1989,7 +2041,7 @@ function renderTrackedIdeas(rows) {
 function renderSuggestions(rows) {
   const body = byId("suggestions-body");
   if (!rows.length) {
-    body.innerHTML = `<div class="empty-state">Run a cycle to generate ranked suggestions.</div>`;
+    body.innerHTML = `<div class="empty-state">No ${escapeHtml(activeMarketLabel())} ideas yet. Let the shared engine complete a cycle for this market.</div>`;
     return;
   }
   body.innerHTML = rows
@@ -1998,7 +2050,7 @@ function renderSuggestions(rows) {
       const action = String(row.suggestion || "WATCH").toLowerCase();
       const targets = row.targets || [];
       const t1 = targets[0] || {};
-      const t2 = targets[1] || {};
+      const t3 = targets[2] || {};
       const riskFlags = Array.isArray(row.risk_flags) ? row.risk_flags.slice(0, 3) : [];
       const institutionalFlags = row.institutional_flags && typeof row.institutional_flags === "object"
         ? Object.entries(row.institutional_flags)
@@ -2012,6 +2064,8 @@ function renderSuggestions(rows) {
       const peakReturn = Number(row.peak_return_pct || 0);
       const worstReturn = Number(row.worst_return_pct || 0);
       const followed = row.user_follow || null;
+      const market = rowMarket(row);
+      const lifecycle = ideaLifecycle(row);
       return `<article class="signal-history-card signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} idea audit">
         <div class="signal-card-main">
           <div class="signal-card-title">
@@ -2020,9 +2074,10 @@ function renderSuggestions(rows) {
               <div class="signal-symbol-row">
                 <strong>${escapeHtml(row.symbol)}</strong>
                 <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(row.suggestion || "WATCH")}</span>
+                <span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span>
                 ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
               </div>
-              <small>${fmtMoney(row.price || row.latest_price)} · ${escapeHtml(row.strategy || "-")} · first seen ${fmtTime(row.first_seen_at)}</small>
+              <small>${fmtMarketMoney(row.price || row.latest_price, market)} · ${escapeHtml(MARKET_LABELS[market] || market)} · ${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))}</small>
             </div>
           </div>
           <div class="signal-card-actions">
@@ -2038,11 +2093,12 @@ function renderSuggestions(rows) {
           <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>after gates</small></div>
           <div><span>Since Signal</span><strong class="${pnlClass(currentReturn)}">${fmtPct(currentReturn)}</strong><small>best ${fmtPct(peakReturn)} · worst ${fmtPct(worstReturn)}</small></div>
         </div>
+        ${targetLadderHtml(row, market)}
         <div class="signal-trade-strip">
-          <span><small>Entry</small><strong>${formatZone(row.entry_zone)}</strong></span>
-          <span><small>Stop</small><strong class="negative">${fmtMoney(row.stop_loss)}</strong></span>
-          <span><small>Target 1</small><strong class="positive">${fmtMoney(t1.price)}</strong></span>
-          <span><small>Target 2</small><strong class="positive">${fmtMoney(t2.price)}</strong></span>
+          <span><small>Entry</small><strong>${formatZone(row.entry_zone, market)}</strong></span>
+          <span><small>Stop</small><strong class="negative">${fmtMarketMoney(row.stop_loss, market)}</strong></span>
+          <span><small>Target 1</small><strong class="positive">${fmtMarketMoney(t1.price, market)}</strong></span>
+          <span><small>Final Target</small><strong class="positive">${fmtMarketMoney(t3.price, market)}</strong></span>
         </div>
         <div class="signal-reason-row">
           <span>Reason</span>
@@ -2093,16 +2149,20 @@ async function followIdea(ideaId, action) {
         suggestions: payload.ideas,
         signal_ideas: payload.ideas,
         tracked_ideas: payload.tracked_ideas || state.latest?.tracked_ideas || [],
+        tracked_ideas_by_market: payload.tracked_ideas_by_market || state.latest?.tracked_ideas_by_market || {},
         positions: payload.positions || state.latest?.positions || [],
       };
-      renderSuggestions(payload.ideas);
-      renderTrackedIdeas(state.latest.tracked_ideas || []);
-      renderPositions(state.latest.positions || []);
-      byId("kpi-positions").textContent = String((state.latest.positions || []).length);
-      byId("nav-positions-badge").textContent = String((state.latest.positions || []).length);
-      byId("position-count").textContent = `${(state.latest.positions || []).length} open`;
+      const marketIdeas = filterRowsByMarket(payload.ideas || [], state.activeMarket);
+      const marketTracked = payloadRowsForMarket(state.latest, "tracked_ideas", state.activeMarket);
+      const marketPositions = filterRowsByMarket(state.latest.positions || [], state.activeMarket);
+      renderSuggestions(marketIdeas);
+      renderTrackedIdeas(marketTracked);
+      renderPositions(marketPositions);
+      byId("kpi-positions").textContent = String(marketPositions.length);
+      byId("nav-positions-badge").textContent = String(marketPositions.length);
+      byId("position-count").textContent = `${marketPositions.length} open`;
       const trackedCount = byId("tracked-count");
-      if (trackedCount) trackedCount.textContent = `${(state.latest.tracked_ideas || []).length} active`;
+      if (trackedCount) trackedCount.textContent = `${marketTracked.length} active`;
       await refreshStatusOnly();
     }
   } catch (error) {
@@ -2132,9 +2192,10 @@ function renderQuotes(rows) {
 
 function quoteRow(row) {
   const dayPct = quoteDayPct(row);
+  const market = rowMarket(row);
   return `<tr>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
-        <td class="num">${fmtMoney(row.price)}</td>
+        <td class="num">${fmtMarketMoney(row.price, market)}</td>
         <td class="num ${pnlClass(dayPct)}">${fmtPct(dayPct)}</td>
         <td class="num">${fmtCompact(row.volume)}</td>
         <td><span class="source ${sourceClass(row.source)}">${escapeHtml(row.source)}</span></td>
@@ -2163,13 +2224,14 @@ function renderDecisions(rows) {
     .slice(0, 120)
     .map((row) => {
       const action = String(row.action || "HOLD").toLowerCase();
+      const market = rowMarket(row);
       return `<tr>
         <td>${fmtTime(row.ts)}</td>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
         <td>${escapeHtml(row.strategy || "-")}</td>
         <td><span class="tag ${action}">${escapeHtml(row.action)}</span></td>
         <td class="num">${fmtNumber(Number(row.confidence) * 100)}%</td>
-        <td class="num">${fmtMoney(row.price)}</td>
+        <td class="num">${fmtMarketMoney(row.price, market)}</td>
         <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
         <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
         <td class="reason">${escapeHtml(readableDecisionReason(row))}</td>
@@ -2200,6 +2262,52 @@ function renderOverviewDecisions(rows) {
   bindRowDetails(body, rows.slice(0, 10), "Decision");
 }
 
+function ideaLifecycle(row = {}) {
+  const status = String(row.lifecycle_status || row.status || "active").toLowerCase();
+  const highest = String(row.highest_target_hit || "NONE").toUpperCase();
+  if (status === "stopped" || String(row.status || "").toUpperCase() === "STOP_HIT") {
+    return { label: "Stop hit", className: "negative", note: "Idea invalidated by stop" };
+  }
+  if (status === "expired" || String(row.status || "").toUpperCase() === "EXPIRED") {
+    return { label: "Expired", className: "warning", note: "Timeline is over" };
+  }
+  if (highest === "T3" || status === "target_3_hit") return { label: "T3 hit", className: "positive", note: "Final target reached" };
+  if (highest === "T2" || status === "target_2_hit") return { label: "T2 hit", className: "positive", note: "Second target reached" };
+  if (highest === "T1" || status === "target_1_hit") return { label: "T1 hit", className: "positive", note: "First target reached" };
+  if (status === "watch" || String(row.signal_type || "").toUpperCase() === "WATCH") return { label: "Watch", className: "warning", note: "Not actionable yet" };
+  return { label: "Active", className: "open", note: "Tracking toward targets" };
+}
+
+function ideaTimelineText(row = {}) {
+  const lifecycle = ideaLifecycle(row);
+  if (lifecycle.label === "Expired" || lifecycle.label === "Stop hit" || lifecycle.label.includes("T3")) return lifecycle.note;
+  const days = Number(row.days_to_expiry ?? row.timeline?.days_left);
+  if (Number.isFinite(days)) return days <= 0 ? "expires today" : `${days} day${days === 1 ? "" : "s"} left`;
+  if (row.expires_at) return `expires ${fmtDate(row.expires_at)}`;
+  return row.timeline?.max_days ? `${row.timeline.max_days} day plan` : "timeline pending";
+}
+
+function targetLadderHtml(row = {}, market = "IN", compact = false) {
+  const targets = Array.isArray(row.target_status) && row.target_status.length
+    ? row.target_status
+    : (Array.isArray(row.targets) ? row.targets : []).slice(0, 3).map((target, index) => ({
+        label: target?.label || `T${index + 1}`,
+        price: target?.price ?? target,
+        hit: false,
+      }));
+  if (!targets.length) return `<div class="target-ladder empty">No targets published yet</div>`;
+  return `<div class="target-ladder ${compact ? "compact" : ""}">
+    ${targets.slice(0, 3).map((target) => {
+      const hit = Boolean(target.hit);
+      return `<span class="${hit ? "hit" : "pending"}">
+        <small>${escapeHtml(target.label || "-")}</small>
+        <strong>${fmtMarketMoney(target.price, market)}</strong>
+        <em>${hit ? "hit" : "pending"}</em>
+      </span>`;
+    }).join("")}
+  </div>`;
+}
+
 function renderOrders(rows) {
   const body = byId("orders-body");
   if (!rows.length) {
@@ -2211,14 +2319,15 @@ function renderOrders(rows) {
     .map((row) => {
       const side = String(row.side || "").toLowerCase();
       const exit = exitPlanFromOrder(row);
+      const market = rowMarket(row);
       return `<tr>
         <td>${fmtTime(row.ts)}</td>
         <td><span class="tag ${side}">${escapeHtml(row.side)}</span></td>
         <td><strong>${escapeHtml(row.symbol)}</strong></td>
         <td>${escapeHtml(row.strategy || "-")}</td>
         <td class="num">${row.qty}</td>
-        <td class="num">${fmtMoney(row.price)}</td>
-        <td class="num">${fmtMoney(row.notional)}</td>
+        <td class="num">${fmtMarketMoney(row.price, market)}</td>
+        <td class="num">${fmtMarketMoney(row.notional, market)}</td>
         <td>${escapeHtml(row.status)}</td>
         <td>${exitPlanMini(exit)}</td>
       </tr>`;
@@ -2297,13 +2406,14 @@ function detailHtml(value) {
 function suggestionDetailHtml(row) {
   const audit = parseJsonObject(row.details_json);
   const context = audit.context || {};
+  const market = rowMarket(row);
   return `
     ${auditHero({
       label: "Suggestion",
       symbol: row.symbol,
       action: row.suggestion,
       status: `${row.confluence}/26 ${row.tier || ""}`,
-      meta: `${fmtMoney(row.price)} · combined ${fmtNumber(row.combined_score)}`,
+      meta: `${fmtMarketMoney(row.price, market)} · ${MARKET_LABELS[market] || market} · combined ${fmtNumber(row.combined_score)}`,
     })}
     <section class="audit-section">
       <h4>Why Suggested</h4>
@@ -2325,21 +2435,22 @@ function suggestionDetailHtml(row) {
 function positionDetailHtml(row) {
   const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
   const summary = row.position_summary || {};
+  const market = rowMarket(row);
   return `
     ${auditHero({
       label: "Position",
       symbol: row.symbol,
       action: summary.recommended_action || (pnl >= 0 ? "OPEN" : "WATCH"),
       status: summary.classification || row.strategy || "-",
-      meta: `${row.qty} qty · ${fmtMoney(pnl)} unrealized`,
+      meta: `${row.qty} qty · ${fmtMarketMoney(pnl, market)} unrealized`,
     })}
     ${positionSummaryHtml(summary)}
     ${objectCardsHtml("Position", {
       qty: row.qty,
-      avg_price: fmtMoney(row.avg_price),
-      market_price: fmtMoney(row.market_price),
-      market_value: fmtMoney(Number(row.market_price) * Number(row.qty)),
-      unrealized_pnl: fmtMoney(pnl),
+      avg_price: fmtMarketMoney(row.avg_price, market),
+      market_price: fmtMarketMoney(row.market_price, market),
+      market_value: fmtMarketMoney(Number(row.market_price) * Number(row.qty), market),
+      unrealized_pnl: fmtMarketMoney(pnl, market),
     })}
     ${exitPlanHtml(row.exit_plan)}
     <section class="audit-section">
@@ -2372,13 +2483,14 @@ function decisionDetailHtml(row) {
   const context = audit.context || {};
   const llm = audit.llm_output || null;
   const exit = exitPlanFromAudit(audit);
+  const market = rowMarket(row);
   return `
     ${auditHero({
       label: "Decision audit",
       symbol: row.symbol,
       action: row.action,
       status: audit.decision_path || row.strategy || "-",
-      meta: `${fmtNumber(Number(row.confidence) * 100)}% confidence · ${fmtMoney(row.price)}`,
+      meta: `${fmtNumber(Number(row.confidence) * 100)}% confidence · ${fmtMarketMoney(row.price, market)}`,
     })}
     <section class="audit-section">
       <h4>Why ${escapeHtml(row.action)}</h4>
@@ -2410,20 +2522,21 @@ function orderDetailHtml(row) {
   const execution = audit.execution || {};
   const route = audit.route || {};
   const exit = exitPlanFromOrder(row);
+  const market = rowMarket(row);
   return `
     ${auditHero({
       label: "Order audit",
       symbol: row.symbol,
       action: row.side,
       status: row.status,
-      meta: `${row.qty} qty · ${fmtMoney(row.notional)}`,
+      meta: `${row.qty} qty · ${fmtMarketMoney(row.notional, market)}`,
     })}
     <section class="audit-section">
       <h4>Why Order ${escapeHtml(row.status)}</h4>
       <p>${escapeHtml(readableOrderReason(row))}</p>
       <div class="audit-chips">
         <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
-        <span>Price: ${fmtMoney(row.price)}</span>
+        <span>Price: ${fmtMarketMoney(row.price, market)}</span>
         <span>Time: ${escapeHtml(fmtTime(row.ts))}</span>
       </div>
     </section>
@@ -2505,9 +2618,11 @@ function exitPlanHtml(exit) {
   </section>`;
 }
 
-function formatZone(zone) {
+function formatZone(zone, market = "IN") {
   if (!Array.isArray(zone) || !zone.length) return "-";
-  return zone.length === 1 ? fmtMoney(zone[0]) : `${fmtMoney(zone[0])} - ${fmtMoney(zone[zone.length - 1])}`;
+  return zone.length === 1
+    ? fmtMarketMoney(zone[0], market)
+    : `${fmtMarketMoney(zone[0], market)} - ${fmtMarketMoney(zone[zone.length - 1], market)}`;
 }
 
 function auditHero({ label, symbol, action, status, meta }) {
@@ -2881,6 +2996,7 @@ function drawEquity(rows) {
   }
 
   if (rows.length < 2) {
+    const baseline = rows.length ? Number(rows[0].equity) : null;
     ctx.strokeStyle = "rgba(0, 201, 139, 0.3)";
     ctx.setLineDash([6, 8]);
     ctx.beginPath();
@@ -2890,7 +3006,7 @@ function drawEquity(rows) {
     ctx.setLineDash([]);
     ctx.fillStyle = "#7f8da0";
     ctx.font = "13px system-ui";
-    ctx.fillText("Waiting for portfolio snapshots", pad, height / 2 - 12);
+    ctx.fillText(baseline ? `Baseline ${fmtMoney(baseline)}. Curve starts after the next snapshot.` : "Curve starts after portfolio snapshots arrive.", pad, height / 2 - 12);
     return;
   }
 
@@ -2944,10 +3060,35 @@ async function postControl(path) {
   }
 }
 
+function setActiveMarket(market, options = {}) {
+  const next = normalizeUiMarket(market);
+  state.activeMarket = next;
+  updateMarketWorkspaceLabels();
+  setAnalyzeMarket(next);
+  if (options.rerender !== false && state.latest) {
+    render(state.latest);
+  }
+}
+
+function setAnalyzeMarket(market) {
+  const next = String(market || "IN").toUpperCase() === "US" ? "US" : "IN";
+  const marketInput = byId("analyze-market");
+  const analyzeInput = byId("analyze-symbol");
+  if (marketInput) marketInput.value = next;
+  if (analyzeInput) analyzeInput.placeholder = next === "US" ? "Search US symbol, e.g. AAPL" : "Search India symbol, e.g. SUZLON";
+  for (const tab of document.querySelectorAll(".market-tab")) {
+    const active = tab.dataset.marketTab === next;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
+}
+
 async function analyzeSymbol(event) {
   event.preventDefault();
   const input = byId("analyze-symbol");
+  const marketSelect = byId("analyze-market");
   const button = byId("analyze-btn");
+  const market = (marketSelect?.value || "IN").toUpperCase();
   const symbol = input.value.trim().toUpperCase();
   if (!symbol) {
     byId("analyze-status").textContent = "enter a symbol";
@@ -2961,16 +3102,16 @@ async function analyzeSymbol(event) {
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   const ticker = window.setInterval(() => {
     const elapsed = Math.round((Date.now() - started) / 1000);
-    byId("analyze-status").textContent = `analyzing ${symbol} · ${elapsed}s`;
+    byId("analyze-status").textContent = `analyzing ${market}:${symbol} · ${elapsed}s`;
   }, 1000);
   button.disabled = true;
-  byId("analyze-status").textContent = `analyzing ${symbol}...`;
-  byId("analyze-result").innerHTML = `<div class="empty-state">Running live quote, candles, strategy, sentiment, risk gates, and LLM if enabled...</div>`;
+  byId("analyze-status").textContent = `analyzing ${market}:${symbol}...`;
+  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk gates, and LLM if enabled...</div>`;
   try {
     const response = await fetch("/api/analyze-symbol", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol }),
+      body: JSON.stringify({ symbol, market }),
       signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
@@ -2979,7 +3120,7 @@ async function analyzeSymbol(event) {
       byId("analyze-result").innerHTML = `<div class="error-box">${escapeHtml(payload.detail || "Analysis failed")}</div>`;
       return;
     }
-    byId("analyze-status").textContent = `${payload.symbol} analyzed`;
+    byId("analyze-status").textContent = `${payload.market || market}:${payload.symbol} analyzed`;
     renderManualAnalysis(payload);
     fetchLogs();
   } catch (error) {
@@ -2998,6 +3139,7 @@ async function analyzeSymbol(event) {
 
 function renderManualAnalysis(payload) {
   const decision = payload.decision || {};
+  const market = payload.market || "IN";
   const action = String(decision.action || "HOLD").toLowerCase();
   const details = decision.details || parseJsonObject(decision.details_json);
   const path = details.decision_path || decision.strategy || "-";
@@ -3011,7 +3153,7 @@ function renderManualAnalysis(payload) {
   const resolvedNote =
     payload.requested_symbol && payload.symbol && String(payload.requested_symbol).toUpperCase() !== String(payload.symbol).toUpperCase()
       ? `resolved from ${payload.requested_symbol}`
-      : `${payload.provider || "-"} · ${payload.candle_count || 0} candles`;
+      : `${payload.market || "IN"} · ${payload.provider || "-"} · ${payload.candle_count || 0} candles`;
   byId("analyze-result").innerHTML = `
     <div class="manual-analysis-card">
       <div>
@@ -3031,25 +3173,25 @@ function renderManualAnalysis(payload) {
       </div>
       <div>
         <span>Price</span>
-        <strong>${fmtMoney(decision.price || payload.quote?.price)}</strong>
+        <strong>${fmtMarketMoney(decision.price || payload.quote?.price, market)}</strong>
         <small>${escapeHtml(fmtTime(payload.quote?.asof))}</small>
       </div>
       <div>
         <span>News Sentiment</span>
-        <strong class="${pnlClass(news.score)}">${fmtNumber(news.score)}</strong>
-        <small>${headlines.length} latest items · ${fmtNumber(Number(news.confidence || 0) * 100)}% conf</small>
+        <strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "DATA_MISSING"}</strong>
+        <small>${headlines.length ? `${headlines.length} latest items · ${fmtNumber(Number(news.confidence || 0) * 100)}% conf` : escapeHtml(news.note || "No recent verified news found")}</small>
       </div>
       <div>
         <span>Credits Used</span>
         <strong>${fmtCredits(creditCharge)}</strong>
-        <small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today · ${llmActivity.billable_calls || 0} brain calls</small>
+        <small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small>
       </div>
     </div>
     <section class="audit-section manual-summary">
       <h4>Reason</h4>
       <p>${escapeHtml(readableDecisionReason(decision))}</p>
       ${auditList("Main Reasons", decisionReasonHighlights(decision))}
-      ${auditList("Latest News", headlines.slice(0, 6))}
+      ${headlines.length ? auditList("Latest News", headlines.slice(0, 6)) : `<p class="muted">${escapeHtml(news.note || "No recent verified news found from connected public feeds.")}</p>`}
       ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
       ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
       <button id="manual-detail-btn" type="button">Open Full Analysis</button>
@@ -3064,24 +3206,27 @@ function bindControls() {
   byId("stop-btn").addEventListener("click", () => postControl("/api/control/stop"));
   byId("run-btn").addEventListener("click", () => postControl("/api/control/run-once"));
   byId("analyze-form").addEventListener("submit", analyzeSymbol);
+  document.querySelectorAll(".market-tab").forEach((button) => {
+    button.addEventListener("click", () => setAnalyzeMarket(button.dataset.marketTab));
+  });
+  document.querySelectorAll(".market-workspace-tab").forEach((button) => {
+    button.addEventListener("click", () => setActiveMarket(button.dataset.marketWorkspace));
+  });
   byId("login-form").addEventListener("submit", login);
   byId("user-create-form").addEventListener("submit", createUser);
   byId("save-settings-btn").addEventListener("click", saveSettings);
   byId("save-provider-keys-btn").addEventListener("click", saveSettings);
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);
-  byId("upstox-auth-url-btn").addEventListener("click", openUpstoxLogin);
-  byId("upstox-connect-btn").addEventListener("click", connectUpstox);
-  byId("my-upstox-auth-url-btn").addEventListener("click", openMyUpstoxLogin);
-  byId("my-upstox-token-save-btn").addEventListener("click", saveMyUpstoxToken);
-  byId("my-upstox-connect-btn").addEventListener("click", connectMyUpstox);
+  byId("indstocks-connect-btn").addEventListener("click", connectIndStocks);
+  byId("my-indstocks-token-save-btn").addEventListener("click", saveMyIndStocksToken);
   byId("my-kite-connect-btn").addEventListener("click", connectMyKite);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
   const quoteFilter = byId("quote-filter");
   if (quoteFilter) {
     quoteFilter.addEventListener("input", () => {
       state.quoteFilter = quoteFilter.value || "";
-      renderQuotes(state.latest?.quotes || []);
+      renderQuotes(filterRowsByMarket(state.latest?.quotes || [], state.activeMarket));
     });
   }
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
@@ -3157,7 +3302,9 @@ function setView(view) {
     section.classList.toggle("active", section.id === `${view}-view`);
   }
   const label = document.querySelector(`.nav-item[data-view="${view}"] span`)?.textContent || "Overview";
-  byId("view-title").textContent = label;
+  const marketScoped = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(view);
+  byId("view-title").textContent = marketScoped ? `${activeMarketLabel()} ${label}` : label;
+  updateMarketWorkspaceLabels();
 }
 
 function currentViewName() {

@@ -5,6 +5,7 @@ from typing import Any
 
 from .config import Settings
 from .db import Database
+from .market_regions import normalize_market_region
 from .models import utc_now
 
 
@@ -24,9 +25,18 @@ class MacroCalendarService:
         self._log("INFO", "macro_calendar_cycle", "Macro calendar refreshed", {"events": len(events)})
         return context
 
-    def event_context_for_date(self, event_date: date | str | None = None, symbol: str | None = None) -> dict[str, Any]:
+    def event_context_for_date(
+        self,
+        event_date: date | str | None = None,
+        symbol: str | None = None,
+        market_region: str | None = None,
+    ) -> dict[str, Any]:
         if not self.settings.enable_macro_calendar:
             return _neutral_event("macro_calendar_disabled")
+        if normalize_market_region(market_region or "IN") == "US":
+            neutral = _neutral_event("us_macro_calendar_not_configured")
+            neutral.update({"enabled": True, "symbol": symbol, "market_region": "US", "date": (_coerce_date(event_date) or _today_ist()).isoformat()})
+            return neutral
         day = _coerce_date(event_date) or _today_ist()
         monthly_expiry = _last_thursday(day.year, day.month)
         next_weekly = _nearest_weekly_expiry(day)

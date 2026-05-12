@@ -35,6 +35,7 @@ class TradingAgentService:
         options_intelligence: Any | None,
         interval_seconds: int,
         cycle_timeout_seconds: int,
+        market_region: str = "IN",
         universe_symbols_per_cycle: int = 0,
         execute_trades: bool = True,
         on_update: UpdateCallback | None = None,
@@ -52,6 +53,7 @@ class TradingAgentService:
         self.options_intelligence = options_intelligence
         self.interval_seconds = interval_seconds
         self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
+        self.market_region = market_region
         self.universe_symbols_per_cycle = max(0, int(universe_symbols_per_cycle or 0))
         self.execute_trades = execute_trades
         self.on_update = on_update
@@ -93,7 +95,7 @@ class TradingAgentService:
         started = datetime.now(timezone.utc)
         self._cycle_started_at = started.isoformat()
         self._cycle_phase = "market_quotes"
-        full_universe = self.db.get_universe(enabled_only=True)
+        full_universe = self.db.get_universe(enabled_only=True, market_region=self.market_region)
         pre_positions = self.broker.positions_by_symbol()
         universe = self._cycle_universe(full_universe, pre_positions)
         self._log(
@@ -103,6 +105,7 @@ class TradingAgentService:
             "Agent cycle started",
             {
                 "enabled_universe_size": len(full_universe),
+                "market_region": self.market_region,
                 "cycle_universe_size": len(universe),
                 "symbols_per_cycle": self.universe_symbols_per_cycle,
             },
@@ -364,7 +367,11 @@ class TradingAgentService:
         market_health["portfolio_equity"] = portfolio.get("equity")
         macro_calendar_context = self.db.get_state("macro_calendar_context", {})
         positions = self._positions_with_exit_plans(raw_positions, order_audit_history, quotes, market_health, macro_calendar_context)
-        suggestions = self.db.latest_signal_ideas(20)
+        suggestions = self.db.latest_signal_ideas(40)
+        suggestions_by_market = {
+            "IN": self.db.latest_signal_ideas(25, market_region="IN"),
+            "US": self.db.latest_signal_ideas(25, market_region="US"),
+        }
         universe_summary = self.db.universe_summary()
         options_context = self.db.get_state("options_intelligence_context", {})
         self_audit = self.db.get_state("self_audit")
@@ -384,6 +391,9 @@ class TradingAgentService:
             "universe": {
                 "enabled": universe_summary.get("enabled"),
                 "total": universe_summary.get("total"),
+                "market_region": self.market_region,
+                "india_enabled": universe_summary.get("india_enabled"),
+                "us_enabled": universe_summary.get("us_enabled"),
                 "low_price_enabled": universe_summary.get("low_price_enabled"),
                 "symbols_per_cycle": self.universe_symbols_per_cycle,
             },
@@ -399,13 +409,14 @@ class TradingAgentService:
             "decisions": decisions,
             "suggestions": suggestions,
             "signal_ideas": suggestions,
+            "suggestions_by_market": suggestions_by_market,
             "strategy_plans": self.db.strategy_plans(),
             "orders": orders,
             "equity_curve": self.db.recent_equity(120),
             "strategy_metrics": self.db.strategy_metrics(),
             "performance": self.db.performance_summary(),
             "sentiment": self.db.latest_sentiment(40),
-            "universe_size": len(self.db.get_universe(enabled_only=True)),
+            "universe_size": len(self.db.get_universe(enabled_only=True, market_region=self.market_region)),
             "market_health": market_health,
             "market_data_health": _market_data_diagnostics(self.market_data),
             "macro_context": self.db.get_state("macro_context", {}),

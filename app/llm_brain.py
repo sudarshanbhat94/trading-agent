@@ -1111,14 +1111,17 @@ class LLMBrain:
         if self.settings.llm_provider == "deepseek":
             return max(900, min(self.settings.llm_max_tokens, 4096))
         if self.settings.llm_provider == "groq":
-            return max(350, min(self.settings.llm_max_tokens, 700))
+            # Qwen reasoning models count hidden reasoning against completion
+            # tokens. 700 often leaves too little room for the final JSON and
+            # causes a truncated safe-HOLD fallback.
+            return max(1200, min(self.settings.llm_max_tokens, 2048))
         return max(350, min(self.settings.llm_max_tokens, 1400))
 
     def _review_max_tokens(self) -> int:
         if self.settings.llm_provider == "deepseek":
             return max(700, min(self.settings.llm_max_tokens, 3000))
         if self.settings.llm_provider == "groq":
-            return max(300, min(self.settings.llm_max_tokens, 600))
+            return max(900, min(self.settings.llm_max_tokens, 1600))
         return max(256, min(self.settings.llm_max_tokens, 1200))
 
     def _apply_model_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:

@@ -11,13 +11,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
 from .config import Settings
 from .db import Database
 from .llm_usage import build_llm_usage_event
+from .market_regions import market_region_for_row
 from .models import utc_now
 
 
@@ -26,6 +27,11 @@ SOURCE_WEIGHTS = {
     "bseindia.com": 1.0,
     "reuters.com": 0.9,
     "bloomberg.com": 0.9,
+    "wsj.com": 0.86,
+    "cnbc.com": 0.78,
+    "marketwatch.com": 0.72,
+    "finance.yahoo.com": 0.68,
+    "seekingalpha.com": 0.62,
     "moneycontrol.com": 0.78,
     "economictimes.indiatimes.com": 0.76,
     "livemint.com": 0.74,
@@ -178,11 +184,14 @@ class SentimentService:
         return selected
 
     def _result_payload(self, result: SentimentResult) -> dict[str, Any]:
+        has_data = bool(result.headlines or result.events)
         return {
             "score": result.score,
             "confidence": result.confidence,
             "headlines": result.headlines[:12],
             "events": [event.to_dict() for event in result.events[:12]],
+            "data_status": "OK" if has_data else "DATA_MISSING",
+            "note": "Latest verified headlines found" if has_data else "No recent verified news found from connected public news feeds",
             "asof": utc_now(),
         }
 
@@ -202,17 +211,29 @@ class SentimentService:
     async def _fetch_news_items(self, row: dict[str, Any]) -> list[dict[str, Any]]:
         company = row.get("name") or row["symbol"]
         symbol = row["symbol"]
-        queries = [
-            f'"{company}" {symbol} NSE stock when:{self.settings.news_lookback_days}d',
-            f'"{company}" results earnings guidance India when:{self.settings.news_lookback_days}d',
-            f'"{company}" order win contract rating downgrade upgrade when:{self.settings.news_lookback_days}d',
-            f'"{company}" fraud probe penalty resignation debt when:{self.settings.news_lookback_days}d',
-        ]
+        region = market_region_for_row(row)
+        if region == "US":
+            queries = [
+                f'"{company}" {symbol} stock earnings guidance when:{self.settings.news_lookback_days}d',
+                f'"{company}" analyst upgrade downgrade price target when:{self.settings.news_lookback_days}d',
+                f'"{company}" SEC lawsuit probe debt when:{self.settings.news_lookback_days}d',
+                f'"{company}" revenue margin AI demand market share when:{self.settings.news_lookback_days}d',
+            ]
+            locale_params = {"hl": "en-US", "gl": "US", "ceid": "US:en"}
+        else:
+            queries = [
+                f'"{company}" {symbol} NSE stock when:{self.settings.news_lookback_days}d',
+                f'"{company}" results earnings guidance India when:{self.settings.news_lookback_days}d',
+                f'"{company}" order win contract rating downgrade upgrade when:{self.settings.news_lookback_days}d',
+                f'"{company}" fraud probe penalty resignation debt when:{self.settings.news_lookback_days}d',
+            ]
+            locale_params = {"hl": "en-IN", "gl": "IN", "ceid": "IN:en"}
         async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
             responses = await asyncio.gather(
                 *[
                     client.get(
-                        f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-IN&gl=IN&ceid=IN:en"
+                        "https://news.google.com/rss/search",
+                        params={"q": query, **locale_params},
                     )
                     for query in queries
                 ],
@@ -240,7 +261,131 @@ class SentimentService:
                 if not self._within_lookback(parsed_published):
                     continue
                 items.append({"title": title, "source": source, "url": url, "published": published})
-        return items
+        if items:
+            return items
+        bing_items = await self._fetch_bing_news_items(row)
+        if bing_items:
+            return bing_items
+        return await self._fetch_yahoo_finance_items(row)
+
+    async def _fetch_bing_news_items(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        company = str(row.get("name") or row.get("symbol") or "").strip()
+        symbol = str(row.get("symbol") or "").strip()
+        region = market_region_for_row(row)
+        suffix = "India NSE stock" if region == "IN" else "stock earnings analyst"
+        queries = [
+            f"{company} {symbol} {suffix}",
+            f"{company} results earnings stock",
+        ]
+        async with httpx.AsyncClient(
+            timeout=8,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            responses = await asyncio.gather(
+                *[
+                    client.get(
+                        "https://www.bing.com/news/search",
+                        params={"q": query, "format": "rss"},
+                    )
+                    for query in queries
+                ],
+                return_exceptions=True,
+            )
+        items: list[dict[str, Any]] = []
+        for response in responses:
+            if isinstance(response, Exception):
+                continue
+            try:
+                response.raise_for_status()
+                root = ET.fromstring(response.text)
+            except Exception:
+                continue
+            for item in root.findall(".//item")[:10]:
+                title = item.findtext("title", default="").strip()
+                if not title or not self._is_relevant(row, title):
+                    continue
+                published = item.findtext("pubDate")
+                parsed_published = _parse_pubdate(published)
+                if not self._within_lookback(parsed_published):
+                    continue
+                items.append(
+                    {
+                        "title": title,
+                        "source": item.findtext("source", default="Bing News").strip() or "Bing News",
+                        "url": item.findtext("link", default=""),
+                        "published": published,
+                    }
+                )
+        return self._dedupe_raw_items(items)
+
+    async def _fetch_yahoo_finance_items(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        region = market_region_for_row(row)
+        symbol = str(row.get("symbol") or "").upper()
+        exchange = str(row.get("exchange") or "").upper()
+        query_symbol = symbol
+        if region == "IN" and "." not in query_symbol:
+            query_symbol = f"{query_symbol}.BO" if exchange == "BSE" else f"{query_symbol}.NS"
+        queries = [query_symbol]
+        company = str(row.get("name") or "").strip()
+        if company and company.upper() != symbol:
+            queries.append(company)
+        async with httpx.AsyncClient(
+            timeout=8,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            responses = await asyncio.gather(
+                *[
+                    client.get(
+                        "https://query1.finance.yahoo.com/v1/finance/search",
+                        params={"q": query, "newsCount": 8, "quotesCount": 1},
+                    )
+                    for query in queries
+                ],
+                return_exceptions=True,
+            )
+        items: list[dict[str, Any]] = []
+        for response in responses:
+            if isinstance(response, Exception):
+                continue
+            try:
+                response.raise_for_status()
+                payload = response.json()
+            except Exception:
+                continue
+            for item in (payload.get("news") or [])[:8]:
+                title = str(item.get("title") or "").strip()
+                if not title or not self._is_relevant(row, title):
+                    continue
+                published_at = None
+                if item.get("providerPublishTime"):
+                    try:
+                        published_at = datetime.fromtimestamp(float(item["providerPublishTime"]), tz=timezone.utc)
+                    except (TypeError, ValueError, OSError):
+                        published_at = None
+                if not self._within_lookback(published_at):
+                    continue
+                items.append(
+                    {
+                        "title": title,
+                        "source": item.get("publisher") or "Yahoo Finance",
+                        "url": item.get("link") or "",
+                        "published": published_at.strftime("%a, %d %b %Y %H:%M:%S GMT") if published_at else "",
+                    }
+                )
+        return self._dedupe_raw_items(items)
+
+    def _dedupe_raw_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        output: list[dict[str, Any]] = []
+        for item in items:
+            key = re.sub(r"[^a-z0-9]+", "", str(item.get("title") or "").lower())[:120]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            output.append(item)
+        return output
 
     def _is_relevant(self, row: dict[str, Any], title: str) -> bool:
         text = title.lower()

@@ -191,6 +191,11 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(user.get("daily_credit_limit") or 0.0), 6),
         "broker_accounts": {
+            "indstocks": {
+                "connected": bool(user.get("indstocks_access_token")),
+                "access_token_saved": bool(user.get("indstocks_access_token")),
+                "base_url": user.get("indstocks_api_base_url") or "",
+            },
             "upstox": {
                 "connected": bool(user.get("upstox_access_token")),
                 "api_key_saved": bool(user.get("upstox_api_key")),

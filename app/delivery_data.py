@@ -28,6 +28,8 @@ class DeliveryDataService:
         self._refresh_task: asyncio.Task | None = None
 
     def start_background_task(self) -> None:
+        if str(self.settings.market_region or "IN").upper() == "US":
+            return
         if self._background_task and not self._background_task.done():
             return
         self._background_task = asyncio.create_task(self._daily_loop())
@@ -51,6 +53,8 @@ class DeliveryDataService:
             await asyncio.sleep(3600)
 
     async def ensure_data_current(self) -> dict[str, Any]:
+        if str(self.settings.market_region or "IN").upper() == "US":
+            return self._neutral_status("us_market_no_nse_delivery_data")
         if not self.settings.enable_delivery_data:
             return self._neutral_status("disabled")
         now_ist = _now_ist()

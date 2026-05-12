@@ -105,6 +105,8 @@ class UniverseService:
                     "exchange": "NSE",
                     "yahoo_symbol": f"{symbol}.NS",
                     "kite_symbol": f"NSE:{symbol}",
+                    "indstocks_scrip_code": "",
+                    "indstocks_security_id": "",
                     "upstox_instrument_key": f"NSE_EQ|{isin}" if isin else "",
                     "nubra_symbol": symbol,
                     "sector": "",

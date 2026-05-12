@@ -38,7 +38,8 @@ from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
-from .market_data import MarketDataError, build_market_data_provider
+from .market_data import MarketDataError, build_market_data_provider, normalize_indstocks_access_token
+from .market_regions import normalize_market_region
 from .models import utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
@@ -57,6 +58,8 @@ settings = settings_from_overrides(base_settings, db.runtime_settings())
 if settings.admin_password:
     db.ensure_default_admin_user(settings.admin_username, hash_password(settings.admin_password))
 db.seed_universe(settings.universe_csv, disable_missing=settings.universe_source == "csv")
+if settings.us_universe_csv.exists():
+    db.seed_universe(settings.us_universe_csv, disable_missing=False)
 
 
 class WebSocketHub:
@@ -175,7 +178,7 @@ class UserSignalSessionManager:
                 status_code=402,
                 detail=f"Insufficient credits or daily budget to start signals. Estimated need: {estimated_charge:.4f} credits.",
             )
-        _market_data_provider_for_user(user)
+        _market_data_provider_for_user(user, settings.market_region)
         self._status[user_id] = {
             "running": True,
             "phase": "starting",
@@ -359,6 +362,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         options_intelligence=new_options_intelligence,
         interval_seconds=new_settings.agent_interval_seconds,
         cycle_timeout_seconds=new_settings.cycle_timeout_seconds,
+        market_region=new_settings.market_region,
         universe_symbols_per_cycle=new_settings.universe_symbols_per_cycle,
         execute_trades=False,
         on_update=hub.broadcast,
@@ -456,6 +460,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot = agent.snapshot()
     is_admin = bool(user and user.get("role") == "admin")
     snapshot["runtime"] = {
+        "market_region": settings.market_region,
         "market_data_provider": settings.market_data_provider,
         "execution_mode": settings.execution_mode,
         "llm_provider": settings.llm_provider if is_admin else "assigned",
@@ -476,9 +481,17 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         user_id = int(user["id"])
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
         user_positions = _user_follow_positions(tracked_ideas)
-        snapshot["suggestions"] = db.latest_signal_ideas(20, user_id=user_id)
+        snapshot["suggestions"] = db.latest_signal_ideas(50, user_id=user_id)
         snapshot["signal_ideas"] = snapshot["suggestions"]
+        snapshot["suggestions_by_market"] = {
+            "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN"),
+            "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US"),
+        }
         snapshot["tracked_ideas"] = tracked_ideas
+        snapshot["tracked_ideas_by_market"] = {
+            "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN"),
+            "US": db.user_followed_signal_ideas(user_id, 100, market_region="US"),
+        }
         snapshot["positions"] = user_positions
         snapshot["portfolio"] = _user_follow_portfolio(tracked_ideas, snapshot.get("portfolio", {}))
         snapshot["strategy_plans"] = db.strategy_plans()
@@ -495,9 +508,14 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         )
         snapshot["user_signal_session"] = _sanitize_private_llm_metadata(shared_status)
     else:
-        snapshot["suggestions"] = db.latest_signal_ideas(20)
+        snapshot["suggestions"] = db.latest_signal_ideas(50)
         snapshot["signal_ideas"] = snapshot["suggestions"]
+        snapshot["suggestions_by_market"] = {
+            "IN": db.latest_signal_ideas(30, market_region="IN"),
+            "US": db.latest_signal_ideas(30, market_region="US"),
+        }
         snapshot["tracked_ideas"] = []
+        snapshot["tracked_ideas_by_market"] = {"IN": [], "US": []}
         snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["user_signal_sessions"] = user_signal_sessions.admin_summary()
     return snapshot
@@ -530,6 +548,9 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
         positions.append(
             {
                 "symbol": item.get("symbol"),
+                "market_region": item.get("market_region") or "IN",
+                "exchange": item.get("exchange"),
+                "sector": item.get("sector"),
                 "qty": qty,
                 "avg_price": entry_price,
                 "market_price": latest_price,
@@ -611,11 +632,13 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             ),
         )
     requested_input = str(payload.get("symbol", ""))
-    symbol, row, resolution = _resolve_analysis_symbol(requested_input)
+    market_region = _payload_market_region(payload)
+    symbol, row, resolution = _resolve_analysis_symbol(requested_input, market_region=market_region)
     if not symbol:
-        raise HTTPException(status_code=400, detail="Enter a valid NSE symbol or company name, for example SBIN, SUZLON, or INFY.")
+        examples = "AAPL, MSFT, or NVDA" if market_region == "US" else "SBIN, SUZLON, or INFY"
+        raise HTTPException(status_code=400, detail=f"Enter a valid {market_region} symbol or company name, for example {examples}.")
 
-    user_market_data = _market_data_provider_for_user(user)
+    user_market_data = _market_data_provider_for_user(user, market_region)
     user_strategy, budget_policy = _strategy_for_user_budget(user, credit_before, estimated_charge)
     provider_error: str | None = None
     usage_after_id = db.latest_llm_usage_id()
@@ -634,11 +657,20 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 
     quote = quotes.get(symbol)
     if quote is None:
-        suggestions = _symbol_suggestions(requested_input, limit=3)
+        if _provider_error_is_indstocks_auth(provider_error):
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "INDstocks rejected the saved market-data token while fetching quotes. "
+                    "The token is incorrect, expired, revoked, or not enabled for market data. "
+                    "Save a fresh INDstocks access token in Account or Admin Broker settings."
+                ),
+            )
+        suggestions = _symbol_suggestions(requested_input, limit=3, market_region=market_region)
         suggestion_text = ""
         if suggestions:
             suggestion_text = " Try " + ", ".join(f"{item['symbol']} ({item['name']})" for item in suggestions[:3]) + "."
-        detail = f"No Upstox market quote found for {symbol}.{suggestion_text} Check the symbol spelling and Upstox instrument key."
+        detail = f"No {market_region} market quote found for {symbol}.{suggestion_text} Check the symbol spelling and market data provider."
         if provider_error:
             detail = f"{detail} Provider error: {provider_error}"
         raise HTTPException(status_code=404, detail=detail)
@@ -690,7 +722,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     billing = _credit_billing_for_usage(usage)
     try:
         credit_after = credit_before
-        if usage.get("calls"):
+        if usage.get("calls") and llm_activity.get("billable"):
             credit_after = db.charge_user_credits(
                 user_id,
                 billing["base_credits"],
@@ -753,6 +785,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         "manual_only": True,
         "message": "Analysis completed. This does not place an order; autonomous cycles still handle trading.",
         "symbol": symbol,
+        "market": market_region,
         "requested_symbol": resolution.get("requested_symbol"),
         "resolved_from": resolution.get("resolved_from"),
         "quote": quote.to_dict(),
@@ -786,7 +819,6 @@ async def my_credit_summary(request: Request) -> dict[str, Any]:
             "daily_limit": summary.get("daily_credit_limit", 0.0),
             "daily_remaining": summary.get("daily_credits_remaining", 0.0),
             "estimated_signal_credit": _estimated_signal_credit_charge(),
-            "tokens_per_credit": settings.credit_tokens_per_credit,
             "low_budget_mode": "OpenTrade automatically uses a leaner analysis path when today's remaining credits are tight.",
         },
     }
@@ -805,6 +837,64 @@ async def set_my_daily_credit_limit(payload: dict[str, Any], request: Request) -
         {"user_id": user["id"], "daily_credit_limit": daily_limit},
     )
     return {"ok": True, "credits": _public_credit_summary(summary)}
+
+
+@app.post("/api/me/indstocks/connect")
+async def my_indstocks_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    token = normalize_indstocks_access_token(payload.get("access_token") or payload.get("token") or "")
+    base_url = str(payload.get("base_url") or settings.indstocks_api_base_url).rstrip("/")
+    if not token:
+        raise HTTPException(status_code=400, detail="Paste your INDstocks access token first.")
+    await _validate_indstocks_access_token(token, base_url)
+    updated_user = db.update_user_broker(
+        int(user["id"]),
+        {
+            "indstocks_access_token": token,
+            "indstocks_api_base_url": base_url,
+        },
+    )
+    db.insert_agent_log(
+        "INFO",
+        "indstocks",
+        "user_indstocks_token_saved",
+        f"INDstocks token saved for user {user['username']}",
+        {"user_id": user["id"], "username": user["username"], "base_url": base_url},
+    )
+    return {
+        "ok": True,
+        "message": "INDstocks token saved for this user. Symbol analysis will use this user's market feed.",
+        "user": updated_user,
+        "token_type": "access_token",
+    }
+
+
+async def _validate_indstocks_access_token(token: str, base_url: str) -> None:
+    headers = {
+        "Accept": "application/json,text/csv,*/*",
+        "Authorization": normalize_indstocks_access_token(token),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/market/quotes/full", params={"scrip-codes": "NSE_2885"})
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403}:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "INDstocks rejected this token. It is incorrect, expired, revoked, or not enabled for market data. "
+                    "Generate a fresh INDstocks access token and save it again."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"INDstocks token check failed with HTTP {exc.response.status_code}: {exc.response.text[:160]}",
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="INDstocks token check timed out. Try again in a moment.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"INDstocks token check failed: {exc.__class__.__name__}: {exc}") from exc
 
 
 @app.post("/api/me/upstox/auth-url")
@@ -913,7 +1003,7 @@ async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str
     )
     return {
         "ok": True,
-        "message": "Kite credentials saved. Upstox is still required for full candle analytics in this build.",
+        "message": "Kite credentials saved. INDstocks is the active analytics feed in this build.",
         "user": updated_user,
     }
 
@@ -956,6 +1046,7 @@ def _public_config_payload() -> dict[str, Any]:
             "cycle_timeout_seconds": settings.cycle_timeout_seconds,
             "llm_timeout_seconds": settings.llm_timeout_seconds,
             "credit_tokens_per_credit": settings.credit_tokens_per_credit,
+            "market_region": settings.market_region,
         },
     }
 
@@ -1000,6 +1091,7 @@ async def universe_snapshot(request: Request) -> dict[str, Any]:
     return {
         "settings": {
             "source": settings.universe_source,
+            "market_region": settings.market_region,
             "symbols_per_cycle": settings.universe_symbols_per_cycle,
             "nse_refresh_on_start": settings.nse_universe_refresh_on_start,
             "nse_series": settings.nse_universe_series,
@@ -1027,6 +1119,54 @@ async def llm_usage(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     summary = db.llm_usage_summary(100)
     return summary if user.get("role") == "admin" else _public_llm_usage_summary(summary)
+
+
+@app.post("/api/indstocks/connect")
+async def indstocks_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    token = normalize_indstocks_access_token(payload.get("access_token") or payload.get("token") or "")
+    base_url = str(payload.get("base_url") or settings.indstocks_api_base_url).rstrip("/")
+    if not token:
+        raise HTTPException(status_code=400, detail="Paste your INDstocks access token first.")
+    await _validate_indstocks_access_token(token, base_url)
+
+    current_overrides = db.runtime_settings()
+    candidate_overrides = dict(current_overrides)
+    candidate_overrides.update(
+        {
+            "market_data_provider": "indstocks",
+            "indstocks_access_token": token,
+            "indstocks_api_base_url": base_url,
+        }
+    )
+    candidate_settings = settings_from_overrides(Settings(), candidate_overrides)
+    try:
+        candidate_stack = build_agent_stack(candidate_settings)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"INDstocks token saved but provider failed to initialize: {exc}") from exc
+    result = await _apply_runtime_stack(
+        candidate_overrides=candidate_overrides,
+        candidate_settings=candidate_settings,
+        candidate_stack=candidate_stack,
+        changed_keys=["market_data_provider", "indstocks_access_token", "indstocks_api_base_url"],
+        component="indstocks",
+        event="connected",
+        message="INDstocks access token connected and saved",
+    )
+    db.insert_agent_log(
+        "INFO",
+        "indstocks",
+        "access_token_saved",
+        "INDstocks access token saved for market data",
+        {"base_url": base_url},
+    )
+    return {
+        "ok": True,
+        "message": "INDstocks connected. Token saved and market data provider rebuilt.",
+        "provider": result["status"].get("provider"),
+        "status": result["status"],
+        "config": result["config"],
+    }
 
 
 @app.post("/api/upstox/auth-url")
@@ -1209,6 +1349,8 @@ async def _apply_runtime_stack(
     strategy = candidate_stack["strategy"]
     agent = candidate_stack["agent"]
     await universe_service.refresh_if_enabled()
+    if settings.us_universe_csv.exists():
+        db.seed_universe(settings.us_universe_csv, disable_missing=False)
     delivery_service.start_background_task()
     if was_running:
         agent.start()
@@ -1379,6 +1521,30 @@ async def adjust_user_credit_balance(user_id: int, payload: dict[str, Any], requ
     return {"ok": True, "credits": summary, "admin": db.admin_credit_usage_summary(), "users": db.list_users()}
 
 
+@app.post("/api/users/{user_id}/assign-runtime-indstocks")
+async def assign_runtime_indstocks(user_id: int, request: Request) -> dict[str, Any]:
+    admin = require_admin(request, settings, db)
+    existing = db.user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    runtime_settings = db.runtime_settings()
+    runtime_indstocks = {
+        "indstocks_access_token": (runtime_settings.get("indstocks_access_token") or settings.indstocks_access_token),
+        "indstocks_api_base_url": (runtime_settings.get("indstocks_api_base_url") or settings.indstocks_api_base_url),
+    }
+    if not runtime_indstocks["indstocks_access_token"]:
+        raise HTTPException(status_code=400, detail="No runtime INDstocks access token is available to assign.")
+    updated_user = db.assign_runtime_indstocks_to_user(user_id, runtime_indstocks)
+    db.insert_agent_log(
+        "INFO",
+        "indstocks",
+        "runtime_indstocks_assigned",
+        f"Admin assigned runtime INDstocks credentials to {existing.get('username')}",
+        {"updated_by": admin.get("username"), "user_id": user_id, "username": existing.get("username")},
+    )
+    return {"ok": True, "user": updated_user, "users": db.list_users()}
+
+
 @app.post("/api/users/{user_id}/assign-runtime-upstox")
 async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any]:
     admin = require_admin(request, settings, db)
@@ -1475,11 +1641,21 @@ async def reset_demo(request: Request) -> dict[str, Any]:
 async def ideas(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     user_id = int(user["id"]) if user.get("role") != "admin" else None
-    tracked_ideas = db.user_followed_signal_ideas(user_id, 100) if user_id is not None else []
+    market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
+    tracked_ideas = db.user_followed_signal_ideas(user_id, 100, market_region=market_region) if user_id is not None else []
     return {
         "ok": True,
-        "ideas": db.latest_signal_ideas(50, user_id=user_id),
+        "market": market_region,
+        "ideas": db.latest_signal_ideas(50, user_id=user_id, market_region=market_region),
+        "ideas_by_market": {
+            "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN"),
+            "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US"),
+        },
         "tracked_ideas": tracked_ideas,
+        "tracked_ideas_by_market": {
+            "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN") if user_id is not None else [],
+            "US": db.user_followed_signal_ideas(user_id, 100, market_region="US") if user_id is not None else [],
+        },
         "positions": _user_follow_positions(tracked_ideas),
         "strategy_plans": db.strategy_plans(),
         "shared_backend": {
@@ -1518,6 +1694,69 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     }
 
 
+@app.post("/api/plans/{plan_code}/follow")
+async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    mode = str(payload.get("mode") or "TRACK").strip().upper()
+    if mode not in {"TRACK", "PAPER", "LIVE"}:
+        mode = "TRACK"
+    amount = _positive_float(payload.get("amount", 0), field="amount")
+    market_region = normalize_market_region(payload.get("market") or "BOTH", default="BOTH")
+    max_symbols = int(_positive_float(payload.get("max_symbols", 5), field="max_symbols") or 5)
+    max_symbols = max(1, min(max_symbols, 10))
+    plans = db.strategy_plans()
+    plan = next((item for item in plans if str(item.get("code") or "") == plan_code), None)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Strategy plan not found")
+    ideas = [
+        idea
+        for idea in plan.get("constituents", [])
+        if normalize_market_region(idea.get("market_region") or "IN", default="IN") == market_region or market_region == "BOTH"
+    ][:max_symbols]
+    if not ideas:
+        raise HTTPException(status_code=400, detail="No active ideas are available under this plan for the selected market")
+    per_idea_amount = float(amount) / len(ideas) if amount > 0 else 0.0
+    followed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for idea in ideas:
+        try:
+            followed.append(
+                db.follow_signal_idea(
+                    int(user["id"]),
+                    int(idea["id"]),
+                    mode=mode,
+                    amount=per_idea_amount,
+                )
+            )
+        except ValueError as exc:
+            skipped.append({"id": idea.get("id"), "symbol": idea.get("symbol"), "reason": str(exc)})
+    db.insert_agent_log(
+        "INFO",
+        "ideas",
+        "plan_followed",
+        f"{user.get('username')} followed plan {plan_code}",
+        {
+            "user_id": user.get("id"),
+            "plan_code": plan_code,
+            "mode": mode,
+            "amount": amount,
+            "followed": len(followed),
+            "skipped": skipped,
+        },
+    )
+    tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    return {
+        "ok": True,
+        "plan": plan,
+        "followed": followed,
+        "skipped": skipped,
+        "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
+        "tracked_ideas": tracked_ideas,
+        "positions": _user_follow_positions(tracked_ideas),
+        "strategy_plans": db.strategy_plans(),
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     user = current_user(websocket, settings, db)
@@ -1533,61 +1772,78 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         hub.disconnect(websocket)
 
 
-def _normalize_symbol(value: str) -> str:
+def _payload_market_region(payload: dict[str, Any]) -> str:
+    return normalize_market_region(payload.get("market") or payload.get("market_region") or "IN")
+
+
+def _normalize_symbol(value: str, market_region: str = "IN") -> str:
     symbol = value.strip().upper()
-    symbol = symbol.removeprefix("NSE:")
-    symbol = symbol.removesuffix(".NS")
+    region = normalize_market_region(market_region)
+    for prefix in ("NSE:", "BSE:", "NASDAQ:", "NYSE:", "AMEX:", "US:"):
+        symbol = symbol.removeprefix(prefix)
+    if region == "IN":
+        symbol = symbol.removesuffix(".NS").removesuffix(".BO")
+    elif region == "US":
+        symbol = symbol.removesuffix(".US").replace(".", "-")
     if not re.fullmatch(r"[A-Z0-9&-]{1,24}", symbol):
         return ""
     return symbol
 
 
-def _resolve_analysis_symbol(value: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    requested = _normalize_symbol(value)
+def _resolve_analysis_symbol(value: str, market_region: str = "IN") -> tuple[str, dict[str, Any], dict[str, Any]]:
+    region = normalize_market_region(market_region)
+    requested = _normalize_symbol(value, region)
     search_text = str(value or "").strip()
     if requested:
-        aliased = COMMON_SYMBOL_ALIASES.get(requested, requested)
-        row = db.universe_row(aliased)
+        aliased = COMMON_SYMBOL_ALIASES.get(requested, requested) if region == "IN" else requested
+        row = db.universe_row(aliased, market_region=region)
         if row:
             return aliased, row, {"requested_symbol": requested, "resolved_from": "alias" if aliased != requested else "symbol"}
-        suggestions = _symbol_suggestions(requested, limit=1)
+        suggestions = _symbol_suggestions(requested, limit=1, market_region=region)
         if suggestions:
             symbol = str(suggestions[0]["symbol"])
-            row = db.universe_row(symbol)
+            row = db.universe_row(symbol, market_region=region)
             if row:
                 return symbol, row, {"requested_symbol": requested, "resolved_from": "universe_search"}
-        return requested, _manual_universe_row(requested), {"requested_symbol": requested, "resolved_from": "manual"}
+        return requested, _manual_universe_row(requested, region), {"requested_symbol": requested, "resolved_from": "manual"}
 
-    suggestions = _symbol_suggestions(search_text, limit=1)
+    suggestions = _symbol_suggestions(search_text, limit=1, market_region=region)
     if suggestions:
         symbol = str(suggestions[0]["symbol"])
-        row = db.universe_row(symbol)
+        row = db.universe_row(symbol, market_region=region)
         if row:
             return symbol, row, {"requested_symbol": search_text, "resolved_from": "company_search"}
     return "", {}, {"requested_symbol": search_text, "resolved_from": "invalid"}
 
 
-def _symbol_suggestions(value: str, limit: int = 5) -> list[dict[str, Any]]:
+def _symbol_suggestions(value: str, limit: int = 5, market_region: str = "IN") -> list[dict[str, Any]]:
+    region = normalize_market_region(market_region)
     raw = str(value or "").strip()
-    normalized = _normalize_symbol(raw)
-    alias = COMMON_SYMBOL_ALIASES.get(normalized or _compact_search_text(raw))
+    normalized = _normalize_symbol(raw, region)
+    alias = COMMON_SYMBOL_ALIASES.get(normalized or _compact_search_text(raw)) if region == "IN" else None
     candidates: list[dict[str, Any]] = []
     if alias:
-        row = db.universe_row(alias)
+        row = db.universe_row(alias, market_region=region)
         if row:
-            candidates.append({"symbol": row.get("symbol"), "name": row.get("name"), "sector": row.get("sector")})
+            candidates.append({"symbol": row.get("symbol"), "name": row.get("name"), "sector": row.get("sector"), "exchange": row.get("exchange")})
     compact = _compact_search_text(raw)
     if not compact and not normalized:
         return candidates[:limit]
     like = f"%{raw.upper()}%" if raw else "%"
     compact_like = f"%{compact}%"
+    region_clause = ""
+    if region == "IN":
+        region_clause = "and upper(exchange) in ('NSE','BSE')"
+    elif region == "US":
+        region_clause = "and upper(exchange) not in ('NSE','BSE')"
     try:
         with db.connect() as conn:
             rows = conn.execute(
-                """
-                select symbol, name, sector
+                f"""
+                select symbol, name, sector, exchange
                 from universe
                 where enabled = 1
+                  {region_clause}
                   and (
                     upper(symbol) like ?
                     or upper(name) like ?
@@ -1612,7 +1868,7 @@ def _symbol_suggestions(value: str, limit: int = 5) -> list[dict[str, Any]]:
         symbol = str(row["symbol"])
         if symbol in seen:
             continue
-        candidates.append({"symbol": symbol, "name": row["name"], "sector": row["sector"]})
+        candidates.append({"symbol": symbol, "name": row["name"], "sector": row["sector"], "exchange": row["exchange"]})
         seen.add(symbol)
         if len(candidates) >= limit:
             break
@@ -1621,6 +1877,17 @@ def _symbol_suggestions(value: str, limit: int = 5) -> list[dict[str, Any]]:
 
 def _compact_search_text(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+
+def _provider_error_is_indstocks_auth(error: str | None) -> bool:
+    text = str(error or "").lower()
+    return "indstocks" in text and (
+        "403" in text
+        or "401" in text
+        or "access_token" in text
+        or "expired" in text
+        or "revoked" in text
+    )
 
 
 def _require_signal_user(request: Request) -> dict[str, Any]:
@@ -1633,27 +1900,27 @@ def _require_signal_user(request: Request) -> dict[str, Any]:
     return user
 
 
-def _market_data_provider_for_user(user: dict[str, Any]):
+def _market_data_provider_for_user(user: dict[str, Any], market_region: str = "IN"):
+    region = normalize_market_region(market_region)
+    if region == "US":
+        return build_market_data_provider(replace(settings, market_region="US", market_data_provider="yahoo"))
     stored = db.user_by_id(int(user["id"])) or {}
-    if stored.get("upstox_access_token"):
+    if stored.get("indstocks_access_token"):
         user_settings = replace(
             settings,
-            market_data_provider="upstox",
-            upstox_api_key=str(stored.get("upstox_api_key") or ""),
-            upstox_api_secret=str(stored.get("upstox_api_secret") or ""),
-            upstox_redirect_uri=str(stored.get("upstox_redirect_uri") or settings.upstox_redirect_uri),
-            upstox_access_token=str(stored.get("upstox_access_token") or ""),
-            upstox_api_base_url=str(stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/"),
+            market_region=region,
+            market_data_provider="indstocks",
+            indstocks_access_token=str(stored.get("indstocks_access_token") or ""),
+            indstocks_api_base_url=str(stored.get("indstocks_api_base_url") or settings.indstocks_api_base_url).rstrip("/"),
         )
         return build_market_data_provider(user_settings)
-    if stored.get("kite_access_token"):
-        raise HTTPException(
-            status_code=400,
-            detail="Kite is saved for this user, but full analytics currently require Upstox candles. Connect Upstox or ask admin to assign the runtime Upstox feed.",
-        )
+    if settings.indstocks_access_token:
+        return build_market_data_provider(replace(settings, market_region=region, market_data_provider="indstocks"))
+    if settings.market_data_provider == "yahoo":
+        return build_market_data_provider(replace(settings, market_region=region, market_data_provider="yahoo"))
     raise HTTPException(
         status_code=400,
-        detail="No Upstox account is connected for this user. Connect Upstox from Account or ask admin to assign the runtime Upstox feed.",
+        detail="No INDstocks market data token is connected. Paste a user token from Account, or ask admin to connect/assign the runtime INDstocks feed.",
     )
 
 
@@ -1770,7 +2037,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     if not can_spend:
         raise RuntimeError(f"insufficient credits or daily budget; estimated need {estimated_charge:.4f} credits")
 
-    full_universe = db.get_universe(enabled_only=True)
+    full_universe = db.get_universe(enabled_only=True, market_region=settings.market_region)
     universe = user_signal_sessions.select_universe(user_id, full_universe, credit_before, estimated_charge)
     if not universe:
         raise RuntimeError("no enabled universe symbols available for user signal session")
@@ -1782,7 +2049,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
         },
     )
 
-    user_market_data = _market_data_provider_for_user(user)
+    user_market_data = _market_data_provider_for_user(user, settings.market_region)
     user_strategy, budget_policy = _strategy_for_user_budget(user, credit_before, estimated_charge)
     usage_after_id = db.latest_llm_usage_id()
     usage_scope = f"user_signal_cycle:{user_id}:{uuid4().hex}"
@@ -1869,7 +2136,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     )
     usage = db.llm_usage_cost_for_scope(user_id, usage_scope, usage_after_id)
     llm_activity = _llm_activity_from_decisions(decisions, usage)
-    if usage.get("calls"):
+    if usage.get("calls") and llm_activity.get("billable"):
         billing = _credit_billing_for_usage(usage)
         credit_after = db.charge_user_credits(
             user_id,
@@ -2152,9 +2419,15 @@ def _llm_activity_from_decisions(decisions: list[Any], usage: dict[str, Any]) ->
         if fallback and not latest_reason:
             latest_reason = _public_llm_failure_reason({"reason": fallback.get("llm_reason") or fallback.get("reason")})
     calls = int(usage.get("calls") or 0)
-    if calls:
+    raw_credits = _public_llm_usage(usage)["estimated_credits"]
+    billable = bool(calls and not (attempted > 0 and failed >= attempted))
+    credits_charged = raw_credits if billable else 0.0
+    if calls and billable:
         status = "completed_billable"
-        message = f"OpenTrade Brain completed {calls} billable call(s); credits were charged from returned token usage."
+        message = f"OpenTrade Brain completed the review lane and used {credits_charged:.2f} credits."
+    elif calls:
+        status = "completed_unusable_not_charged"
+        message = "OpenTrade Brain returned provider output, but it was not usable as a strict trading decision. No credits were charged."
     elif attempted:
         status = "attempted_no_billable_tokens"
         message = "OpenTrade Brain was selected and attempted analysis, but the provider returned no billable token usage. No credits were charged."
@@ -2170,9 +2443,9 @@ def _llm_activity_from_decisions(decisions: list[Any], usage: dict[str, Any]) ->
         "selected_symbols": selected,
         "attempted_symbols": attempted,
         "failed_symbols": failed,
-        "billable_calls": calls,
-        "billable_tokens": int(usage.get("total_tokens") or 0),
-        "credits_charged": _public_llm_usage(usage)["estimated_credits"],
+        "billable": billable,
+        "credits_charged": credits_charged,
+        "raw_provider_credits": raw_credits,
         "latest_failure": latest_reason,
     }
 
@@ -2220,15 +2493,20 @@ def _extract_oauth_code(value: str) -> str:
     return raw
 
 
-def _manual_universe_row(symbol: str) -> dict[str, Any]:
+def _manual_universe_row(symbol: str, market_region: str = "IN") -> dict[str, Any]:
+    region = normalize_market_region(market_region)
+    exchange = "NASDAQ" if region == "US" else "NSE"
+    yahoo_symbol = symbol if region == "US" else f"{symbol}.NS"
     return {
         "symbol": symbol,
         "name": symbol,
-        "exchange": "NSE",
-        "yahoo_symbol": f"{symbol}.NS",
-        "kite_symbol": f"NSE:{symbol}",
+        "exchange": exchange,
+        "yahoo_symbol": yahoo_symbol,
+        "kite_symbol": "" if region == "US" else f"NSE:{symbol}",
+        "indstocks_scrip_code": "",
+        "indstocks_security_id": "",
         "upstox_instrument_key": "",
-        "nubra_symbol": symbol,
+        "nubra_symbol": "" if region == "US" else symbol,
         "nubra_ref_id": None,
         "sector": "manual",
         "base_price": 100,

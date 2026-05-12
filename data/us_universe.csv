@@ -1,0 +1,82 @@
+symbol,name,exchange,yahoo_symbol,kite_symbol,upstox_instrument_key,sector,industry,base_price,enabled
+AAPL,Apple,NASDAQ,AAPL,,,Technology,Consumer Electronics,195,1
+MSFT,Microsoft,NASDAQ,MSFT,,,Technology,Software,420,1
+NVDA,Nvidia,NASDAQ,NVDA,,,Technology,Semiconductors,125,1
+AMZN,Amazon,NASDAQ,AMZN,,,Consumer Discretionary,Ecommerce,185,1
+META,Meta Platforms,NASDAQ,META,,,Communication Services,Internet Platforms,520,1
+GOOGL,Alphabet Class A,NASDAQ,GOOGL,,,Communication Services,Internet Platforms,170,1
+GOOG,Alphabet Class C,NASDAQ,GOOG,,,Communication Services,Internet Platforms,170,1
+TSLA,Tesla,NASDAQ,TSLA,,,Consumer Discretionary,Automobiles,240,1
+AVGO,Broadcom,NASDAQ,AVGO,,,Technology,Semiconductors,1700,1
+AMD,Advanced Micro Devices,NASDAQ,AMD,,,Technology,Semiconductors,160,1
+QCOM,Qualcomm,NASDAQ,QCOM,,,Technology,Semiconductors,185,1
+INTC,Intel,NASDAQ,INTC,,,Technology,Semiconductors,31,1
+MU,Micron Technology,NASDAQ,MU,,,Technology,Semiconductors,125,1
+SMCI,Super Micro Computer,NASDAQ,SMCI,,,Technology,Computer Hardware,850,1
+PLTR,Palantir Technologies,NASDAQ,PLTR,,,Technology,Software,25,1
+CRM,Salesforce,NYSE,CRM,,,Technology,Software,280,1
+ORCL,Oracle,NYSE,ORCL,,,Technology,Software,130,1
+ADBE,Adobe,NASDAQ,ADBE,,,Technology,Software,520,1
+NOW,ServiceNow,NYSE,NOW,,,Technology,Software,780,1
+SHOP,Shopify,NASDAQ,SHOP,,,Technology,Ecommerce Software,75,1
+NFLX,Netflix,NASDAQ,NFLX,,,Communication Services,Streaming,650,1
+DIS,Walt Disney,NYSE,DIS,,,Communication Services,Entertainment,110,1
+JPM,JPMorgan Chase,NYSE,JPM,,,Financials,Banks,200,1
+BAC,Bank of America,NYSE,BAC,,,Financials,Banks,38,1
+GS,Goldman Sachs,NYSE,GS,,,Financials,Capital Markets,450,1
+MS,Morgan Stanley,NYSE,MS,,,Financials,Capital Markets,95,1
+V,Visa,NYSE,V,,,Financials,Payments,275,1
+MA,Mastercard,NYSE,MA,,,Financials,Payments,455,1
+AXP,American Express,NYSE,AXP,,,Financials,Payments,230,1
+BRK-B,Berkshire Hathaway Class B,NYSE,BRK-B,,,Financials,Diversified Financials,410,1
+UNH,UnitedHealth Group,NYSE,UNH,,,Healthcare,Managed Care,520,1
+LLY,Eli Lilly,NYSE,LLY,,,Healthcare,Pharmaceuticals,800,1
+JNJ,Johnson and Johnson,NYSE,JNJ,,,Healthcare,Pharmaceuticals,155,1
+PFE,Pfizer,NYSE,PFE,,,Healthcare,Pharmaceuticals,28,1
+MRK,Merck,NYSE,MRK,,,Healthcare,Pharmaceuticals,125,1
+ABBV,AbbVie,NYSE,ABBV,,,Healthcare,Pharmaceuticals,170,1
+TMO,Thermo Fisher Scientific,NYSE,TMO,,,Healthcare,Life Sciences Tools,570,1
+COST,Costco Wholesale,NASDAQ,COST,,,Consumer Staples,Retail,830,1
+WMT,Walmart,NYSE,WMT,,,Consumer Staples,Retail,68,1
+HD,Home Depot,NYSE,HD,,,Consumer Discretionary,Home Improvement Retail,360,1
+LOW,Lowes,NYSE,LOW,,,Consumer Discretionary,Home Improvement Retail,235,1
+MCD,McDonalds,NYSE,MCD,,,Consumer Discretionary,Restaurants,290,1
+SBUX,Starbucks,NASDAQ,SBUX,,,Consumer Discretionary,Restaurants,90,1
+NKE,Nike,NYSE,NKE,,,Consumer Discretionary,Apparel,95,1
+PG,Procter and Gamble,NYSE,PG,,,Consumer Staples,Household Products,165,1
+KO,Coca Cola,NYSE,KO,,,Consumer Staples,Beverages,62,1
+PEP,PepsiCo,NASDAQ,PEP,,,Consumer Staples,Beverages,175,1
+XOM,Exxon Mobil,NYSE,XOM,,,Energy,Oil and Gas,115,1
+CVX,Chevron,NYSE,CVX,,,Energy,Oil and Gas,160,1
+COP,ConocoPhillips,NYSE,COP,,,Energy,Oil and Gas,115,1
+SLB,Schlumberger,NYSE,SLB,,,Energy,Oilfield Services,47,1
+LIN,Linde,NASDAQ,LIN,,,Materials,Chemicals,450,1
+CAT,Caterpillar,NYSE,CAT,,,Industrials,Machinery,340,1
+DE,Deere,NYSE,DE,,,Industrials,Machinery,390,1
+GE,GE Aerospace,NYSE,GE,,,Industrials,Aerospace,165,1
+BA,Boeing,NYSE,BA,,,Industrials,Aerospace,180,1
+LMT,Lockheed Martin,NYSE,LMT,,,Industrials,Defense,460,1
+RTX,RTX,NYSE,RTX,,,Industrials,Defense,105,1
+NEE,NextEra Energy,NYSE,NEE,,,Utilities,Electric Utilities,70,1
+DUK,Duke Energy,NYSE,DUK,,,Utilities,Electric Utilities,100,1
+SO,Southern Company,NYSE,SO,,,Utilities,Electric Utilities,78,1
+AMT,American Tower,NYSE,AMT,,,Real Estate,REIT,195,1
+PLD,Prologis,NYSE,PLD,,,Real Estate,Industrial REIT,120,1
+O,Realty Income,NYSE,O,,,Real Estate,Retail REIT,55,1
+QQQ,Invesco QQQ Trust,ARCA,QQQ,,,ETF,Nasdaq 100 ETF,450,1
+SPY,SPDR S&P 500 ETF,ARCA,SPY,,,ETF,S&P 500 ETF,520,1
+IWM,iShares Russell 2000 ETF,ARCA,IWM,,,ETF,Russell 2000 ETF,205,1
+DIA,SPDR Dow Jones Industrial Average ETF,ARCA,DIA,,,ETF,Dow Jones ETF,390,1
+XLK,Technology Select Sector SPDR Fund,ARCA,XLK,,,ETF,Technology ETF,210,1
+XLF,Financial Select Sector SPDR Fund,ARCA,XLF,,,ETF,Financials ETF,42,1
+XLE,Energy Select Sector SPDR Fund,ARCA,XLE,,,ETF,Energy ETF,92,1
+ARKK,ARK Innovation ETF,ARCA,ARKK,,,ETF,Growth ETF,45,1
+SOFI,SoFi Technologies,NASDAQ,SOFI,,,Financials,Consumer Finance,8,1
+RIVN,Rivian Automotive,NASDAQ,RIVN,,,Consumer Discretionary,Electric Vehicles,12,1
+LCID,Lucid Group,NASDAQ,LCID,,,Consumer Discretionary,Electric Vehicles,3,1
+IONQ,IonQ,NYSE,IONQ,,,Technology,Quantum Computing,10,1
+RKLB,Rocket Lab USA,NASDAQ,RKLB,,,Industrials,Aerospace,5,1
+SOUN,SoundHound AI,NASDAQ,SOUN,,,Technology,AI Software,5,1
+MARA,MARA Holdings,NASDAQ,MARA,,,Financials,Crypto Mining,20,1
+COIN,Coinbase Global,NASDAQ,COIN,,,Financials,Crypto Exchange,230,1
+HOOD,Robinhood Markets,NASDAQ,HOOD,,,Financials,Brokerage,22,1

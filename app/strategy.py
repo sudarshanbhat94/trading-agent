@@ -10,6 +10,7 @@ from .analysis_tools import build_symbol_tool_context, deterministic_score, dete
 from .config import Settings
 from .indicators import technical_snapshot
 from .llm_brain import LLMBrain
+from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
 from .sentiment import SentimentService
 from .trading_rules import evaluate_rules_for_context
@@ -83,7 +84,7 @@ class StrategyEngine:
                 history = list(self._history[symbol])
             technical = technical_snapshot(history)
             macro_event_context = (
-                macro_calendar.event_context_for_date(symbol=symbol)
+                macro_calendar.event_context_for_date(symbol=symbol, market_region=market_region_for_row(row))
                 if macro_calendar is not None
                 else {}
             )

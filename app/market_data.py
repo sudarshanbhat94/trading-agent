@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import math
 import random
+import time
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -11,11 +14,21 @@ from urllib.parse import quote
 import httpx
 
 from .config import Settings
+from .market_regions import market_region_for_row, normalize_market_region
 from .models import Candle, Quote, utc_now
 
 
 class MarketDataError(RuntimeError):
     pass
+
+
+def normalize_indstocks_access_token(value: Any) -> str:
+    token = str(value or "").strip()
+    if token.lower().startswith("authorization:"):
+        token = token.split(":", 1)[1].strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token
 
 
 class MarketDataProvider(ABC):
@@ -91,6 +104,65 @@ class HistoricalCandleFallbackProvider(MarketDataProvider):
         return merged
 
 
+class MarketRegionRoutingProvider(MarketDataProvider):
+    def __init__(self, india_provider: MarketDataProvider, us_provider: MarketDataProvider) -> None:
+        self.india_provider = india_provider
+        self.us_provider = us_provider
+        self.source_name = f"region-router:{india_provider.source_name}+{us_provider.source_name}"
+        self.last_quote_diagnostics: dict[str, Any] = {}
+        self.last_candle_diagnostics: dict[str, Any] = {}
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        groups = self._groups(universe)
+        quotes: dict[str, Quote] = {}
+        errors: dict[str, str] = {}
+        for region, rows in groups.items():
+            if not rows:
+                continue
+            provider = self.us_provider if region == "US" else self.india_provider
+            try:
+                quotes.update(await provider.get_quotes(rows))
+            except Exception as exc:
+                errors[region] = _market_data_error_summary(exc)
+        self.last_quote_diagnostics = {
+            "requested": len(universe),
+            "returned": len(quotes),
+            "groups": {region: len(rows) for region, rows in groups.items()},
+            "group_errors": errors,
+            "india_provider": _provider_diagnostics(self.india_provider),
+            "us_provider": _provider_diagnostics(self.us_provider),
+        }
+        if universe and not quotes:
+            raise MarketDataError(f"{self.source_name} returned no quotes; diagnostics={self.last_quote_diagnostics}")
+        return quotes
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        groups = self._groups(universe)
+        candles: dict[str, list[Candle]] = {}
+        errors: dict[str, str] = {}
+        for region, rows in groups.items():
+            if not rows:
+                continue
+            provider = self.us_provider if region == "US" else self.india_provider
+            try:
+                candles.update(await provider.get_candles(rows))
+            except Exception as exc:
+                errors[region] = _market_data_error_summary(exc)
+        self.last_candle_diagnostics = {
+            "requested": len(universe),
+            "returned": len(candles),
+            "groups": {region: len(rows) for region, rows in groups.items()},
+            "group_errors": errors,
+        }
+        return candles
+
+    def _groups(self, universe: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        groups = {"IN": [], "US": []}
+        for row in universe:
+            groups["US" if market_region_for_row(row) == "US" else "IN"].append(row)
+        return groups
+
+
 class SimulatedMarketDataProvider(MarketDataProvider):
     source_name = "simulated"
 
@@ -163,7 +235,7 @@ class YahooMarketDataProvider(MarketDataProvider):
         }
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
-        symbols = [row.get("yahoo_symbol") or f"{row['symbol']}.NS" for row in universe]
+        symbols = [self._yahoo_symbol(row) for row in universe]
         by_yahoo = dict(zip(symbols, universe))
         quotes: dict[str, Quote] = {}
         diagnostics: dict[str, Any] = {"requested": len(universe), "chunks": 0, "chunk_errors": [], "chart_errors": 0}
@@ -292,13 +364,25 @@ class YahooMarketDataProvider(MarketDataProvider):
                         source=self.source_name,
                     )
                 )
-            return candles[-96:]
+            return candles[-self._candle_limit() :]
         except Exception:
             return []
 
     def _chart_url(self, row: dict[str, Any]) -> str:
-        yahoo_symbol = row.get("yahoo_symbol") or f"{row['symbol']}.NS"
+        yahoo_symbol = self._yahoo_symbol(row)
         return f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(yahoo_symbol, safe='')}"
+
+    def _yahoo_symbol(self, row: dict[str, Any]) -> str:
+        explicit = str(row.get("yahoo_symbol") or "").strip()
+        if explicit:
+            return explicit
+        exchange = str(row.get("exchange") or "").strip().upper()
+        symbol = str(row["symbol"]).strip().upper()
+        if exchange == "NSE":
+            return f"{symbol}.NS"
+        if exchange == "BSE":
+            return f"{symbol}.BO"
+        return symbol
 
     def _chart_result(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         results = payload.get("chart", {}).get("result") or []
@@ -325,6 +409,273 @@ class YahooMarketDataProvider(MarketDataProvider):
             return None
         value = values[index]
         return float(value) if value is not None else None
+
+    def _candle_limit(self) -> int:
+        interval = str(self.interval or "").lower()
+        if interval in {"1d", "1wk"}:
+            return 320
+        return 160
+
+
+class IndStocksMarketDataProvider(MarketDataProvider):
+    source_name = "indstocks-live"
+
+    def __init__(self, settings: Settings) -> None:
+        self.access_token = normalize_indstocks_access_token(settings.indstocks_access_token)
+        self.base_url = settings.indstocks_api_base_url.rstrip("/")
+        self.interval = settings.indstocks_candle_interval
+        self.lookback_days = max(1, int(settings.indstocks_candle_lookback_days or 365))
+        self.candle_concurrency = max(1, int(settings.indstocks_candle_concurrency or 8))
+        self.timeout_seconds = max(5, int(settings.indstocks_fetch_timeout_seconds or 20))
+        self.last_quote_diagnostics: dict[str, Any] = {}
+        self.last_candle_diagnostics: dict[str, Any] = {}
+        self.last_resolver_diagnostics: dict[str, Any] = {}
+        self._instrument_cache: tuple[float, dict[str, dict[str, str]]] | None = None
+        if not self.access_token:
+            raise MarketDataError("INDstocks provider needs INDSTOCKS_ACCESS_TOKEN")
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self._headers(), follow_redirects=True) as client:
+            resolved = await self._resolve_rows(client, universe)
+            quotes: dict[str, Quote] = {}
+            errors: list[str] = []
+            for chunk in _chunks(resolved, 1000):
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/market/quotes/full",
+                        params={"scrip-codes": ",".join(item["scrip_code"] for item in chunk)},
+                    )
+                    response.raise_for_status()
+                    data = response.json().get("data") or {}
+                except Exception as exc:
+                    errors.append(_market_data_error_summary(exc))
+                    continue
+                for item in chunk:
+                    quote_data = data.get(item["scrip_code"]) or {}
+                    price = _float_any(quote_data.get("live_price"))
+                    if price is None:
+                        continue
+                    row = item["row"]
+                    quotes[row["symbol"]] = Quote(
+                        symbol=row["symbol"],
+                        price=price,
+                        source=self.source_name,
+                        asof=utc_now(),
+                        open=_float_any(quote_data.get("day_open")),
+                        high=_float_any(quote_data.get("day_high")),
+                        low=_float_any(quote_data.get("day_low")),
+                        close=_float_any(quote_data.get("prev_close")),
+                        volume=_float_any(quote_data.get("volume")),
+                    )
+            self.last_quote_diagnostics = {
+                "requested": len(universe),
+                "resolved": len(resolved),
+                "returned": len(quotes),
+                "missing_symbols": [row["symbol"] for row in universe if row["symbol"] not in quotes][:20],
+                "errors": _unique_errors(errors)[:5],
+                "source": "indstocks_market_quotes_full",
+                "resolver": self.last_resolver_diagnostics,
+            }
+            if universe and not quotes:
+                raise MarketDataError(f"INDstocks returned no quotes; diagnostics={self.last_quote_diagnostics}")
+            return quotes
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        output: dict[str, list[Candle]] = {}
+        failures: list[str] = []
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self._headers(), follow_redirects=True) as client:
+            resolved = await self._resolve_rows(client, universe)
+            semaphore = asyncio.Semaphore(self.candle_concurrency)
+
+            async def fetch(item: dict[str, Any]) -> tuple[str, list[Candle]]:
+                async with semaphore:
+                    return item["row"]["symbol"], await self._candles_for_scrip(client, item["row"], item["scrip_code"])
+
+            results = await asyncio.gather(*(fetch(item) for item in resolved), return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                failures.append(_market_data_error_summary(result))
+                continue
+            symbol, candles = result
+            if candles:
+                output[symbol] = candles
+        self.last_candle_diagnostics = {
+            "requested": len(universe),
+            "resolved": len(resolved),
+            "symbols_with_candles": len(output),
+            "failures": len(failures),
+            "sample_errors": _unique_errors(failures)[:5],
+            "interval": self.interval,
+            "resolver": self.last_resolver_diagnostics,
+        }
+        return output
+
+    async def _candles_for_scrip(self, client: httpx.AsyncClient, row: dict[str, Any], scrip_code: str) -> list[Candle]:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=self._effective_lookback_days())
+        response = await client.get(
+            f"{self.base_url}/market/historical/{self.interval}",
+            params={
+                "scrip-codes": scrip_code,
+                "start_time": int(start.timestamp() * 1000),
+                "end_time": int(end.timestamp() * 1000),
+            },
+        )
+        response.raise_for_status()
+        raw_candles = ((response.json().get("data") or {}).get("candles") or [])
+        candles: list[Candle] = []
+        for candle in raw_candles:
+            parsed = self._parse_candle(row["symbol"], candle)
+            if parsed:
+                candles.append(parsed)
+        return candles[-320:]
+
+    async def _resolve_rows(self, client: httpx.AsyncClient, universe: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        instruments: dict[str, dict[str, str]] | None = None
+        resolved: list[dict[str, Any]] = []
+        for row in universe:
+            scrip_code = self._explicit_scrip_code(row)
+            if not scrip_code:
+                if instruments is None:
+                    instruments = await self._instrument_index(client)
+                instrument = instruments.get(self._instrument_key(row))
+                if instrument:
+                    scrip_code = instrument["scrip_code"]
+            if not scrip_code:
+                continue
+            resolved.append({"row": row, "scrip_code": scrip_code})
+        return resolved
+
+    async def _instrument_index(self, client: httpx.AsyncClient) -> dict[str, dict[str, str]]:
+        cached = self._instrument_cache
+        if cached and time.monotonic() - cached[0] < 86400:
+            return cached[1]
+        try:
+            response = await client.get(f"{self.base_url}/market/instruments", params={"source": "equity"})
+            response.raise_for_status()
+            index = self._parse_indstocks_instruments_csv(response.text)
+            self.last_resolver_diagnostics = {
+                "source": "indstocks_market_instruments",
+                "instrument_count": len(index),
+            }
+            self._instrument_cache = (time.monotonic(), index)
+            return index
+        except Exception as primary_exc:
+            try:
+                index = await self._public_kite_instrument_index()
+            except Exception as fallback_exc:
+                self.last_resolver_diagnostics = {
+                    "source": "unavailable",
+                    "indstocks_error": _market_data_error_summary(primary_exc),
+                    "public_fallback_error": _market_data_error_summary(fallback_exc),
+                }
+                raise MarketDataError(
+                    "Could not resolve INDstocks scrip codes. "
+                    f"INDstocks instruments failed: {_market_data_error_summary(primary_exc)}; "
+                    f"public NSE/BSE resolver failed: {_market_data_error_summary(fallback_exc)}"
+                ) from fallback_exc
+            self.last_resolver_diagnostics = {
+                "source": "kite_public_instruments_fallback",
+                "instrument_count": len(index),
+                "fallback_reason": _market_data_error_summary(primary_exc),
+            }
+            self._instrument_cache = (time.monotonic(), index)
+            return index
+
+    def _parse_indstocks_instruments_csv(self, text: str) -> dict[str, dict[str, str]]:
+        reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+        index: dict[str, dict[str, str]] = {}
+        for raw in reader:
+            row = {str(key or "").strip().upper(): str(value or "").strip() for key, value in raw.items()}
+            exchange = row.get("EXCH", "").upper()
+            security_id = row.get("SECURITY_ID", "")
+            if not exchange or not security_id:
+                continue
+            scrip_code = f"{exchange}_{security_id}"
+            for symbol in {
+                row.get("TRADING_SYMBOL", ""),
+                row.get("SYMBOL_NAME", ""),
+                row.get("CUSTOM_SYMBOL", ""),
+            }:
+                normalized = _normalize_trade_symbol(symbol)
+                if normalized:
+                    index[f"{exchange}:{normalized}"] = {"scrip_code": scrip_code, "security_id": security_id}
+        return index
+
+    async def _public_kite_instrument_index(self) -> dict[str, dict[str, str]]:
+        # The INDstocks instruments endpoint may be blocked for some direct
+        # tokens even when quote APIs work. Kite's public instrument dump gives
+        # NSE/BSE exchange tokens, which match the INDstocks NSE_<token> /
+        # BSE_<token> scrip-code shape used by quote and history endpoints.
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as public_client:
+            response = await public_client.get("https://api.kite.trade/instruments")
+            response.raise_for_status()
+        reader = csv.DictReader(io.StringIO(response.text.lstrip("\ufeff")))
+        index: dict[str, dict[str, str]] = {}
+        for raw in reader:
+            row = {str(key or "").strip().upper(): str(value or "").strip() for key, value in raw.items()}
+            exchange = row.get("EXCHANGE", "").upper()
+            if exchange not in {"NSE", "BSE"}:
+                continue
+            if row.get("INSTRUMENT_TYPE", "").upper() != "EQ":
+                continue
+            exchange_token = row.get("EXCHANGE_TOKEN", "")
+            if not exchange_token:
+                continue
+            scrip_code = f"{exchange}_{exchange_token}"
+            for symbol in {
+                row.get("TRADINGSYMBOL", ""),
+                row.get("NAME", ""),
+            }:
+                normalized = _normalize_trade_symbol(symbol)
+                if normalized:
+                    index[f"{exchange}:{normalized}"] = {"scrip_code": scrip_code, "security_id": exchange_token}
+        return index
+
+    def _instrument_key(self, row: dict[str, Any]) -> str:
+        exchange = str(row.get("exchange") or "NSE").strip().upper()
+        return f"{exchange}:{_normalize_trade_symbol(str(row.get('symbol') or ''))}"
+
+    def _explicit_scrip_code(self, row: dict[str, Any]) -> str:
+        explicit = str(row.get("indstocks_scrip_code") or row.get("scrip_code") or "").strip().upper()
+        if explicit:
+            return explicit
+        security_id = str(row.get("indstocks_security_id") or row.get("security_id") or "").strip()
+        exchange = str(row.get("exchange") or "NSE").strip().upper()
+        return f"{exchange}_{security_id}" if security_id and exchange else ""
+
+    def _parse_candle(self, symbol: str, candle: Any) -> Candle | None:
+        if not isinstance(candle, list) or len(candle) < 6:
+            return None
+        try:
+            return Candle(
+                symbol=symbol,
+                ts=datetime.fromtimestamp(float(candle[0]) / 1000.0, timezone.utc).isoformat(),
+                open=float(candle[1]),
+                high=float(candle[2]),
+                low=float(candle[3]),
+                close=float(candle[4]),
+                volume=float(candle[5] or 0),
+                source=f"{self.source_name}:{self.interval}",
+            )
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+
+    def _effective_lookback_days(self) -> int:
+        interval = str(self.interval or "").lower()
+        if interval.endswith("second"):
+            return 1
+        if interval in {"1minute", "2minute", "3minute", "4minute", "5minute", "10minute", "15minute", "30minute"}:
+            return min(self.lookback_days, 7)
+        if interval in {"60minute", "120minute", "180minute", "240minute"}:
+            return min(self.lookback_days, 14)
+        return min(self.lookback_days, 365)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json,text/csv,*/*",
+            "Authorization": self.access_token,
+        }
 
 
 class KiteMarketDataProvider(MarketDataProvider):
@@ -886,7 +1237,67 @@ def _unique_errors(errors: list[str]) -> list[str]:
     return output
 
 
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    safe_size = max(1, int(size or 1))
+    return [items[index : index + safe_size] for index in range(0, len(items), safe_size)]
+
+
+def _float_any(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_trade_symbol(value: str) -> str:
+    text = str(value or "").strip().upper()
+    for suffix in ("-EQ", "_EQ", ".EQ"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return text.replace(" ", "").replace("&AMP;", "&")
+
+
+class IndStocksSetupRequiredProvider(MarketDataProvider):
+    source_name = "indstocks-not-connected"
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        raise MarketDataError(
+            "INDstocks access token is not configured. Paste the token in Broker settings before running market analytics."
+        )
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        raise MarketDataError(
+            "INDstocks access token is not configured. Paste the token in Broker settings before running candle analytics."
+        )
+
+
 def build_market_data_provider(settings: Settings) -> MarketDataProvider:
-    if not settings.upstox_access_token:
-        return UpstoxSetupRequiredProvider()
-    return UpstoxMarketDataProvider(settings)
+    region = normalize_market_region(settings.market_region)
+    yahoo = YahooMarketDataProvider(settings)
+    provider = str(settings.market_data_provider or "indstocks").strip().lower()
+    if provider == "yahoo":
+        return yahoo
+
+    india_provider = _build_indstocks_market_data_provider(settings, yahoo)
+    # INDstocks currently resolves Indian exchange instruments. Keep the US desk
+    # on Yahoo's symbol feed so tickers such as ORCL/AAPL do not go through
+    # India-only scrip-code resolution.
+    us_provider = yahoo
+    if region == "BOTH":
+        return MarketRegionRoutingProvider(india_provider=india_provider, us_provider=us_provider)
+    return us_provider if region == "US" else india_provider
+
+
+def _build_indstocks_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:
+    provider = str(settings.market_data_provider or "indstocks").strip().lower()
+    if provider == "yahoo":
+        return yahoo
+    if provider in {"indstocks_yahoo", "upstox_yahoo"}:
+        if not settings.indstocks_access_token:
+            return yahoo
+        return HistoricalCandleFallbackProvider(IndStocksMarketDataProvider(settings), yahoo)
+    if not settings.indstocks_access_token:
+        return IndStocksSetupRequiredProvider()
+    return IndStocksMarketDataProvider(settings)

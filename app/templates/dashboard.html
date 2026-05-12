@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenTrade</title>
-    <link rel="stylesheet" href="/static/styles.css?v=product-polish-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=product-polish-4" />
   </head>
   <body>
     <section id="login-screen" class="login-screen">
@@ -13,7 +13,7 @@
           <div class="mark">OT</div>
           <div>
             <h1>OpenTrade</h1>
-            <p>Autonomous trading desk powered by Upstox data</p>
+            <p>Autonomous trading desk for India and US markets</p>
           </div>
         </div>
         <form id="login-form" class="login-form">
@@ -33,7 +33,7 @@
           <div class="mark">OT</div>
           <div>
             <h1>OpenTrade</h1>
-            <p>Upstox market terminal</p>
+            <p>Multi-market trading terminal</p>
           </div>
         </div>
         <nav class="nav" aria-label="OpenTrade views">
@@ -51,7 +51,8 @@
         </nav>
         <div class="top-actions">
           <span id="status-pill" class="pill">connecting</span>
-          <span id="feed-pill" class="pill">Upstox</span>
+          <span id="feed-pill" class="pill">Market feed</span>
+          <span id="market-scope-label" class="pill">India workspace</span>
           <span id="admin-pill" class="pill">user</span>
           <span id="credit-pill" class="pill">0 credits</span>
           <span id="current-user-label" class="user-chip">signed in</span>
@@ -73,7 +74,7 @@
           </div>
           <div class="rail-search">
             <input id="quote-filter" type="search" placeholder="Filter symbol" autocomplete="off" />
-            <span>Upstox universe</span>
+            <span id="rail-market-label">India universe</span>
           </div>
           <div class="table-wrap rail-table">
             <table>
@@ -101,7 +102,17 @@
           <div class="workspace-head">
             <div>
               <h2 id="view-title">Dashboard</h2>
-              <p>Live NSE universe · paper risk desk · audited AI decisions</p>
+              <p id="view-subtitle">India market only · paper risk desk · audited AI decisions</p>
+            </div>
+            <div class="market-workspace-tabs" role="tablist" aria-label="Market workspace selector">
+              <button class="market-workspace-tab active" type="button" data-market-workspace="IN" aria-selected="true">
+                <span>India</span>
+                <strong>NSE/BSE</strong>
+              </button>
+              <button class="market-workspace-tab" type="button" data-market-workspace="US" aria-selected="false">
+                <span>US</span>
+                <strong>NYSE/Nasdaq</strong>
+              </button>
             </div>
             <div id="last-cycle" class="cycle-stamp">waiting</div>
           </div>
@@ -123,12 +134,12 @@
                   <div class="panel-head">
                     <div>
                       <h3>Equity Curve</h3>
-                      <span>Paper ledger</span>
+                      <span>Portfolio performance</span>
                     </div>
                     <div class="chart-pills" aria-label="Chart context">
-                      <span>NSE</span>
+                      <span>IN/US</span>
                       <span>EQ</span>
-                      <span>LIVE</span>
+                      <span>tracked</span>
                     </div>
                   </div>
                   <canvas id="equity-chart" width="920" height="360"></canvas>
@@ -225,14 +236,14 @@
             </div>
             <div class="panel full">
               <div class="panel-head">
-                <h3>My Tracks</h3>
+                <h3 id="tracked-market-title">India Tracks</h3>
                 <span id="tracked-count">0 active</span>
               </div>
               <div class="tracked-ideas-list" id="tracked-ideas-body"></div>
             </div>
             <div class="panel full">
               <div class="panel-head">
-                <h3>Signal History</h3>
+                <h3 id="signals-market-title">India Signal History</h3>
                 <span id="suggestion-count">0 candidates</span>
               </div>
               <div class="signal-history-list" id="suggestions-body"></div>
@@ -247,11 +258,16 @@
               </div>
               <div class="symbol-lab">
                 <form id="analyze-form" class="symbol-search">
-                  <input id="analyze-symbol" type="text" placeholder="Search NSE symbol, e.g. SUZLON" autocomplete="off" />
+                  <div class="market-tabs" role="tablist" aria-label="Market selector">
+                    <button class="market-tab active" type="button" data-market-tab="IN" aria-selected="true">India</button>
+                    <button class="market-tab" type="button" data-market-tab="US" aria-selected="false">US</button>
+                  </div>
+                  <input id="analyze-market" type="hidden" value="IN" />
+                  <input id="analyze-symbol" type="text" placeholder="Search symbol, e.g. SUZLON or AAPL" autocomplete="off" />
                   <button id="analyze-btn" class="primary" type="submit">Analyze</button>
                 </form>
                 <div id="analyze-result" class="analyze-result">
-                  <div class="empty-state">Enter a symbol to run Upstox quote, candles, strategy rules, sentiment, risk checks, and LLM review if enabled.</div>
+                  <div class="empty-state">Pick the India or US tab, then enter a symbol to run quote, candles, strategy rules, sentiment, risk checks, and LLM review if enabled.</div>
                 </div>
               </div>
             </div>
@@ -308,7 +324,7 @@
           <section id="account-view" class="view">
             <div class="split-layout">
               <div class="panel">
-                <div class="panel-head"><h3>Account</h3><span id="account-status">paper demo</span></div>
+                <div class="panel-head"><h3>Account</h3><span id="account-status">profile</span></div>
                 <div id="account-body" class="account-body"></div>
               </div>
               <div class="panel">
@@ -321,27 +337,21 @@
                   <div class="connect-card">
                     <div class="connect-card-head">
                       <div>
-                        <h4>User Upstox</h4>
+                        <h4>User INDstocks</h4>
                         <p>Used for this user's live quotes, candles, and symbol analysis.</p>
                       </div>
-                      <span id="my-upstox-status">not connected</span>
+                      <span id="my-indstocks-status">not connected</span>
                     </div>
                     <div class="connect-grid">
-                      <input id="my-upstox-access-token" type="password" placeholder="Paste Upstox Analytics Token" autocomplete="off" />
-                      <button id="my-upstox-token-save-btn" class="primary" type="button">Save Token</button>
-                      <input id="my-upstox-api-key" type="password" placeholder="Upstox API Key" autocomplete="off" />
-                      <input id="my-upstox-api-secret" type="password" placeholder="Upstox API Secret" autocomplete="off" />
-                      <input id="my-upstox-redirect-uri" type="text" placeholder="Redirect URI" autocomplete="off" />
-                      <button id="my-upstox-auth-url-btn" type="button">Open Login</button>
-                      <input id="my-upstox-auth-code" type="text" placeholder="Paste code or full redirect URL" autocomplete="off" />
-                      <button id="my-upstox-connect-btn" class="primary" type="button">Connect Upstox</button>
+                      <input id="my-indstocks-access-token" type="password" placeholder="Paste INDstocks access token" autocomplete="off" />
+                      <button id="my-indstocks-token-save-btn" class="primary" type="button">Save Token</button>
                     </div>
                   </div>
                   <div class="connect-card">
                     <div class="connect-card-head">
                       <div>
                         <h4>User Kite</h4>
-                        <p>Credentials are stored for this user. Upstox powers full candle analytics in this build.</p>
+                        <p>Optional broker credential storage. INDstocks powers market analytics in this build.</p>
                       </div>
                       <span id="my-kite-status">not connected</span>
                     </div>
@@ -432,32 +442,42 @@
               </div>
               <div class="settings-tabs" role="tablist" aria-label="Admin settings tabs">
                 <button class="settings-tab active" type="button" data-settings-tab="broker">Broker</button>
+                <button class="settings-tab" type="button" data-settings-tab="markets">Markets</button>
                 <button class="settings-tab" type="button" data-settings-tab="runtime">Runtime</button>
-                <button class="settings-tab" type="button" data-settings-tab="ai">AI &amp; Data</button>
+                <button class="settings-tab" type="button" data-settings-tab="ai">AI</button>
                 <button class="settings-tab" type="button" data-settings-tab="risk">Risk</button>
-                <button class="settings-tab" type="button" data-settings-tab="access">Access</button>
+                <button class="settings-tab" type="button" data-settings-tab="users">Users</button>
                 <button class="settings-tab" type="button" data-settings-tab="calendar">Calendar</button>
+                <button class="settings-tab" type="button" data-settings-tab="advanced">Advanced</button>
               </div>
               <form id="settings-form" class="settings-form settings-tab-shell">
                 <section class="settings-tab-panel active" data-settings-panel="broker">
                   <div class="connect-card">
                     <div class="connect-card-head">
                       <div>
-                        <h4>Upstox Connect</h4>
+                        <h4>INDstocks Connect</h4>
                         <p>Market data, candles, symbol analysis, and order routing.</p>
                       </div>
-                      <span id="upstox-connect-status" class="settings-inline-status">not connected</span>
+                      <span id="indstocks-connect-status" class="settings-inline-status">not connected</span>
                     </div>
                     <div class="connect-grid">
-                      <input id="upstox-api-key" type="password" placeholder="API Key" autocomplete="off" />
-                      <input id="upstox-api-secret" type="password" placeholder="API Secret" autocomplete="off" />
-                      <input id="upstox-redirect-uri" type="text" placeholder="Redirect URI" autocomplete="off" />
-                      <button id="upstox-auth-url-btn" type="button">Open Login</button>
-                      <input id="upstox-auth-code" type="text" placeholder="Paste code or full redirect URL" autocomplete="off" />
-                      <button id="upstox-connect-btn" class="primary" type="button">Connect Upstox</button>
+                      <input id="indstocks-access-token" type="password" placeholder="Paste INDstocks access token" autocomplete="off" />
+                      <button id="indstocks-connect-btn" class="primary" type="button">Connect INDstocks</button>
                     </div>
                   </div>
                   <div id="settings-fields-broker" class="settings-fields-grid"></div>
+                </section>
+                <section class="settings-tab-panel" data-settings-panel="markets">
+                  <div class="connect-card market-routing-card">
+                    <div class="connect-card-head">
+                      <div>
+                        <h4>Market Routing</h4>
+                        <p>India analytics use INDstocks. US analytics use Yahoo-delayed symbols until a US broker feed is connected.</p>
+                      </div>
+                      <span class="settings-inline-status positive">split desk</span>
+                    </div>
+                  </div>
+                  <div id="settings-fields-markets" class="settings-fields-grid"></div>
                 </section>
                 <section class="settings-tab-panel" data-settings-panel="runtime">
                   <div id="settings-fields-runtime" class="settings-fields-grid"></div>
@@ -507,8 +527,8 @@
                 <section class="settings-tab-panel" data-settings-panel="risk">
                   <div id="settings-fields-risk" class="settings-fields-grid"></div>
                 </section>
-                <section class="settings-tab-panel" data-settings-panel="access">
-                  <div id="settings-fields-access" class="settings-fields-grid"></div>
+                <section class="settings-tab-panel" data-settings-panel="users">
+                  <div id="settings-fields-users" class="settings-fields-grid"></div>
                 </section>
                 <section class="settings-tab-panel" data-settings-panel="calendar">
                   <div class="macro-table-shell">
@@ -526,6 +546,9 @@
                       </table>
                     </div>
                   </div>
+                </section>
+                <section class="settings-tab-panel" data-settings-panel="advanced">
+                  <div id="settings-fields-advanced" class="settings-fields-grid"></div>
                 </section>
               </form>
               <div class="settings-actions">
@@ -548,6 +571,6 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
-    <script src="/static/dashboard.js?v=product-polish-2"></script>
+    <script src="/static/dashboard.js?v=product-polish-4"></script>
   </body>
 </html>
