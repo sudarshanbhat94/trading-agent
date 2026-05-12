@@ -67,6 +67,167 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+def _json_load(value: Any) -> Any:
+    try:
+        return json.loads(value or "{}") if isinstance(value, str) else value
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _bounded_for_storage(value: Any, depth: int = 0, max_depth: int = 5) -> Any:
+    if depth >= max_depth:
+        return _storage_scalar(value)
+    if isinstance(value, dict):
+        output: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 12:
+                output["_truncated_keys"] = max(len(value) - 12, 0)
+                break
+            output[str(key)] = _bounded_for_storage(item, depth + 1, max_depth)
+        return output
+    if isinstance(value, list):
+        trimmed = [_bounded_for_storage(item, depth + 1, max_depth) for item in value[:6]]
+        if len(value) > 6:
+            trimmed.append({"_truncated_items": len(value) - 6})
+        return trimmed
+    return _storage_scalar(value)
+
+
+def _storage_scalar(value: Any) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= 300 else f"{value[:300]}... [truncated {len(value) - 300} chars]"
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:800]
+
+
+def _pick_keys(source: Any, keys: Iterable[str]) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    return {key: source.get(key) for key in keys if key in source}
+
+
+def _compact_full_spectrum(full: Any) -> dict[str, Any]:
+    if not isinstance(full, dict):
+        return {}
+    trend = full.get("trend_context") if isinstance(full.get("trend_context"), dict) else {}
+    scorecard = full.get("institutional_scorecard") if isinstance(full.get("institutional_scorecard"), dict) else {}
+    signal_plan = full.get("signal_plan") if isinstance(full.get("signal_plan"), dict) else {}
+    trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
+    risk_overrides = full.get("risk_overrides") if isinstance(full.get("risk_overrides"), dict) else {}
+    return _bounded_for_storage(
+        {
+            "confluence_score": full.get("confluence_score"),
+            "institutional_scorecard": _pick_keys(
+                scorecard,
+                ["total_score", "grade", "buy_ready", "must_pass_failed", "warnings", "hard_veto"],
+            ),
+            "signal_plan": _pick_keys(
+                signal_plan,
+                ["direction", "decision_readiness", "institutional_grade", "failed_must_pass", "confluence"],
+            ),
+            "trade_plan": _pick_keys(trade_plan, ["entry_zone", "stop_loss", "targets", "risk_reward"]),
+            "risk_overrides": _pick_keys(risk_overrides, ["no_new_longs", "flags", "size_multiplier"]),
+            "stage_analysis": full.get("stage_analysis"),
+            "entry_quality": full.get("entry_quality"),
+            "breakout_quality": full.get("breakout_quality"),
+            "price_volume_divergence": full.get("price_volume_divergence"),
+            "timeframe_alignment": trend.get("timeframe_alignment"),
+            "sector_rotation": full.get("sector_rotation"),
+            "delivery_accumulation": full.get("delivery_accumulation"),
+            "options_intelligence": full.get("options_intelligence"),
+        }
+    )
+
+
+def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
+    raw_text = raw_details or "{}"
+    audit = _json_load(raw_text)
+    if not isinstance(audit, dict):
+        audit = {}
+    context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
+    full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+    risk_gates = audit.get("risk_gates") if isinstance(audit.get("risk_gates"), dict) else {}
+    score_breakdown = audit.get("score_breakdown") if isinstance(audit.get("score_breakdown"), dict) else {}
+    system_gate = audit.get("system_gate_audit") or context.get("system_gate_audit")
+    if isinstance(system_gate, dict):
+        system_gate = _pick_keys(
+            system_gate,
+            [
+                "overall_score_pct",
+                "overall_grade",
+                "recommended_action",
+                "classification",
+                "active_flags",
+                "hard_blocked",
+                "grade_violation_count",
+                "delivery_conflict_count",
+                "price_mismatch_count",
+            ],
+        )
+    else:
+        system_gate = None
+    technical = context.get("technical_math") if isinstance(context.get("technical_math"), dict) else {}
+    sentiment = context.get("sentiment") if isinstance(context.get("sentiment"), dict) else {}
+    candle = context.get("candlestick_analysis") if isinstance(context.get("candlestick_analysis"), dict) else {}
+    compact = {
+        "audit_version": audit.get("audit_version", 1),
+        "storage_compacted": True,
+        "compacted_at": utc_now(),
+        "original_details_bytes": len(str(raw_text).encode("utf-8", "ignore")),
+        "decision_path": audit.get("decision_path"),
+        "final_action": row.get("action") or audit.get("final_action"),
+        "action_reason": audit.get("action_reason") or row.get("reason"),
+        "score_breakdown": _pick_keys(score_breakdown, ["combined", "formula", "components", "data_gaps"]),
+        "overall_score_pct": audit.get("overall_score_pct"),
+        "overall_grade": audit.get("overall_grade"),
+        "pre_filter": audit.get("pre_filter") or context.get("pre_filter"),
+        "system_gate_audit": system_gate,
+        "sizing_grade": audit.get("sizing_grade") or context.get("sizing_grade"),
+        "llm_primary_fallback": audit.get("llm_primary_fallback") or context.get("llm_primary_fallback"),
+        "risk_gates": _pick_keys(
+            risk_gates,
+            [
+                "has_existing_position",
+                "current_open_positions",
+                "max_positions",
+                "buy_combined_threshold",
+                "buy_confluence_threshold",
+                "institutional_scorecard",
+                "pre_filter",
+                "decision_gate_context",
+                "portfolio_correlation_gate",
+                "sizing_grade",
+                "system_gate_audit",
+                "llm_primary_fallback",
+                "llm_primary_rule_blocked",
+            ],
+        ),
+        "context_summary": {
+            "symbol": context.get("symbol") or row.get("symbol"),
+            "company": context.get("company"),
+            "sector": context.get("sector"),
+            "exchange": context.get("exchange"),
+            "quote": context.get("quote"),
+            "technical_math": _pick_keys(
+                technical,
+                ["score", "trend", "rsi", "sma_fast", "sma_slow", "momentum_pct", "atr_pct", "adx"],
+            ),
+            "candlestick_analysis": _pick_keys(candle, ["score", "patterns", "bias", "confidence"]),
+            "best_strategy": context.get("best_strategy"),
+            "sentiment": _pick_keys(sentiment, ["score", "bias", "headline_count", "confidence", "source"]),
+            "market_breadth_context": context.get("market_breadth_context"),
+            "macro_event_context": context.get("macro_event_context"),
+            "sector_rotation": context.get("sector_rotation"),
+            "delivery_data": context.get("delivery_data"),
+            "full_spectrum_summary": _compact_full_spectrum(full),
+            "universe_scan": context.get("universe_scan"),
+            "recent_candle_count": context.get("recent_candle_count"),
+        },
+    }
+    return json.dumps(_bounded_for_storage(compact), default=str, separators=(",", ":"))
+
+
 def _plan_max_days(plan_code: str, fallback_status: str = "") -> int:
     code = str(plan_code or "").lower()
     status = str(fallback_status or "").upper()
@@ -1625,6 +1786,10 @@ class Database:
         rows = [decision.to_dict() for decision in decisions]
         if not rows:
             return
+        for row in rows:
+            raw_details = row.get("details_json") or "{}"
+            if str(row.get("action") or "").upper() == "HOLD" and len(raw_details) > 5000:
+                row["details_json"] = _compact_decision_details(row, raw_details)
         with self.connect() as conn:
             conn.executemany(
                 """
@@ -2422,6 +2587,198 @@ class Database:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def run_data_retention(self, policy: dict[str, Any] | None = None, force: bool = False) -> dict[str, Any]:
+        policy = policy or {}
+        enabled = bool(policy.get("enabled", True))
+        if not enabled:
+            return {"ran": False, "reason": "disabled"}
+
+        now = datetime.now(timezone.utc)
+        interval_hours = max(int(policy.get("interval_hours", 168) or 168), 1)
+        last_run = self.get_state("db_maintenance_last_run_at")
+        last_dt = _parse_dt(last_run)
+        if not force and last_dt and now - last_dt < timedelta(hours=interval_hours):
+            return {
+                "ran": False,
+                "reason": "not_due",
+                "last_run_at": last_dt.isoformat(),
+                "next_due_at": (last_dt + timedelta(hours=interval_hours)).isoformat(),
+            }
+
+        full_audit_keep_latest = max(int(policy.get("full_audit_keep_latest", 500) or 0), 0)
+        hold_days = max(int(policy.get("hold_decision_days", 7) or 7), 1)
+        full_audit_days = max(int(policy.get("full_audit_days", 30) or 30), 1)
+        market_tick_days = max(int(policy.get("market_tick_days", 7) or 7), 1)
+        sentiment_days = max(int(policy.get("sentiment_days", 30) or 30), 1)
+        llm_usage_days = max(int(policy.get("llm_usage_days", 180) or 180), 1)
+        delivery_days = max(int(policy.get("delivery_days", 90) or 90), 20)
+        candle_rows = max(int(policy.get("candle_rows_per_symbol_source", 320) or 320), 30)
+        compact_threshold = max(int(policy.get("compact_threshold_chars", 5000) or 5000), 1000)
+        vacuum_enabled = bool(policy.get("vacuum", True))
+
+        cutoffs = {
+            "hold": (now - timedelta(days=hold_days)).isoformat(),
+            "full_audit": (now - timedelta(days=full_audit_days)).isoformat(),
+            "market_ticks": (now - timedelta(days=market_tick_days)).isoformat(),
+            "sentiment": (now - timedelta(days=sentiment_days)).isoformat(),
+            "llm_usage": (now - timedelta(days=llm_usage_days)).isoformat(),
+            "delivery": (now - timedelta(days=delivery_days)).date().isoformat(),
+        }
+
+        before = self.storage_summary()
+        deleted: dict[str, int] = {}
+        compacted = 0
+        with self.connect() as conn:
+            cursor = conn.execute("delete from market_ticks where ts < ?", (cutoffs["market_ticks"],))
+            deleted["market_ticks"] = max(cursor.rowcount, 0)
+            cursor = conn.execute("delete from sentiment_events where ts < ?", (cutoffs["sentiment"],))
+            deleted["sentiment_events"] = max(cursor.rowcount, 0)
+            cursor = conn.execute("delete from llm_usage_events where ts < ?", (cutoffs["llm_usage"],))
+            deleted["llm_usage_events"] = max(cursor.rowcount, 0)
+            cursor = conn.execute("delete from delivery_data where date < ?", (cutoffs["delivery"],))
+            deleted["delivery_data"] = max(cursor.rowcount, 0)
+            cursor = conn.execute(
+                """
+                delete from candles
+                where rowid in (
+                    select rowid from (
+                        select rowid,
+                            row_number() over (partition by symbol, source order by ts desc) as rn
+                        from candles
+                    )
+                    where rn > ?
+                )
+                """,
+                (candle_rows,),
+            )
+            deleted["candles"] = max(cursor.rowcount, 0)
+            cursor = conn.execute(
+                """
+                delete from decisions
+                where action = 'HOLD'
+                    and ts < ?
+                    and id not in (select id from decisions order by id desc limit ?)
+                    and not exists (
+                        select 1 from signal_ideas s
+                        where s.decision_id = decisions.id
+                           or s.latest_decision_id = decisions.id
+                    )
+                """,
+                (cutoffs["hold"], full_audit_keep_latest),
+            )
+            deleted["hold_decisions"] = max(cursor.rowcount, 0)
+
+            while True:
+                rows = conn.execute(
+                    """
+                    select id, ts, symbol, action, strategy, confidence, price,
+                        technical_score, sentiment_score, reason, details_json
+                    from decisions
+                    where length(details_json) > ?
+                        and (
+                            action = 'HOLD'
+                            or ts < ?
+                        )
+                        and id not in (select id from decisions order by id desc limit ?)
+                    order by id asc
+                    limit 250
+                    """,
+                    (compact_threshold, cutoffs["full_audit"], full_audit_keep_latest),
+                ).fetchall()
+                if not rows:
+                    break
+                updates = []
+                for row in rows:
+                    raw = row["details_json"] or "{}"
+                    parsed = _json_load(raw)
+                    if isinstance(parsed, dict) and parsed.get("storage_compacted") and len(raw) <= 12000:
+                        continue
+                    updates.append((_compact_decision_details(dict(row), raw), row["id"]))
+                if not updates:
+                    compact_threshold = 12000
+                    continue
+                conn.executemany("update decisions set details_json = ? where id = ?", updates)
+                compacted += len(updates)
+
+            cursor = conn.execute(
+                """
+                delete from signal_ideas
+                where status not in ('ACTIVE','WATCH','MONITORING')
+                    and last_seen_at < ?
+                    and not exists (
+                        select 1 from user_idea_follows f
+                        where f.idea_id = signal_ideas.id
+                    )
+                """,
+                ((now - timedelta(days=180)).isoformat(),),
+            )
+            deleted["inactive_signal_ideas"] = max(cursor.rowcount, 0)
+            conn.execute(
+                """
+                insert into agent_state (key, value) values ('db_maintenance_last_run_at', ?)
+                on conflict(key) do update set value = excluded.value
+                """,
+                (json.dumps(now.isoformat()),),
+            )
+
+        vacuumed = False
+        if vacuum_enabled and (compacted or any(deleted.values())):
+            self.vacuum()
+            vacuumed = True
+        after = self.storage_summary()
+        summary = {
+            "ran": True,
+            "ran_at": now.isoformat(),
+            "deleted": deleted,
+            "compacted_decisions": compacted,
+            "vacuumed": vacuumed,
+            "before": before,
+            "after": after,
+            "policy": {
+                "hold_decision_days": hold_days,
+                "full_audit_keep_latest": full_audit_keep_latest,
+                "full_audit_days": full_audit_days,
+                "market_tick_days": market_tick_days,
+                "sentiment_days": sentiment_days,
+                "delivery_days": delivery_days,
+                "candle_rows_per_symbol_source": candle_rows,
+            },
+        }
+        self.insert_agent_log(
+            "INFO",
+            "maintenance",
+            "db_retention_complete",
+            "Database retention maintenance completed",
+            summary,
+        )
+        return summary
+
+    def storage_summary(self) -> dict[str, Any]:
+        file_bytes = self.path.stat().st_size if self.path.exists() else 0
+        with self.connect() as conn:
+            page_size = int(conn.execute("pragma page_size").fetchone()[0])
+            page_count = int(conn.execute("pragma page_count").fetchone()[0])
+            freelist_count = int(conn.execute("pragma freelist_count").fetchone()[0])
+        return {
+            "path": str(self.path),
+            "file_bytes": file_bytes,
+            "file_mb": round(file_bytes / 1024 / 1024, 3),
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "reclaimable_mb": round((page_size * freelist_count) / 1024 / 1024, 3),
+            "active_mb": round((page_size * max(page_count - freelist_count, 0)) / 1024 / 1024, 3),
+        }
+
+    def vacuum(self) -> None:
+        with self._lock:
+            conn = sqlite3.connect(self.path)
+            try:
+                conn.execute("vacuum")
+                conn.execute("pragma optimize")
+            finally:
+                conn.close()
 
     def reset_trading_ledger(self, cash: float) -> None:
         with self.connect() as conn:

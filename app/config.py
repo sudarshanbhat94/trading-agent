@@ -176,6 +176,18 @@ class Settings:
     llm_rolling_context_chunk_chars: int = _int("LLM_ROLLING_CONTEXT_CHUNK_CHARS", 7000)
     llm_rolling_context_max_chunks: int = _int("LLM_ROLLING_CONTEXT_MAX_CHUNKS", 0)
 
+    enable_db_maintenance: bool = _bool("ENABLE_DB_MAINTENANCE", True)
+    db_maintenance_interval_hours: int = _int("DB_MAINTENANCE_INTERVAL_HOURS", 168)
+    db_retention_full_audit_keep_latest: int = _int("DB_RETENTION_FULL_AUDIT_KEEP_LATEST", 500)
+    db_retention_hold_decision_days: int = _int("DB_RETENTION_HOLD_DECISION_DAYS", 7)
+    db_retention_full_audit_days: int = _int("DB_RETENTION_FULL_AUDIT_DAYS", 30)
+    db_retention_market_tick_days: int = _int("DB_RETENTION_MARKET_TICK_DAYS", 7)
+    db_retention_sentiment_days: int = _int("DB_RETENTION_SENTIMENT_DAYS", 30)
+    db_retention_llm_usage_days: int = _int("DB_RETENTION_LLM_USAGE_DAYS", 180)
+    db_retention_delivery_days: int = _int("DB_RETENTION_DELIVERY_DAYS", 90)
+    db_retention_candle_rows_per_symbol_source: int = _int("DB_RETENTION_CANDLE_ROWS_PER_SYMBOL_SOURCE", 320)
+    db_retention_vacuum: bool = _bool("DB_RETENTION_VACUUM", True)
+
 
 SECRET_FIELDS = {
     "kite_api_key",
@@ -202,6 +214,17 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Agent Cycle"},
     {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Agent Cycle", "min": 5, "step": 1},
     {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
+    {"key": "enable_db_maintenance", "label": "DB Maintenance", "type": "boolean", "category": "Maintenance"},
+    {"key": "db_maintenance_interval_hours", "label": "Maintenance Interval Hours", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
+    {"key": "db_retention_full_audit_keep_latest", "label": "Full Audits To Keep", "type": "number", "category": "Maintenance", "min": 0, "step": 100},
+    {"key": "db_retention_hold_decision_days", "label": "HOLD Decision Days", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
+    {"key": "db_retention_full_audit_days", "label": "Full Audit Days", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
+    {"key": "db_retention_market_tick_days", "label": "Market Tick Days", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
+    {"key": "db_retention_sentiment_days", "label": "Sentiment Days", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
+    {"key": "db_retention_llm_usage_days", "label": "LLM Usage Days", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
+    {"key": "db_retention_delivery_days", "label": "Delivery Data Days", "type": "number", "category": "Maintenance", "min": 20, "step": 1},
+    {"key": "db_retention_candle_rows_per_symbol_source", "label": "Candles Per Symbol/Source", "type": "number", "category": "Maintenance", "min": 30, "step": 10},
+    {"key": "db_retention_vacuum", "label": "Vacuum After Purge", "type": "boolean", "category": "Maintenance"},
     {"key": "admin_password", "label": "Admin Password", "type": "secret", "category": "Access Control"},
     {"key": "admin_username", "label": "Admin Username", "type": "text", "category": "Access Control"},
     {"key": "auth_session_secret", "label": "Session Secret", "type": "secret", "category": "Access Control"},

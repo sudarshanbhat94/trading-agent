@@ -405,6 +405,7 @@ llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
 user_signal_sessions = UserSignalSessionManager()
+maintenance_task: asyncio.Task | None = None
 
 app = FastAPI(title="OpenTrade")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -421,16 +422,59 @@ COMMON_SYMBOL_ALIASES = {
 }
 
 
+def _db_maintenance_policy(current_settings: Settings) -> dict[str, Any]:
+    return {
+        "enabled": current_settings.enable_db_maintenance,
+        "interval_hours": current_settings.db_maintenance_interval_hours,
+        "full_audit_keep_latest": current_settings.db_retention_full_audit_keep_latest,
+        "hold_decision_days": current_settings.db_retention_hold_decision_days,
+        "full_audit_days": current_settings.db_retention_full_audit_days,
+        "market_tick_days": current_settings.db_retention_market_tick_days,
+        "sentiment_days": current_settings.db_retention_sentiment_days,
+        "llm_usage_days": current_settings.db_retention_llm_usage_days,
+        "delivery_days": current_settings.db_retention_delivery_days,
+        "candle_rows_per_symbol_source": current_settings.db_retention_candle_rows_per_symbol_source,
+        "vacuum": current_settings.db_retention_vacuum,
+    }
+
+
+async def _maintenance_loop() -> None:
+    while True:
+        try:
+            summary = await asyncio.to_thread(db.run_data_retention, _db_maintenance_policy(settings), False)
+            if summary.get("ran"):
+                await hub.broadcast(agent.snapshot())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            db.insert_agent_log(
+                "WARN",
+                "maintenance",
+                "db_retention_failed",
+                f"Database retention maintenance failed: {_exception_message(exc)}",
+                {"error_type": exc.__class__.__name__, "error": str(exc)[:500]},
+            )
+        await asyncio.sleep(3600)
+
+
 @app.on_event("startup")
 async def startup() -> None:
+    global maintenance_task
     await universe_service.refresh_if_enabled()
     delivery_service.start_background_task()
+    maintenance_task = asyncio.create_task(_maintenance_loop())
     if settings.auto_start_agent:
         agent.start()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    if maintenance_task:
+        maintenance_task.cancel()
+        try:
+            await maintenance_task
+        except asyncio.CancelledError:
+            pass
     await agent.stop()
     await user_signal_sessions.stop_all()
     await delivery_service.stop_background_task()
