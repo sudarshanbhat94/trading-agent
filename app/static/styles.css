@@ -7432,6 +7432,75 @@ body.is-user #stop-btn {
   min-height: 360px;
 }
 
+.decision-feed-panel {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  max-height: 520px;
+}
+
+.decision-feed-panel .decision-card-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.decision-feed-panel .decision-feed-card {
+  grid-template-columns: 34px minmax(0, 1fr) 50px;
+  gap: 10px;
+  padding: 10px;
+}
+
+.decision-feed-panel .decision-logo {
+  width: 30px;
+  height: 30px;
+  font-size: 10px;
+}
+
+.decision-feed-panel .decision-main {
+  gap: 5px;
+}
+
+.decision-feed-panel .decision-title-row {
+  gap: 6px;
+}
+
+.decision-feed-panel .decision-title-row small {
+  display: none;
+}
+
+.decision-feed-panel .decision-main p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+}
+
+.decision-feed-panel .decision-bars {
+  display: none;
+}
+
+.decision-feed-panel .score-ring {
+  width: 42px;
+  height: 42px;
+}
+
+.decision-feed-panel .score-ring strong {
+  font-size: 11px;
+}
+
+.decision-feed-panel .score-ring::after,
+.decision-feed-panel .score-ring small {
+  display: none;
+}
+
+.sector-heatmap-card {
+  align-self: start;
+}
+
 .positions-preview-card,
 .product-track-panel {
   grid-column: 1 / -1;
