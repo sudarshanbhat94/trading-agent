@@ -197,8 +197,22 @@ function updateSessionPill() {
   const pill = byId("session-pill");
   if (!pill) return;
   const session = getNSESession();
-  pill.textContent = session.label;
+  pill.textContent = session.state === "closed" ? `${session.label} · Opens ${timeUntilNextNseOpen()}` : session.label;
   pill.className = `session-pill ${session.state}`;
+}
+
+function timeUntilNextNseOpen(now = new Date()) {
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const target = new Date(ist);
+  target.setHours(9, 15, 0, 0);
+  if (ist.getDay() === 6) target.setDate(target.getDate() + 2);
+  else if (ist.getDay() === 0) target.setDate(target.getDate() + 1);
+  else if (ist >= target) target.setDate(target.getDate() + (ist.getDay() === 5 ? 3 : 1));
+  while (target.getDay() === 0 || target.getDay() === 6) target.setDate(target.getDate() + 1);
+  const diff = Math.max(0, target.getTime() - ist.getTime());
+  const hours = Math.floor(diff / 3600000);
+  const minutes = Math.floor((diff % 3600000) / 60000);
+  return `in ${hours}h ${minutes}m`;
 }
 
 function applyTheme(theme) {
@@ -211,7 +225,7 @@ function applyTheme(theme) {
   }
   const button = byId("theme-toggle-btn");
   if (button) {
-    button.textContent = next === "dark" ? "Light" : "Dark";
+    button.textContent = next === "dark" ? "☀" : "☾";
     button.setAttribute("aria-label", `Switch to ${next === "dark" ? "light" : "dark"} theme`);
   }
 }
@@ -239,6 +253,88 @@ function fmtAge(seconds) {
   if (value < 60) return `${Math.round(value)}s old`;
   if (value < 3600) return `${Math.round(value / 60)}m old`;
   return `${Math.round(value / 3600)}h old`;
+}
+
+function getUSSession(now = new Date()) {
+  const ny = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const day = ny.getDay();
+  if (day === 0 || day === 6) return { state: "closed", label: "US Closed", venue: "US" };
+  const mins = ny.getHours() * 60 + ny.getMinutes();
+  if (mins >= 4 * 60 && mins < 9 * 60 + 30) return { state: "pre-open", label: "US Pre-market", venue: "US" };
+  if (mins >= 9 * 60 + 30 && mins < 16 * 60) return { state: "open", label: "US Open", venue: "US" };
+  if (mins >= 16 * 60 && mins < 20 * 60) return { state: "post-close", label: "US After-hours", venue: "US" };
+  return { state: "closed", label: "US Closed", venue: "US" };
+}
+
+function marketSessionFor(market = state.activeMarket) {
+  return normalizeUiMarket(market) === "US" ? getUSSession() : getNSESession();
+}
+
+function quoteDisplayMode(payload = state.latest || {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const session = marketSessionFor(region);
+  const health = payload.market_health || {};
+  const mode = String(health.mode || "").toLowerCase();
+  const quotes = filterRowsByMarket(payload.quotes || [], region);
+  const age = Number(health.latest_quote_age_seconds);
+  const hasQuotes = Boolean(quotes.length);
+  const isOpen = session.state === "open" || Boolean(health.is_market_open);
+  if (!hasQuotes) {
+    return { label: "Waiting for prices", tone: "stopped", session, hasQuotes: false, age };
+  }
+  if (isOpen && mode !== "stale") {
+    return { label: "Last traded", tone: Number.isFinite(age) && age > 600 ? "warning" : "running", session, hasQuotes: true, age };
+  }
+  if (mode === "stale") {
+    return { label: "Stale prices", tone: "warning", session, hasQuotes: true, age };
+  }
+  return { label: "Last close", tone: "warning", session, hasQuotes: true, age };
+}
+
+function marketDataLabel(payload = state.latest || {}, market = state.activeMarket) {
+  const display = quoteDisplayMode(payload, market);
+  const region = normalizeUiMarket(market);
+  const quotes = filterRowsByMarket(payload.quotes || [], region);
+  const count = quotes.length;
+  const age = fmtAge(display.age);
+  const sessionLabel = display.session?.label || `${MARKET_LABELS[region]} closed`;
+  return {
+    ...display,
+    count,
+    title: display.hasQuotes ? display.label : "Connect feed",
+    meta: display.hasQuotes
+      ? `${count} ${MARKET_LABELS[region]} prices · last tick ${age} · ${sessionLabel}`
+      : `${MARKET_LABELS[region]} prices are not connected yet`,
+  };
+}
+
+function scoreToProductLabel(score) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return { label: "Not scored", tone: "neutral" };
+  if (value >= 80) return { label: "Strong", tone: "positive" };
+  if (value >= 65) return { label: "Healthy", tone: "positive" };
+  if (value >= 50) return { label: "Watch", tone: "warning" };
+  return { label: "Weak", tone: "negative" };
+}
+
+function marketStanceText(breadth = {}) {
+  const regime = String(breadth.breadth_regime || "neutral");
+  const labels = {
+    bull_confirmed: "Supportive",
+    bull_weakening: "Selective",
+    neutral: "Neutral",
+    bear_warning: "Defensive",
+    bear_confirmed: "Risk-off",
+  };
+  return labels[regime] || humanLabel(regime);
+}
+
+function actionableIdeaRows(rows = []) {
+  return (rows || []).filter((row) => {
+    const action = String(row.suggestion || row.action || row.signal_type || "").toUpperCase();
+    const readiness = String(row.decision_readiness || "").toLowerCase();
+    return ["BUY", "PAPER", "LIVE", "TRADE"].includes(action) || readiness.includes("trade");
+  });
 }
 
 function pnlClass(value) {
@@ -591,13 +687,25 @@ function render(payload) {
   const sentiment = filterRowsByMarket(allSentiment, activeMarket);
 
   const scopedPortfolio = marketPortfolioFromPayload(payload, activeMarket);
+  const unrealizedPct = Number(scopedPortfolio.invested) > 0
+    ? (Number(scopedPortfolio.unrealized_pnl || 0) / Number(scopedPortfolio.invested)) * 100
+    : 0;
   byId("kpi-equity").textContent = fmtMarketMoney(scopedPortfolio.equity, activeMarket);
   byId("kpi-cash").textContent = fmtMarketMoney(scopedPortfolio.cash, activeMarket);
-  byId("kpi-invested").textContent = fmtMarketMoney(scopedPortfolio.invested, activeMarket);
   byId("kpi-unrealized").textContent = fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket);
   byId("kpi-unrealized").className = pnlClass(scopedPortfolio.unrealized_pnl);
+  const equityDelta = byId("kpi-equity-delta");
+  if (equityDelta) equityDelta.textContent = `${fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket)} today`;
+  const unrealizedPctEl = byId("kpi-unrealized-pct");
+  if (unrealizedPctEl) {
+    unrealizedPctEl.textContent = fmtPct(unrealizedPct);
+    unrealizedPctEl.className = pnlClass(unrealizedPct);
+  }
   byId("kpi-positions").textContent = String(positions.length);
-  byId("kpi-decisions").textContent = String(decisions.length);
+  const kpiOrders = byId("kpi-orders");
+  if (kpiOrders) kpiOrders.textContent = String(orders.length);
+  const currency = byId("kpi-currency");
+  if (currency) currency.textContent = marketCurrencyLabel(activeMarket);
   byId("last-cycle").textContent = state.auth?.admin
     ? (payload.last_cycle_at ? `Last cycle ${fmtTime(payload.last_cycle_at)}` : "waiting")
     : userSession.shared_backend
@@ -605,7 +713,7 @@ function render(payload) {
       : (userSession.last_cycle_at ? `Your signal cycle ${fmtTime(userSession.last_cycle_at)}` : "signals waiting");
 
   const pill = byId("status-pill");
-  pill.textContent = controlRunning ? (state.auth?.admin ? "running" : "shared engine on") : "stopped";
+  pill.textContent = controlRunning ? "Agent running" : "Agent idle";
   pill.className = `pill ${controlRunning ? "running" : "stopped"}`;
 
   const error = byId("error-box");
@@ -652,9 +760,12 @@ function render(payload) {
   renderSentiment(sentiment);
   renderQuotes(quotes);
   renderMarketTape(quotes, activeMarket);
+  renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
+  renderProductTrackingPanel(trackedIdeas, positions, suggestions);
   renderSuggestions(suggestions);
   renderDecisions(decisions);
   renderOverviewDecisions(decisions);
+  renderOverviewPositions(positions);
   renderOrders(orders);
   renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
   renderSectorRotation(scopedMarketContext(payload.sector_rotation_context || {}, activeMarket));
@@ -670,13 +781,164 @@ function render(payload) {
   drawEquity(equityRows, activeMarket);
 }
 
+function renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, portfolio) {
+  const panel = byId("product-action-panel");
+  if (!panel) return;
+  const market = normalizeUiMarket(state.activeMarket);
+  const breadth = scopedMarketContext(payload.market_breadth || {}, market);
+  const feed = marketDataLabel(payload, market);
+  const readyIdeas = actionableIdeaRows(suggestions);
+  const reviewPositions = (positions || []).filter((row) => {
+    const summary = row.position_summary || {};
+    const action = String(summary.recommended_action || "").toUpperCase();
+    const flags = summary.active_flags || [];
+    return ["EXIT", "REVIEW", "TRAIL STOP"].includes(action) || flags.length;
+  });
+  const pnl = Number(portfolio.unrealized_pnl || 0);
+  const pnlPct = Number(portfolio.invested) > 0 ? (pnl / Number(portfolio.invested)) * 100 : 0;
+  const credits = state.credits || {};
+  const creditText = state.auth?.admin
+    ? "Admin view"
+    : `${fmtCredits(credits.daily_credits_remaining ?? state.auth?.user?.credit_balance ?? 0)} credits left today`;
+  const lastDecision = decisions?.[0];
+  const lastReason = lastDecision ? readableDecisionReason(lastDecision) : "";
+  let headline = "Waiting for the first scan";
+  let note = "OpenStocks will publish a tracked idea only after price, trend, risk, news, and decision gates are clear.";
+  let cta = { label: "Analyze Symbol", view: "analyze" };
+  let tone = "neutral";
+  if (reviewPositions.length) {
+    headline = `${reviewPositions.length} position${reviewPositions.length === 1 ? "" : "s"} need review`;
+    note = "Risk, stop, or target rules are asking for attention before adding fresh exposure.";
+    cta = { label: "Open Positions", view: "positions" };
+    tone = "warning";
+  } else if (readyIdeas.length) {
+    headline = `${readyIdeas.length} trade idea${readyIdeas.length === 1 ? "" : "s"} ready to review`;
+    note = "These ideas cleared the main gates. Check entry, stop, targets, and expiry before following.";
+    cta = { label: "Review Ideas", view: "suggestions" };
+    tone = "positive";
+  } else if (trackedIdeas.length) {
+    headline = `${trackedIdeas.length} idea${trackedIdeas.length === 1 ? "" : "s"} being tracked`;
+    note = "No fresh buy has cleared all gates yet. Continue tracking active ideas against targets and stops.";
+    cta = { label: "Track Ideas", view: "suggestions" };
+    tone = "open";
+  } else if (decisions.length) {
+    headline = "No fresh buys yet";
+    note = lastReason || "The latest scan did not find a setup strong enough for a new trade.";
+    cta = { label: "See Scan Log", view: "decisions" };
+    tone = "neutral";
+  }
+  const stance = marketStanceText(breadth);
+  const score = scoreToProductLabel(payload.self_audit?.overall_score_pct);
+  panel.innerHTML = `
+    <article class="product-action-card ${escapeHtml(tone)}">
+      <div class="product-action-primary">
+        <span class="product-eyebrow">${escapeHtml(MARKET_LABELS[market] || market)} workspace</span>
+        <h3>${escapeHtml(headline)}</h3>
+        <p>${escapeHtml(shortValue(note, 190))}</p>
+        <div class="product-action-buttons">
+          <button class="primary" type="button" data-view-jump="${escapeHtml(cta.view)}">${escapeHtml(cta.label)}</button>
+          <button type="button" data-view-jump="analyze">Run Stock Check</button>
+        </div>
+      </div>
+      <div class="product-action-metrics">
+        <button type="button" data-view-jump="account">
+          <span>Prices</span>
+          <strong class="${escapeHtml(feed.tone)}">${escapeHtml(feed.title)}</strong>
+          <small>${escapeHtml(feed.meta)}</small>
+        </button>
+        <button type="button" data-view-jump="positions">
+          <span>Portfolio P&amp;L</span>
+          <strong class="${pnlClass(pnl)}">${fmtMarketMoney(pnl, market)}</strong>
+          <small>${Number(portfolio.invested) > 0 ? `${fmtPct(pnlPct)} on deployed capital` : "no deployed capital yet"}</small>
+        </button>
+        <button type="button" data-view-jump="decisions">
+          <span>Market Stance</span>
+          <strong class="${escapeHtml(cssToken(breadth.breadth_regime || "neutral"))}">${escapeHtml(stance)}</strong>
+          <small>${fmtPct(breadth.pct_above_50dma || 0)} above 50-DMA</small>
+        </button>
+        <button type="button" data-view-jump="${state.auth?.admin ? "users" : "account"}">
+          <span>${state.auth?.admin ? "Access" : "Credits"}</span>
+          <strong>${escapeHtml(creditText)}</strong>
+          <small>${escapeHtml(score.label)} trade-safety score</small>
+        </button>
+      </div>
+    </article>
+  `;
+  panel.querySelectorAll("[data-view-jump]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.viewJump));
+  });
+}
+
+function renderProductTrackingPanel(trackedIdeas = [], positions = [], suggestions = []) {
+  const panel = byId("product-tracking-panel");
+  const status = byId("product-track-status");
+  if (!panel) return;
+  const market = normalizeUiMarket(state.activeMarket);
+  const rows = [
+    ...positions.slice(0, 3).map((row) => ({ type: "position", row })),
+    ...trackedIdeas.slice(0, 4).map((row) => ({ type: "tracked", row })),
+    ...actionableIdeaRows(suggestions).slice(0, 3).map((row) => ({ type: "idea", row })),
+  ].slice(0, 6);
+  if (status) status.textContent = rows.length ? `${rows.length} active` : "no active tracks";
+  if (!rows.length) {
+    panel.innerHTML = emptyBlock(
+      "No active ideas yet",
+      "When a signal clears every gate, it will appear here with entry, stop, targets, expiry, and return from recommendation.",
+      "Open Ideas",
+      "suggestions",
+    );
+    return;
+  }
+  panel.innerHTML = rows.map((item, index) => {
+    const row = item.row || {};
+    const itemMarket = rowMarket(row) || market;
+    const lifecycle = ideaLifecycle(row);
+    if (item.type === "position") {
+      const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
+      const summary = row.position_summary || {};
+      return `<article class="product-track-item" role="button" tabindex="0" data-track-index="${index}">
+        <div>
+          <span class="product-track-type">Position</span>
+          <strong>${escapeHtml(row.symbol || "-")}</strong>
+          <small>${escapeHtml(summary.recommended_action || "HOLD")} · ${escapeHtml(shortValue(summary.reason || row.strategy || "-", 90))}</small>
+        </div>
+        <div class="product-track-values">
+          <strong class="${pnlClass(pnl)}">${fmtMarketMoney(pnl, itemMarket)}</strong>
+          <small>${fmtNumber(row.qty)} qty · ${fmtMarketMoney(row.market_price, itemMarket)}</small>
+        </div>
+      </article>`;
+    }
+    const latest = Number(row.follow_latest_price || row.latest_price || row.price || 0);
+    const entry = Number(row.follow_entry_price || row.entry_price || row.price || 0);
+    const returnPct = Number(row.return_pct || row.current_return_pct || (entry ? ((latest - entry) / entry) * 100 : 0));
+    return `<article class="product-track-item" role="button" tabindex="0" data-track-index="${index}">
+      <div>
+        <span class="product-track-type">${escapeHtml(item.type === "idea" ? "Ready idea" : "Tracked idea")}</span>
+        <strong>${escapeHtml(row.symbol || "-")}</strong>
+        <small>${escapeHtml(lifecycle.label)} · ${escapeHtml(ideaTimelineText(row))}</small>
+      </div>
+      <div class="product-track-values">
+        <strong class="${pnlClass(returnPct)}">${fmtPct(returnPct)}</strong>
+        <small>${fmtMarketMoney(latest || row.price, itemMarket)} · ${escapeHtml(row.suggestion || row.strategy || "WATCH")}</small>
+      </div>
+    </article>`;
+  }).join("");
+  panel.querySelectorAll(".product-track-item").forEach((card) => {
+    const item = rows[Number(card.dataset.trackIndex)];
+    card.addEventListener("click", () => {
+      const title = item.type === "position" ? "Position" : item.type === "idea" ? "Suggestion" : "Tracked Idea";
+      showDetails(title, item.row);
+    });
+  });
+}
+
 function renderSelfAudit(audit = {}) {
   const panel = byId("self-audit-panel");
   if (!panel) return;
   const ok = audit.capital_pool_within_position_count_rule !== false && !Number(audit.price_mismatch_count || 0);
   byId("self-audit-status").textContent = audit.updated_at ? `${fmtPct(audit.overall_score_pct ?? 0)} · ${audit.overall_grade || (ok ? "clear" : "flags")}` : "pending";
   const items = [
-    { label: "Overall Score", value: `${fmtPct(audit.overall_score_pct ?? 0)}`, note: `${audit.overall_grade || "-"} production readiness` },
+    { label: "Trade Safety", value: `${fmtPct(audit.overall_score_pct ?? 0)}`, note: ok ? "rules clear" : "needs review" },
     { label: "Grade Violations", value: audit.grade_violation_count ?? 0, note: "WATCH/undefined entries" },
     { label: "Delivery Conflicts", value: audit.delivery_conflict_count ?? 0, note: "distribution vs long" },
     { label: "Price Mismatch", value: audit.price_mismatch_count ?? 0, note: ">1% source gap" },
@@ -745,21 +1007,36 @@ function renderSectorRotation(context) {
   if (!panel) return;
   const top = context.leaderboard?.top || [];
   const bottom = context.leaderboard?.bottom || [];
-  byId("sector-status").textContent = `${top.length + bottom.length} sectors`;
-  const row = (sector, tone) => `<button class="sector-row" type="button">
-    <span>${escapeHtml(sector.sector || "-")}</span>
-    <strong class="${tone}">${fmtNumber(sector.sector_vs_nifty_rs)}</strong>
-    <small>${escapeHtml(`${sector.sector_stage || "-"} · rank ${sector.sector_rank || "-"}`)}</small>
-  </button>`;
-  panel.innerHTML = `
-    <div class="sector-columns">
-      <div><h4>Top 3</h4>${top.map((item) => row(item, "positive")).join("") || `<p class="muted">waiting</p>`}</div>
-      <div><h4>Bottom 3</h4>${bottom.map((item) => row(item, "negative")).join("") || `<p class="muted">waiting</p>`}</div>
-    </div>
-  `;
-  [...panel.querySelectorAll(".sector-row")].forEach((button, index) => {
-    const data = index < top.length ? top[index] : bottom[index - top.length];
-    button.addEventListener("click", () => showDetails("Sector Rotation", data));
+  const seen = new Set();
+  const sectors = [...top, ...bottom].filter((item) => {
+    const key = String(item.sector || "").toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 9);
+  byId("sector-status").textContent = sectors.length ? `${sectors.length} sectors` : "waiting";
+  const tile = (sector) => {
+    const rs = Number(sector.sector_vs_nifty_rs ?? sector.sector_return_5d ?? 0);
+    const clamped = Math.max(-2, Math.min(2, rs));
+    const heat = ((clamped + 2) / 4) * 100;
+    return `<button class="sector-tile" type="button" style="--heat:${heat}%">
+      <span>${escapeHtml(sector.sector || "-")}</span>
+      <strong class="${pnlClass(rs)}">${fmtPct(rs)}</strong>
+      <small>${escapeHtml(`${humanLabel(sector.sector_stage || "neutral")} · rank ${sector.sector_rank || "-"}`)}</small>
+    </button>`;
+  };
+  panel.innerHTML = sectors.length
+    ? sectors.map(tile).join("")
+    : `<div class="empty-state product-empty">
+      <strong>Sector heatmap is building</strong>
+      <span>Sector momentum appears after the next scan has enough quote and candle data.</span>
+      <button type="button" data-view-jump="analyze">Analyze a stock</button>
+    </div>`;
+  [...panel.querySelectorAll(".sector-tile")].forEach((button, index) => {
+    button.addEventListener("click", () => showDetails("Sector Rotation", sectors[index]));
+  });
+  panel.querySelectorAll("[data-view-jump]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.viewJump));
   });
 }
 
@@ -791,8 +1068,7 @@ function renderShell(payload = state.latest || {}) {
   const activeQuotes = filterRowsByMarket(payload.quotes || [], activeMarket);
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
-  const mode = health.mode || "unknown";
-  const feedLabel = health.display_label || (mode === "last_traded" ? "Last traded" : mode === "stale" ? "Stale quote" : mode);
+  const feed = marketDataLabel(payload, activeMarket);
   const llmProvider = plainSetting("llm_provider", runtime.llm_provider || "offline");
   const llmMode = plainSetting("llm_decision_mode", runtime.llm_decision_mode || "offline");
   const llmModel = llmProvider === "deepseek"
@@ -809,20 +1085,37 @@ function renderShell(payload = state.latest || {}) {
     ? `${fmtCompact(llmUsage.total_tokens)} tok · ${fmtUsd(llmUsage.cost_usd)} today`
     : `${llmModel || "model unset"}`;
 
-  byId("top-provider").textContent = provider;
-  byId("top-llm").textContent = llmProvider === "offline" ? "off" : llmModel;
-  byId("top-execution").textContent = plainSetting("execution_mode", runtime.execution_mode || "-");
+  byId("top-provider").textContent = state.auth?.admin ? provider : feed.title;
+  byId("top-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "off" : llmModel) : "OpenStocks Brain";
+  byId("top-execution").textContent = state.auth?.admin ? plainSetting("execution_mode", runtime.execution_mode || "-") : marketCurrencyLabel(activeMarket);
 
   const feedPending = isFeedPending(payload);
-  const feedConnected = !feedPending && (activeQuotes.length || health.quote_count || String(provider).includes("indstocks") || String(provider).includes("yahoo"));
-  const feedIsFresh = feedConnected && mode === "live";
-  byId("feed-pill").textContent = feedConnected ? feedLabel : "Feed pending";
-  byId("feed-pill").className = `pill ${feedIsFresh ? "running" : feedConnected ? "warning" : "stopped"}`;
-  byId("ops-feed").textContent = feedConnected ? feedLabel : "Connect feed";
+  const feedConnected = !feedPending && feed.hasQuotes;
+  const paperBanner = byId("paper-mode-banner");
+  if (paperBanner) {
+    const executionMode = String(plainSetting("execution_mode", runtime.execution_mode || "paper")).toLowerCase();
+    let dismissed = false;
+    try {
+      dismissed = window.sessionStorage.getItem("openstocks-paper-banner-dismissed") === "1";
+    } catch {
+      dismissed = false;
+    }
+    paperBanner.hidden = executionMode !== "paper" || dismissed;
+  }
+  byId("feed-pill").textContent = feedConnected ? feed.title : "Feed pending";
+  byId("feed-pill").className = `pill ${feedConnected ? feed.tone : "stopped"}`;
+  const modePill = byId("mode-pill");
+  if (modePill) {
+    const executionMode = String(plainSetting("execution_mode", runtime.execution_mode || "paper")).toLowerCase();
+    const live = executionMode === "live" || executionMode === "live_trading";
+    modePill.textContent = live ? "LIVE" : "PAPER";
+    modePill.className = `mode-pill ${live ? "live" : "paper"}`;
+  }
+  byId("ops-feed").textContent = feedConnected ? feed.title : "Connect feed";
   byId("ops-feed-meta").textContent = feedPending
     ? "quotes paused until token/feed is ready"
-    : `${activeQuotes.length || health.quote_count || 0} ${activeMarketLabel()} quotes · ${health.is_market_open ? "market open" : "market closed"} · ${fmtAge(health.latest_quote_age_seconds)}`;
-  byId("ops-llm").textContent = llmProvider === "offline" ? "Offline" : llmDisplay;
+    : feed.meta;
+  byId("ops-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks Brain";
   const userCreditMeta = state.credits
     ? `${fmtCredits(state.credits.credits_used_today || 0)} credits used today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
     : `${fmtCredits(llmActivity.credits_charged || 0)} credits last cycle`;
@@ -833,11 +1126,11 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   byId("ops-macro").textContent = macro.regime || "unknown";
   byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · breadth ${escapeHtml(breadth.breadth_regime || "neutral")}`;
-  byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Shared Engine") : "Stopped";
+  byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Scanning") : "Paused";
   byId("ops-cycle-meta").textContent = state.auth?.admin
     ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending")
     : (userSession.shared_backend
-      ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · admin controlled` : "admin controlled")
+      ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · background scan` : "background scan waiting")
       : userSession.last_cycle_at
       ? `${fmtTime(userSession.last_cycle_at)} · ${fmtCredits(userSession.last_credit_charge || 0)} credits`
       : `${userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30} symbols per cycle`);
@@ -865,7 +1158,7 @@ function updateMarketWorkspaceLabels(payload = state.latest || {}) {
   if (scope) scope.textContent = `${label} workspace`;
   const currentView = currentViewName();
   const title = byId("view-title");
-  const navLabel = document.querySelector(`.nav-item[data-view="${currentView}"] span`)?.textContent || "Dashboard";
+  const navLabel = document.querySelector(`.nav-item[data-view="${currentView}"] span:not(.nav-icon)`)?.textContent || "Dashboard";
   if (title) {
     title.textContent = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(currentView)
       ? `${label} ${navLabel}`
@@ -953,16 +1246,18 @@ function renderAuth(auth) {
   const authenticated = Boolean(auth.authenticated);
   byId("login-screen").hidden = authenticated;
   byId("app-shell").classList.toggle("app-hidden", !authenticated);
+  document.body.classList.toggle("is-admin", authenticated && Boolean(auth.admin));
+  document.body.classList.toggle("is-user", authenticated && !auth.admin);
   const pill = byId("admin-pill");
   pill.textContent = auth.admin ? "admin" : "user";
   pill.className = `pill ${auth.admin ? "running" : "stopped"}`;
   pill.hidden = true;
   const currentUser = auth.user?.username || "signed in";
-  byId("current-user-label").textContent = `${currentUser} · ${auth.user?.role || "user"}`;
+  byId("current-user-label").textContent = currentUser;
   byId("credit-pill").hidden = Boolean(auth.admin);
   byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "";
-  byId("start-btn").textContent = auth.admin ? "Start" : "Refresh";
-  byId("stop-btn").textContent = auth.admin ? "Stop" : "Admin Controlled";
+  byId("start-btn").textContent = auth.admin ? "Start" : "Refresh Signals";
+  byId("stop-btn").textContent = auth.admin ? "Stop" : "Managed";
   byId("logout-btn").hidden = !authenticated;
   renderUserBrokerStatus();
   for (const item of document.querySelectorAll(".admin-only")) {
@@ -1086,12 +1381,14 @@ function renderCreditSummary(credits, policy = {}) {
   if (!state.auth?.authenticated) {
     byId("credits-status").textContent = "login required";
     body.innerHTML = `<div class="empty-state">Login to view credit usage.</div>`;
+    renderCreditPopoverBody(null, policy);
     return;
   }
   if (state.auth?.admin) {
     byId("credits-status").textContent = "admin view";
     body.innerHTML = `<div class="account-note"><strong>Admin mode</strong><span>Admins allocate credits and monitor usage from the Users tab. Signals run from user accounts only.</span></div>`;
     byId("credit-pill").hidden = true;
+    renderCreditPopoverBody(null, policy);
     return;
   }
   const balance = Number(credits?.credit_balance || 0);
@@ -1101,7 +1398,8 @@ function renderCreditSummary(credits, policy = {}) {
   const llmActivity = state.latest?.user_signal_session?.last_llm_activity || {};
   byId("credits-status").textContent = `${fmtCredits(remaining)} left today`;
   byId("credit-pill").hidden = false;
-  byId("credit-pill").textContent = `${fmtCredits(balance)} credits`;
+  byId("credit-pill").textContent = `⚡ ${fmtCredits(balance)} credits`;
+  renderCreditPopoverBody(credits, policy);
   body.innerHTML = `
     <div class="account-metrics">
       <div><span>Balance</span><strong>${fmtCredits(balance)}</strong></div>
@@ -1135,6 +1433,41 @@ function renderCreditSummary(credits, policy = {}) {
   `;
   byId("daily-credit-limit-form").addEventListener("submit", saveDailyCreditLimit);
   applyAccessMode();
+}
+
+function renderCreditPopoverBody(credits, policy = {}) {
+  const body = byId("credit-popover-body");
+  if (!body) return;
+  if (!credits || state.auth?.admin) {
+    body.innerHTML = `<div class="empty-state product-empty"><strong>No user credit ledger</strong><span>User credit usage appears here after sign in.</span></div>`;
+    return;
+  }
+  const balance = Number(credits.credit_balance || 0);
+  const dailyLimit = Number(credits.daily_credit_limit || 0);
+  const usedToday = Number(credits.credits_used_today || 0);
+  const remaining = Number(credits.daily_credits_remaining || 0);
+  const pct = dailyLimit > 0 ? Math.max(0, Math.min(100, (usedToday / dailyLimit) * 100)) : 0;
+  const ledger = credits.ledger || [];
+  body.innerHTML = `
+    <div class="credit-popover-summary">
+      <div><span>Balance</span><strong>${fmtCredits(balance)}</strong></div>
+      <div><span>Used today</span><strong>${fmtCredits(usedToday)}</strong></div>
+      <div><span>Remaining today</span><strong>${dailyLimit > 0 ? fmtCredits(remaining) : "No cap"}</strong></div>
+    </div>
+    <div class="progress-row credit-progress">
+      <span>Daily budget</span>
+      <div class="progress-track"><div style="width:${pct}%"></div></div>
+      <strong>${fmtPct(pct)}</strong>
+    </div>
+    <div class="credit-popover-ledger">
+      ${(ledger || []).slice(0, 5).map((row) => `<button type="button">
+        <span>${escapeHtml(humanLabel(row.entry_type || "usage"))}</span>
+        <strong class="${pnlClass(row.amount)}">${fmtCredits(row.amount)}</strong>
+        <small>${escapeHtml(row.description || "OpenStocks Brain review")} · ${fmtTime(row.ts)}</small>
+      </button>`).join("") || `<div class="empty-state product-empty"><strong>No LLM calls yet</strong><span>Last five credit events will appear here.</span></div>`}
+    </div>
+    <small class="credit-policy-note">${fmtCredits(policy.estimated_signal_credit || 0)} estimated credits per signal review.</small>
+  `;
 }
 
 async function saveDailyCreditLimit(event) {
@@ -2200,35 +2533,80 @@ function renderPositions(rows) {
   }
   if (!rows.length) {
     body.innerHTML = emptyTableRow(
-      9,
+      11,
       `No open ${activeMarketLabel()} positions`,
-      "When a followed idea is executed in paper or live mode, it will appear here with score, gates, P&L, and exit action.",
-      "Open Ideas",
-      "suggestions",
+      "The agent will open positions when it finds qualifying opportunities.",
+      "Run agent cycle",
+      "decisions",
     );
     return;
   }
   body.innerHTML = rows
-    .map((row) => {
-      const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
-      const marketValue = Number(row.market_price) * Number(row.qty);
-      const summary = row.position_summary || {};
-      const flags = summary.active_flags || [];
-      const market = rowMarket(row);
-      return `<tr>
-        <td><strong>${escapeHtml(row.symbol)}</strong></td>
-        <td class="num"><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><br><small>${escapeHtml(summary.overall_grade || "-")}</small></td>
-        <td class="num">${row.qty}</td>
-        <td class="num">${fmtMarketMoney(row.market_price, market)}<br><small>${escapeHtml(summary.price_label || "LTP")}</small></td>
-        <td class="num">${fmtMarketMoney(marketValue, market)}</td>
-        <td class="num pnl-value ${pnlClass(pnl)}"><strong>${fmtMarketMoney(pnl, market)}</strong></td>
-        <td><span class="tag ${String(summary.classification || "").toLowerCase()}">${escapeHtml(summary.classification || "-")}</span><br><small>${escapeHtml(row.strategy || "-")}</small></td>
-        <td><small>Entry ${escapeHtml(summary.entry_grade || "-")} · MTF ${escapeHtml(summary.mtf_grade || "-")} · Delivery ${escapeHtml(summary.delivery_bias || "-")}</small><br>${flags.length ? flags.map((flag) => `<span class="tag watch">${escapeHtml(humanLabel(flag))}</span>`).join(" ") : `<span class="tag open">CLEAR</span>`}</td>
-        <td><strong>${escapeHtml(summary.recommended_action || "HOLD")}</strong><br><small>${escapeHtml(summary.reason || "-")}</small></td>
-      </tr>`;
-    })
+    .map((row) => positionRowHtml(row))
     .join("");
   bindRowDetails(body, rows, "Position");
+}
+
+function renderOverviewPositions(rows) {
+  const body = byId("overview-positions-body");
+  if (!body) return;
+  const sorted = [...rows].sort((a, b) => {
+    const pnlA = (Number(a.market_price) - Number(a.avg_price)) * Number(a.qty);
+    const pnlB = (Number(b.market_price) - Number(b.avg_price)) * Number(b.qty);
+    return pnlB - pnlA;
+  });
+  if (!sorted.length) {
+    body.innerHTML = emptyTableRow(
+      9,
+      `No open ${activeMarketLabel()} positions`,
+      "The agent will open positions when qualifying opportunities are found.",
+      "View decisions",
+      "decisions",
+    );
+    return;
+  }
+  body.innerHTML = sorted.slice(0, 5).map((row) => positionRowHtml(row, true)).join("");
+  bindRowDetails(body, sorted.slice(0, 5), "Position");
+}
+
+function positionRowHtml(row, compact = false) {
+  const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
+  const pnlPct = Number(row.avg_price) > 0 ? ((Number(row.market_price) - Number(row.avg_price)) / Number(row.avg_price)) * 100 : 0;
+  const marketValue = Number(row.market_price) * Number(row.qty);
+  const summary = row.position_summary || {};
+  const flags = summary.active_flags || [];
+  const market = rowMarket(row);
+  const dayPct = quoteDayPct(row);
+  const gates = flags.length
+    ? flags.slice(0, 3).map((flag) => `<span class="gate-pill warning">${escapeHtml(humanLabel(flag))}</span>`).join("")
+    : `<span class="gate-pill positive">Clear</span>`;
+  const symbolCell = `<div class="symbol-cell"><span class="symbol-logo">${escapeHtml(String(row.symbol || "--").slice(0, 2))}</span><div><strong>${escapeHtml(row.symbol || "-")}</strong><small>${escapeHtml(row.company_name || row.strategy || "-")}</small></div></div>`;
+  if (compact) {
+    return `<tr>
+      <td>${symbolCell}</td>
+      <td class="num"><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong></td>
+      <td class="num quantity">${fmtNumber(row.qty)}</td>
+      <td class="num price" aria-live="polite">${fmtMarketMoney(row.market_price, market)}</td>
+      <td class="num"><span class="day-badge ${pnlClass(dayPct)}">${fmtPct(dayPct)}</span></td>
+      <td class="num price">${fmtMarketMoney(marketValue, market)}</td>
+      <td class="num pnl ${pnlClass(pnl)}"><strong>${fmtMarketMoney(pnl, market)}</strong></td>
+      <td>${gates}</td>
+      <td><button type="button" class="row-link">Details →</button></td>
+    </tr>`;
+  }
+  return `<tr>
+    <td>${symbolCell}</td>
+    <td class="num"><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><br><small>${escapeHtml(summary.overall_grade || "-")}</small></td>
+    <td class="num quantity">${fmtNumber(row.qty)}</td>
+    <td class="num price">${fmtMarketMoney(row.avg_price, market)}</td>
+    <td class="num price" aria-live="polite">${fmtMarketMoney(row.market_price, market)}<br><small>${escapeHtml(summary.price_label || "LTP")}</small></td>
+    <td class="num"><span class="day-badge ${pnlClass(dayPct)}">${fmtPct(dayPct)}</span></td>
+    <td class="num price">${fmtMarketMoney(marketValue, market)}</td>
+    <td class="num pnl ${pnlClass(pnl)}"><strong>${fmtMarketMoney(pnl, market)}</strong></td>
+    <td class="num percentage ${pnlClass(pnlPct)}">${fmtPct(pnlPct)}</td>
+    <td>${gates}</td>
+    <td><button type="button" class="danger-outline">Exit</button> <button type="button" class="row-link">Details →</button></td>
+  </tr>`;
 }
 
 function renderTrackedIdeas(rows) {
@@ -2518,33 +2896,38 @@ function sourceClass(source) {
 
 function renderDecisions(rows) {
   const body = byId("decisions-body");
-  body.innerHTML = rows.length
-    ? rows
-    .slice(0, 120)
-    .map((row) => {
-      const action = String(row.action || "HOLD").toLowerCase();
-      const market = rowMarket(row);
-      return `<tr>
-        <td>${fmtTime(row.ts)}</td>
-        <td><strong>${escapeHtml(row.symbol)}</strong></td>
-        <td>${escapeHtml(row.strategy || "-")}</td>
-        <td><span class="tag ${action}">${escapeHtml(row.action)}</span></td>
-        <td class="num">${fmtNumber(Number(row.confidence) * 100)}%</td>
-        <td class="num">${fmtMarketMoney(row.price, market)}</td>
-        <td class="num ${pnlClass(row.technical_score)}">${fmtNumber(row.technical_score)}</td>
-        <td class="num ${pnlClass(row.sentiment_score)}">${fmtNumber(row.sentiment_score)}</td>
-        <td class="reason">${escapeHtml(shortValue(readableDecisionReason(row), 190))}</td>
-      </tr>`;
-    })
-    .join("")
-    : emptyTableRow(
-        9,
-        `No ${activeMarketLabel()} decision audit yet`,
-        "After the shared engine scans this market, every BUY, HOLD, and EXIT decision will be listed here with plain-English blockers.",
-        "Run Symbol Analysis",
+  const detail = byId("decision-detail-panel");
+  if (!body) return;
+  const visibleRows = rows.slice(0, 120);
+  if (!visibleRows.length) {
+    body.innerHTML = emptyBlock(
+      `No ${activeMarketLabel()} decisions yet`,
+      "Start the agent to begin scanning your universe.",
+      "Start agent",
+      "overview",
+    );
+    if (detail) {
+      detail.innerHTML = emptyBlock(
+        "No decision selected",
+        "When decisions arrive, select one to inspect the score radar, LLM reasoning, gates, and timeline.",
+        "Analyze Symbol",
         "analyze",
       );
-  bindRowDetails(body, rows.slice(0, 120), "Decision");
+    }
+    return;
+  }
+  body.innerHTML = visibleRows.map((row, index) => decisionFeedCardHtml(row, index, false)).join("");
+  [...body.querySelectorAll(".decision-feed-card")].forEach((card) => {
+    const row = visibleRows[Number(card.dataset.index)];
+    if (!row) return;
+    card.addEventListener("click", () => {
+      for (const item of body.querySelectorAll(".decision-feed-card")) item.classList.remove("active");
+      card.classList.add("active");
+      renderDecisionDetailPanel(row);
+    });
+  });
+  body.querySelector(".decision-feed-card")?.classList.add("active");
+  renderDecisionDetailPanel(visibleRows[0]);
 }
 
 function renderOverviewDecisions(rows) {
@@ -2555,9 +2938,9 @@ function renderOverviewDecisions(rows) {
         .map((row, index) => decisionFeedCardHtml(row, index, true))
         .join("")
     : emptyBlock(
-        "No engine checks yet",
-        "The shared engine will list scanned symbols, calls, scores, and plain-English blockers after a cycle completes.",
-        "View Decisions",
+        "No decisions yet",
+        "Start the agent to begin scanning your universe.",
+        "Start agent",
         "decisions",
       );
   [...body.querySelectorAll(".decision-feed-card")].forEach((card) => {
@@ -2578,14 +2961,15 @@ function decisionFeedCardHtml(row, index, compact = false) {
     <div class="decision-main">
       <div class="decision-title-row">
         <strong>${escapeHtml(row.symbol || "-")}</strong>
+        ${row.company_name ? `<small>${escapeHtml(row.company_name)}</small>` : ""}
         <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
         <span class="decision-time">${escapeHtml(fmtTime(row.ts))}</span>
       </div>
       <p>${escapeHtml(reason)}</p>
       <div class="decision-bars">
-        <span><em style="width:${Math.max(0, Math.min(100, (tech + 1) * 50))}%"></em><b>Tech</b></span>
-        <span><em style="width:${Math.max(0, Math.min(100, (sentiment + 1) * 50))}%"></em><b>Sentiment</b></span>
-        <span><em style="width:${Math.max(0, Math.min(100, score))}%"></em><b>Score</b></span>
+        <span><em style="width:${Math.max(0, Math.min(100, (tech + 1) * 50))}%"></em><b>Setup</b></span>
+        <span><em style="width:${Math.max(0, Math.min(100, (sentiment + 1) * 50))}%"></em><b>News</b></span>
+        <span><em style="width:${Math.max(0, Math.min(100, score))}%"></em><b>Confidence</b></span>
       </div>
     </div>
     <div class="score-ring" style="--score:${Math.max(0, Math.min(100, score))}">
@@ -2593,6 +2977,117 @@ function decisionFeedCardHtml(row, index, compact = false) {
       <small>%</small>
     </div>
   </article>`;
+}
+
+function renderDecisionDetailPanel(row = {}) {
+  const panel = byId("decision-detail-panel");
+  if (!panel) return;
+  const audit = decisionAudit(row);
+  const context = audit.context || {};
+  const full = decisionFullSpectrum(audit);
+  const market = rowMarket(row);
+  const action = String(row.action || audit.final_action || "HOLD").toLowerCase();
+  const confidence = Math.max(0, Math.min(100, Number(row.confidence || audit.confidence || 0) * 100));
+  const score = audit.score_breakdown || {};
+  const metrics = [
+    { label: "Tech", value: normalizedScore(row.technical_score ?? context.technical_math?.score) },
+    { label: "Sentiment", value: normalizedScore(row.sentiment_score ?? context.sentiment?.score) },
+    { label: "Risk", value: normalizedScore(score.risk_score ?? full.risk_score ?? (full.risk_overrides?.no_new_longs ? -0.7 : 0.35)) },
+    { label: "Macro", value: normalizedScore(context.global_market_context?.risk_score ?? context.market_breadth?.breadth_score) },
+  ];
+  const llm = audit.llm_output || {};
+  const timeline = [
+    ["Quote", `${fmtMarketMoney(row.price || context.quote?.price, market)} from ${context.quote?.source || row.source || "market feed"}`],
+    ["Score", `${fmtNumber(score.combined ?? row.combined_score)} combined · ${full.confluence_score?.total ?? row.confluence ?? "-"} confluence`],
+    ["Gates", failedGatesFromAudit(audit, context).length ? `${failedGatesFromAudit(audit, context).length} blockers` : "hard gates clear"],
+    ["Brain", audit.llm_error ? "OpenStocks Brain failed safely" : (audit.decision_path || "deterministic audit")],
+    ["Decision", `${row.action || "HOLD"} · ${fmtNumber(confidence)}% confidence`],
+  ];
+  panel.innerHTML = `
+    <section class="decision-detail-hero">
+      <div class="decision-logo large">${escapeHtml(String(row.symbol || "--").slice(0, 2))}</div>
+      <div>
+        <span>${escapeHtml(MARKET_LABELS[market] || market)} decision</span>
+        <h3>${escapeHtml(row.symbol || "-")}</h3>
+        <p>${fmtMarketMoney(row.price, market)} · ${escapeHtml(row.strategy || context.best_strategy?.name || "-")} · ${escapeHtml(fmtTime(row.ts))}</p>
+      </div>
+      <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
+      <div class="score-ring large" style="--score:${confidence}"><strong>${fmtNumber(confidence)}</strong><small>%</small></div>
+    </section>
+    <section class="decision-radar-section">
+      ${scoreRadarSvg(metrics)}
+      <div class="decision-reason-block">
+        <h4>Plain-English Decision</h4>
+        <p>${escapeHtml(readableDecisionReason(row))}</p>
+        ${auditList("Key Evidence", decisionReasonHighlights(row).slice(0, 5))}
+      </div>
+    </section>
+    <section class="decision-review-grid">
+      <div>
+        <h4>OpenStocks Brain Review</h4>
+        ${formattedLlmReasonHtml(llm, audit)}
+      </div>
+      <div>
+        <h4>Timeline</h4>
+        <ol class="decision-timeline">
+          ${timeline.map(([label, text]) => `<li><strong>${escapeHtml(label)}</strong><span>${escapeHtml(text)}</span></li>`).join("")}
+        </ol>
+      </div>
+    </section>
+    ${preFilterHtml(audit, context, market)}
+    ${riskGateHtml(audit, market)}
+    ${fullSpectrumHtml(full, market)}
+  `;
+}
+
+function normalizedScore(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 50;
+  if (numeric >= 0 && numeric <= 100) return numeric;
+  return Math.max(0, Math.min(100, (numeric + 1) * 50));
+}
+
+function scoreRadarSvg(metrics = []) {
+  const points = metrics.map((metric, index) => {
+    const angle = (-90 + index * (360 / metrics.length)) * (Math.PI / 180);
+    const radius = 22 + (Math.max(0, Math.min(100, metric.value)) / 100) * 54;
+    return {
+      ...metric,
+      x: 90 + Math.cos(angle) * radius,
+      y: 90 + Math.sin(angle) * radius,
+      lx: 90 + Math.cos(angle) * 83,
+      ly: 90 + Math.sin(angle) * 83,
+    };
+  });
+  const polygon = points.map((point) => `${point.x},${point.y}`).join(" ");
+  return `<div class="score-radar" role="img" aria-label="Decision score breakdown radar">
+    <svg viewBox="0 0 180 180" aria-hidden="true">
+      <circle cx="90" cy="90" r="70"></circle>
+      <circle cx="90" cy="90" r="44"></circle>
+      <line x1="90" y1="20" x2="90" y2="160"></line>
+      <line x1="20" y1="90" x2="160" y2="90"></line>
+      <polygon points="${polygon}"></polygon>
+      ${points.map((point) => `<text x="${point.lx}" y="${point.ly}">${escapeHtml(point.label)}</text>`).join("")}
+    </svg>
+    <div class="radar-legend">
+      ${metrics.map((metric) => `<span><b>${escapeHtml(metric.label)}</b>${fmtNumber(metric.value)}%</span>`).join("")}
+    </div>
+  </div>`;
+}
+
+function formattedLlmReasonHtml(llm = {}, audit = {}) {
+  const sections = [];
+  const reason = llm.reason || llm.summary || audit.action_reason || "";
+  if (reason) sections.push(["Conclusion", reason]);
+  if (Array.isArray(llm.evidence) && llm.evidence.length) sections.push(["Technical analysis", llm.evidence.slice(0, 5).join(" ")]);
+  if (Array.isArray(llm.risk_checks) && llm.risk_checks.length) sections.push(["Risk assessment", llm.risk_checks.slice(0, 5).join(" ")]);
+  if (Array.isArray(llm.data_gaps) && llm.data_gaps.length) sections.push(["Data gaps", llm.data_gaps.slice(0, 5).join(" ")]);
+  if (!sections.length) {
+    return `<div class="empty-state product-empty"><strong>No LLM narrative captured</strong><span>This decision still used deterministic gates and safe policy checks.</span></div>`;
+  }
+  return `<div class="llm-formatted-review">
+    ${sections.map(([title, text]) => `<article><h5>${escapeHtml(title)}</h5><p>${escapeHtml(shortValue(text, 520))}</p></article>`).join("")}
+  </div>`;
 }
 
 function ideaLifecycle(row = {}) {
@@ -3574,6 +4069,8 @@ function renderManualAnalysis(payload) {
   const market = payload.market || "IN";
   const action = String(decision.action || "HOLD").toLowerCase();
   const details = decision.details || parseJsonObject(decision.details_json);
+  const context = details.context || {};
+  const full = decisionFullSpectrum(details);
   const path = details.decision_path || decision.strategy || "-";
   const news = payload.news || {};
   const headlines = news.headlines || [];
@@ -3586,57 +4083,154 @@ function renderManualAnalysis(payload) {
     payload.requested_symbol && payload.symbol && String(payload.requested_symbol).toUpperCase() !== String(payload.symbol).toUpperCase()
       ? `resolved from ${payload.requested_symbol}`
       : `${payload.market || "IN"} · ${payload.provider || "-"} · ${payload.candle_count || 0} candles`;
+  const quote = payload.quote || context.quote || {};
+  const dayPct = quoteDayPct({ price: decision.price || quote.price, close: quote.close || quote.prev_close });
+  const high52 = Number(quote.week_52_high || quote["52week_high"] || quote.fifty_two_week_high);
+  const low52 = Number(quote.week_52_low || quote["52week_low"] || quote.fifty_two_week_low);
+  const ltp = Number(decision.price || quote.price || 0);
+  const rangePct = Number.isFinite(high52) && Number.isFinite(low52) && high52 > low52
+    ? Math.max(0, Math.min(100, ((ltp - low52) / (high52 - low52)) * 100))
+    : 0;
+  const metrics = [
+    ["PE", full.fundamental_quality?.pe ?? payload.fundamentals?.pe],
+    ["PB", full.fundamental_quality?.pb ?? payload.fundamentals?.pb],
+    ["Market cap", full.fundamental_quality?.market_cap ?? payload.fundamentals?.market_cap],
+    ["Volume", quote.volume ?? payload.volume],
+    ["52W high", high52],
+    ["52W low", low52],
+  ];
   byId("analyze-result").innerHTML = `
-    <div class="manual-analysis-card">
-      <div>
-        <span>Symbol</span>
-        <strong>${escapeHtml(payload.symbol || decision.symbol || "-")}</strong>
-        <small>${escapeHtml(resolvedNote)}</small>
+    <section class="analysis-result-shell">
+      <header class="analysis-hero">
+        <div class="decision-logo large">${escapeHtml(String(payload.symbol || decision.symbol || "--").slice(0, 2))}</div>
+        <div>
+          <span>${escapeHtml(resolvedNote)}</span>
+          <h3>${escapeHtml(payload.symbol || decision.symbol || "-")}</h3>
+          <p>${escapeHtml(payload.company_name || decision.company_name || quote.company_name || "Symbol audit")}</p>
+        </div>
+        <div class="analysis-price">
+          <strong>${fmtMarketMoney(decision.price || quote.price, market)}</strong>
+          <span class="day-badge ${pnlClass(dayPct)}">${fmtPct(dayPct)}</span>
+          <small>${escapeHtml(fmtTime(quote.asof || quote.ts))}</small>
+        </div>
+      </header>
+      <div class="range-52w">
+        <span>52W low ${fmtMarketMoney(low52, market)}</span>
+        <div class="progress-track"><div style="width:${rangePct}%"></div></div>
+        <span>52W high ${fmtMarketMoney(high52, market)}</span>
       </div>
-      <div>
-        <span>Decision</span>
-        <strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong>
-        <small>${escapeHtml(path)}</small>
+      <div class="analysis-metric-strip">
+        ${metrics.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${typeof value === "number" || Number.isFinite(Number(value)) ? fmtNumber(value) : escapeHtml(value ?? "-")}</strong></div>`).join("")}
       </div>
-      <div>
-        <span>Confidence</span>
-        <strong>${fmtNumber(Number(decision.confidence || 0) * 100)}%</strong>
-        <small>policy gates still apply</small>
+      <div class="analysis-tabs" role="tablist" aria-label="Analysis result sections">
+        <button class="active" type="button" data-analysis-tab="overview">Overview</button>
+        <button type="button" data-analysis-tab="chart">Chart</button>
+        <button type="button" data-analysis-tab="strategy">Strategy</button>
+        <button type="button" data-analysis-tab="sentiment">Sentiment</button>
+        <button type="button" data-analysis-tab="risk">Risk</button>
+        <button type="button" data-analysis-tab="llm">LLM Review</button>
       </div>
-      <div>
-        <span>Price</span>
-        <strong>${fmtMarketMoney(decision.price || payload.quote?.price, market)}</strong>
-        <small>${escapeHtml(fmtTime(payload.quote?.asof))}</small>
+      <div class="analysis-tab-panels">
+        <section class="analysis-tab-panel active" data-analysis-panel="overview">
+          <div class="manual-analysis-card">
+            <div><span>Decision</span><strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong><small>${escapeHtml(path)}</small></div>
+            <div><span>Confidence</span><strong>${fmtNumber(Number(decision.confidence || 0) * 100)}%</strong><small>policy gates still apply</small></div>
+            <div><span>News Sentiment</span><strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "DATA_MISSING"}</strong><small>${headlines.length ? `${headlines.length} items` : escapeHtml(news.note || "No verified news")}</small></div>
+            <div><span>Credits Used</span><strong>${fmtCredits(creditCharge)}</strong><small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small></div>
+          </div>
+          <p>${escapeHtml(readableDecisionReason(decision))}</p>
+        </section>
+        <section class="analysis-tab-panel" data-analysis-panel="chart">
+          ${miniPriceChartHtml(context.recent_candles_tail || [], market)}
+        </section>
+        <section class="analysis-tab-panel" data-analysis-panel="strategy">
+          ${strategySignalsHtml(context.strategy_signals || []) || auditList("Strategy signals", decisionReasonHighlights(decision))}
+        </section>
+        <section class="analysis-tab-panel" data-analysis-panel="sentiment">
+          ${headlines.length ? auditList("Latest News", headlines.slice(0, 6)) : `<p class="muted">${escapeHtml(news.note || "No recent verified news found from connected public feeds.")}</p>`}
+        </section>
+        <section class="analysis-tab-panel" data-analysis-panel="risk">
+          ${preFilterHtml(details, context, market)}
+          ${riskGateHtml(details, market)}
+        </section>
+        <section class="analysis-tab-panel" data-analysis-panel="llm">
+          <button id="manual-detail-btn" type="button">Open Full Analysis</button>
+          ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
+          ${details.llm_output ? formattedLlmReasonHtml(details.llm_output, details) : `<p class="muted">Run AI Review from this symbol analysis to spend credits and capture OpenStocks Brain evidence.</p>`}
+          ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
+        </section>
       </div>
-      <div>
-        <span>News Sentiment</span>
-        <strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "DATA_MISSING"}</strong>
-        <small>${headlines.length ? `${headlines.length} latest items · ${fmtNumber(Number(news.confidence || 0) * 100)}% conf` : escapeHtml(news.note || "No recent verified news found")}</small>
-      </div>
-      <div>
-        <span>Credits Used</span>
-        <strong>${fmtCredits(creditCharge)}</strong>
-        <small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small>
-      </div>
-    </div>
-    <section class="audit-section manual-summary">
-      <h4>Reason</h4>
-      <p>${escapeHtml(readableDecisionReason(decision))}</p>
-      ${auditList("Main Reasons", decisionReasonHighlights(decision))}
-      ${headlines.length ? auditList("Latest News", headlines.slice(0, 6)) : `<p class="muted">${escapeHtml(news.note || "No recent verified news found from connected public feeds.")}</p>`}
-      ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
-      ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
-      <button id="manual-detail-btn" type="button">Open Full Analysis</button>
     </section>
   `;
   byId("manual-detail-btn").addEventListener("click", () => showDetails("Manual Analysis", decision));
+  bindAnalysisTabs();
   if (creditUsage.after) renderCreditSummary(creditUsage.after);
+}
+
+function bindAnalysisTabs() {
+  const root = byId("analyze-result");
+  if (!root) return;
+  const buttons = root.querySelectorAll("[data-analysis-tab]");
+  const panels = root.querySelectorAll("[data-analysis-panel]");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      buttons.forEach((item) => item.classList.toggle("active", item === button));
+      panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.analysisPanel === button.dataset.analysisTab));
+    });
+  });
+}
+
+function miniPriceChartHtml(candles = [], market = "IN") {
+  const closes = (candles || []).map((candle) => Number(candle.close ?? candle.price)).filter(Number.isFinite);
+  if (closes.length < 2) {
+    return emptyBlock("Chart history is building", "Price and volume chart appears after candles are available for this symbol.", "View Decisions", "decisions");
+  }
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const width = 560;
+  const height = 220;
+  const range = max - min || 1;
+  const points = closes.map((close, index) => {
+    const x = (index / Math.max(closes.length - 1, 1)) * width;
+    const y = height - ((close - min) / range) * (height - 22) - 11;
+    return `${x},${y}`;
+  }).join(" ");
+  return `<div class="analysis-chart" role="img" aria-label="Recent price chart">
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+      <polyline points="${points}"></polyline>
+    </svg>
+    <div class="analysis-chart-meta">
+      <span>${closes.length} candles</span>
+      <strong>${fmtMarketMoney(closes[closes.length - 1], market)}</strong>
+      <span>range ${fmtMarketMoney(min, market)} - ${fmtMarketMoney(max, market)}</span>
+    </div>
+  </div>`;
 }
 
 function bindControls() {
   byId("start-btn").addEventListener("click", () => postControl("/api/control/start"));
   byId("stop-btn").addEventListener("click", () => postControl("/api/control/stop"));
   byId("run-btn").addEventListener("click", () => postControl("/api/control/run-once"));
+  const dashboardRun = byId("dashboard-run-btn");
+  if (dashboardRun) dashboardRun.addEventListener("click", () => postControl(state.auth?.admin ? "/api/control/run-once" : "/api/control/start"));
+  const dashboardStop = byId("dashboard-stop-btn");
+  if (dashboardStop) dashboardStop.addEventListener("click", () => postControl("/api/control/stop"));
+  const paperDismiss = byId("paper-banner-dismiss");
+  if (paperDismiss) {
+    paperDismiss.addEventListener("click", () => {
+      try {
+        window.sessionStorage.setItem("openstocks-paper-banner-dismissed", "1");
+      } catch {
+        /* ignore storage failures */
+      }
+      const banner = byId("paper-mode-banner");
+      if (banner) banner.hidden = true;
+    });
+  }
+  const sidebarToggle = byId("sidebar-toggle-btn");
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener("click", () => document.body.classList.toggle("sidebar-open"));
+  }
   byId("analyze-form").addEventListener("submit", analyzeSymbol);
   const globalSearch = byId("global-search-form");
   if (globalSearch) {
@@ -3654,6 +4248,33 @@ function bindControls() {
   const themeButton = byId("theme-toggle-btn");
   if (themeButton) {
     themeButton.addEventListener("click", () => applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark"));
+  }
+  const creditPill = byId("credit-pill");
+  const creditPopover = byId("credit-popover");
+  if (creditPill && creditPopover) {
+    creditPill.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const nextHidden = !creditPopover.hidden;
+      creditPopover.hidden = nextHidden;
+      creditPill.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+    });
+  }
+  const creditClose = byId("credit-popover-close");
+  if (creditClose && creditPopover) {
+    creditClose.addEventListener("click", () => {
+      creditPopover.hidden = true;
+      creditPill?.setAttribute("aria-expanded", "false");
+    });
+  }
+  const userMenuButton = byId("user-menu-btn");
+  const userMenu = byId("user-menu-dropdown");
+  if (userMenuButton && userMenu) {
+    userMenuButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const nextHidden = !userMenu.hidden;
+      userMenu.hidden = nextHidden;
+      userMenuButton.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+    });
   }
   document.querySelectorAll(".market-tab").forEach((button) => {
     button.addEventListener("click", () => setAnalyzeMarket(button.dataset.marketTab));
@@ -3682,7 +4303,10 @@ function bindControls() {
   }
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
-    button.addEventListener("click", () => setView(button.dataset.view));
+    button.addEventListener("click", () => {
+      document.body.classList.remove("sidebar-open");
+      setView(button.dataset.view);
+    });
   }
   for (const button of document.querySelectorAll("[data-view-jump]")) {
     button.addEventListener("click", () => setView(button.dataset.viewJump));
@@ -3690,7 +4314,22 @@ function bindControls() {
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-view-jump]");
     if (!button) return;
+    byId("user-menu-dropdown")?.setAttribute("hidden", "");
+    const popover = byId("credit-popover");
+    if (popover) popover.hidden = true;
     setView(button.dataset.viewJump);
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".user-menu")) {
+      const menu = byId("user-menu-dropdown");
+      if (menu) menu.hidden = true;
+      byId("user-menu-btn")?.setAttribute("aria-expanded", "false");
+    }
+    if (!event.target.closest("#credit-popover") && !event.target.closest("#credit-pill")) {
+      const popover = byId("credit-popover");
+      if (popover) popover.hidden = true;
+      byId("credit-pill")?.setAttribute("aria-expanded", "false");
+    }
   });
   for (const button of document.querySelectorAll(".settings-tab")) {
     button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab));
@@ -3707,6 +4346,10 @@ function bindControls() {
         setView("decisions");
         return;
       }
+      if (target === "orders-summary") {
+        setView("orders");
+        return;
+      }
       if (["portfolio", "cash", "invested", "pnl"].includes(target)) {
         setView("account");
         return;
@@ -3717,6 +4360,24 @@ function bindControls() {
   for (const tile of document.querySelectorAll(".ops-card")) {
     tile.addEventListener("click", () => {
       const target = tile.dataset.detailType;
+      if (!state.auth?.admin) {
+        if (target === "feed-health" || target === "llm-health") {
+          setView("account");
+          return;
+        }
+        if (target === "risk-health") {
+          setView("positions");
+          return;
+        }
+        if (target === "cycle-health") {
+          setView("decisions");
+          return;
+        }
+        if (target === "macro-health") {
+          setView("decisions");
+          return;
+        }
+      }
       if (target === "feed-health") {
         openSettingsTab("broker");
         return;
@@ -3757,7 +4418,7 @@ function setView(view) {
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("active", section.id === `${view}-view`);
   }
-  const label = document.querySelector(`.nav-item[data-view="${view}"] span`)?.textContent || "Overview";
+  const label = document.querySelector(`.nav-item[data-view="${view}"] span:not(.nav-icon)`)?.textContent || "Overview";
   const marketScoped = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(view);
   byId("view-title").textContent = marketScoped ? `${activeMarketLabel()} ${label}` : label;
   updateMarketWorkspaceLabels();

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=openstocks-11" />
+    <link rel="stylesheet" href="/static/styles.css?v=production-ui-3" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -30,45 +30,67 @@
 
     <div id="app-shell" class="app-shell app-hidden">
       <header class="terminal-topbar">
+        <button id="sidebar-toggle-btn" class="icon-button sidebar-toggle" type="button" aria-label="Open navigation">☰</button>
         <div class="brand">
           <div class="mark"><img src="/static/openstocks-mark.svg" alt="" /></div>
           <div>
             <h1>OpenStocks</h1>
-            <p>Multi-market trading terminal</p>
+            <p>AI trading desk</p>
           </div>
         </div>
+        <span id="session-pill" class="session-pill closed">NSE Closed</span>
         <form id="global-search-form" class="global-search" role="search">
-          <span id="session-pill" class="session-pill closed">NSE Closed</span>
           <input id="global-symbol-search" type="search" placeholder="Search symbol, e.g. RELIANCE or AAPL" autocomplete="off" />
-          <button type="submit">Analyze</button>
+          <button type="submit" aria-label="Analyze searched symbol">⌕</button>
         </form>
-        <nav class="nav" aria-label="OpenStocks views">
-          <button class="nav-item active" type="button" data-view="overview"><span>Dashboard</span><strong id="nav-overview-badge">live</strong></button>
-          <button class="nav-item" type="button" data-view="suggestions"><span>Ideas</span><strong id="nav-suggestions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="analyze"><span>Analyze</span><strong>symbol</strong></button>
-          <button class="nav-item" type="button" data-view="positions"><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="orders"><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="decisions"><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="sentiment"><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="account"><span>Account</span><strong>paper</strong></button>
-          <button class="nav-item admin-only" type="button" data-view="logs"><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
-          <button class="nav-item admin-only" type="button" data-view="users"><span>Users</span><strong id="nav-users-badge">0</strong></button>
-          <button class="nav-item admin-only" type="button" data-view="settings"><span>Settings</span><strong>admin</strong></button>
-        </nav>
         <div class="top-actions">
-          <span id="status-pill" class="pill">connecting</span>
-          <span id="feed-pill" class="pill">Market feed</span>
-          <span id="market-scope-label" class="pill">India workspace</span>
-          <span id="admin-pill" class="pill">user</span>
-          <span id="credit-pill" class="pill">0 credits</span>
-          <button id="theme-toggle-btn" type="button" aria-label="Toggle theme">Dark</button>
-          <span id="current-user-label" class="user-chip">signed in</span>
-          <button id="logout-btn" type="button">Logout</button>
-          <button id="start-btn" class="primary" type="button">Start</button>
-          <button id="stop-btn" type="button">Stop</button>
-          <button id="run-btn" class="admin-only" type="button">Run Once</button>
+          <span id="status-pill" class="pill agent-status">connecting</span>
+          <span id="mode-pill" class="mode-pill paper">PAPER</span>
+          <button id="credit-pill" class="credit-chip" type="button" aria-haspopup="dialog" aria-expanded="false">⚡ 0 credits</button>
+          <button id="theme-toggle-btn" class="icon-button" type="button" aria-label="Toggle theme">☾</button>
+          <div class="user-menu">
+            <button id="user-menu-btn" class="user-avatar" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span id="current-user-label">signed in</span>
+            </button>
+            <div id="user-menu-dropdown" class="user-menu-dropdown" hidden>
+              <button type="button" data-view-jump="account">Profile</button>
+              <button type="button" data-view-jump="account">Broker Link</button>
+              <button id="logout-btn" type="button">Logout</button>
+            </div>
+          </div>
+          <span id="feed-pill" class="pill shell-diagnostic">Market feed</span>
+          <span id="market-scope-label" class="pill shell-diagnostic">India workspace</span>
+          <span id="admin-pill" class="pill shell-diagnostic">user</span>
+          <button id="start-btn" class="primary shell-diagnostic" type="button">Start</button>
+          <button id="stop-btn" class="shell-diagnostic" type="button">Stop</button>
+          <button id="run-btn" class="admin-only shell-diagnostic" type="button">Run Once</button>
         </div>
       </header>
+      <div id="credit-popover" class="credit-popover" hidden>
+        <div class="credit-popover-head">
+          <strong>Credit usage</strong>
+          <button id="credit-popover-close" class="icon-button" type="button" aria-label="Close credit usage">×</button>
+        </div>
+        <div id="credit-popover-body" class="credit-popover-body">Credit activity will appear after sign in.</div>
+      </div>
+
+      <aside id="app-sidebar" class="app-sidebar" aria-label="Primary navigation">
+        <nav class="nav" aria-label="OpenStocks views">
+          <span class="nav-section-label">User</span>
+          <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon" aria-hidden="true">🏠</span><span>Dashboard</span><strong id="nav-overview-badge">on</strong></button>
+          <button class="nav-item" type="button" data-view="suggestions"><span class="nav-icon" aria-hidden="true">💡</span><span>Ideas</span><strong id="nav-suggestions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="analyze"><span class="nav-icon" aria-hidden="true">🔍</span><span>Analyze</span><strong>symbol</strong></button>
+          <button class="nav-item" type="button" data-view="positions"><span class="nav-icon" aria-hidden="true">📊</span><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true">📋</span><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon" aria-hidden="true">🤖</span><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="sentiment"><span class="nav-icon" aria-hidden="true">📰</span><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="account"><span class="nav-icon" aria-hidden="true">👤</span><span>Account</span><strong>paper</strong></button>
+          <span class="nav-section-label admin-only">Admin</span>
+          <button class="nav-item admin-only" type="button" data-view="logs"><span class="nav-icon" aria-hidden="true">📝</span><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="users"><span class="nav-icon" aria-hidden="true">👥</span><span>Users</span><strong id="nav-users-badge">0</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙️</span><span>Settings</span><strong>admin</strong></button>
+        </nav>
+      </aside>
 
       <section class="market-tape" aria-label="Market ticker">
         <div class="market-tape-label">
@@ -113,7 +135,7 @@
           </div>
           <div class="rail-footer">
             <div><span>Feed</span><strong id="top-provider">{{ provider }}</strong></div>
-            <div><span>LLM</span><strong id="top-llm">{{ llm_model if llm_enabled else "off" }}</strong></div>
+            <div><span>Review</span><strong id="top-llm">{{ llm_model if llm_enabled else "off" }}</strong></div>
             <div><span>Mode</span><strong id="top-execution">{{ execution_mode }}</strong></div>
           </div>
         </aside>
@@ -121,8 +143,8 @@
         <main class="workspace">
           <div class="workspace-head">
             <div>
-              <h2 id="view-title">Dashboard</h2>
-              <p id="view-subtitle">India market only · paper risk desk · audited AI decisions</p>
+              <h2 id="view-title">Home</h2>
+              <p id="view-subtitle">India and US workspaces · tracked ideas · targets and stops</p>
             </div>
             <div class="market-workspace-tabs" role="tablist" aria-label="Market workspace selector">
               <button class="market-workspace-tab active" type="button" data-market-workspace="IN" aria-selected="true">
@@ -138,133 +160,138 @@
           </div>
           <div id="error-box" class="error-box" hidden></div>
 
-          <section id="overview-view" class="view active">
-            <div class="market-board">
-              <section class="terminal-main">
-                <section class="kpis portfolio-strip" aria-label="Portfolio summary">
-                  <button class="kpi" type="button" data-detail-type="portfolio"><span>Equity</span><strong id="kpi-equity">-</strong></button>
-                  <button class="kpi" type="button" data-detail-type="cash"><span>Cash</span><strong id="kpi-cash">-</strong></button>
-                  <button class="kpi" type="button" data-detail-type="invested"><span>Deployed</span><strong id="kpi-invested">-</strong></button>
-                  <button class="kpi" type="button" data-detail-type="pnl"><span>Unrealized P&amp;L</span><strong id="kpi-unrealized">-</strong></button>
-                  <button class="kpi" type="button" data-detail-type="positions-summary"><span>Positions</span><strong id="kpi-positions">-</strong></button>
-                  <button class="kpi" type="button" data-detail-type="decision-summary"><span>Decisions</span><strong id="kpi-decisions">-</strong></button>
-                </section>
+          <section id="overview-view" class="view active dashboard-page">
+            <div id="paper-mode-banner" class="paper-mode-banner">
+              <strong>Paper trading mode</strong>
+              <span>No real orders will be placed. Switch to Live in Settings when you are ready.</span>
+              <button id="paper-banner-dismiss" class="icon-button" type="button" aria-label="Dismiss paper mode banner">×</button>
+            </div>
 
-                <div class="panel panel-chart terminal-chart">
-                  <div class="panel-head">
-                    <div>
-                      <h3>Equity Curve</h3>
-                      <span>Portfolio performance</span>
-                    </div>
-                    <div class="chart-pills" aria-label="Chart context">
-                      <span>IN/US</span>
-                      <span>EQ</span>
-                      <span>tracked</span>
-                    </div>
+            <section class="kpis portfolio-strip" aria-label="Portfolio summary">
+              <button class="kpi" type="button" data-detail-type="portfolio"><span>Portfolio equity</span><strong id="kpi-equity">-</strong><small id="kpi-equity-delta">today -</small></button>
+              <button class="kpi" type="button" data-detail-type="pnl"><span>Unrealised P&amp;L</span><strong id="kpi-unrealized">-</strong><small id="kpi-unrealized-pct">-</small></button>
+              <button class="kpi" type="button" data-detail-type="positions-summary"><span>Open positions</span><strong id="kpi-positions">-</strong><small>active holdings</small></button>
+              <button class="kpi" type="button" data-detail-type="orders-summary"><span>Orders today</span><strong id="kpi-orders">-</strong><small>paper/live actions</small></button>
+              <button class="kpi" type="button" data-detail-type="cash"><span>Cash available</span><strong id="kpi-cash">-</strong><small id="kpi-currency">INR</small></button>
+            </section>
+
+            <div class="dashboard-grid">
+              <div class="panel panel-chart dashboard-card equity-card">
+                <div class="panel-head">
+                  <div>
+                    <h3>Equity Curve</h3>
+                    <span>Portfolio value over time</span>
                   </div>
-                  <canvas id="equity-chart" width="920" height="360"></canvas>
+                  <div class="chart-pills" aria-label="Time range selector">
+                    <button type="button" class="active">1D</button>
+                    <button type="button">1W</button>
+                    <button type="button">1M</button>
+                    <button type="button">All</button>
+                  </div>
                 </div>
+                <canvas id="equity-chart" width="920" height="360" role="img" aria-label="Portfolio equity curve"></canvas>
+              </div>
 
-                <section class="desk-grid lower terminal-bottom">
-                  <div class="panel">
-                    <div class="panel-head">
-                      <div class="panel-title-stack">
-                        <h3>Latest Engine Checks</h3>
-                        <p>Why each scanned stock is BUY, HOLD, or EXIT.</p>
-                      </div>
-                      <span id="overview-decision-count">0 decisions</span>
-                    </div>
-                    <div class="table-wrap">
-                      <div id="overview-decisions-body" class="decision-card-list"></div>
-                    </div>
+              <div class="panel dashboard-card health-card">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Market Health</h3>
+                    <p>Feed, AI review, risk guard, market risk, and agent cycle.</p>
                   </div>
-
-                  <div class="panel">
-                    <div class="panel-head">
-                      <div class="panel-title-stack">
-                        <h3>Market Health</h3>
-                        <p>Whether the broader market supports new buys.</p>
-                      </div>
-                      <span id="breadth-status">neutral</span>
-                    </div>
-                    <div id="market-breadth-panel" class="breadth-panel"></div>
-                  </div>
-                </section>
-              </section>
-
-              <aside class="signal-rail" aria-label="Signal and risk rail">
-                <section class="ops-grid" aria-label="Operating state">
+                  <span id="breadth-status">neutral</span>
+                </div>
+                <section class="ops-grid" aria-label="Market health">
                   <button class="ops-card" type="button" data-detail-type="feed-health"><span>Market Feed</span><strong id="ops-feed">-</strong><small id="ops-feed-meta">waiting</small></button>
                   <button class="ops-card" type="button" data-detail-type="llm-health"><span>LLM Brain</span><strong id="ops-llm">-</strong><small id="ops-llm-meta">decision mode</small></button>
                   <button class="ops-card" type="button" data-detail-type="risk-health"><span>Risk Guard</span><strong id="ops-risk">-</strong><small id="ops-risk-meta">position rules</small></button>
                   <button class="ops-card" type="button" data-detail-type="macro-health"><span>Global Risk</span><strong id="ops-macro">-</strong><small id="ops-macro-meta">macro context</small></button>
                   <button class="ops-card" type="button" data-detail-type="cycle-health"><span>Agent Cycle</span><strong id="ops-cycle">-</strong><small id="ops-cycle-meta">not run yet</small></button>
                 </section>
-
-                <div class="panel">
-                  <div class="panel-head">
-                    <div class="panel-title-stack">
-                      <h3>Engine Activity</h3>
-                      <p>What the backend is doing in the current cycle.</p>
-                    </div>
-                    <span id="console-status">monitoring</span>
-                  </div>
-                  <div id="agent-console" class="console-grid"></div>
+                <div id="market-breadth-panel" class="breadth-panel"></div>
+                <div class="health-actions">
+                  <button id="dashboard-run-btn" class="primary" type="button">Run Now</button>
+                  <button id="dashboard-stop-btn" type="button">Stop</button>
                 </div>
+              </div>
 
-                <div class="panel">
-                  <div class="panel-head">
-                    <div class="panel-title-stack">
-                      <h3>Safety Checks</h3>
-                      <p>Rule violations that can block fresh trades.</p>
-                    </div>
-                    <span id="self-audit-status">required</span>
+              <div class="panel dashboard-card decision-feed-panel">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Decision Feed</h3>
+                    <p>AI decisions from the latest cycle with plain-English reasons.</p>
                   </div>
-                  <div id="self-audit-panel" class="mini-grid"></div>
+                  <button type="button" data-view-jump="decisions">View all →</button>
                 </div>
+                <span id="overview-decision-count" class="panel-count">0 decisions</span>
+                <div id="overview-decisions-body" class="decision-card-list"></div>
+              </div>
 
-                <div class="panel">
-                  <div class="panel-head">
-                    <div class="panel-title-stack">
-                      <h3>Sector Leaders</h3>
-                      <p>Where money is rotating compared with the market.</p>
-                    </div>
-                    <span id="sector-status">waiting</span>
+              <div class="panel dashboard-card sector-heatmap-card">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Sector Heatmap</h3>
+                    <p>Relative strength across market groups.</p>
                   </div>
-                  <div id="sector-rotation-panel" class="sector-panel"></div>
+                  <span id="sector-status">waiting</span>
                 </div>
+                <div id="sector-rotation-panel" class="sector-panel sector-heatmap"></div>
+              </div>
 
-                <div class="panel">
-                  <div class="panel-head">
-                    <div class="panel-title-stack">
-                      <h3>Performance</h3>
-                      <p>Closed-trade win rate, drawdown, and realized P&amp;L.</p>
-                    </div>
-                    <span id="performance-status">waiting</span>
+              <div class="panel dashboard-card positions-preview-card">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Positions</h3>
+                    <p>Top open positions by current P&amp;L.</p>
                   </div>
-                  <div id="performance-panel" class="mini-grid"></div>
+                  <button type="button" data-view-jump="positions">View all →</button>
                 </div>
+                <div class="table-wrap page-table compact">
+                  <table>
+                    <thead><tr><th>Symbol</th><th>Score</th><th>Qty</th><th>LTP</th><th>Day %</th><th>Market value</th><th>P&amp;L</th><th>Gates</th><th>Action</th></tr></thead>
+                    <tbody id="overview-positions-body"></tbody>
+                  </table>
+                </div>
+              </div>
 
-                <div class="panel">
-                  <div class="panel-head">
-                    <div class="panel-title-stack">
-                      <h3>Strategy P&amp;L</h3>
-                      <p>How each strategy is performing after signals.</p>
-                    </div>
-                    <span id="strategy-count">0 strategies</span>
+              <div class="panel dashboard-card product-track-panel">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Tracked Ideas</h3>
+                    <p>Followed ideas with target, stop, expiry, and return from recommendation.</p>
                   </div>
-                  <div class="table-wrap strategy-mini">
-                    <table>
-                      <thead><tr><th>Strategy</th><th>Open</th><th>Exposure</th><th>Unrealized</th><th>Realized</th><th>Orders</th></tr></thead>
-                      <tbody id="strategies-body"></tbody>
-                    </table>
-                  </div>
+                  <span id="product-track-status">waiting</span>
                 </div>
-              </aside>
+                <div id="product-tracking-panel" class="product-track-list"></div>
+              </div>
             </div>
+
+            <section class="dashboard-admin-row admin-diagnostics-panel">
+              <div class="panel">
+                <div class="panel-head"><div class="panel-title-stack"><h3>Agent Diagnostics</h3><p>Admin-only backend cycle state.</p></div><span id="console-status">monitoring</span></div>
+                <div id="agent-console" class="console-grid"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-head"><div class="panel-title-stack"><h3>Safety Checks</h3><p>Rule violations that can block fresh trades.</p></div><span id="self-audit-status">required</span></div>
+                <div id="self-audit-panel" class="mini-grid"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-head"><div class="panel-title-stack"><h3>Performance</h3><p>Closed-trade win rate, drawdown, and realized P&amp;L.</p></div><span id="performance-status">waiting</span></div>
+                <div id="performance-panel" class="mini-grid"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-head"><div class="panel-title-stack"><h3>Strategy P&amp;L</h3><p>How each strategy is performing after signals.</p></div><span id="strategy-count">0 strategies</span></div>
+                <div class="table-wrap strategy-mini"><table><thead><tr><th>Strategy</th><th>Open</th><th>Exposure</th><th>Unrealized</th><th>Realized</th><th>Orders</th></tr></thead><tbody id="strategies-body"></tbody></table></div>
+              </div>
+            </section>
           </section>
 
           <section id="suggestions-view" class="view">
+            <div class="page-filter-bar" aria-label="Ideas filters">
+              <button type="button" class="active">All</button>
+              <button type="button">BUY ideas</button>
+              <button type="button">High confidence</button>
+              <button type="button">Today</button>
+            </div>
             <div class="panel full">
               <div class="panel-head">
                 <div class="panel-title-stack">
@@ -316,6 +343,16 @@
                   <input id="analyze-symbol" type="text" placeholder="Search symbol, e.g. SUZLON or AAPL" autocomplete="off" />
                   <button id="analyze-btn" class="primary" type="submit">Analyze</button>
                 </form>
+                <div class="analysis-side-tools">
+                  <div>
+                    <span>Recent searches</span>
+                    <div id="recent-searches" class="chip-row"><button type="button">RELIANCE</button><button type="button">AAPL</button><button type="button">NVDA</button></div>
+                  </div>
+                  <div>
+                    <span>Universe</span>
+                    <div class="chip-row"><button type="button" class="active">Nifty 50</button><button type="button">Nifty Next 50</button><button type="button">Custom watchlist</button></div>
+                  </div>
+                </div>
                 <div id="analyze-result" class="analyze-result">
                   <div class="empty-state product-empty">
                     <strong>Run a focused symbol audit</strong>
@@ -332,7 +369,7 @@
               <div id="positions-summary-strip" class="position-summary-strip"></div>
               <div class="table-wrap page-table">
                 <table>
-                  <thead><tr><th>Symbol</th><th>Score</th><th>Qty</th><th>Price</th><th>Market Value</th><th>P&amp;L</th><th>Classification</th><th>Gates</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Symbol</th><th>Score</th><th>Qty</th><th>Avg price</th><th>LTP</th><th>Day %</th><th>Market value</th><th>P&amp;L</th><th>P&amp;L %</th><th>Gates</th><th>Action</th></tr></thead>
                   <tbody id="positions-body"></tbody>
                 </table>
               </div>
@@ -351,19 +388,41 @@
             </div>
           </section>
 
-          <section id="decisions-view" class="view">
-            <div class="panel full">
-              <div class="panel-head"><div class="panel-title-stack"><h3>Decision Audit</h3><p>Every scanned symbol shows the final action and the plain-English reason.</p></div><span id="decision-count">0 decisions</span></div>
-              <div class="table-wrap page-table">
-                <table>
-                  <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Action</th><th>Confidence</th><th>Price</th><th>Tech</th><th>Sentiment</th><th>Reason</th></tr></thead>
-                  <tbody id="decisions-body"></tbody>
-                </table>
-              </div>
+          <section id="decisions-view" class="view decisions-page">
+            <div class="page-filter-bar" aria-label="Decision filters">
+              <button type="button" class="active">All</button>
+              <button type="button">BUY</button>
+              <button type="button">SELL</button>
+              <button type="button">HOLD</button>
+              <button type="button">EXIT</button>
+              <button type="button">High confidence</button>
+              <button type="button">This cycle</button>
+            </div>
+            <div class="decision-split">
+              <section class="panel decision-feed-column">
+                <div class="panel-head"><div class="panel-title-stack"><h3>Decision Feed</h3><p>Every scanned symbol with action, confidence, and plain-English blocker.</p></div><span id="decision-count">0 decisions</span></div>
+                <div id="decisions-body" class="decision-card-list decision-list-full"></div>
+              </section>
+              <section class="panel decision-detail-column">
+                <div class="panel-head"><div class="panel-title-stack"><h3>Decision Detail</h3><p>Score radar, LLM reasoning, risk gates, and timeline.</p></div><button id="decision-rerun-btn" type="button" data-view-jump="analyze">Re-run analysis</button></div>
+                <div id="decision-detail-panel" class="decision-detail-panel">
+                  <div class="empty-state product-empty">
+                    <strong>Select a decision</strong>
+                    <span>Click a decision card to inspect technical, sentiment, risk, macro, and LLM review details.</span>
+                  </div>
+                </div>
+              </section>
             </div>
           </section>
 
           <section id="sentiment-view" class="view">
+            <div class="page-filter-bar" aria-label="Sentiment filters">
+              <button type="button" class="active">All</button>
+              <button type="button">Positive</button>
+              <button type="button">Negative</button>
+              <button type="button">Today</button>
+              <button type="button">This week</button>
+            </div>
             <div class="panel full">
               <div class="panel-head"><div class="panel-title-stack"><h3>Sentiment Intelligence</h3><p>Verified news is scored only when source data exists; missing data is never treated as neutral.</p></div><span id="sentiment-count">0 events</span></div>
               <div id="market-mood-panel" class="market-mood-panel"></div>
@@ -371,18 +430,18 @@
             </div>
           </section>
 
-          <section id="account-view" class="view">
-            <div class="split-layout">
-              <div class="panel">
-                <div class="panel-head"><h3>Account</h3><span id="account-status">profile</span></div>
+          <section id="account-view" class="view account-page">
+            <div class="account-grid">
+              <div class="panel account-profile-panel">
+                <div class="panel-head"><h3>Profile</h3><span id="account-status">profile</span></div>
                 <div id="account-body" class="account-body"></div>
               </div>
-              <div class="panel">
-                <div class="panel-head"><h3>My Credits</h3><span id="credits-status">loading</span></div>
+              <div class="panel account-credit-panel">
+                <div class="panel-head"><h3>Credits</h3><span id="credits-status">loading</span></div>
                 <div id="credits-body" class="account-body"></div>
               </div>
-              <div class="panel">
-                <div class="panel-head"><h3>Broker Link</h3><span id="user-broker-status">user feed</span></div>
+              <div class="panel account-broker-panel">
+                <div class="panel-head"><h3>Broker Connections</h3><span id="user-broker-status">user feed</span></div>
                 <div class="account-body">
                   <div class="connect-card">
                     <div class="connect-card-head">
@@ -413,8 +472,8 @@
                   </div>
                 </div>
               </div>
-              <div class="panel">
-                <div class="panel-head"><h3>All Quotes</h3><span id="account-quote-count">0 quotes</span></div>
+              <div class="panel account-quotes-panel">
+                <div class="panel-head"><h3>Market Feed Diagnostics</h3><span id="account-quote-count">0 quotes</span></div>
                 <div class="table-wrap page-table compact">
                   <table>
                     <thead><tr><th>Symbol</th><th>Price</th><th>Day %</th><th>Volume</th><th>Source</th><th>As Of</th></tr></thead>
@@ -621,6 +680,19 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
-    <script src="/static/dashboard.js?v=product-polish-15"></script>
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+    <section id="confirm-modal" class="confirm-modal" hidden aria-modal="true" role="dialog">
+      <div class="confirm-card">
+        <h3 id="confirm-title">Confirm action</h3>
+        <p id="confirm-message">This action needs confirmation.</p>
+        <div class="confirm-actions">
+          <button id="confirm-cancel-btn" type="button">Cancel</button>
+          <button id="confirm-action-btn" class="danger-outline" type="button">Confirm</button>
+        </div>
+      </div>
+    </section>
+
+    <script src="/static/dashboard.js?v=production-ui-3"></script>
   </body>
 </html>
