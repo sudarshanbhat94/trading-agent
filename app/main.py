@@ -40,7 +40,7 @@ from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
 from .market_data import MarketDataError, build_market_data_provider, normalize_indstocks_access_token
 from .market_regions import normalize_market_region
-from .models import utc_now
+from .models import Decision, utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
 from .paper_broker import PaperBroker
@@ -536,20 +536,26 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
             "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN"),
             "US": db.user_followed_signal_ideas(user_id, 100, market_region="US"),
         }
+        user_portfolio = _user_follow_portfolio(tracked_ideas, snapshot.get("portfolio", {}))
         snapshot["positions"] = user_positions
-        snapshot["portfolio"] = _user_follow_portfolio(tracked_ideas, snapshot.get("portfolio", {}))
+        snapshot["portfolio"] = user_portfolio
+        snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(tracked_ideas, user_portfolio)
+        snapshot["equity_curve"] = _combined_equity_curve(snapshot["equity_curve_by_market"], user_portfolio)
         snapshot["strategy_plans"] = db.strategy_plans()
         shared_status = user_signal_sessions.status(user_id)
-        shared_status.update(
-            {
-                "running": bool(snapshot.get("running")),
-                "phase": snapshot.get("cycle", {}).get("phase", "shared_backend"),
-                "last_cycle_at": snapshot.get("last_cycle_at"),
-                "last_error": snapshot.get("last_error"),
-                "shared_backend": True,
-                "message": "Signals come from the shared backend engine. Admin start/stop controls the engine.",
-            }
-        )
+        if shared_status.get("running"):
+            shared_status.update({"shared_backend": False, "message": "Your personal signal cycle is running."})
+        else:
+            shared_status.update(
+                {
+                    "running": bool(snapshot.get("running")),
+                    "phase": snapshot.get("cycle", {}).get("phase", "shared_backend"),
+                    "last_cycle_at": snapshot.get("last_cycle_at"),
+                    "last_error": snapshot.get("last_error"),
+                    "shared_backend": True,
+                    "message": "Signals come from the shared backend engine. Use Run Now to start your own credit-budgeted scan.",
+                }
+            )
         snapshot["user_signal_session"] = _sanitize_private_llm_metadata(shared_status)
     else:
         snapshot["suggestions"] = db.latest_signal_ideas(50)
@@ -639,6 +645,57 @@ def _user_follow_portfolio(tracked_ideas: list[dict[str, Any]], fallback: dict[s
     }
 
 
+def _user_equity_curve_by_market(
+    tracked_ideas: list[dict[str, Any]],
+    user_portfolio: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    by_market: dict[str, list[dict[str, Any]]] = {}
+    for market in ("IN", "US"):
+        rows = [
+            item
+            for item in tracked_ideas
+            if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
+            and int(item.get("qty") or 0) > 0
+            and normalize_market_region(item.get("market_region") or "IN", default="IN") == market
+        ]
+        if not rows:
+            by_market[market] = []
+            continue
+        first_ts = min(str(item.get("followed_at") or item.get("first_seen_at") or utc_now()) for item in rows)
+        last_ts = max(str(item.get("follow_updated_at") or item.get("last_seen_at") or utc_now()) for item in rows)
+        invested = sum(float(item.get("invested_amount") or 0.0) for item in rows)
+        market_value = sum(float(item.get("follow_latest_price") or item.get("latest_price") or 0.0) * int(item.get("qty") or 0) for item in rows)
+        current_equity = float(settings.initial_cash_inr or 0.0) - invested + market_value
+        by_market[market] = [
+            {"ts": first_ts, "equity": round(float(settings.initial_cash_inr or user_portfolio.get("equity") or 0.0), 2)},
+            {"ts": last_ts, "equity": round(current_equity, 2)},
+        ]
+    return by_market
+
+
+def _combined_equity_curve(
+    equity_by_market: dict[str, list[dict[str, Any]]],
+    user_portfolio: dict[str, Any],
+) -> list[dict[str, Any]]:
+    timestamps = [
+        row.get("ts")
+        for rows in (equity_by_market or {}).values()
+        for row in rows
+        if row.get("ts")
+    ]
+    if not timestamps:
+        return []
+    start_equity = sum(
+        float(rows[0].get("equity") or 0.0)
+        for rows in (equity_by_market or {}).values()
+        if rows
+    )
+    return [
+        {"ts": min(timestamps), "equity": round(start_equity or float(user_portfolio.get("equity") or 0.0), 2)},
+        {"ts": max(timestamps), "equity": round(float(user_portfolio.get("equity") or 0.0), 2)},
+    ]
+
+
 @app.get("/api/decisions/{decision_id}")
 async def decision_detail(decision_id: int, request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
@@ -659,6 +716,88 @@ async def order_detail(order_id: int, request: Request) -> dict[str, Any]:
     if user.get("role") != "admin":
         row = _sanitize_order_row_for_user(row)
     return row
+
+
+@app.post("/api/positions/{symbol}/exit")
+async def manual_exit_position(symbol: str, request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    symbol = str(symbol or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required.")
+    market_region = normalize_market_region((payload or {}).get("market_region") or "BOTH", default="BOTH")
+    if user.get("role") != "admin":
+        exited = db.exit_user_follow_position(
+            int(user["id"]),
+            symbol,
+            None if market_region == "BOTH" else market_region,
+            reason="manual_exit_from_positions",
+        )
+        if not exited:
+            raise HTTPException(status_code=404, detail=f"No open tracked paper/live position found for {symbol}.")
+        db.insert_agent_log(
+            "INFO",
+            "user_position",
+            "manual_exit",
+            f"{user.get('username')} manually exited {symbol}",
+            {"user_id": user.get("id"), "symbol": symbol, "market_region": market_region, "exited_count": len(exited)},
+        )
+        snapshot = _status_payload(user)
+        await hub.broadcast(snapshot)
+        return snapshot
+
+    positions = db.positions()
+    row = next(
+        (
+            item
+            for item in positions
+            if str(item.get("symbol") or "").upper() == symbol
+            and (market_region == "BOTH" or normalize_market_region(item.get("market_region") or "IN") == market_region)
+        ),
+        None,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No open broker position found for {symbol}.")
+    price = _latest_quote_price(symbol, row.get("market_price") or row.get("avg_price") or 0.0)
+    decision = Decision(
+        symbol=symbol,
+        action="SELL",
+        confidence=1.0,
+        price=float(price),
+        technical_score=0.0,
+        sentiment_score=0.0,
+        reason="Manual exit requested from Positions",
+        asof=utc_now(),
+        strategy="manual_exit",
+        details_json=json.dumps(
+            {
+                "audit_version": 1,
+                "decision_path": "manual_exit",
+                "manual_exit": True,
+                "requested_by": user.get("username"),
+                "market_region": market_region,
+            },
+            separators=(",", ":"),
+        ),
+    )
+    db.insert_decisions([decision])
+    broker.execute(decision, float((db.latest_portfolio() or {}).get("equity") or settings.initial_cash_inr or 0.0))
+    snapshot = _status_payload(user)
+    await hub.broadcast(snapshot)
+    return snapshot
+
+
+def _latest_quote_price(symbol: str, fallback: Any = 0.0) -> float:
+    try:
+        with db.connect() as conn:
+            row = conn.execute("select price from latest_quotes where symbol = ?", (symbol,)).fetchone()
+        if row and row["price"] is not None:
+            return float(row["price"])
+    except Exception:
+        pass
+    try:
+        return float(fallback or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @app.post("/api/analyze-symbol")
@@ -1620,14 +1759,7 @@ async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any
 async def start_agent(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     if user.get("role") != "admin":
-        db.insert_agent_log(
-            "INFO",
-            "user_session",
-            "shared_signal_view",
-            f"{user.get('username')} opened shared signal tracking",
-            {"user_id": user.get("id"), "shared_backend_running": agent.running},
-        )
-        return _status_payload(user)
+        return await user_signal_sessions.start(user)
     db.insert_agent_log("INFO", "admin", "control_start", "Admin requested agent start")
     agent.start()
     snapshot = agent.snapshot()
@@ -1639,14 +1771,7 @@ async def start_agent(request: Request) -> dict[str, Any]:
 async def stop_agent(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     if user.get("role") != "admin":
-        db.insert_agent_log(
-            "INFO",
-            "user_session",
-            "shared_signal_stop_ignored",
-            "User stop does not stop the shared backend engine; admin controls global analysis.",
-            {"user_id": user.get("id")},
-        )
-        return _status_payload(user)
+        return await user_signal_sessions.stop(user)
     db.insert_agent_log("INFO", "admin", "control_stop", "Admin requested agent stop")
     await agent.stop()
     snapshot = agent.snapshot()

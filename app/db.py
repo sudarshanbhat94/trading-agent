@@ -2295,6 +2295,89 @@ class Database:
             row = conn.execute("select * from user_idea_follows where id = last_insert_rowid()").fetchone()
         return _row_dict(row) if row else {}
 
+    def exit_user_follow_position(
+        self,
+        user_id: int,
+        symbol: str,
+        market_region: str | None = None,
+        reason: str = "manual_exit",
+    ) -> list[dict[str, Any]]:
+        symbol = str(symbol or "").strip().upper()
+        if not symbol:
+            return []
+        market_clause, market_params = _market_region_where("u", market_region)
+        market_sql = f"and {market_clause}" if market_clause else ""
+        exited: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                f"""
+                select
+                    f.*,
+                    i.symbol,
+                    i.latest_price as idea_latest_price,
+                    {_market_region_case("u")} as market_region,
+                    u.exchange
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
+                where f.user_id = ?
+                  and upper(i.symbol) = ?
+                  and f.status in ('ACTIVE','LIVE_REQUESTED')
+                  and f.qty > 0
+                  {market_sql}
+                order by f.id desc
+                """,
+                (int(user_id), symbol, *market_params),
+            ).fetchall()
+            now = utc_now()
+            for row in rows:
+                item = _row_dict(row)
+                qty = int(item.get("qty") or 0)
+                entry_price = float(item.get("entry_price") or 0.0)
+                latest_price = float(item.get("idea_latest_price") or item.get("latest_price") or entry_price or 0.0)
+                realized_pnl = round((latest_price - entry_price) * qty, 2)
+                return_pct = _return_pct(entry_price, latest_price)
+                details = self._decode_json(item.get("details_json"))
+                details["manual_exit"] = {
+                    "reason": reason,
+                    "exited_at": now,
+                    "exit_price": latest_price,
+                    "qty": qty,
+                    "realized_pnl": realized_pnl,
+                    "return_pct": return_pct,
+                    "mode": item.get("mode"),
+                }
+                next_status = "LIVE_EXIT_REQUESTED" if str(item.get("mode") or "").upper() == "LIVE" else "EXITED"
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set status = ?, latest_price = ?, unrealized_pnl = ?, return_pct = ?,
+                        updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        next_status,
+                        latest_price,
+                        realized_pnl,
+                        return_pct,
+                        now,
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        item["id"],
+                    ),
+                )
+                item.update(
+                    {
+                        "status": next_status,
+                        "latest_price": latest_price,
+                        "unrealized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                        "updated_at": now,
+                    }
+                )
+                exited.append(item)
+        return exited
+
     def _refresh_user_follow_marks(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
             """

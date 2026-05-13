@@ -775,9 +775,12 @@ function render(payload) {
   renderSelfAudit(payload.self_audit || {});
   renderShell(payload);
   const marketEquityRows = payload.equity_curve_by_market?.[activeMarket] || payload.equityCurveByMarket?.[activeMarket] || [];
+  const globalEquityRows = payload.equity_curve || payload.equityCurve || [];
   const equityRows = Array.isArray(marketEquityRows) && marketEquityRows.length
     ? marketEquityRows
-    : (Number.isFinite(Number(scopedPortfolio.equity)) ? [{ equity: Number(scopedPortfolio.equity), ts: payload.last_cycle_at || new Date().toISOString() }] : []);
+    : Array.isArray(globalEquityRows) && globalEquityRows.length
+      ? globalEquityRows
+      : (Number.isFinite(Number(scopedPortfolio.equity)) ? [{ equity: Number(scopedPortfolio.equity), ts: payload.last_cycle_at || new Date().toISOString() }] : []);
   drawEquity(equityRows, activeMarket);
 }
 
@@ -1134,6 +1137,14 @@ function renderShell(payload = state.latest || {}) {
       : userSession.last_cycle_at
       ? `${fmtTime(userSession.last_cycle_at)} · ${fmtCredits(userSession.last_credit_charge || 0)} credits`
       : `${userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30} symbols per cycle`);
+  const phase = String(state.auth?.admin ? payload.cycle?.phase || "" : userSession.phase || payload.cycle?.phase || "").toLowerCase();
+  const scanBusy = controlRunning && phase && !["idle", "sleep", "shared_backend"].includes(phase);
+  const runButton = byId("dashboard-run-btn");
+  if (runButton) {
+    runButton.disabled = scanBusy;
+    runButton.textContent = scanBusy ? "Scanning..." : "Run Now";
+    runButton.title = scanBusy ? "A scan is already running. Wait for it to finish before starting another." : "Start a fresh scan.";
+  }
 }
 
 function isFeedPending(payload = state.latest || {}) {
@@ -2545,6 +2556,7 @@ function renderPositions(rows) {
     .map((row) => positionRowHtml(row))
     .join("");
   bindRowDetails(body, rows, "Position");
+  bindPositionExitButtons(body, rows);
 }
 
 function renderOverviewPositions(rows) {
@@ -2605,8 +2617,56 @@ function positionRowHtml(row, compact = false) {
     <td class="num pnl ${pnlClass(pnl)}"><strong>${fmtMarketMoney(pnl, market)}</strong></td>
     <td class="num percentage ${pnlClass(pnlPct)}">${fmtPct(pnlPct)}</td>
     <td>${gates}</td>
-    <td><button type="button" class="danger-outline">Exit</button> <button type="button" class="row-link">Details →</button></td>
+    <td><button type="button" class="danger-outline manual-exit-btn" data-symbol="${escapeHtml(row.symbol || "")}" data-market="${escapeHtml(market)}">Exit</button> <button type="button" class="row-link">Details →</button></td>
   </tr>`;
+}
+
+function bindPositionExitButtons(body, rows) {
+  [...body.querySelectorAll(".manual-exit-btn")].forEach((button) => {
+    const symbol = button.dataset.symbol;
+    const row = rows.find((item) => String(item.symbol || "").toUpperCase() === String(symbol || "").toUpperCase());
+    if (!row) return;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      manualExitPosition(row, button);
+    });
+  });
+}
+
+async function manualExitPosition(row, button) {
+  const symbol = String(row.symbol || "").toUpperCase();
+  if (!symbol) return;
+  const market = rowMarket(row);
+  const qty = Number(row.qty || 0);
+  const label = `${symbol}${qty ? ` (${fmtNumber(qty)} qty)` : ""}`;
+  if (!window.confirm(`Exit ${label} from OpenStocks now?`)) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Exiting...";
+  try {
+    const response = await fetch(`/api/positions/${encodeURIComponent(symbol)}/exit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ market_region: market }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (response.status === 401) {
+      handleUnauthorized(payload.detail || "Session expired. Sign in again.");
+      return;
+    }
+    if (!response.ok) {
+      showDetails("Exit Error", payload);
+      return;
+    }
+    render(payload);
+    fetchCredits();
+    showDetails("Manual Exit", { symbol, market_region: market, status: "submitted", message: `${symbol} exit was processed.` });
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "manual exit"), { symbol, market_region: market });
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 }
 
 function renderTrackedIdeas(rows) {
@@ -3173,7 +3233,10 @@ function bindRowDetails(body, rows, title) {
   [...body.querySelectorAll("tr")].forEach((tr, index) => {
     const row = rows[index];
     if (!row) return;
-    tr.addEventListener("click", () => showDetails(title, row));
+    tr.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, input, select, textarea")) return;
+      showDetails(title, row);
+    });
   });
 }
 
@@ -4536,7 +4599,7 @@ window.addEventListener("resize", () => {
   if (state.latest) {
     const market = normalizeUiMarket(state.activeMarket);
     const scoped = marketPortfolioFromPayload(state.latest, market);
-    const rows = state.latest.equity_curve_by_market?.[market] || [{ equity: scoped.equity, ts: state.latest.last_cycle_at || new Date().toISOString() }];
+    const rows = state.latest.equity_curve_by_market?.[market] || state.latest.equity_curve || [{ equity: scoped.equity, ts: state.latest.last_cycle_at || new Date().toISOString() }];
     drawEquity(rows, market);
   }
 });
