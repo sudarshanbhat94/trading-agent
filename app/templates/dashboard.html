@@ -3,16 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenTrade</title>
-    <link rel="stylesheet" href="/static/styles.css?v=product-polish-4" />
+    <title>OpenStocks</title>
+    <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css?v=openstocks-11" />
   </head>
-  <body>
+  <body data-theme="light">
     <section id="login-screen" class="login-screen">
       <div class="login-card">
         <div class="login-brand">
-          <div class="mark">OT</div>
+          <div class="mark"><img src="/static/openstocks-mark.svg" alt="" /></div>
           <div>
-            <h1>OpenTrade</h1>
+            <h1>OpenStocks</h1>
             <p>Autonomous trading desk for India and US markets</p>
           </div>
         </div>
@@ -30,13 +31,18 @@
     <div id="app-shell" class="app-shell app-hidden">
       <header class="terminal-topbar">
         <div class="brand">
-          <div class="mark">OT</div>
+          <div class="mark"><img src="/static/openstocks-mark.svg" alt="" /></div>
           <div>
-            <h1>OpenTrade</h1>
+            <h1>OpenStocks</h1>
             <p>Multi-market trading terminal</p>
           </div>
         </div>
-        <nav class="nav" aria-label="OpenTrade views">
+        <form id="global-search-form" class="global-search" role="search">
+          <span id="session-pill" class="session-pill closed">NSE Closed</span>
+          <input id="global-symbol-search" type="search" placeholder="Search symbol, e.g. RELIANCE or AAPL" autocomplete="off" />
+          <button type="submit">Analyze</button>
+        </form>
+        <nav class="nav" aria-label="OpenStocks views">
           <button class="nav-item active" type="button" data-view="overview"><span>Dashboard</span><strong id="nav-overview-badge">live</strong></button>
           <button class="nav-item" type="button" data-view="suggestions"><span>Ideas</span><strong id="nav-suggestions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="analyze"><span>Analyze</span><strong>symbol</strong></button>
@@ -55,6 +61,7 @@
           <span id="market-scope-label" class="pill">India workspace</span>
           <span id="admin-pill" class="pill">user</span>
           <span id="credit-pill" class="pill">0 credits</span>
+          <button id="theme-toggle-btn" type="button" aria-label="Toggle theme">Dark</button>
           <span id="current-user-label" class="user-chip">signed in</span>
           <button id="logout-btn" type="button">Logout</button>
           <button id="start-btn" class="primary" type="button">Start</button>
@@ -62,6 +69,19 @@
           <button id="run-btn" class="admin-only" type="button">Run Once</button>
         </div>
       </header>
+
+      <section class="market-tape" aria-label="Market ticker">
+        <div class="market-tape-label">
+          <span id="market-tape-market">India</span>
+          <strong>Market Tape</strong>
+        </div>
+        <div class="market-tape-viewport">
+          <div id="market-tape-track" class="market-tape-track">
+            <span class="market-tape-empty">Waiting for quotes...</span>
+          </div>
+        </div>
+        <button class="market-tape-action" type="button" data-view-jump="analyze">Search</button>
+      </section>
 
       <div class="terminal-body">
         <aside class="market-rail">
@@ -148,20 +168,23 @@
                 <section class="desk-grid lower terminal-bottom">
                   <div class="panel">
                     <div class="panel-head">
-                      <h3>Recent Decisions</h3>
+                      <div class="panel-title-stack">
+                        <h3>Latest Engine Checks</h3>
+                        <p>Why each scanned stock is BUY, HOLD, or EXIT.</p>
+                      </div>
                       <span id="overview-decision-count">0 decisions</span>
                     </div>
                     <div class="table-wrap">
-                      <table>
-                        <thead><tr><th>Symbol</th><th>Action</th><th>Conf.</th><th>Tech</th><th>Sent.</th></tr></thead>
-                        <tbody id="overview-decisions-body"></tbody>
-                      </table>
+                      <div id="overview-decisions-body" class="decision-card-list"></div>
                     </div>
                   </div>
 
                   <div class="panel">
                     <div class="panel-head">
-                      <h3>Market Breadth</h3>
+                      <div class="panel-title-stack">
+                        <h3>Market Health</h3>
+                        <p>Whether the broader market supports new buys.</p>
+                      </div>
                       <span id="breadth-status">neutral</span>
                     </div>
                     <div id="market-breadth-panel" class="breadth-panel"></div>
@@ -180,7 +203,10 @@
 
                 <div class="panel">
                   <div class="panel-head">
-                    <h3>Agent Console</h3>
+                    <div class="panel-title-stack">
+                      <h3>Engine Activity</h3>
+                      <p>What the backend is doing in the current cycle.</p>
+                    </div>
                     <span id="console-status">monitoring</span>
                   </div>
                   <div id="agent-console" class="console-grid"></div>
@@ -188,7 +214,10 @@
 
                 <div class="panel">
                   <div class="panel-head">
-                    <h3>Self Audit</h3>
+                    <div class="panel-title-stack">
+                      <h3>Safety Checks</h3>
+                      <p>Rule violations that can block fresh trades.</p>
+                    </div>
                     <span id="self-audit-status">required</span>
                   </div>
                   <div id="self-audit-panel" class="mini-grid"></div>
@@ -196,7 +225,10 @@
 
                 <div class="panel">
                   <div class="panel-head">
-                    <h3>Sector Rotation</h3>
+                    <div class="panel-title-stack">
+                      <h3>Sector Leaders</h3>
+                      <p>Where money is rotating compared with the market.</p>
+                    </div>
                     <span id="sector-status">waiting</span>
                   </div>
                   <div id="sector-rotation-panel" class="sector-panel"></div>
@@ -204,7 +236,10 @@
 
                 <div class="panel">
                   <div class="panel-head">
-                    <h3>Trade Scoreboard</h3>
+                    <div class="panel-title-stack">
+                      <h3>Performance</h3>
+                      <p>Closed-trade win rate, drawdown, and realized P&amp;L.</p>
+                    </div>
                     <span id="performance-status">waiting</span>
                   </div>
                   <div id="performance-panel" class="mini-grid"></div>
@@ -212,7 +247,10 @@
 
                 <div class="panel">
                   <div class="panel-head">
-                    <h3>Strategy Tracking</h3>
+                    <div class="panel-title-stack">
+                      <h3>Strategy P&amp;L</h3>
+                      <p>How each strategy is performing after signals.</p>
+                    </div>
                     <span id="strategy-count">0 strategies</span>
                   </div>
                   <div class="table-wrap strategy-mini">
@@ -229,21 +267,30 @@
           <section id="suggestions-view" class="view">
             <div class="panel full">
               <div class="panel-head">
-                <h3>5 Auto-Trade Plans</h3>
+                <div class="panel-title-stack">
+                  <h3>Strategy Plans</h3>
+                  <p>Choose a playbook, follow it with a budget, then track targets and stops from the original signal.</p>
+                </div>
                 <span id="strategy-plan-count">0 plans</span>
               </div>
               <div class="strategy-plan-grid" id="strategy-plans-body"></div>
             </div>
             <div class="panel full">
               <div class="panel-head">
-                <h3 id="tracked-market-title">India Tracks</h3>
+                <div class="panel-title-stack">
+                  <h3 id="tracked-market-title">India Tracks</h3>
+                  <p>Ideas you decided to watch, paper-trade, or route live.</p>
+                </div>
                 <span id="tracked-count">0 active</span>
               </div>
               <div class="tracked-ideas-list" id="tracked-ideas-body"></div>
             </div>
             <div class="panel full">
               <div class="panel-head">
-                <h3 id="signals-market-title">India Signal History</h3>
+                <div class="panel-title-stack">
+                  <h3 id="signals-market-title">India Signal History</h3>
+                  <p>Each idea keeps its original entry, stop, targets, expiry, and return since recommendation.</p>
+                </div>
                 <span id="suggestion-count">0 candidates</span>
               </div>
               <div class="signal-history-list" id="suggestions-body"></div>
@@ -253,7 +300,10 @@
           <section id="analyze-view" class="view">
             <div class="panel full">
               <div class="panel-head">
-                <h3>Symbol Analysis</h3>
+                <div class="panel-title-stack">
+                  <h3>Symbol Analysis</h3>
+                  <p>User-run analysis spends credits and returns one full audit for a selected symbol.</p>
+                </div>
                 <span id="analyze-status">user login required</span>
               </div>
               <div class="symbol-lab">
@@ -267,7 +317,10 @@
                   <button id="analyze-btn" class="primary" type="submit">Analyze</button>
                 </form>
                 <div id="analyze-result" class="analyze-result">
-                  <div class="empty-state">Pick the India or US tab, then enter a symbol to run quote, candles, strategy rules, sentiment, risk checks, and LLM review if enabled.</div>
+                  <div class="empty-state product-empty">
+                    <strong>Run a focused symbol audit</strong>
+                    <span>Pick India or US, enter a symbol, and OpenStocks will check quote, candles, strategy rules, sentiment, risk gates, and LLM review when enabled.</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -275,10 +328,11 @@
 
           <section id="positions-view" class="view">
             <div class="panel full">
-              <div class="panel-head"><h3>Positions</h3><span id="position-count">0 open</span></div>
+              <div class="panel-head"><div class="panel-title-stack"><h3>Positions</h3><p>Open paper/live holdings with current score, gates, P&amp;L, and exit action.</p></div><span id="position-count">0 open</span></div>
+              <div id="positions-summary-strip" class="position-summary-strip"></div>
               <div class="table-wrap page-table">
                 <table>
-                  <thead><tr><th>Symbol</th><th>Score</th><th>Classification</th><th>Gates</th><th>Qty</th><th>Price</th><th>Market Value</th><th>P&amp;L</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Symbol</th><th>Score</th><th>Qty</th><th>Price</th><th>Market Value</th><th>P&amp;L</th><th>Classification</th><th>Gates</th><th>Action</th></tr></thead>
                   <tbody id="positions-body"></tbody>
                 </table>
               </div>
@@ -287,7 +341,7 @@
 
           <section id="orders-view" class="view">
             <div class="panel full">
-              <div class="panel-head"><h3>Orders</h3><span id="order-count">0 orders</span></div>
+              <div class="panel-head"><div class="panel-title-stack"><h3>Orders</h3><p>Execution history, partial exits, target hits, stop exits, and broker status.</p></div><div class="panel-actions"><div class="order-filter-tabs" aria-label="Order filters"><button type="button" class="active">All</button><button type="button">Open</button><button type="button">Filled</button><button type="button">Rejected</button></div><span id="order-count">0 orders</span></div></div>
               <div class="table-wrap page-table">
                 <table>
                   <thead><tr><th>Time</th><th>Side</th><th>Symbol</th><th>Strategy</th><th>Qty</th><th>Price</th><th>Value</th><th>Status</th><th>Exit Plan</th></tr></thead>
@@ -299,7 +353,7 @@
 
           <section id="decisions-view" class="view">
             <div class="panel full">
-              <div class="panel-head"><h3>Decision Audit</h3><span id="decision-count">0 decisions</span></div>
+              <div class="panel-head"><div class="panel-title-stack"><h3>Decision Audit</h3><p>Every scanned symbol shows the final action and the plain-English reason.</p></div><span id="decision-count">0 decisions</span></div>
               <div class="table-wrap page-table">
                 <table>
                   <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Action</th><th>Confidence</th><th>Price</th><th>Tech</th><th>Sentiment</th><th>Reason</th></tr></thead>
@@ -311,13 +365,9 @@
 
           <section id="sentiment-view" class="view">
             <div class="panel full">
-              <div class="panel-head"><h3>Sentiment Intelligence</h3><span id="sentiment-count">0 events</span></div>
-              <div class="table-wrap page-table">
-                <table>
-                  <thead><tr><th>Symbol</th><th>Score</th><th>Confidence</th><th>Items</th><th>Headlines</th></tr></thead>
-                  <tbody id="sentiment-body"></tbody>
-                </table>
-              </div>
+              <div class="panel-head"><div class="panel-title-stack"><h3>Sentiment Intelligence</h3><p>Verified news is scored only when source data exists; missing data is never treated as neutral.</p></div><span id="sentiment-count">0 events</span></div>
+              <div id="market-mood-panel" class="market-mood-panel"></div>
+              <div id="sentiment-body" class="sentiment-card-list"></div>
             </div>
           </section>
 
@@ -472,7 +522,7 @@
                     <div class="connect-card-head">
                       <div>
                         <h4>Market Routing</h4>
-                        <p>India analytics use INDstocks. US analytics use Yahoo-delayed symbols until a US broker feed is connected.</p>
+                        <p>India and US workspaces stay separated. The selected market feed supplies quotes, candles, symbol analysis, and routing.</p>
                       </div>
                       <span class="settings-inline-status positive">split desk</span>
                     </div>
@@ -487,7 +537,7 @@
                     <div class="connect-card-head">
                       <div>
                         <h4>LLM Provider Keys</h4>
-                        <p>Admin-only keys. Users see OpenTrade Brain, not provider or model names.</p>
+                        <p>Admin-only keys. Users see OpenStocks Brain, not provider or model names.</p>
                       </div>
                       <span id="llm-keys-status" class="settings-inline-status">keys not checked</span>
                     </div>
@@ -571,6 +621,6 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
-    <script src="/static/dashboard.js?v=product-polish-4"></script>
+    <script src="/static/dashboard.js?v=product-polish-15"></script>
   </body>
 </html>
