@@ -6,6 +6,9 @@ import httpx
 
 from .config import Settings
 from .db import Database
+from .market_regions import market_region_for_row, normalize_market_region
+
+MARKET_REGIONS = ("IN", "US")
 
 
 class AccountService:
@@ -20,12 +23,50 @@ class AccountService:
 
     def _paper_account(self) -> dict[str, Any]:
         portfolio = self.db.latest_portfolio()
+        positions = self.db.positions()
+        portfolio_by_market = self._portfolio_by_market(positions)
         return {
             "mode": self.settings.execution_mode,
-            "cash": self.db.get_state("cash", self.settings.initial_cash_inr),
+            "cash": round(sum(float(row["cash"]) for row in portfolio_by_market.values()), 2),
+            "cash_by_market": self._cash_by_market(),
             "portfolio": portfolio,
-            "positions": self.db.positions(),
+            "portfolio_by_market": portfolio_by_market,
+            "positions": positions,
         }
+
+    def _cash_by_market(self) -> dict[str, float]:
+        raw = self.db.get_state("cash_by_market", None)
+        if not isinstance(raw, dict):
+            raw = {}
+        output: dict[str, float] = {}
+        for market in MARKET_REGIONS:
+            try:
+                output[market] = float(raw.get(market, self.settings.initial_cash_inr))
+            except (TypeError, ValueError):
+                output[market] = float(self.settings.initial_cash_inr)
+        return output
+
+    def _portfolio_by_market(self, positions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        cash_by_market = self._cash_by_market()
+        output: dict[str, dict[str, Any]] = {}
+        for market in MARKET_REGIONS:
+            market_positions = [row for row in positions if _row_market(row) == market]
+            cash = cash_by_market.get(market, float(self.settings.initial_cash_inr))
+            invested = sum(float(row["qty"]) * float(row["avg_price"]) for row in market_positions)
+            market_value = sum(float(row["qty"]) * float(row["market_price"]) for row in market_positions)
+            realized = sum(float(row["realized_pnl"]) for row in market_positions)
+            unrealized = market_value - invested
+            output[market] = {
+                "market_region": market,
+                "currency": "USD" if market == "US" else "INR",
+                "cash": round(cash, 2),
+                "invested": round(invested, 2),
+                "market_value": round(market_value, 2),
+                "equity": round(cash + market_value, 2),
+                "realized_pnl": round(realized, 2),
+                "unrealized_pnl": round(unrealized, 2),
+            }
+        return output
 
     def _indstocks_account(self) -> dict[str, Any]:
         return {
@@ -96,3 +137,10 @@ class AccountService:
         if len(value) <= 4:
             return "***"
         return f"***{value[-4:]}"
+
+
+def _row_market(row: dict[str, Any]) -> str:
+    explicit = row.get("market_region")
+    if explicit:
+        return normalize_market_region(explicit, default="IN")
+    return normalize_market_region(market_region_for_row(row), default="IN")

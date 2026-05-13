@@ -159,6 +159,14 @@ function fmtNumber(value) {
   return Number.isFinite(Number(value)) ? number.format(Number(value)) : "-";
 }
 
+function firstFinite(...values) {
+  for (const value of values) {
+    const numberValue = Number(value);
+    if (Number.isFinite(numberValue)) return numberValue;
+  }
+  return null;
+}
+
 function fmtCompact(value) {
   return Number.isFinite(Number(value)) ? compactNumber.format(Number(value)) : "-";
 }
@@ -320,13 +328,25 @@ function scoreToProductLabel(score) {
 function marketStanceText(breadth = {}) {
   const regime = String(breadth.breadth_regime || "neutral");
   const labels = {
-    bull_confirmed: "Supportive",
-    bull_weakening: "Selective",
+    bull_confirmed: "Broad Bull Market",
+    bull_weakening: "Selective Bull Market",
     neutral: "Neutral",
-    bear_warning: "Defensive",
-    bear_confirmed: "Risk-off",
+    bear_warning: "Defensive Market",
+    bear_confirmed: "Risk-Off Market",
   };
   return labels[regime] || humanLabel(regime);
+}
+
+function marketStanceHelp(breadth = {}) {
+  const regime = String(breadth.breadth_regime || "neutral");
+  const labels = {
+    bull_confirmed: "Most stocks are participating. Strong long setups can use normal risk.",
+    bull_weakening: "The market is still positive, but participation is narrowing. Take only the cleanest longs and avoid weak sectors.",
+    neutral: "Participation is mixed. New trades need stronger stock-specific evidence.",
+    bear_warning: "Participation is weak. Reduce size and avoid marginal long setups.",
+    bear_confirmed: "Broad participation is bearish. Fresh long entries are blocked.",
+  };
+  return labels[regime] || "Breadth measures how many stocks are participating in the move.";
 }
 
 function actionableIdeaRows(rows = []) {
@@ -969,16 +989,16 @@ function renderMarketBreadth(breadth) {
   if (!panel) return;
   const regime = breadth.breadth_regime || "neutral";
   const hasGap = Boolean(breadth.data_gap);
-  byId("breadth-status").textContent = hasGap ? "building history" : humanLabel(regime);
+  byId("breadth-status").textContent = hasGap ? "building history" : marketStanceText(breadth);
   const pct50 = Number(breadth.pct_above_50dma || 0);
   const checked = Number(breadth.symbols_checked || 0);
   const checkedLabel = checked ? `${checked} symbols` : "this market";
   const helpText = hasGap
     ? `History is still loading for ${checkedLabel}. New BUY calls stay conservative until enough candles are available.`
-    : `Checks broad participation across ${checkedLabel}. Strong markets allow better long ideas; weak markets reduce or block new buys.`;
+    : `${marketStanceHelp(breadth)} Checked across ${checkedLabel}.`;
   panel.innerHTML = `
     <div class="breadth-headline">
-      <span class="pill regime ${escapeHtml(regime)}">${escapeHtml(hasGap ? "Waiting for candles" : humanLabel(regime))}</span>
+      <span class="pill regime ${escapeHtml(regime)}">${escapeHtml(hasGap ? "Waiting for candles" : marketStanceText(breadth))}</span>
       ${breadth.breadth_thrust ? `<strong class="breadth-thrust">BREADTH THRUST DETECTED</strong>` : ""}
       <small>${escapeHtml(helpText)}</small>
     </div>
@@ -1119,8 +1139,8 @@ function renderShell(payload = state.latest || {}) {
     : `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
-  byId("ops-macro").textContent = macro.regime || "unknown";
-  byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · breadth ${escapeHtml(breadth.breadth_regime || "neutral")}`;
+  byId("ops-macro").textContent = macro.regime || marketStanceText(breadth);
+  byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · ${marketStanceText(breadth)}`;
   byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Scanning") : "Paused";
   byId("ops-cycle-meta").textContent = state.auth?.admin
     ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending")
@@ -4129,6 +4149,8 @@ function renderManualAnalysis(payload) {
   const full = decisionFullSpectrum(details);
   const path = details.decision_path || decision.strategy || "-";
   const news = payload.news || {};
+  const fundamentals = payload.fundamentals || {};
+  const referenceData = payload.reference_data || {};
   const headlines = news.headlines || [];
   const creditUsage = payload.credit_usage || {};
   const llmActivity = creditUsage.llm_activity || {};
@@ -4141,20 +4163,25 @@ function renderManualAnalysis(payload) {
       : `${payload.market || "IN"} · ${payload.provider || "-"} · ${payload.candle_count || 0} candles`;
   const quote = payload.quote || context.quote || {};
   const dayPct = quoteDayPct({ price: decision.price || quote.price, close: quote.close || quote.prev_close });
-  const high52 = Number(quote.week_52_high || quote["52week_high"] || quote.fifty_two_week_high);
-  const low52 = Number(quote.week_52_low || quote["52week_low"] || quote.fifty_two_week_low);
+  const high52 = firstFinite(quote.week_52_high, quote["52week_high"], quote.fifty_two_week_high, fundamentals.week_52_high, full.fundamental_quality?.week_52_high);
+  const low52 = firstFinite(quote.week_52_low, quote["52week_low"], quote.fifty_two_week_low, fundamentals.week_52_low, full.fundamental_quality?.week_52_low);
   const ltp = Number(decision.price || quote.price || 0);
   const rangePct = Number.isFinite(high52) && Number.isFinite(low52) && high52 > low52
     ? Math.max(0, Math.min(100, ((ltp - low52) / (high52 - low52)) * 100))
     : 0;
   const metrics = [
-    ["PE", full.fundamental_quality?.pe ?? payload.fundamentals?.pe],
-    ["PB", full.fundamental_quality?.pb ?? payload.fundamentals?.pb],
-    ["Market cap", full.fundamental_quality?.market_cap ?? payload.fundamentals?.market_cap],
-    ["Volume", quote.volume ?? payload.volume],
-    ["52W high", high52],
-    ["52W low", low52],
+    { label: "PE", value: firstFinite(full.fundamental_quality?.pe, fundamentals.pe), kind: "number", empty: "not reported by feed" },
+    { label: "PB", value: firstFinite(full.fundamental_quality?.pb, fundamentals.pb), kind: "number", empty: "not reported by feed" },
+    { label: "Market cap", value: firstFinite(full.fundamental_quality?.market_cap, fundamentals.market_cap), kind: "compact", empty: "not reported by feed" },
+    { label: "Volume", value: firstFinite(quote.volume, fundamentals.volume, payload.volume), kind: "compact", empty: "not reported by feed" },
+    { label: "52W high", value: high52, kind: "money", empty: "derived after candles load" },
+    { label: "52W low", value: low52, kind: "money", empty: "derived after candles load" },
   ];
+  const referenceNote = (referenceData.derived_from_candles || []).length
+    ? `52-week levels derived from ${payload.candle_count || 0} candles.`
+    : referenceData.source
+      ? `Reference data: ${humanLabel(referenceData.source)}.`
+      : "";
   byId("analyze-result").innerHTML = `
     <section class="analysis-result-shell">
       <header class="analysis-hero">
@@ -4162,7 +4189,7 @@ function renderManualAnalysis(payload) {
         <div>
           <span>${escapeHtml(resolvedNote)}</span>
           <h3>${escapeHtml(payload.symbol || decision.symbol || "-")}</h3>
-          <p>${escapeHtml(payload.company_name || decision.company_name || quote.company_name || "Symbol audit")}</p>
+          <p>${escapeHtml(payload.company_name || decision.company_name || quote.company_name || fundamentals.company_name || "Symbol audit")}</p>
         </div>
         <div class="analysis-price">
           <strong>${fmtMarketMoney(decision.price || quote.price, market)}</strong>
@@ -4176,8 +4203,9 @@ function renderManualAnalysis(payload) {
         <span>52W high ${fmtMarketMoney(high52, market)}</span>
       </div>
       <div class="analysis-metric-strip">
-        ${metrics.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${typeof value === "number" || Number.isFinite(Number(value)) ? fmtNumber(value) : escapeHtml(value ?? "-")}</strong></div>`).join("")}
+        ${metrics.map((metric) => metricCardHtml(metric, market)).join("")}
       </div>
+      ${referenceNote || referenceData.data_gaps?.length ? `<p class="analysis-data-note">${escapeHtml(referenceNote || "Some reference fields are not available from the connected feed.")}${referenceData.data_gaps?.length ? ` Missing: ${escapeHtml(referenceData.data_gaps.join(", "))}.` : ""}</p>` : ""}
       <div class="analysis-tabs" role="tablist" aria-label="Analysis result sections">
         <button class="active" type="button" data-analysis-tab="overview">Overview</button>
         <button type="button" data-analysis-tab="chart">Chart</button>
@@ -4236,6 +4264,23 @@ function bindAnalysisTabs() {
   });
 }
 
+function metricCardHtml(metric, market = "IN") {
+  const value = metric.value;
+  let rendered = "-";
+  if (Number.isFinite(Number(value))) {
+    if (metric.kind === "money") rendered = fmtMarketMoney(value, market);
+    else if (metric.kind === "compact") rendered = fmtCompact(value);
+    else rendered = fmtNumber(value);
+  } else if (value) {
+    rendered = String(value);
+  }
+  return `<div>
+    <span>${escapeHtml(metric.label)}</span>
+    <strong class="${rendered === "-" ? "muted" : ""}">${escapeHtml(rendered)}</strong>
+    ${rendered === "-" ? `<small>${escapeHtml(metric.empty || "data unavailable")}</small>` : ""}
+  </div>`;
+}
+
 function miniPriceChartHtml(candles = [], market = "IN") {
   const closes = (candles || []).map((candle) => Number(candle.close ?? candle.price)).filter(Number.isFinite);
   if (closes.length < 2) {
@@ -4285,8 +4330,12 @@ function bindControls() {
   }
   const sidebarToggle = byId("sidebar-toggle-btn");
   if (sidebarToggle) {
-    sidebarToggle.addEventListener("click", () => document.body.classList.toggle("sidebar-open"));
+    sidebarToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setSidebarOpen(!document.body.classList.contains("sidebar-open"));
+    });
   }
+  byId("sidebar-backdrop")?.addEventListener("click", () => setSidebarOpen(false));
   byId("analyze-form").addEventListener("submit", analyzeSymbol);
   const globalSearch = byId("global-search-form");
   if (globalSearch) {
@@ -4360,7 +4409,7 @@ function bindControls() {
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
     button.addEventListener("click", () => {
-      document.body.classList.remove("sidebar-open");
+      setSidebarOpen(false);
       setView(button.dataset.view);
     });
   }
@@ -4374,6 +4423,12 @@ function bindControls() {
     const popover = byId("credit-popover");
     if (popover) popover.hidden = true;
     setView(button.dataset.viewJump);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setSidebarOpen(false);
+  });
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 767) setSidebarOpen(false);
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".user-menu")) {
@@ -4463,6 +4518,18 @@ function bindControls() {
     });
   }
   byId("logout-btn").addEventListener("click", logout);
+}
+
+function setSidebarOpen(open) {
+  document.body.classList.toggle("sidebar-open", Boolean(open));
+  const button = byId("sidebar-toggle-btn");
+  if (button) {
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+    button.textContent = open ? "×" : "☰";
+  }
+  const backdrop = byId("sidebar-backdrop");
+  if (backdrop) backdrop.hidden = !open;
 }
 
 function setView(view) {

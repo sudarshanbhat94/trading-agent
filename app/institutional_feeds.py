@@ -100,7 +100,7 @@ class FreeInstitutionalFeedsService:
             "Accept": "application/json,text/csv,*/*",
             "Accept-Language": "en-IN,en;q=0.9",
             "Referer": "https://www.nseindia.com/",
-            "User-Agent": "Mozilla/5.0 OpenTrade/1.0 (+free-institutional-feeds)",
+            "User-Agent": "Mozilla/5.0 OpenStocks/1.0 (+free-institutional-feeds)",
         }
 
     async def _bootstrap_nse(self, client: httpx.AsyncClient) -> None:

@@ -278,7 +278,7 @@ def _nse_headers() -> dict[str, str]:
         "Accept": "application/json,text/csv,application/zip,*/*",
         "Accept-Language": "en-IN,en;q=0.9",
         "Referer": "https://www.nseindia.com/",
-        "User-Agent": "Mozilla/5.0 OpenTrade/1.0 (+delivery-data)",
+        "User-Agent": "Mozilla/5.0 OpenStocks/1.0 (+delivery-data)",
     }
 
 

@@ -10,6 +10,7 @@ from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .macro import GlobalIntelligenceService
 from .market_data import MarketDataError, MarketDataProvider
+from .market_regions import market_region_for_row
 from .models import Decision, utc_now
 from .paper_broker import PaperBroker
 from .strategy import StrategyEngine
@@ -65,6 +66,7 @@ class TradingAgentService:
         self._cycle_phase = "idle"
         self._last_cycle_duration_seconds: float | None = None
         self._universe_cursor = 0
+        self._last_candle_fetch_at: dict[str, datetime] = {}
 
     @property
     def running(self) -> bool:
@@ -126,7 +128,12 @@ class TradingAgentService:
             },
         )
         self._cycle_phase = "candles"
-        fresh_candles = await self.market_data.get_candles(universe)
+        cached_sets_before = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
+        candle_fetch_universe, candle_fetch_plan = self._candle_fetch_universe(universe, cached_sets_before)
+        fresh_candles = await self.market_data.get_candles(candle_fetch_universe) if candle_fetch_universe else {}
+        fetched_at = datetime.now(timezone.utc)
+        for row in candle_fetch_universe:
+            self._last_candle_fetch_at[row["symbol"]] = fetched_at
         candle_counts = {symbol: len(items) for symbol, items in fresh_candles.items()}
         candle_sources: dict[str, int] = {}
         for items in fresh_candles.values():
@@ -139,6 +146,9 @@ class TradingAgentService:
             f"Fetched candles for {len(fresh_candles)} symbols",
             {
                 "provider": self.market_data.source_name,
+                "fetch_plan": candle_fetch_plan,
+                "requested_fetch_symbols": len(candle_fetch_universe),
+                "cached_symbols_reused": candle_fetch_plan.get("cache_ready", 0) + candle_fetch_plan.get("recently_attempted", 0),
                 "symbols_with_candles": len(fresh_candles),
                 "total_candles": sum(candle_counts.values()),
                 "source_counts": candle_sources,
@@ -208,14 +218,14 @@ class TradingAgentService:
         self.db.set_state("delivery_data_status", delivery_status)
         self._cycle_phase = "market_breadth"
         market_breadth_context = (
-            await self.market_breadth.compute_breadth(universe, quotes, candles)
+            await self._market_breadth_by_region(universe, quotes, candles)
             if self.market_breadth
             else {}
         )
         self.db.set_state("market_breadth_context", market_breadth_context)
         self._cycle_phase = "sector_rotation"
         sector_rotation_context = (
-            await self.sector_rotation.compute_sector_scores(universe, quotes, candles)
+            await self._sector_rotation_by_region(universe, quotes, candles)
             if self.sector_rotation
             else {}
         )
@@ -327,6 +337,54 @@ class TradingAgentService:
             await self.on_update(snapshot)
         return snapshot
 
+    def _candle_fetch_universe(
+        self,
+        universe: list[dict[str, Any]],
+        cached_sets: dict[str, dict[str, list[Any]]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        minimum_ready_candles = 60
+        retry_cooldown = timedelta(hours=6)
+        stale_after = timedelta(hours=20)
+        selected: list[dict[str, Any]] = []
+        stats = {
+            "minimum_ready_candles": minimum_ready_candles,
+            "missing_or_short_history": 0,
+            "stale_history": 0,
+            "cache_ready": 0,
+            "recently_attempted": 0,
+        }
+        for row in universe:
+            symbol = row["symbol"]
+            sets = cached_sets.get(symbol) or {}
+            candles = sets.get("analysis") or sets.get("daily") or sets.get("intraday") or []
+            last_attempt = self._last_candle_fetch_at.get(symbol)
+            if last_attempt and now - last_attempt < retry_cooldown and len(candles) >= 30:
+                stats["recently_attempted"] += 1
+                continue
+            if len(candles) < minimum_ready_candles:
+                stats["missing_or_short_history"] += 1
+                selected.append(row)
+                continue
+            if self._candles_are_stale(candles, now, stale_after):
+                stats["stale_history"] += 1
+                selected.append(row)
+                continue
+            stats["cache_ready"] += 1
+        stats["fetch_symbols"] = len(selected)
+        return selected, stats
+
+    def _candles_are_stale(self, candles: list[Any], now: datetime, stale_after: timedelta) -> bool:
+        if not candles:
+            return True
+        ts = getattr(candles[-1], "ts", None)
+        parsed = _parse_iso_datetime(ts)
+        if parsed is None:
+            return True
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return now - parsed.astimezone(timezone.utc) > stale_after
+
     def _cycle_universe(
         self,
         full_universe: list[dict[str, Any]],
@@ -348,6 +406,46 @@ class TradingAgentService:
                     selected_symbols.add(row["symbol"])
         return selected
 
+    async def _market_breadth_by_region(
+        self,
+        universe: list[dict[str, Any]],
+        quotes: dict[str, Any],
+        candles: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.market_region != "BOTH":
+            return await self.market_breadth.compute_breadth(universe, quotes, candles, market_region=self.market_region)
+        by_market: dict[str, Any] = {}
+        for region in ("IN", "US"):
+            rows = [row for row in universe if market_region_for_row(row) == region]
+            by_market[region] = await self.market_breadth.compute_breadth(rows, quotes, candles, market_region=region)
+        return {
+            "enabled": True,
+            "market_region": "BOTH",
+            "by_market": by_market,
+            "breadth_regime": by_market.get("IN", {}).get("breadth_regime", "neutral"),
+            "data_note": "Use by_market.IN or by_market.US for symbol-level decisions.",
+        }
+
+    async def _sector_rotation_by_region(
+        self,
+        universe: list[dict[str, Any]],
+        quotes: dict[str, Any],
+        candles: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.market_region != "BOTH":
+            return await self.sector_rotation.compute_sector_scores(universe, quotes, candles, market_region=self.market_region)
+        by_market: dict[str, Any] = {}
+        for region in ("IN", "US"):
+            rows = [row for row in universe if market_region_for_row(row) == region]
+            by_market[region] = await self.sector_rotation.compute_sector_scores(rows, quotes, candles, market_region=region)
+        return {
+            "enabled": True,
+            "market_region": "BOTH",
+            "by_market": by_market,
+            "leaderboard": by_market.get("IN", {}).get("leaderboard", {"top": [], "bottom": []}),
+            "data_note": "Use by_market.IN or by_market.US for symbol-level sector rotation.",
+        }
+
     def snapshot(self) -> dict[str, Any]:
         quotes = self.db.latest_quotes()
         decisions = _with_detail_urls(self.db.latest_decision_summaries(80), "decisions")
@@ -367,6 +465,7 @@ class TradingAgentService:
             "realized_pnl": 0,
             "unrealized_pnl": 0,
         }
+        portfolio_by_market = self.broker.portfolio_by_market(raw_positions)
         market_health = self._market_health(quotes)
         market_health["portfolio_equity"] = portfolio.get("equity")
         macro_calendar_context = self.db.get_state("macro_calendar_context", {})
@@ -408,6 +507,7 @@ class TradingAgentService:
                 "last_duration_seconds": self._last_cycle_duration_seconds,
             },
             "portfolio": portfolio,
+            "portfolio_by_market": portfolio_by_market,
             "positions": positions,
             "quotes": quotes,
             "decisions": decisions,
@@ -717,6 +817,18 @@ def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[
 def _sector_rotation_summary(context: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(context, dict):
         return {}
+    by_market = context.get("by_market") or {}
+    if isinstance(by_market, dict) and by_market:
+        return {
+            "enabled": context.get("enabled"),
+            "updated_at": context.get("updated_at"),
+            "market_region": context.get("market_region"),
+            "by_market": {
+                region: _sector_rotation_summary(value)
+                for region, value in by_market.items()
+                if isinstance(value, dict)
+            },
+        }
     leaderboard = context.get("leaderboard") or {}
     return {
         "enabled": context.get("enabled"),
@@ -804,5 +916,14 @@ def _monotonic_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _float_or_none(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None

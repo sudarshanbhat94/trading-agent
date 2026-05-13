@@ -407,7 +407,7 @@ agent = stack["agent"]
 user_signal_sessions = UserSignalSessionManager()
 maintenance_task: asyncio.Task | None = None
 
-app = FastAPI(title="OpenTrade")
+app = FastAPI(title="OpenStocks")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
@@ -523,6 +523,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["llm_usage"] = _public_llm_usage_summary(snapshot.get("llm_usage", {}))
     if user and not is_admin:
         user_id = int(user["id"])
+        paper_cash_by_market = _user_paper_cash_by_market(user)
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
         user_positions = _user_follow_positions(tracked_ideas)
         snapshot["suggestions"] = db.latest_signal_ideas(50, user_id=user_id)
@@ -536,12 +537,22 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
             "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN"),
             "US": db.user_followed_signal_ideas(user_id, 100, market_region="US"),
         }
-        user_portfolio = _user_follow_portfolio(tracked_ideas, snapshot.get("portfolio", {}))
+        user_portfolio = _user_follow_portfolio(
+            tracked_ideas,
+            snapshot.get("portfolio", {}),
+            paper_cash_by_market=paper_cash_by_market,
+        )
         snapshot["positions"] = user_positions
         snapshot["portfolio"] = user_portfolio
-        snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(tracked_ideas, user_portfolio)
-        snapshot["equity_curve"] = _combined_equity_curve(snapshot["equity_curve_by_market"], user_portfolio)
+        snapshot["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
+        snapshot["paper_cash_pool_by_market"] = paper_cash_by_market
         snapshot["strategy_plans"] = db.strategy_plans()
+        snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(
+            tracked_ideas,
+            user_portfolio,
+            paper_cash_by_market,
+        )
+        snapshot["equity_curve"] = _combined_equity_curve(snapshot["equity_curve_by_market"], user_portfolio)
         shared_status = user_signal_sessions.status(user_id)
         if shared_status.get("running"):
             shared_status.update({"shared_backend": False, "message": "Your personal signal cycle is running."})
@@ -623,24 +634,47 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
     return positions
 
 
-def _user_follow_portfolio(tracked_ideas: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
-    base_cash = float(settings.initial_cash_inr or fallback.get("cash") or 0.0)
+def _user_follow_portfolio(
+    tracked_ideas: list[dict[str, Any]],
+    fallback: dict[str, Any],
+    market_region: str | None = None,
+    paper_cash_by_market: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    region = normalize_market_region(market_region or "BOTH", default="BOTH")
+    if region == "BOTH":
+        by_market = {
+            "IN": _user_follow_portfolio(tracked_ideas, fallback, "IN", paper_cash_by_market=paper_cash_by_market),
+            "US": _user_follow_portfolio(tracked_ideas, fallback, "US", paper_cash_by_market=paper_cash_by_market),
+        }
+        return {
+            **(fallback or {}),
+            "cash": round(sum(float(row["cash"]) for row in by_market.values()), 2),
+            "invested": round(sum(float(row["invested"]) for row in by_market.values()), 2),
+            "market_value": round(sum(float(row["market_value"]) for row in by_market.values()), 2),
+            "equity": round(sum(float(row["equity"]) for row in by_market.values()), 2),
+            "realized_pnl": round(sum(float(row.get("realized_pnl") or 0.0) for row in by_market.values()), 2),
+            "unrealized_pnl": round(sum(float(row["unrealized_pnl"]) for row in by_market.values()), 2),
+            "portfolio_by_market": by_market,
+        }
+    base_cash = _paper_base_cash_for_market(fallback, region, paper_cash_by_market=paper_cash_by_market)
     paper_items = [
         item
         for item in tracked_ideas
         if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"} and int(item.get("qty") or 0) > 0
+        and normalize_market_region(item.get("market_region") or "IN", default="IN") == region
     ]
     invested = sum(float(item.get("invested_amount") or 0.0) for item in paper_items)
     market_value = sum(float(item.get("follow_latest_price") or item.get("latest_price") or 0.0) * int(item.get("qty") or 0) for item in paper_items)
     unrealized = sum(float(item.get("unrealized_pnl") or 0.0) for item in paper_items)
     cash = max(base_cash - invested, 0.0)
     return {
-        **(fallback or {}),
+        "market_region": region,
+        "currency": "USD" if region == "US" else "INR",
         "cash": round(cash, 2),
         "invested": round(invested, 2),
         "market_value": round(market_value, 2),
         "equity": round(cash + market_value, 2),
-        "realized_pnl": round(float((fallback or {}).get("realized_pnl") or 0.0), 2),
+        "realized_pnl": 0.0,
         "unrealized_pnl": round(unrealized, 2),
     }
 
@@ -648,9 +682,17 @@ def _user_follow_portfolio(tracked_ideas: list[dict[str, Any]], fallback: dict[s
 def _user_equity_curve_by_market(
     tracked_ideas: list[dict[str, Any]],
     user_portfolio: dict[str, Any],
+    paper_cash_by_market: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     by_market: dict[str, list[dict[str, Any]]] = {}
+    portfolio_by_market = user_portfolio.get("portfolio_by_market") or {}
     for market in ("IN", "US"):
+        portfolio = portfolio_by_market.get(market) or _user_follow_portfolio(
+            tracked_ideas,
+            user_portfolio,
+            market,
+            paper_cash_by_market=paper_cash_by_market,
+        )
         rows = [
             item
             for item in tracked_ideas
@@ -663,11 +705,10 @@ def _user_equity_curve_by_market(
             continue
         first_ts = min(str(item.get("followed_at") or item.get("first_seen_at") or utc_now()) for item in rows)
         last_ts = max(str(item.get("follow_updated_at") or item.get("last_seen_at") or utc_now()) for item in rows)
-        invested = sum(float(item.get("invested_amount") or 0.0) for item in rows)
-        market_value = sum(float(item.get("follow_latest_price") or item.get("latest_price") or 0.0) * int(item.get("qty") or 0) for item in rows)
-        current_equity = float(settings.initial_cash_inr or 0.0) - invested + market_value
+        base_cash = _paper_base_cash_for_market(user_portfolio, market, paper_cash_by_market=paper_cash_by_market)
+        current_equity = float(portfolio.get("equity") or base_cash)
         by_market[market] = [
-            {"ts": first_ts, "equity": round(float(settings.initial_cash_inr or user_portfolio.get("equity") or 0.0), 2)},
+            {"ts": first_ts, "equity": round(base_cash, 2)},
             {"ts": last_ts, "equity": round(current_equity, 2)},
         ]
     return by_market
@@ -685,15 +726,50 @@ def _combined_equity_curve(
     ]
     if not timestamps:
         return []
-    start_equity = sum(
-        float(rows[0].get("equity") or 0.0)
-        for rows in (equity_by_market or {}).values()
-        if rows
-    )
     return [
-        {"ts": min(timestamps), "equity": round(start_equity or float(user_portfolio.get("equity") or 0.0), 2)},
-        {"ts": max(timestamps), "equity": round(float(user_portfolio.get("equity") or 0.0), 2)},
+        {"ts": min(timestamps), "equity": round(float(user_portfolio.get("cash", 0.0)) + float(user_portfolio.get("invested", 0.0)), 2)},
+        {"ts": max(timestamps), "equity": round(float(user_portfolio.get("equity", 0.0)), 2)},
     ]
+
+
+def _paper_base_cash_for_market(
+    fallback: dict[str, Any] | None,
+    market_region: str,
+    paper_cash_by_market: dict[str, Any] | None = None,
+) -> float:
+    if isinstance(paper_cash_by_market, dict) and market_region in paper_cash_by_market:
+        try:
+            return max(float(paper_cash_by_market.get(market_region) or 0.0), 0.0)
+        except (TypeError, ValueError):
+            pass
+    if settings.initial_cash_inr:
+        return float(settings.initial_cash_inr)
+    by_market = (fallback or {}).get("portfolio_by_market") or db.get_state("portfolio_by_market", {})
+    if isinstance(by_market, dict):
+        row = by_market.get(market_region) or {}
+        try:
+            invested = float(row.get("invested") or 0.0)
+            cash = float(row.get("cash") or 0.0)
+            if cash > 0 or invested > 0:
+                return cash + invested
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return float(settings.initial_cash_inr or 0.0)
+
+
+def _user_paper_cash_by_market(user: dict[str, Any] | None) -> dict[str, float]:
+    defaults = {"IN": float(settings.initial_cash_inr or 0.0), "US": float(settings.initial_cash_inr or 0.0)}
+    raw = (user or {}).get("paper_cash_by_market")
+    if not isinstance(raw, dict):
+        return defaults
+    output: dict[str, float] = {}
+    for market in ("IN", "US"):
+        value = raw.get(market)
+        try:
+            output[market] = defaults[market] if value is None else max(float(value), 0.0)
+        except (TypeError, ValueError):
+            output[market] = defaults[market]
+    return output
 
 
 @app.get("/api/decisions/{decision_id}")
@@ -858,10 +934,12 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             detail = f"{detail} Provider error: {provider_error}"
         raise HTTPException(status_code=404, detail=detail)
 
+    reference_data = await _analysis_reference_data(row, quote.to_dict(), candles.get(symbol, []), market_region)
+    row_for_analysis = {**row, **reference_data.get("row_fields", {})}
     context_token = current_user_id.set(user_id)
     try:
         user_sentiment = SentimentService(_llm_settings_for_user(db.user_by_id(user_id) or user), db)
-        news = await user_sentiment.analyze_symbol_news(row)
+        news = await user_sentiment.analyze_symbol_news(row_for_analysis)
     finally:
         current_user_id.reset(context_token)
     db.upsert_quotes(quotes)
@@ -879,7 +957,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         decisions = await asyncio.to_thread(
             lambda: asyncio.run(
                 user_strategy.evaluate(
-                    [row],
+                    [row_for_analysis],
                     quotes,
                     broker.positions_by_symbol(),
                     analysis_candles,
@@ -972,6 +1050,13 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         "requested_symbol": resolution.get("requested_symbol"),
         "resolved_from": resolution.get("resolved_from"),
         "quote": quote.to_dict(),
+        "company_name": row_for_analysis.get("name") or reference_data.get("fundamentals", {}).get("company_name"),
+        "fundamentals": reference_data.get("fundamentals", {}),
+        "reference_data": {
+            "source": reference_data.get("source"),
+            "data_gaps": reference_data.get("data_gaps", []),
+            "derived_from_candles": reference_data.get("derived_from_candles", []),
+        },
         "candle_count": len(analysis_candles.get(symbol, [])),
         "timeframe_candle_counts": {
             key: len(value)
@@ -1002,7 +1087,7 @@ async def my_credit_summary(request: Request) -> dict[str, Any]:
             "daily_limit": summary.get("daily_credit_limit", 0.0),
             "daily_remaining": summary.get("daily_credits_remaining", 0.0),
             "estimated_signal_credit": _estimated_signal_credit_charge(),
-            "low_budget_mode": "OpenTrade automatically uses a leaner analysis path when today's remaining credits are tight.",
+            "low_budget_mode": "OpenStocks automatically uses a leaner analysis path when today's remaining credits are tight.",
         },
     }
 
@@ -1020,6 +1105,63 @@ async def set_my_daily_credit_limit(payload: dict[str, Any], request: Request) -
         {"user_id": user["id"], "daily_credit_limit": daily_limit},
     )
     return {"ok": True, "credits": _public_credit_summary(summary)}
+
+
+@app.post("/api/me/paper-cash")
+async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    cash_payload = payload.get("cash_by_market") if isinstance(payload.get("cash_by_market"), dict) else {}
+    has_india = any(key in payload for key in ("india_cash", "cash_in", "IN")) or "IN" in cash_payload
+    has_us = any(key in payload for key in ("us_cash", "cash_us", "US")) or "US" in cash_payload
+    if not has_india and not has_us:
+        raise HTTPException(status_code=400, detail="Enter India Cash or US Cash to update.")
+
+    cash_in = None
+    cash_us = None
+    if has_india:
+        cash_in = _positive_float(
+            payload.get("india_cash", payload.get("cash_in", payload.get("IN", cash_payload.get("IN")))),
+            field="India cash",
+        )
+    if has_us:
+        cash_us = _positive_float(
+            payload.get("us_cash", payload.get("cash_us", payload.get("US", cash_payload.get("US")))),
+            field="US cash",
+        )
+    updated_user = db.update_user_paper_cash(int(user["id"]), cash_in=cash_in, cash_us=cash_us)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    paper_cash_by_market = _user_paper_cash_by_market(updated_user)
+    tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    account_payload = await account.snapshot()
+    user_portfolio = _user_follow_portfolio(
+        tracked_ideas,
+        account_payload["paper"].get("portfolio", {}),
+        paper_cash_by_market=paper_cash_by_market,
+    )
+    db.insert_agent_log(
+        "INFO",
+        "account",
+        "user_paper_cash_updated",
+        f"{user['username']} updated paper cash",
+        {"user_id": user["id"], "cash_by_market": paper_cash_by_market},
+    )
+    return {
+        "ok": True,
+        "paper_cash_by_market": paper_cash_by_market,
+        "paper": {
+            "cash": user_portfolio["cash"],
+            "cash_pool_by_market": paper_cash_by_market,
+            "cash_by_market": {
+                market: row.get("cash", 0.0)
+                for market, row in (user_portfolio.get("portfolio_by_market") or {}).items()
+            },
+            "portfolio": user_portfolio,
+            "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+            "positions": _user_follow_positions(tracked_ideas),
+        },
+    }
 
 
 @app.post("/api/me/indstocks/connect")
@@ -1095,7 +1237,7 @@ async def my_upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[
     return {
         "ok": True,
         "auth_url": auth_url,
-        "message": "Open this URL, login to Upstox, then paste the returned code or full redirect URL into OpenTrade.",
+        "message": "Open this URL, login to Upstox, then paste the returned code or full redirect URL into OpenStocks.",
     }
 
 
@@ -1196,11 +1338,22 @@ async def account_details(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     payload = await account.snapshot()
     if user.get("role") != "admin":
+        paper_cash_by_market = _user_paper_cash_by_market(user)
         tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-        user_portfolio = _user_follow_portfolio(tracked_ideas, payload["paper"].get("portfolio", {}))
+        user_portfolio = _user_follow_portfolio(
+            tracked_ideas,
+            payload["paper"].get("portfolio", {}),
+            paper_cash_by_market=paper_cash_by_market,
+        )
         payload["tracked_ideas"] = tracked_ideas
         payload["paper"]["positions"] = _user_follow_positions(tracked_ideas)
         payload["paper"]["portfolio"] = user_portfolio
+        payload["paper"]["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
+        payload["paper"]["cash_pool_by_market"] = paper_cash_by_market
+        payload["paper"]["cash_by_market"] = {
+            market: row.get("cash", 0.0)
+            for market, row in (user_portfolio.get("portfolio_by_market") or {}).items()
+        }
         payload["paper"]["cash"] = user_portfolio["cash"]
     return payload
 
@@ -1366,7 +1519,7 @@ async def upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[str
     return {
         "ok": True,
         "auth_url": auth_url,
-        "message": "Open this URL, login to Upstox, then paste the returned code or full redirect URL into OpenTrade.",
+        "message": "Open this URL, login to Upstox, then paste the returned code or full redirect URL into OpenStocks.",
     }
 
 
@@ -1447,7 +1600,7 @@ async def upstox_callback(request: Request) -> HTMLResponse:
     code = _extract_oauth_code(str(request.url))
     error = request.query_params.get("error") or request.query_params.get("error_description")
     body = (
-        f"<h1>Upstox authorization code received</h1><p>Paste this code into OpenTrade Upstox Connect.</p>"
+        f"<h1>Upstox authorization code received</h1><p>Paste this code into OpenStocks Upstox Connect.</p>"
         f"<textarea style='width:100%;height:120px'>{code}</textarea>"
         if code
         else f"<h1>Upstox authorization did not return a code</h1><p>{error or 'No code found in callback URL.'}</p>"
@@ -2476,7 +2629,7 @@ def _public_budget_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "daily_credits_remaining": policy.get("daily_credits_remaining", 0.0),
         "estimated_signal_credit": policy.get("estimated_signal_credit", 0.0),
         "tokens_per_credit": policy.get("tokens_per_credit", settings.credit_tokens_per_credit),
-        "reason": "OpenTrade selected the analysis lane assigned by admin.",
+        "reason": "OpenStocks selected the analysis lane assigned by admin.",
     }
 
 
@@ -2593,19 +2746,19 @@ def _llm_activity_from_decisions(decisions: list[Any], usage: dict[str, Any]) ->
     credits_charged = raw_credits if billable else 0.0
     if calls and billable:
         status = "completed_billable"
-        message = f"OpenTrade Brain completed the review lane and used {credits_charged:.2f} credits."
+        message = f"OpenStocks Brain completed the review lane and used {credits_charged:.2f} credits."
     elif calls:
         status = "completed_unusable_not_charged"
-        message = "OpenTrade Brain returned provider output, but it was not usable as a strict trading decision. No credits were charged."
+        message = "OpenStocks Brain returned provider output, but it was not usable as a strict trading decision. No credits were charged."
     elif attempted:
         status = "attempted_no_billable_tokens"
-        message = "OpenTrade Brain was selected and attempted analysis, but the provider returned no billable token usage. No credits were charged."
+        message = "OpenStocks Brain was selected and attempted analysis, but the provider returned no billable token usage. No credits were charged."
     elif selected:
         status = "selected_not_attempted"
-        message = "OpenTrade Brain was selected, but no provider attempt was completed in this cycle. No credits were charged."
+        message = "OpenStocks Brain was selected, but no provider attempt was completed in this cycle. No credits were charged."
     else:
         status = "not_selected"
-        message = "No symbol reached the OpenTrade Brain review lane in this cycle. No LLM credits were used."
+        message = "No symbol reached the OpenStocks Brain review lane in this cycle. No LLM credits were used."
     return {
         "status": status,
         "message": message,
@@ -2681,6 +2834,134 @@ def _manual_universe_row(symbol: str, market_region: str = "IN") -> dict[str, An
         "base_price": 100,
         "enabled": 1,
     }
+
+
+async def _analysis_reference_data(
+    row: dict[str, Any],
+    quote_payload: dict[str, Any],
+    candles: list[Any],
+    market_region: str,
+) -> dict[str, Any]:
+    region = normalize_market_region(market_region)
+    yahoo_symbol = str(row.get("yahoo_symbol") or "").strip() or (str(row.get("symbol") or "").upper() if region == "US" else f"{str(row.get('symbol') or '').upper()}.NS")
+    fundamentals: dict[str, Any] = {
+        "company_name": row.get("name"),
+        "source": "yahoo_quote_reference",
+        "market_region": region,
+    }
+    data_gaps: list[str] = []
+    derived_from_candles: list[str] = []
+    headers = {"Accept": "application/json", "User-Agent": "OpenStocks/1.0 (+symbol-analysis)"}
+    try:
+        async with httpx.AsyncClient(timeout=8, headers=headers, follow_redirects=True) as client:
+            response = await client.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": yahoo_symbol})
+            response.raise_for_status()
+            item = ((response.json().get("quoteResponse") or {}).get("result") or [{}])[0]
+    except Exception as exc:
+        item = {}
+        try:
+            async with httpx.AsyncClient(timeout=8, headers=headers, follow_redirects=True) as client:
+                response = await client.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}",
+                    params={"range": "1y", "interval": "1d", "includePrePost": "false"},
+                )
+                response.raise_for_status()
+                result = ((response.json().get("chart") or {}).get("result") or [{}])[0]
+                item = result.get("meta") or {}
+                fundamentals["source"] = "yahoo_chart_reference"
+        except Exception as chart_exc:
+            data_gaps.append(f"yahoo_reference_unavailable:{exc.__class__.__name__}")
+            data_gaps.append(f"yahoo_chart_reference_unavailable:{chart_exc.__class__.__name__}")
+
+    field_map = {
+        "pe": "trailingPE",
+        "forward_pe": "forwardPE",
+        "pb": "priceToBook",
+        "market_cap": "marketCap",
+        "week_52_high": "fiftyTwoWeekHigh",
+        "week_52_low": "fiftyTwoWeekLow",
+        "volume": "regularMarketVolume",
+        "average_volume_10d": "averageDailyVolume10Day",
+        "average_volume_3m": "averageDailyVolume3Month",
+        "beta": "beta",
+        "eps_ttm": "epsTrailingTwelveMonths",
+    }
+    for target, source in field_map.items():
+        value = _json_number(item.get(source))
+        if value is not None:
+            fundamentals[target] = value
+    fundamentals["company_name"] = item.get("longName") or item.get("shortName") or fundamentals.get("company_name")
+    if item.get("currency"):
+        fundamentals["currency"] = item.get("currency")
+    if item.get("quoteType"):
+        fundamentals["quote_type"] = item.get("quoteType")
+    if item.get("exchange"):
+        fundamentals["exchange"] = item.get("exchange")
+
+    if fundamentals.get("week_52_high") is None or fundamentals.get("week_52_low") is None:
+        candle_levels = _candle_52w_levels(candles)
+        if fundamentals.get("week_52_high") is None and candle_levels.get("week_52_high") is not None:
+            fundamentals["week_52_high"] = candle_levels["week_52_high"]
+            derived_from_candles.append("week_52_high")
+        if fundamentals.get("week_52_low") is None and candle_levels.get("week_52_low") is not None:
+            fundamentals["week_52_low"] = candle_levels["week_52_low"]
+            derived_from_candles.append("week_52_low")
+
+    if _json_number(quote_payload.get("volume")) is not None and _json_number(quote_payload.get("volume")) > 0:
+        fundamentals["volume"] = quote_payload.get("volume")
+    if quote_payload.get("close") is not None:
+        fundamentals["previous_close"] = quote_payload.get("close")
+
+    for required in ("pe", "pb", "market_cap", "week_52_high", "week_52_low"):
+        if fundamentals.get(required) is None:
+            data_gaps.append(required)
+
+    row_fields = {
+        "name": fundamentals.get("company_name") or row.get("name"),
+        "pe": fundamentals.get("pe"),
+        "forward_pe": fundamentals.get("forward_pe"),
+        "pb": fundamentals.get("pb"),
+        "market_cap": fundamentals.get("market_cap"),
+        "week_52_high": fundamentals.get("week_52_high"),
+        "week_52_low": fundamentals.get("week_52_low"),
+        "beta": fundamentals.get("beta"),
+        "eps_ttm": fundamentals.get("eps_ttm"),
+    }
+    return {
+        "source": fundamentals["source"],
+        "fundamentals": fundamentals,
+        "row_fields": {key: value for key, value in row_fields.items() if value is not None and value != ""},
+        "data_gaps": _dedupe(data_gaps),
+        "derived_from_candles": derived_from_candles,
+    }
+
+
+def _candle_52w_levels(candles: list[Any]) -> dict[str, float | None]:
+    recent = candles[-252:] if len(candles) >= 252 else candles
+    highs = [_json_number(getattr(candle, "high", None)) for candle in recent]
+    lows = [_json_number(getattr(candle, "low", None)) for candle in recent]
+    highs = [value for value in highs if value is not None]
+    lows = [value for value in lows if value is not None]
+    return {
+        "week_52_high": max(highs) if highs else None,
+        "week_52_low": min(lows) if lows else None,
+    }
+
+
+def _json_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+        return number if number == number else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    output: list[str] = []
+    for value in values:
+        if value not in output:
+            output.append(value)
+    return output
 
 
 def _json_object(value: Any) -> dict[str, Any]:

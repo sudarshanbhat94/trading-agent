@@ -1,1 +1,1 @@
-"""OpenTrade dry-money Indian equity trading platform."""
+"""OpenStocks multi-market equity trading platform."""

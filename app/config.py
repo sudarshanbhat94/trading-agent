@@ -72,8 +72,11 @@ class Settings:
     indstocks_api_base_url: str = os.getenv("INDSTOCKS_API_BASE_URL", "https://api.indstocks.com").rstrip("/")
     indstocks_candle_interval: str = os.getenv("INDSTOCKS_CANDLE_INTERVAL", "1day")
     indstocks_candle_lookback_days: int = _int("INDSTOCKS_CANDLE_LOOKBACK_DAYS", 365)
-    indstocks_candle_concurrency: int = _int("INDSTOCKS_CANDLE_CONCURRENCY", 8)
-    indstocks_fetch_timeout_seconds: int = _int("INDSTOCKS_FETCH_TIMEOUT_SECONDS", 20)
+    indstocks_candle_concurrency: int = _int("INDSTOCKS_CANDLE_CONCURRENCY", 2)
+    indstocks_candle_request_spacing_ms: int = _int("INDSTOCKS_CANDLE_REQUEST_SPACING_MS", 450)
+    indstocks_candle_retry_attempts: int = _int("INDSTOCKS_CANDLE_RETRY_ATTEMPTS", 4)
+    indstocks_candle_retry_backoff_seconds: float = _float("INDSTOCKS_CANDLE_RETRY_BACKOFF_SECONDS", 1.0)
+    indstocks_fetch_timeout_seconds: int = _int("INDSTOCKS_FETCH_TIMEOUT_SECONDS", 35)
     kite_api_key: str = os.getenv("KITE_API_KEY", "")
     kite_access_token: str = os.getenv("KITE_ACCESS_TOKEN", "")
     upstox_api_key: str = os.getenv("UPSTOX_API_KEY", "")
@@ -244,6 +247,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "indstocks_candle_interval", "label": "INDstocks Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "5minute", "15minute", "30minute", "60minute", "1day", "1week", "1month"]},
     {"key": "indstocks_candle_lookback_days", "label": "INDstocks Lookback Days", "type": "number", "category": "Market Data", "min": 1, "max": 365, "step": 1},
     {"key": "indstocks_candle_concurrency", "label": "INDstocks Candle Concurrency", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "indstocks_candle_request_spacing_ms", "label": "INDstocks Candle Spacing ms", "type": "number", "category": "Market Data", "min": 0, "step": 50},
+    {"key": "indstocks_candle_retry_attempts", "label": "INDstocks Candle Retries", "type": "number", "category": "Market Data", "min": 1, "step": 1},
+    {"key": "indstocks_candle_retry_backoff_seconds", "label": "INDstocks Retry Backoff Sec", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
     {"key": "indstocks_fetch_timeout_seconds", "label": "INDstocks Fetch Timeout", "type": "number", "category": "Market Data", "min": 5, "step": 5},
     {"key": "yahoo_candle_interval", "label": "Yahoo Candle Interval", "type": "select", "category": "Market Data", "choices": ["5m", "15m", "30m", "60m", "1d", "1wk"]},
     {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"]},

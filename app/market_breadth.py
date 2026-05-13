@@ -12,21 +12,25 @@ class MarketBreadthService:
     def __init__(self, settings: Settings, db: Database) -> None:
         self.settings = settings
         self.db = db
-        self._cache: tuple[float, dict[str, Any]] | None = None
+        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     async def compute_breadth(
         self,
         universe: list[dict[str, Any]],
         quotes: dict[str, Quote],
         candles_by_symbol: dict[str, list[Candle]],
+        market_region: str = "BOTH",
     ) -> dict[str, Any]:
         if not self.settings.enable_market_breadth:
             return _neutral("disabled")
-        if self._cache and time.monotonic() - self._cache[0] < self.settings.market_breadth_cache_seconds:
-            return self._cache[1]
+        cache_key = str(market_region or "BOTH").upper()
+        if cache_key in self._cache and time.monotonic() - self._cache[cache_key][0] < self.settings.market_breadth_cache_seconds:
+            return self._cache[cache_key][1]
         try:
             snapshot = self._compute(universe, quotes, candles_by_symbol)
-            history = self.db.get_state("market_breadth_history", [])
+            snapshot["market_region"] = cache_key
+            history_key = f"market_breadth_history_{cache_key.lower()}"
+            history = self.db.get_state(history_key, [])
             if not isinstance(history, list):
                 history = []
             history.append(snapshot)
@@ -34,9 +38,8 @@ class MarketBreadthService:
             snapshot["history_count"] = len(history)
             snapshot["breadth_thrust"] = _breadth_thrust(history)
             snapshot["mcclellan_proxy"] = _mcclellan_proxy(history)
-            self.db.set_state("market_breadth_history", history)
-            self.db.set_state("market_breadth_context", snapshot)
-            self._cache = (time.monotonic(), snapshot)
+            self.db.set_state(history_key, history)
+            self._cache[cache_key] = (time.monotonic(), snapshot)
             self._log("INFO", "breadth_computed", "Market breadth computed", snapshot)
             return snapshot
         except Exception as exc:
@@ -91,6 +94,10 @@ class MarketBreadthService:
                 new_highs += 1
             if lookback and price <= min(lookback):
                 new_lows += 1
+        if checked == 0 or ma50_count == 0:
+            result = _neutral("insufficient_market_breadth_history")
+            result.update({"enabled": True, "symbols_checked": checked, "advance_count": advance_count, "decline_count": decline_count})
+            return result
         pct_20 = (above_20 / ma20_count) * 100 if ma20_count else 0.0
         pct_50 = (above_50 / ma50_count) * 100 if ma50_count else 0.0
         pct_200 = (above_200 / ma200_count) * 100 if ma200_count else 0.0

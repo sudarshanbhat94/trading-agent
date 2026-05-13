@@ -87,7 +87,7 @@ class GlobalIntelligenceService:
         self._cache: tuple[float, dict[str, Any]] | None = None
         self._headers = {
             "Accept": "application/json",
-            "User-Agent": "OpenTrade/1.0 (+global-risk-context)",
+            "User-Agent": "OpenStocks/1.0 (+global-risk-context)",
         }
 
     async def context_for_cycle(self) -> dict[str, Any]:

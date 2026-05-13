@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request, Response
 from .config import Settings
 
 
-SESSION_COOKIE = "opentrade_session"
+SESSION_COOKIE = "openstocks_session"
 PASSWORD_ITERATIONS = 260_000
 
 
@@ -93,7 +93,7 @@ def is_admin_request(request: Request, settings: Settings, db: Any) -> bool:
 
 def require_user(request: Request, settings: Settings, db: Any) -> dict[str, Any]:
     if not auth_available(db, settings):
-        raise HTTPException(status_code=403, detail="Create an admin password before using OpenTrade.")
+        raise HTTPException(status_code=403, detail="Create an admin password before using OpenStocks.")
     user = current_user(request, settings, db)
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
@@ -151,7 +151,7 @@ def auth_status(request: Request, settings: Settings, db: Any) -> dict[str, Any]
 
 
 def _secret(settings: Settings) -> bytes:
-    material = settings.auth_session_secret or settings.admin_password or "opentrade-local-session"
+    material = settings.auth_session_secret or settings.admin_password or "openstocks-local-session"
     return material.encode("utf-8")
 
 
@@ -183,6 +183,10 @@ def _verify_token(token: str, settings: Settings) -> dict[str, Any] | None:
 
 
 def _public_user(user: dict[str, Any]) -> dict[str, Any]:
+    paper_cash_by_market = {
+        "IN": round(float(user["paper_cash_in"]), 2) if user.get("paper_cash_in") is not None else None,
+        "US": round(float(user["paper_cash_us"]), 2) if user.get("paper_cash_us") is not None else None,
+    }
     return {
         "id": int(user["id"]),
         "username": user["username"],
@@ -190,6 +194,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "active": bool(user.get("active")),
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(user.get("daily_credit_limit") or 0.0), 6),
+        "paper_cash_by_market": paper_cash_by_market,
         "broker_accounts": {
             "indstocks": {
                 "connected": bool(user.get("indstocks_access_token")),

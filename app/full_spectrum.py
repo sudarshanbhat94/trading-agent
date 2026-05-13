@@ -156,7 +156,7 @@ def full_spectrum_analysis(
     signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides, scorecard)
     monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides, scorecard)
     return {
-        "version": "opentrade-full-spectrum-v2",
+        "version": "openstocks-full-spectrum-v2",
         "symbol": row.get("symbol"),
         "timeframe_data": {
             "analysis_candle_count": len(candles),
@@ -1245,33 +1245,78 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
     announcements = flow.get("official_announcements") or []
     negative_event = _event_text_matches(announcements, r"loss|default|resign|fraud|forensic|penalty|downgrade|pledge")
     positive_event = _event_text_matches(announcements, r"profit|order|contract|approval|dividend|bonus|split|upgrade")
+    pe = _float_or_none(row.get("pe") or row.get("trailing_pe"))
+    forward_pe = _float_or_none(row.get("forward_pe"))
+    pb = _float_or_none(row.get("pb") or row.get("price_to_book"))
+    market_cap = _float_or_none(row.get("market_cap"))
+    beta = _float_or_none(row.get("beta"))
+    eps_ttm = _float_or_none(row.get("eps_ttm"))
+    ratio_available = any(value is not None for value in (pe, forward_pe, pb, market_cap, beta, eps_ttm))
     score = 0.0
     reasons = []
+    if ratio_available:
+        score += 0.08
+        reasons.append("market reference ratios available")
+    if pe is not None and 0 < pe <= 65:
+        score += 0.05
+        reasons.append("PE is within a tradable range")
+    elif pe is not None and pe > 100:
+        score -= 0.06
+        reasons.append("PE is stretched")
+    if pb is not None and 0 < pb <= 12:
+        score += 0.03
+        reasons.append("PB is available and not extreme")
+    elif pb is not None and pb > 20:
+        score -= 0.05
+        reasons.append("PB is stretched")
     if positive_event:
         score += 0.15
         reasons.append("recent positive official announcement keyword")
     if negative_event:
         score -= 0.35
         reasons.append("recent negative official announcement keyword")
-    return {
-        "available": bool(announcements),
-        "score": _round(max(min(score, 1.0), -1.0)),
-        "quality_bucket": "event_positive" if score > 0 else "event_risk" if score < 0 else "unknown",
-        "checked": [
-            "official announcement keyword proxy",
-            "promoter pledge placeholder",
-            "debt/profitability ratios placeholder",
-            "ROE/ROCE/revenue growth placeholder",
-        ],
-        "reasons": reasons or ["fundamental ratios not connected yet"],
-        "data_gaps": [
+    if negative_event:
+        quality_bucket = "event_risk"
+    elif positive_event and ratio_available:
+        quality_bucket = "event_positive_with_ratios"
+    elif positive_event:
+        quality_bucket = "event_positive"
+    elif ratio_available:
+        quality_bucket = "reference_ratios_available"
+    else:
+        quality_bucket = "unknown"
+    data_gaps = []
+    if not ratio_available:
+        data_gaps.extend(["PE/PB/market-cap reference"])
+    data_gaps.extend(
+        [
             "revenue/profit growth",
             "debt/equity",
             "ROE/ROCE",
             "promoter holding and pledge",
             "cash-flow quality",
             "quarterly trend",
+        ]
+    )
+    return {
+        "available": bool(announcements) or ratio_available,
+        "score": _round(max(min(score, 1.0), -1.0)),
+        "quality_bucket": quality_bucket,
+        "pe": _round(pe, 2),
+        "forward_pe": _round(forward_pe, 2),
+        "pb": _round(pb, 2),
+        "market_cap": _round(market_cap, 2),
+        "beta": _round(beta, 3),
+        "eps_ttm": _round(eps_ttm, 3),
+        "checked": [
+            "Yahoo/reference quote ratios when available",
+            "official announcement keyword proxy",
+            "promoter pledge placeholder",
+            "debt/profitability ratios placeholder",
+            "ROE/ROCE/revenue growth placeholder",
         ],
+        "reasons": reasons or ["fundamental ratios not connected yet"],
+        "data_gaps": _unique(data_gaps),
     }
 
 
@@ -1296,6 +1341,14 @@ def _corporate_event_risk(flow: dict[str, Any]) -> dict[str, Any]:
 
 
 def _delivery_accumulation(flow: dict[str, Any], candles: list[Candle], delivery_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    if delivery_data and delivery_data.get("source") == "not_applicable_to_us_market":
+        return {
+            **delivery_data,
+            "bias": "neutral",
+            "delivery_score": 0.0,
+            "institutional_fingerprint": False,
+            "source": "not_applicable_to_us_market",
+        }
     if delivery_data and delivery_data.get("available"):
         score_payload = delivery_data.get("score_payload") or {}
         return {
@@ -1986,7 +2039,7 @@ def _news_sentiment(sentiment_score: float) -> dict[str, Any]:
     return {
         "aggregate_score": _round(sentiment_score),
         "bias": bias,
-        "source": "OpenTrade rotating news sentiment service",
+        "source": "OpenStocks rotating news sentiment service",
         "note": "0.0 means DATA_MISSING, not neutral" if bias == "DATA_MISSING" else None,
     }
 

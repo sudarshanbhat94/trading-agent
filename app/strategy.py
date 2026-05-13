@@ -67,6 +67,7 @@ class StrategyEngine:
             self._log_pre_filter("market_breadth_bear_regime_blocked_buys", {"breadth_regime": breadth_regime})
         for row in universe:
             symbol = row["symbol"]
+            market_region = market_region_for_row(row)
             quote = quotes.get(symbol)
             if not quote:
                 continue
@@ -84,13 +85,26 @@ class StrategyEngine:
                 history = list(self._history[symbol])
             technical = technical_snapshot(history)
             macro_event_context = (
-                macro_calendar.event_context_for_date(symbol=symbol, market_region=market_region_for_row(row))
+                macro_calendar.event_context_for_date(symbol=symbol, market_region=market_region)
                 if macro_calendar is not None
                 else {}
             )
-            delivery_data = self._delivery_context(symbol, delivery_service)
-            options_data = ((options_context or {}).get("symbols") or {}).get(symbol, {})
-            sector_context = ((sector_rotation_context or {}).get("symbols") or {}).get(symbol, {})
+            symbol_breadth = _market_specific_context(market_breadth or {}, market_region)
+            symbol_sector_rotation = _market_specific_context(sector_rotation_context or {}, market_region)
+            delivery_data = (
+                {
+                    "available": False,
+                    "market_region": "US",
+                    "source": "not_applicable_to_us_market",
+                    "data_gap": "NSE delivery bhavcopy is not applicable to US equities.",
+                    "delivery_score": 0.0,
+                    "net_bias": "neutral",
+                }
+                if market_region == "US"
+                else self._delivery_context(symbol, delivery_service)
+            )
+            options_data = {} if market_region == "US" else ((options_context or {}).get("symbols") or {}).get(symbol, {})
+            sector_context = ((symbol_sector_rotation or {}).get("symbols") or {}).get(symbol, {})
             pre_filter = self._pre_filter_context(
                 symbol=symbol,
                 row=row,
@@ -98,7 +112,7 @@ class StrategyEngine:
                 candles=candles,
                 positions=positions,
                 delivery_data=delivery_data,
-                market_breadth=market_breadth or {},
+                market_breadth=symbol_breadth or {},
                 sector_context=sector_context,
                 macro_event_context=macro_event_context,
             )
@@ -115,7 +129,7 @@ class StrategyEngine:
                 delivery_data=delivery_data,
                 options_data=options_data,
                 sector_context=sector_context,
-                market_breadth=market_breadth,
+                market_breadth=symbol_breadth,
                 macro_event_context=macro_event_context,
                 timeframe_candles=timeframe_candles,
             )
@@ -123,7 +137,7 @@ class StrategyEngine:
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
             action = self._action_from_context(symbol, combined, positions, context, candles_by_symbol)
-            confidence = self._confidence_for_action(action, combined, macro_event_context, market_breadth)
+            confidence = self._confidence_for_action(action, combined, macro_event_context, symbol_breadth)
             scan_items.append(
                 {
                     "row": row,
@@ -1093,6 +1107,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     return {
         "symbol": context.get("symbol"),
         "company": context.get("company"),
+        "market_region": context.get("market_region"),
+        "currency": context.get("currency"),
         "sector": context.get("sector"),
         "exchange": context.get("exchange"),
         "quote": context.get("quote"),
@@ -1122,7 +1138,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "universe_scan": context.get("universe_scan"),
         "risk_limits": context.get("risk_limits"),
         "recent_candle_count": len(recent_candles),
-        "recent_candles_tail": recent_candles[-5:],
+        "recent_candles_tail": recent_candles[-60:],
     }
 
 
@@ -1153,6 +1169,17 @@ def _execution_cost_bps(settings: Settings) -> float:
         + max(float(settings.stt_bps or 0.0), 0.0),
         4,
     )
+
+
+def _market_specific_context(context: dict[str, Any], market_region: str) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    by_market = context.get("by_market")
+    if isinstance(by_market, dict):
+        selected = by_market.get(str(market_region or "").upper())
+        if isinstance(selected, dict):
+            return selected
+    return context
 
 
 def _atr(candles: list[Candle], period: int = 14) -> float | None:

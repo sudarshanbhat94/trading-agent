@@ -233,6 +233,8 @@ def _plan_max_days(plan_code: str, fallback_status: str = "") -> int:
     status = str(fallback_status or "").upper()
     if status in {"WATCH", "MONITORING"}:
         return 7
+    if code == "aggressive_rs_breakout":
+        return 8
     if code == "smallcap_momentum":
         return 10
     if code == "confirmed_breakout":
@@ -330,6 +332,7 @@ def _refresh_idea_lifecycle(
     now_dt = _parse_dt(now_iso) or datetime.now(timezone.utc)
     expired = bool(expires_dt and now_dt >= expires_dt)
     days_left = max(0, int((expires_dt - now_dt).total_seconds() // 86400)) if expires_dt else None
+    overall_score = _optional_float(details.get("overall_score_pct")) or 0.0
 
     lifecycle_status = "active"
     new_status = str(status or "ACTIVE")
@@ -346,6 +349,9 @@ def _refresh_idea_lifecycle(
     elif expired:
         lifecycle_status = "expired"
         new_status = "EXPIRED"
+    elif str(status or "").upper() in {"WATCH", "MONITORING"} and overall_score < 55:
+        lifecycle_status = "rejected_low_quality"
+        new_status = "REJECTED"
     elif str(status or "").upper() in {"WATCH", "MONITORING"}:
         lifecycle_status = str(status).lower()
 
@@ -373,6 +379,10 @@ def _refresh_idea_lifecycle(
 def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
+    paper_cash_by_market = {
+        "IN": round(float(row["paper_cash_in"]), 2) if row.get("paper_cash_in") is not None else None,
+        "US": round(float(row["paper_cash_us"]), 2) if row.get("paper_cash_us") is not None else None,
+    }
     broker_accounts = {
         "indstocks": {
             "access_token_saved": bool(row.get("indstocks_access_token")),
@@ -407,6 +417,7 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "active": bool(row.get("active")),
         "credit_balance": round(float(row.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(row.get("daily_credit_limit") or 0.0), 6),
+        "paper_cash_by_market": paper_cash_by_market,
         "broker_accounts": broker_accounts,
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -618,6 +629,8 @@ class Database:
                     active integer not null default 1,
                     credit_balance real not null default 0,
                     daily_credit_limit real not null default 0,
+                    paper_cash_in real,
+                    paper_cash_us real,
                     upstox_api_key text not null default '',
                     upstox_api_secret text not null default '',
                     upstox_redirect_uri text not null default '',
@@ -760,6 +773,8 @@ class Database:
             self._ensure_column(conn, "llm_usage_events", "latency_ms", "integer not null default 0")
             self._ensure_column(conn, "llm_usage_events", "user_id", "integer")
             self._ensure_column(conn, "llm_usage_events", "scope_id", "text not null default ''")
+            self._ensure_column(conn, "users", "paper_cash_in", "real")
+            self._ensure_column(conn, "users", "paper_cash_us", "real")
             conn.execute(
                 """
                 create index if not exists idx_llm_usage_user_ts
@@ -803,6 +818,14 @@ class Database:
     def _seed_strategy_plans(self, conn: sqlite3.Connection) -> None:
         now = utc_now()
         plans = [
+            (
+                "aggressive_rs_breakout",
+                "Aggressive RS Breakout",
+                "High-momentum leaders breaking out near fresh highs with stacked moving averages, volume expansion, and strict volatility control.",
+                "Aggressive",
+                "2-8 sessions",
+                "Use only A/B/C entries; start smaller when volatility is wide and trail quickly after Target 1.",
+            ),
             (
                 "institutional_quality_swing",
                 "Institutional Quality Swing",
@@ -1029,6 +1052,26 @@ class Database:
             )
         return self.user_credit_summary(user_id)
 
+    def update_user_paper_cash(self, user_id: int, cash_in: float | None = None, cash_us: float | None = None) -> dict[str, Any] | None:
+        assignments: list[str] = []
+        values: list[Any] = []
+        if cash_in is not None:
+            assignments.append("paper_cash_in = ?")
+            values.append(round(max(float(cash_in), 0.0), 6))
+        if cash_us is not None:
+            assignments.append("paper_cash_us = ?")
+            values.append(round(max(float(cash_us), 0.0), 6))
+        if not assignments:
+            user = self.user_by_id(user_id)
+            return _public_user(user) if user else None
+        assignments.append("updated_at = ?")
+        values.append(utc_now())
+        values.append(user_id)
+        with self.connect() as conn:
+            conn.execute(f"update users set {', '.join(assignments)} where id = ?", values)
+        user = self.user_by_id(user_id)
+        return _public_user(user) if user else None
+
     def adjust_user_credits(
         self,
         user_id: int,
@@ -1208,7 +1251,7 @@ class Database:
         return {
             "updated_at": utc_now(),
             "today_utc": today,
-            "margin_policy": "Admin view includes OpenTrade platform margin.",
+            "margin_policy": "Admin view includes OpenStocks platform margin.",
             "users": [
                 {
                     "id": row["id"],
@@ -1583,14 +1626,16 @@ class Database:
             return {}
         intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source_like="upstox-live:%minute")
         legacy_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source="upstox-live")
-        yahoo_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="yahoo-delayed")
         daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=260, source="upstox-live:day")
+        indstocks_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source_like="indstocks-live:%day")
+        yahoo_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="yahoo-delayed")
         weekly = self.recent_candles_by_symbol(symbols, limit_per_symbol=160, source="upstox-live:week")
+        indstocks_weekly = self.recent_candles_by_symbol(symbols, limit_per_symbol=160, source_like="indstocks-live:%week")
         output: dict[str, dict[str, list[Candle]]] = {}
         for symbol in symbols:
-            intraday_candles = intraday.get(symbol) or legacy_intraday.get(symbol) or yahoo_intraday.get(symbol) or []
-            daily_candles = daily.get(symbol) or self._resample_daily(intraday_candles)
-            weekly_candles = weekly.get(symbol) or self._resample_weekly(daily_candles)
+            intraday_candles = intraday.get(symbol) or legacy_intraday.get(symbol) or []
+            daily_candles = daily.get(symbol) or indstocks_daily.get(symbol) or yahoo_daily.get(symbol) or self._resample_daily(intraday_candles)
+            weekly_candles = weekly.get(symbol) or indstocks_weekly.get(symbol) or self._resample_weekly(daily_candles)
             analysis_candles = daily_candles or intraday_candles
             output[symbol] = {
                 "intraday": intraday_candles,
@@ -1987,7 +2032,10 @@ class Database:
     ) -> list[dict[str, Any]]:
         self.refresh_signal_idea_marks()
         market_clause, market_params = _market_region_where("u", market_region)
-        where_sql = f"where {market_clause}" if market_clause else ""
+        where_parts = ["i.status != 'REJECTED'"]
+        if market_clause:
+            where_parts.append(market_clause)
+        where_sql = "where " + " and ".join(where_parts)
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -2161,7 +2209,7 @@ class Database:
                     u.sector as sector
                 from signal_ideas i
                 left join universe u on u.symbol = i.symbol
-                where i.plan_code != ''
+                where i.plan_code != '' and i.status != 'REJECTED'
                 order by
                     case i.status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
                     i.current_return_pct desc,
@@ -2864,6 +2912,7 @@ class Database:
                 conn.close()
 
     def reset_trading_ledger(self, cash: float) -> None:
+        cash_by_market = {"IN": float(cash), "US": float(cash)}
         with self.connect() as conn:
             conn.execute("delete from decisions")
             conn.execute("delete from orders")
@@ -2871,10 +2920,17 @@ class Database:
             conn.execute("delete from portfolio_snapshots")
             conn.execute(
                 """
+                insert into agent_state (key, value) values ('cash_by_market', ?)
+                on conflict(key) do update set value = excluded.value
+                """,
+                (json.dumps(cash_by_market),),
+            )
+            conn.execute(
+                """
                 insert into agent_state (key, value) values ('cash', ?)
                 on conflict(key) do update set value = excluded.value
                 """,
-                (json.dumps(cash),),
+                (json.dumps(sum(cash_by_market.values())),),
             )
 
     def latest_quotes(self) -> list[dict[str, Any]]:
@@ -3217,7 +3273,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     if action == "BUY" and not hard_blocked:
         signal_type = "BUY"
         status = "ACTIVE"
-    elif confluence_total >= 10 and combined >= 0 and action != "SELL":
+    elif confluence_total >= 16 and combined >= 0.20 and float(system_audit.get("overall_score_pct") or 0.0) >= 55 and action != "SELL":
         signal_type = "WATCH"
         status = "WATCH"
     elif action == "SELL":
@@ -3270,6 +3326,8 @@ def _strategy_plan_code(
     classification = ((system_audit.get("classification") or {}) if isinstance(system_audit.get("classification"), dict) else {}).get("classification")
     if action == "SELL" or "exit" in name or "risk" in name:
         return "defensive_exit_manager"
+    if "aggressive_relative_strength" in name or "relative_strength_breakout" in name or "fifty_two_week_high_momentum" in name:
+        return "aggressive_rs_breakout"
     if "breakout" in name or "darvas" in name or "vcp" in name:
         return "confirmed_breakout"
     if "pullback" in name or "ema" in name or "continuation" in name:

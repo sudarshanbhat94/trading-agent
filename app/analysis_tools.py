@@ -5,6 +5,7 @@ from typing import Any
 
 from .full_spectrum import full_spectrum_analysis
 from .indicators import technical_snapshot
+from .market_regions import market_region_for_row
 from .models import Candle, Quote
 from .strategy_presets import choose_best_strategy, evaluate_strategy_presets
 
@@ -42,7 +43,13 @@ def build_symbol_tool_context(
     volumes = [candle.volume for candle in analysis_candles]
     technical = technical_snapshot(closes, highs, lows, volumes)
     candle_tools = _candle_tools(analysis_candles)
-    strategy_signals = evaluate_strategy_presets(analysis_candles, quote.price)
+    strategy_signals = evaluate_strategy_presets(
+        analysis_candles,
+        quote.price,
+        intraday_candles=intraday_candles,
+        market_breadth=market_breadth,
+        sector_context=sector_context,
+    )
     best_strategy = choose_best_strategy(strategy_signals)
     normalized_global_context = global_context or {
         "enabled": False,
@@ -59,6 +66,26 @@ def build_symbol_tool_context(
     }
     strategy_signal_dicts = [signal.to_dict() for signal in strategy_signals]
     technical_dict = technical.to_dict()
+    market_region = market_region_for_row(row)
+    currency = "USD" if market_region == "US" else "INR"
+    if market_region == "US":
+        normalized_institutional_context = {
+            "enabled": False,
+            "source_quality": "not_applicable_to_us_market",
+            "feeds": {},
+            "symbol_flags": {},
+            "market_bias": {"score": 0.0, "rationale": ["NSE/FII/DII feeds omitted for US equities"]},
+            "data_gaps": ["India-only institutional feeds are not sent for US analysis."],
+        }
+        delivery_data = delivery_data or {
+            "available": False,
+            "market_region": "US",
+            "source": "not_applicable_to_us_market",
+            "data_gap": "NSE delivery bhavcopy is not applicable to US equities.",
+            "delivery_score": 0.0,
+            "net_bias": "neutral",
+        }
+        options_data = options_data or {}
     full_spectrum = full_spectrum_analysis(
         row=row,
         quote=quote,
@@ -86,6 +113,8 @@ def build_symbol_tool_context(
         "tool_protocol": "mcp-style-json-context",
         "symbol": row["symbol"],
         "company": row.get("name"),
+        "market_region": market_region,
+        "currency": currency,
         "sector": row.get("sector"),
         "industry": row.get("industry"),
         "exchange": row.get("exchange", "NSE"),

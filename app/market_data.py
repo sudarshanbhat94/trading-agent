@@ -231,7 +231,7 @@ class YahooMarketDataProvider(MarketDataProvider):
         self.last_quote_diagnostics: dict[str, Any] = {}
         self.headers = {
             "Accept": "application/json",
-            "User-Agent": "OpenTrade/1.0 (+paper-trading-dashboard)",
+            "User-Agent": "OpenStocks/1.0 (+paper-trading-dashboard)",
         }
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
@@ -326,10 +326,28 @@ class YahooMarketDataProvider(MarketDataProvider):
         )
 
     async def _candles_from_chart(self, client: httpx.AsyncClient, row: dict[str, Any]) -> list[Candle]:
+        if self._is_us_row(row) and str(self.interval or "").lower() != "1d":
+            daily = await self._candles_from_chart_params(client, row, "1y", "1d")
+            if len(daily) >= 60:
+                return daily[-320:]
+        candles = await self._candles_from_chart_params(client, row, self.range, self.interval)
+        if len(candles) < 60 and self._is_us_row(row) and str(self.interval or "").lower() != "1d":
+            daily = await self._candles_from_chart_params(client, row, "1y", "1d")
+            if len(daily) > len(candles):
+                return daily[-320:]
+        return candles[-self._candle_limit() :]
+
+    async def _candles_from_chart_params(
+        self,
+        client: httpx.AsyncClient,
+        row: dict[str, Any],
+        range_value: str,
+        interval_value: str,
+    ) -> list[Candle]:
         try:
             response = await client.get(
                 self._chart_url(row),
-                params={"range": self.range, "interval": self.interval, "includePrePost": "false"},
+                params={"range": range_value, "interval": interval_value, "includePrePost": "false"},
             )
             response.raise_for_status()
             result = self._chart_result(response.json())
@@ -364,9 +382,13 @@ class YahooMarketDataProvider(MarketDataProvider):
                         source=self.source_name,
                     )
                 )
-            return candles[-self._candle_limit() :]
+            return candles
         except Exception:
             return []
+
+    def _is_us_row(self, row: dict[str, Any]) -> bool:
+        exchange = str(row.get("exchange") or "").strip().upper()
+        return exchange in {"NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS", "OTC"}
 
     def _chart_url(self, row: dict[str, Any]) -> str:
         yahoo_symbol = self._yahoo_symbol(row)
@@ -426,11 +448,23 @@ class IndStocksMarketDataProvider(MarketDataProvider):
         self.interval = settings.indstocks_candle_interval
         self.lookback_days = max(1, int(settings.indstocks_candle_lookback_days or 365))
         self.candle_concurrency = max(1, int(settings.indstocks_candle_concurrency or 8))
+        self.candle_request_spacing_seconds = max(
+            0.0,
+            float(getattr(settings, "indstocks_candle_request_spacing_ms", 450) or 0) / 1000.0,
+        )
+        self.candle_retry_attempts = max(1, int(getattr(settings, "indstocks_candle_retry_attempts", 4) or 4))
+        self.candle_retry_backoff_seconds = max(
+            0.1,
+            float(getattr(settings, "indstocks_candle_retry_backoff_seconds", 1.0) or 1.0),
+        )
         self.timeout_seconds = max(5, int(settings.indstocks_fetch_timeout_seconds or 20))
         self.last_quote_diagnostics: dict[str, Any] = {}
         self.last_candle_diagnostics: dict[str, Any] = {}
         self.last_resolver_diagnostics: dict[str, Any] = {}
         self._instrument_cache: tuple[float, dict[str, dict[str, str]]] | None = None
+        self._candle_rate_lock = asyncio.Lock()
+        self._last_candle_request_at = 0.0
+        self._last_rate_limit_count = 0
         if not self.access_token:
             raise MarketDataError("INDstocks provider needs INDSTOCKS_ACCESS_TOKEN")
 
@@ -483,6 +517,7 @@ class IndStocksMarketDataProvider(MarketDataProvider):
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
         output: dict[str, list[Candle]] = {}
         failures: list[str] = []
+        self._last_rate_limit_count = 0
         async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self._headers(), follow_redirects=True) as client:
             resolved = await self._resolve_rows(client, universe)
             semaphore = asyncio.Semaphore(self.candle_concurrency)
@@ -506,6 +541,10 @@ class IndStocksMarketDataProvider(MarketDataProvider):
             "failures": len(failures),
             "sample_errors": _unique_errors(failures)[:5],
             "interval": self.interval,
+            "concurrency": self.candle_concurrency,
+            "request_spacing_ms": round(self.candle_request_spacing_seconds * 1000),
+            "retry_attempts": self.candle_retry_attempts,
+            "rate_limit_retries": self._last_rate_limit_count,
             "resolver": self.last_resolver_diagnostics,
         }
         return output
@@ -513,22 +552,71 @@ class IndStocksMarketDataProvider(MarketDataProvider):
     async def _candles_for_scrip(self, client: httpx.AsyncClient, row: dict[str, Any], scrip_code: str) -> list[Candle]:
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=self._effective_lookback_days())
-        response = await client.get(
-            f"{self.base_url}/market/historical/{self.interval}",
-            params={
-                "scrip-codes": scrip_code,
-                "start_time": int(start.timestamp() * 1000),
-                "end_time": int(end.timestamp() * 1000),
-            },
+        response = await self._get_candles_with_retry(
+            client=client,
+            scrip_code=scrip_code,
+            start_ms=int(start.timestamp() * 1000),
+            end_ms=int(end.timestamp() * 1000),
         )
-        response.raise_for_status()
-        raw_candles = ((response.json().get("data") or {}).get("candles") or [])
+        data = response.json().get("data") or {}
+        symbol_payload = data.get(scrip_code) if isinstance(data, dict) else None
+        raw_candles = (
+            (symbol_payload or {}).get("candles")
+            if isinstance(symbol_payload, dict)
+            else None
+        ) or (data.get("candles") if isinstance(data, dict) else None) or []
         candles: list[Candle] = []
         for candle in raw_candles:
             parsed = self._parse_candle(row["symbol"], candle)
             if parsed:
                 candles.append(parsed)
         return candles[-320:]
+
+    async def _get_candles_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        scrip_code: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> httpx.Response:
+        last_exc: Exception | None = None
+        for attempt in range(1, self.candle_retry_attempts + 1):
+            await self._pace_candle_request()
+            try:
+                response = await client.get(
+                    f"{self.base_url}/market/historical/{self.interval}",
+                    params={
+                        "scrip-codes": scrip_code,
+                        "start_time": start_ms,
+                        "end_time": end_ms,
+                    },
+                )
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if exc.response.status_code != 429 or attempt >= self.candle_retry_attempts:
+                    raise
+                self._last_rate_limit_count += 1
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.TransportError) as exc:
+                last_exc = exc
+                if attempt >= self.candle_retry_attempts:
+                    raise
+            delay = self.candle_retry_backoff_seconds * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
+            await asyncio.sleep(delay)
+        if last_exc:
+            raise last_exc
+        raise MarketDataError(f"INDstocks historical candles failed for {scrip_code}")
+
+    async def _pace_candle_request(self) -> None:
+        if self.candle_request_spacing_seconds <= 0:
+            return
+        async with self._candle_rate_lock:
+            now = time.monotonic()
+            wait_for = self.candle_request_spacing_seconds - (now - self._last_candle_request_at)
+            if wait_for > 0:
+                await asyncio.sleep(wait_for)
+            self._last_candle_request_at = time.monotonic()
 
     async def _resolve_rows(self, client: httpx.AsyncClient, universe: list[dict[str, Any]]) -> list[dict[str, Any]]:
         instruments: dict[str, dict[str, str]] | None = None
@@ -645,12 +733,30 @@ class IndStocksMarketDataProvider(MarketDataProvider):
         return f"{exchange}_{security_id}" if security_id and exchange else ""
 
     def _parse_candle(self, symbol: str, candle: Any) -> Candle | None:
-        if not isinstance(candle, list) or len(candle) < 6:
-            return None
         try:
+            if isinstance(candle, dict):
+                ts_raw = candle.get("ts") or candle.get("time") or candle.get("timestamp")
+                timestamp = float(ts_raw)
+                if timestamp > 10_000_000_000:
+                    timestamp = timestamp / 1000.0
+                return Candle(
+                    symbol=symbol,
+                    ts=datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+                    open=float(candle.get("o") if candle.get("o") is not None else candle.get("open")),
+                    high=float(candle.get("h") if candle.get("h") is not None else candle.get("high")),
+                    low=float(candle.get("l") if candle.get("l") is not None else candle.get("low")),
+                    close=float(candle.get("c") if candle.get("c") is not None else candle.get("close")),
+                    volume=float((candle.get("v") if candle.get("v") is not None else candle.get("volume")) or 0),
+                    source=f"{self.source_name}:{self.interval}",
+                )
+            if not isinstance(candle, list) or len(candle) < 6:
+                return None
+            timestamp = float(candle[0])
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000.0
             return Candle(
                 symbol=symbol,
-                ts=datetime.fromtimestamp(float(candle[0]) / 1000.0, timezone.utc).isoformat(),
+                ts=datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
                 open=float(candle[1]),
                 high=float(candle[2]),
                 low=float(candle[3]),

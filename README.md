@@ -1,4 +1,4 @@
-# OpenTrade
+# OpenStocks
 
 Autonomous dry-money trading platform for Indian equities. It watches a stock universe, pulls quote/candle data, builds MCP-style analysis context, asks an LLM to decide or review, applies risk controls, paper-fills BUY/SELL orders, and streams the state to a live dashboard.
 
@@ -67,7 +67,7 @@ This is evidence and audit data, not hidden chain-of-thought. The app asks the m
 
 ### Admin Access
 
-OpenTrade now starts with a dedicated login screen. The first admin user is migrated from `ADMIN_USERNAME` and `ADMIN_PASSWORD`, then admins can create additional users from **Users** in the dashboard.
+OpenStocks now starts with a dedicated login screen. The first admin user is migrated from `ADMIN_USERNAME` and `ADMIN_PASSWORD`, then admins can create additional users from **Users** in the dashboard.
 
 Set this before starting the app:
 
@@ -96,7 +96,7 @@ For true institutional coverage, plug in licensed feeds for exchange announcemen
 
 ## Global Market Intelligence
 
-OpenTrade now adds a macro backdrop to every stock decision. Each cycle checks:
+OpenStocks now adds a macro backdrop to every stock decision. Each cycle checks:
 
 - US, Europe, Asia, and Indian index moves.
 - Crude oil, gold, and USD/INR pressure.
@@ -117,7 +117,7 @@ GLOBAL_RISK_WEIGHT=0.10
 
 ## Free Institutional Feeds
 
-OpenTrade can now enrich every decision with free/public institutional context. These feeds are best-effort and often EOD, so the audit labels them separately from live broker/vendor data.
+OpenStocks can now enrich every decision with free/public institutional context. These feeds are best-effort and often EOD, so the audit labels them separately from live broker/vendor data.
 
 ```bash
 ENABLE_FREE_INSTITUTIONAL_FEEDS=true
@@ -167,7 +167,7 @@ YAHOO_CANDLE_INTERVAL=15m
 YAHOO_CANDLE_RANGE=5d
 ```
 
-If you only have the Upstox API key/secret, open **Settings → Upstox Connect** in the dashboard. Save the API key, API secret, and redirect URI, click **Open Login**, complete the Upstox login, then paste the returned `code` or full redirect URL into **Connect Upstox**. OpenTrade exchanges it for an access token, saves it, switches `MARKET_DATA_PROVIDER` to `upstox`, and rebuilds the running provider.
+If you only have the Upstox API key/secret, open **Settings → Upstox Connect** in the dashboard. Save the API key, API secret, and redirect URI, click **Open Login**, complete the Upstox login, then paste the returned `code` or full redirect URL into **Connect Upstox**. OpenStocks exchanges it for an access token, saves it, switches `MARKET_DATA_PROVIDER` to `upstox`, and rebuilds the running provider.
 
 The universe file includes `upstox_instrument_key` values like `NSE_EQ|INE002A01018`. For all stocks, regenerate `data/universe.csv` from Upstox's instrument master and keep that column accurate.
 
@@ -192,7 +192,7 @@ NUBRA_DELIVERY_ENDPOINT=
 NUBRA_OI_ENDPOINT=
 ```
 
-To quickly test market watch before starting OpenTrade:
+To quickly test market watch before starting OpenStocks:
 
 ```bash
 export NUBRA_SESSION_TOKEN=...
@@ -220,7 +220,7 @@ The `yahoo` provider is useful for development and paper testing. It now pulls d
 
 ## LLM Brain
 
-OpenTrade supports admin-assigned LLM lanes per user. Users spend the same token-based credits regardless of the assigned model, and normal users do not see the underlying provider/model. Admins can assign Groq Qwen, DeepSeek Pro, DeepSeek Flash, or offline mode from the Users panel.
+OpenStocks supports admin-assigned LLM lanes per user. Users spend the same token-based credits regardless of the assigned model, and normal users do not see the underlying provider/model. Admins can assign Groq Qwen, DeepSeek Pro, DeepSeek Flash, or offline mode from the Users panel.
 
 ```bash
 LLM_PROVIDER=deepseek
@@ -258,9 +258,9 @@ LLM_DECISION_MODE=offline
 
 `LLM_DECISION_MODE=review` keeps the deterministic strategy as the proposer and asks the assigned LLM to review non-HOLD candidates. `LLM_DECISION_MODE=primary` asks the assigned LLM to produce the BUY/SELL/HOLD decision from tool context. In both modes, the paper broker risk layer can still veto the trade. Admin audit records the selected provider/model, API attempts, and whether rolling context was used; standard user audit hides model routing.
 
-Large context is handled with rolling analysis instead of blunt trimming. When the rich context exceeds `LLM_ROLLING_CONTEXT_THRESHOLD_CHARS`, OpenTrade summarizes each chunk with DeepSeek, then sends a compact core packet plus the chunk evidence summaries for the final decision. `LLM_ROLLING_CONTEXT_MAX_CHUNKS=0` means cover all chunks; set a positive number only when you intentionally want to cap cost/latency on a small VM.
+Large context is handled with rolling analysis instead of blunt trimming. When the rich context exceeds `LLM_ROLLING_CONTEXT_THRESHOLD_CHARS`, OpenStocks summarizes each chunk with DeepSeek, then sends a compact core packet plus the chunk evidence summaries for the final decision. `LLM_ROLLING_CONTEXT_MAX_CHUNKS=0` means cover all chunks; set a positive number only when you intentionally want to cap cost/latency on a small VM.
 
-DeepSeek calls are non-streamed JSON-mode calls. When `LLM_THINKING_ENABLED=true`, OpenTrade sends `thinking={"type":"enabled"}` with `reasoning_effort=high`, matching the direct DeepSeek API style.
+DeepSeek calls are non-streamed JSON-mode calls. When `LLM_THINKING_ENABLED=true`, OpenStocks sends `thinking={"type":"enabled"}` with `reasoning_effort=high`, matching the direct DeepSeek API style.
 
 ## Strategy Presets
 
@@ -282,7 +282,7 @@ The dashboard shows strategy-level open positions, exposure, unrealized P&L, and
 
 ## Full-Spectrum v2 Analysis
 
-Every decision now includes an `opentrade-full-spectrum-v2` audit block inspired by the institutional prompt. The app computes and stores:
+Every decision now includes an `openstocks-full-spectrum-v2` audit block inspired by the institutional prompt. The app computes and stores:
 
 - Primary universe filters and data gaps.
 - Multi-timeframe trend context from available candles.

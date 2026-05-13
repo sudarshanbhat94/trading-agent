@@ -5,9 +5,12 @@ from typing import Any
 
 from .config import Settings
 from .db import Database
+from .market_regions import market_region_for_row, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .order_router import OrderRouter
 from .trading_rules import capital_position_limit
+
+MARKET_REGIONS = ("IN", "US")
 
 
 class PaperBroker:
@@ -15,12 +18,33 @@ class PaperBroker:
         self.settings = settings
         self.db = db
         self.order_router = order_router
-        if self.db.get_state("cash") is None:
-            self.db.set_state("cash", settings.initial_cash_inr)
+        if self.db.get_state("cash_by_market") is None:
+            self.db.set_state("cash_by_market", self._bootstrap_cash_by_market())
+        self._sync_legacy_cash_state()
 
     @property
     def cash(self) -> float:
-        return float(self.db.get_state("cash", self.settings.initial_cash_inr))
+        return round(sum(self.cash_by_market().values()), 6)
+
+    def cash_by_market(self) -> dict[str, float]:
+        raw = self.db.get_state("cash_by_market", None)
+        if not isinstance(raw, dict):
+            raw = self._bootstrap_cash_by_market()
+            self.db.set_state("cash_by_market", raw)
+        cash_map: dict[str, float] = {}
+        for market in MARKET_REGIONS:
+            value = raw.get(market, self.settings.initial_cash_inr)
+            try:
+                cash_map[market] = float(value)
+            except (TypeError, ValueError):
+                cash_map[market] = float(self.settings.initial_cash_inr)
+        return cash_map
+
+    def cash_for_market(self, market_region: str) -> float:
+        market = normalize_market_region(market_region, default="IN")
+        if market == "BOTH":
+            return self.cash
+        return self.cash_by_market().get(market, float(self.settings.initial_cash_inr))
 
     def positions_by_symbol(self) -> dict[str, dict[str, Any]]:
         return {row["symbol"]: row for row in self.db.positions()}
@@ -36,6 +60,8 @@ class PaperBroker:
     def execute(self, decision: Decision, portfolio_equity: float) -> bool:
         if decision.action == "HOLD":
             return False
+        market_region = self._market_region_from_decision(decision)
+        market_equity = float(self.portfolio_for_market(market_region).get("equity", portfolio_equity) or portfolio_equity)
         daily_loss = self._daily_loss_status(portfolio_equity)
         if daily_loss["hit"]:
             self.db.insert_order(
@@ -51,19 +77,20 @@ class PaperBroker:
             return False
 
         if decision.action == "BUY":
-            return self._buy(decision, portfolio_equity)
+            return self._buy(decision, market_equity)
         if decision.action == "SELL":
             return self._sell(decision)
         return False
 
     def snapshot(self) -> dict[str, float]:
         positions = self.db.positions()
-        cash = self.cash
-        invested = sum(row["qty"] * row["avg_price"] for row in positions)
-        market_value = sum(row["qty"] * row["market_price"] for row in positions)
-        realized = sum(row["realized_pnl"] for row in positions)
-        unrealized = market_value - invested
-        equity = cash + market_value
+        portfolio_by_market = self.portfolio_by_market(positions)
+        cash = sum(float(row["cash"]) for row in portfolio_by_market.values())
+        invested = sum(float(row["invested"]) for row in portfolio_by_market.values())
+        market_value = sum(float(row["market_value"]) for row in portfolio_by_market.values())
+        realized = sum(float(row["realized_pnl"]) for row in portfolio_by_market.values())
+        unrealized = sum(float(row["unrealized_pnl"]) for row in portfolio_by_market.values())
+        equity = sum(float(row["equity"]) for row in portfolio_by_market.values())
         row = {
             "cash": round(cash, 2),
             "invested": round(invested, 2),
@@ -89,7 +116,39 @@ class PaperBroker:
                     row["unrealized_pnl"],
                 ),
             )
+        self.db.set_state("portfolio_by_market", portfolio_by_market)
+        self.db.set_state("cash_by_market", self.cash_by_market())
         return row
+
+    def portfolio_by_market(self, positions: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+        positions = positions if positions is not None else self.db.positions()
+        return {market: self.portfolio_for_market(market, positions) for market in MARKET_REGIONS}
+
+    def portfolio_for_market(
+        self,
+        market_region: str,
+        positions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        market = normalize_market_region(market_region, default="IN")
+        if market == "BOTH":
+            market = "IN"
+        positions = positions if positions is not None else self.db.positions()
+        market_positions = [row for row in positions if _position_market(row) == market]
+        cash = self.cash_for_market(market)
+        invested = sum(float(row["qty"]) * float(row["avg_price"]) for row in market_positions)
+        market_value = sum(float(row["qty"]) * float(row["market_price"]) for row in market_positions)
+        realized = sum(float(row["realized_pnl"]) for row in market_positions)
+        unrealized = market_value - invested
+        return {
+            "market_region": market,
+            "currency": "USD" if market == "US" else "INR",
+            "cash": round(cash, 2),
+            "invested": round(invested, 2),
+            "market_value": round(market_value, 2),
+            "equity": round(cash + market_value, 2),
+            "realized_pnl": round(realized, 2),
+            "unrealized_pnl": round(unrealized, 2),
+        }
 
     def _buy(self, decision: Decision, portfolio_equity: float) -> bool:
         if self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline":
@@ -107,7 +166,9 @@ class PaperBroker:
                 )
                 return False
 
-        positions = self.db.positions()
+        market_region = self._market_region_from_decision(decision)
+        all_positions = self.db.positions()
+        positions = [row for row in all_positions if _position_market(row) == market_region]
         dynamic_position_limit = min(self.settings.max_positions, capital_position_limit(portfolio_equity))
         if len(positions) >= dynamic_position_limit:
             self.db.insert_order(
@@ -196,7 +257,7 @@ class PaperBroker:
             return False
 
         max_order_value = portfolio_equity * self.settings.max_order_value_pct
-        cash_before = self.cash
+        cash_before = self.cash_for_market(market_region)
         sizing_plan = _sizing_plan_from_decision(decision, portfolio_equity, max_order_value)
         spend = min(max_order_value, max_position_value - current_value, cash_before, sizing_plan["max_notional"])
         fill_price = _paper_fill_price(decision.price, "BUY", self.settings)
@@ -231,6 +292,8 @@ class PaperBroker:
         estimated_costs = _trade_cost(gross_notional, self.settings)
         cash_after = cash_before - gross_notional - estimated_costs
 
+        cash_by_market = self.cash_by_market()
+        cash_by_market[market_region] = cash_after
         with self.db.connect() as conn:
             existing = conn.execute(
                 "select * from positions where symbol = ?",
@@ -255,13 +318,7 @@ class PaperBroker:
                     """,
                     (decision.symbol, decision.strategy, qty, fill_price, fill_price, utc_now(), _position_details_json(decision)),
                 )
-            conn.execute(
-                """
-                insert into agent_state (key, value) values ('cash', ?)
-                on conflict(key) do update set value = excluded.value
-                """,
-                (str(cash_after),),
-            )
+            self._persist_cash_by_market(conn, cash_by_market)
         self.db.insert_order(
             decision.symbol,
             "BUY",
@@ -280,6 +337,7 @@ class PaperBroker:
                     },
                     "sizing": {
                         "portfolio_equity": round(portfolio_equity, 2),
+                        "market_region": market_region,
                         "cash_before": round(cash_before, 2),
                         "cash_after": round(cash_after, 2),
                         "current_position_value_before": round(current_value, 2),
@@ -307,7 +365,9 @@ class PaperBroker:
         partial_pct = _partial_sell_pct_from_decision(decision)
         if partial_pct is not None and 0 < partial_pct < 1:
             return self.partial_sell(decision.symbol, partial_pct, decision.reason, decision.strategy, decision)
-        cash_before = self.cash
+        market_region = self._market_region_for_symbol(decision.symbol)
+        cash_before = self.cash_for_market(market_region)
+        cash_by_market = self.cash_by_market()
         with self.db.connect() as conn:
             row = conn.execute("select * from positions where symbol = ?", (decision.symbol,)).fetchone()
             if not row or row["qty"] <= 0:
@@ -338,13 +398,8 @@ class PaperBroker:
                 """,
                 (fill_price, realized, utc_now(), decision.symbol),
             )
-            conn.execute(
-                """
-                insert into agent_state (key, value) values ('cash', ?)
-                on conflict(key) do update set value = excluded.value
-                """,
-                (str(cash_before + net_proceeds),),
-            )
+            cash_by_market[market_region] = cash_before + net_proceeds
+            self._persist_cash_by_market(conn, cash_by_market)
         self.db.insert_order(
             decision.symbol,
             "SELL",
@@ -360,6 +415,7 @@ class PaperBroker:
                     "sizing": {
                         "cash_before": round(cash_before, 2),
                         "cash_after": round(cash_before + net_proceeds, 2),
+                        "market_region": market_region,
                         "filled_qty": qty,
                         "avg_price": round(float(row["avg_price"]), 2),
                         "decision_price": decision.price,
@@ -397,7 +453,9 @@ class PaperBroker:
         decision: Decision | None = None,
     ) -> bool:
         pct = max(min(float(pct_of_position), 1.0), 0.0)
-        cash_before = self.cash
+        market_region = self._market_region_from_decision(decision) if decision else self._market_region_for_symbol(symbol)
+        cash_before = self.cash_for_market(market_region)
+        cash_by_market = self.cash_by_market()
         price = float(decision.price if decision else 0.0)
         fill_price = _paper_fill_price(price, "SELL", self.settings) if price > 0 else 0.0
         with self.db.connect() as conn:
@@ -426,13 +484,8 @@ class PaperBroker:
                 """,
                 (remaining, fill_price, realized, utc_now(), json.dumps(details, default=str, separators=(",", ":")), symbol),
             )
-            conn.execute(
-                """
-                insert into agent_state (key, value) values ('cash', ?)
-                on conflict(key) do update set value = excluded.value
-                """,
-                (str(cash_before + net_proceeds),),
-            )
+            cash_by_market[market_region] = cash_before + net_proceeds
+            self._persist_cash_by_market(conn, cash_by_market)
         self.db.insert_order(
             symbol,
             "SELL",
@@ -449,6 +502,7 @@ class PaperBroker:
                     "pct_of_position": pct,
                     "cash_before": round(cash_before, 2),
                     "cash_after": round(cash_before + net_proceeds, 2),
+                    "market_region": market_region,
                     "remaining_qty": remaining,
                     "filled_qty": qty,
                     "filled_notional": round(proceeds, 2),
@@ -526,6 +580,72 @@ class PaperBroker:
             "drawdown_pct": round(drawdown, 6),
             "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
         }
+
+    def _bootstrap_cash_by_market(self) -> dict[str, float]:
+        initial_cash = float(self.settings.initial_cash_inr)
+        positions = self.db.positions()
+        if not positions:
+            legacy_cash = self.db.get_state("cash", None)
+            try:
+                india_cash = float(legacy_cash) if legacy_cash is not None else initial_cash
+            except (TypeError, ValueError):
+                india_cash = initial_cash
+            return {"IN": round(india_cash, 6), "US": round(initial_cash, 6)}
+        invested = {market: 0.0 for market in MARKET_REGIONS}
+        for row in positions:
+            market = _position_market(row)
+            invested[market] += float(row["qty"]) * float(row["avg_price"])
+        return {
+            market: round(max(initial_cash - invested.get(market, 0.0), 0.0), 6)
+            for market in MARKET_REGIONS
+        }
+
+    def _sync_legacy_cash_state(self) -> None:
+        self.db.set_state("cash", self.cash)
+
+    def _persist_cash_by_market(self, conn: Any, cash_by_market: dict[str, float]) -> None:
+        normalized = {
+            market: round(float(cash_by_market.get(market, self.settings.initial_cash_inr) or 0.0), 6)
+            for market in MARKET_REGIONS
+        }
+        combined = round(sum(normalized.values()), 6)
+        conn.execute(
+            """
+            insert into agent_state (key, value) values ('cash_by_market', ?)
+            on conflict(key) do update set value = excluded.value
+            """,
+            (json.dumps(normalized),),
+        )
+        conn.execute(
+            """
+            insert into agent_state (key, value) values ('cash', ?)
+            on conflict(key) do update set value = excluded.value
+            """,
+            (json.dumps(combined),),
+        )
+
+    def _market_region_from_decision(self, decision: Decision) -> str:
+        details = _json_object(decision.details_json)
+        context = details.get("context") or {}
+        market = (
+            context.get("market_region")
+            or details.get("market_region")
+            or (details.get("decision") or {}).get("market_region")
+        )
+        if market:
+            return normalize_market_region(market, default="IN")
+        return self._market_region_for_symbol(decision.symbol)
+
+    def _market_region_for_symbol(self, symbol: str) -> str:
+        row = self.db.universe_row(symbol) or {}
+        return normalize_market_region(row.get("market_region"), default=_position_market(row))
+
+ 
+def _position_market(row: dict[str, Any]) -> str:
+    explicit = row.get("market_region")
+    if explicit:
+        return normalize_market_region(explicit, default="IN")
+    return normalize_market_region(market_region_for_row(row), default="IN")
 
 
 def _order_details_json(decision: Decision, execution: dict[str, Any]) -> str:

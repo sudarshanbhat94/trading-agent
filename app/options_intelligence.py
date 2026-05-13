@@ -191,7 +191,7 @@ class OptionsIntelligenceService:
             "Accept": "application/json,text/plain,*/*",
             "Accept-Language": "en-IN,en;q=0.9",
             "Referer": "https://www.nseindia.com/option-chain",
-            "User-Agent": "Mozilla/5.0 OpenTrade/1.0 (+options-intelligence)",
+            "User-Agent": "Mozilla/5.0 OpenStocks/1.0 (+options-intelligence)",
         }
 
     def _index_symbols(self) -> list[str]:

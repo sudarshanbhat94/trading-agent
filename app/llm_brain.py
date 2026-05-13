@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import asyncio
 import re
@@ -208,8 +209,8 @@ class LLMBrain:
             "temperature": 0,
             "top_p": 0.1,
             "max_tokens": self._test_max_tokens(),
-            "_opentrade_usage_component": "llm_brain",
-            "_opentrade_usage_purpose": "health_check",
+            "_openstocks_usage_component": "llm_brain",
+            "_openstocks_usage_purpose": "health_check",
             "messages": [
                 {
                     "role": "system",
@@ -375,48 +376,15 @@ class LLMBrain:
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
             "max_tokens": self._decision_max_tokens(),
-            "_opentrade_usage_component": "llm_brain",
-            "_opentrade_usage_purpose": "decision",
+            "_openstocks_usage_component": "llm_brain",
+            "_openstocks_usage_purpose": "decision",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are OpenTrade Intelligence v2.0, an institutional-style dry-run analyst for Indian equities. "
-                        "Use the supplied MCP-style tool context: quote, candles, exact math indicators, "
-                        "candlestick facts, strategy_signals, sentiment, global market context, free institutional "
-                        "feed context, universe scan rank, full_spectrum_analysis, position, and risk limits. "
-                        "You must explicitly use stage_analysis, entry_quality.entry_grade, breakout_quality.two_day_rule_failed, "
-                        "price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, "
-                        "sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, "
-                        "delivery_accumulation.institutional_fingerprint, and options_oi.max_pain_distance_pct. BUY is permitted only in Stage2_Markup; "
-                        "entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or "
-                        "bear_confirmed breadth means HOLD. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
-                        "system_gate_audit is mandatory and absolute: if hard_blocked is true or overall_score_pct is below 55, your action must be HOLD for new entries. "
-                        "Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
-                        "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true. "
-                        "risk_checks must say whether each new gate passed or failed. If you recommend BUY while any "
-                        "new gate conflicts, acknowledge that conflict in reason. "
-                        "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, "
-                        "evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, "
-                        "monitoring_checklist, and data_gaps. "
-                        "Your entire response must be one JSON object. The first character must be { and the last "
-                        "character must be }. Do not include markdown, scratchpad, reasoning text, or commentary. "
-                        "Keep it compact: no newline characters inside strings, reason <= 280 characters, "
-                        "each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. "
-                        "action must be BUY, SELL, or HOLD. confidence is 0..1. "
-                        "strategy must be one of the supplied strategy_signals names or best_strategy.name. "
-                        "risk must be LOW, MEDIUM, or HIGH. "
-                        "reason must be concise; evidence must list the concrete inputs that support the action. "
-                        "risk_checks must list the gates that passed or failed. "
-                        "invalidators must list the exact conditions that would make the action wrong. "
-                        "Respect confluence_score: below 10 means HOLD, 10-15 watchlist only, 16+ may trade, "
-                        "18+ high conviction, 22+ maximum conviction. For new BUY decisions, also require "
-                        "institutional_scorecard.buy_ready=true; hard vetoes or failed must-pass gates override your opinion. "
-                        "If an existing long position is supplied, act as the exit/risk manager: SELL only when "
-                        "the hard stop, target/invalidation, technical breakdown, news shock, or risk-off regime "
-                        "justifies exit; otherwise HOLD with a concrete updated exit plan. "
-                        "Be conservative: HOLD unless the candle structure, math, sentiment, global regime, and risk all support action. "
-                        "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
+                        _budget_decision_system_prompt(prompt_context)
+                        if self.settings.llm_provider == "groq"
+                        else _decision_system_prompt(prompt_context)
                     ),
                 },
                 {
@@ -426,9 +394,11 @@ class LLMBrain:
             ],
         }
         self._apply_model_options(payload, schema=DECISION_SCHEMA)
+        prompt_audit = _llm_payload_audit(prompt_context, payload["messages"][0]["content"], payload)
         try:
             parsed = await self._chat_json(payload, retry_payload=self._compact_decision_retry_payload(context))
             parsed.update(rolling_meta)
+            parsed["_llm_prompt_audit"] = prompt_audit
             requested_action = str(parsed.get("action", "HOLD")).upper()
             confidence = max(min(float(parsed.get("confidence", 0)), 1.0), 0.0)
             confidence_gate_passed = confidence >= self.settings.llm_primary_min_confidence
@@ -484,23 +454,13 @@ class LLMBrain:
             "temperature": min(self.settings.llm_temperature, 0.2),
             "top_p": min(self.settings.llm_top_p, 0.7),
             "max_tokens": self._review_max_tokens(),
-            "_opentrade_usage_component": "llm_brain",
-            "_opentrade_usage_purpose": "review",
+            "_openstocks_usage_component": "llm_brain",
+            "_openstocks_usage_purpose": "review",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are a dry-run equity trading risk reviewer. "
-                        "Return strict JSON only with action BUY, SELL, or HOLD; "
-                        "confidence from 0 to 1; reason; evidence; risk_checks; invalidators; "
-                        "signal_plan; confluence_score; trade_plan; monitoring_checklist; and data_gaps. "
-                        "Your entire response must be one JSON object. Do not include markdown, scratchpad, "
-                        "reasoning text, or commentary. "
-                        "Keep it compact: no newline characters inside strings, reason <= 280 characters, "
-                        "each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. "
-                        "For existing long positions, review whether to continue holding or exit based on stop, "
-                        "target, invalidation, technical breakdown, news, and market regime. "
-                        "Never recommend leverage, options, futures, or short-selling."
+                        _review_system_prompt(prompt_context)
                     ),
                 },
                 {
@@ -520,9 +480,11 @@ class LLMBrain:
             ],
         }
         self._apply_model_options(payload, schema=DECISION_SCHEMA)
+        prompt_audit = _llm_payload_audit(prompt_context, payload["messages"][0]["content"], payload)
         try:
             parsed = await self._chat_json(payload)
             parsed.update(rolling_meta)
+            parsed["_llm_prompt_audit"] = prompt_audit
             action = str(parsed.get("action", decision.action)).upper()
             confidence = max(min(float(parsed.get("confidence", decision.confidence)), 1.0), 0.0)
             action, policy_gates = _policy_gate_action(
@@ -558,7 +520,7 @@ class LLMBrain:
                 price=decision.price,
                 technical_score=decision.technical_score,
                 sentiment_score=decision.sentiment_score,
-                reason=f"LLM review failed, so OpenTrade forced HOLD and did not preserve the deterministic trade: {_error_summary(exc)}"[:700],
+                reason=f"LLM review failed, so OpenStocks forced HOLD and did not preserve the deterministic trade: {_error_summary(exc)}"[:700],
                 asof=decision.asof,
                 strategy=decision.strategy,
                 details_json=_json_dumps(
@@ -566,7 +528,7 @@ class LLMBrain:
                         "audit_version": 1,
                         "decision_path": "llm_review_failed",
                         "final_action": "HOLD",
-                        "action_reason": "LLM review failed, so OpenTrade forced HOLD.",
+                        "action_reason": "LLM review failed, so OpenStocks forced HOLD.",
                         "candidate_decision": original,
                         "context": _compact_context(context),
                         "sizing_grade": context.get("sizing_grade"),
@@ -591,7 +553,7 @@ class LLMBrain:
 
     async def _decision_prompt_context(self, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         if self.settings.llm_provider == "groq":
-            return _compact_retry_context(context), {"_llm_analysis_mode": "token_budget_context"}
+            return _groq_budget_context(context), {"_llm_analysis_mode": "groq_budget_context"}
 
         cycle_safe_context = _llm_prompt_context(context, profile="compact")
         cycle_safe_json = json.dumps(cycle_safe_context, default=str, separators=(",", ":"))
@@ -617,18 +579,13 @@ class LLMBrain:
                 "temperature": 0,
                 "top_p": 0.1,
                 "max_tokens": max(600, min(self.settings.llm_max_tokens, 1200)),
-                "_opentrade_usage_component": "llm_brain",
-                "_opentrade_usage_purpose": "rolling_summary",
+                "_openstocks_usage_component": "llm_brain",
+                "_openstocks_usage_purpose": "rolling_summary",
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are compressing one chunk of an Indian equity trading context for a later decision. "
-                            "Return one strict JSON object only. Preserve numeric thresholds, risk vetoes, data gaps, "
-                            "scorecard values, institutional flow, news, indicators, and trade implications. "
-                            "Do not make the final BUY/SELL/HOLD decision."
-                        ),
-                    },
+	                    {
+	                        "role": "system",
+	                        "content": _rolling_summary_system_prompt(context),
+	                    },
                     {
                         "role": "user",
                         "content": json.dumps(
@@ -671,7 +628,7 @@ class LLMBrain:
 
         rolling_context = _prune_empty(
             {
-                "tool_protocol": "opentrade-rolling-decision-context-v1",
+                "tool_protocol": "openstocks-rolling-decision-context-v1",
                 "core_decision_context": _llm_prompt_context(context, profile="compact"),
                 "rolling_context_coverage": {
                     "full_context_chars": len(rich_json),
@@ -806,8 +763,8 @@ class LLMBrain:
             "temperature": 0,
             "top_p": 0.1,
             "max_tokens": max(500, min(self.settings.llm_max_tokens, 800)),
-            "_opentrade_usage_component": "llm_brain",
-            "_opentrade_usage_purpose": "decision_retry",
+            "_openstocks_usage_component": "llm_brain",
+            "_openstocks_usage_purpose": "decision_retry",
             "messages": [
                 {
                     "role": "system",
@@ -822,7 +779,10 @@ class LLMBrain:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(_compact_retry_context(context), separators=(",", ":")),
+                    "content": json.dumps(
+                        _groq_budget_context(context) if self.settings.llm_provider == "groq" else _compact_retry_context(context),
+                        separators=(",", ":"),
+                    ),
                 },
             ],
         }
@@ -898,8 +858,8 @@ class LLMBrain:
             "temperature": 0,
             "top_p": 0.1,
             "max_tokens": max(500, min(self.settings.llm_max_tokens, 900)),
-            "_opentrade_usage_component": "llm_brain",
-            "_opentrade_usage_purpose": "json_repair",
+            "_openstocks_usage_component": "llm_brain",
+            "_openstocks_usage_purpose": "json_repair",
             "messages": [
                 {
                     "role": "system",
@@ -1111,10 +1071,10 @@ class LLMBrain:
         if self.settings.llm_provider == "deepseek":
             return max(900, min(self.settings.llm_max_tokens, 4096))
         if self.settings.llm_provider == "groq":
-            # Qwen reasoning models count hidden reasoning against completion
-            # tokens. 700 often leaves too little room for the final JSON and
-            # causes a truncated safe-HOLD fallback.
-            return max(1200, min(self.settings.llm_max_tokens, 2048))
+            # Groq on-demand Qwen commonly enforces a tight TPM budget. Keep
+            # the response compact so the decision call does not fail before
+            # a usable JSON answer is returned.
+            return max(550, min(self.settings.llm_max_tokens, 750))
         return max(350, min(self.settings.llm_max_tokens, 1400))
 
     def _review_max_tokens(self) -> int:
@@ -1162,7 +1122,7 @@ class LLMBrain:
 
     def _apply_groq_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
         # Groq's JSON response_format can reject Qwen generations with
-        # json_validate_failed before any text is returned. Let OpenTrade parse
+        # json_validate_failed before any text is returned. Let OpenStocks parse
         # and repair the model text instead so a provider-side formatting miss
         # does not stop a trading cycle.
         payload.pop("response_format", None)
@@ -1182,8 +1142,8 @@ class LLMBrain:
             return
         try:
             event = build_llm_usage_event(
-                component=str(local_payload.get("_opentrade_usage_component") or "llm_brain"),
-                purpose=str(local_payload.get("_opentrade_usage_purpose") or "chat"),
+                component=str(local_payload.get("_openstocks_usage_component") or "llm_brain"),
+                purpose=str(local_payload.get("_openstocks_usage_purpose") or "chat"),
                 provider=endpoint.provider,
                 model=endpoint.model,
                 payload=api_payload,
@@ -1213,13 +1173,13 @@ class LLMBrain:
         wait_seconds = await asyncio.to_thread(_provider_rate_wait_seconds, self.db, endpoint.provider, api_payload)
         if wait_seconds <= 0:
             return
-        purpose = str(api_payload.get("_opentrade_usage_purpose") or "chat")
+        purpose = str(api_payload.get("_openstocks_usage_purpose") or "chat")
         try:
             self.db.insert_agent_log(
                 "INFO",
                 "llm",
                 "llm_rate_limit_wait",
-                "OpenTrade Brain is waiting for provider token capacity before retrying.",
+                "OpenStocks Brain is waiting for provider token capacity before retrying.",
                 {
                     "provider": endpoint.provider,
                     "model": endpoint.model,
@@ -1243,7 +1203,7 @@ class LLMBrain:
     ) -> None:
         if self.db is None:
             return
-        purpose = str(local_payload.get("_opentrade_usage_purpose") or "chat")
+        purpose = str(local_payload.get("_openstocks_usage_purpose") or "chat")
         if purpose not in {"decision", "decision_retry", "llm_review", "rolling_summary", "json_repair"}:
             return
         try:
@@ -1258,7 +1218,7 @@ class LLMBrain:
                 "INFO" if status == "ok" else "WARNING",
                 "llm",
                 "llm_attempt",
-                f"OpenTrade Brain {purpose} attempt {status}",
+                f"OpenStocks Brain {purpose} attempt {status}",
                 {
                     "purpose": purpose,
                     "status": status,
@@ -1392,9 +1352,10 @@ class LLMBrain:
                 "configured_provider": self.settings.llm_provider,
                 "configured_model": self.model,
                 "model_attempts": parsed.get("_llm_attempts", []),
-                "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
-                "rolling_context": parsed.get("_rolling_context"),
-                "requested_action": requested_action,
+	                "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
+	                "rolling_context": parsed.get("_rolling_context"),
+	                "llm_prompt_audit": parsed.get("_llm_prompt_audit"),
+	                "requested_action": requested_action,
                 "final_action": final_action,
                 "action_reason": parsed.get("reason", "no reason supplied"),
                 "confidence": round(confidence, 4),
@@ -1471,9 +1432,10 @@ class LLMBrain:
                 "configured_provider": self.settings.llm_provider,
                 "configured_model": self.model,
                 "model_attempts": parsed.get("_llm_attempts", []),
-                "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
-                "rolling_context": parsed.get("_rolling_context"),
-                "candidate_decision": _decision_summary(original),
+	                "analysis_mode": parsed.get("_llm_analysis_mode", "single_context"),
+	                "rolling_context": parsed.get("_rolling_context"),
+	                "llm_prompt_audit": parsed.get("_llm_prompt_audit"),
+	                "candidate_decision": _decision_summary(original),
                 "final_action": final_action,
                 "confidence": round(confidence, 4),
                 "json_repaired": bool(parsed.get("_json_repaired")),
@@ -1520,6 +1482,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     return {
         "symbol": context.get("symbol"),
         "company": context.get("company"),
+        "market_region": context.get("market_region"),
+        "currency": context.get("currency"),
         "sector": context.get("sector"),
         "exchange": context.get("exchange"),
         "quote": context.get("quote"),
@@ -1545,6 +1509,98 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _market_region_from_context(context: dict[str, Any]) -> str:
+    region = str(context.get("market_region") or context.get("market") or "").upper()
+    if region in {"US", "IN"}:
+        return region
+    exchange = str(context.get("exchange") or "").upper()
+    if exchange in {"NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS", "OTC"}:
+        return "US"
+    quote = context.get("quote") or {}
+    source = str(quote.get("source") if isinstance(quote, dict) else "").lower()
+    if "yahoo" in source and exchange not in {"NSE", "BSE"}:
+        return "US"
+    return "IN"
+
+
+def _decision_system_prompt(prompt_context: dict[str, Any]) -> str:
+    market_region = _market_region_from_context(prompt_context)
+    currency = "USD" if market_region == "US" else "INR"
+    market_scope = "US equities" if market_region == "US" else "Indian equities"
+    market_specific = (
+        "For US equities, do not use or infer NSE delivery data, FII/DII flows, F&O stock option-chain gates, expiry-day rules, or rupee-based assumptions unless the supplied context explicitly marks an equivalent US feed as available. Treat omitted market-specific feeds as data gaps, not bearish signals. "
+        if market_region == "US"
+        else "For Indian equities, use supplied NSE delivery, sector rotation, options/OI, expiry, and institutional-feed context only when the feed says it is available. "
+    )
+    return (
+        f"You are OpenStocks Intelligence v2.0, an institutional-style dry-run analyst for {market_scope}. "
+        f"All price and plan values are in {currency}. Use only the supplied MCP-style tool context for this exact symbol and market; ignore unrelated universe noise. "
+        "Use quote, candles, exact math indicators, candlestick facts, strategy_signals, sentiment/news, global market context, universe scan rank, full_spectrum_analysis, position, and risk limits. "
+        f"{market_specific}"
+        "You must explicitly use stage_analysis, entry_quality.entry_grade, breakout_quality.two_day_rule_failed, price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, delivery_accumulation.institutional_fingerprint when applicable, and options_oi.max_pain_distance_pct when applicable. "
+        "BUY is permitted only in Stage2_Markup; entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or bear_confirmed breadth means HOLD. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
+        "system_gate_audit is mandatory and absolute: if hard_blocked is true or overall_score_pct is below 55, your action must be HOLD for new entries. Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
+        "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true. risk_checks must say whether each new gate passed or failed. If you recommend BUY while any new gate conflicts, acknowledge that conflict in reason. "
+        "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, and data_gaps. "
+        "Your entire response must be one JSON object. The first character must be { and the last character must be }. Do not include markdown, scratchpad, reasoning text, or commentary. "
+        "Keep it compact: no newline characters inside strings, reason <= 280 characters, each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. action must be BUY, SELL, or HOLD. confidence is 0..1. strategy must be one of the supplied strategy_signals names or best_strategy.name. risk must be LOW, MEDIUM, or HIGH. "
+        "Respect confluence_score: below 10 means HOLD, 10-15 watchlist only, 16+ may trade, 18+ high conviction, 22+ maximum conviction. For new BUY decisions, also require institutional_scorecard.buy_ready=true; hard vetoes or failed must-pass gates override your opinion. "
+        "If an existing long position is supplied, act as the exit/risk manager: SELL only when the hard stop, target/invalidation, technical breakdown, news shock, or risk-off regime justifies exit; otherwise HOLD with a concrete updated exit plan. "
+        "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
+    )
+
+
+def _budget_decision_system_prompt(prompt_context: dict[str, Any]) -> str:
+    market_region = _market_region_from_context(prompt_context)
+    currency = "USD" if market_region == "US" else "INR"
+    return (
+        f"You are OpenStocks Brain for {market_region} equities. Prices are in {currency}. "
+        "Return one strict minified JSON object only, with no markdown or reasoning text. "
+        "Required keys: action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, data_gaps. "
+        "Use only supplied data. HARD rules: hard_blocked=true, Stage not Stage2_Markup, entry grade WATCH/D, failed two-day breakout, climax top, D alignment, bear_confirmed breadth, or buy_suppressed options means HOLD for new entries. "
+        "Sentiment 0 means DATA_MISSING. Below confluence 16 is watch/HOLD unless already managing an open position. Keep reason under 180 chars and every list under 4 short items."
+    )
+
+
+def _review_system_prompt(prompt_context: dict[str, Any]) -> str:
+    market_region = _market_region_from_context(prompt_context)
+    currency = "USD" if market_region == "US" else "INR"
+    return (
+        f"You are an OpenStocks dry-run equity trading risk reviewer for {market_region} market positions. All prices are in {currency}. "
+        "Return strict JSON only with action BUY, SELL, or HOLD; confidence from 0 to 1; reason; evidence; risk_checks; invalidators; signal_plan; confluence_score; trade_plan; monitoring_checklist; and data_gaps. "
+        "Your entire response must be one JSON object. Do not include markdown, scratchpad, reasoning text, or commentary. Keep it compact: no newline characters inside strings, reason <= 280 characters, each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. "
+        "For existing long positions, review whether to continue holding or exit based on stop, target, invalidation, technical breakdown, news, and market regime. Do not use India-only NSE delivery/options/expiry signals for US symbols unless the context explicitly says such data is available. Never recommend leverage, options, futures, or short-selling."
+    )
+
+
+def _rolling_summary_system_prompt(context: dict[str, Any]) -> str:
+    market_region = _market_region_from_context(context)
+    return (
+        f"You are compressing one chunk of an OpenStocks {market_region} equity trading context for a later decision. "
+        "Return one strict JSON object only. Preserve numeric thresholds, risk vetoes, data gaps, scorecard values, market-specific feed availability, news, indicators, and trade implications. Do not make the final BUY/SELL/HOLD decision."
+    )
+
+
+def _llm_payload_audit(prompt_context: dict[str, Any], system_prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+    context_json = json.dumps(prompt_context, default=str, separators=(",", ":"))
+    system_chars = len(system_prompt)
+    context_chars = len(context_json)
+    payload_chars = system_chars + context_chars
+    return {
+        "market_region": _market_region_from_context(prompt_context),
+        "currency": prompt_context.get("currency"),
+        "model": payload.get("model"),
+        "mode": "exact_context_sent_to_llm",
+        "system_prompt_chars": system_chars,
+        "context_chars": context_chars,
+        "estimated_input_tokens": round(payload_chars * 0.3, 1),
+        "included_sections": sorted(prompt_context.keys()),
+        "context_sha256": hashlib.sha256(context_json.encode("utf-8")).hexdigest(),
+        "system_prompt": system_prompt,
+        "user_context": prompt_context,
+    }
+
+
 def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> dict[str, Any]:
     full = context.get("full_spectrum_analysis") or {}
     institutional = context.get("institutional_context") or {}
@@ -1552,11 +1608,34 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
     symbol = str(context.get("symbol") or "").upper()
     recent_candles = context.get("recent_candles") or []
     rich = profile == "rich"
+    market_region = _market_region_from_context(context)
+    currency = "USD" if market_region == "US" else "INR"
+    delivery_data = context.get("delivery_data") if market_region == "IN" else {
+        "available": False,
+        "data_gap": "NSE delivery bhavcopy is not applicable to US equities.",
+    }
+    institutional_prompt = (
+        {
+            "enabled": institutional.get("enabled"),
+            "source_quality": institutional.get("source_quality"),
+            "market_bias": institutional.get("market_bias"),
+            "symbol_flags": (institutional.get("symbol_flags") or {}).get(symbol, {}),
+            "data_gaps": _limit_list(institutional.get("data_gaps"), 16 if rich else 8),
+        }
+        if market_region == "IN"
+        else {
+            "enabled": False,
+            "source_quality": "not_applicable_to_us_market",
+            "data_gaps": ["NSE/FII/DII delivery feeds are omitted for US equities."],
+        }
+    )
     return _prune_empty(
         {
-            "tool_protocol": "opentrade-rich-decision-context-v1" if rich else "opentrade-compact-decision-context-v1",
+            "tool_protocol": "openstocks-rich-decision-context-v1" if rich else "openstocks-compact-decision-context-v1",
             "symbol": context.get("symbol"),
             "company": context.get("company"),
+            "market_region": market_region,
+            "currency": currency,
             "sector": context.get("sector"),
             "exchange": context.get("exchange"),
             "quote": context.get("quote"),
@@ -1567,20 +1646,19 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             "best_strategy": context.get("best_strategy"),
             "sentiment": context.get("sentiment"),
             "global_market_context": _compact_global_context(context.get("global_market_context") or {}, limit=16 if rich else 8),
-            "institutional_context": {
-                "enabled": institutional.get("enabled"),
-                "source_quality": institutional.get("source_quality"),
-                "market_bias": institutional.get("market_bias"),
-                "symbol_flags": (institutional.get("symbol_flags") or {}).get(symbol, {}),
-                "data_gaps": _limit_list(institutional.get("data_gaps"), 16 if rich else 8),
-            },
+            "institutional_context": institutional_prompt,
             "market_breadth_context": context.get("market_breadth_context"),
             "macro_event_context": context.get("macro_event_context"),
             "timeframe_data": context.get("timeframe_data"),
             "sector_rotation": context.get("sector_rotation"),
-            "delivery_data": context.get("delivery_data"),
+            "delivery_data": delivery_data,
             "system_gate_audit": context.get("system_gate_audit"),
-            "full_spectrum_analysis": _compact_full_spectrum_for_llm(full, institutional_flow, rich=rich),
+            "full_spectrum_analysis": _compact_full_spectrum_for_llm(
+                full,
+                institutional_flow if market_region == "IN" else {},
+                rich=rich,
+                market_region=market_region,
+            ),
             "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
             "universe_scan": context.get("universe_scan"),
             "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-(16 if rich else 5):]],
@@ -1604,9 +1682,19 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
     breadth = full.get("market_breadth") or context.get("market_breadth_context") or {}
     macro_event = full.get("macro_event_context") or context.get("macro_event_context") or {}
     scorecard = full.get("institutional_scorecard") or {}
+    market_region = _market_region_from_context(context)
+    currency = "USD" if market_region == "US" else "INR"
+    if market_region == "US":
+        delivery = {
+            "available": False,
+            "data_gap": "NSE delivery bhavcopy is not applicable to US equities.",
+        }
+        institutional_flow = {}
     return _prune_empty(
         {
             "symbol": context.get("symbol"),
+            "market_region": market_region,
+            "currency": currency,
             "quote": context.get("quote"),
             "position": context.get("position"),
             "technical_math": context.get("technical_math"),
@@ -1679,6 +1767,124 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
+    full = context.get("full_spectrum_analysis") or {}
+    trend = full.get("trend_context") or {}
+    indicators = full.get("indicator_suite") or {}
+    confluence = full.get("confluence_score") or {}
+    trade_plan = full.get("trade_plan") or {}
+    stage = full.get("stage_analysis") or {}
+    entry = full.get("entry_quality") or {}
+    breakout = full.get("breakout_quality") or {}
+    divergence = full.get("price_volume_divergence") or {}
+    sector = full.get("sector_rotation") or context.get("sector_rotation") or {}
+    delivery = full.get("delivery_accumulation") or context.get("delivery_data") or {}
+    breadth = full.get("market_breadth") or context.get("market_breadth_context") or {}
+    macro_event = full.get("macro_event_context") or context.get("macro_event_context") or {}
+    scorecard = full.get("institutional_scorecard") or {}
+    try:
+        score_breakdown = context.get("score_breakdown") or deterministic_score_breakdown(context)
+    except Exception:
+        score_breakdown = {}
+    market_region = _market_region_from_context(context)
+    if market_region == "US":
+        delivery = {"available": False, "data_gap": "NSE delivery not applicable to US equities."}
+    quote = context.get("quote") or {}
+    technical = context.get("technical_math") or {}
+    sentiment = context.get("sentiment") or {}
+    risk_overrides = full.get("risk_overrides") or {}
+    options_oi = full.get("options_oi") or {}
+    recent_candles = context.get("recent_candles") or []
+    return _prune_empty(
+        {
+            "symbol": context.get("symbol"),
+            "company": context.get("company"),
+            "market_region": market_region,
+            "currency": "USD" if market_region == "US" else "INR",
+            "quote": _short_object(quote, ["price", "close", "volume", "source", "ts"], 80),
+            "position": _short_object(context.get("position") or {}, ["qty", "avg_price", "market_price", "unrealized_pnl"], 80),
+            "technical": _prune_empty(
+                {
+                    "score": technical.get("score"),
+                    "trend": technical.get("trend"),
+                    "rsi": technical.get("rsi"),
+                    "sma_fast": technical.get("sma_fast"),
+                    "sma_slow": technical.get("sma_slow"),
+                    "momentum_pct": technical.get("momentum_pct"),
+                    "atr_pct": indicators.get("atr_pct"),
+                    "adx": indicators.get("adx"),
+                    "volume_ratio_20": indicators.get("volume_ratio_20"),
+                }
+            ),
+            "strategies": _top_strategy_signals(context.get("strategy_signals") or [], limit=3),
+            "best_strategy": _short_object(context.get("best_strategy") or {}, ["name", "score", "direction", "confidence"], 80),
+            "sentiment": _short_object(sentiment, ["score", "confidence", "headline_count", "data_source", "label"], 120),
+            "must_pass_gates": _prune_empty(
+                {
+                    "hard_blocked": (context.get("system_gate_audit") or {}).get("hard_blocked"),
+                    "overall_score_pct": (context.get("system_gate_audit") or {}).get("overall_score_pct"),
+                    "classification": ((context.get("system_gate_audit") or {}).get("classification") or {}).get("classification"),
+                    "active_flags": _limit_list((context.get("system_gate_audit") or {}).get("active_flags"), 5),
+                    "stage": stage.get("stage"),
+                    "stage_buy_permitted": stage.get("buy_permitted"),
+                    "entry_grade": entry.get("entry_grade"),
+                    "breakout_quality": breakout.get("breakout_quality"),
+                    "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+                    "climax_volume_top": divergence.get("climax_volume_top"),
+                    "alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
+                    "breadth_regime": breadth.get("breadth_regime"),
+                    "delivery_bias": delivery.get("bias") or delivery.get("net_bias"),
+                    "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+                    "options_buy_suppressed": options_oi.get("buy_suppressed"),
+                    "earnings_days_away": macro_event.get("earnings_days_away"),
+                    "expiry_day": macro_event.get("is_expiry_day"),
+                    "no_new_longs": risk_overrides.get("no_new_longs"),
+                    "risk_flags": _limit_list(risk_overrides.get("flags"), 6),
+                }
+            ),
+            "scores": _prune_empty(
+                {
+                    "combined": score_breakdown.get("combined"),
+                    "confluence_total": confluence.get("total"),
+                    "confluence_tier": confluence.get("tier"),
+                    "institutional_score": scorecard.get("total_score"),
+                    "institutional_buy_ready": scorecard.get("buy_ready"),
+                    "delivery_score": delivery.get("delivery_score"),
+                    "sector_rotation_score": sector.get("sector_rotation_score"),
+                    "divergence_score": divergence.get("divergence_score"),
+                    "entry_quality_score": entry.get("quality_score"),
+                }
+            ),
+            "market_context": _prune_empty(
+                {
+                    "sector": context.get("sector"),
+                    "sector_tier": sector.get("sector_tier"),
+                    "sector_stage": sector.get("sector_stage"),
+                    "sector_tailwind": sector.get("sector_tailwind"),
+                    "sector_headwind": sector.get("sector_headwind"),
+                    "pct_above_50dma": breadth.get("pct_above_50dma"),
+                    "advance_decline_ratio": breadth.get("advance_decline_ratio"),
+                }
+            ),
+            "trade_plan": _prune_empty(
+                {
+                    "entry_zone": trade_plan.get("entry_zone"),
+                    "stop_loss": trade_plan.get("stop_loss"),
+                    "targets": _limit_list(trade_plan.get("targets"), 3),
+                    "invalidation": trade_plan.get("invalidation"),
+                }
+            ),
+            "data_quality": _short_object(full.get("data_quality") or {}, ["coverage", "analysis_candle_count", "daily_candle_count", "weekly_candle_count"], 80),
+            "data_gaps": _limit_list(full.get("data_gaps"), 4),
+            "recent_closes": [
+                _short_object(candle, ["ts", "close", "volume"], 80)
+                for candle in recent_candles[-3:]
+                if isinstance(candle, dict)
+            ],
+        }
+    )
+
+
 def _compact_system_gate_audit(audit: dict[str, Any]) -> dict[str, Any]:
     classification = audit.get("classification") or {}
     return _prune_empty(
@@ -1730,6 +1936,7 @@ def _compact_full_spectrum_for_llm(
     full: dict[str, Any],
     institutional_flow: dict[str, Any],
     rich: bool = False,
+    market_region: str = "IN",
 ) -> dict[str, Any]:
     trend = full.get("trend_context") or {}
     scorecard = full.get("institutional_scorecard") or {}
@@ -1743,6 +1950,11 @@ def _compact_full_spectrum_for_llm(
     sector = full.get("sector_rotation") or {}
     breadth = full.get("market_breadth") or {}
     delivery = full.get("delivery_accumulation") or {}
+    if market_region == "US":
+        delivery = {
+            "available": False,
+            "data_gap": "NSE delivery bhavcopy is not applicable to US equities.",
+        }
     macro_event = full.get("macro_event_context") or {}
     indicators = full.get("indicator_suite") or {}
     return _prune_empty(
@@ -1761,6 +1973,7 @@ def _compact_full_spectrum_for_llm(
                     "sector_headwind": sector.get("sector_headwind"),
                     "breadth_regime": breadth.get("breadth_regime"),
                     "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+                    "market_region": market_region,
                     "expiry_day": macro_event.get("is_expiry_day"),
                     "earnings_days_away": macro_event.get("earnings_days_away"),
                     "no_new_longs": risk_overrides.get("no_new_longs"),
@@ -2209,7 +2422,11 @@ def _json_dumps(value: dict[str, Any]) -> str:
 
 
 def _api_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if not str(key).startswith("_opentrade_")}
+    return {
+        key: value
+        for key, value in payload.items()
+        if not str(key).startswith(("_openstocks_", "_opentrade_"))
+    }
 
 
 def _json_object_candidates(text: str) -> list[str]:
@@ -2597,7 +2814,7 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
     if _all_endpoint_attempts_failed(exc):
         rate_limited = _rate_limited_attempts(attempts)
         reason = (
-            "LLM provider unavailable/rate-limited, so OpenTrade used the safe fallback HOLD. "
+            "LLM provider unavailable/rate-limited, so OpenStocks used the safe fallback HOLD. "
             f"error={_error_summary(exc)[:180]}"
         )
         checklist = [
@@ -2613,7 +2830,7 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
         data_gaps = ["llm_provider_rate_limited" if rate_limited else "llm_provider_unavailable"]
         if _attempts_have_payload_limit(attempts):
             reason = (
-                "LLM request exceeded the provider token budget, so OpenTrade retried compactly or used safe HOLD. "
+                "LLM request exceeded the provider token budget, so OpenStocks retried compactly or used safe HOLD. "
                 f"error={_error_summary(exc)[:180]}"
             )
             checklist = ["llm_payload_too_large", "compact_retry_needed", "safe_hold_fallback_used"]
@@ -2625,7 +2842,7 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
             data_gaps = ["llm_payload_too_large"]
     elif is_timeout:
         reason = (
-            "LLM timed out before returning a strict decision JSON, so OpenTrade used the safe fallback HOLD. "
+            "LLM timed out before returning a strict decision JSON, so OpenStocks used the safe fallback HOLD. "
             f"timeout={_error_summary(exc)[:180]}"
         )
         checklist = ["llm_timeout", "safe_hold_fallback_used", "deterministic_gates_preserved"]
@@ -2637,7 +2854,7 @@ def _synthetic_safe_decision_from_text(content: Any, exc: Exception) -> dict[str
         data_gaps = ["llm_timeout_no_final_json"]
     else:
         reason = (
-            "LLM returned malformed or non-JSON output, so OpenTrade used the safe fallback HOLD. "
+            "LLM returned malformed or non-JSON output, so OpenStocks used the safe fallback HOLD. "
             f"parse_error={_error_summary(exc)[:180]}"
         )
         checklist = ["strict_json_failed", "json_repair_attempted", "safe_hold_fallback_used"]

@@ -32,22 +32,23 @@ class SectorRotationService:
     def __init__(self, settings: Settings, db: Database) -> None:
         self.settings = settings
         self.db = db
-        self._cache: tuple[float, dict[str, Any]] | None = None
+        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     async def compute_sector_scores(
         self,
         universe: list[dict[str, Any]],
         quotes: dict[str, Quote],
         candles_by_symbol: dict[str, list[Candle]],
+        market_region: str = "BOTH",
     ) -> dict[str, Any]:
         if not self.settings.enable_sector_rotation:
             return _neutral("disabled")
-        if self._cache and time.monotonic() - self._cache[0] < self.settings.sector_rotation_cache_seconds:
-            return self._cache[1]
+        cache_key = str(market_region or "BOTH").upper()
+        if cache_key in self._cache and time.monotonic() - self._cache[cache_key][0] < self.settings.sector_rotation_cache_seconds:
+            return self._cache[cache_key][1]
         try:
-            context = self._compute(universe, quotes, candles_by_symbol)
-            self.db.set_state("sector_rotation_context", context)
-            self._cache = (time.monotonic(), context)
+            context = self._compute(universe, quotes, candles_by_symbol, market_region=cache_key)
+            self._cache[cache_key] = (time.monotonic(), context)
             self._log("INFO", "sector_rotation_computed", "Sector rotation computed", context.get("leaderboard"))
             return context
         except Exception as exc:
@@ -56,7 +57,8 @@ class SectorRotationService:
             return context
 
     def get_symbol_sector_context(self, symbol: str, sector: str | None, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        source = context or (self._cache[1] if self._cache else self.db.get_state("sector_rotation_context", {}))
+        cached = self._cache.get("BOTH") or self._cache.get("IN") or self._cache.get("US")
+        source = context or (cached[1] if cached else self.db.get_state("sector_rotation_context", {}))
         symbols = source.get("symbols") or {}
         sectors = source.get("sectors") or {}
         symbol_context = symbols.get(str(symbol).upper())
@@ -85,6 +87,7 @@ class SectorRotationService:
         universe: list[dict[str, Any]],
         quotes: dict[str, Quote],
         candles_by_symbol: dict[str, list[Candle]],
+        market_region: str = "BOTH",
     ) -> dict[str, Any]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         universe_returns_20: list[float] = []
@@ -153,6 +156,7 @@ class SectorRotationService:
         context = {
             "enabled": True,
             "updated_at": utc_now(),
+            "market_region": market_region,
             "nifty_proxy_return_20d": round(nifty_proxy, 4),
             "sectors": sectors,
             "symbols": symbols,

@@ -80,7 +80,7 @@ class UniverseService:
         headers = {
             "Accept": "text/csv,*/*",
             "Referer": "https://www.nseindia.com/market-data/securities-available-for-trading",
-            "User-Agent": "Mozilla/5.0 OpenTrade/1.0",
+            "User-Agent": "Mozilla/5.0 OpenStocks/1.0",
         }
         async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
             response = await client.get(self.settings.nse_equity_list_url)
