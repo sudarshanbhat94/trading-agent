@@ -774,14 +774,6 @@ function render(payload) {
   renderAgentConsole(payload);
   renderSelfAudit(payload.self_audit || {});
   renderShell(payload);
-  const marketEquityRows = payload.equity_curve_by_market?.[activeMarket] || payload.equityCurveByMarket?.[activeMarket] || [];
-  const globalEquityRows = payload.equity_curve || payload.equityCurve || [];
-  const equityRows = Array.isArray(marketEquityRows) && marketEquityRows.length
-    ? marketEquityRows
-    : Array.isArray(globalEquityRows) && globalEquityRows.length
-      ? globalEquityRows
-      : (Number.isFinite(Number(scopedPortfolio.equity)) ? [{ equity: Number(scopedPortfolio.equity), ts: payload.last_cycle_at || new Date().toISOString() }] : []);
-  drawEquity(equityRows, activeMarket);
 }
 
 function renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, portfolio) {
@@ -2996,9 +2988,10 @@ function renderDecisions(rows, options = {}) {
 
 function renderOverviewDecisions(rows, options = {}) {
   const body = byId("overview-decisions-body");
+  const previewLimit = window.matchMedia?.("(max-width: 767px)")?.matches ? 3 : 5;
   body.innerHTML = rows.length
     ? rows
-        .slice(0, 8)
+        .slice(0, previewLimit)
         .map((row, index) => decisionFeedCardHtml(row, index, true))
         .join("")
     : decisionFeedEmptyHtml(Boolean(options.controlRunning));
@@ -3951,6 +3944,7 @@ function prettyJson(value) {
 
 function drawEquity(rows, market = state.activeMarket) {
   const canvas = byId("equity-chart");
+  if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || 720;
@@ -4596,7 +4590,7 @@ updateSessionPill();
 setInterval(updateSessionPill, 60_000);
 loadInitial();
 window.addEventListener("resize", () => {
-  if (state.latest) {
+  if (state.latest && byId("equity-chart")) {
     const market = normalizeUiMarket(state.activeMarket);
     const scoped = marketPortfolioFromPayload(state.latest, market);
     const rows = state.latest.equity_curve_by_market?.[market] || state.latest.equity_curve || [{ equity: scoped.equity, ts: state.latest.last_cycle_at || new Date().toISOString() }];

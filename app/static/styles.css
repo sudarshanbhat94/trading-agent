@@ -7414,17 +7414,12 @@ body.is-user #stop-btn {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
-.equity-card {
-  grid-column: span 2;
-  min-height: 360px;
-}
-
 .health-card {
-  grid-column: span 1;
+  grid-column: 1 / -1;
 }
 
 .decision-feed-panel,
@@ -7499,6 +7494,10 @@ body.is-user #stop-btn {
 
 .sector-heatmap-card {
   align-self: start;
+}
+
+.health-card .ops-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .positions-preview-card,
@@ -7984,13 +7983,16 @@ body.is-user .admin-diagnostics-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .equity-card,
   .health-card,
   .decision-feed-panel,
   .sector-heatmap-card,
   .positions-preview-card,
   .product-track-panel {
     grid-column: 1 / -1;
+  }
+
+  .health-card .ops-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -8108,6 +8110,10 @@ body.is-user .admin-diagnostics-panel {
   }
 
   .sector-heatmap {
+    grid-template-columns: 1fr;
+  }
+
+  .health-card .ops-grid {
     grid-template-columns: 1fr;
   }
 
@@ -8419,13 +8425,6 @@ body {
 .panel-head button:not(.primary),
 .chart-pills button {
   background: var(--surface-0);
-}
-
-.equity-card canvas {
-  display: block;
-  width: 100%;
-  min-height: 290px;
-  padding: 12px 16px;
 }
 
 .decision-feed-card.active {
@@ -8972,5 +8971,262 @@ body[data-theme="dark"] th {
   .decision-list-full,
   .decision-detail-panel {
     max-height: none;
+  }
+}
+
+/* Mobile app pass: make the dashboard behave like a compact trading app. */
+@media (max-width: 767px) {
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .terminal-topbar {
+    grid-template-columns: 38px minmax(0, 1fr) 38px;
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .sidebar-toggle {
+    grid-column: 1;
+    grid-row: 1;
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+  }
+
+  .global-search {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .global-search input {
+    width: 100%;
+    min-width: 0;
+    height: 38px;
+    font-size: 13px;
+    text-overflow: ellipsis;
+  }
+
+  .top-actions {
+    grid-column: 3 !important;
+    grid-row: 1 !important;
+    width: 38px;
+    min-width: 38px;
+    overflow: visible;
+  }
+
+  .top-actions .credit-chip,
+  .top-actions .mode-pill,
+  .top-actions .user-menu,
+  .top-actions .agent-status {
+    display: none !important;
+  }
+
+  #theme-toggle-btn {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0;
+  }
+
+  .market-tape {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .market-tape-label {
+    padding-inline: 8px;
+  }
+
+  .market-tape-item {
+    max-width: 168px;
+  }
+
+  .terminal-body {
+    padding: 14px 10px 88px;
+  }
+
+  .workspace-head {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .workspace-head h2 {
+    font-size: 21px;
+    line-height: 1.12;
+  }
+
+  .workspace-head p {
+    max-width: 100%;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .cycle-stamp {
+    justify-self: start;
+    width: auto;
+    min-height: 32px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .market-workspace-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .market-workspace-tab {
+    min-width: 0;
+    padding: 8px 10px;
+  }
+
+  .market-workspace-tab span,
+  .market-workspace-tab strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .paper-mode-banner {
+    align-items: flex-start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    gap: 8px 10px;
+    padding: 14px;
+  }
+
+  .paper-mode-banner span {
+    grid-column: 1 / -1;
+    line-height: 1.45;
+  }
+
+  .paper-mode-banner button {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .portfolio-strip,
+  .dashboard-grid,
+  .split-layout,
+  .admin-layout,
+  .dashboard-admin-row,
+  .symbol-lab,
+  #suggestions-view .signal-history-list {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-strip .kpi,
+  .portfolio-strip .kpi:first-child {
+    grid-column: auto;
+  }
+
+  .kpi {
+    min-height: 82px;
+    padding: 12px 14px;
+  }
+
+  .kpi strong {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+  }
+
+  .health-card .ops-grid,
+  .sector-heatmap {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-feed-panel,
+  .sector-heatmap-card {
+    min-height: 0;
+    max-height: none;
+  }
+
+  .decision-feed-panel .decision-card-list {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .positions-preview-card .table-wrap,
+  .product-track-panel,
+  .panel {
+    min-width: 0;
+  }
+
+  .app-sidebar {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 66px;
+    border-top: 1px solid var(--border-color);
+    border-right: 0;
+    background: color-mix(in srgb, var(--surface-0) 94%, transparent);
+    backdrop-filter: blur(18px);
+  }
+
+  .app-sidebar .nav {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: center;
+    gap: 4px;
+    height: 100%;
+    padding: 6px;
+  }
+
+  .app-sidebar .nav-section-label,
+  .app-sidebar .nav-item[data-view="suggestions"],
+  .app-sidebar .nav-item[data-view="orders"],
+  .app-sidebar .nav-item[data-view="sentiment"],
+  .app-sidebar .nav-item.admin-only {
+    display: none !important;
+  }
+
+  .app-sidebar .nav-item[data-view="overview"] { order: 1; }
+  .app-sidebar .nav-item[data-view="analyze"] { order: 2; }
+  .app-sidebar .nav-item[data-view="positions"] { order: 3; }
+  .app-sidebar .nav-item[data-view="decisions"] { order: 4; }
+  .app-sidebar .nav-item[data-view="account"] { order: 5; }
+
+  .nav-item {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    align-content: center;
+    min-width: 0;
+    min-height: 52px;
+    gap: 2px;
+    padding: 0;
+    border-left: 0;
+    border-bottom: 3px solid transparent;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+
+  .nav-item .nav-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .nav-item span:not(.nav-icon) {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 10px;
+    line-height: 1.1;
+  }
+
+  .nav-item strong {
+    display: none;
+  }
+
+  .nav-item.active {
+    border-bottom-color: var(--color-brand-primary);
+    background: color-mix(in srgb, var(--color-brand-primary) 9%, var(--surface-1));
   }
 }
