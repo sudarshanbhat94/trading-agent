@@ -2809,21 +2809,26 @@ class Database:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def latest_decisions(self, limit: int = 80) -> list[dict[str, Any]]:
+    def latest_decisions(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
+        where_sql, params = _market_region_where("u", market_region)
+        where_clause = f"where {where_sql}" if where_sql else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
                 select d.*, {_market_region_case("u")} as market_region
                 from decisions d
                 left join universe u on u.symbol = d.symbol
+                {where_clause}
                 order by d.id desc
                 limit ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def latest_decision_summaries(self, limit: int = 80) -> list[dict[str, Any]]:
+    def latest_decision_summaries(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
+        where_sql, params = _market_region_where("u", market_region)
+        where_clause = f"where {where_sql}" if where_sql else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -2832,10 +2837,11 @@ class Database:
                     {_market_region_case("u")} as market_region
                 from decisions d
                 left join universe u on u.symbol = d.symbol
+                {where_clause}
                 order by d.id desc
                 limit ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 

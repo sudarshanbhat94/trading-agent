@@ -351,6 +351,10 @@ class TradingAgentService:
     def snapshot(self) -> dict[str, Any]:
         quotes = self.db.latest_quotes()
         decisions = _with_detail_urls(self.db.latest_decision_summaries(80), "decisions")
+        decisions_by_market = {
+            "IN": _with_detail_urls(self.db.latest_decision_summaries(80, market_region="IN"), "decisions"),
+            "US": _with_detail_urls(self.db.latest_decision_summaries(80, market_region="US"), "decisions"),
+        }
         suggestion_decisions = self.db.latest_decisions(240)
         orders = _with_detail_urls(self.db.latest_order_summaries(80), "orders")
         order_audit_history = self.db.latest_orders(240)
@@ -407,6 +411,7 @@ class TradingAgentService:
             "positions": positions,
             "quotes": quotes,
             "decisions": decisions,
+            "decisions_by_market": decisions_by_market,
             "suggestions": suggestions,
             "signal_ideas": suggestions,
             "suggestions_by_market": suggestions_by_market,

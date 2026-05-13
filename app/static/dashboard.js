@@ -678,7 +678,7 @@ function render(payload) {
   const allSentiment = payload.sentiment || [];
   const positions = filterRowsByMarket(allPositions, activeMarket);
   const quotes = filterRowsByMarket(allQuotes, activeMarket);
-  const decisions = filterRowsByMarket(allDecisions, activeMarket);
+  const decisions = payloadRowsForMarket(payload, "decisions", activeMarket);
   const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
   const trackedIdeas = payloadRowsForMarket(payload, "tracked_ideas", activeMarket);
   const orders = filterRowsByMarket(allOrders, activeMarket);
@@ -734,7 +734,7 @@ function render(payload) {
   byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
   byId("quote-count").textContent = `${quotes.length}/${allQuotes.length} quotes`;
   byId("account-quote-count").textContent = `${quotes.length} ${activeMarketLabel()} quotes`;
-  byId("decision-count").textContent = `${decisions.length}/${allDecisions.length} decisions`;
+  byId("decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
   byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
   byId("suggestion-count").textContent = suggestions.length ? `${suggestions.length} full-audit ideas` : "0 ideas";
   byId("order-count").textContent = `${orders.length} orders`;
@@ -763,8 +763,8 @@ function render(payload) {
   renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
   renderProductTrackingPanel(trackedIdeas, positions, suggestions);
   renderSuggestions(suggestions);
-  renderDecisions(decisions);
-  renderOverviewDecisions(decisions);
+  renderDecisions(decisions, { controlRunning });
+  renderOverviewDecisions(decisions, { controlRunning });
   renderOverviewPositions(positions);
   renderOrders(orders);
   renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
@@ -2894,18 +2894,22 @@ function sourceClass(source) {
   return "";
 }
 
-function renderDecisions(rows) {
+function decisionFeedEmptyHtml(controlRunning, marketLabel = activeMarketLabel()) {
+  return emptyBlock(
+    `No ${marketLabel} decisions yet`,
+    controlRunning
+      ? "The agent is running. This market feed will fill after the next completed strategy scan."
+      : "Use Run Now in Dashboard to scan the selected market.",
+  );
+}
+
+function renderDecisions(rows, options = {}) {
   const body = byId("decisions-body");
   const detail = byId("decision-detail-panel");
   if (!body) return;
   const visibleRows = rows.slice(0, 120);
   if (!visibleRows.length) {
-    body.innerHTML = emptyBlock(
-      `No ${activeMarketLabel()} decisions yet`,
-      "Start the agent to begin scanning your universe.",
-      "Start agent",
-      "overview",
-    );
+    body.innerHTML = decisionFeedEmptyHtml(Boolean(options.controlRunning));
     if (detail) {
       detail.innerHTML = emptyBlock(
         "No decision selected",
@@ -2930,19 +2934,14 @@ function renderDecisions(rows) {
   renderDecisionDetailPanel(visibleRows[0]);
 }
 
-function renderOverviewDecisions(rows) {
+function renderOverviewDecisions(rows, options = {}) {
   const body = byId("overview-decisions-body");
   body.innerHTML = rows.length
     ? rows
         .slice(0, 8)
         .map((row, index) => decisionFeedCardHtml(row, index, true))
         .join("")
-    : emptyBlock(
-        "No decisions yet",
-        "Start the agent to begin scanning your universe.",
-        "Start agent",
-        "decisions",
-      );
+    : decisionFeedEmptyHtml(Boolean(options.controlRunning));
   [...body.querySelectorAll(".decision-feed-card")].forEach((card) => {
     const row = rows[Number(card.dataset.index)];
     if (row) card.addEventListener("click", () => showDetails("Decision", row));
