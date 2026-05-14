@@ -2280,6 +2280,7 @@ def _strategy_for_user_budget(
     if active_settings.llm_provider == "deepseek" and active_settings.deepseek_model != "deepseek-v4-flash" and 0 < available <= threshold:
         budget_settings = replace(
             active_settings,
+            enable_llm_sentiment=False,
             deepseek_model="deepseek-v4-flash",
             llm_max_tokens=min(int(settings.llm_max_tokens or 4096), 2048),
             llm_rolling_context_max_chunks=1 if int(settings.llm_rolling_context_max_chunks or 0) == 0 else min(int(settings.llm_rolling_context_max_chunks), 1),
@@ -2292,7 +2293,8 @@ def _strategy_for_user_budget(
             }
         )
         return StrategyEngine(budget_settings, SentimentService(budget_settings, db), LLMBrain(budget_settings, db)), policy
-    return StrategyEngine(active_settings, SentimentService(active_settings, db), LLMBrain(active_settings, db)), policy
+    decision_only_settings = replace(active_settings, enable_llm_sentiment=False)
+    return StrategyEngine(decision_only_settings, SentimentService(decision_only_settings, db), LLMBrain(decision_only_settings, db)), policy
 
 
 def _llm_settings_for_user(user: dict[str, Any]) -> Settings:

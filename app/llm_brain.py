@@ -172,28 +172,42 @@ class LLMBrain:
         return f"{base_url}/v1/chat/completions"
 
     def _has_multiple_fallback_endpoints(self) -> bool:
-        return False
+        return len(self._endpoint_candidates()) > 1
 
     def _endpoint_candidates(self) -> list[LLMEndpoint]:
-        if self.settings.llm_provider == "deepseek" and self.settings.deepseek_api_key:
-            return [
-                LLMEndpoint(
-                    provider="deepseek",
-                    model=self.settings.deepseek_model,
-                    base_url=self.settings.deepseek_base_url,
-                    api_key=self.settings.deepseek_api_key,
+        if self.settings.llm_provider not in {"deepseek", "groq"}:
+            return []
+
+        endpoints: list[LLMEndpoint] = []
+
+        def add(provider: str) -> None:
+            if any(endpoint.provider == provider for endpoint in endpoints):
+                return
+            if provider == "deepseek" and self.settings.deepseek_api_key:
+                endpoints.append(
+                    LLMEndpoint(
+                        provider="deepseek",
+                        model=self.settings.deepseek_model,
+                        base_url=self.settings.deepseek_base_url,
+                        api_key=self.settings.deepseek_api_key,
+                    )
                 )
-            ]
-        if self.settings.llm_provider == "groq" and self.settings.groq_api_key:
-            return [
-                LLMEndpoint(
-                    provider="groq",
-                    model=self.settings.groq_model,
-                    base_url=self.settings.groq_base_url,
-                    api_key=self.settings.groq_api_key,
+            if provider == "groq" and self.settings.groq_api_key:
+                endpoints.append(
+                    LLMEndpoint(
+                        provider="groq",
+                        model=self.settings.groq_model,
+                        base_url=self.settings.groq_base_url,
+                        api_key=self.settings.groq_api_key,
+                    )
                 )
-            ]
-        return []
+
+        add(self.settings.llm_provider)
+        # If the assigned provider is temporarily rate-limited, use the other
+        # configured provider before forcing a safe HOLD. Users still do not see
+        # model names; the audit keeps the actual provider for admin review.
+        add("deepseek" if self.settings.llm_provider == "groq" else "groq")
+        return endpoints
 
     async def test_connection(self) -> dict[str, Any]:
         if not self.enabled:

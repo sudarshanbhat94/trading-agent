@@ -13,6 +13,12 @@ const state = {
   quoteFilter: "",
   activeMarket: "IN",
   activeSettingsTab: "broker",
+  pageFilters: {
+    suggestions: "all",
+    decisions: "all",
+    sentiment: "all",
+    orders: "all",
+  },
 };
 
 const MARKET_LABELS = {
@@ -354,6 +360,151 @@ function actionableIdeaRows(rows = []) {
     const action = String(row.suggestion || row.action || row.signal_type || "").toUpperCase();
     const readiness = String(row.decision_readiness || "").toLowerCase();
     return ["BUY", "PAPER", "LIVE", "TRADE"].includes(action) || readiness.includes("trade");
+  });
+}
+
+function pageFilter(group) {
+  return state.pageFilters?.[group] || "all";
+}
+
+function confidencePercent(row = {}) {
+  const values = [
+    row.confidence,
+    row.overall_score_pct,
+    row.score_percent,
+    row.score,
+  ]
+    .map(Number)
+    .filter(Number.isFinite)
+    .map((value) => (value > 0 && value <= 1 ? value * 100 : value));
+  return values.length ? Math.max(...values) : 0;
+}
+
+function rowActionText(row = {}) {
+  return String(row.action || row.suggestion || row.signal_type || "").toUpperCase();
+}
+
+function rowTimestamp(row = {}) {
+  const raw =
+    row.ts ||
+    row.last_seen_at ||
+    row.first_seen_at ||
+    row.created_at ||
+    row.updated_at ||
+    row.asof ||
+    row.recommended_at;
+  const date = raw ? new Date(raw) : null;
+  return date && Number.isFinite(date.getTime()) ? date : null;
+}
+
+function isTodayRow(row = {}) {
+  const date = rowTimestamp(row);
+  if (!date) return false;
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+}
+
+function isThisWeekRow(row = {}) {
+  const date = rowTimestamp(row);
+  if (!date) return false;
+  return Date.now() - date.getTime() <= 7 * 24 * 60 * 60 * 1000;
+}
+
+function latestCycleCutoff(rows = []) {
+  const times = rows
+    .map((row) => rowTimestamp(row)?.getTime())
+    .filter(Number.isFinite);
+  if (!times.length) return null;
+  return Math.max(...times) - 20 * 60 * 1000;
+}
+
+function applySuggestionFilter(rows = []) {
+  const filter = pageFilter("suggestions");
+  if (filter === "all") return rows;
+  return (rows || []).filter((row) => ideaMatchesFilter(row, filter));
+}
+
+function ideaMatchesFilter(row = {}, filter = pageFilter("suggestions")) {
+  const action = rowActionText(row);
+  if (filter === "buy") return action === "BUY" || String(row.decision_readiness || "").toLowerCase().includes("trade");
+  if (filter === "high") return confidencePercent(row) >= 65 || Number(row.overall_score_pct || 0) >= 70;
+  if (filter === "today") return isTodayRow(row);
+  return true;
+}
+
+function applyStrategyPlanFilter(rows = []) {
+  const filter = pageFilter("suggestions");
+  if (filter === "all") return rows;
+  const market = normalizeUiMarket(state.activeMarket);
+  return (rows || []).filter((plan) => {
+    const ideas = Array.isArray(plan.constituents) ? plan.constituents : [];
+    return ideas.some((idea) => rowMarket(idea) === market && ideaMatchesFilter(idea, filter));
+  });
+}
+
+function applyDecisionFilter(rows = []) {
+  const filter = pageFilter("decisions");
+  if (filter === "all") return rows;
+  const cutoff = filter === "cycle" ? latestCycleCutoff(rows) : null;
+  return (rows || []).filter((row) => {
+    const action = rowActionText(row);
+    if (filter === "buy") return action === "BUY";
+    if (filter === "sell") return action === "SELL";
+    if (filter === "hold") return action === "HOLD";
+    if (filter === "exit") return action === "EXIT" || action === "SELL";
+    if (filter === "high") return confidencePercent(row) >= 65;
+    if (filter === "cycle") {
+      const ts = rowTimestamp(row)?.getTime();
+      return cutoff !== null && Number.isFinite(ts) && ts >= cutoff;
+    }
+    return true;
+  });
+}
+
+function applySentimentFilter(rows = []) {
+  const filter = pageFilter("sentiment");
+  if (filter === "all") return rows;
+  return (rows || []).filter((row) => {
+    const score = Number(row.score);
+    if (filter === "positive") return Number.isFinite(score) && score > 0.05;
+    if (filter === "negative") return Number.isFinite(score) && score < -0.05;
+    if (filter === "today") return isTodayRow(row);
+    if (filter === "week") return isThisWeekRow(row);
+    return true;
+  });
+}
+
+function applyOrderFilter(rows = []) {
+  const filter = pageFilter("orders");
+  if (filter === "all") return rows;
+  return (rows || []).filter((row) => {
+    const status = String(row.status || "").toLowerCase();
+    if (filter === "open") return ["open", "pending", "submitted", "working"].includes(status);
+    if (filter === "filled") return status === "filled";
+    if (filter === "rejected") return status === "rejected" || status === "vetoed" || status === "cancelled";
+    return true;
+  });
+}
+
+function filteredCountLabel(visible, total, singular, plural = `${singular}s`) {
+  const label = total === 1 ? singular : plural;
+  return visible === total ? `${total} ${label}` : `${visible}/${total} ${label}`;
+}
+
+function setPageFilter(group, value) {
+  if (!group) return;
+  state.pageFilters[group] = value || "all";
+  updatePageFilterButtons(group);
+  if (state.latest) render(state.latest);
+}
+
+function updatePageFilterButtons(group = "") {
+  const selector = group ? `[data-filter-group="${CSS.escape(group)}"]` : "[data-filter-group]";
+  document.querySelectorAll(selector).forEach((bar) => {
+    const active = pageFilter(bar.dataset.filterGroup);
+    bar.querySelectorAll("[data-filter-value]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.filterValue === active);
+    });
   });
 }
 
@@ -705,6 +856,12 @@ function render(payload) {
   const strategies = payload.strategy_metrics || [];
   const strategyPlans = payload.strategy_plans || [];
   const sentiment = filterRowsByMarket(allSentiment, activeMarket);
+  const visibleDecisions = applyDecisionFilter(decisions);
+  const visibleSuggestions = applySuggestionFilter(suggestions);
+  const visibleTrackedIdeas = applySuggestionFilter(trackedIdeas);
+  const visibleOrders = applyOrderFilter(orders);
+  const visibleSentiment = applySentimentFilter(sentiment);
+  const visibleStrategyPlans = applyStrategyPlanFilter(strategyPlans);
 
   const scopedPortfolio = marketPortfolioFromPayload(payload, activeMarket);
   const unrealizedPct = Number(scopedPortfolio.invested) > 0
@@ -754,16 +911,20 @@ function render(payload) {
   byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
   byId("quote-count").textContent = `${quotes.length}/${allQuotes.length} quotes`;
   byId("account-quote-count").textContent = `${quotes.length} ${activeMarketLabel()} quotes`;
-  byId("decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
+  byId("decision-count").textContent = `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "decision")}`;
   byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
-  byId("suggestion-count").textContent = suggestions.length ? `${suggestions.length} full-audit ideas` : "0 ideas";
-  byId("order-count").textContent = `${orders.length} orders`;
+  byId("suggestion-count").textContent = visibleSuggestions.length
+    ? `${filteredCountLabel(visibleSuggestions.length, suggestions.length, "full-audit idea", "full-audit ideas")}`
+    : suggestions.length
+      ? `0/${suggestions.length} ideas`
+      : "0 ideas";
+  byId("order-count").textContent = `${filteredCountLabel(visibleOrders.length, orders.length, "order")}`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
   const planCount = byId("strategy-plan-count");
-  if (planCount) planCount.textContent = `${strategyPlans.length} plans`;
+  if (planCount) planCount.textContent = `${filteredCountLabel(visibleStrategyPlans.length, strategyPlans.length, "plan")}`;
   const trackedCount = byId("tracked-count");
-  if (trackedCount) trackedCount.textContent = trackedIdeas.length ? `${trackedIdeas.length} active` : "0 active";
-  byId("sentiment-count").textContent = `${sentiment.length} events`;
+  if (trackedCount) trackedCount.textContent = visibleTrackedIdeas.length ? `${filteredCountLabel(visibleTrackedIdeas.length, trackedIdeas.length, "active idea", "active ideas")}` : "0 active";
+  byId("sentiment-count").textContent = `${filteredCountLabel(visibleSentiment.length, sentiment.length, "event")}`;
   byId("nav-positions-badge").textContent = String(positions.length);
   byId("nav-suggestions-badge").textContent = String(suggestions.length);
   byId("nav-decisions-badge").textContent = String(decisions.length);
@@ -775,18 +936,19 @@ function render(payload) {
 
   renderPositions(positions);
   renderStrategies(strategies);
-  renderStrategyPlans(strategyPlans);
-  renderTrackedIdeas(trackedIdeas);
-  renderSentiment(sentiment);
+  updatePageFilterButtons();
+  renderStrategyPlans(visibleStrategyPlans);
+  renderTrackedIdeas(visibleTrackedIdeas);
+  renderSentiment(visibleSentiment);
   renderQuotes(quotes);
   renderMarketTape(quotes, activeMarket);
   renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
   renderProductTrackingPanel(trackedIdeas, positions, suggestions);
-  renderSuggestions(suggestions);
-  renderDecisions(decisions, { controlRunning });
+  renderSuggestions(visibleSuggestions);
+  renderDecisions(visibleDecisions, { controlRunning });
   renderOverviewDecisions(decisions, { controlRunning });
   renderOverviewPositions(positions);
-  renderOrders(orders);
+  renderOrders(visibleOrders);
   renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
   renderSectorRotation(scopedMarketContext(payload.sector_rotation_context || {}, activeMarket));
   renderPerformance(payload.performance || {});
@@ -1170,7 +1332,7 @@ function updateMarketWorkspaceLabels(payload = state.latest || {}) {
   const market = normalizeUiMarket(state.activeMarket);
   const label = activeMarketLabel();
   const quotes = filterRowsByMarket(payload.quotes || [], market);
-  const decisions = filterRowsByMarket(payload.decisions || [], market);
+  const decisions = payloadRowsForMarket(payload, "decisions", market);
   const positions = filterRowsByMarket(payload.positions || [], market);
   for (const button of document.querySelectorAll(".market-workspace-tab")) {
     const active = button.dataset.marketWorkspace === market;
@@ -2448,9 +2610,12 @@ function renderStrategyPlans(rows) {
   const body = byId("strategy-plans-body");
   if (!body) return;
   if (!rows.length) {
+    const filtered = pageFilter("suggestions") !== "all";
     body.innerHTML = emptyBlock(
-      "No strategy plans loaded",
-      "Plans define how ideas are grouped, budgeted, followed, and measured after recommendation.",
+      filtered ? "No plans match this filter" : "No strategy plans loaded",
+      filtered
+        ? "Switch back to All, or wait for new ideas to be assigned to strategy plans."
+        : "Plans define how ideas are grouped, budgeted, followed, and measured after recommendation.",
     );
     return;
   }
@@ -4444,6 +4609,12 @@ function bindControls() {
   });
   for (const button of document.querySelectorAll(".settings-tab")) {
     button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab));
+  }
+  for (const button of document.querySelectorAll("[data-filter-group] [data-filter-value]")) {
+    button.addEventListener("click", () => {
+      const group = button.closest("[data-filter-group]")?.dataset.filterGroup;
+      setPageFilter(group, button.dataset.filterValue);
+    });
   }
   for (const tile of document.querySelectorAll(".kpi")) {
     tile.addEventListener("click", () => {

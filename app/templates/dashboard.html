@@ -271,11 +271,11 @@
           </section>
 
           <section id="suggestions-view" class="view">
-            <div class="page-filter-bar" aria-label="Ideas filters">
-              <button type="button" class="active">All</button>
-              <button type="button">BUY ideas</button>
-              <button type="button">High confidence</button>
-              <button type="button">Today</button>
+            <div class="page-filter-bar" aria-label="Ideas filters" data-filter-group="suggestions">
+              <button type="button" class="active" data-filter-value="all">All</button>
+              <button type="button" data-filter-value="buy">BUY ideas</button>
+              <button type="button" data-filter-value="high">High confidence</button>
+              <button type="button" data-filter-value="today">Today</button>
             </div>
             <div class="panel full">
               <div class="panel-head">
@@ -363,7 +363,7 @@
 
           <section id="orders-view" class="view">
             <div class="panel full">
-              <div class="panel-head"><div class="panel-title-stack"><h3>Orders</h3><p>Execution history, partial exits, target hits, stop exits, and broker status.</p></div><div class="panel-actions"><div class="order-filter-tabs" aria-label="Order filters"><button type="button" class="active">All</button><button type="button">Open</button><button type="button">Filled</button><button type="button">Rejected</button></div><span id="order-count">0 orders</span></div></div>
+                <div class="panel-head"><div class="panel-title-stack"><h3>Orders</h3><p>Execution history, partial exits, target hits, stop exits, and broker status.</p></div><div class="panel-actions"><div class="order-filter-tabs" aria-label="Order filters" data-filter-group="orders"><button type="button" class="active" data-filter-value="all">All</button><button type="button" data-filter-value="open">Open</button><button type="button" data-filter-value="filled">Filled</button><button type="button" data-filter-value="rejected">Rejected</button></div><span id="order-count">0 orders</span></div></div>
               <div class="table-wrap page-table">
                 <table>
                   <thead><tr><th>Time</th><th>Side</th><th>Symbol</th><th>Strategy</th><th>Qty</th><th>Price</th><th>Value</th><th>Status</th><th>Exit Plan</th></tr></thead>
@@ -374,14 +374,14 @@
           </section>
 
           <section id="decisions-view" class="view decisions-page">
-            <div class="page-filter-bar" aria-label="Decision filters">
-              <button type="button" class="active">All</button>
-              <button type="button">BUY</button>
-              <button type="button">SELL</button>
-              <button type="button">HOLD</button>
-              <button type="button">EXIT</button>
-              <button type="button">High confidence</button>
-              <button type="button">This cycle</button>
+            <div class="page-filter-bar" aria-label="Decision filters" data-filter-group="decisions">
+              <button type="button" class="active" data-filter-value="all">All</button>
+              <button type="button" data-filter-value="buy">BUY</button>
+              <button type="button" data-filter-value="sell">SELL</button>
+              <button type="button" data-filter-value="hold">HOLD</button>
+              <button type="button" data-filter-value="exit">EXIT</button>
+              <button type="button" data-filter-value="high">High confidence</button>
+              <button type="button" data-filter-value="cycle">This cycle</button>
             </div>
             <div class="decision-split">
               <section class="panel decision-feed-column">
@@ -401,12 +401,12 @@
           </section>
 
           <section id="sentiment-view" class="view">
-            <div class="page-filter-bar" aria-label="Sentiment filters">
-              <button type="button" class="active">All</button>
-              <button type="button">Positive</button>
-              <button type="button">Negative</button>
-              <button type="button">Today</button>
-              <button type="button">This week</button>
+            <div class="page-filter-bar" aria-label="Sentiment filters" data-filter-group="sentiment">
+              <button type="button" class="active" data-filter-value="all">All</button>
+              <button type="button" data-filter-value="positive">Positive</button>
+              <button type="button" data-filter-value="negative">Negative</button>
+              <button type="button" data-filter-value="today">Today</button>
+              <button type="button" data-filter-value="week">This week</button>
             </div>
             <div class="panel full">
               <div class="panel-head"><div class="panel-title-stack"><h3>Sentiment Intelligence</h3><p>Verified news is scored only when source data exists; missing data is never treated as neutral.</p></div><span id="sentiment-count">0 events</span></div>
