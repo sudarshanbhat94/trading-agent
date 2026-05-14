@@ -318,6 +318,7 @@ class TradingAgentService:
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
+        shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
         executed_count = self._execute_top_decisions(decisions, portfolio["equity"]) if self.execute_trades else 0
         if not self.execute_trades:
             self._log(
@@ -342,6 +343,7 @@ class TradingAgentService:
                 "decisions": len(decisions),
                 "risk_exits": len(risk_exits),
                 "executed_orders": executed_count,
+                "shared_auto_trade": shared_auto_trade,
                 "equity": portfolio.get("equity"),
             },
         )
@@ -487,6 +489,124 @@ class TradingAgentService:
             seen.add(symbol)
             selected.append(row)
         return selected
+
+    def _auto_follow_buy_ideas_for_signal_users(self, decisions: list[Decision]) -> dict[str, Any]:
+        buy_symbols = {
+            str(decision.symbol or "").upper()
+            for decision in decisions
+            if str(decision.action or "").upper() == "BUY"
+        }
+        summary: dict[str, Any] = {"buy_symbols": sorted(buy_symbols), "users_checked": 0, "followed": 0, "skipped": []}
+        if not buy_symbols:
+            return summary
+        users = [
+            user
+            for user in self.db.list_users()
+            if user.get("role") != "admin"
+            and user.get("active")
+            and _normalize_signal_execution_mode(user.get("signal_execution_mode")) in {"AUTO_PAPER", "AUTO_LIVE"}
+        ]
+        summary["users_checked"] = len(users)
+        for user in users:
+            mode = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
+            if mode == "AUTO_LIVE":
+                summary["skipped"].append(
+                    {
+                        "user_id": user.get("id"),
+                        "username": user.get("username"),
+                        "reason": "shared_engine_does_not_place_live_orders",
+                    }
+                )
+                continue
+            ideas = [
+                idea
+                for idea in self.db.latest_signal_ideas(200, user_id=int(user["id"]))
+                if str(idea.get("symbol") or "").upper() in buy_symbols
+                and str(idea.get("signal_type") or "").upper() == "BUY"
+                and str(idea.get("status") or "").upper() == "ACTIVE"
+            ]
+            active_follow_symbols = {
+                str(item.get("symbol") or "").upper()
+                for item in self.db.user_followed_signal_ideas(int(user["id"]), 200)
+                if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
+                and str(item.get("follow_status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}
+                and int(item.get("qty") or 0) > 0
+            }
+            seen_symbols: set[str] = set()
+            for idea in ideas:
+                symbol = str(idea.get("symbol") or "").upper()
+                if not symbol or symbol in seen_symbols:
+                    continue
+                seen_symbols.add(symbol)
+                if symbol in active_follow_symbols:
+                    summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed_symbol"})
+                    continue
+                follow = idea.get("user_follow") or {}
+                if follow and str(follow.get("status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}:
+                    summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed"})
+                    continue
+                market = str(idea.get("market_region") or "IN").upper()
+                cash = self._auto_follow_cash_for_user(int(user["id"]), user, market)
+                price = _float_or_none(idea.get("latest_price") or idea.get("entry_price")) or 0.0
+                amount = self._auto_follow_amount(cash, price)
+                if amount <= 0:
+                    summary["skipped"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "symbol": symbol,
+                            "reason": "insufficient_paper_cash_for_position_size",
+                            "cash": round(cash, 4),
+                            "price": round(price, 4),
+                        }
+                    )
+                    continue
+                try:
+                    created = self.db.follow_signal_idea(int(user["id"]), int(idea["id"]), mode="PAPER", amount=amount)
+                    summary["followed"] += 1
+                    self._log(
+                        "INFO",
+                        "user_session",
+                        "shared_buy_auto_paper_followed",
+                        f"Auto-paper followed {symbol} for {user.get('username')}",
+                        {
+                            "user_id": user.get("id"),
+                            "username": user.get("username"),
+                            "symbol": symbol,
+                            "idea_id": idea.get("id"),
+                            "amount": round(amount, 4),
+                            "qty": created.get("qty"),
+                            "entry_price": created.get("entry_price"),
+                        },
+                    )
+                except ValueError as exc:
+                    summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": str(exc)})
+        return summary
+
+    def _auto_follow_cash_for_user(self, user_id: int, user: dict[str, Any], market: str) -> float:
+        market = "US" if str(market or "").upper() == "US" else "IN"
+        cash_by_market = user.get("paper_cash_by_market") if isinstance(user.get("paper_cash_by_market"), dict) else {}
+        base_cash = _float_or_none(cash_by_market.get(market)) if cash_by_market else None
+        if base_cash is None:
+            base_cash = float(self.strategy.settings.initial_cash_inr or 0.0)
+        tracked = self.db.user_followed_signal_ideas(user_id, 200, market_region=market)
+        invested = sum(
+            float(item.get("invested_amount") or 0.0)
+            for item in tracked
+            if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"} and int(item.get("qty") or 0) > 0
+        )
+        return max(float(base_cash or 0.0) - invested, 0.0)
+
+    def _auto_follow_amount(self, cash: float, price: float) -> float:
+        if cash <= 0 or price <= 0:
+            return 0.0
+        max_pct = max(min(float(self.strategy.settings.max_position_pct or 0.25), 0.50), 0.01)
+        target = cash * max_pct
+        cap = cash * min(max_pct * 1.5, 0.60)
+        if target >= price:
+            return min(target, cash)
+        if price <= cap:
+            return min(price, cash)
+        return 0.0
 
     def _candle_fetch_universe(
         self,
@@ -918,6 +1038,15 @@ def _json_object(value: Any) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _normalize_signal_execution_mode(value: Any) -> str:
+    mode = str(value or "SIGNAL_ONLY").strip().upper()
+    if mode in {"PAPER", "AUTO_PAPER"}:
+        return "AUTO_PAPER"
+    if mode in {"LIVE", "AUTO_LIVE"}:
+        return "AUTO_LIVE"
+    return "SIGNAL_ONLY"
 
 
 def _source_counts(items: dict[str, Any]) -> dict[str, int]:

@@ -37,6 +37,20 @@ def _market_region_where(alias: str, market_region: str | None) -> tuple[str, li
     )
 
 
+def _normalize_signal_execution_mode(value: Any) -> str:
+    mode = str(value or "SIGNAL_ONLY").strip().upper()
+    aliases = {
+        "SIGNALS": "SIGNAL_ONLY",
+        "SIGNAL": "SIGNAL_ONLY",
+        "SIGNAL_ONLY": "SIGNAL_ONLY",
+        "PAPER": "AUTO_PAPER",
+        "AUTO_PAPER": "AUTO_PAPER",
+        "LIVE": "AUTO_LIVE",
+        "AUTO_LIVE": "AUTO_LIVE",
+    }
+    return aliases.get(mode, "SIGNAL_ONLY")
+
+
 def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -417,6 +431,7 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
             "model": row.get("assigned_llm_model") or "",
         },
         "active": bool(row.get("active")),
+        "signal_execution_mode": _normalize_signal_execution_mode(row.get("signal_execution_mode")),
         "credit_balance": round(float(row.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(row.get("daily_credit_limit") or 0.0), 6),
         "paper_cash_by_market": paper_cash_by_market,
@@ -779,6 +794,7 @@ class Database:
             self._ensure_column(conn, "llm_usage_events", "scope_id", "text not null default ''")
             self._ensure_column(conn, "users", "paper_cash_in", "real")
             self._ensure_column(conn, "users", "paper_cash_us", "real")
+            self._ensure_column(conn, "users", "signal_execution_mode", "text not null default 'SIGNAL_ONLY'")
             conn.execute(
                 """
                 create index if not exists idx_llm_usage_user_ts
@@ -980,13 +996,17 @@ class Database:
         active: bool = True,
         assigned_llm_provider: str = "",
         assigned_llm_model: str = "",
+        signal_execution_mode: str = "SIGNAL_ONLY",
     ) -> dict[str, Any]:
         now = utc_now()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
-                insert into users (username, password_hash, role, account_plan, assigned_llm_provider, assigned_llm_model, active, created_at, updated_at)
-                values (?, ?, ?, 'standard', ?, ?, ?, ?, ?)
+                insert into users (
+                    username, password_hash, role, account_plan, assigned_llm_provider,
+                    assigned_llm_model, signal_execution_mode, active, created_at, updated_at
+                )
+                values (?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username.strip(),
@@ -994,6 +1014,7 @@ class Database:
                     role,
                     str(assigned_llm_provider or "").strip().lower(),
                     str(assigned_llm_model or "").strip(),
+                    _normalize_signal_execution_mode(signal_execution_mode),
                     1 if active else 0,
                     now,
                     now,
@@ -1010,6 +1031,7 @@ class Database:
         role: str | None = None,
         assigned_llm_provider: str | None = None,
         assigned_llm_model: str | None = None,
+        signal_execution_mode: str | None = None,
         active: bool | None = None,
         password_hash: str | None = None,
     ) -> dict[str, Any] | None:
@@ -1024,6 +1046,9 @@ class Database:
         if assigned_llm_model is not None:
             assignments.append("assigned_llm_model = ?")
             values.append(str(assigned_llm_model or "").strip())
+        if signal_execution_mode is not None:
+            assignments.append("signal_execution_mode = ?")
+            values.append(_normalize_signal_execution_mode(signal_execution_mode))
         if active is not None:
             assignments.append("active = ?")
             values.append(1 if active else 0)
@@ -1057,6 +1082,16 @@ class Database:
                 (limit, utc_now(), user_id),
             )
         return self.user_credit_summary(user_id)
+
+    def update_user_signal_execution_mode(self, user_id: int, mode: str) -> dict[str, Any] | None:
+        normalized = _normalize_signal_execution_mode(mode)
+        with self.connect() as conn:
+            conn.execute(
+                "update users set signal_execution_mode = ?, updated_at = ? where id = ?",
+                (normalized, utc_now(), user_id),
+            )
+        user = self.user_by_id(user_id)
+        return _public_user(user) if user else None
 
     def update_user_paper_cash(self, user_id: int, cash_in: float | None = None, cash_us: float | None = None) -> dict[str, Any] | None:
         assignments: list[str] = []

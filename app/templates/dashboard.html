@@ -502,6 +502,12 @@
                     <option value="deepseek:deepseek-v4-flash">DeepSeek · V4 Flash</option>
                     <option value="offline:offline">Offline</option>
                   </select>
+                  <label for="new-user-signal-mode">Signal Mode</label>
+                  <select id="new-user-signal-mode">
+                    <option value="SIGNAL_ONLY">Signal only</option>
+                    <option value="AUTO_PAPER">Auto paper</option>
+                    <option value="AUTO_LIVE">Auto live guarded</option>
+                  </select>
                   <label for="new-user-credits">Starting Credits</label>
                   <input id="new-user-credits" type="number" min="0" step="1" placeholder="100000" />
                   <label for="new-user-daily-limit">Daily Credit Budget</label>
@@ -518,7 +524,7 @@
               <div class="panel-head"><h3>Users</h3><span id="users-count">0 users</span></div>
               <div class="table-wrap page-table compact">
                 <table>
-                  <thead><tr><th>User</th><th>Role</th><th>Credits</th><th>Today</th><th>Broker</th><th>Status</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>User</th><th>Role</th><th>Credits</th><th>Today</th><th>Signal Mode</th><th>Broker</th><th>Status</th><th>Actions</th></tr></thead>
                   <tbody id="users-body"></tbody>
                 </table>
               </div>

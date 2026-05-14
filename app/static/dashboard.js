@@ -1540,6 +1540,8 @@ function applyAccessMode() {
     "my-kite-connect-btn",
     "daily-credit-limit-input",
     "save-daily-credit-limit-btn",
+    "signal-execution-mode",
+    "save-signal-execution-mode-btn",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !authenticated || admin;
@@ -1591,6 +1593,7 @@ function renderCreditSummary(credits, policy = {}) {
   const usedToday = Number(credits?.credits_used_today || 0);
   const remaining = Number(credits?.daily_credits_remaining || 0);
   const llmActivity = state.latest?.user_signal_session?.last_llm_activity || {};
+  const autoTrade = state.latest?.user_signal_session?.auto_trade || {};
   byId("credits-status").textContent = `${fmtCredits(remaining)} left today`;
   byId("credit-pill").hidden = false;
   byId("credit-pill").textContent = `⚡ ${fmtCredits(balance)} credits`;
@@ -1612,6 +1615,7 @@ function renderCreditSummary(credits, policy = {}) {
       <span>OpenStocks automatically uses a leaner analysis path when today's remaining credits are tight.</span>
       <span>Estimated signal cost: ${fmtCredits(policy.estimated_signal_credit || 0)} credits.</span>
       ${llmActivity.message ? `<span>Last cycle: ${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</span>` : ""}
+      ${autoTrade.mode ? `<span>Auto action: ${escapeHtml(signalModeLabel(autoTrade.mode))} · followed ${fmtNumber(autoTrade.followed || 0)} BUY ideas${(autoTrade.skipped || []).length ? ` · skipped ${(autoTrade.skipped || []).length}` : ""}</span>` : ""}
     </div>
     <div class="table-wrap compact credit-ledger">
       <table>
@@ -1808,11 +1812,11 @@ function renderUsers(rows) {
   byId("users-count").textContent = `${state.users.length} users`;
   byId("nav-users-badge").textContent = String(state.users.length);
   if (!state.auth?.admin) {
-    body.innerHTML = emptyTableRow(7, "Admin access required", "Only admins can create users, allocate credits, and assign broker feeds.");
+    body.innerHTML = emptyTableRow(8, "Admin access required", "Only admins can create users, allocate credits, and assign broker feeds.");
     return;
   }
   if (!state.users.length) {
-    body.innerHTML = emptyTableRow(7, "No users yet", "Create the first user to run signals with separate credits, cash, and broker feed settings.");
+    body.innerHTML = emptyTableRow(8, "No users yet", "Create the first user to run signals with separate credits, cash, and broker feed settings.");
     return;
   }
   body.innerHTML = state.users
@@ -1822,6 +1826,7 @@ function renderUsers(rows) {
       const upstox = user.broker_accounts?.upstox || {};
       const kite = user.broker_accounts?.kite || {};
       const assigned = user.assigned_llm || {};
+      const signalMode = String(user.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
       const upstoxLabel = upstox.connected ? (upstox.scope === "user" ? "personal" : "shared") : "off";
       const kiteLabel = kite.connected ? (kite.scope === "user" ? "personal" : "saved") : "off";
       return `<tr data-user-id="${user.id}">
@@ -1829,12 +1834,14 @@ function renderUsers(rows) {
         <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span><br><small>${escapeHtml(assigned.provider || "default")} · ${escapeHtml(assigned.model || "default")}</small></td>
         <td><strong>${fmtCredits(user.credit_balance || credits.credit_balance || 0)}</strong><br><small>daily ${fmtCredits(user.daily_credit_limit || credits.daily_credit_limit || 0)}</small></td>
         <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
+        <td><span class="tag ${signalModeClass(signalMode)}">${escapeHtml(signalModeLabel(signalMode))}</span></td>
         <td><span class="tag ${upstox.connected ? "open" : "watch"}">Upstox ${upstoxLabel}</span><br><small>Kite ${kiteLabel}</small></td>
         <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
           <button type="button" data-user-action="role" title="${user.role === "admin" ? "Change to user role" : "Change to admin role"}">Role</button>
           <button type="button" data-user-action="model">Model</button>
+          <button type="button" data-user-action="signal-mode">Mode</button>
           <button type="button" data-user-action="credits">Credits</button>
         </td>
       </tr>`;
@@ -1852,12 +1859,28 @@ function renderUsers(rows) {
         updateUser(user.id, { role: user.role === "admin" ? "user" : "admin" });
       } else if (button.dataset.userAction === "model") {
         openModelAssign(user);
+      } else if (button.dataset.userAction === "signal-mode") {
+        openSignalModeAssign(user);
       } else if (button.dataset.userAction === "credits") {
         openCreditAdjust(user);
       }
     });
   });
   bindRowDetails(body, state.users, "User");
+}
+
+function signalModeLabel(mode) {
+  const normalized = String(mode || "SIGNAL_ONLY").toUpperCase();
+  if (normalized === "AUTO_PAPER") return "Auto paper";
+  if (normalized === "AUTO_LIVE") return "Auto live";
+  return "Signal only";
+}
+
+function signalModeClass(mode) {
+  const normalized = String(mode || "SIGNAL_ONLY").toUpperCase();
+  if (normalized === "AUTO_PAPER") return "open";
+  if (normalized === "AUTO_LIVE") return "sell";
+  return "watch";
 }
 
 function openModelAssign(user) {
@@ -1875,6 +1898,16 @@ function openModelAssign(user) {
     return;
   }
   updateUser(user.id, { assigned_llm_provider: provider, assigned_llm_model: model || "offline" });
+}
+
+function openSignalModeAssign(user) {
+  const current = String(user.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
+  const raw = window.prompt(
+    `Signal execution mode for ${user.username}\nUse SIGNAL_ONLY, AUTO_PAPER, or AUTO_LIVE`,
+    current,
+  );
+  if (raw === null) return;
+  updateUser(user.id, { signal_execution_mode: raw });
 }
 
 function openCreditAdjust(user) {
@@ -1913,6 +1946,7 @@ async function createUser(event) {
     password: byId("new-user-password").value,
     role: byId("new-user-role").value,
     ...llmAssignmentFromSelect(byId("new-user-llm").value),
+    signal_execution_mode: byId("new-user-signal-mode")?.value || "SIGNAL_ONLY",
     active: true,
     starting_credits: Number(byId("new-user-credits").value || 0),
     daily_credit_limit: Number(byId("new-user-daily-limit").value || 0),
@@ -1935,6 +1969,7 @@ async function createUser(event) {
     byId("new-user-password").value = "";
     byId("new-user-role").value = "user";
     byId("new-user-llm").value = "groq:qwen/qwen3-32b";
+    if (byId("new-user-signal-mode")) byId("new-user-signal-mode").value = "SIGNAL_ONLY";
     byId("new-user-credits").value = "";
     byId("new-user-daily-limit").value = "";
     renderUsers(data.users || []);
@@ -2003,6 +2038,21 @@ function renderAccount(account) {
       <small id="paper-cash-status">Starting paper cash per market; active paper ideas reduce available cash.</small>
     </form>
   `;
+  const signalExecutionMode = String(account.signal_execution_mode || state.auth?.user?.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
+  const signalModeEditor = state.auth?.admin ? "" : `
+    <form id="signal-mode-form" class="paper-cash-form">
+      <label>
+        <span>Signal Action</span>
+        <select id="signal-execution-mode">
+          <option value="SIGNAL_ONLY" ${signalExecutionMode === "SIGNAL_ONLY" ? "selected" : ""}>Signal only</option>
+          <option value="AUTO_PAPER" ${signalExecutionMode === "AUTO_PAPER" ? "selected" : ""}>Auto paper</option>
+          <option value="AUTO_LIVE" ${signalExecutionMode === "AUTO_LIVE" ? "selected" : ""}>Auto live guarded</option>
+        </select>
+      </label>
+      <button id="save-signal-execution-mode-btn" type="submit">Save Mode</button>
+      <small id="signal-mode-status">${escapeHtml(account.signal_execution_mode_message || "Signals are saved only until you enable auto paper or guarded live mode.")}</small>
+    </form>
+  `;
   const userUpstoxPersonal = userUpstox.connected && userUpstox.scope === "user";
   const userKitePersonal = userKite.connected && userKite.scope === "user";
   const userFeedLabel = userUpstoxPersonal
@@ -2021,10 +2071,12 @@ function renderAccount(account) {
       <div><span>US Cash</span><strong>${fmtMarketMoney(usPaper.cash, "US")}</strong></div>
       <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
       <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
+      <div><span>Signal Action</span><strong>${escapeHtml(signalModeLabel(signalExecutionMode))}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
       <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
     </div>
     ${cashEditor}
+    ${signalModeEditor}
     <div class="account-note">
       <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
       <span>${state.auth?.admin ? "Admins manage users, credits, and runtime broker connections. Signals are run from user accounts." : "Signals and symbol analysis consume this user's credits and use this user's broker feed when connected."}</span>
@@ -2032,7 +2084,33 @@ function renderAccount(account) {
   `;
   const cashForm = byId("paper-cash-form");
   if (cashForm) cashForm.addEventListener("submit", savePaperCash);
+  const signalModeForm = byId("signal-mode-form");
+  if (signalModeForm) signalModeForm.addEventListener("submit", saveSignalExecutionMode);
   renderUserBrokerStatus();
+}
+
+async function saveSignalExecutionMode(event) {
+  event.preventDefault();
+  const status = byId("signal-mode-status");
+  const mode = byId("signal-execution-mode")?.value || "SIGNAL_ONLY";
+  if (status) status.textContent = "saving";
+  try {
+    const response = await fetch("/api/me/signal-execution-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signal_execution_mode: mode }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      if (status) status.textContent = payload.detail || "save failed";
+      return;
+    }
+    if (state.auth?.user) state.auth.user.signal_execution_mode = payload.signal_execution_mode || mode;
+    if (status) status.textContent = payload.message || "saved";
+    await loadAuthenticatedData();
+  } catch (error) {
+    if (status) status.textContent = "save failed";
+  }
 }
 
 async function savePaperCash(event) {

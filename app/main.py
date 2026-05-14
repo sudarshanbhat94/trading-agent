@@ -105,6 +105,29 @@ def _exception_message(exc: BaseException) -> str:
     return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
 
 
+def _normalize_signal_execution_mode(value: Any) -> str:
+    mode = str(value or "SIGNAL_ONLY").strip().upper()
+    aliases = {
+        "SIGNALS": "SIGNAL_ONLY",
+        "SIGNAL": "SIGNAL_ONLY",
+        "SIGNAL_ONLY": "SIGNAL_ONLY",
+        "PAPER": "AUTO_PAPER",
+        "AUTO_PAPER": "AUTO_PAPER",
+        "LIVE": "AUTO_LIVE",
+        "AUTO_LIVE": "AUTO_LIVE",
+    }
+    return aliases.get(mode, "SIGNAL_ONLY")
+
+
+def _signal_execution_mode_message(mode: str) -> str:
+    normalized = _normalize_signal_execution_mode(mode)
+    if normalized == "AUTO_PAPER":
+        return "BUY ideas from your running signal cycle will be paper-followed automatically within your paper cash."
+    if normalized == "AUTO_LIVE":
+        return "BUY ideas will request live execution only when your personal broker guard passes; US live trading remains disabled."
+    return "Signals are saved only. You can track, paper, or live-follow ideas manually."
+
+
 def _is_recoverable_user_signal_exception(exc: BaseException) -> bool:
     original = exc.original if isinstance(exc, UserSignalCycleError) else exc
     if isinstance(original, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, MarketDataError)):
@@ -142,6 +165,7 @@ class UserSignalSessionManager:
         status.setdefault("last_credit_charge", 0.0)
         status.setdefault("last_llm_calls", 0)
         status.setdefault("last_llm_activity", {})
+        status.setdefault("auto_trade", {})
         status.setdefault("last_decision_count", 0)
         status.setdefault("symbols_per_cycle", self._symbol_limit({}, _estimated_signal_credit_charge()))
         status["running"] = self.is_running(user_id)
@@ -554,6 +578,8 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         )
         snapshot["equity_curve"] = _combined_equity_curve(snapshot["equity_curve_by_market"], user_portfolio)
         shared_status = user_signal_sessions.status(user_id)
+        shared_status["signal_execution_mode"] = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
+        shared_status["signal_execution_mode_message"] = _signal_execution_mode_message(shared_status["signal_execution_mode"])
         if shared_status.get("running"):
             shared_status.update({"shared_backend": False, "message": "Your personal signal cycle is running."})
         else:
@@ -1123,6 +1149,28 @@ async def set_my_daily_credit_limit(payload: dict[str, Any], request: Request) -
     return {"ok": True, "credits": _public_credit_summary(summary)}
 
 
+@app.post("/api/me/signal-execution-mode")
+async def set_my_signal_execution_mode(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    mode = _normalize_signal_execution_mode(payload.get("signal_execution_mode") or payload.get("mode"))
+    updated_user = db.update_user_signal_execution_mode(int(user["id"]), mode)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.insert_agent_log(
+        "INFO",
+        "user_session",
+        "signal_execution_mode_updated",
+        f"{user['username']} updated signal execution mode to {mode}",
+        {"user_id": user["id"], "signal_execution_mode": mode},
+    )
+    return {
+        "ok": True,
+        "signal_execution_mode": mode,
+        "user": updated_user,
+        "message": _signal_execution_mode_message(mode),
+    }
+
+
 @app.post("/api/me/paper-cash")
 async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
@@ -1408,6 +1456,8 @@ async def account_details(request: Request) -> dict[str, Any]:
             for market, row in (user_portfolio.get("portfolio_by_market") or {}).items()
         }
         payload["paper"]["cash"] = user_portfolio["cash"]
+        payload["signal_execution_mode"] = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
+        payload["signal_execution_mode_message"] = _signal_execution_mode_message(payload["signal_execution_mode"])
     return payload
 
 
@@ -1819,6 +1869,7 @@ async def create_user(payload: dict[str, Any], request: Request) -> dict[str, An
     password = validate_password(str(payload.get("password", "")))
     role = normalize_role(str(payload.get("role", "user")))
     assigned_provider, assigned_model = _assigned_llm_from_payload(payload)
+    signal_execution_mode = _normalize_signal_execution_mode(payload.get("signal_execution_mode"))
     active = bool(payload.get("active", True))
     starting_credits = _positive_float(payload.get("starting_credits", payload.get("credit_balance", 0)), field="starting_credits")
     daily_credit_limit = _positive_float(payload.get("daily_credit_limit", 0), field="daily_credit_limit")
@@ -1831,6 +1882,7 @@ async def create_user(payload: dict[str, Any], request: Request) -> dict[str, An
         active=active,
         assigned_llm_provider=assigned_provider,
         assigned_llm_model=assigned_model,
+        signal_execution_mode=signal_execution_mode,
     )
     if daily_credit_limit:
         db.update_user_daily_credit_limit(int(user["id"]), daily_credit_limit)
@@ -1854,6 +1906,7 @@ async def create_user(payload: dict[str, Any], request: Request) -> dict[str, An
             "role": role,
             "assigned_llm_provider": assigned_provider,
             "assigned_llm_model": assigned_model,
+            "signal_execution_mode": signal_execution_mode,
             "active": active,
             "starting_credits": starting_credits,
             "daily_credit_limit": daily_credit_limit,
@@ -1880,6 +1933,11 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
     active = bool(payload["active"]) if "active" in payload else None
     password_hash = hash_password(validate_password(str(payload["password"]))) if payload.get("password") else None
     daily_credit_limit = _positive_float(payload["daily_credit_limit"], field="daily_credit_limit") if "daily_credit_limit" in payload else None
+    signal_execution_mode = (
+        _normalize_signal_execution_mode(payload.get("signal_execution_mode"))
+        if "signal_execution_mode" in payload
+        else None
+    )
     if existing.get("role") == "admin" and db.active_admin_count() <= 1:
         would_remove_admin = (role is not None and role != "admin") or active is False
         if would_remove_admin:
@@ -1889,6 +1947,7 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
         role=role,
         assigned_llm_provider=assigned_provider,
         assigned_llm_model=assigned_model,
+        signal_execution_mode=signal_execution_mode,
         active=active,
         password_hash=password_hash,
     )
@@ -1905,6 +1964,7 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
             "user_id": user_id,
             "role_changed": role is not None,
             "llm_assignment_changed": assigned_provider is not None or assigned_model is not None,
+            "signal_execution_mode_changed": signal_execution_mode is not None,
             "active_changed": active is not None,
             "password_changed": password_hash is not None,
             "daily_credit_limit_changed": daily_credit_limit is not None,
@@ -2504,6 +2564,108 @@ def _attach_user_to_decision(
     return replace(decision, details_json=json.dumps(details, default=str, separators=(",", ":")))
 
 
+def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) -> dict[str, Any]:
+    mode = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
+    summary: dict[str, Any] = {
+        "mode": mode,
+        "enabled": mode in {"AUTO_PAPER", "AUTO_LIVE"},
+        "buy_decisions": sum(1 for decision in decisions if getattr(decision, "action", "") == "BUY"),
+        "followed": 0,
+        "skipped": [],
+        "follows": [],
+    }
+    if mode == "SIGNAL_ONLY" or not summary["buy_decisions"]:
+        return summary
+
+    user_id = int(user["id"])
+    idea_mode = "LIVE" if mode == "AUTO_LIVE" else "PAPER"
+    paper_cash_by_market = _user_paper_cash_by_market(user)
+    buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "BUY"}
+    ideas = [
+        idea
+        for idea in db.latest_signal_ideas(200, user_id=user_id)
+        if str(idea.get("symbol") or "").upper() in buy_symbols
+        and str(idea.get("signal_type") or "").upper() == "BUY"
+        and str(idea.get("status") or "").upper() == "ACTIVE"
+    ]
+    active_follow_symbols = {
+        str(item.get("symbol") or "").upper()
+        for item in db.user_followed_signal_ideas(user_id, 200)
+        if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
+        and str(item.get("follow_status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}
+        and int(item.get("qty") or 0) > 0
+    }
+    seen_symbols: set[str] = set()
+    for idea in ideas:
+        symbol = str(idea.get("symbol") or "").upper()
+        if not symbol or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        if symbol in active_follow_symbols:
+            summary["skipped"].append({"symbol": symbol, "reason": "already_followed_symbol"})
+            continue
+        if idea.get("user_follow") and str((idea.get("user_follow") or {}).get("status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}:
+            summary["skipped"].append({"symbol": symbol, "reason": "already_followed"})
+            continue
+        market = normalize_market_region(idea.get("market_region") or "IN", default="IN")
+        if mode == "AUTO_LIVE":
+            try:
+                _require_user_live_broker(user, market)
+            except HTTPException as exc:
+                summary["skipped"].append({"symbol": symbol, "reason": str(exc.detail)})
+                continue
+        tracked = db.user_followed_signal_ideas(user_id, 200)
+        portfolio = _user_follow_portfolio(
+            tracked,
+            db.latest_portfolio() or {},
+            paper_cash_by_market=paper_cash_by_market,
+        )
+        market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
+        cash = float(market_portfolio.get("cash") or 0.0)
+        price = float(idea.get("latest_price") or idea.get("entry_price") or 0.0)
+        amount = _auto_follow_amount(cash, price)
+        if amount <= 0:
+            summary["skipped"].append(
+                {
+                    "symbol": symbol,
+                    "reason": "insufficient_paper_cash_for_position_size",
+                    "cash": round(cash, 4),
+                    "price": round(price, 4),
+                }
+            )
+            continue
+        try:
+            follow = db.follow_signal_idea(user_id, int(idea["id"]), mode=idea_mode, amount=amount)
+            summary["followed"] += 1
+            summary["follows"].append(
+                {
+                    "symbol": symbol,
+                    "idea_id": int(idea["id"]),
+                    "mode": idea_mode,
+                    "amount": round(amount, 4),
+                    "qty": follow.get("qty"),
+                    "entry_price": follow.get("entry_price"),
+                    "market_region": market,
+                }
+            )
+        except ValueError as exc:
+            summary["skipped"].append({"symbol": symbol, "reason": str(exc)})
+    return summary
+
+
+def _auto_follow_amount(cash: float, price: float) -> float:
+    if cash <= 0 or price <= 0:
+        return 0.0
+    max_pct = max(min(float(settings.max_position_pct or 0.25), 0.50), 0.01)
+    target = cash * max_pct
+    cap = cash * min(max_pct * 1.5, 0.60)
+    if target >= price:
+        return min(target, cash)
+    if price <= cap:
+        return min(price, cash)
+    return 0.0
+
+
 async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     phase = "prepare"
 
@@ -2580,6 +2742,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
                 "last_llm_calls": 0,
                 "last_llm_tokens": 0,
                 "last_llm_activity": {"billable": False, "reason": "market_closed"},
+                "auto_trade": {"mode": _normalize_signal_execution_mode(user.get("signal_execution_mode")), "enabled": False, "reason": "market_closed"},
                 "last_decision_count": 0,
                 "last_action_counts": {},
                 "symbols_per_cycle": 0,
@@ -2741,6 +2904,9 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     ]
     if tagged_decisions:
         db.insert_decisions(tagged_decisions)
+        db.upsert_signal_ideas_from_decisions(tagged_decisions)
+    set_phase("auto_execute", {"symbol_count": len(universe), "decision_count": len(tagged_decisions)})
+    auto_trade = _auto_follow_buy_ideas_for_user(user, tagged_decisions)
 
     action_counts: dict[str, int] = {}
     for decision in tagged_decisions:
@@ -2766,9 +2932,18 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
             "credit_charge": credit_charge,
             "daily_credits_remaining": credit_after.get("daily_credits_remaining"),
             "budget_policy": budget_policy,
+            "auto_trade": auto_trade,
         },
     )
-    set_phase("sleep", {"last_decision_count": len(tagged_decisions), "last_llm_calls": usage.get("calls", 0), "llm_activity": llm_activity})
+    set_phase(
+        "sleep",
+        {
+            "last_decision_count": len(tagged_decisions),
+            "last_llm_calls": usage.get("calls", 0),
+            "llm_activity": llm_activity,
+            "auto_trade": auto_trade,
+        },
+    )
     return {
         "last_cycle_at": utc_now(),
         "last_error": None,
@@ -2782,6 +2957,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
         "credit_balance": credit_after.get("credit_balance"),
         "daily_credits_remaining": credit_after.get("daily_credits_remaining"),
         "budget_policy": budget_policy,
+        "auto_trade": auto_trade,
     }
 
 

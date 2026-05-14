@@ -192,6 +192,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "username": user["username"],
         "role": user.get("role") or "user",
         "active": bool(user.get("active")),
+        "signal_execution_mode": str(user.get("signal_execution_mode") or "SIGNAL_ONLY").strip().upper(),
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(user.get("daily_credit_limit") or 0.0), 6),
         "paper_cash_by_market": paper_cash_by_market,
