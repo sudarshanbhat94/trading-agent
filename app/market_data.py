@@ -441,6 +441,8 @@ class YahooMarketDataProvider(MarketDataProvider):
 
 class IndStocksMarketDataProvider(MarketDataProvider):
     source_name = "indstocks-live"
+    quote_chunk_size = 20
+    quote_chunk_spacing_seconds = 0.15
 
     def __init__(self, settings: Settings) -> None:
         self.access_token = normalize_indstocks_access_token(settings.indstocks_access_token)
@@ -473,17 +475,15 @@ class IndStocksMarketDataProvider(MarketDataProvider):
             resolved = await self._resolve_rows(client, universe)
             quotes: dict[str, Quote] = {}
             errors: list[str] = []
-            for chunk in _chunks(resolved, 1000):
-                try:
-                    response = await client.get(
-                        f"{self.base_url}/market/quotes/full",
-                        params={"scrip-codes": ",".join(item["scrip_code"] for item in chunk)},
-                    )
-                    response.raise_for_status()
-                    data = response.json().get("data") or {}
-                except Exception as exc:
-                    errors.append(_market_data_error_summary(exc))
-                    continue
+            for chunk_index, chunk in enumerate(_chunks(resolved, self.quote_chunk_size)):
+                if chunk_index:
+                    await asyncio.sleep(self.quote_chunk_spacing_seconds)
+                data = await self._quote_data_for_chunk(client, chunk, errors)
+                if len(data) < len(chunk):
+                    missing_items = [item for item in chunk if item["scrip_code"] not in data]
+                    for item in missing_items:
+                        await asyncio.sleep(self.quote_chunk_spacing_seconds)
+                        data.update(await self._quote_data_for_chunk(client, [item], errors))
                 for item in chunk:
                     quote_data = data.get(item["scrip_code"]) or {}
                     price = _float_any(quote_data.get("live_price"))
@@ -513,6 +513,35 @@ class IndStocksMarketDataProvider(MarketDataProvider):
             if universe and not quotes:
                 raise MarketDataError(f"INDstocks returned no quotes; diagnostics={self.last_quote_diagnostics}")
             return quotes
+
+    async def _quote_data_for_chunk(
+        self,
+        client: httpx.AsyncClient,
+        chunk: list[dict[str, Any]],
+        errors: list[str],
+    ) -> dict[str, Any]:
+        if not chunk:
+            return {}
+        try:
+            response = await client.get(
+                f"{self.base_url}/market/quotes/full",
+                params={"scrip-codes": ",".join(item["scrip_code"] for item in chunk)},
+            )
+            response.raise_for_status()
+            data = response.json().get("data") or {}
+            return data if isinstance(data, dict) else {}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and len(chunk) > 1:
+                midpoint = max(1, len(chunk) // 2)
+                await asyncio.sleep(self.quote_chunk_spacing_seconds)
+                left = await self._quote_data_for_chunk(client, chunk[:midpoint], errors)
+                await asyncio.sleep(self.quote_chunk_spacing_seconds)
+                right = await self._quote_data_for_chunk(client, chunk[midpoint:], errors)
+                return {**left, **right}
+            errors.append(_market_data_error_summary(exc))
+        except Exception as exc:
+            errors.append(_market_data_error_summary(exc))
+        return {}
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
         output: dict[str, list[Candle]] = {}
