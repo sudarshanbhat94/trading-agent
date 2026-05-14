@@ -441,8 +441,9 @@ class YahooMarketDataProvider(MarketDataProvider):
 
 class IndStocksMarketDataProvider(MarketDataProvider):
     source_name = "indstocks-live"
-    quote_chunk_size = 20
-    quote_chunk_spacing_seconds = 0.15
+    quote_chunk_size = 10
+    quote_chunk_spacing_seconds = 0.35
+    quote_rate_limit_backoff_seconds = 1.0
 
     def __init__(self, settings: Settings) -> None:
         self.access_token = normalize_indstocks_access_token(settings.indstocks_access_token)
@@ -519,6 +520,7 @@ class IndStocksMarketDataProvider(MarketDataProvider):
         client: httpx.AsyncClient,
         chunk: list[dict[str, Any]],
         errors: list[str],
+        attempt: int = 1,
     ) -> dict[str, Any]:
         if not chunk:
             return {}
@@ -531,6 +533,9 @@ class IndStocksMarketDataProvider(MarketDataProvider):
             data = response.json().get("data") or {}
             return data if isinstance(data, dict) else {}
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and attempt < 3:
+                await asyncio.sleep(self.quote_rate_limit_backoff_seconds * attempt)
+                return await self._quote_data_for_chunk(client, chunk, errors, attempt=attempt + 1)
             if exc.response.status_code == 429 and len(chunk) > 1:
                 midpoint = max(1, len(chunk) // 2)
                 await asyncio.sleep(self.quote_chunk_spacing_seconds)
