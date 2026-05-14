@@ -38,7 +38,7 @@ from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
-from .market_data import MarketDataError, build_market_data_provider, normalize_indstocks_access_token
+from .market_data import MarketDataError, build_market_data_provider, normalize_indstocks_access_token, normalize_upstox_access_token
 from .market_regions import normalize_market_region
 from .models import Decision, utc_now
 from .order_router import build_order_router
@@ -916,6 +916,15 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 
     quote = quotes.get(symbol)
     if quote is None:
+        if _provider_error_is_upstox_auth(provider_error):
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Upstox rejected the saved analytics token while fetching quotes. "
+                    "The token is incorrect, expired, revoked, or not enabled for market data. "
+                    "Save a fresh Upstox access token in Account or Admin Broker settings."
+                ),
+            )
         if _provider_error_is_indstocks_auth(provider_error):
             raise HTTPException(
                 status_code=401,
@@ -1171,6 +1180,7 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
 @app.post("/api/me/indstocks/connect")
 async def my_indstocks_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
+    raise HTTPException(status_code=410, detail="INDstocks analytics is disabled. Use Upstox or Kite in Account.")
     token = normalize_indstocks_access_token(payload.get("access_token") or payload.get("token") or "")
     base_url = str(payload.get("base_url") or settings.indstocks_api_base_url).rstrip("/")
     if not token:
@@ -1226,6 +1236,38 @@ async def _validate_indstocks_access_token(token: str, base_url: str) -> None:
         raise HTTPException(status_code=502, detail=f"INDstocks token check failed: {exc.__class__.__name__}: {exc}") from exc
 
 
+async def _validate_upstox_access_token(token: str, base_url: str) -> None:
+    token = normalize_upstox_access_token(token)
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12, headers=headers, follow_redirects=True) as client:
+            response = await client.get(
+                f"{base_url.rstrip('/')}/market-quote/quotes",
+                params={"instrument_key": "NSE_EQ|INE002A01018"},
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403}:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Upstox rejected this token. It is incorrect, expired, revoked, or not enabled for market data. "
+                    "Generate a fresh access token and save it again."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=f"Upstox token check failed with HTTP {exc.response.status_code}: {exc.response.text[:160]}",
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Upstox token check timed out. Try again in a moment.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upstox token check failed: {exc.__class__.__name__}: {exc}") from exc
+
+
 @app.post("/api/me/upstox/auth-url")
 async def my_upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
@@ -1249,14 +1291,16 @@ async def my_upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[
 async def my_upstox_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
     stored = db.user_by_id(int(user["id"])) or {}
-    direct_token = str(payload.get("access_token") or payload.get("token") or "").strip()
+    direct_token = normalize_upstox_access_token(payload.get("access_token") or payload.get("token") or "")
     base_url = str(payload.get("base_url") or stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/")
     if direct_token:
+        await _validate_upstox_access_token(direct_token, base_url)
         updated_user = db.update_user_broker(
             int(user["id"]),
             {
                 "upstox_access_token": direct_token,
                 "upstox_api_base_url": base_url,
+                "upstox_token_scope": "user",
             },
         )
         db.insert_agent_log(
@@ -1291,6 +1335,7 @@ async def my_upstox_connect(payload: dict[str, Any], request: Request) -> dict[s
             "upstox_redirect_uri": redirect_uri,
             "upstox_access_token": access_token,
             "upstox_api_base_url": base_url,
+            "upstox_token_scope": "user",
         },
     )
     db.insert_agent_log(
@@ -1321,6 +1366,7 @@ async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str
         {
             "kite_api_key": api_key,
             "kite_access_token": access_token,
+            "kite_token_scope": "user",
         },
     )
     db.insert_agent_log(
@@ -1332,7 +1378,7 @@ async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str
     )
     return {
         "ok": True,
-        "message": "Kite credentials saved. INDstocks is the active analytics feed in this build.",
+        "message": "Kite credentials saved. This user can use Kite as a personal analytics override and live-trading broker guard.",
         "user": updated_user,
     }
 
@@ -1464,6 +1510,7 @@ async def llm_usage(request: Request) -> dict[str, Any]:
 @app.post("/api/indstocks/connect")
 async def indstocks_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)
+    raise HTTPException(status_code=410, detail="INDstocks analytics is disabled. Connect the shared Upstox analytics feed instead.")
     token = normalize_indstocks_access_token(payload.get("access_token") or payload.get("token") or "")
     base_url = str(payload.get("base_url") or settings.indstocks_api_base_url).rstrip("/")
     if not token:
@@ -1530,10 +1577,51 @@ async def upstox_auth_url(payload: dict[str, Any], request: Request) -> dict[str
 @app.post("/api/upstox/connect")
 async def upstox_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)
+    direct_token = normalize_upstox_access_token(payload.get("access_token") or payload.get("token") or "")
+    base_url = str(payload.get("base_url") or settings.upstox_api_base_url).rstrip("/")
+    if direct_token:
+        await _validate_upstox_access_token(direct_token, base_url)
+        current_overrides = db.runtime_settings()
+        candidate_overrides = dict(current_overrides)
+        candidate_overrides.update(
+            {
+                "market_data_provider": "upstox",
+                "upstox_access_token": direct_token,
+                "upstox_api_base_url": base_url,
+            }
+        )
+        candidate_settings = settings_from_overrides(Settings(), candidate_overrides)
+        try:
+            candidate_stack = build_agent_stack(candidate_settings)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Upstox access token saved but provider failed to initialize: {exc}") from exc
+        result = await _apply_runtime_stack(
+            candidate_overrides=candidate_overrides,
+            candidate_settings=candidate_settings,
+            candidate_stack=candidate_stack,
+            changed_keys=["market_data_provider", "upstox_access_token", "upstox_api_base_url"],
+            component="upstox",
+            event="connected",
+            message="Upstox analytics access token connected and saved",
+        )
+        db.insert_agent_log(
+            "INFO",
+            "upstox",
+            "access_token_saved",
+            "Upstox analytics access token saved for shared market data",
+            {"base_url": base_url, "token_type": "direct_access_token"},
+        )
+        return {
+            "ok": True,
+            "message": "Upstox connected. Shared analytics feed now uses this token.",
+            "provider": result["status"].get("provider"),
+            "token_type": "direct_access_token",
+            "status": result["status"],
+            "config": result["config"],
+        }
     api_key = str(payload.get("api_key") or settings.upstox_api_key).strip()
     api_secret = str(payload.get("api_secret") or settings.upstox_api_secret).strip()
     redirect_uri = str(payload.get("redirect_uri") or settings.upstox_redirect_uri).strip()
-    base_url = str(payload.get("base_url") or settings.upstox_api_base_url).rstrip("/")
     code = _extract_oauth_code(str(payload.get("code") or ""))
     if not all([api_key, api_secret, redirect_uri, code]):
         raise HTTPException(status_code=400, detail="Upstox connect needs API key, API secret, redirect URI, and authorization code.")
@@ -1864,6 +1952,7 @@ async def adjust_user_credit_balance(user_id: int, payload: dict[str, Any], requ
 @app.post("/api/users/{user_id}/assign-runtime-indstocks")
 async def assign_runtime_indstocks(user_id: int, request: Request) -> dict[str, Any]:
     admin = require_admin(request, settings, db)
+    raise HTTPException(status_code=410, detail="INDstocks assignment is disabled. Shared Upstox analytics is routed automatically.")
     existing = db.user_by_id(user_id)
     if not existing:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1898,6 +1987,7 @@ async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any
         "upstox_redirect_uri": (runtime_settings.get("upstox_redirect_uri") or settings.upstox_redirect_uri),
         "upstox_access_token": (runtime_settings.get("upstox_access_token") or settings.upstox_access_token),
         "upstox_api_base_url": (runtime_settings.get("upstox_api_base_url") or settings.upstox_api_base_url),
+        "upstox_token_scope": "shared_analytics",
     }
     if not runtime_upstox["upstox_access_token"]:
         raise HTTPException(status_code=400, detail="No runtime Upstox access token is available to assign.")
@@ -1998,6 +2088,9 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     mode = str(payload.get("mode") or "TRACK")
     amount = _positive_float(payload.get("amount", 0), field="amount")
     qty = int(_positive_float(payload.get("qty", 0), field="qty"))
+    if mode.strip().upper() == "LIVE":
+        idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
+        _require_user_live_broker(user, normalize_market_region(idea.get("market_region") or "IN", default="IN"))
     try:
         follow = db.follow_signal_idea(int(user["id"]), idea_id, mode=mode, amount=amount, qty=qty)
     except ValueError as exc:
@@ -2046,6 +2139,8 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
     skipped: list[dict[str, Any]] = []
     for idea in ideas:
         try:
+            if mode == "LIVE":
+                _require_user_live_broker(user, normalize_market_region(idea.get("market_region") or "IN", default="IN"))
             followed.append(
                 db.follow_signal_idea(
                     int(user["id"]),
@@ -2205,6 +2300,38 @@ def _compact_search_text(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
 
 
+def _signal_idea_for_live_guard(idea_id: int, user_id: int) -> dict[str, Any]:
+    for idea in db.latest_signal_ideas(500, user_id=user_id):
+        if int(idea.get("id") or 0) == int(idea_id):
+            return idea
+    raise HTTPException(status_code=404, detail="Signal idea not found.")
+
+
+def _require_user_live_broker(user: dict[str, Any], market_region: str) -> None:
+    region = normalize_market_region(market_region or "IN", default="IN")
+    if region == "US":
+        raise HTTPException(
+            status_code=400,
+            detail="Live US trading is not enabled yet. Use Track or Paper for US ideas until a supported US broker is connected.",
+        )
+    stored = db.user_by_id(int(user["id"])) or {}
+    has_upstox = bool(stored.get("upstox_access_token") and stored.get("upstox_token_scope") == "user")
+    has_kite = bool(
+        stored.get("kite_api_key")
+        and stored.get("kite_access_token")
+        and stored.get("kite_token_scope") == "user"
+    )
+    if has_upstox or has_kite:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Live trading requires your own broker connection. Save your personal Upstox token or Kite API key/access token "
+            "in Account before using Live."
+        ),
+    )
+
+
 def _provider_error_is_indstocks_auth(error: str | None) -> bool:
     text = str(error or "").lower()
     return "indstocks" in text and (
@@ -2213,6 +2340,18 @@ def _provider_error_is_indstocks_auth(error: str | None) -> bool:
         or "access_token" in text
         or "expired" in text
         or "revoked" in text
+    )
+
+
+def _provider_error_is_upstox_auth(error: str | None) -> bool:
+    text = str(error or "").lower()
+    return "upstox" in text and (
+        "403" in text
+        or "401" in text
+        or "access_token" in text
+        or "expired" in text
+        or "revoked" in text
+        or "unauthorized" in text
     )
 
 
@@ -2231,22 +2370,37 @@ def _market_data_provider_for_user(user: dict[str, Any], market_region: str = "I
     if region == "US":
         return build_market_data_provider(replace(settings, market_region="US", market_data_provider="yahoo"))
     stored = db.user_by_id(int(user["id"])) or {}
-    if stored.get("indstocks_access_token"):
-        user_settings = replace(
-            settings,
-            market_region=region,
-            market_data_provider="indstocks",
-            indstocks_access_token=str(stored.get("indstocks_access_token") or ""),
-            indstocks_api_base_url=str(stored.get("indstocks_api_base_url") or settings.indstocks_api_base_url).rstrip("/"),
+    if stored.get("upstox_access_token") and stored.get("upstox_token_scope") == "user":
+        return build_market_data_provider(
+            replace(
+                settings,
+                market_region=region,
+                market_data_provider="upstox",
+                upstox_access_token=str(stored.get("upstox_access_token") or ""),
+                upstox_api_base_url=str(stored.get("upstox_api_base_url") or settings.upstox_api_base_url).rstrip("/"),
+            )
         )
-        return build_market_data_provider(user_settings)
-    if settings.indstocks_access_token:
-        return build_market_data_provider(replace(settings, market_region=region, market_data_provider="indstocks"))
+    if stored.get("kite_api_key") and stored.get("kite_access_token") and stored.get("kite_token_scope") == "user":
+        return build_market_data_provider(
+            replace(
+                settings,
+                market_region=region,
+                market_data_provider="kite_yahoo",
+                kite_api_key=str(stored.get("kite_api_key") or ""),
+                kite_access_token=str(stored.get("kite_access_token") or ""),
+            )
+        )
+    if settings.upstox_access_token:
+        provider = settings.market_data_provider if str(settings.market_data_provider).startswith("upstox") else "upstox"
+        return build_market_data_provider(replace(settings, market_region=region, market_data_provider=provider))
+    if settings.kite_api_key and settings.kite_access_token:
+        provider = settings.market_data_provider if str(settings.market_data_provider).startswith("kite") else "kite_yahoo"
+        return build_market_data_provider(replace(settings, market_region=region, market_data_provider=provider))
     if settings.market_data_provider == "yahoo":
         return build_market_data_provider(replace(settings, market_region=region, market_data_provider="yahoo"))
     raise HTTPException(
         status_code=400,
-        detail="No INDstocks market data token is connected. Paste a user token from Account, or ask admin to connect/assign the runtime INDstocks feed.",
+        detail="No Upstox analytics token is connected. Paste a user Upstox/Kite token in Account, or ask admin to connect the shared Upstox analytics feed.",
     )
 
 

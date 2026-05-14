@@ -1325,7 +1325,9 @@ function isFeedPending(payload = state.latest || {}) {
   const provider = String(payload.market_health?.provider || payload.provider || payload.runtime?.market_data_provider || "");
   const error = String(payload.last_error || "");
   if (normalizeUiMarket(state.activeMarket) === "US" && filterRowsByMarket(payload.quotes || [], "US").length) return false;
-  return provider.includes("indstocks-not-connected") || /indstocks|marketdataerror|no quotes|access token/i.test(error);
+  return provider.includes("upstox-not-connected")
+    || provider.includes("indstocks-not-connected")
+    || /(upstox|indstocks|marketdataerror|no quotes|access token)/i.test(error);
 }
 
 function updateMarketWorkspaceLabels(payload = state.latest || {}) {
@@ -1492,7 +1494,7 @@ function applyAccessMode() {
     "test-llm-btn",
     "refresh-logs-btn",
     "analyze-btn",
-    "indstocks-connect-btn",
+    "upstox-connect-btn",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
@@ -1517,14 +1519,14 @@ function applyAccessMode() {
     }
   }
   for (const id of [
-    "indstocks-access-token",
+    "upstox-access-token",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
   }
   for (const id of [
-    "my-indstocks-access-token",
-    "my-indstocks-token-save-btn",
+    "my-upstox-access-token",
+    "my-upstox-token-save-btn",
     "my-kite-api-key",
     "my-kite-access-token",
     "my-kite-connect-btn",
@@ -1809,22 +1811,23 @@ function renderUsers(rows) {
     .map((user) => {
       const active = Boolean(user.active);
       const credits = user.credit_usage || {};
-      const indstocks = user.broker_accounts?.indstocks || {};
+      const upstox = user.broker_accounts?.upstox || {};
       const kite = user.broker_accounts?.kite || {};
       const assigned = user.assigned_llm || {};
+      const upstoxLabel = upstox.connected ? (upstox.scope === "user" ? "personal" : "shared") : "off";
+      const kiteLabel = kite.connected ? (kite.scope === "user" ? "personal" : "saved") : "off";
       return `<tr data-user-id="${user.id}">
         <td><strong>${escapeHtml(user.username)}</strong></td>
         <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span><br><small>${escapeHtml(assigned.provider || "default")} · ${escapeHtml(assigned.model || "default")}</small></td>
         <td><strong>${fmtCredits(user.credit_balance || credits.credit_balance || 0)}</strong><br><small>daily ${fmtCredits(user.daily_credit_limit || credits.daily_credit_limit || 0)}</small></td>
         <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
-        <td><span class="tag ${indstocks.connected ? "open" : "watch"}">INDstocks ${indstocks.connected ? "on" : "off"}</span><br><small>Kite ${kite.connected ? "on" : "off"}</small></td>
+        <td><span class="tag ${upstox.connected ? "open" : "watch"}">Upstox ${upstoxLabel}</span><br><small>Kite ${kiteLabel}</small></td>
         <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
           <button type="button" data-user-action="role" title="${user.role === "admin" ? "Change to user role" : "Change to admin role"}">Role</button>
           <button type="button" data-user-action="model">Model</button>
           <button type="button" data-user-action="credits">Credits</button>
-          <button type="button" data-user-action="assign-indstocks" title="Assign runtime INDstocks credentials">Feed</button>
         </td>
       </tr>`;
     })
@@ -1843,8 +1846,6 @@ function renderUsers(rows) {
         openModelAssign(user);
       } else if (button.dataset.userAction === "credits") {
         openCreditAdjust(user);
-      } else if (button.dataset.userAction === "assign-indstocks") {
-        assignRuntimeIndStocks(user.id);
       }
     });
   });
@@ -1893,22 +1894,6 @@ async function adjustUserCredits(userId, amount) {
     fetchLogs();
   } catch (error) {
     showBackendError(networkErrorMessage(error, "credit adjustment"), { action: "credit adjustment" });
-  }
-}
-
-async function assignRuntimeIndStocks(userId) {
-  try {
-    const response = await fetch(`/api/users/${userId}/assign-runtime-indstocks`, { method: "POST" });
-    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    if (!response.ok) {
-      showDetails("Assign Runtime INDstocks", payload);
-      return;
-    }
-    renderUsers(payload.users || []);
-    fetchLogs();
-    showDetails("Assign Runtime INDstocks", { ok: true, message: "Runtime INDstocks credentials assigned to user." });
-  } catch (error) {
-    showBackendError(networkErrorMessage(error, "assign INDstocks"), { action: "assign INDstocks" });
   }
 }
 
@@ -1985,11 +1970,12 @@ async function updateUser(userId, patch) {
 function renderAccount(account) {
   state.account = account;
   const paper = account.paper || {};
-  const indstocks = account.indstocks || {};
+  const upstox = account.upstox || {};
   const portfolio = paper.portfolio || {};
   const portfolioByMarket = paper.portfolio_by_market || portfolio.portfolio_by_market || {};
   const trackedIdeas = account.tracked_ideas || [];
-  const userIndStocks = state.auth?.user?.broker_accounts?.indstocks || {};
+  const userUpstox = state.auth?.user?.broker_accounts?.upstox || {};
+  const userKite = state.auth?.user?.broker_accounts?.kite || {};
   const indiaPaper = portfolioByMarket.IN || portfolioMetricsForMarket(portfolio, filterRowsByMarket(paper.positions || [], "IN"), "IN");
   const usPaper = portfolioByMarket.US || portfolioMetricsForMarket(portfolio, filterRowsByMarket(paper.positions || [], "US"), "US");
   const cashPool = paper.cash_pool_by_market || state.auth?.user?.paper_cash_by_market || {};
@@ -2009,7 +1995,16 @@ function renderAccount(account) {
       <small id="paper-cash-status">Starting paper cash per market; active paper ideas reduce available cash.</small>
     </form>
   `;
-  byId("account-status").textContent = userIndStocks.connected ? "user INDstocks connected" : indstocks.connected ? "runtime INDstocks" : "paper demo";
+  const userUpstoxPersonal = userUpstox.connected && userUpstox.scope === "user";
+  const userKitePersonal = userKite.connected && userKite.scope === "user";
+  const userFeedLabel = userUpstoxPersonal
+    ? "Upstox connected"
+    : userKitePersonal
+      ? "Kite connected"
+      : upstox.connected
+        ? "shared Upstox analytics"
+        : "not connected";
+  byId("account-status").textContent = userFeedLabel;
   byId("account-body").innerHTML = `
     <div class="account-metrics">
       <div><span>Mode</span><strong>${paper.mode || "-"}</strong></div>
@@ -2017,7 +2012,7 @@ function renderAccount(account) {
       <div><span>India Equity</span><strong>${fmtMarketMoney(indiaPaper.equity, "IN")}</strong></div>
       <div><span>US Cash</span><strong>${fmtMarketMoney(usPaper.cash, "US")}</strong></div>
       <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
-      <div><span>User Feed</span><strong>${userIndStocks.connected ? "INDstocks connected" : "not connected"}</strong></div>
+      <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
       <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
     </div>
@@ -2178,7 +2173,7 @@ function renderSettings(config) {
     }
   }
   renderProviderKeysPanel(config.settings || {});
-  renderIndStocksConnect(config.settings || {});
+  renderUpstoxConnect(config.settings || {});
   const configuredRegion = String(config.settings?.market_region || "IN").toUpperCase();
   setActiveMarket(configuredRegion === "US" ? "US" : "IN", { rerender: false });
   setAnalyzeMarket(configuredRegion === "US" ? "US" : "IN");
@@ -2225,33 +2220,43 @@ function setSettingsTab(tabName) {
   }
 }
 
-function renderIndStocksConnect(settings) {
-  const token = byId("indstocks-access-token");
-  const status = byId("indstocks-connect-status");
-  if (token && !token.value) token.placeholder = settings.indstocks_access_token?.saved ? "INDstocks token saved" : "Paste INDstocks access token";
+function renderUpstoxConnect(settings) {
+  const token = byId("upstox-access-token");
+  const status = byId("upstox-connect-status");
+  const saved = Boolean(settings.upstox_access_token?.saved);
+  if (token && !token.value) token.placeholder = saved ? "Upstox token saved" : "Paste Upstox access token";
   if (status) {
-    status.textContent = settings.indstocks_access_token?.saved ? "connected" : "not connected";
-    status.className = `settings-inline-status ${settings.indstocks_access_token?.saved ? "positive" : ""}`;
+    status.textContent = saved ? "connected" : "not connected";
+    status.className = `settings-inline-status ${saved ? "positive" : ""}`;
   }
 }
 
 function renderUserBrokerStatus() {
   const user = state.auth?.user || {};
-  const indstocks = user.broker_accounts?.indstocks || {};
+  const upstox = user.broker_accounts?.upstox || {};
   const kite = user.broker_accounts?.kite || {};
-  const indstocksStatus = byId("my-indstocks-status");
+  const sharedUpstox = state.account?.upstox || {};
+  const upstoxStatus = byId("my-upstox-status");
   const kiteStatus = byId("my-kite-status");
   const brokerStatus = byId("user-broker-status");
-  if (indstocksStatus) {
-    indstocksStatus.textContent = indstocks.connected ? "connected" : "not connected";
-    indstocksStatus.className = `settings-inline-status ${indstocks.connected ? "positive" : ""}`;
+  const upstoxPersonal = upstox.connected && upstox.scope === "user";
+  const kitePersonal = kite.connected && kite.scope === "user";
+  if (upstoxStatus) {
+    upstoxStatus.textContent = upstoxPersonal ? "personal connected" : upstox.connected ? "shared analytics" : "not connected";
+    upstoxStatus.className = `settings-inline-status ${upstox.connected ? "positive" : ""}`;
   }
   if (kiteStatus) {
-    kiteStatus.textContent = kite.connected ? "connected" : kite.api_key_saved ? "key saved" : "not connected";
-    kiteStatus.className = `settings-inline-status ${kite.connected ? "positive" : ""}`;
+    kiteStatus.textContent = kitePersonal ? "personal connected" : kite.api_key_saved ? "key saved" : "not connected";
+    kiteStatus.className = `settings-inline-status ${kitePersonal ? "positive" : ""}`;
   }
   if (brokerStatus) {
-    brokerStatus.textContent = indstocks.connected ? "INDstocks connected" : "connect user feed";
+    brokerStatus.textContent = upstoxPersonal
+      ? "Upstox connected"
+      : kitePersonal
+        ? "Kite connected"
+        : sharedUpstox.connected
+          ? "shared Upstox analytics"
+          : "connect broker feed";
   }
 }
 
@@ -2409,93 +2414,113 @@ async function testLlm() {
   }
 }
 
-function indStocksConnectPayload() {
+function upstoxConnectPayload() {
   return {
-    access_token: byId("indstocks-access-token")?.value?.trim() || byId("setting-indstocks_access_token")?.value?.trim(),
-    base_url: byId("setting-indstocks_api_base_url")?.value?.trim() || "https://api.indstocks.com",
+    access_token: byId("upstox-access-token")?.value?.trim() || byId("setting-upstox_access_token")?.value?.trim(),
+    base_url: byId("setting-upstox_api_base_url")?.value?.trim() || "https://api.upstox.com/v2",
   };
 }
 
-function myIndStocksConnectPayload() {
+function myUpstoxConnectPayload() {
   return {
-    access_token: byId("my-indstocks-access-token")?.value?.trim(),
-    base_url: state.config?.settings?.indstocks_api_base_url || "https://api.indstocks.com",
+    access_token: byId("my-upstox-access-token")?.value?.trim(),
+    base_url: state.config?.settings?.upstox_api_base_url || "https://api.upstox.com/v2",
   };
 }
 
-async function saveMyIndStocksToken() {
-  const status = byId("my-indstocks-status");
-  const button = byId("my-indstocks-token-save-btn");
-  const token = byId("my-indstocks-access-token")?.value?.trim();
+async function saveMyUpstoxToken() {
+  const status = byId("my-upstox-status");
+  const button = byId("my-upstox-token-save-btn");
+  const token = byId("my-upstox-access-token")?.value?.trim();
   if (!token) {
-    status.textContent = "paste token first";
-    status.className = "settings-inline-status negative";
+    if (status) {
+      status.textContent = "paste token first";
+      status.className = "settings-inline-status negative";
+    }
     return;
   }
-  status.textContent = "saving token";
-  button.disabled = true;
+  if (status) {
+    status.textContent = "saving token";
+    status.className = "settings-inline-status";
+  }
+  if (button) button.disabled = true;
   try {
-    const response = await fetch("/api/me/indstocks/connect", {
+    const response = await fetch("/api/me/upstox/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(myIndStocksConnectPayload()),
+      body: JSON.stringify(myUpstoxConnectPayload()),
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "token save failed";
-      status.className = "settings-inline-status negative";
-      showDetails("User INDstocks Token", payload);
+      if (status) {
+        status.textContent = payload.detail || "token save failed";
+        status.className = "settings-inline-status negative";
+      }
+      showDetails("User Upstox Token", payload);
       return;
     }
-    byId("my-indstocks-access-token").value = "";
+    if (byId("my-upstox-access-token")) byId("my-upstox-access-token").value = "";
     state.auth.user = payload.user || state.auth.user;
     renderUserBrokerStatus();
-    status.textContent = "token saved";
-    status.className = "settings-inline-status positive";
+    if (status) {
+      status.textContent = "token saved";
+      status.className = "settings-inline-status positive";
+    }
   } catch (error) {
-    status.textContent = "token save failed";
-    status.className = "settings-inline-status negative";
+    if (status) {
+      status.textContent = "token save failed";
+      status.className = "settings-inline-status negative";
+    }
+    showBackendError(networkErrorMessage(error, "user Upstox token save"), { action: "user Upstox token save" });
   } finally {
-    button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
+    if (button) button.disabled = !(state.auth?.authenticated && !state.auth?.admin);
   }
 }
 
-async function connectIndStocks() {
-  const status = byId("indstocks-connect-status");
-  const button = byId("indstocks-connect-btn");
-  status.textContent = "connecting INDstocks";
-  status.className = "settings-inline-status";
-  button.disabled = true;
+async function connectUpstox() {
+  const status = byId("upstox-connect-status");
+  const button = byId("upstox-connect-btn");
+  if (status) {
+    status.textContent = "connecting Upstox";
+    status.className = "settings-inline-status";
+  }
+  if (button) button.disabled = true;
   try {
-    const response = await fetch("/api/indstocks/connect", {
+    const response = await fetch("/api/upstox/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(indStocksConnectPayload()),
+      body: JSON.stringify(upstoxConnectPayload()),
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (!response.ok || !payload.ok) {
-      status.textContent = payload.detail || "INDstocks connect failed";
-      status.className = "settings-inline-status negative";
-      showDetails("INDstocks Connect", payload);
+      if (status) {
+        status.textContent = payload.detail || "Upstox connect failed";
+        status.className = "settings-inline-status negative";
+      }
+      showDetails("Upstox Connect", payload);
       return;
     }
-    if (byId("indstocks-access-token")) byId("indstocks-access-token").value = "";
-    status.textContent = `INDstocks connected · ${payload.provider || "provider ready"}`;
-    status.className = "settings-inline-status positive";
+    if (byId("upstox-access-token")) byId("upstox-access-token").value = "";
+    if (status) {
+      status.textContent = `Upstox connected · ${payload.provider || "provider ready"}`;
+      status.className = "settings-inline-status positive";
+    }
     if (payload.config) renderSettings(payload.config);
     if (payload.status) render(payload.status);
     fetchLogs();
-    showDetails("INDstocks Connect", {
+    showDetails("Upstox Connect", {
       ok: payload.ok,
       message: payload.message,
       provider: payload.provider,
     });
   } catch (error) {
-    status.textContent = "INDstocks connect failed: backend unreachable";
-    status.className = "settings-inline-status negative";
-    showBackendError(networkErrorMessage(error, "INDstocks connect"), { action: "INDstocks connect" });
+    if (status) {
+      status.textContent = "Upstox connect failed: backend unreachable";
+      status.className = "settings-inline-status negative";
+    }
+    showBackendError(networkErrorMessage(error, "Upstox connect"), { action: "Upstox connect" });
   } finally {
-    button.disabled = !(state.auth && state.auth.admin);
+    if (button) button.disabled = !(state.auth && state.auth.admin);
   }
 }
 
@@ -4558,8 +4583,8 @@ function bindControls() {
   byId("save-provider-keys-btn").addEventListener("click", saveSettings);
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);
-  byId("indstocks-connect-btn").addEventListener("click", connectIndStocks);
-  byId("my-indstocks-token-save-btn").addEventListener("click", saveMyIndStocksToken);
+  byId("upstox-connect-btn").addEventListener("click", connectUpstox);
+  byId("my-upstox-token-save-btn").addEventListener("click", saveMyUpstoxToken);
   byId("my-kite-connect-btn").addEventListener("click", connectMyKite);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
   const quoteFilter = byId("quote-filter");

@@ -6,6 +6,7 @@ import httpx
 
 from .config import Settings
 from .db import Database
+from .market_data import normalize_upstox_access_token
 from .market_regions import market_region_for_row, normalize_market_region
 
 MARKET_REGIONS = ("IN", "US")
@@ -19,7 +20,8 @@ class AccountService:
     async def snapshot(self) -> dict[str, Any]:
         paper = self._paper_account()
         indstocks = self._indstocks_account()
-        return {"paper": paper, "indstocks": indstocks}
+        upstox = self._upstox_feed_account()
+        return {"paper": paper, "indstocks": indstocks, "upstox": upstox}
 
     def _paper_account(self) -> dict[str, Any]:
         portfolio = self.db.latest_portfolio()
@@ -75,8 +77,19 @@ class AccountService:
             "provider": "indstocks",
         }
 
+    def _upstox_feed_account(self) -> dict[str, Any]:
+        return {
+            "connected": bool(self.settings.upstox_access_token),
+            "base_url": self.settings.upstox_api_base_url,
+            "provider": "upstox",
+            "default_analytics": str(self.settings.market_data_provider or "").startswith("upstox"),
+        }
+
     async def _upstox_account(self) -> dict[str, Any]:
-        headers = {"Accept": "application/json", "Authorization": f"Bearer {self.settings.upstox_access_token}"}
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {normalize_upstox_access_token(self.settings.upstox_access_token)}",
+        }
         output: dict[str, Any] = {"connected": True, "errors": []}
         async with httpx.AsyncClient(timeout=8, headers=headers) as client:
             await self._fetch_account_part(client, output, "profile", f"{self.settings.upstox_api_base_url}/user/profile")

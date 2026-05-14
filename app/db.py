@@ -397,12 +397,14 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
             "redirect_uri_saved": bool(row.get("upstox_redirect_uri")),
             "connected": bool(row.get("upstox_access_token")),
             "base_url": row.get("upstox_api_base_url") or "",
+            "scope": row.get("upstox_token_scope") or "",
             "updated_at": row.get("broker_updated_at"),
         },
         "kite": {
             "api_key_saved": bool(row.get("kite_api_key")),
             "access_token_saved": bool(row.get("kite_access_token")),
             "connected": bool(row.get("kite_access_token")),
+            "scope": row.get("kite_token_scope") or "",
             "updated_at": row.get("broker_updated_at"),
         },
     }
@@ -636,10 +638,12 @@ class Database:
                     upstox_redirect_uri text not null default '',
                     upstox_access_token text not null default '',
                     upstox_api_base_url text not null default '',
+                    upstox_token_scope text not null default '',
                     indstocks_access_token text not null default '',
                     indstocks_api_base_url text not null default '',
                     kite_api_key text not null default '',
                     kite_access_token text not null default '',
+                    kite_token_scope text not null default '',
                     broker_updated_at text,
                     created_at text not null,
                     updated_at text not null,
@@ -799,10 +803,12 @@ class Database:
             self._ensure_column(conn, "users", "upstox_redirect_uri", "text not null default ''")
             self._ensure_column(conn, "users", "upstox_access_token", "text not null default ''")
             self._ensure_column(conn, "users", "upstox_api_base_url", "text not null default ''")
+            self._ensure_column(conn, "users", "upstox_token_scope", "text not null default ''")
             self._ensure_column(conn, "users", "indstocks_access_token", "text not null default ''")
             self._ensure_column(conn, "users", "indstocks_api_base_url", "text not null default ''")
             self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
             self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
+            self._ensure_column(conn, "users", "kite_token_scope", "text not null default ''")
             self._ensure_column(conn, "users", "broker_updated_at", "text")
             self._seed_strategy_plans(conn)
             self._backfill_signal_plan_codes(conn)
@@ -1391,8 +1397,10 @@ class Database:
             "upstox_redirect_uri",
             "upstox_access_token",
             "upstox_api_base_url",
+            "upstox_token_scope",
             "kite_api_key",
             "kite_access_token",
+            "kite_token_scope",
         }
         assignments: list[str] = []
         params: list[Any] = []
@@ -1418,6 +1426,7 @@ class Database:
                 "upstox_redirect_uri": runtime_settings.get("upstox_redirect_uri", ""),
                 "upstox_access_token": runtime_settings.get("upstox_access_token", ""),
                 "upstox_api_base_url": runtime_settings.get("upstox_api_base_url", ""),
+                "upstox_token_scope": runtime_settings.get("upstox_token_scope", "shared_analytics"),
             },
         )
 

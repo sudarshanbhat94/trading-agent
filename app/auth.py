@@ -207,11 +207,13 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
                 "api_secret_saved": bool(user.get("upstox_api_secret")),
                 "access_token_saved": bool(user.get("upstox_access_token")),
                 "redirect_uri_saved": bool(user.get("upstox_redirect_uri")),
+                "scope": user.get("upstox_token_scope") or "",
             },
             "kite": {
                 "connected": bool(user.get("kite_access_token")),
                 "api_key_saved": bool(user.get("kite_api_key")),
                 "access_token_saved": bool(user.get("kite_access_token")),
+                "scope": user.get("kite_token_scope") or "",
             },
         },
         "created_at": user.get("created_at"),

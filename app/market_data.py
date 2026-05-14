@@ -31,6 +31,21 @@ def normalize_indstocks_access_token(value: Any) -> str:
     return token
 
 
+def normalize_upstox_access_token(value: Any) -> str:
+    token = str(value or "").strip()
+    if token.lower().startswith("authorization:"):
+        token = token.split(":", 1)[1].strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token
+
+
+def normalize_market_data_provider_name(value: Any) -> str:
+    provider = str(value or "upstox").strip().lower()
+    choices = {"upstox", "upstox_yahoo", "kite", "kite_yahoo", "yahoo"}
+    return provider if provider in choices else "upstox"
+
+
 class MarketDataProvider(ABC):
     source_name: str
 
@@ -873,7 +888,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
     source_name = "upstox-live"
 
     def __init__(self, settings: Settings) -> None:
-        self.access_token = settings.upstox_access_token
+        self.access_token = normalize_upstox_access_token(settings.upstox_access_token)
         self.base_url = settings.upstox_api_base_url
         self.interval = settings.upstox_candle_interval
         self.lookback_days = settings.upstox_candle_lookback_days
@@ -882,22 +897,30 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         self.weekly_lookback_days = settings.upstox_weekly_candle_lookback_days
         self.candle_concurrency = max(1, int(settings.upstox_candle_concurrency or 10))
         self.candle_fetch_timeout_seconds = max(5, int(settings.upstox_candle_fetch_timeout_seconds or 35))
+        self.last_quote_diagnostics: dict[str, Any] = {}
         self.last_candle_diagnostics: dict[str, Any] = {}
         if not self.access_token:
             raise MarketDataError("Upstox provider needs UPSTOX_ACCESS_TOKEN")
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        requested = len(universe)
+        missing_key_symbols = [row["symbol"] for row in universe if not row.get("upstox_instrument_key")]
         universe = [row for row in universe if row.get("upstox_instrument_key")]
         quotes: dict[str, Quote] = {}
+        errors: list[str] = []
         async with httpx.AsyncClient(timeout=10, headers=self._headers()) as client:
             for i in range(0, len(universe), 100):
                 chunk = universe[i : i + 100]
-                response = await client.get(
-                    f"{self.base_url}/market-quote/quotes",
-                    params={"instrument_key": ",".join(self._instrument_key(row) for row in chunk)},
-                )
-                response.raise_for_status()
-                data = response.json().get("data", {})
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/market-quote/quotes",
+                        params={"instrument_key": ",".join(self._instrument_key(row) for row in chunk)},
+                    )
+                    response.raise_for_status()
+                    data = response.json().get("data", {})
+                except Exception as exc:
+                    errors.append(_market_data_error_summary(exc))
+                    continue
                 for row in chunk:
                     item = self._find_quote_item(data, row)
                     if not item:
@@ -919,6 +942,17 @@ class UpstoxMarketDataProvider(MarketDataProvider):
                         close=ohlc.get("close"),
                         volume=item.get("volume") or item.get("volume_traded"),
                     )
+        self.last_quote_diagnostics = {
+            "requested": requested,
+            "resolved": len(universe),
+            "returned": len(quotes),
+            "missing_instrument_keys": missing_key_symbols[:20],
+            "missing_symbols": [row["symbol"] for row in universe if row["symbol"] not in quotes][:20],
+            "errors": _unique_errors(errors)[:5],
+            "source": "upstox_market_quote_quotes",
+        }
+        if requested and not quotes:
+            raise MarketDataError(f"Upstox returned no quotes; diagnostics={self.last_quote_diagnostics}")
         return quotes
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
@@ -1131,6 +1165,20 @@ class UpstoxSetupRequiredProvider(MarketDataProvider):
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
         raise MarketDataError(
             "Upstox access token is not configured. Connect Upstox from Settings before running candle analytics."
+        )
+
+
+class KiteSetupRequiredProvider(MarketDataProvider):
+    source_name = "kite-not-connected"
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        raise MarketDataError(
+            "Kite credentials are not configured. Save a Kite API key and access token before using Kite analytics."
+        )
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        raise MarketDataError(
+            "Kite credentials are not configured. Save a Kite API key and access token before using Kite analytics."
         )
 
 
@@ -1416,18 +1464,35 @@ class IndStocksSetupRequiredProvider(MarketDataProvider):
 def build_market_data_provider(settings: Settings) -> MarketDataProvider:
     region = normalize_market_region(settings.market_region)
     yahoo = YahooMarketDataProvider(settings)
-    provider = str(settings.market_data_provider or "indstocks").strip().lower()
+    provider = normalize_market_data_provider_name(settings.market_data_provider)
     if provider == "yahoo":
         return yahoo
 
-    india_provider = _build_indstocks_market_data_provider(settings, yahoo)
-    # INDstocks currently resolves Indian exchange instruments. Keep the US desk
-    # on Yahoo's symbol feed so tickers such as ORCL/AAPL do not go through
-    # India-only scrip-code resolution.
+    india_provider = _build_india_market_data_provider(settings, yahoo)
+    # Indian brokers resolve Indian exchange instruments. Keep the US desk on
+    # Yahoo's symbol feed so tickers such as ORCL/AAPL do not go through
+    # India-only instrument-key resolution.
     us_provider = yahoo
     if region == "BOTH":
         return MarketRegionRoutingProvider(india_provider=india_provider, us_provider=us_provider)
     return us_provider if region == "US" else india_provider
+
+
+def _build_india_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:
+    provider = normalize_market_data_provider_name(settings.market_data_provider)
+    if provider == "yahoo":
+        return yahoo
+    if provider in {"upstox", "upstox_yahoo"}:
+        if not settings.upstox_access_token:
+            return yahoo if provider == "upstox_yahoo" else UpstoxSetupRequiredProvider()
+        primary = UpstoxMarketDataProvider(settings)
+        return HistoricalCandleFallbackProvider(primary, yahoo) if provider == "upstox_yahoo" else primary
+    if provider in {"kite", "kite_yahoo"}:
+        if not settings.kite_api_key or not settings.kite_access_token:
+            return yahoo if provider == "kite_yahoo" else KiteSetupRequiredProvider()
+        primary = KiteMarketDataProvider(settings)
+        return HistoricalCandleFallbackProvider(primary, yahoo) if provider == "kite_yahoo" else primary
+    return _build_indstocks_market_data_provider(settings, yahoo)
 
 
 def _build_indstocks_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:

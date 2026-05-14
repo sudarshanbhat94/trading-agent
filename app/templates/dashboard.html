@@ -431,21 +431,21 @@
                   <div class="connect-card">
                     <div class="connect-card-head">
                       <div>
-                        <h4>User INDstocks</h4>
-                        <p>Used for this user's live quotes, candles, and symbol analysis.</p>
+                        <h4>My Upstox</h4>
+                        <p>Optional personal feed. If empty, analytics uses the shared admin Upstox feed; live trading still requires your own broker token.</p>
                       </div>
-                      <span id="my-indstocks-status">not connected</span>
+                      <span id="my-upstox-status">not connected</span>
                     </div>
                     <div class="connect-grid">
-                      <input id="my-indstocks-access-token" type="password" placeholder="Paste INDstocks access token" autocomplete="off" />
-                      <button id="my-indstocks-token-save-btn" class="primary" type="button">Save Token</button>
+                      <input id="my-upstox-access-token" type="password" placeholder="Paste Upstox access token" autocomplete="off" />
+                      <button id="my-upstox-token-save-btn" class="primary" type="button">Save Upstox</button>
                     </div>
                   </div>
                   <div class="connect-card">
                     <div class="connect-card-head">
                       <div>
                         <h4>User Kite</h4>
-                        <p>Optional broker credential storage. INDstocks powers market analytics in this build.</p>
+                        <p>Optional personal broker credentials for analytics override and live trading guard.</p>
                       </div>
                       <span id="my-kite-status">not connected</span>
                     </div>
@@ -549,14 +549,14 @@
                   <div class="connect-card">
                     <div class="connect-card-head">
                       <div>
-                        <h4>INDstocks Connect</h4>
-                        <p>Market data, candles, symbol analysis, and order routing.</p>
+                        <h4>Upstox Analytics Feed</h4>
+                        <p>Shared India market analytics feed for all users. Users can override with their own Upstox or Kite token.</p>
                       </div>
-                      <span id="indstocks-connect-status" class="settings-inline-status">not connected</span>
+                      <span id="upstox-connect-status" class="settings-inline-status">not connected</span>
                     </div>
                     <div class="connect-grid">
-                      <input id="indstocks-access-token" type="password" placeholder="Paste INDstocks access token" autocomplete="off" />
-                      <button id="indstocks-connect-btn" class="primary" type="button">Connect INDstocks</button>
+                      <input id="upstox-access-token" type="password" placeholder="Paste Upstox access token" autocomplete="off" />
+                      <button id="upstox-connect-btn" class="primary" type="button">Connect Upstox</button>
                     </div>
                   </div>
                   <div id="settings-fields-broker" class="settings-fields-grid"></div>

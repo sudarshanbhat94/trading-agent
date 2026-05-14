@@ -7,7 +7,7 @@ import httpx
 
 from .config import Settings
 from .db import Database
-from .market_data import normalize_indstocks_access_token
+from .market_data import normalize_indstocks_access_token, normalize_upstox_access_token
 from .models import Decision
 
 
@@ -140,7 +140,9 @@ class UpstoxOrderRouter(OrderRouter):
         self.db = db
         self.base_url = settings.upstox_order_base_url
         self.sandbox = sandbox
-        self.access_token = settings.upstox_sandbox_access_token if sandbox else settings.upstox_access_token
+        self.access_token = normalize_upstox_access_token(
+            settings.upstox_sandbox_access_token if sandbox else settings.upstox_access_token
+        )
         if not self.access_token:
             name = "UPSTOX_SANDBOX_ACCESS_TOKEN" if sandbox else "UPSTOX_ACCESS_TOKEN"
             raise RuntimeError(f"{name} is required for Upstox order routing")
@@ -233,8 +235,14 @@ class UpstoxOrderRouter(OrderRouter):
 
 
 def build_order_router(settings: Settings, db: Database) -> OrderRouter | None:
-    if settings.execution_mode != "indstocks_live":
+    if settings.execution_mode == "paper":
         return None
     if not settings.live_trading_enabled:
+        return None
+    if settings.execution_mode == "upstox_sandbox":
+        return UpstoxOrderRouter(settings, db, sandbox=True)
+    if settings.execution_mode == "upstox_live":
+        return UpstoxOrderRouter(settings, db, sandbox=False)
+    if settings.execution_mode != "indstocks_live":
         return None
     return IndStocksOrderRouter(settings, db)
