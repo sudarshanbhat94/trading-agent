@@ -692,6 +692,7 @@ class LLMBrain:
                 retry_payload is not None
                 and (
                     not _all_endpoint_attempts_failed(exc)
+                    or _rate_limited_attempts(initial_attempts)
                     or _attempts_have_timeout(initial_attempts)
                     or _attempts_have_payload_limit(initial_attempts)
                 )
@@ -1128,6 +1129,12 @@ class LLMBrain:
     def _apply_deepseek_options(self, payload: dict[str, Any], schema: dict[str, Any] | None = None) -> None:
         if schema is not None:
             payload["response_format"] = {"type": "json_object"}
+            # Trading decisions need machine-readable output more than hidden
+            # reasoning. Thinking mode can return reasoning with empty content,
+            # which is unusable for a strict JSON gate.
+            payload["thinking"] = {"type": "disabled"}
+            payload.pop("reasoning_effort", None)
+            return
         effort = self.settings.llm_reasoning_effort
         if effort in {"high", "max"}:
             payload["reasoning_effort"] = effort
