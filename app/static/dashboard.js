@@ -173,6 +173,14 @@ function firstFinite(...values) {
   return null;
 }
 
+function firstPositiveFinite(...values) {
+  for (const value of values) {
+    const numberValue = Number(value);
+    if (Number.isFinite(numberValue) && numberValue > 0) return numberValue;
+  }
+  return null;
+}
+
 function fmtCompact(value) {
   return Number.isFinite(Number(value)) ? compactNumber.format(Number(value)) : "-";
 }
@@ -3854,19 +3862,28 @@ function llmPayloadHtml(audit, context = {}) {
 
 function riskGateHtml(audit, market = "IN") {
   const gates = audit.risk_gates || {};
-  const gateContext = gates.decision_gate_context || {};
-  const failed = failedGatesFromAudit(audit, audit.context || {});
-  const scorecard = gates.institutional_scorecard || {};
+  const context = audit.context || {};
+  const full = decisionFullSpectrum(audit);
+  const gateContext = gates.decision_gate_context || context.decision_gate_context || {};
+  const riskLimits = context.risk_limits || {};
+  const failed = failedGatesFromAudit(audit, context);
+  const scorecard = gates.institutional_scorecard || full.institutional_scorecard || {};
   const scorecardStatus =
     scorecard.buy_ready === true ? "clear" : scorecard.buy_ready === false ? "not clear" : "not evaluated";
   const scorecardClass = scorecard.buy_ready === true ? "positive" : scorecard.buy_ready === false ? "negative" : "";
+  const buyThreshold = gateContext.buy_threshold ?? gates.buy_combined_threshold;
+  const currentOpenPositions = gates.current_open_positions ?? riskLimits.current_open_positions;
+  const maxPositions = gates.max_positions ?? riskLimits.max_positions;
+  const failedScorecardItems = scorecard.failed || scorecard.must_pass_failed || [];
+  const llmSelected = gates.llm_deep_review_selected ?? context.llm_primary_selection?.selected ?? String(audit.decision_path || "").startsWith("llm");
+  const llmLimit = gates.llm_candidate_limit ?? riskLimits.llm_candidate_limit ?? context.universe_scan?.llm_candidate_limit;
   return `<section class="audit-section">
     <h4>Risk Gates</h4>
     <div class="audit-cards">
-      <div class="audit-card"><span>BUY Threshold</span><strong>${fmtNumber(gateContext.buy_threshold ?? gates.buy_combined_threshold)}</strong><small>combined score required before a fresh long</small></div>
-      <div class="audit-card"><span>Open Position</span><strong>${gates.has_existing_position ? "yes" : "no"}</strong><small>${fmtNumber(gates.current_open_positions)} / ${fmtNumber(gates.max_positions)} positions used</small></div>
-      <div class="audit-card"><span>Institutional Gate</span><strong class="${scorecardClass}">${scorecardStatus}</strong><small>${escapeHtml((scorecard.failed || []).map(reasonFromSnakeCase).join(" ") || "must-pass checks clear")}</small></div>
-      <div class="audit-card"><span>LLM Review</span><strong>${gates.llm_deep_review_selected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(gates.llm_candidate_limit ?? "-")}</small></div>
+      <div class="audit-card"><span>BUY Threshold</span><strong>${fmtNumber(buyThreshold)}</strong><small>combined score required before a fresh long</small></div>
+      <div class="audit-card"><span>Open Position</span><strong>${(gates.has_existing_position ?? Number(context.position?.qty || 0) > 0) ? "yes" : "no"}</strong><small>${fmtNumber(currentOpenPositions)} / ${fmtNumber(maxPositions)} positions used</small></div>
+      <div class="audit-card"><span>Institutional Gate</span><strong class="${scorecardClass}">${scorecardStatus}</strong><small>${escapeHtml(failedScorecardItems.map(reasonFromSnakeCase).join(" ") || "must-pass checks clear")}</small></div>
+      <div class="audit-card"><span>LLM Review</span><strong>${llmSelected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(llmLimit ?? "-")}</small></div>
     </div>
 	    ${auditList("Failed Gates", failed.length ? failed.map((gate) => humanizeGateFailure(gate, market)) : ["No hard gate failed."])}
     <details class="raw-audit"><summary>Technical risk-gate data</summary><pre>${escapeHtml(JSON.stringify(gates, null, 2))}</pre></details>
@@ -4360,9 +4377,9 @@ function renderManualAnalysis(payload) {
     ? Math.max(0, Math.min(100, ((ltp - low52) / (high52 - low52)) * 100))
     : 0;
   const metrics = [
-    { label: "PE", value: firstFinite(full.fundamental_quality?.pe, fundamentals.pe), kind: "number", empty: "not reported by feed" },
-    { label: "PB", value: firstFinite(full.fundamental_quality?.pb, fundamentals.pb), kind: "number", empty: "not reported by feed" },
-    { label: "Market cap", value: firstFinite(full.fundamental_quality?.market_cap, fundamentals.market_cap), kind: "compact", empty: "not reported by feed" },
+    { label: "PE", value: firstPositiveFinite(full.fundamental_quality?.pe, fundamentals.pe), kind: "number", empty: "not reported by feed" },
+    { label: "PB", value: firstPositiveFinite(full.fundamental_quality?.pb, fundamentals.pb), kind: "number", empty: "not reported by feed" },
+    { label: "Market cap", value: firstPositiveFinite(full.fundamental_quality?.market_cap, fundamentals.market_cap), kind: "compact", empty: "not reported by feed" },
     { label: "Volume", value: firstFinite(quote.volume, fundamentals.volume, payload.volume), kind: "compact", empty: "not reported by feed" },
     { label: "52W high", value: high52, kind: "money", empty: "derived after candles load" },
     { label: "52W low", value: low52, kind: "money", empty: "derived after candles load" },

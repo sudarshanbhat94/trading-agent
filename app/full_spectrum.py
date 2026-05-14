@@ -1245,10 +1245,10 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
     announcements = flow.get("official_announcements") or []
     negative_event = _event_text_matches(announcements, r"loss|default|resign|fraud|forensic|penalty|downgrade|pledge")
     positive_event = _event_text_matches(announcements, r"profit|order|contract|approval|dividend|bonus|split|upgrade")
-    pe = _float_or_none(row.get("pe") or row.get("trailing_pe"))
-    forward_pe = _float_or_none(row.get("forward_pe"))
-    pb = _float_or_none(row.get("pb") or row.get("price_to_book"))
-    market_cap = _float_or_none(row.get("market_cap"))
+    pe = _positive_float_or_none(row.get("pe") or row.get("trailing_pe"))
+    forward_pe = _positive_float_or_none(row.get("forward_pe"))
+    pb = _positive_float_or_none(row.get("pb") or row.get("price_to_book"))
+    market_cap = _positive_float_or_none(row.get("market_cap"))
     beta = _float_or_none(row.get("beta"))
     eps_ttm = _float_or_none(row.get("eps_ttm"))
     ratio_available = any(value is not None for value in (pe, forward_pe, pb, market_cap, beta, eps_ttm))
@@ -2578,3 +2578,8 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _positive_float_or_none(value: Any) -> float | None:
+    number = _float_or_none(value)
+    return number if number is not None and number > 0 else None
