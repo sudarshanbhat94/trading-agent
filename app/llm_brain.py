@@ -21,6 +21,12 @@ from .models import Decision, utc_now
 
 _PROVIDER_RATE_LOCKS: dict[str, threading.Lock] = {}
 
+GROQ_MIN_CALL_INTERVAL_SECONDS = 19.0
+GROQ_DAILY_REQUEST_LIMIT = 1_000
+GROQ_DAILY_TOKEN_LIMIT = 500_000
+GROQ_REQUEST_BUFFER = 50
+GROQ_TOKEN_BUFFER = 20_000
+
 
 @dataclass(frozen=True)
 class LLMEndpoint:
@@ -134,6 +140,160 @@ class LLMResponseError(RuntimeError):
     def __init__(self, message: str, raw: Any | None = None) -> None:
         super().__init__(message)
         self.raw = raw
+
+
+class BudgetExhausted(LLMResponseError):
+    pass
+
+
+class RateLimiter:
+    def __init__(
+        self,
+        db: Any,
+        provider: str,
+        model: str,
+        *,
+        min_interval_seconds: float = GROQ_MIN_CALL_INTERVAL_SECONDS,
+        daily_request_limit: int = GROQ_DAILY_REQUEST_LIMIT,
+        daily_token_limit: int = GROQ_DAILY_TOKEN_LIMIT,
+        request_buffer: int = GROQ_REQUEST_BUFFER,
+        token_buffer: int = GROQ_TOKEN_BUFFER,
+    ) -> None:
+        self.db = db
+        self.provider = str(provider or "").strip().lower()
+        self.model = str(model or "").strip()
+        self.min_interval_seconds = max(float(min_interval_seconds or 0.0), 0.0)
+        self.daily_request_limit = max(int(daily_request_limit or 0), 1)
+        self.daily_token_limit = max(int(daily_token_limit or 0), 1)
+        self.request_buffer = max(int(request_buffer or 0), 0)
+        self.token_buffer = max(int(token_buffer or 0), 0)
+
+    def remaining_calls(self) -> int:
+        state = self._load_state()
+        return max(self.daily_request_limit - int(state.get("calls_used") or 0), 0)
+
+    def before_call(self, estimated_tokens: int) -> tuple[float, dict[str, Any]]:
+        state = self._load_state()
+        calls_used = int(state.get("calls_used") or 0)
+        tokens_used = int(state.get("tokens_used") or 0)
+        calls_remaining = self.daily_request_limit - calls_used
+        tokens_remaining = self.daily_token_limit - tokens_used
+        projected_token_remaining = tokens_remaining - max(int(estimated_tokens or 0), 0)
+        if calls_remaining <= self.request_buffer:
+            raise BudgetExhausted(
+                f"Groq daily request budget protected: {calls_used}/{self.daily_request_limit} used, "
+                f"{calls_remaining} remaining, buffer={self.request_buffer}."
+            )
+        if tokens_remaining <= self.token_buffer or projected_token_remaining < self.token_buffer:
+            raise BudgetExhausted(
+                f"Groq daily token budget protected: {tokens_used}/{self.daily_token_limit} used, "
+                f"{tokens_remaining} remaining, estimated_call_tokens={estimated_tokens}, buffer={self.token_buffer}."
+            )
+        wait_seconds = self._wait_seconds(state)
+        now = datetime.now(timezone.utc)
+        scheduled_call_at = now + timedelta(seconds=wait_seconds)
+        state.update(
+            {
+                "date": self._today_key(),
+                "provider": self.provider,
+                "model": self.model,
+                "calls_used": calls_used + 1,
+                "tokens_used": tokens_used,
+                "last_call_at": scheduled_call_at.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+        )
+        self._save_state(state)
+        return wait_seconds, self._summary(state)
+
+    def record_tokens(self, tokens: int) -> dict[str, Any]:
+        state = self._load_state()
+        now = datetime.now(timezone.utc)
+        state.update(
+            {
+                "date": self._today_key(),
+                "provider": self.provider,
+                "model": self.model,
+                "tokens_used": int(state.get("tokens_used") or 0) + max(int(tokens or 0), 0),
+                "updated_at": now.isoformat(),
+            }
+        )
+        self._save_state(state)
+        return self._summary(state)
+
+    def _summary(self, state: dict[str, Any]) -> dict[str, Any]:
+        calls_used = int(state.get("calls_used") or 0)
+        tokens_used = int(state.get("tokens_used") or 0)
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "date": self._today_key(),
+            "calls_used": calls_used,
+            "calls_remaining": max(self.daily_request_limit - calls_used, 0),
+            "tokens_used": tokens_used,
+            "tokens_remaining": max(self.daily_token_limit - tokens_used, 0),
+            "request_buffer": self.request_buffer,
+            "token_buffer": self.token_buffer,
+        }
+
+    def _wait_seconds(self, state: dict[str, Any]) -> float:
+        last_call_at = _parse_iso_datetime(state.get("last_call_at"))
+        if last_call_at is None:
+            return 0.0
+        elapsed = max((datetime.now(timezone.utc) - last_call_at).total_seconds(), 0.0)
+        return max(self.min_interval_seconds - elapsed, 0.0)
+
+    def _load_state(self) -> dict[str, Any]:
+        key = self._state_key()
+        state = self.db.get_state(key, None)
+        if isinstance(state, dict) and state.get("date") == self._today_key():
+            return state
+        return self._seed_from_usage()
+
+    def _save_state(self, state: dict[str, Any]) -> None:
+        self.db.set_state(self._state_key(), state)
+
+    def _seed_from_usage(self) -> dict[str, Any]:
+        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        calls_used = 0
+        tokens_used = 0
+        last_call_at = None
+        try:
+            with self.db.connect() as conn:
+                row = conn.execute(
+                    """
+                    select count(*) as calls_used,
+                           coalesce(sum(total_tokens), 0) as tokens_used,
+                           max(ts) as last_call_at
+                    from llm_usage_events
+                    where provider = ? and model = ? and ts >= ? and ts < ?
+                    """,
+                    (self.provider, self.model, start.isoformat(), end.isoformat()),
+                ).fetchone()
+            if row is not None:
+                calls_used = int((row["calls_used"] if hasattr(row, "keys") else row[0]) or 0)
+                tokens_used = int((row["tokens_used"] if hasattr(row, "keys") else row[1]) or 0)
+                last_call_at = (row["last_call_at"] if hasattr(row, "keys") else row[2]) or None
+        except Exception:
+            pass
+        return {
+            "date": self._today_key(),
+            "provider": self.provider,
+            "model": self.model,
+            "calls_used": calls_used,
+            "tokens_used": tokens_used,
+            "last_call_at": last_call_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _state_key(self) -> str:
+        model_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", self.model or "default")
+        return f"llm_budget:{self.provider}:{model_key}:{self._today_key()}"
+
+    @staticmethod
+    def _today_key() -> str:
+        return datetime.now(timezone.utc).date().isoformat()
 
 
 class LLMBrain:
@@ -1002,10 +1162,11 @@ class LLMBrain:
         headers = {"Authorization": f"Bearer {endpoint.api_key}"}
         started = perf_counter()
         lock = _provider_rate_lock(endpoint.provider) if endpoint.provider == "groq" else None
+        budget_summary: dict[str, Any] | None = None
         if lock:
             await asyncio.to_thread(lock.acquire)
         try:
-            await self._respect_provider_rate_limit(endpoint, api_payload)
+            budget_summary = await self._respect_provider_rate_limit(endpoint, api_payload, payload)
             async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
                 response = await client.post(
                     _chat_completions_url_for_endpoint(endpoint),
@@ -1032,6 +1193,9 @@ class LLMBrain:
                     raw={"reasoning_tail": reasoning[-1000:]},
                 )
             raise LLMResponseError("LLM response had no text content", raw=message)
+        except Exception:
+            self._emit_budget_summary(endpoint, payload, budget_summary)
+            raise
         finally:
             if lock:
                 lock.release()
@@ -1043,7 +1207,7 @@ class LLMBrain:
         chunks: list[str] = []
         reasoning_chunks: list[str] = []
         started = perf_counter()
-        await self._respect_provider_rate_limit(endpoint, stream_payload)
+        budget_summary = await self._respect_provider_rate_limit(endpoint, stream_payload, payload)
         async with httpx.AsyncClient(timeout=timeout_seconds, headers=headers) as client:
             async with client.stream("POST", _chat_completions_url_for_endpoint(endpoint), json=stream_payload) as response:
                 if response.status_code >= 400:
@@ -1074,6 +1238,7 @@ class LLMBrain:
         if reasoning and "{" in reasoning and "}" in reasoning:
             self._record_usage(stream_payload, None, reasoning, endpoint, payload, round((perf_counter() - started) * 1000))
             return reasoning
+        self._emit_budget_summary(endpoint, payload, budget_summary)
         raise LLMResponseError(
             "LLM stream finished without final content",
             raw={"reasoning_tail": reasoning[-1000:] if reasoning else ""},
@@ -1185,16 +1350,28 @@ class LLMBrain:
                 event["user_id"] = None
                 event["scope_id"] = ""
             self.db.insert_llm_usage(event)
+            if endpoint.provider == "groq":
+                summary = RateLimiter(self.db, endpoint.provider, endpoint.model).record_tokens(int(event.get("total_tokens") or 0))
+                self._emit_budget_summary(endpoint, local_payload, summary)
         except Exception:
             return
 
-    async def _respect_provider_rate_limit(self, endpoint: LLMEndpoint, api_payload: dict[str, Any]) -> None:
+    async def _respect_provider_rate_limit(
+        self,
+        endpoint: LLMEndpoint,
+        api_payload: dict[str, Any],
+        local_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if endpoint.provider != "groq" or self.db is None:
-            return
-        wait_seconds = await asyncio.to_thread(_provider_rate_wait_seconds, self.db, endpoint.provider, api_payload)
+            return None
+        estimated_tokens = _estimate_payload_tokens(api_payload)
+        wait_seconds, summary = await asyncio.to_thread(
+            RateLimiter(self.db, endpoint.provider, endpoint.model).before_call,
+            estimated_tokens,
+        )
         if wait_seconds <= 0:
-            return
-        purpose = str(api_payload.get("_openstocks_usage_purpose") or "chat")
+            return summary
+        purpose = str((local_payload or {}).get("_openstocks_usage_purpose") or "chat")
         try:
             self.db.insert_agent_log(
                 "INFO",
@@ -1211,6 +1388,38 @@ class LLMBrain:
         except Exception:
             pass
         await asyncio.sleep(wait_seconds)
+        return summary
+
+    def _emit_budget_summary(
+        self,
+        endpoint: LLMEndpoint,
+        local_payload: dict[str, Any] | None,
+        summary: dict[str, Any] | None,
+    ) -> None:
+        if endpoint.provider != "groq" or not isinstance(summary, dict):
+            return
+        line = (
+            f"[BUDGET] calls_used={int(summary.get('calls_used') or 0)} "
+            f"calls_remaining={int(summary.get('calls_remaining') or 0)} "
+            f"tokens_used={int(summary.get('tokens_used') or 0)} "
+            f"tokens_remaining={int(summary.get('tokens_remaining') or 0)}"
+        )
+        print(line, flush=True)
+        if self.db is None:
+            return
+        try:
+            self.db.insert_agent_log(
+                "INFO",
+                "llm",
+                "llm_budget_summary",
+                line,
+                {
+                    **summary,
+                    "purpose": str((local_payload or {}).get("_openstocks_usage_purpose") or "chat"),
+                },
+            )
+        except Exception:
+            pass
 
     def _log_llm_attempt(
         self,
@@ -1578,7 +1787,7 @@ def _budget_decision_system_prompt(prompt_context: dict[str, Any]) -> str:
         f"You are OpenStocks Brain for {market_region} equities. Prices are in {currency}. "
         "Return one strict minified JSON object only, with no markdown or reasoning text. "
         "Required keys: action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, data_gaps. "
-        "Use only supplied data. HARD rules: hard_blocked=true, Stage not Stage2_Markup, entry grade WATCH/D, failed two-day breakout, climax top, D alignment, bear_confirmed breadth, or buy_suppressed options means HOLD for new entries. "
+        "Use only supplied data. HARD: new BUY=>HOLD if hard_blocked, stage!=Stage2_Markup, entry WATCH/D, 2-day breakout failed, climax top, MTF D, breadth bear_confirmed, or options buy_suppressed. "
         "Sentiment 0 means DATA_MISSING. Below confluence 16 is watch/HOLD unless already managing an open position. Keep reason under 180 chars and every list under 4 short items."
     )
 
@@ -1816,6 +2025,10 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
     risk_overrides = full.get("risk_overrides") or {}
     options_oi = full.get("options_oi") or {}
     recent_candles = context.get("recent_candles") or []
+    try:
+        confluence_total = float(confluence.get("total") or 0.0)
+    except (TypeError, ValueError):
+        confluence_total = 0.0
     return _prune_empty(
         {
             "symbol": context.get("symbol"),
@@ -1837,7 +2050,11 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                     "volume_ratio_20": indicators.get("volume_ratio_20"),
                 }
             ),
-            "strategies": _top_strategy_signals(context.get("strategy_signals") or [], limit=3),
+            "strategies": (
+                _top_strategy_signals(context.get("strategy_signals") or [], limit=3)
+                if confluence_total < 18
+                else None
+            ),
             "best_strategy": _short_object(context.get("best_strategy") or {}, ["name", "score", "direction", "confidence"], 80),
             "sentiment": _short_object(sentiment, ["score", "confidence", "headline_count", "data_source", "label"], 120),
             "must_pass_gates": _prune_empty(
@@ -1896,10 +2113,9 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                 }
             ),
             "data_quality": _short_object(full.get("data_quality") or {}, ["coverage", "analysis_candle_count", "daily_candle_count", "weekly_candle_count"], 80),
-            "data_gaps": _limit_list(full.get("data_gaps"), 4),
             "recent_closes": [
                 _short_object(candle, ["ts", "close", "volume"], 80)
-                for candle in recent_candles[-3:]
+                for candle in recent_candles[-2:]
                 if isinstance(candle, dict)
             ],
         }

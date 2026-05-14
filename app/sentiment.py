@@ -137,6 +137,97 @@ class SentimentService:
             for row in universe
         }
 
+    async def refresh_watchlist_news(
+        self,
+        rows: list[dict[str, Any]],
+        limit: int | None = None,
+        *,
+        allow_llm: bool = False,
+        reason: str = "post_market_prep",
+    ) -> dict[str, Any]:
+        if not self.settings.enable_news_sentiment or not rows:
+            return {
+                "enabled": self.settings.enable_news_sentiment,
+                "reason": reason,
+                "symbols_requested": 0,
+                "symbols_refreshed": 0,
+                "symbols_cached": 0,
+                "events_found": 0,
+                "headlines_found": 0,
+            }
+        max_rows = max(0, int(limit if limit is not None else len(rows)))
+        if max_rows == 0:
+            return {
+                "enabled": True,
+                "reason": reason,
+                "allow_llm": allow_llm,
+                "symbols_requested": 0,
+                "symbols_refreshed": 0,
+                "symbols_cached": 0,
+                "events_found": 0,
+                "headlines_found": 0,
+                "symbols": [],
+                "asof": utc_now(),
+            }
+        now = time.monotonic()
+        unique_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            unique_rows.append(row)
+            if len(unique_rows) >= max_rows:
+                break
+        to_refresh = [
+            row
+            for row in unique_rows
+            if not self._cache.get(row["symbol"]) or now - self._cache[row["symbol"]][0] >= self.settings.news_cache_seconds
+        ]
+        await asyncio.gather(*(self._refresh(row, allow_llm=allow_llm) for row in to_refresh), return_exceptions=True)
+        payloads = {row["symbol"]: self.latest_for_symbol(row["symbol"]) for row in unique_rows}
+        events_found = sum(len(item.get("events") or []) for item in payloads.values())
+        headlines_found = sum(len(item.get("headlines") or []) for item in payloads.values())
+        summary = {
+            "enabled": True,
+            "reason": reason,
+            "allow_llm": allow_llm,
+            "symbols_requested": len(unique_rows),
+            "symbols_refreshed": len(to_refresh),
+            "symbols_cached": len(unique_rows) - len(to_refresh),
+            "events_found": events_found,
+            "headlines_found": headlines_found,
+            "symbols": [
+                {
+                    "symbol": symbol,
+                    "score": payload.get("score"),
+                    "confidence": payload.get("confidence"),
+                    "data_status": payload.get("data_status"),
+                    "headline_count": len(payload.get("headlines") or []),
+                    "event_count": len(payload.get("events") or []),
+                }
+                for symbol, payload in payloads.items()
+            ],
+            "asof": utc_now(),
+        }
+        self.db.insert_agent_log(
+            "INFO",
+            "sentiment",
+            "news_watchlist_refreshed",
+            f"Refreshed news prep for {summary['symbols_refreshed']} symbols",
+            {
+                "reason": reason,
+                "symbols_requested": summary["symbols_requested"],
+                "symbols_refreshed": summary["symbols_refreshed"],
+                "symbols_cached": summary["symbols_cached"],
+                "events_found": events_found,
+                "headlines_found": headlines_found,
+                "allow_llm": allow_llm,
+            },
+        )
+        return summary
+
     def latest_for_symbol(self, symbol: str) -> dict[str, Any]:
         cached = self._cache.get(symbol)
         if not cached:
@@ -195,12 +286,12 @@ class SentimentService:
             "asof": utc_now(),
         }
 
-    async def _refresh(self, row: dict[str, Any]) -> None:
+    async def _refresh(self, row: dict[str, Any], *, allow_llm: bool = True) -> None:
         symbol = row["symbol"]
         try:
             raw_items = await self._fetch_news_items(row)
             events = self._dedupe_events([self._classify_item(item) for item in raw_items])
-            if self._llm_sentiment_enabled() and events:
+            if allow_llm and self._llm_sentiment_enabled() and events:
                 events = await self._llm_refine_events(row, events)
             result = self._aggregate(events)
         except Exception:

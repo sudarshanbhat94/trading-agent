@@ -10,7 +10,7 @@ from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .macro import GlobalIntelligenceService
 from .market_data import MarketDataError, MarketDataProvider
-from .market_regions import market_region_for_row
+from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context
 from .models import Decision, utc_now
 from .paper_broker import PaperBroker
 from .strategy import StrategyEngine
@@ -99,7 +99,14 @@ class TradingAgentService:
         self._cycle_phase = "market_quotes"
         full_universe = self.db.get_universe(enabled_only=True, market_region=self.market_region)
         pre_positions = self.broker.positions_by_symbol()
-        universe = self._cycle_universe(full_universe, pre_positions)
+        session_context = market_session_context(self.market_region, full_universe)
+        self.db.set_state("market_session_context", session_context)
+        scan_universe = full_universe
+        if getattr(self.strategy.settings, "skip_market_data_when_closed", True):
+            scan_universe = filter_universe_for_open_markets(full_universe, session_context)
+            if not scan_universe:
+                return await self._run_market_closed_prep(started, full_universe, pre_positions, session_context)
+        universe = self._cycle_universe(scan_universe, pre_positions)
         self._log(
             "INFO",
             "cycle",
@@ -108,6 +115,9 @@ class TradingAgentService:
             {
                 "enabled_universe_size": len(full_universe),
                 "market_region": self.market_region,
+                "open_regions": session_context.get("open_regions"),
+                "closed_regions": session_context.get("closed_regions"),
+                "market_data_policy": session_context.get("data_policy"),
                 "cycle_universe_size": len(universe),
                 "symbols_per_cycle": self.universe_symbols_per_cycle,
             },
@@ -340,6 +350,144 @@ class TradingAgentService:
             await self.on_update(snapshot)
         return snapshot
 
+    async def _run_market_closed_prep(
+        self,
+        started: datetime,
+        full_universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+        session_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._cycle_phase = "post_market_prep"
+        self._log(
+            "INFO",
+            "cycle",
+            "market_closed_skip_market_data",
+            "All selected markets are closed; skipped quote, candle, breadth, sector, strategy and LLM scans.",
+            {
+                "market_region": self.market_region,
+                "open_regions": session_context.get("open_regions"),
+                "closed_regions": session_context.get("closed_regions"),
+                "enabled_universe_size": len(full_universe),
+                "post_market_prep_enabled": getattr(self.strategy.settings, "post_market_prep_enabled", True),
+            },
+        )
+        macro_context = self.db.get_state("macro_context", {})
+        macro_calendar_context = self.db.get_state("macro_calendar_context", {})
+        delivery_status = self.db.get_state("delivery_data_status", {})
+        news_summary: dict[str, Any] = {
+            "enabled": False,
+            "reason": "post_market_prep_disabled",
+            "symbols_requested": 0,
+            "symbols_refreshed": 0,
+        }
+        if getattr(self.strategy.settings, "post_market_prep_enabled", True):
+            self._cycle_phase = "post_market_news"
+            prep_rows = self._post_market_news_rows(full_universe, positions)
+            news_summary = await self.strategy.sentiment.refresh_watchlist_news(
+                prep_rows,
+                limit=getattr(self.strategy.settings, "post_market_news_symbols", 20),
+                allow_llm=False,
+                reason="post_market_tomorrow_prep",
+            )
+            self._cycle_phase = "macro_calendar"
+            macro_context = await self.macro.context_for_cycle() if self.macro else macro_context
+            self.db.set_state("macro_context", macro_context)
+            macro_calendar_context = (
+                await self.macro_calendar.event_context_for_cycle()
+                if self.macro_calendar
+                else macro_calendar_context
+            )
+            self.db.set_state("macro_calendar_context", macro_calendar_context)
+            self._cycle_phase = "delivery_data"
+            delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else delivery_status
+            self.db.set_state("delivery_data_status", delivery_status)
+
+        quote_rows = self.db.latest_quotes()
+        portfolio = self.broker.snapshot()
+        market_health = self._market_health(quote_rows)
+        market_health["portfolio_equity"] = portfolio.get("equity")
+        self_audit = build_self_audit(list(positions.values()), quote_rows, portfolio, market_health, macro_calendar_context)
+        self.db.set_state("self_audit", self_audit)
+        prep_context = {
+            "enabled": getattr(self.strategy.settings, "post_market_prep_enabled", True),
+            "mode": "market_closed_tomorrow_prep",
+            "prepared_at": utc_now(),
+            "market_session": session_context,
+            "news": news_summary,
+            "macro": {
+                "regime": macro_context.get("regime") if isinstance(macro_context, dict) else None,
+                "risk_score": macro_context.get("risk_score") if isinstance(macro_context, dict) else None,
+                "confidence": macro_context.get("confidence") if isinstance(macro_context, dict) else None,
+            },
+            "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
+            "delivery_data_status": delivery_status,
+            "skipped_phases": [
+                "market_quotes",
+                "candles",
+                "market_breadth",
+                "sector_rotation",
+                "strategy_and_llm",
+                "risk_and_execution",
+            ],
+            "readiness_note": "Closed-market prep only. Next live scan will run when the selected market session opens.",
+        }
+        self.db.set_state("tomorrow_prep_context", prep_context)
+        self._last_cycle_at = utc_now()
+        self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
+        self._cycle_started_at = None
+        self._cycle_phase = "idle"
+        self._log(
+            "INFO",
+            "cycle",
+            "post_market_prep_completed",
+            "Closed-market prep completed for tomorrow.",
+            {
+                "duration_seconds": self._last_cycle_duration_seconds,
+                "news_symbols_requested": news_summary.get("symbols_requested"),
+                "news_symbols_refreshed": news_summary.get("symbols_refreshed"),
+                "events_found": news_summary.get("events_found"),
+                "headlines_found": news_summary.get("headlines_found"),
+                "open_regions": session_context.get("open_regions"),
+                "closed_regions": session_context.get("closed_regions"),
+            },
+        )
+        snapshot = self.snapshot()
+        if self.on_update:
+            await self.on_update(snapshot)
+        return snapshot
+
+    def _post_market_news_rows(
+        self,
+        full_universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows_by_symbol = {str(row.get("symbol")): row for row in full_universe}
+        ordered_symbols: list[str] = []
+        for symbol in positions:
+            ordered_symbols.append(symbol)
+        for idea in self.db.latest_signal_ideas(80, market_region=self.market_region):
+            symbol = str(idea.get("symbol") or "")
+            if symbol:
+                ordered_symbols.append(symbol)
+        for decision in self.db.latest_decision_summaries(120, market_region=self.market_region):
+            symbol = str(decision.get("symbol") or "")
+            if symbol:
+                ordered_symbols.append(symbol)
+        for row in full_universe:
+            ordered_symbols.append(str(row.get("symbol") or ""))
+
+        selected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for symbol in ordered_symbols:
+            if not symbol or symbol in seen:
+                continue
+            row = rows_by_symbol.get(symbol)
+            if not row:
+                continue
+            seen.add(symbol)
+            selected.append(row)
+        return selected
+
     def _candle_fetch_universe(
         self,
         universe: list[dict[str, Any]],
@@ -526,6 +674,8 @@ class TradingAgentService:
             "sentiment": self.db.latest_sentiment(40),
             "universe_size": len(self.db.get_universe(enabled_only=True, market_region=self.market_region)),
             "market_health": market_health,
+            "market_session": self.db.get_state("market_session_context", {}),
+            "tomorrow_prep": self.db.get_state("tomorrow_prep_context", {}),
             "market_data_health": _market_data_diagnostics(self.market_data),
             "macro_context": self.db.get_state("macro_context", {}),
             "institutional_context": self.db.get_state("institutional_context", {}),
@@ -735,7 +885,8 @@ class TradingAgentService:
                 latest_ts = str(ts)
         provider = self.market_data.source_name
         quote_sources = _source_counts({str(index): quote for index, quote in enumerate(quotes)})
-        market_open = _is_nse_regular_session_now()
+        session_context = self.db.get_state("market_session_context", {}) or market_session_context(self.market_region)
+        market_open = bool((session_context or {}).get("is_any_market_open"))
         if "upstox" in provider and not market_open:
             mode = "last_traded"
         elif latest_age is not None and latest_age > 900 and "live" in provider:
@@ -753,6 +904,7 @@ class TradingAgentService:
             "mode": mode,
             "display_label": "Last traded" if mode == "last_traded" else "Stale quote" if mode == "stale" else mode,
             "is_market_open": market_open,
+            "market_session": session_context,
             "quote_count": len(quotes),
             "quote_sources": quote_sources,
             "latest_quote_at": latest_ts,

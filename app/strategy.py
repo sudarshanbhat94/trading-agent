@@ -16,6 +16,47 @@ from .sentiment import SentimentService
 from .trading_rules import evaluate_rules_for_context
 
 
+def should_call_llm(signal: dict[str, Any]) -> bool:
+    return _llm_prefilter_reason(signal) is None
+
+
+def _llm_prefilter_reason(signal: dict[str, Any]) -> str | None:
+    context = signal.get("context") if isinstance(signal.get("context"), dict) else signal
+    full = context.get("full_spectrum_analysis") or {}
+    system_audit = context.get("system_gate_audit") or {}
+    if signal.get("hard_blocked") is True or system_audit.get("hard_blocked") is True:
+        return "hard_blocked"
+
+    stage = signal.get("stage")
+    if stage is None:
+        stage = (full.get("stage_analysis") or {}).get("stage")
+    if stage != "Stage2_Markup":
+        return f"stage_not_stage2:{stage or 'missing'}"
+
+    entry_grade = signal.get("entry_grade")
+    if entry_grade is None:
+        entry_grade = (full.get("entry_quality") or {}).get("entry_grade")
+    entry_grade = str(entry_grade or "").upper()
+    if entry_grade in {"WATCH", "D"}:
+        return f"entry_grade_blocked:{entry_grade}"
+
+    risk_overrides = full.get("risk_overrides") or {}
+    no_new_longs = signal.get("no_new_longs")
+    if no_new_longs is None:
+        no_new_longs = risk_overrides.get("no_new_longs")
+    confidence = _signal_confidence(signal)
+    if no_new_longs is True and confidence < 0.7:
+        return f"no_new_longs_low_confidence:{confidence:.2f}"
+    return None
+
+
+def _signal_confidence(signal: dict[str, Any]) -> float:
+    try:
+        return max(min(float(signal.get("confidence") or 0.0), 1.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class StrategyEngine:
     def __init__(self, settings: Settings, sentiment: SentimentService, llm: LLMBrain) -> None:
         self.settings = settings
@@ -179,6 +220,14 @@ class StrategyEngine:
 
         llm_candidate_symbols: set[str] = set()
         if llm_primary:
+            llm_prefilter_skips = {
+                item["symbol"]: _llm_prefilter_reason(item)
+                for item in ranked
+                if _llm_prefilter_reason(item) is not None
+            }
+            llm_skip_reasons: dict[str, int] = defaultdict(int)
+            for reason in llm_prefilter_skips.values():
+                llm_skip_reasons[str(reason).split(":", 1)[0]] += 1
             llm_candidate_symbols = self._llm_candidate_symbols(ranked)
             self._log_pre_filter(
                 "llm_candidates_selected",
@@ -188,6 +237,8 @@ class StrategyEngine:
                     "limit": self.settings.llm_max_symbols_per_cycle,
                     "symbols": sorted(llm_candidate_symbols),
                     "symbols_scanned": len(scan_items),
+                    "prefilter_skipped": len(llm_prefilter_skips),
+                    "prefilter_skip_reasons": dict(llm_skip_reasons),
                     "provider": self.settings.llm_provider,
                     "model": self.llm.model,
                 },
@@ -210,54 +261,73 @@ class StrategyEngine:
                 "enabled": llm_primary,
                 "selected": item["symbol"] in llm_candidate_symbols,
                 "candidate_limit": self.settings.llm_max_symbols_per_cycle,
+                "prefilter_passed": should_call_llm(item),
+                "prefilter_reason": _llm_prefilter_reason(item),
             }
             blocked_by_llm_primary = False
             llm_block_reason: str | None = None
             if llm_primary and item["symbol"] in llm_candidate_symbols:
-                llm_decision = await self.llm.decide(context)
-                llm_reviews += 1
-                llm_audit = _json_object(llm_decision.details_json)
-                llm_failed = bool(llm_audit.get("llm_error")) or llm_audit.get("decision_path") == "safe_hold"
-                context["llm_primary_review"] = {
-                    "reviewed": True,
-                    "llm_action": llm_decision.action,
-                    "llm_reason": llm_decision.reason,
-                    "llm_error": llm_audit.get("llm_error"),
-                    "json_synthetic": bool(llm_audit.get("json_synthetic")),
-                    "deterministic_action_preserved": False,
-                    "deterministic_action_blocked": llm_failed and item["action"] != "HOLD",
-                }
-                llm_rule_blocked = (
-                    llm_decision.action == "BUY"
-                    and bool((context.get("system_gate_audit") or {}).get("hard_blocked"))
-                )
-                if llm_rule_blocked:
-                    context["llm_primary_rule_blocked"] = {
-                        "llm_action": llm_decision.action,
-                        "reason": "system_rules_hard_blocked_llm_buy",
-                        "hard_blocks": (context.get("system_gate_audit") or {}).get("hard_blocks", []),
+                llm_prefilter_reason = _llm_prefilter_reason(item)
+                if llm_prefilter_reason is not None:
+                    blocked_by_llm_primary = item["action"] != "HOLD"
+                    llm_block_reason = f"llm_budget_prefilter_rule_hold:{llm_prefilter_reason}"
+                    context["llm_primary_gate"] = {
+                        "required": True,
+                        "reviewed": False,
+                        "original_action": item["action"],
+                        "final_action": "HOLD",
+                        "reason": llm_block_reason,
+                        "effect": "forced_hold_no_trade",
                     }
-                    llm_failed = True
-                    llm_block_reason = "llm_buy_blocked_by_system_rules"
-                if not llm_failed:
-                    decisions.append(llm_decision)
-                    continue
-                blocked_by_llm_primary = item["action"] != "HOLD"
-                llm_block_reason = llm_block_reason or "llm_primary_failed_safe_hold"
-                context["llm_primary_fallback"] = {
-                    "blocked_deterministic_action": item["action"],
-                    "llm_action": llm_decision.action,
-                    "llm_reason": llm_decision.reason,
-                    "reason": llm_block_reason,
-                    "effect": "forced_hold_no_trade",
-                }
+                else:
+                    llm_decision = await self.llm.decide(context)
+                    llm_reviews += 1
+                    llm_audit = _json_object(llm_decision.details_json)
+                    llm_failed = bool(llm_audit.get("llm_error")) or llm_audit.get("decision_path") == "safe_hold"
+                    context["llm_primary_review"] = {
+                        "reviewed": True,
+                        "llm_action": llm_decision.action,
+                        "llm_reason": llm_decision.reason,
+                        "llm_error": llm_audit.get("llm_error"),
+                        "json_synthetic": bool(llm_audit.get("json_synthetic")),
+                        "deterministic_action_preserved": False,
+                        "deterministic_action_blocked": llm_failed and item["action"] != "HOLD",
+                    }
+                    llm_rule_blocked = (
+                        llm_decision.action == "BUY"
+                        and bool((context.get("system_gate_audit") or {}).get("hard_blocked"))
+                    )
+                    if llm_rule_blocked:
+                        context["llm_primary_rule_blocked"] = {
+                            "llm_action": llm_decision.action,
+                            "reason": "system_rules_hard_blocked_llm_buy",
+                            "hard_blocks": (context.get("system_gate_audit") or {}).get("hard_blocks", []),
+                        }
+                        llm_failed = True
+                        llm_block_reason = "llm_buy_blocked_by_system_rules"
+                    if not llm_failed:
+                        decisions.append(llm_decision)
+                        continue
+                    blocked_by_llm_primary = item["action"] != "HOLD"
+                    llm_block_reason = llm_block_reason or "llm_primary_failed_safe_hold"
+                    context["llm_primary_fallback"] = {
+                        "blocked_deterministic_action": item["action"],
+                        "llm_action": llm_decision.action,
+                        "llm_reason": llm_decision.reason,
+                        "reason": llm_block_reason,
+                        "effect": "forced_hold_no_trade",
+                    }
             elif llm_primary_required and item["action"] != "HOLD":
                 blocked_by_llm_primary = True
-                llm_block_reason = (
-                    "llm_primary_unavailable_no_trade"
-                    if not self.llm.enabled
-                    else "llm_primary_required_no_unreviewed_trade"
-                )
+                prefilter_reason = _llm_prefilter_reason(item)
+                if llm_primary and prefilter_reason is not None:
+                    llm_block_reason = f"llm_budget_prefilter_rule_hold:{prefilter_reason}"
+                else:
+                    llm_block_reason = (
+                        "llm_primary_unavailable_no_trade"
+                        if not self.llm.enabled
+                        else "llm_primary_required_no_unreviewed_trade"
+                    )
                 context["llm_primary_gate"] = {
                     "required": True,
                     "reviewed": False,
@@ -310,7 +380,12 @@ class StrategyEngine:
             if context.get("llm_primary_fallback"):
                 decision_path = "llm_primary_failed_safe_hold"
             elif context.get("llm_primary_gate", {}).get("effect") == "forced_hold_no_trade":
-                decision_path = "llm_primary_required_safe_hold"
+                gate_reason = str(context.get("llm_primary_gate", {}).get("reason") or "")
+                decision_path = (
+                    "llm_budget_prefilter_rule_hold"
+                    if gate_reason.startswith("llm_budget_prefilter_rule_hold")
+                    else "llm_primary_required_safe_hold"
+                )
             decision = Decision(
                 symbol=item["symbol"],
                 action=action,
@@ -845,6 +920,7 @@ class StrategyEngine:
     def _llm_candidate_symbols(self, ranked: list[dict[str, Any]]) -> set[str]:
         limit = max(int(self.settings.llm_max_symbols_per_cycle or 1), 1)
         selected: list[str] = []
+        eligible = [item for item in ranked if should_call_llm(item)]
 
         def add(items: list[dict[str, Any]]) -> None:
             for item in items:
@@ -856,16 +932,16 @@ class StrategyEngine:
                     return
 
         open_positions = sorted(
-            [item for item in ranked if self._has_open_position(item)],
+            [item for item in eligible if self._has_open_position(item)],
             key=self._exit_review_priority,
             reverse=True,
         )
-        action_candidates = [item for item in ranked if item["action"] != "HOLD"]
+        action_candidates = [item for item in eligible if item["action"] != "HOLD"]
         add(action_candidates)
         if len(selected) < limit:
             add(open_positions)
         if len(selected) < limit:
-            add(ranked)
+            add(eligible)
         return set(selected)
 
     def _has_open_position(self, item: dict[str, Any]) -> bool:

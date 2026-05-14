@@ -39,7 +39,7 @@ from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
 from .market_data import MarketDataError, build_market_data_provider, normalize_indstocks_access_token, normalize_upstox_access_token
-from .market_regions import normalize_market_region
+from .market_regions import filter_universe_for_open_markets, market_session_context, normalize_market_region
 from .models import Decision, utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
@@ -2517,12 +2517,83 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     if not user or not user.get("active") or user.get("role") == "admin":
         raise RuntimeError("user signal session requires an active non-admin user")
 
+    full_universe = db.get_universe(enabled_only=True, market_region=settings.market_region)
+    session_context = market_session_context(settings.market_region, full_universe)
+    db.set_state("market_session_context", session_context)
+    if settings.skip_market_data_when_closed:
+        open_universe = filter_universe_for_open_markets(full_universe, session_context)
+        if not open_universe:
+            set_phase(
+                "post_market_prep",
+                {
+                    "market_closed": True,
+                    "closed_regions": session_context.get("closed_regions"),
+                    "open_regions": session_context.get("open_regions"),
+                },
+            )
+            news_summary: dict[str, Any]
+            if settings.post_market_prep_enabled:
+                prep_settings = replace(settings, enable_llm_sentiment=False, llm_provider="offline", llm_decision_mode="offline")
+                news_summary = await SentimentService(prep_settings, db).refresh_watchlist_news(
+                    full_universe,
+                    limit=settings.post_market_news_symbols,
+                    allow_llm=False,
+                    reason=f"user_post_market_prep:{user_id}",
+                )
+            else:
+                news_summary = {
+                    "enabled": False,
+                    "reason": "post_market_prep_disabled",
+                    "symbols_requested": 0,
+                    "symbols_refreshed": 0,
+                }
+            prep_context = {
+                "enabled": settings.post_market_prep_enabled,
+                "mode": "user_market_closed_tomorrow_prep",
+                "prepared_at": utc_now(),
+                "user_id": user_id,
+                "market_session": session_context,
+                "news": news_summary,
+                "readiness_note": "Markets are closed, so no quote/candle/LLM scan or credit charge was made. News prep was refreshed for tomorrow.",
+            }
+            db.set_state("tomorrow_prep_context", prep_context)
+            credit_summary = db.user_credit_summary(user_id, include_ledger=False)
+            db.insert_agent_log(
+                "INFO",
+                "user_session",
+                "market_closed_skip_user_signal_cycle",
+                f"Skipped market-data and LLM scan for {user.get('username')} because selected markets are closed.",
+                {
+                    "user_id": user_id,
+                    "username": user.get("username"),
+                    "closed_regions": session_context.get("closed_regions"),
+                    "news_symbols_requested": news_summary.get("symbols_requested"),
+                    "news_symbols_refreshed": news_summary.get("symbols_refreshed"),
+                },
+            )
+            set_phase("sleep", {"market_closed": True, "last_llm_calls": 0, "last_decision_count": 0})
+            return {
+                "last_cycle_at": utc_now(),
+                "last_error": None,
+                "market_closed": True,
+                "last_credit_charge": 0.0,
+                "last_llm_calls": 0,
+                "last_llm_tokens": 0,
+                "last_llm_activity": {"billable": False, "reason": "market_closed"},
+                "last_decision_count": 0,
+                "last_action_counts": {},
+                "symbols_per_cycle": 0,
+                "credit_balance": credit_summary.get("credit_balance"),
+                "daily_credits_remaining": credit_summary.get("daily_credits_remaining"),
+                "news_prep": news_summary,
+            }
+        full_universe = open_universe
+
     estimated_charge = _estimated_signal_credit_charge()
     can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
     if not can_spend:
         raise RuntimeError(f"insufficient credits or daily budget; estimated need {estimated_charge:.4f} credits")
 
-    full_universe = db.get_universe(enabled_only=True, market_region=settings.market_region)
     universe = user_signal_sessions.select_universe(user_id, full_universe, credit_before, estimated_charge)
     if not universe:
         raise RuntimeError("no enabled universe symbols available for user signal session")

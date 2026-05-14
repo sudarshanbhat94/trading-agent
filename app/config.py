@@ -57,6 +57,9 @@ class Settings:
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
+    skip_market_data_when_closed: bool = _bool("SKIP_MARKET_DATA_WHEN_CLOSED", True)
+    post_market_prep_enabled: bool = _bool("POST_MARKET_PREP_ENABLED", True)
+    post_market_news_symbols: int = _int("POST_MARKET_NEWS_SYMBOLS", 20)
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
     admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
     auth_session_secret: str = os.getenv("AUTH_SESSION_SECRET", "")
@@ -223,6 +226,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Agent Cycle"},
     {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Agent Cycle", "min": 5, "step": 1},
     {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
+    {"key": "skip_market_data_when_closed", "label": "Skip Closed Markets", "type": "boolean", "category": "Agent Cycle"},
+    {"key": "post_market_prep_enabled", "label": "Post-Market Prep", "type": "boolean", "category": "Agent Cycle"},
+    {"key": "post_market_news_symbols", "label": "Post-Market News Symbols", "type": "number", "category": "Agent Cycle", "min": 0, "step": 1},
     {"key": "enable_db_maintenance", "label": "DB Maintenance", "type": "boolean", "category": "Maintenance"},
     {"key": "db_maintenance_interval_hours", "label": "Maintenance Interval Hours", "type": "number", "category": "Maintenance", "min": 1, "step": 1},
     {"key": "db_retention_full_audit_keep_latest", "label": "Full Audits To Keep", "type": "number", "category": "Maintenance", "min": 0, "step": 100},
