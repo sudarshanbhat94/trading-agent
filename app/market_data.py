@@ -886,6 +886,7 @@ class KiteMarketDataProvider(MarketDataProvider):
 
 class UpstoxMarketDataProvider(MarketDataProvider):
     source_name = "upstox-live"
+    _instrument_key_cache: dict[str, str] = {}
 
     def __init__(self, settings: Settings) -> None:
         self.access_token = normalize_upstox_access_token(settings.upstox_access_token)
@@ -904,11 +905,13 @@ class UpstoxMarketDataProvider(MarketDataProvider):
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
         requested = len(universe)
-        missing_key_symbols = [row["symbol"] for row in universe if not row.get("upstox_instrument_key")]
-        universe = [row for row in universe if row.get("upstox_instrument_key")]
         quotes: dict[str, Quote] = {}
         errors: list[str] = []
         async with httpx.AsyncClient(timeout=10, headers=self._headers()) as client:
+            resolution = await self._ensure_instrument_keys(client, universe)
+            missing_key_symbols = [row["symbol"] for row in universe if not row.get("upstox_instrument_key")]
+            universe = [row for row in universe if row.get("upstox_instrument_key")]
+            errors.extend(resolution["errors"])
             for i in range(0, len(universe), 100):
                 chunk = universe[i : i + 100]
                 try:
@@ -947,6 +950,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             "resolved": len(universe),
             "returned": len(quotes),
             "missing_instrument_keys": missing_key_symbols[:20],
+            "auto_resolved_instrument_keys": resolution["resolved"][:20],
             "missing_symbols": [row["symbol"] for row in universe if row["symbol"] not in quotes][:20],
             "errors": _unique_errors(errors)[:5],
             "source": "upstox_market_quote_quotes",
@@ -956,7 +960,6 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         return quotes
 
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
-        universe = [row for row in universe if row.get("upstox_instrument_key")]
         output: dict[str, list[Candle]] = {}
         diagnostics: dict[str, Any] = {
             "requested_symbols": len(universe),
@@ -971,6 +974,14 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         diagnostics["intervals"] = [spec["interval"] for spec in specs]
         semaphore = asyncio.Semaphore(self.candle_concurrency)
         async with httpx.AsyncClient(timeout=12, headers=self._headers()) as client:
+            resolution = await self._ensure_instrument_keys(client, universe)
+            diagnostics["auto_resolved_instrument_keys"] = resolution["resolved"][:20]
+            diagnostics["missing_instrument_keys"] = [
+                row["symbol"] for row in universe if not row.get("upstox_instrument_key")
+            ][:20]
+            for error in resolution["errors"][:5]:
+                diagnostics["sample_errors"].append(error)
+            universe = [row for row in universe if row.get("upstox_instrument_key")]
             tasks = [
                 asyncio.create_task(self._fetch_candle_series(client, semaphore, row, spec))
                 for row in universe
@@ -1065,6 +1076,110 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             "Accept": "application/json",
             "Authorization": f"Bearer {self.access_token}",
         }
+
+    async def _ensure_instrument_keys(
+        self,
+        client: httpx.AsyncClient,
+        universe: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        resolved: list[str] = []
+        errors: list[str] = []
+        candidates: list[dict[str, Any]] = []
+        for row in universe:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            if row.get("upstox_instrument_key"):
+                self._instrument_key_cache.setdefault(symbol, str(row["upstox_instrument_key"]))
+                continue
+            cached = self._instrument_key_cache.get(symbol)
+            if cached:
+                row["upstox_instrument_key"] = cached
+                resolved.append(symbol)
+                continue
+            candidates.append(row)
+        if not candidates:
+            return {"resolved": resolved, "errors": errors}
+
+        semaphore = asyncio.Semaphore(min(5, max(1, self.candle_concurrency)))
+
+        async def resolve_one(row: dict[str, Any]) -> str | None:
+            async with semaphore:
+                return await self._resolve_instrument_key(client, row)
+
+        results = await asyncio.gather(*(resolve_one(row) for row in candidates), return_exceptions=True)
+        for row, result in zip(candidates, results):
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if isinstance(result, Exception):
+                errors.append(f"{symbol}: {_market_data_error_summary(result)}")
+                continue
+            if result:
+                row["upstox_instrument_key"] = result
+                self._instrument_key_cache[symbol] = result
+                resolved.append(symbol)
+        return {"resolved": resolved, "errors": errors}
+
+    async def _resolve_instrument_key(self, client: httpx.AsyncClient, row: dict[str, Any]) -> str | None:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            return None
+        queries = [symbol]
+        name = str(row.get("name") or "").strip()
+        if name and name.upper() != symbol:
+            queries.append(name[:50])
+        for query in queries:
+            response = await client.get(
+                f"{self.base_url}/instruments/search",
+                params={
+                    "query": query,
+                    "exchanges": "NSE",
+                    "segments": "EQ",
+                    "page_number": 1,
+                    "records": 30,
+                },
+            )
+            response.raise_for_status()
+            items = response.json().get("data", [])
+            selected = self._select_instrument_search_result(row, items)
+            if selected:
+                key = str(selected.get("instrument_key") or "").strip()
+                if key:
+                    return key
+        return None
+
+    def _select_instrument_search_result(
+        self,
+        row: dict[str, Any],
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        name = str(row.get("name") or "").strip().upper()
+
+        def score(item: dict[str, Any]) -> int:
+            item_symbol = str(item.get("trading_symbol") or item.get("symbol") or "").strip().upper()
+            item_name = str(item.get("name") or item.get("short_name") or "").strip().upper()
+            item_segment = str(item.get("segment") or "").strip().upper()
+            item_type = str(item.get("instrument_type") or "").strip().upper()
+            item_key = str(item.get("instrument_key") or "").strip()
+            if not item_key:
+                return -1000
+            points = 0
+            if item_segment == "NSE_EQ":
+                points += 100
+            if item_type == "EQ":
+                points += 25
+            if item_symbol == symbol:
+                points += 100
+            elif item_symbol.startswith(symbol):
+                points += 25
+            if name and (item_name == name or name in item_name or item_name in name):
+                points += 20
+            return points
+
+        ranked = sorted(items, key=score, reverse=True)
+        if not ranked or score(ranked[0]) < 100:
+            return None
+        return ranked[0]
 
     def _instrument_key(self, row: dict[str, Any]) -> str:
         instrument = row.get("upstox_instrument_key")

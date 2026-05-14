@@ -943,6 +943,9 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             detail = f"{detail} Provider error: {provider_error}"
         raise HTTPException(status_code=404, detail=detail)
 
+    if row.get("upstox_instrument_key"):
+        db.upsert_universe_rows([row], disable_missing=False)
+
     reference_data = await _analysis_reference_data(row, quote.to_dict(), candles.get(symbol, []), market_region)
     row_for_analysis = {**row, **reference_data.get("row_fields", {})}
     context_token = current_user_id.set(user_id)

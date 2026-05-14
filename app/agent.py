@@ -115,6 +115,9 @@ class TradingAgentService:
         quotes = await self.market_data.get_quotes(universe)
         if not quotes:
             raise MarketDataError(f"{self.market_data.source_name} returned no quotes for the enabled universe")
+        resolved_instruments = [row for row in universe if row.get("upstox_instrument_key")]
+        if resolved_instruments:
+            self.db.upsert_universe_rows(resolved_instruments, disable_missing=False)
         self._log(
             "INFO",
             "market_data",
