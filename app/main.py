@@ -938,7 +938,11 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
     row_for_analysis = {**row, **reference_data.get("row_fields", {})}
     context_token = current_user_id.set(user_id)
     try:
-        user_sentiment = SentimentService(_llm_settings_for_user(db.user_by_id(user_id) or user), db)
+        sentiment_settings = replace(
+            _llm_settings_for_user(db.user_by_id(user_id) or user),
+            enable_llm_sentiment=False,
+        )
+        user_sentiment = SentimentService(sentiment_settings, db)
         news = await user_sentiment.analyze_symbol_news(row_for_analysis)
     finally:
         current_user_id.reset(context_token)
