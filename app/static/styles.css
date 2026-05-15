@@ -10467,6 +10467,8 @@ body[data-theme="dark"] :is(
   .detail-drawer,
   .account-metrics div,
   .account-note,
+  .paper-cash-form,
+  #daily-credit-limit-form,
   .manual-analysis-card > div,
   .analysis-result-shell,
   .analysis-chart,
@@ -10585,6 +10587,10 @@ body[data-theme="dark"] button.primary {
   background: linear-gradient(180deg, #2c7bff, var(--color-brand-primary)) !important;
   color: #ffffff !important;
   box-shadow: 0 10px 22px rgba(11, 99, 246, 0.28) !important;
+}
+
+body[data-theme="dark"] :is(.paper-cash-form label, .paper-cash-form span, .paper-cash-form small, #daily-credit-limit-form + .account-note span) {
+  color: var(--text-secondary) !important;
 }
 
 body[data-theme="dark"] :is(
