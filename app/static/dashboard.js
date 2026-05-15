@@ -499,7 +499,7 @@ function applyDecisionFilter(rows = []) {
     if (filter === "sell") return action === "SELL";
     if (filter === "hold") return action === "HOLD";
     if (filter === "exit") return action === "EXIT" || action === "SELL";
-    if (filter === "high") return confidencePercent(row) >= 65;
+    if (filter === "high") return decisionScorePercent(row) >= 65;
     if (filter === "cycle") {
       const ts = rowTimestamp(row)?.getTime();
       return cutoff !== null && Number.isFinite(ts) && ts >= cutoff;
@@ -896,7 +896,7 @@ function render(payload) {
   const allSentiment = payload.sentiment || [];
   const positions = filterRowsByMarket(allPositions, activeMarket);
   const quotes = filterRowsByMarket(allQuotes, activeMarket);
-  const decisions = payloadRowsForMarket(payload, "decisions", activeMarket);
+  const decisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
   const trackedIdeas = payloadRowsForMarket(payload, "tracked_ideas", activeMarket);
   const orders = filterRowsByMarket(allOrders, activeMarket);
