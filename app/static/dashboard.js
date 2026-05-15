@@ -4761,6 +4761,7 @@ function bindControls() {
   window.addEventListener("resize", () => {
     if (window.innerWidth > 767) setSidebarOpen(false);
     syncSidebarControls();
+    syncResponsiveShellControls();
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".user-menu")) {
@@ -4884,6 +4885,7 @@ function initializeSidebarState() {
   document.body.classList.remove("sidebar-open");
   document.body.classList.toggle("sidebar-collapsed", readSidebarCollapsedPreference());
   syncSidebarControls();
+  syncResponsiveShellControls();
 }
 
 function toggleSidebar() {
@@ -4919,6 +4921,11 @@ function syncSidebarControls() {
   }
   const backdrop = byId("sidebar-backdrop");
   if (backdrop) backdrop.hidden = !(mobile && open);
+}
+
+function syncResponsiveShellControls() {
+  const topbarUserMenu = document.querySelector(".terminal-topbar .user-menu");
+  if (topbarUserMenu) topbarUserMenu.hidden = isMobileSidebar();
 }
 
 function setView(view) {
