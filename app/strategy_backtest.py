@@ -33,6 +33,10 @@ def strategy_backtest_snapshot(
             position = states.get(name)
             if not position:
                 continue
+            entry = float(position["entry"] or 0.0)
+            if entry > 0:
+                position["mae_pct"] = min(float(position.get("mae_pct", 0.0)), ((candles[index].low - entry) / entry) * 100)
+                position["mfe_pct"] = max(float(position.get("mfe_pct", 0.0)), ((candles[index].high - entry) / entry) * 100)
             exit_price, exit_reason = _exit_for_position(position, candles[index], index)
             if exit_price is None:
                 continue
@@ -45,6 +49,8 @@ def strategy_backtest_snapshot(
                     "pnl_pct": pnl_pct,
                     "exit": exit_reason,
                     "hold_periods": index - position["entry_index"],
+                    "mae_pct": position.get("mae_pct", 0.0),
+                    "mfe_pct": position.get("mfe_pct", 0.0),
                 }
             )
             states[name] = None
@@ -61,6 +67,8 @@ def strategy_backtest_snapshot(
                 "stop": close - risk,
                 "target": close + (risk * 2.0),
                 "time_stop": 15,
+                "mae_pct": 0.0,
+                "mfe_pct": 0.0,
             }
     summaries = [_summarize_strategy(name, rows) for name, rows in trades.items()]
     summaries.sort(key=lambda row: (row["expectancy_pct"], row["profit_factor"], row["trades"]), reverse=True)
@@ -93,7 +101,10 @@ def _summarize_strategy(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]
             "expectancy_pct": 0.0,
             "profit_factor": 0.0,
             "max_drawdown_pct": 0.0,
+            "avg_mae_pct": 0.0,
+            "avg_mfe_pct": 0.0,
             "avg_hold_periods": 0.0,
+            "evidence_quality": "none",
             "last_5": [],
         }
     wins = [row for row in rows if row["pnl_pct"] > 0]
@@ -114,12 +125,31 @@ def _summarize_strategy(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]
         "expectancy_pct": round(_mean(row["pnl_pct"] for row in rows), 4),
         "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else round(gross_win, 4),
         "max_drawdown_pct": round(max_drawdown, 4),
+        "avg_mae_pct": round(_mean(row.get("mae_pct", 0.0) for row in rows), 4),
+        "avg_mfe_pct": round(_mean(row.get("mfe_pct", 0.0) for row in rows), 4),
         "avg_hold_periods": round(_mean(row["hold_periods"] for row in rows), 2),
+        "evidence_quality": _evidence_quality(len(rows)),
         "last_5": [
-            {"pnl_pct": round(row["pnl_pct"], 4), "exit": row["exit"], "hold_periods": row["hold_periods"]}
+            {
+                "pnl_pct": round(row["pnl_pct"], 4),
+                "exit": row["exit"],
+                "hold_periods": row["hold_periods"],
+                "mae_pct": round(row.get("mae_pct", 0.0), 4),
+                "mfe_pct": round(row.get("mfe_pct", 0.0), 4),
+            }
             for row in rows[-5:]
         ],
     }
+
+
+def _evidence_quality(trades: int) -> str:
+    if trades >= 30:
+        return "usable"
+    if trades >= 12:
+        return "thin"
+    if trades > 0:
+        return "anecdotal"
+    return "none"
 
 
 def _atr(candles: list[Candle], period: int = 14) -> float | None:

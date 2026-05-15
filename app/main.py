@@ -43,6 +43,13 @@ from .market_regions import filter_universe_for_open_markets, market_session_con
 from .models import Decision, utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
+from .openclaw_bridge import (
+    OpenClawNotifier,
+    bridge_context,
+    default_openclaw_user,
+    require_openclaw_bridge,
+    select_stock_candidates,
+)
 from .paper_broker import PaperBroker
 from .request_context import current_llm_usage_scope, current_user_id
 from .sector_rotation import SectorRotationService
@@ -122,9 +129,9 @@ def _normalize_signal_execution_mode(value: Any) -> str:
 def _signal_execution_mode_message(mode: str) -> str:
     normalized = _normalize_signal_execution_mode(mode)
     if normalized == "AUTO_PAPER":
-        return "BUY ideas from your running signal cycle will be paper-followed automatically within your paper cash."
+        return "BUY ideas are paper-followed automatically within your paper cash, and stop/exit signals close followed paper ideas."
     if normalized == "AUTO_LIVE":
-        return "BUY ideas will request live execution only when your personal broker guard passes; US live trading remains disabled."
+        return "BUY ideas and exit signals create guarded live requests only when your personal broker guard passes; US live trading remains disabled."
     return "Signals are saved only. You can track, paper, or live-follow ideas manually."
 
 
@@ -369,6 +376,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_macro_calendar = MacroCalendarService(new_settings, db)
     new_universe_service = UniverseService(new_settings, db)
     new_options_intelligence = OptionsIntelligenceService(new_settings, db)
+    new_openclaw_notifier = OpenClawNotifier(new_settings, db)
     monitor_llm = LLMBrain(strategy_settings, db)
     admin_llm = LLMBrain(new_settings, db)
     new_strategy = StrategyEngine(strategy_settings, new_sentiment, monitor_llm)
@@ -390,6 +398,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         universe_symbols_per_cycle=new_settings.universe_symbols_per_cycle,
         execute_trades=False,
         on_update=hub.broadcast,
+        openclaw_notifier=new_openclaw_notifier,
     )
     return {
         "market_data": new_market_data,
@@ -405,6 +414,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         "macro_calendar": new_macro_calendar,
         "universe_service": new_universe_service,
         "options_intelligence": new_options_intelligence,
+        "openclaw_notifier": new_openclaw_notifier,
         "llm": admin_llm,
         "strategy": new_strategy,
         "agent": new_agent,
@@ -425,6 +435,7 @@ sector_rotation = stack["sector_rotation"]
 macro_calendar = stack["macro_calendar"]
 universe_service = stack["universe_service"]
 options_intelligence = stack["options_intelligence"]
+openclaw_notifier = stack["openclaw_notifier"]
 llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
@@ -571,6 +582,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
         snapshot["paper_cash_pool_by_market"] = paper_cash_by_market
         snapshot["strategy_plans"] = db.strategy_plans()
+        snapshot["performance"] = db.performance_summary(user_id=user_id)
         snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(
             tracked_ideas,
             user_portfolio,
@@ -905,6 +917,10 @@ def _latest_quote_price(symbol: str, fallback: Any = 0.0) -> float:
 @app.post("/api/analyze-symbol")
 async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
+    return await _analyze_symbol_for_user(payload, user)
+
+
+async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     user_id = int(user["id"])
     estimated_charge = _estimated_signal_credit_charge()
     can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
@@ -955,9 +971,8 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
             raise HTTPException(
                 status_code=401,
                 detail=(
-                    "INDstocks rejected the saved market-data token while fetching quotes. "
-                    "The token is incorrect, expired, revoked, or not enabled for market data. "
-                    "Save a fresh INDstocks access token in Account or Admin Broker settings."
+                    "The legacy INDstocks feed is disabled for analytics. "
+                    "Save a fresh Upstox access token in Account or Admin Broker settings."
                 ),
             )
         suggestions = _symbol_suggestions(requested_input, limit=3, market_region=market_region)
@@ -1116,6 +1131,66 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
         },
         "decision": decision_payload,
     }
+
+
+@app.get("/api/openclaw/health")
+async def openclaw_health(request: Request) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    user = default_openclaw_user(settings, db)
+    return {
+        "ok": True,
+        "source": "openstocks",
+        "bridge_enabled": settings.openclaw_bridge_enabled,
+        "default_user": user.get("username"),
+        "webhook_configured": bool(settings.openclaw_webhook_url),
+        "agent_running": agent.running,
+        "last_cycle_at": agent.snapshot().get("last_cycle_at"),
+    }
+
+
+@app.get("/api/openclaw/context")
+async def openclaw_context(request: Request, market: str = "BOTH", limit: int = 8) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    return bridge_context(db, market=market, limit=limit)
+
+
+@app.post("/api/openclaw/select-stocks")
+async def openclaw_select_stocks(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    market = str(payload.get("market") or "BOTH")
+    limit = int(payload.get("limit") or 5)
+    result = select_stock_candidates(db, market=market, limit=limit)
+    db.insert_agent_log(
+        "INFO",
+        "openclaw",
+        "select_stocks",
+        "OpenClaw requested stock candidates",
+        {"market": result.get("market"), "candidate_count": len(result.get("candidates", []))},
+    )
+    return result
+
+
+@app.post("/api/openclaw/analyze")
+async def openclaw_analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    user = default_openclaw_user(settings, db)
+    result = await _analyze_symbol_for_user(payload, user)
+    result["requested_by"] = "openclaw"
+    result["openclaw_default_user"] = user.get("username")
+    return result
+
+
+@app.post("/api/openclaw/run-cycle")
+async def openclaw_run_cycle(request: Request) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    db.insert_agent_log("INFO", "openclaw", "run_cycle", "OpenClaw requested one agent cycle")
+    return await agent.run_once()
+
+
+@app.post("/api/openclaw/notify-test")
+async def openclaw_notify_test(request: Request) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    return await openclaw_notifier.send_test()
 
 
 @app.get("/api/me/credits")
@@ -1437,7 +1512,7 @@ async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str
 @app.get("/api/account")
 async def account_details(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
-    payload = await account.snapshot()
+    payload = await account.snapshot(user)
     if user.get("role") != "admin":
         paper_cash_by_market = _user_paper_cash_by_market(user)
         tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
@@ -1463,8 +1538,8 @@ async def account_details(request: Request) -> dict[str, Any]:
 
 @app.get("/api/performance")
 async def performance_summary(request: Request) -> dict[str, Any]:
-    require_user(request, settings, db)
-    return db.performance_summary()
+    user = require_user(request, settings, db)
+    return db.performance_summary(user_id=int(user["id"]) if user.get("role") != "admin" else None)
 
 
 @app.get("/api/config")
@@ -1796,7 +1871,7 @@ async def _apply_runtime_stack(
     event: str,
     message: str,
 ) -> dict[str, Any]:
-    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, universe_service, options_intelligence, llm, strategy, agent
+    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, universe_service, options_intelligence, openclaw_notifier, llm, strategy, agent
     was_running = agent.running
     await agent.stop()
     await delivery_service.stop_background_task()
@@ -1826,6 +1901,7 @@ async def _apply_runtime_stack(
     macro_calendar = candidate_stack["macro_calendar"]
     universe_service = candidate_stack["universe_service"]
     options_intelligence = candidate_stack["options_intelligence"]
+    openclaw_notifier = candidate_stack["openclaw_notifier"]
     llm = candidate_stack["llm"]
     strategy = candidate_stack["strategy"]
     agent = candidate_stack["agent"]
@@ -2459,6 +2535,8 @@ def _market_data_provider_for_user(user: dict[str, Any], market_region: str = "I
     if settings.kite_api_key and settings.kite_access_token:
         provider = settings.market_data_provider if str(settings.market_data_provider).startswith("kite") else "kite_yahoo"
         return build_market_data_provider(replace(settings, market_region=region, market_data_provider=provider))
+    if settings.nubra_session_token and settings.nubra_device_id:
+        return build_market_data_provider(replace(settings, market_region=region, market_data_provider="nubra"))
     if settings.market_data_provider == "yahoo":
         return build_market_data_provider(replace(settings, market_region=region, market_data_provider="yahoo"))
     raise HTTPException(
@@ -2570,24 +2648,80 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         "mode": mode,
         "enabled": mode in {"AUTO_PAPER", "AUTO_LIVE"},
         "buy_decisions": sum(1 for decision in decisions if getattr(decision, "action", "") == "BUY"),
+        "exit_decisions": sum(1 for decision in decisions if getattr(decision, "action", "") == "SELL"),
+        "active_buy_ideas": 0,
         "followed": 0,
+        "exited": 0,
         "skipped": [],
         "follows": [],
+        "exits": [],
     }
-    if mode == "SIGNAL_ONLY" or not summary["buy_decisions"]:
+    if mode == "SIGNAL_ONLY":
         return summary
 
     user_id = int(user["id"])
     idea_mode = "LIVE" if mode == "AUTO_LIVE" else "PAPER"
     paper_cash_by_market = _user_paper_cash_by_market(user)
-    buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "BUY"}
-    ideas = [
+    exit_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "SELL"}
+    for symbol in sorted(exit_symbols):
+        exited = db.exit_user_follow_position(user_id, symbol, reason="auto_exit_signal_sell")
+        if exited:
+            summary["exited"] += len(exited)
+            summary["exits"].extend(
+                {
+                    "symbol": symbol,
+                    "mode": item.get("mode"),
+                    "status": item.get("status"),
+                    "reason": "auto_exit_signal_sell",
+                    "return_pct": item.get("return_pct"),
+                }
+                for item in exited
+            )
+
+    followed_rows = db.user_followed_signal_ideas(user_id, 200)
+    lifecycle_exit_statuses = {"EXIT_SIGNAL", "STOP_HIT", "TARGET_3_HIT", "EXPIRED"}
+    lifecycle_exit_labels = {"exit_signal", "stopped", "target_3_hit", "expired"}
+    already_exited = {item["symbol"] for item in summary["exits"]}
+    for followed in followed_rows:
+        symbol = str(followed.get("symbol") or "").upper()
+        if not symbol or symbol in already_exited:
+            continue
+        status = str(followed.get("status") or "").upper()
+        lifecycle = str(followed.get("lifecycle_status") or "").lower()
+        if status not in lifecycle_exit_statuses and lifecycle not in lifecycle_exit_labels:
+            continue
+        exited = db.exit_user_follow_position(user_id, symbol, reason=f"auto_exit_{lifecycle or status.lower()}")
+        if exited:
+            already_exited.add(symbol)
+            summary["exited"] += len(exited)
+            summary["exits"].extend(
+                {
+                    "symbol": symbol,
+                    "mode": item.get("mode"),
+                    "status": item.get("status"),
+                    "reason": f"auto_exit_{lifecycle or status.lower()}",
+                    "return_pct": item.get("return_pct"),
+                }
+                for item in exited
+            )
+
+    decision_buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "BUY"}
+    active_buy_ideas = [
         idea
         for idea in db.latest_signal_ideas(200, user_id=user_id)
-        if str(idea.get("symbol") or "").upper() in buy_symbols
-        and str(idea.get("signal_type") or "").upper() == "BUY"
+        if str(idea.get("signal_type") or "").upper() == "BUY"
         and str(idea.get("status") or "").upper() == "ACTIVE"
+        and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
     ]
+    summary["active_buy_ideas"] = len(active_buy_ideas)
+    buy_symbols = decision_buy_symbols or {
+        str(idea.get("symbol") or "").upper()
+        for idea in active_buy_ideas
+        if _auto_follow_idea_fresh_enough(idea, decision_buy_symbols)
+    }
+    if not buy_symbols:
+        return summary
+    ideas = [idea for idea in active_buy_ideas if str(idea.get("symbol") or "").upper() in buy_symbols]
     active_follow_symbols = {
         str(item.get("symbol") or "").upper()
         for item in db.user_followed_signal_ideas(user_id, 200)
@@ -2603,6 +2737,17 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         seen_symbols.add(symbol)
         if symbol in active_follow_symbols:
             summary["skipped"].append({"symbol": symbol, "reason": "already_followed_symbol"})
+            continue
+        if not _auto_follow_idea_fresh_enough(idea, decision_buy_symbols):
+            summary["skipped"].append(
+                {
+                    "symbol": symbol,
+                    "reason": "active_buy_not_fresh_enough_for_auto_follow",
+                    "current_return_pct": round(float(idea.get("current_return_pct") or 0.0), 4),
+                    "fresh_action": idea.get("fresh_action"),
+                    "setup_bucket": idea.get("setup_bucket"),
+                }
+            )
             continue
         if idea.get("user_follow") and str((idea.get("user_follow") or {}).get("status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}:
             summary["skipped"].append({"symbol": symbol, "reason": "already_followed"})
@@ -2664,6 +2809,45 @@ def _auto_follow_amount(cash: float, price: float) -> float:
     if price <= cap:
         return min(price, cash)
     return 0.0
+
+
+def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[str]) -> bool:
+    symbol = str(idea.get("symbol") or "").upper()
+    if symbol in fresh_buy_symbols:
+        return True
+    if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
+        return True
+    if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:
+        return False
+    current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
+    if current_return < -1.5:
+        return False
+    return _price_inside_entry_zone(idea, cushion_pct=0.003)
+
+
+def _price_inside_entry_zone(idea: dict[str, Any], cushion_pct: float = 0.0) -> bool:
+    price = _float_or_none(idea.get("latest_price") or idea.get("price"))
+    zone = idea.get("entry_zone")
+    if price is None or price <= 0:
+        return False
+    if isinstance(zone, list) and len(zone) >= 2:
+        low = _float_or_none(zone[0])
+        high = _float_or_none(zone[1])
+        if low is not None and high is not None:
+            lower = min(low, high) * (1 - cushion_pct)
+            upper = max(low, high) * (1 + cushion_pct)
+            return lower <= price <= upper
+    entry = _float_or_none(idea.get("entry_price"))
+    if entry and entry > 0:
+        return abs(price - entry) / entry <= max(cushion_pct, 0.005)
+    return False
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:

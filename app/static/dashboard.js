@@ -1182,13 +1182,17 @@ function renderPerformance(performance) {
   const orders = performance.orders || {};
   const pnl = performance.pnl || {};
   const positions = performance.positions || {};
-  byId("performance-status").textContent = `${orders.filled || 0} fills`;
+  const learning = performance.post_trade_learning || {};
+  const learningSummary = learning.summary || {};
+  byId("performance-status").textContent = `${orders.filled || 0} fills · ${learningSummary.ideas_analyzed || 0} ideas`;
   const market = normalizeUiMarket(state.activeMarket);
   panel.innerHTML = `
     <button type="button" data-performance-detail="fills"><span>Filled</span><strong>${fmtNumber(orders.filled)}</strong><small>${fmtNumber(orders.vetoed)} vetoed</small></button>
     <button type="button" data-performance-detail="win"><span>Win Rate</span><strong>${fmtPct(Number(pnl.win_rate || 0) * 100)}</strong><small>${fmtNumber(positions.closed)} closed</small></button>
     <button type="button" data-performance-detail="realized"><span>Realized</span><strong class="${pnlClass(pnl.realized)}">${fmtMarketMoney(pnl.realized, market)}</strong><small>${fmtMarketMoney(pnl.expectancy_per_closed_trade, market)} expectancy</small></button>
     <button type="button" data-performance-detail="dd"><span>Max DD</span><strong class="${pnlClass(pnl.max_drawdown_pct)}">${fmtPct(pnl.max_drawdown_pct)}</strong><small>equity curve</small></button>
+    <button type="button" data-performance-detail="quick-red"><span>Quick Red</span><strong class="${pnlClass(-Number(learningSummary.quick_red || 0))}">${fmtNumber(learningSummary.quick_red || 0)}</strong><small>${escapeHtml(learningSummary.evidence_quality || "thin")} evidence</small></button>
+    <button type="button" data-performance-detail="t1"><span>T1 Hits</span><strong class="positive">${fmtNumber(learningSummary.hit_t1 || 0)}</strong><small>${fmtPct(Number(learningSummary.avg_mfe_pct || 0))} avg MFE</small></button>
   `;
   panel.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => showDetails("Trade Scoreboard", performance)));
 }
@@ -2055,6 +2059,8 @@ function renderAccount(account) {
   state.account = account;
   const paper = account.paper || {};
   const upstox = account.upstox || {};
+  const brokerSync = account.broker_sync || {};
+  const brokerReconcile = brokerSync.reconciliation || {};
   const portfolio = paper.portfolio || {};
   const portfolioByMarket = paper.portfolio_by_market || portfolio.portfolio_by_market || {};
   const trackedIdeas = account.tracked_ideas || [];
@@ -2113,14 +2119,21 @@ function renderAccount(account) {
       <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
       <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
       <div><span>Signal Action</span><strong>${escapeHtml(signalModeLabel(signalExecutionMode))}</strong></div>
+      <div><span>Broker Sync</span><strong>${escapeHtml(brokerSync.status_label || brokerSync.status || "Not Connected")}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
       <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
+      <div><span>Broker Positions</span><strong>${fmtNumber(brokerReconcile.broker_position_symbols || brokerSync.positions_count || 0)}</strong></div>
     </div>
     ${cashEditor}
     ${signalModeEditor}
     <div class="account-note">
       <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
       <span>${state.auth?.admin ? "Admins manage users, credits, and runtime broker connections. Signals are run from user accounts." : "Signals and symbol analysis consume this user's credits and use this user's broker feed when connected."}</span>
+    </div>
+    <div class="account-note">
+      <strong>Broker sync</strong>
+      <span>${escapeHtml(brokerSync.note || "Connect a personal broker token to reconcile live requests with broker positions.")}</span>
+      ${(brokerReconcile.unmatched_live_requests || []).length ? `<span>${fmtNumber((brokerReconcile.unmatched_live_requests || []).length)} live request(s) are not matched to a broker position.</span>` : ""}
     </div>
   `;
   const cashForm = byId("paper-cash-form");
@@ -3064,7 +3077,8 @@ function renderSuggestions(rows) {
   body.innerHTML = rows
     .slice(0, 20)
     .map((row, index) => {
-      const action = String(row.suggestion || "WATCH").toLowerCase();
+      const displaySignal = row.display_signal || row.suggestion || "WATCH";
+      const action = String(row.suggestion || row.signal_type || "WATCH").toLowerCase();
       const targets = row.targets || [];
       const t1 = targets[0] || {};
       const t3 = targets[2] || {};
@@ -3075,12 +3089,16 @@ function renderSuggestions(rows) {
             .slice(0, 3)
             .map(([key]) => humanLabel(key))
         : [];
-      const readiness = humanLabel(row.decision_readiness || "monitor_only");
+      const readiness = row.fresh_action_label || humanLabel(row.decision_readiness || "monitor_only");
+      const latestSystemAction = row.latest_system_action ? String(row.latest_system_action).toUpperCase() : "";
+      const followed = row.user_follow || null;
+      const followedActive = followed && ["ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"].includes(String(followed.status || "").toUpperCase()) && Number(followed.qty || 0) > 0;
+      const executionLabel = row.execution_state_label || (followed ? `${followed.mode} active` : "Signal Only");
+      const setupBucket = row.setup_bucket_label || "-";
       const confidence = Number(row.confidence || 0) * 100;
       const currentReturn = Number(row.current_return_pct || 0);
       const peakReturn = Number(row.peak_return_pct || 0);
       const worstReturn = Number(row.worst_return_pct || 0);
-      const followed = row.user_follow || null;
       const market = rowMarket(row);
       const lifecycle = ideaLifecycle(row);
       return `<article class="signal-history-card signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} idea audit">
@@ -3090,24 +3108,29 @@ function renderSuggestions(rows) {
             <div>
               <div class="signal-symbol-row">
                 <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-                <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(row.suggestion || "WATCH")}</span>
+                <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(displaySignal)}</span>
                 <span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span>
                 ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
               </div>
               <small>${fmtMarketMoney(row.price || row.latest_price, market)} · ${escapeHtml(MARKET_LABELS[market] || market)} · ${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))}</small>
             </div>
           </div>
-          <div class="signal-card-actions">
-            <button type="button" data-idea-action="track" data-idea-id="${escapeHtml(row.id)}">Track</button>
-            <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}">Paper</button>
-            <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}">Live</button>
-          </div>
+          ${followedActive
+            ? `<div class="signal-card-actions">
+                <button type="button" data-idea-action="details" data-idea-id="${escapeHtml(row.id)}">Manage</button>
+                <button type="button" class="danger-outline" data-idea-action="exit" data-idea-id="${escapeHtml(row.id)}" data-symbol="${escapeHtml(row.symbol || "")}">Exit</button>
+              </div>`
+            : `<div class="signal-card-actions">
+                <button type="button" data-idea-action="track" data-idea-id="${escapeHtml(row.id)}">Track</button>
+                <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}">Paper</button>
+                <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}">Live</button>
+              </div>`}
         </div>
         <div class="signal-metric-strip">
-          <div><span>Signal</span><strong>${escapeHtml(readiness)}</strong><small>${fmtNumber(confidence)}% confidence</small></div>
-          <div><span>Overall</span><strong>${fmtPct(row.overall_score_pct ?? 0)}</strong><small>${escapeHtml(row.overall_grade || "-")} readiness</small></div>
+          <div><span>Fresh Action</span><strong>${escapeHtml(readiness)}</strong><small>${latestSystemAction ? `engine ${escapeHtml(latestSystemAction)}` : `${fmtNumber(confidence)}% confidence`}</small></div>
+          <div><span>Setup</span><strong>${escapeHtml(setupBucket)}</strong><small>${escapeHtml(row.setup_bucket || "-")}</small></div>
           <div><span>Confluence</span><strong>${escapeHtml(row.confluence ?? "-")}/26</strong><small>${escapeHtml(row.tier || "-")}</small></div>
-          <div><span>Combined</span><strong class="${pnlClass(row.combined_score)}">${fmtNumber(row.combined_score)}</strong><small>after gates</small></div>
+          <div><span>Execution</span><strong>${escapeHtml(executionLabel)}</strong><small>${escapeHtml(row.execution_state || "SIGNAL_ONLY")}</small></div>
           <div><span>Since Signal</span><strong class="${pnlClass(currentReturn)}">${fmtPct(currentReturn)}</strong><small>best ${fmtPct(peakReturn)} · worst ${fmtPct(worstReturn)}</small></div>
         </div>
         ${targetLadderHtml(row, market)}
@@ -3119,11 +3142,14 @@ function renderSuggestions(rows) {
         </div>
         <div class="signal-reason-row">
           <span>Reason</span>
-          <p>${escapeHtml(shortValue(readableDecisionReason(row), 220))}</p>
+          <p>${escapeHtml(shortValue(row.display_reason || readableDecisionReason(row), 220))}</p>
         </div>
         <div class="signal-audit-row">
           <span>Full audit</span>
           <span>${escapeHtml(row.latest_decision_id ? `Decision #${row.latest_decision_id}` : "Decision audit")}</span>
+          ${latestSystemAction ? `<span>Latest engine: ${escapeHtml(latestSystemAction)}</span>` : ""}
+          <span>Setup: ${escapeHtml(setupBucket)}</span>
+          <span>Execution: ${escapeHtml(executionLabel)}</span>
           ${riskFlags.map((flag) => `<span class="warning">${escapeHtml(humanLabel(flag))}</span>`).join("")}
           ${institutionalFlags.map((flag) => `<span>${escapeHtml(flag)}</span>`).join("")}
         </div>
@@ -3140,7 +3166,17 @@ function renderSuggestions(rows) {
   [...body.querySelectorAll("[data-idea-action]")].forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      followIdea(Number(button.dataset.ideaId), button.dataset.ideaAction);
+      const action = button.dataset.ideaAction;
+      const row = rows.find((item) => Number(item.id) === Number(button.dataset.ideaId));
+      if (action === "details") {
+        showDetails("Suggestion", row || {});
+        return;
+      }
+      if (action === "exit") {
+        manualExitPosition(row || { symbol: button.dataset.symbol, market_region: activeMarket }, button);
+        return;
+      }
+      followIdea(Number(button.dataset.ideaId), action);
     });
   });
 }
@@ -3484,6 +3520,7 @@ function formattedLlmReasonHtml(llm = {}, audit = {}) {
 function ideaLifecycle(row = {}) {
   const status = String(row.lifecycle_status || row.status || "active").toLowerCase();
   const highest = String(row.highest_target_hit || "NONE").toUpperCase();
+  const state = row.signal_state || {};
   if (status === "stopped" || String(row.status || "").toUpperCase() === "STOP_HIT") {
     return { label: "Stop hit", className: "negative", note: "Idea invalidated by stop" };
   }
@@ -3493,6 +3530,13 @@ function ideaLifecycle(row = {}) {
   if (highest === "T3" || status === "target_3_hit") return { label: "T3 hit", className: "positive", note: "Final target reached" };
   if (highest === "T2" || status === "target_2_hit") return { label: "T2 hit", className: "positive", note: "Second target reached" };
   if (highest === "T1" || status === "target_1_hit") return { label: "T1 hit", className: "positive", note: "First target reached" };
+  if (String(row.signal_type || "").toUpperCase() === "BUY" && ["active", "monitoring"].includes(status)) {
+    return {
+      label: state.trade_state_label || row.display_signal || "Active Buy",
+      className: state.class_name || "open",
+      note: state.fresh_action_label || "Tracking toward targets",
+    };
+  }
   if (status === "watch" || String(row.signal_type || "").toUpperCase() === "WATCH") return { label: "Watch", className: "warning", note: "Not actionable yet" };
   return { label: "Active", className: "open", note: "Tracking toward targets" };
 }
@@ -3521,7 +3565,7 @@ function targetLadderHtml(row = {}, market = "IN", compact = false) {
       return `<span class="${hit ? "hit" : "pending"}">
         <small>${escapeHtml(target.label || "-")}</small>
         <strong>${fmtMarketMoney(target.price, market)}</strong>
-        <em>${hit ? "hit" : "pending"}</em>
+        <em>${hit ? "hit" : escapeHtml(target.probability_label || "pending")}</em>
       </span>`;
     }).join("")}
   </div>`;
@@ -3635,24 +3679,37 @@ function suggestionDetailHtml(row) {
   const audit = parseJsonObject(row.details_json);
   const context = audit.context || {};
   const market = rowMarket(row);
+  const displaySignal = row.display_signal || row.suggestion;
+  const latestSystemAction = row.latest_system_action ? String(row.latest_system_action).toUpperCase() : "";
+  const whyChanged = row.why_changed || row.signal_state?.why_changed || {};
+  const whyRows = [
+    whyChanged.summary ? `Current State: ${whyChanged.summary}` : null,
+    whyChanged.original_buy_reason ? `Original BUY: ${whyChanged.original_buy_reason}` : null,
+    whyChanged.latest_monitor_reason ? `Latest Monitor: ${whyChanged.latest_monitor_reason}` : null,
+  ].filter(Boolean);
   return `
     ${auditHero({
       label: "Suggestion",
       symbol: row.symbol,
-      action: row.suggestion,
+      action: displaySignal,
       status: `${row.confluence}/26 ${row.tier || ""}`,
       meta: `${fmtMarketMoney(row.price, market)} · ${MARKET_LABELS[market] || market} · combined ${fmtNumber(row.combined_score)}`,
     })}
     <section class="audit-section">
       <h4>Why Suggested</h4>
-      <p>${escapeHtml(readableDecisionReason(row))}</p>
+      <p>${escapeHtml(row.display_reason || readableDecisionReason(row))}</p>
       ${auditList("Main Reasons", decisionReasonHighlights(row))}
       <div class="audit-chips">
+        <span>Fresh action: ${escapeHtml(row.fresh_action_label || "-")}</span>
+        <span>Setup: ${escapeHtml(row.setup_bucket_label || "-")}</span>
+        <span>Execution: ${escapeHtml(row.execution_state_label || "Signal Only")}</span>
+        ${latestSystemAction ? `<span>Latest engine: ${escapeHtml(latestSystemAction)}</span>` : ""}
         <span>Readiness: ${escapeHtml(row.decision_readiness || "-")}</span>
         <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
         <span>Institutional: ${escapeHtml(flowBiasText(row.institutional_bias))}</span>
       </div>
     </section>
+    ${whyRows.length ? auditList("Why Changed", whyRows) : ""}
     ${exitPlanHtml(row.exit_plan, market)}
     ${scoreBreakdownHtml(audit.score_breakdown)}
     ${marketContextHtml(context, market)}

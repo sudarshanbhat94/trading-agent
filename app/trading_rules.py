@@ -51,6 +51,9 @@ def evaluate_rules_for_context(
         active_flags.append(flag)
         soft_flags.append({"flag": flag, "reason": reason, "value": value})
 
+    def data_gap(flag: str, reason: str, value: Any = None) -> None:
+        soft_flags.append({"flag": flag, "reason": reason, "value": value, "data_gap": True})
+
     price = price_integrity(quote, market_health)
     if price.get("price_mismatch"):
         hard("PRICE_MISMATCH", "two available price references differ by more than 1%", price)
@@ -75,9 +78,11 @@ def evaluate_rules_for_context(
     industry = str(sector_context.get("industry") or context.get("industry") or "").strip()
     sector_missing = not sector or sector.lower() in {"none", "unknown", "unclassified", "na", "n/a", "-"}
     industry_missing = not industry or industry.lower() in {"none", "unknown", "unclassified", "na", "n/a", "-"}
-    sector_metadata_missing = sector_missing or industry_missing
+    sector_metadata_missing = sector_missing
     if sector_metadata_missing:
-        soft("SECTOR_MISSING", "sector or industry classification is missing; exclude from sector rotation/concentration math", {"sector": sector, "industry": industry})
+        soft("SECTOR_MISSING", "sector classification is missing; exclude from sector rotation/concentration math", {"sector": sector, "industry": industry})
+    elif industry_missing:
+        data_gap("INDUSTRY_MISSING", "industry classification is missing; sector-level checks remain usable", {"sector": sector, "industry": industry})
 
     entry_grade = str(entry.get("entry_grade") or "").upper()
     if entry_grade not in VALID_ENTRY_GRADES and entry_grade != "WATCH":
@@ -92,7 +97,7 @@ def evaluate_rules_for_context(
 
     earnings = earnings_calendar_audit(macro_event, macro_calendar_context)
     if earnings.get("stale_or_empty") and earnings.get("result_season"):
-        soft("EARNINGS_CALENDAR_STALE", "earnings calendar is empty or stale during result season", earnings)
+        data_gap("EARNINGS_CALENDAR_STALE", "earnings calendar is empty or stale during result season", earnings)
     if earnings.get("known_earnings_block"):
         hard("EARNINGS_LOCKOUT", "known earnings date is within 10 trading days", earnings)
 
@@ -155,7 +160,12 @@ def evaluate_rules_for_context(
         "active_flags": _unique(active_flags),
         "price": price,
         "options": options,
-        "sector": {"sector": sector or None, "industry": industry or None, "sector_missing": sector_metadata_missing},
+        "sector": {
+            "sector": sector or None,
+            "industry": industry or None,
+            "sector_missing": sector_metadata_missing,
+            "industry_missing": industry_missing,
+        },
         "entry": {"entry_grade": entry_grade or None, "effective_entry_grade": effective_entry_grade},
         "sentiment": sentiment_audit,
         "earnings": earnings,

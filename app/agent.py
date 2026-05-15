@@ -40,6 +40,7 @@ class TradingAgentService:
         universe_symbols_per_cycle: int = 0,
         execute_trades: bool = True,
         on_update: UpdateCallback | None = None,
+        openclaw_notifier: Any | None = None,
     ) -> None:
         self.db = db
         self.market_data = market_data
@@ -52,6 +53,7 @@ class TradingAgentService:
         self.sector_rotation = sector_rotation
         self.macro_calendar = macro_calendar
         self.options_intelligence = options_intelligence
+        self.openclaw_notifier = openclaw_notifier
         self.interval_seconds = interval_seconds
         self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
         self.market_region = market_region
@@ -348,6 +350,16 @@ class TradingAgentService:
             },
         )
         snapshot = self.snapshot()
+        if self.openclaw_notifier:
+            notify_result = await self.openclaw_notifier.notify_cycle_events()
+            if notify_result.get("enabled"):
+                self._log(
+                    "INFO",
+                    "openclaw",
+                    "notifications_checked",
+                    "OpenClaw notification bridge checked cycle events",
+                    notify_result,
+                )
         if self.on_update:
             await self.on_update(snapshot)
         return snapshot
@@ -496,9 +508,20 @@ class TradingAgentService:
             for decision in decisions
             if str(decision.action or "").upper() == "BUY"
         }
-        summary: dict[str, Any] = {"buy_symbols": sorted(buy_symbols), "users_checked": 0, "followed": 0, "skipped": []}
-        if not buy_symbols:
-            return summary
+        exit_symbols = {
+            str(decision.symbol or "").upper()
+            for decision in decisions
+            if str(decision.action or "").upper() == "SELL"
+        }
+        summary: dict[str, Any] = {
+            "buy_symbols": sorted(buy_symbols),
+            "exit_symbols": sorted(exit_symbols),
+            "users_checked": 0,
+            "followed": 0,
+            "exited": 0,
+            "active_buy_ideas_checked": 0,
+            "skipped": [],
+        }
         users = [
             user
             for user in self.db.list_users()
@@ -509,21 +532,37 @@ class TradingAgentService:
         summary["users_checked"] = len(users)
         for user in users:
             mode = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
+            exited_symbols = self._auto_exit_followed_signal_ideas_for_user(int(user["id"]), user, exit_symbols)
+            summary["exited"] += len(exited_symbols)
+            active_buy_ideas = [
+                idea
+                for idea in self.db.latest_signal_ideas(200, user_id=int(user["id"]))
+                if str(idea.get("signal_type") or "").upper() == "BUY"
+                and str(idea.get("status") or "").upper() == "ACTIVE"
+                and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
+            ]
+            summary["active_buy_ideas_checked"] += len(active_buy_ideas)
+            candidate_buy_symbols = buy_symbols or {
+                str(idea.get("symbol") or "").upper()
+                for idea in active_buy_ideas
+                if _auto_follow_idea_fresh_enough(idea, buy_symbols)
+            }
             if mode == "AUTO_LIVE":
-                summary["skipped"].append(
-                    {
-                        "user_id": user.get("id"),
-                        "username": user.get("username"),
-                        "reason": "shared_engine_does_not_place_live_orders",
-                    }
-                )
+                if candidate_buy_symbols:
+                    summary["skipped"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "username": user.get("username"),
+                            "reason": "live_unavailable_shared_engine_needs_user_broker_session",
+                        }
+                    )
+                continue
+            if not candidate_buy_symbols:
                 continue
             ideas = [
                 idea
-                for idea in self.db.latest_signal_ideas(200, user_id=int(user["id"]))
-                if str(idea.get("symbol") or "").upper() in buy_symbols
-                and str(idea.get("signal_type") or "").upper() == "BUY"
-                and str(idea.get("status") or "").upper() == "ACTIVE"
+                for idea in active_buy_ideas
+                if str(idea.get("symbol") or "").upper() in candidate_buy_symbols
             ]
             active_follow_symbols = {
                 str(item.get("symbol") or "").upper()
@@ -540,6 +579,18 @@ class TradingAgentService:
                 seen_symbols.add(symbol)
                 if symbol in active_follow_symbols:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed_symbol"})
+                    continue
+                if not _auto_follow_idea_fresh_enough(idea, buy_symbols):
+                    summary["skipped"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "symbol": symbol,
+                            "reason": "active_buy_not_fresh_enough_for_auto_follow",
+                            "current_return_pct": round(float(idea.get("current_return_pct") or 0.0), 4),
+                            "fresh_action": idea.get("fresh_action"),
+                            "setup_bucket": idea.get("setup_bucket"),
+                        }
+                    )
                     continue
                 follow = idea.get("user_follow") or {}
                 if follow and str(follow.get("status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}:
@@ -581,6 +632,49 @@ class TradingAgentService:
                 except ValueError as exc:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": str(exc)})
         return summary
+
+    def _auto_exit_followed_signal_ideas_for_user(
+        self,
+        user_id: int,
+        user: dict[str, Any],
+        exit_symbols: set[str],
+    ) -> list[str]:
+        exited: list[str] = []
+        followed = self.db.user_followed_signal_ideas(user_id, 200)
+        lifecycle_exit_statuses = {"EXIT_SIGNAL", "STOP_HIT", "TARGET_3_HIT", "EXPIRED"}
+        lifecycle_exit_labels = {"exit_signal", "stopped", "target_3_hit", "expired"}
+        for item in followed:
+            symbol = str(item.get("symbol") or "").upper()
+            if not symbol or symbol in exited:
+                continue
+            status = str(item.get("status") or "").upper()
+            lifecycle = str(item.get("lifecycle_status") or "").lower()
+            should_exit = (
+                symbol in exit_symbols
+                or status in lifecycle_exit_statuses
+                or lifecycle in lifecycle_exit_labels
+            )
+            if not should_exit:
+                continue
+            rows = self.db.exit_user_follow_position(user_id, symbol, reason=f"shared_auto_exit_{lifecycle or status.lower()}")
+            if rows:
+                exited.append(symbol)
+                self._log(
+                    "INFO",
+                    "user_session",
+                    "shared_signal_auto_exit",
+                    f"Auto-exit requested for {symbol} for {user.get('username')}",
+                    {
+                        "user_id": user_id,
+                        "username": user.get("username"),
+                        "symbol": symbol,
+                        "mode": item.get("mode"),
+                        "status": status,
+                        "lifecycle_status": lifecycle,
+                        "exited_rows": len(rows),
+                    },
+                )
+        return exited
 
     def _auto_follow_cash_for_user(self, user_id: int, user: dict[str, Any], market: str) -> float:
         market = "US" if str(market or "").upper() == "US" else "IN"
@@ -1195,6 +1289,38 @@ def _monotonic_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "note": "normalized so target ladder stays above T2; original structure target is retained as reference",
     }
     return normalized
+
+
+def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[str]) -> bool:
+    symbol = str(idea.get("symbol") or "").upper()
+    if symbol in fresh_buy_symbols:
+        return True
+    if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
+        return True
+    if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:
+        return False
+    current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
+    if current_return < -1.5:
+        return False
+    return _price_inside_entry_zone(idea, cushion_pct=0.003)
+
+
+def _price_inside_entry_zone(idea: dict[str, Any], cushion_pct: float = 0.0) -> bool:
+    price = _float_or_none(idea.get("latest_price") or idea.get("price"))
+    zone = idea.get("entry_zone")
+    if price is None or price <= 0:
+        return False
+    if isinstance(zone, list) and len(zone) >= 2:
+        low = _float_or_none(zone[0])
+        high = _float_or_none(zone[1])
+        if low is not None and high is not None:
+            lower = min(low, high) * (1 - cushion_pct)
+            upper = max(low, high) * (1 + cushion_pct)
+            return lower <= price <= upper
+    entry = _float_or_none(idea.get("entry_price"))
+    if entry and entry > 0:
+        return abs(price - entry) / entry <= max(cushion_pct, 0.005)
+    return False
 
 
 def _float_or_none(value: Any) -> float | None:

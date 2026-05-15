@@ -2505,6 +2505,94 @@ def _prune_empty(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _policy_gate_profile(context: dict[str, Any], system_gate_audit: dict[str, Any]) -> dict[str, Any]:
+    strategy_name = str((context.get("best_strategy") or {}).get("name") or "").lower()
+    classification = str(((system_gate_audit.get("classification") or {}) if isinstance(system_gate_audit, dict) else {}).get("classification") or "").upper()
+    try:
+        price = float(((context.get("quote") or {}).get("price")) or 0.0)
+    except (TypeError, ValueError):
+        price = 0.0
+    momentum_strategy = any(
+        token in strategy_name
+        for token in (
+            "aggressive_relative_strength",
+            "fifty_two_week_high_momentum",
+            "normalized_momentum",
+            "donchian_momentum",
+            "volume_price_accumulation",
+            "liquidity_sweep",
+            "vwap_reclaim",
+            "breakout",
+            "momentum",
+            "pullback",
+            "minervini",
+            "darvas",
+            "vcp",
+            "ema_",
+            "bollinger",
+        )
+    )
+    if strategy_name == "defensive_exit_manager" or "exit" in strategy_name or "risk" in strategy_name:
+        return {
+            "name": "defensive_exit_manager",
+            "description": "defensive profile: manage existing exposure and exits; fresh entries are not promoted by this profile",
+            "min_overall": 60.0,
+            "min_confluence": 20,
+            "min_scorecard": 80.0,
+            "scorecard_required": "defensive manager normally handles exits; fresh BUY requires exceptional full readiness",
+        }
+    smallcap_momentum = 0 < price <= 250 or strategy_name in {
+        "aggressive_relative_strength_breakout",
+        "fifty_two_week_high_momentum",
+        "liquidity_sweep_reclaim",
+        "vwap_reclaim_order_flow",
+    }
+    if smallcap_momentum:
+        return {
+            "name": "smallcap_momentum",
+            "description": "momentum/speculative profile: keep hard vetoes, liquidity, trend, and risk/reward, but do not require full institutional-quality proof",
+            "min_overall": 50.0,
+            "min_confluence": 18,
+            "min_scorecard": 68.0,
+            "scorecard_required": "hard veto clear, score >=68/100, and data quality/liquidity/trend/risk-reward must-pass gates clear",
+        }
+    if "pullback" in strategy_name or "ema_" in strategy_name or "continuation" in strategy_name or "vwap_reclaim" in strategy_name:
+        return {
+            "name": "pullback_buy",
+            "description": "pullback profile: allow buys near planned entry/support with clean trend alignment and controlled risk",
+            "min_overall": 52.0,
+            "min_confluence": 16,
+            "min_scorecard": 70.0,
+            "scorecard_required": "hard veto clear, score >=70/100, and liquidity/trend/risk-reward must-pass gates clear",
+        }
+    if "breakout" in strategy_name or "darvas" in strategy_name or "vcp" in strategy_name or "donchian" in strategy_name:
+        return {
+            "name": "breakout_continuation",
+            "description": "breakout profile: require stronger confluence and clean breakout checks, but incomplete fundamentals reduce size instead of forcing institutional rejection",
+            "min_overall": 54.0,
+            "min_confluence": 18,
+            "min_scorecard": 72.0,
+            "scorecard_required": "hard veto clear, score >=72/100, and liquidity/trend/risk-reward/breakout checks clear",
+        }
+    if momentum_strategy or classification in {"MOMENTUM", "SPECULATIVE"}:
+        return {
+            "name": "momentum_swing",
+            "description": "momentum swing profile: keep hard vetoes and core execution checks, while allowing incomplete fundamentals to reduce size instead of forcing institutional rejection",
+            "min_overall": 52.0,
+            "min_confluence": 17,
+            "min_scorecard": 72.0,
+            "scorecard_required": "hard veto clear, score >=72/100, and data quality/liquidity/trend/risk-reward must-pass gates clear",
+        }
+    return {
+        "name": "institutional_quality_swing",
+        "description": "institutional-quality profile: fresh BUY requires full scorecard readiness and production-readiness gates",
+        "min_overall": 55.0,
+        "min_confluence": 16,
+        "min_scorecard": 75.0,
+        "scorecard_required": "buy_ready=true, score >=75/100, hard veto clear, must-pass gates clear",
+    }
+
+
 def _policy_gate_action(
     context: dict[str, Any],
     requested_action: str,
@@ -2526,6 +2614,17 @@ def _policy_gate_action(
     options_oi = full_spectrum.get("options_oi") or {}
     system_gate_audit = context.get("system_gate_audit") or {}
     confluence_total = int(confluence.get("total", 0) or 0)
+    gate_profile = _policy_gate_profile(context, system_gate_audit)
+    scorecard_score = float(scorecard.get("total_score") or 0.0)
+    scorecard_failed = set(scorecard.get("must_pass_failed") or [])
+    scorecard_hard_veto_failed = (scorecard.get("hard_veto") or {}).get("failed", [])
+    scorecard_profile_passed = bool(scorecard.get("buy_ready"))
+    if gate_profile["name"] in {"smallcap_momentum", "momentum_swing", "breakout_continuation", "pullback_buy"}:
+        scorecard_profile_passed = (
+            not scorecard_hard_veto_failed
+            and scorecard_score >= gate_profile["min_scorecard"]
+            and not scorecard_failed.intersection({"data_quality_min_55", "liquidity_execution_min_7", "trend_relative_strength_min_9", "risk_reward_min_5"})
+        )
     gates: list[dict[str, Any]] = [
         {
             "gate": "valid_action",
@@ -2544,6 +2643,12 @@ def _policy_gate_action(
             "passed": action != "SELL" or has_position,
             "value": action,
             "required": "SELL only closes an existing long; no short-selling",
+        },
+        {
+            "gate": "strategy_gate_profile",
+            "passed": True,
+            "value": gate_profile["name"],
+            "required": gate_profile["description"],
         },
     ]
     if action == "BUY":
@@ -2572,12 +2677,12 @@ def _policy_gate_action(
                 },
                 {
                     "gate": "overall_quality_gate",
-                    "passed": float(system_gate_audit.get("overall_score_pct") or 0.0) >= 55.0,
+                    "passed": float(system_gate_audit.get("overall_score_pct") or 0.0) >= gate_profile["min_overall"],
                     "value": {
                         "overall_score_pct": system_gate_audit.get("overall_score_pct"),
                         "overall_grade": system_gate_audit.get("overall_grade"),
                     },
-                    "required": "overall production-readiness score >= 55%",
+                    "required": f"overall production-readiness score >= {gate_profile['min_overall']}%",
                 },
                 {
                     "gate": "breakout_quality_gate",
@@ -2609,20 +2714,20 @@ def _policy_gate_action(
                 },
                 {
                     "gate": "full_spectrum_confluence",
-                    "passed": confluence_total >= 16,
+                    "passed": confluence_total >= gate_profile["min_confluence"],
                     "value": confluence_total,
-                    "required": ">= 16/26",
+                    "required": f">= {gate_profile['min_confluence']}/26",
                 },
                 {
                     "gate": "institutional_scorecard_buy_ready",
-                    "passed": bool(scorecard.get("buy_ready")),
+                    "passed": scorecard_profile_passed,
                     "value": {
                         "score": scorecard.get("total_score"),
                         "grade": scorecard.get("grade"),
                         "failed": scorecard.get("must_pass_failed", []),
                         "hard_veto": (scorecard.get("hard_veto") or {}).get("failed", []),
                     },
-                    "required": "buy_ready=true, score >=75/100, hard veto clear, must-pass gates clear",
+                    "required": gate_profile["scorecard_required"],
                 },
                 {
                     "gate": "no_new_longs_override",

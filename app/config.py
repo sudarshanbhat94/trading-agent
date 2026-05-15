@@ -34,7 +34,11 @@ def _path(name: str, default: str) -> Path:
 
 def _market_data_provider(default: str = "upstox") -> str:
     provider = os.getenv("MARKET_DATA_PROVIDER", default).strip().lower()
-    choices = {"upstox", "upstox_yahoo", "kite", "kite_yahoo", "yahoo"}
+    if provider == "indstocks":
+        provider = "upstox"
+    elif provider == "indstocks_yahoo":
+        provider = "upstox_yahoo"
+    choices = {"simulated", "upstox", "upstox_yahoo", "kite", "kite_yahoo", "nubra", "yahoo"}
     return provider if provider in choices else default
 
 
@@ -66,6 +70,16 @@ class Settings:
     admin_session_hours: int = _int("ADMIN_SESSION_HOURS", 12)
     credit_tokens_per_credit: int = _int("CREDIT_TOKENS_PER_CREDIT", 10)
     credit_platform_margin_pct: float = _float("CREDIT_PLATFORM_MARGIN_PCT", 0.20)
+    openclaw_bridge_enabled: bool = _bool("OPENCLAW_BRIDGE_ENABLED", True)
+    openclaw_bridge_token: str = os.getenv("OPENCLAW_BRIDGE_TOKEN", "")
+    openclaw_default_username: str = os.getenv("OPENCLAW_DEFAULT_USERNAME", "sudarshan")
+    openclaw_webhook_url: str = os.getenv("OPENCLAW_WEBHOOK_URL", "")
+    openclaw_webhook_secret: str = os.getenv("OPENCLAW_WEBHOOK_SECRET", "")
+    openclaw_cli_path: str = os.getenv("OPENCLAW_CLI_PATH", "openclaw")
+    openclaw_notify_channel: str = os.getenv("OPENCLAW_NOTIFY_CHANNEL", "whatsapp")
+    openclaw_notify_target: str = os.getenv("OPENCLAW_NOTIFY_TARGET", "")
+    openclaw_notify_ideas: bool = _bool("OPENCLAW_NOTIFY_IDEAS", True)
+    openclaw_notify_orders: bool = _bool("OPENCLAW_NOTIFY_ORDERS", True)
 
     initial_cash_inr: float = _float("INITIAL_CASH_INR", 10_000)
     max_positions: int = _int("MAX_POSITIONS", 5)
@@ -217,6 +231,8 @@ SECRET_FIELDS = {
     "live_trading_confirm",
     "admin_password",
     "auth_session_secret",
+    "openclaw_bridge_token",
+    "openclaw_webhook_secret",
 }
 
 
@@ -246,8 +262,18 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "admin_session_hours", "label": "Session Hours", "type": "number", "category": "Access Control", "min": 1, "step": 1},
     {"key": "credit_tokens_per_credit", "label": "Tokens Per Credit", "type": "number", "category": "User Credits", "min": 1, "step": 1},
     {"key": "credit_platform_margin_pct", "label": "Platform Margin %", "type": "number", "category": "User Credits", "min": 0, "max": 1, "step": 0.01},
+    {"key": "openclaw_bridge_enabled", "label": "OpenClaw Bridge", "type": "boolean", "category": "OpenClaw"},
+    {"key": "openclaw_bridge_token", "label": "OpenClaw API Token", "type": "secret", "category": "OpenClaw"},
+    {"key": "openclaw_default_username", "label": "OpenClaw User", "type": "text", "category": "OpenClaw"},
+    {"key": "openclaw_webhook_url", "label": "OpenClaw Webhook URL", "type": "text", "category": "OpenClaw"},
+    {"key": "openclaw_webhook_secret", "label": "OpenClaw Webhook Secret", "type": "secret", "category": "OpenClaw"},
+    {"key": "openclaw_cli_path", "label": "OpenClaw CLI Path", "type": "text", "category": "OpenClaw"},
+    {"key": "openclaw_notify_channel", "label": "Notify Channel", "type": "text", "category": "OpenClaw"},
+    {"key": "openclaw_notify_target", "label": "Notify Target", "type": "text", "category": "OpenClaw"},
+    {"key": "openclaw_notify_ideas", "label": "Notify Ideas", "type": "boolean", "category": "OpenClaw"},
+    {"key": "openclaw_notify_orders", "label": "Notify Orders", "type": "boolean", "category": "OpenClaw"},
     {"key": "market_region", "label": "Market Region", "type": "select", "category": "Market Data", "choices": ["IN", "US", "BOTH"]},
-    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["upstox", "upstox_yahoo", "kite", "kite_yahoo", "yahoo"]},
+    {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["simulated", "upstox", "upstox_yahoo", "kite", "kite_yahoo", "nubra", "yahoo"]},
     {"key": "universe_source", "label": "Universe Source", "type": "select", "category": "Market Data", "choices": ["csv", "nse_equity"]},
     {"key": "us_universe_csv", "label": "US Universe CSV", "type": "text", "category": "Market Data"},
     {"key": "nse_universe_refresh_on_start", "label": "Refresh NSE Universe", "type": "boolean", "category": "Market Data"},
@@ -346,7 +372,11 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return region if region in {"IN", "US", "BOTH"} else "IN"
     if key == "market_data_provider":
         provider = str(value).strip().lower()
-        choices = {"upstox", "upstox_yahoo", "kite", "kite_yahoo", "yahoo"}
+        if provider == "indstocks":
+            provider = "upstox"
+        elif provider == "indstocks_yahoo":
+            provider = "upstox_yahoo"
+        choices = {"simulated", "upstox", "upstox_yahoo", "kite", "kite_yahoo", "nubra", "yahoo"}
         return provider if provider in choices else "upstox"
     if key == "upstox_api_base_url":
         return str(value).strip().rstrip("/") or "https://api.upstox.com/v2"

@@ -42,7 +42,11 @@ def normalize_upstox_access_token(value: Any) -> str:
 
 def normalize_market_data_provider_name(value: Any) -> str:
     provider = str(value or "upstox").strip().lower()
-    choices = {"upstox", "upstox_yahoo", "kite", "kite_yahoo", "yahoo"}
+    if provider == "indstocks":
+        provider = "upstox"
+    elif provider == "indstocks_yahoo":
+        provider = "upstox_yahoo"
+    choices = {"simulated", "upstox", "upstox_yahoo", "kite", "kite_yahoo", "nubra", "yahoo"}
     return provider if provider in choices else "upstox"
 
 
@@ -1580,6 +1584,8 @@ def build_market_data_provider(settings: Settings) -> MarketDataProvider:
     region = normalize_market_region(settings.market_region)
     yahoo = YahooMarketDataProvider(settings)
     provider = normalize_market_data_provider_name(settings.market_data_provider)
+    if provider == "simulated":
+        return SimulatedMarketDataProvider()
     if provider == "yahoo":
         return yahoo
 
@@ -1595,6 +1601,8 @@ def build_market_data_provider(settings: Settings) -> MarketDataProvider:
 
 def _build_india_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:
     provider = normalize_market_data_provider_name(settings.market_data_provider)
+    if provider == "simulated":
+        return SimulatedMarketDataProvider()
     if provider == "yahoo":
         return yahoo
     if provider in {"upstox", "upstox_yahoo"}:
@@ -1607,17 +1615,18 @@ def _build_india_market_data_provider(settings: Settings, yahoo: YahooMarketData
             return yahoo if provider == "kite_yahoo" else KiteSetupRequiredProvider()
         primary = KiteMarketDataProvider(settings)
         return HistoricalCandleFallbackProvider(primary, yahoo) if provider == "kite_yahoo" else primary
-    return _build_indstocks_market_data_provider(settings, yahoo)
+    if provider == "nubra":
+        return NubraMarketDataProvider(settings)
+    return UpstoxSetupRequiredProvider()
 
 
 def _build_indstocks_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:
-    provider = str(settings.market_data_provider or "indstocks").strip().lower()
-    if provider == "yahoo":
+    provider = normalize_market_data_provider_name(settings.market_data_provider)
+    if provider == "upstox_yahoo" and not settings.upstox_access_token:
         return yahoo
-    if provider in {"indstocks_yahoo", "upstox_yahoo"}:
-        if not settings.indstocks_access_token:
-            return yahoo
-        return HistoricalCandleFallbackProvider(IndStocksMarketDataProvider(settings), yahoo)
-    if not settings.indstocks_access_token:
-        return IndStocksSetupRequiredProvider()
-    return IndStocksMarketDataProvider(settings)
+    if provider in {"upstox", "upstox_yahoo"}:
+        if not settings.upstox_access_token:
+            return UpstoxSetupRequiredProvider()
+        primary = UpstoxMarketDataProvider(settings)
+        return HistoricalCandleFallbackProvider(primary, yahoo) if provider == "upstox_yahoo" else primary
+    return UpstoxSetupRequiredProvider()

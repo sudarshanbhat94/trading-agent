@@ -51,6 +51,80 @@ def _normalize_signal_execution_mode(value: Any) -> str:
     return aliases.get(mode, "SIGNAL_ONLY")
 
 
+NSE_INDUSTRY_FALLBACKS: dict[str, str] = {
+    "ABCAPITAL": "Financial Services Holding",
+    "ADANIENT": "Diversified Holdings",
+    "ADANIPORTS": "Ports & Logistics",
+    "ASIANPAINT": "Paints",
+    "AXISBANK": "Private Sector Bank",
+    "BAJAJFINSV": "Financial Services Holding",
+    "BAJFINANCE": "NBFC",
+    "BANKINDIA": "Public Sector Bank",
+    "BEL": "Defence Electronics",
+    "BHEL": "Electrical Equipment",
+    "BHARTIARTL": "Telecom Services",
+    "CANBK": "Public Sector Bank",
+    "CENTRALBK": "Public Sector Bank",
+    "COALINDIA": "Coal",
+    "GAIL": "Gas Transmission & Marketing",
+    "GMRAIRPORT": "Airport Infrastructure",
+    "HCLTECH": "IT Services",
+    "HDFCBANK": "Private Sector Bank",
+    "HFCL": "Telecom Equipment",
+    "HINDCOPPER": "Copper",
+    "HINDUNILVR": "FMCG",
+    "HUDCO": "Housing Finance",
+    "ICICIBANK": "Private Sector Bank",
+    "IDEA": "Telecom Services",
+    "IDFCFIRSTB": "Private Sector Bank",
+    "IFCI": "Development Finance",
+    "INFY": "IT Services",
+    "IOB": "Public Sector Bank",
+    "IRCON": "Rail EPC",
+    "IREDA": "Renewable Energy Finance",
+    "IRFC": "Railway Finance",
+    "ITC": "FMCG - Tobacco",
+    "JPPOWER": "Power Generation",
+    "KOTAKBANK": "Private Sector Bank",
+    "LT": "Engineering & Construction",
+    "LTF": "NBFC",
+    "M&M": "Automobiles",
+    "MANAPPURAM": "Gold Loan NBFC",
+    "MARUTI": "Passenger Cars",
+    "MOREPENLAB": "Pharmaceuticals",
+    "NATIONALUM": "Aluminium",
+    "NBCC": "Construction & Real Estate",
+    "NESTLEIND": "Packaged Foods",
+    "NMDC": "Iron Ore Mining",
+    "NTPC": "Power Generation",
+    "ONGC": "Oil & Gas Exploration",
+    "PCJEWELLER": "Jewellery Retail",
+    "PNB": "Public Sector Bank",
+    "POWERGRID": "Power Transmission",
+    "RAILTEL": "Telecom Infrastructure",
+    "RBLBANK": "Private Sector Bank",
+    "RELIANCE": "Integrated Oil & Gas",
+    "RPOWER": "Power Generation",
+    "RVNL": "Rail Infrastructure",
+    "SAIL": "Steel",
+    "SBIN": "Public Sector Bank",
+    "SJVN": "Hydropower Generation",
+    "SOUTHBANK": "Private Sector Bank",
+    "SUNPHARMA": "Pharmaceuticals",
+    "SUZLON": "Wind Energy Equipment",
+    "TCS": "IT Services",
+    "TEXRAIL": "Rail Equipment",
+    "TITAN": "Jewellery & Watches",
+    "TMPV": "Automobiles",
+    "TRIDENT": "Textiles & Home Furnishing",
+    "UJJIVANSFB": "Small Finance Bank",
+    "ULTRACEMCO": "Cement",
+    "UNIONBANK": "Public Sector Bank",
+    "WIPRO": "IT Services",
+    "YESBANK": "Private Sector Bank",
+}
+
+
 def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -320,6 +394,9 @@ def _refresh_idea_lifecycle(
                 "hit": hit,
                 "hit_at": previous.get("hit_at") or (now_iso if hit else None),
                 "distance_pct": _return_pct(latest_price, price) if latest_price > 0 else 0.0,
+                "basis": target.get("basis"),
+                "probability_label": target.get("probability_label"),
+                "suggested_exit_pct": target.get("suggested_exit_pct"),
             }
         )
 
@@ -347,12 +424,16 @@ def _refresh_idea_lifecycle(
     expired = bool(expires_dt and now_dt >= expires_dt)
     days_left = max(0, int((expires_dt - now_dt).total_seconds() // 86400)) if expires_dt else None
     overall_score = _optional_float(details.get("overall_score_pct")) or 0.0
+    current_return_pct = _return_pct(entry_price, latest_price)
 
     lifecycle_status = "active"
     new_status = str(status or "ACTIVE")
     if stop_status["hit"]:
         lifecycle_status = "stopped"
         new_status = "STOP_HIT"
+    elif str(status or "").upper() == "EXIT_SIGNAL":
+        lifecycle_status = "exit_signal"
+        new_status = "EXIT_SIGNAL"
     elif highest_hit == "T3":
         lifecycle_status = "target_3_hit"
         new_status = "TARGET_3_HIT"
@@ -377,6 +458,11 @@ def _refresh_idea_lifecycle(
             "target_status": target_status,
             "highest_target_hit": highest_hit or "NONE",
             "stop_status": stop_status,
+            "drawdown_status": {
+                "return_pct": current_return_pct,
+                "in_red": current_return_pct < 0,
+                "near_stop": bool(stop_loss and latest_price > 0 and latest_price <= (entry_price + stop_loss) / 2),
+            },
             "lifecycle_status": lifecycle_status,
             "timeline": {
                 "plan_code": plan_code,
@@ -1535,6 +1621,8 @@ class Database:
         symbol = str(row.get("symbol", "")).strip().upper()
         exchange = str(row.get("exchange") or "NSE").strip().upper() or "NSE"
         default_yahoo_symbol = f"{symbol}.NS" if exchange == "NSE" else f"{symbol}.BO" if exchange == "BSE" else symbol
+        sector = row.get("sector") or ""
+        industry = row.get("industry") or (NSE_INDUSTRY_FALLBACKS.get(symbol, "") if exchange in INDIA_EXCHANGES else "")
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -1546,8 +1634,8 @@ class Database:
             "upstox_instrument_key": row.get("upstox_instrument_key") or "",
             "nubra_symbol": row.get("nubra_symbol") or symbol,
             "nubra_ref_id": _optional_int(row.get("nubra_ref_id")),
-            "sector": row.get("sector") or "",
-            "industry": row.get("industry") or "",
+            "sector": sector,
+            "industry": industry or sector,
             "base_price": _optional_float(row.get("base_price")) or 100,
             "enabled": int(float(row.get("enabled"))) if row.get("enabled") not in (None, "") else 1,
         }
@@ -1932,6 +2020,37 @@ class Database:
                     if row.get("action") == "SELL":
                         status = "EXIT_SIGNAL"
                     existing_details = self._decode_json(existing["details_json"])
+                    preserve_active_buy = _should_preserve_active_buy(existing, idea, row)
+                    if preserve_active_buy:
+                        status = "ACTIVE"
+                        idea["signal_type"] = "BUY"
+                        incoming_monitor_reason = idea["details"].get("reason") or row.get("reason")
+                        original_buy_reason = (
+                            existing_details.get("original_buy_reason")
+                            or existing_details.get("reason")
+                            or existing["reason"]
+                        )
+                        if original_buy_reason:
+                            idea["reason"] = str(original_buy_reason)[:1000]
+                            idea["details"]["reason"] = original_buy_reason
+                            idea["details"]["original_buy_reason"] = original_buy_reason
+                        if incoming_monitor_reason:
+                            idea["details"]["latest_monitor_reason"] = incoming_monitor_reason
+                        idea["details"]["why_changed"] = _why_changed_payload(
+                            original_buy_reason,
+                            incoming_monitor_reason,
+                            str(row.get("action") or ""),
+                            {"preserved": True},
+                        )
+                        idea["details"]["signal_continuity"] = {
+                            "preserved": True,
+                            "previous_signal_type": existing["signal_type"],
+                            "previous_status": existing["status"],
+                            "latest_engine_action": row.get("action"),
+                            "latest_engine_status": idea["status"],
+                            "reason": "A live BUY idea remains active until stop, expiry, target completion, or explicit exit. HOLD means monitor/no add.",
+                        }
+                        idea["details"]["latest_system_action"] = row.get("action")
                     status, idea_details = _refresh_idea_lifecycle(
                         existing_details,
                         idea["details"],
@@ -1942,6 +2061,8 @@ class Database:
                         idea["plan_code"],
                         existing["first_seen_at"],
                     )
+                    if preserve_active_buy and status in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+                        idea["signal_type"] = "BUY"
                     conn.execute(
                         """
                         update signal_ideas
@@ -2139,7 +2260,7 @@ class Database:
             if item.get("latest_decision_id"):
                 item["detail_url"] = f"/api/decisions/{item['latest_decision_id']}"
             item["user_follow"] = follows_by_idea.get(int(item["id"]))
-            output.append(item)
+            output.append(_decorate_signal_idea_item(item))
         return output
 
     def user_followed_signal_ideas(
@@ -2225,7 +2346,7 @@ class Database:
                 "created_at": item.get("followed_at"),
                 "updated_at": item.get("follow_updated_at"),
             }
-            output.append(item)
+            output.append(_decorate_signal_idea_item(item))
         return output
 
     def strategy_plans(self) -> list[dict[str, Any]]:
@@ -3196,7 +3317,7 @@ class Database:
             metrics["realized_pnl"] = round(row["realized_pnl"] or 0, 2)
         return sorted(by_strategy.values(), key=lambda item: abs(item["unrealized_pnl"]), reverse=True)
 
-    def performance_summary(self) -> dict[str, Any]:
+    def performance_summary(self, user_id: int | None = None) -> dict[str, Any]:
         with self.connect() as conn:
             orders = conn.execute(
                 """
@@ -3238,6 +3359,7 @@ class Database:
         losers = int(position_data.get("closed_losers") or 0)
         closed = winners + losers
         realized = float(position_data.get("realized_pnl") or 0.0)
+        learning = self.post_trade_learning_summary(user_id=user_id)
         return {
             "orders": {
                 "total": int(order_data.get("total_orders") or 0),
@@ -3260,6 +3382,187 @@ class Database:
                 "win_rate": round(winners / closed, 4) if closed else 0.0,
                 "expectancy_per_closed_trade": round(realized / closed, 2) if closed else 0.0,
                 "max_drawdown_pct": round(max_drawdown * 100, 4),
+            },
+            "post_trade_learning": learning,
+        }
+
+    def post_trade_learning_summary(self, user_id: int | None = None, limit: int = 800) -> dict[str, Any]:
+        join_sql = ""
+        follow_columns = "null as follow_id, '' as follow_mode, '' as follow_status, 0 as follow_return_pct"
+        params: tuple[Any, ...] = (max(1, min(int(limit), 2000)),)
+        if user_id is not None:
+            join_sql = "left join user_idea_follows f on f.idea_id = i.id and f.user_id = ?"
+            follow_columns = "f.id as follow_id, f.mode as follow_mode, f.status as follow_status, f.return_pct as follow_return_pct"
+            params = (int(user_id), max(1, min(int(limit), 2000)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select
+                    i.id, i.symbol, i.strategy, i.plan_code, i.signal_type, i.status,
+                    i.first_seen_at, i.last_seen_at, i.current_return_pct, i.peak_return_pct,
+                    i.worst_return_pct, i.details_json,
+                    {_market_region_case("u")} as market_region,
+                    u.sector, u.industry,
+                    {follow_columns}
+                from signal_ideas i
+                left join universe u on u.symbol = i.symbol
+                {join_sql}
+                where i.status != 'REJECTED'
+                order by i.last_seen_at desc, i.id desc
+                limit ?
+                """,
+                params,
+            ).fetchall()
+
+        now = datetime.now(timezone.utc)
+        total_current: list[float] = []
+        total_peak: list[float] = []
+        total_worst: list[float] = []
+        groups: dict[str, dict[str, Any]] = {}
+        failures: list[dict[str, Any]] = []
+        winners_list: list[dict[str, Any]] = []
+        summary = {
+            "ideas_analyzed": 0,
+            "buy_ideas": 0,
+            "followed_ideas": 0,
+            "quick_red": 0,
+            "hit_t1": 0,
+            "stopped": 0,
+            "failed_after_entry": 0,
+        }
+
+        for row in rows:
+            item = _row_dict(row)
+            details = self._decode_json(item.pop("details_json", "{}"))
+            signal_type = str(item.get("signal_type") or "").upper()
+            if signal_type not in {"BUY", "WATCH", "EXIT"}:
+                continue
+            status = str(item.get("status") or "").upper()
+            lifecycle = str(details.get("lifecycle_status") or item.get("status") or "").lower()
+            summary["ideas_analyzed"] += 1
+            is_buy = (
+                signal_type == "BUY"
+                or status in {"STOP_HIT", "TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"}
+                or lifecycle in {"stopped", "target_1_hit", "target_2_hit", "target_3_hit"}
+            )
+            if is_buy:
+                summary["buy_ideas"] += 1
+            if item.get("follow_id"):
+                summary["followed_ideas"] += 1
+            current = _optional_float(item.get("current_return_pct")) or 0.0
+            peak = _optional_float(item.get("peak_return_pct")) or current
+            worst = _optional_float(item.get("worst_return_pct")) or current
+            total_current.append(current)
+            total_peak.append(peak)
+            total_worst.append(worst)
+            highest = str(details.get("highest_target_hit") or "NONE").upper()
+            hit_t1 = highest in {"T1", "T2", "T3"} or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"}
+            stopped = status == "STOP_HIT" or lifecycle == "stopped"
+            first_seen = _parse_dt(item.get("first_seen_at"))
+            age_hours = ((now - first_seen).total_seconds() / 3600) if first_seen else 9999.0
+            quick_red = is_buy and ((age_hours <= 48 and current < -0.5) or worst <= -1.5)
+            failed = is_buy and not hit_t1 and (stopped or current <= -2.0 or worst <= -3.0)
+            if quick_red:
+                summary["quick_red"] += 1
+            if hit_t1:
+                summary["hit_t1"] += 1
+            if stopped:
+                summary["stopped"] += 1
+            if failed:
+                summary["failed_after_entry"] += 1
+
+            market = str(item.get("market_region") or "IN")
+            plan = str(item.get("plan_code") or item.get("strategy") or "unclassified")
+            group_key = f"{plan}|{market}"
+            group = groups.setdefault(
+                group_key,
+                {
+                    "plan_code": plan,
+                    "market_region": market,
+                    "ideas": 0,
+                    "buy_ideas": 0,
+                    "followed_ideas": 0,
+                    "quick_red": 0,
+                    "hit_t1": 0,
+                    "stopped": 0,
+                    "failed_after_entry": 0,
+                    "_current": [],
+                    "_peak": [],
+                    "_worst": [],
+                    "sample_symbols": [],
+                },
+            )
+            group["ideas"] += 1
+            group["buy_ideas"] += 1 if is_buy else 0
+            group["followed_ideas"] += 1 if item.get("follow_id") else 0
+            group["quick_red"] += 1 if quick_red else 0
+            group["hit_t1"] += 1 if hit_t1 else 0
+            group["stopped"] += 1 if stopped else 0
+            group["failed_after_entry"] += 1 if failed else 0
+            group["_current"].append(current)
+            group["_peak"].append(peak)
+            group["_worst"].append(worst)
+            if len(group["sample_symbols"]) < 6:
+                group["sample_symbols"].append(item.get("symbol"))
+
+            event = {
+                "symbol": item.get("symbol"),
+                "plan_code": plan,
+                "market_region": market,
+                "current_return_pct": round(current, 4),
+                "peak_return_pct": round(peak, 4),
+                "worst_return_pct": round(worst, 4),
+                "highest_target_hit": highest,
+                "status": status,
+                "last_seen_at": item.get("last_seen_at"),
+            }
+            if failed:
+                event["lesson"] = "Failed after entry before T1; review entry freshness, stop distance, and adverse move threshold."
+                failures.append(event)
+            elif quick_red:
+                event["lesson"] = "Went red quickly; reduce size unless price is still inside entry zone with fresh confirmation."
+                failures.append(event)
+            if hit_t1 or peak >= 2.0:
+                event["lesson"] = "Reached T1 or meaningful MFE; check whether partial exit/trailing stop captured the move."
+                winners_list.append(event)
+
+        def avg(values: list[float]) -> float:
+            return round(sum(values) / len(values), 4) if values else 0.0
+
+        by_strategy_market: list[dict[str, Any]] = []
+        for group in groups.values():
+            buy_count = max(int(group["buy_ideas"]), 1)
+            current_values = group.pop("_current")
+            peak_values = group.pop("_peak")
+            worst_values = group.pop("_worst")
+            group["avg_current_return_pct"] = avg(current_values)
+            group["avg_mfe_pct"] = avg(peak_values)
+            group["avg_mae_pct"] = avg(worst_values)
+            group["t1_rate"] = round(float(group["hit_t1"]) / buy_count, 4)
+            group["quick_red_rate"] = round(float(group["quick_red"]) / buy_count, 4)
+            group["failure_rate"] = round(float(group["failed_after_entry"]) / buy_count, 4)
+            group["expectancy_proxy_pct"] = group["avg_current_return_pct"]
+            by_strategy_market.append(group)
+
+        summary["avg_current_return_pct"] = avg(total_current)
+        summary["avg_mfe_pct"] = avg(total_peak)
+        summary["avg_mae_pct"] = avg(total_worst)
+        summary["evidence_quality"] = (
+            "thin" if summary["buy_ideas"] < 20 else "moderate" if summary["buy_ideas"] < 100 else "good"
+        )
+        return {
+            "summary": summary,
+            "by_strategy_market": sorted(
+                by_strategy_market,
+                key=lambda item: (item["failed_after_entry"], item["quick_red"], item["ideas"]),
+                reverse=True,
+            )[:20],
+            "recent_failures": sorted(failures, key=lambda item: item.get("last_seen_at") or "", reverse=True)[:15],
+            "recent_winners": sorted(winners_list, key=lambda item: item.get("last_seen_at") or "", reverse=True)[:15],
+            "definitions": {
+                "quick_red": "BUY went negative within roughly two days or had MAE worse than -1.5%.",
+                "failed_after_entry": "BUY did not hit T1 and is stopped, below -2%, or had MAE worse than -3%.",
+                "mfe_mae": "MFE uses peak return since signal; MAE uses worst return since signal.",
             },
         }
 
@@ -3291,6 +3594,246 @@ def _return_pct(entry_price: float, latest_price: float) -> float:
     if entry <= 0:
         return 0.0
     return round(((latest - entry) / entry) * 100, 4)
+
+
+def _short_reason(value: Any, limit: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 0)].rstrip() + "…"
+
+
+def _why_changed_payload(
+    original_buy_reason: Any,
+    latest_monitor_reason: Any,
+    latest_action: str,
+    continuity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    latest_action = str(latest_action or "HOLD").upper()
+    original = _short_reason(original_buy_reason, 260)
+    latest = _short_reason(latest_monitor_reason, 320)
+    if latest_action == "BUY":
+        summary = "Fresh BUY is currently confirmed by the latest engine cycle."
+    elif original and latest:
+        summary = f"BUY preserved. Latest engine action {latest_action} because {latest}"
+    elif original:
+        summary = f"BUY preserved. Latest engine action {latest_action}; no fresh add until a new BUY confirmation or exit."
+    elif latest:
+        summary = f"Latest engine action {latest_action} because {latest}"
+    else:
+        summary = f"Latest engine action {latest_action}; no fresh entry is active."
+    return {
+        "preserved": bool(continuity),
+        "latest_engine_action": latest_action,
+        "summary": summary,
+        "original_buy_reason": original,
+        "latest_monitor_reason": latest,
+    }
+
+
+def _drawdown_review_state(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    entry = _optional_float(item.get("entry_price"))
+    latest = _optional_float(item.get("latest_price") or item.get("price"))
+    stop = _optional_float(details.get("stop_loss"))
+    current_return = _optional_float(item.get("current_return_pct")) or 0.0
+    worst_return = _optional_float(item.get("worst_return_pct")) or current_return
+    near_stop = bool((details.get("drawdown_status") or {}).get("near_stop")) if isinstance(details.get("drawdown_status"), dict) else False
+    risk_used_pct = 0.0
+    if entry and latest and stop and entry > stop:
+        risk_used_pct = max(min(((entry - latest) / (entry - stop)) * 100.0, 100.0), 0.0)
+    review = near_stop or risk_used_pct >= 55.0 or current_return <= -2.0 or worst_return <= -3.0
+    return {
+        "risk_review": bool(review),
+        "risk_used_pct": round(risk_used_pct, 2),
+        "reason": (
+            f"Adverse move needs review: return {current_return:.2f}%, worst {worst_return:.2f}%, risk used {risk_used_pct:.0f}%."
+            if review
+            else ""
+        ),
+    }
+
+
+def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None = None) -> dict[str, Any]:
+    details = details if isinstance(details, dict) else {}
+    signal_type = str(item.get("signal_type") or item.get("suggestion") or "").upper()
+    status = str(item.get("status") or "").upper()
+    lifecycle = str(details.get("lifecycle_status") or item.get("lifecycle_status") or status or "active").lower()
+    latest_action = str(details.get("latest_system_action") or details.get("action") or signal_type or "HOLD").upper()
+    continuity = details.get("signal_continuity") if isinstance(details.get("signal_continuity"), dict) else {}
+    current_return = _optional_float(item.get("current_return_pct")) or 0.0
+    latest_monitor_reason = details.get("latest_monitor_reason")
+    original_buy_reason = details.get("original_buy_reason")
+    why_changed = details.get("why_changed") if isinstance(details.get("why_changed"), dict) else {}
+    if not why_changed:
+        why_changed = _why_changed_payload(original_buy_reason, latest_monitor_reason, latest_action, continuity)
+    drawdown_review = _drawdown_review_state(item, details)
+    follow = item.get("user_follow") if isinstance(item.get("user_follow"), dict) else {}
+    follow_status = str(follow.get("status") or item.get("follow_status") or "").upper()
+    followed_active = follow_status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} and _optional_int(follow.get("qty") if follow else item.get("qty")) not in {None, 0}
+
+    if status == "STOP_HIT" or lifecycle == "stopped":
+        display_signal = "Stopped"
+        fresh_action = "EXITED"
+        trade_state = "STOP_HIT"
+        class_name = "negative"
+        reason = "Idea invalidated by stop."
+    elif status == "EXIT_SIGNAL" or lifecycle == "exit_signal" or signal_type == "EXIT":
+        display_signal = "Exit"
+        fresh_action = "EXIT"
+        trade_state = "EXIT_SIGNAL"
+        class_name = "negative"
+        reason = "Exit signal is active for this idea."
+    elif status == "EXPIRED" or lifecycle == "expired":
+        display_signal = "Expired"
+        fresh_action = "EXPIRED"
+        trade_state = "EXPIRED"
+        class_name = "warning"
+        reason = "Idea timeline has expired."
+    elif signal_type == "BUY" and status in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+        if latest_action == "BUY" and not continuity:
+            display_signal = "Fresh Buy"
+            fresh_action = "BUY_NOW"
+            reason = "Fresh BUY passed the current entry and risk gates."
+        elif drawdown_review["risk_review"]:
+            display_signal = "Risk Review"
+            fresh_action = "NO_FRESH_ADD"
+            reason = drawdown_review["reason"] or "Active BUY is in adverse movement; review risk before adding."
+        else:
+            display_signal = "Active Buy"
+            fresh_action = "NO_FRESH_ADD"
+            reason = why_changed.get("summary") or "Active BUY remains valid; latest cycle is monitor/no fresh add until a new BUY confirmation or exit."
+        trade_state = "ACTIVE_BUY"
+        class_name = "open"
+        if drawdown_review["risk_review"]:
+            trade_state = "RISK_REVIEW"
+            class_name = "warning"
+        if current_return < 0:
+            reason = f"{reason} Current return is {current_return:.2f}% from the original signal."
+    elif followed_active and drawdown_review["risk_review"]:
+        display_signal = "Risk Review"
+        fresh_action = "NO_FRESH_ADD"
+        trade_state = "RISK_REVIEW"
+        class_name = "warning"
+        reason = drawdown_review["reason"] or "Followed position needs risk review before adding."
+        if current_return < 0:
+            reason = f"{reason} Current return is {current_return:.2f}% from the original signal."
+    elif followed_active:
+        display_signal = "Position Monitor"
+        fresh_action = "NO_FRESH_ADD"
+        trade_state = "POSITION_MONITOR"
+        class_name = "open"
+        reason = why_changed.get("summary") or "Followed position is active; this is position monitoring, not a fresh entry."
+    elif signal_type == "WATCH" or status == "WATCH" or lifecycle == "watch":
+        display_signal = "Watch"
+        fresh_action = "WATCH"
+        trade_state = "WATCH"
+        class_name = "warning"
+        reason = "Setup is being monitored but is not a fresh BUY."
+    else:
+        display_signal = "Monitor"
+        fresh_action = "NO_TRADE"
+        trade_state = "MONITORING"
+        class_name = "neutral"
+        reason = "No fresh trade action is active."
+
+    if continuity:
+        reason = str(why_changed.get("summary") or continuity.get("reason") or reason)
+    return {
+        "display_signal": display_signal,
+        "fresh_action": fresh_action,
+        "fresh_action_label": {
+            "BUY_NOW": "Fresh Buy",
+            "NO_FRESH_ADD": "No Fresh Add",
+            "WATCH": "Watch",
+            "EXIT": "Exit",
+            "EXITED": "Exited",
+            "EXPIRED": "Expired",
+            "NO_TRADE": "No Trade",
+        }.get(fresh_action, display_signal),
+        "trade_state": trade_state,
+        "trade_state_label": display_signal,
+        "class_name": class_name,
+        "latest_system_action": latest_action,
+        "display_reason": reason,
+        "original_buy_reason": original_buy_reason,
+        "latest_monitor_reason": latest_monitor_reason,
+        "why_changed": why_changed,
+        "risk_review": drawdown_review,
+    }
+
+
+def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    state = _signal_state_payload(item, details)
+    execution = _execution_state_payload(item)
+    setup_bucket = _setup_bucket_payload(item, details, state)
+    item["signal_state"] = state
+    item["display_signal"] = state["display_signal"]
+    item["fresh_action"] = state["fresh_action"]
+    item["fresh_action_label"] = state["fresh_action_label"]
+    item["trade_state"] = state["trade_state"]
+    item["latest_system_action"] = state["latest_system_action"]
+    item["display_reason"] = state["display_reason"]
+    item["execution_state"] = execution["state"]
+    item["execution_state_label"] = execution["label"]
+    item["execution_state_note"] = execution["note"]
+    item["why_changed"] = state["why_changed"]
+    item["risk_review"] = state["risk_review"]
+    item["setup_bucket"] = setup_bucket["bucket"]
+    item["setup_bucket_label"] = setup_bucket["label"]
+    item["setup_bucket_reason"] = setup_bucket["reason"]
+    return item
+
+
+def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: dict[str, Any]) -> dict[str, str]:
+    status = str(item.get("status") or "").upper()
+    signal_type = str(item.get("signal_type") or "").upper()
+    confluence = _optional_float(item.get("confluence")) or 0.0
+    overall = _optional_float(item.get("overall_score_pct")) or 0.0
+    risk_flags = details.get("risk_flags") if isinstance(details.get("risk_flags"), list) else []
+    classification = str((details.get("classification") or {}).get("classification") or "").upper() if isinstance(details.get("classification"), dict) else ""
+    cap = _optional_float(details.get("allocation_cap_multiplier"))
+    if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT"} or signal_type == "EXIT":
+        return {"bucket": "AVOID", "label": "Avoid", "reason": "Idea is closed, invalidated, or in exit mode."}
+    if state.get("trade_state") == "RISK_REVIEW":
+        return {"bucket": "RISK_REVIEW", "label": "Risk Review", "reason": "Adverse move is outside normal noise; do not add without review."}
+    if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and overall >= 65 and confluence >= 18 and not risk_flags and classification != "SPECULATIVE":
+        return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "Fresh BUY with strong score, confluence, and no active risk flags."}
+    if signal_type == "BUY":
+        if classification == "SPECULATIVE" or (cap is not None and cap <= 0.3) or risk_flags or overall < 65:
+            return {"bucket": "SMALL_SIZE_ONLY", "label": "Small Size Only", "reason": "BUY thesis exists, but risk/data/quality profile requires reduced size."}
+        return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "BUY thesis is active and risk checks are acceptable."}
+    if signal_type == "WATCH" or status == "WATCH":
+        return {"bucket": "WATCH", "label": "Watch", "reason": "Setup is not actionable yet."}
+    return {"bucket": "AVOID", "label": "Avoid", "reason": "No active trade setup is available."}
+
+
+def _execution_state_payload(item: dict[str, Any]) -> dict[str, str]:
+    follow = item.get("user_follow") if isinstance(item.get("user_follow"), dict) else {}
+    mode = str(follow.get("mode") or item.get("mode") or "").upper()
+    status = str(follow.get("status") or item.get("follow_status") or "").upper()
+    qty = _optional_int(follow.get("qty") if follow else item.get("qty")) or 0
+    if not follow and not mode:
+        return {"state": "SIGNAL_ONLY", "label": "Signal Only", "note": "Not tracked or auto-followed for this user."}
+    if mode == "TRACK":
+        return {"state": "TRACKED", "label": "Tracked", "note": "Tracking only; no paper or live order."}
+    if status in {"REJECTED", "FAILED"}:
+        return {"state": status, "label": "Rejected", "note": "Order/follow request was rejected or failed."}
+    if status == "CANCELLED":
+        return {"state": "CANCELLED", "label": "Cancelled", "note": "Order/follow request was cancelled."}
+    if status in {"FILLED", "ACCEPTED", "PARTIAL"}:
+        return {"state": status, "label": status.title(), "note": "Broker/order lifecycle has advanced beyond request state."}
+    if mode == "PAPER" and status == "ACTIVE" and qty > 0:
+        return {"state": "PAPER_ACTIVE", "label": "Paper Active", "note": "Paper position is active and marked to latest price."}
+    if mode == "LIVE" and status == "LIVE_REQUESTED":
+        return {"state": "LIVE_REQUESTED", "label": "Live Requested", "note": "Guarded live request was created; broker fill must be reconciled."}
+    if mode == "LIVE" and status == "LIVE_EXIT_REQUESTED":
+        return {"state": "LIVE_EXIT_REQUESTED", "label": "Live Exit Requested", "note": "Exit request was created; broker fill must be reconciled."}
+    if mode == "LIVE" and status == "ACTIVE" and qty > 0:
+        return {"state": "LIVE_ACTIVE", "label": "Live Active", "note": "Live-follow position is active in OpenStocks."}
+    if status == "EXITED":
+        return {"state": "EXITED", "label": "Exited", "note": "Followed position has been exited."}
+    return {"state": status or "FOLLOW_PENDING", "label": "Follow Pending", "note": "Follow state is pending or missing quantity."}
 
 
 def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -3340,7 +3883,11 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "overall_score_pct": system_audit.get("overall_score_pct"),
         "overall_grade": system_audit.get("overall_grade"),
         "reason": audit.get("action_reason") or row.get("reason"),
+        "classification": system_audit.get("classification"),
+        "allocation_cap_multiplier": system_audit.get("allocation_cap_multiplier"),
     }
+    if signal_type == "BUY":
+        details["original_buy_reason"] = audit.get("action_reason") or row.get("reason")
     plan_code = _strategy_plan_code(str(row.get("strategy") or ""), action, price, full, system_audit)
     return {
         "symbol": str(row.get("symbol") or "").upper(),
@@ -3357,6 +3904,21 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "reason": str(audit.get("action_reason") or row.get("reason") or "")[:1000],
         "details": details,
     }
+
+
+def _should_preserve_active_buy(existing: sqlite3.Row, idea: dict[str, Any], row: dict[str, Any]) -> bool:
+    existing_signal = str(existing["signal_type"] or "").upper()
+    existing_status = str(existing["status"] or "").upper()
+    incoming_signal = str(idea.get("signal_type") or "").upper()
+    incoming_status = str(idea.get("status") or "").upper()
+    action = str(row.get("action") or "").upper()
+    if existing_signal != "BUY":
+        return False
+    if existing_status not in {"ACTIVE", "MONITORING", "TARGET_1_HIT", "TARGET_2_HIT"}:
+        return False
+    if action in {"SELL", "EXIT"} or incoming_signal == "EXIT" or incoming_status == "EXIT_SIGNAL":
+        return False
+    return action == "HOLD" or incoming_signal in {"WATCH", "NO_TRADE"} or incoming_status in {"WATCH", "MONITORING"}
 
 
 def _strategy_plan_code(

@@ -1057,21 +1057,22 @@ def _trade_plan(
 ) -> dict[str, Any]:
     options_oi = options_oi or {}
     atr = indicators.get("atr") or price * 0.02
+    atr_pct = indicators.get("atr_pct")
+    if atr_pct is None and price > 0:
+        atr_pct = (atr / price) * 100
     stop_pct = min(max(float(risk_limits.get("stop_loss_pct", 0.035) or 0.035), 0.005), 0.04)
-    stop = min(price - atr * 1.2, price * (1 - stop_pct))
+    support = _float_or_none(key_levels.get("nearest_support") or key_levels.get("prev_swing_low"))
+    stop, stop_basis = _planned_stop(price, atr, stop_pct, support)
     risk = max(price - stop, price * 0.005)
     risk_per_trade_pct = min(float(risk_limits.get("max_order_value_pct", 0.04) or 0.04), 0.01)
-    target_1 = price + risk * 1.5
-    target_2 = price + risk * 2.5
-    structure_target = _float_or_none(key_levels.get("nearest_resistance") or key_levels.get("prev_swing_high"))
-    rr_target_3 = price + risk * 3.5
-    target_3 = max(structure_target or 0.0, rr_target_3, target_2 + risk)
-    target_3_note = (
-        "structure resistance used"
-        if structure_target and structure_target >= target_3
-        else "structure resistance was below T2, so T3 uses 3.5R ladder target"
-        if structure_target and structure_target < target_2
-        else "3.5R ladder target"
+    targets, target_policy = _planned_targets(
+        price=price,
+        risk=risk,
+        atr=atr,
+        atr_pct=atr_pct,
+        key_levels=key_levels,
+        confluence=confluence,
+        liquidity=liquidity,
     )
     option_zones = options_oi.get("oi_concentration_zones") or {}
     option_resistance = (option_zones.get("resistance") or [])[:3]
@@ -1081,17 +1082,9 @@ def _trade_plan(
         "horizon": "swing_3_to_7_days",
         "entry_zone": [_round(price * 0.995), _round(price * 1.005)],
         "stop_loss": _round(stop),
-        "targets": [
-            {"label": "T1", "price": _round(target_1), "rr": 1.5},
-            {"label": "T2", "price": _round(target_2), "rr": 2.5},
-            {
-                "label": "T3",
-                "price": _round(target_3),
-                "rr": "3.5_or_structure",
-                "structure_reference": _round(structure_target),
-                "note": target_3_note,
-            },
-        ],
+        "stop_basis": stop_basis,
+        "targets": targets,
+        "target_policy": target_policy,
         "invalidation": {
             "chart": _round(stop),
             "macro": "risk-off regime or high-impact event within 48h",
@@ -1115,9 +1108,183 @@ def _trade_plan(
             "backtest_expectancy": backtest.get("expectancy"),
             "sizing_note": "paper broker still enforces max order, max position, cash, and daily loss limits",
         },
+        "target_execution": _target_execution_plan(targets),
         "time_stop": "exit or re-score if not moving toward T1 within 5 trading sessions",
         "trailing_stop": "after T1, trail below previous swing low or 1.2 ATR, whichever is tighter",
     }
+
+
+def _planned_stop(price: float, atr: float, stop_pct: float, support: float | None) -> tuple[float, str]:
+    if price <= 0:
+        return 0.0, "invalid_price"
+    risk_floor = price * 0.006
+    risk_ceiling = price * 0.065
+    target_risk = max(float(atr or 0.0) * 1.15, price * stop_pct, risk_floor)
+    if support and 0 < support < price:
+        support_stop = support - max(float(atr or 0.0) * 0.25, price * 0.002)
+        support_risk = price - support_stop
+        if risk_floor <= support_risk <= risk_ceiling:
+            return max(support_stop, price - risk_ceiling), "nearest_support_minus_atr_buffer"
+    risk = min(max(target_risk, risk_floor), risk_ceiling)
+    return price - risk, "atr_or_configured_pct"
+
+
+def _planned_targets(
+    price: float,
+    risk: float,
+    atr: float,
+    atr_pct: float | None,
+    key_levels: dict[str, Any],
+    confluence: dict[str, Any],
+    liquidity: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rr_profile = _target_rr_profile(confluence, atr_pct, liquidity)
+    structure_levels = _overhead_structure_levels(price, key_levels)
+    targets: list[dict[str, Any]] = []
+    used_structure: set[float] = set()
+    previous_price = price
+    for index, rr in enumerate(rr_profile, start=1):
+        ladder_price = price + risk * rr
+        basis = "dynamic_volatility_rr"
+        note = "volatility and conviction target"
+        structure_price = _structure_target_for_step(
+            price=price,
+            risk=risk,
+            desired=ladder_price,
+            structure_levels=structure_levels,
+            used_structure=used_structure,
+            step=index,
+        )
+        if structure_price is not None:
+            target_price = structure_price
+            used_structure.add(structure_price)
+            basis = "overhead_structure"
+            note = "uses nearby resistance/swing level"
+        else:
+            target_price = ladder_price
+        min_gap = max(risk * 0.55, price * 0.004)
+        if target_price <= previous_price + min_gap:
+            target_price = previous_price + min_gap
+            basis = "spacing_adjusted"
+            note = "lifted to keep target ladder sequential"
+        actual_rr = (target_price - price) / risk if risk > 0 else 0.0
+        probability_label = _target_probability_label(actual_rr, index, confluence, liquidity)
+        targets.append(
+            {
+                "label": f"T{index}",
+                "price": _round(target_price),
+                "rr": _round(actual_rr),
+                "basis": basis,
+                "distance_pct": _round(((target_price - price) / price) * 100 if price else None),
+                "probability_label": probability_label,
+                "suggested_exit_pct": [35, 35, 30][index - 1],
+                "note": note,
+            }
+        )
+        previous_price = target_price
+    return targets, {
+        "method": "structure_first_dynamic_rr",
+        "risk_per_share": _round(risk),
+        "atr": _round(atr),
+        "atr_pct": _round(atr_pct),
+        "rr_profile": [_round(value) for value in rr_profile],
+        "structure_levels_above_price": [_round(level) for level in structure_levels[:5]],
+        "note": "Targets prefer usable overhead structure; otherwise RR adapts to volatility, conviction, and liquidity.",
+    }
+
+
+def _target_rr_profile(
+    confluence: dict[str, Any],
+    atr_pct: float | None,
+    liquidity: dict[str, Any],
+) -> list[float]:
+    tier = str(confluence.get("tier") or "").upper()
+    if tier == "MAXIMUM_CONVICTION":
+        profile = [1.45, 2.35, 3.35]
+    elif tier == "HIGH_CONVICTION":
+        profile = [1.25, 2.05, 2.95]
+    elif tier == "TRADE_SIGNAL":
+        profile = [1.1, 1.75, 2.45]
+    else:
+        profile = [0.95, 1.4, 2.0]
+    volatility = float(atr_pct or 0.0)
+    if volatility >= 6:
+        profile = [value * 0.82 for value in profile]
+    elif 0 < volatility <= 1.2:
+        profile = [value * 1.12 for value in profile]
+    liquidity_tier = str(liquidity.get("liquidity_tier") or "").lower()
+    if liquidity_tier in {"thin", "illiquid"}:
+        profile = [value * 0.86 for value in profile]
+    return [round(max(value, 0.75), 3) for value in profile]
+
+
+def _target_probability_label(
+    rr: float,
+    step: int,
+    confluence: dict[str, Any],
+    liquidity: dict[str, Any],
+) -> str:
+    tier = str(confluence.get("tier") or "").upper()
+    liquidity_tier = str(liquidity.get("liquidity_tier") or "").lower()
+    if liquidity_tier in {"thin", "illiquid"}:
+        return "stretch" if step >= 2 else "moderate"
+    if step == 1 and rr <= 1.6:
+        return "higher" if tier in {"HIGH_CONVICTION", "MAXIMUM_CONVICTION"} else "moderate"
+    if step == 2 and rr <= 2.4 and tier in {"HIGH_CONVICTION", "MAXIMUM_CONVICTION"}:
+        return "moderate"
+    return "stretch"
+
+
+def _target_execution_plan(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    actions = {
+        "T1": "book partial profit and move stop to breakeven/entry zone if liquidity allows",
+        "T2": "book another partial and trail below latest swing low or 1.2 ATR",
+        "T3": "exit remaining size or keep only a runner with a hard trailing stop",
+    }
+    plan = []
+    for target in targets[:3]:
+        label = str(target.get("label") or "").upper()
+        plan.append(
+            {
+                "label": label,
+                "price": target.get("price"),
+                "suggested_exit_pct": target.get("suggested_exit_pct"),
+                "probability_label": target.get("probability_label"),
+                "action": actions.get(label, "reduce risk and reassess"),
+            }
+        )
+    return plan
+
+
+def _overhead_structure_levels(price: float, key_levels: dict[str, Any]) -> list[float]:
+    levels: list[float] = []
+    for key in ("nearest_resistance", "prev_swing_high", "period_high"):
+        value = _float_or_none(key_levels.get(key))
+        if value and value > price * 1.003:
+            levels.append(value)
+    return sorted({round(level, 4) for level in levels})
+
+
+def _structure_target_for_step(
+    price: float,
+    risk: float,
+    desired: float,
+    structure_levels: list[float],
+    used_structure: set[float],
+    step: int,
+) -> float | None:
+    if not structure_levels or risk <= 0:
+        return None
+    lower_rr = 0.65 if step == 1 else 0.85
+    upper_rr = 1.65 if step == 1 else 1.8 if step == 2 else 2.4
+    lower = price + risk * lower_rr
+    upper = desired + risk * upper_rr
+    for level in structure_levels:
+        if level in used_structure:
+            continue
+        if lower <= level <= upper:
+            return level
+    return None
 
 
 def _signal_plan(
