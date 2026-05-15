@@ -989,6 +989,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 
 async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     user_id = int(user["id"])
+    force_llm = _payload_bool(payload.get("force_llm", payload.get("run_ai_review")), default=False)
     estimated_charge = _estimated_signal_credit_charge()
     can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
     if not can_spend:
@@ -1102,8 +1103,38 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
     if not decisions:
         raise HTTPException(status_code=500, detail=f"Analysis produced no decision for {symbol}.")
 
+    manual_llm_review = await _manual_llm_review_if_requested(
+        requested=force_llm,
+        decision=decisions[0],
+        strategy=user_strategy,
+        user_id=user_id,
+    )
+    decisions[0] = manual_llm_review["decision"]
+
     usage = db.llm_usage_cost_for_scope(user_id, usage_scope, usage_after_id)
     llm_activity = _llm_activity_from_decisions(decisions, usage)
+    if manual_llm_review["status"] != "not_requested":
+        llm_activity["manual_review"] = manual_llm_review["public"]
+        if manual_llm_review["status"] == "disabled" and not int(usage.get("calls") or 0):
+            llm_activity.update(
+                {
+                    "status": "disabled",
+                    "message": "OpenStocks Brain was requested, but this user has no enabled LLM provider/API key. No LLM credits were used.",
+                    "billable": False,
+                    "credits_charged": 0.0,
+                    "raw_provider_credits": 0.0,
+                }
+            )
+        elif manual_llm_review["status"] == "failed" and not int(usage.get("calls") or 0):
+            llm_activity.update(
+                {
+                    "status": "manual_review_failed",
+                    "message": "OpenStocks Brain was requested, but the manual review failed before a billable provider response. No LLM credits were used.",
+                    "billable": False,
+                    "credits_charged": 0.0,
+                    "raw_provider_credits": 0.0,
+                }
+            )
     billing = _credit_billing_for_usage(usage)
     try:
         credit_after = credit_before
@@ -1197,6 +1228,127 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
             "budget_policy": _public_budget_policy(budget_policy),
         },
         "decision": decision_payload,
+    }
+
+
+def _payload_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+async def _manual_llm_review_if_requested(
+    *,
+    requested: bool,
+    decision: Decision,
+    strategy: StrategyEngine,
+    user_id: int,
+) -> dict[str, Any]:
+    public: dict[str, Any] = {
+        "requested": bool(requested),
+        "executed": False,
+        "status": "not_requested",
+        "prefilter_bypassed": False,
+    }
+    if not requested:
+        return {"decision": decision, "status": "not_requested", "public": public}
+
+    details = _json_object(decision.details_json)
+    decision_path = str(details.get("decision_path") or "")
+    if details.get("llm_output") or decision_path.startswith("llm_"):
+        public.update(
+            {
+                "executed": True,
+                "status": "already_reviewed",
+                "reason": "The strategy engine already used OpenStocks Brain for this manual analysis.",
+                "decision_path": decision_path,
+            }
+        )
+        return {"decision": decision, "status": "already_reviewed", "public": public}
+
+    if not strategy.llm.enabled or strategy.llm.settings.llm_provider == "offline":
+        details["manual_llm_review"] = {
+            "requested": True,
+            "executed": False,
+            "status": "disabled",
+            "reason": "LLM provider/API key is not enabled for this user.",
+        }
+        public.update(details["manual_llm_review"])
+        return {
+            "decision": replace(decision, details_json=json.dumps(details, default=str, separators=(",", ":"))),
+            "status": "disabled",
+            "public": public,
+        }
+
+    context = details.get("context") if isinstance(details.get("context"), dict) else {}
+    context = dict(context or {})
+    context.setdefault("symbol", decision.symbol)
+    if not isinstance(context.get("quote"), dict):
+        context["quote"] = {"price": decision.price}
+    if not isinstance(context.get("technical_math"), dict):
+        context["technical_math"] = {"score": decision.technical_score}
+    if not isinstance(context.get("sentiment"), dict):
+        context["sentiment"] = {"score": decision.sentiment_score}
+    if not isinstance(context.get("best_strategy"), dict):
+        context["best_strategy"] = {"name": decision.strategy}
+    context["manual_analysis"] = {
+        "force_llm": True,
+        "source": "symbol_analysis",
+        "original_decision_path": decision_path,
+        "original_action": decision.action,
+    }
+    context["manual_llm_review"] = {
+        "requested": True,
+        "prefilter_bypassed": True,
+        "reason": "Manual symbol analysis explicitly requested OpenStocks Brain evidence.",
+    }
+
+    context_token = current_user_id.set(user_id)
+    try:
+        reviewed = await strategy.llm.review(decision, context)
+    except Exception as exc:
+        details["manual_llm_review"] = {
+            "requested": True,
+            "executed": False,
+            "status": "failed",
+            "prefilter_bypassed": True,
+            "reason": f"{exc.__class__.__name__}: {exc}"[:500],
+            "original_decision_path": decision_path,
+        }
+        public.update(details["manual_llm_review"])
+        return {
+            "decision": replace(decision, details_json=json.dumps(details, default=str, separators=(",", ":"))),
+            "status": "failed",
+            "public": public,
+        }
+    finally:
+        current_user_id.reset(context_token)
+
+    reviewed_details = _json_object(reviewed.details_json)
+    reviewed_details["manual_llm_review"] = {
+        "requested": True,
+        "executed": True,
+        "status": "completed",
+        "prefilter_bypassed": True,
+        "original_decision_path": decision_path,
+        "original_action": decision.action,
+        "final_action": reviewed.action,
+        "note": "Manual Analyze bypassed the scanner candidate lane for LLM evidence; system risk gates still control tradability.",
+    }
+    public.update(reviewed_details["manual_llm_review"])
+    return {
+        "decision": replace(reviewed, details_json=json.dumps(reviewed_details, default=str, separators=(",", ":"))),
+        "status": "completed",
+        "public": public,
     }
 
 

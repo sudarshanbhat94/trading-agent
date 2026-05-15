@@ -4607,12 +4607,12 @@ async function analyzeSymbol(event) {
   }, 1000);
   button.disabled = true;
   byId("analyze-status").textContent = `analyzing ${market}:${symbol}...`;
-  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk gates, and LLM if enabled...</div>`;
+  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk gates, and OpenStocks Brain review if enabled...</div>`;
   try {
     const response = await fetch("/api/analyze-symbol", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, market }),
+      body: JSON.stringify({ symbol, market, force_llm: true }),
       signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
@@ -4738,7 +4738,7 @@ function renderManualAnalysis(payload) {
         <section class="analysis-tab-panel" data-analysis-panel="llm">
           <button id="manual-detail-btn" type="button">Open Full Analysis</button>
           ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
-          ${details.llm_output ? formattedLlmReasonHtml(details.llm_output, details) : `<p class="muted">Run AI Review from this symbol analysis to spend credits and capture OpenStocks Brain evidence.</p>`}
+          ${details.llm_output ? formattedLlmReasonHtml(details.llm_output, details) : `<p class="muted">OpenStocks Brain evidence was not captured for this result. Re-run Analyze after checking credits and the user LLM provider/API key.</p>`}
           ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
         </section>
       </div>
