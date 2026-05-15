@@ -268,11 +268,43 @@ class UserSignalSessionManager:
         if not full_universe:
             return []
         limit = self._symbol_limit(credit_summary, estimated_charge)
+        opportunity_universe = self._opportunity_universe(user_id, full_universe, limit)
+        if opportunity_universe:
+            return opportunity_universe
         if limit >= len(full_universe):
             return full_universe
         start = self._cursors.get(user_id, 0) % len(full_universe)
         selected = [full_universe[(start + index) % len(full_universe)] for index in range(limit)]
         self._cursors[user_id] = (start + limit) % len(full_universe)
+        return selected
+
+    def _opportunity_universe(
+        self,
+        user_id: int,
+        full_universe: list[dict[str, Any]],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not getattr(settings, "dynamic_opportunity_scan_enabled", True):
+            return []
+        scan = db.get_state("opportunity_scan", {})
+        if not isinstance(scan, dict) or not scan.get("enabled"):
+            return []
+        candidates = scan.get("top_candidates") or []
+        if not isinstance(candidates, list):
+            return []
+        row_by_symbol = {str(row.get("symbol") or "").upper(): row for row in full_universe}
+        symbols = [
+            str(item.get("symbol") or "").upper()
+            for item in candidates
+            if isinstance(item, dict) and str(item.get("symbol") or "").upper() in row_by_symbol
+        ]
+        if not symbols:
+            return []
+        capped_limit = max(1, min(limit, len(symbols)))
+        start = self._cursors.get(user_id, 0) % len(symbols)
+        ordered = [symbols[(start + index) % len(symbols)] for index in range(len(symbols))]
+        selected = [row_by_symbol[symbol] for symbol in ordered[:capped_limit]]
+        self._cursors[user_id] = (start + capped_limit) % len(symbols)
         return selected
 
     def _symbol_limit(self, credit_summary: dict[str, Any], estimated_charge: float) -> int:
@@ -1601,6 +1633,12 @@ async def agent_logs(request: Request, limit: int = 300) -> dict[str, Any]:
 async def market_breadth_snapshot(request: Request) -> dict[str, Any]:
     require_user(request, settings, db)
     return db.get_state("market_breadth_context", {})
+
+
+@app.get("/api/opportunity-scan")
+async def opportunity_scan_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return db.get_state("opportunity_scan", {})
 
 
 @app.get("/api/sector-rotation")

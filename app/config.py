@@ -58,6 +58,12 @@ class Settings:
     nse_universe_refresh_on_start: bool = _bool("NSE_UNIVERSE_REFRESH_ON_START", False)
     nse_universe_series: str = os.getenv("NSE_UNIVERSE_SERIES", "EQ").strip().upper()
     universe_symbols_per_cycle: int = _int("UNIVERSE_SYMBOLS_PER_CYCLE", 0)
+    dynamic_opportunity_scan_enabled: bool = _bool("DYNAMIC_OPPORTUNITY_SCAN_ENABLED", True)
+    dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 500)
+    dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 120)
+    dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
+    dynamic_scan_min_turnover_inr: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_INR", 50_000_000.0)
+    dynamic_scan_breakout_distance_pct: float = _float("DYNAMIC_SCAN_BREAKOUT_DISTANCE_PCT", 3.0)
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
@@ -280,6 +286,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "nse_equity_list_url", "label": "NSE Equity List URL", "type": "text", "category": "Market Data"},
     {"key": "nse_universe_series", "label": "NSE Series", "type": "text", "category": "Market Data"},
     {"key": "universe_symbols_per_cycle", "label": "Symbols/Cycle (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
+    {"key": "dynamic_opportunity_scan_enabled", "label": "Dynamic Opportunity Scan", "type": "boolean", "category": "Market Data"},
+    {"key": "dynamic_scan_raw_limit", "label": "Dynamic Raw Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 50},
+    {"key": "dynamic_scan_candidate_limit", "label": "Dynamic Candidates/Cycle", "type": "number", "category": "Market Data", "min": 1, "step": 10},
+    {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
+    {"key": "dynamic_scan_min_turnover_inr", "label": "Dynamic Min Turnover INR", "type": "number", "category": "Market Data", "min": 0, "step": 1000000},
+    {"key": "dynamic_scan_breakout_distance_pct", "label": "Dynamic Breakout Distance %", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
     {"key": "upstox_access_token", "label": "Upstox Analytics Token", "type": "secret", "category": "Market Data"},
     {"key": "upstox_api_base_url", "label": "Upstox API URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_candle_interval", "label": "Upstox Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},

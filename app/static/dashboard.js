@@ -1291,6 +1291,7 @@ function renderShell(payload = state.latest || {}) {
   const health = payload.market_health || {};
   const macro = payload.macro_context || {};
   const breadth = payload.market_breadth || {};
+  const opportunity = payload.opportunity_scan || {};
   const runtime = payload.runtime || {};
   const userSession = payload.user_signal_session || {};
   const activeMarket = normalizeUiMarket(state.activeMarket);
@@ -1353,6 +1354,12 @@ function renderShell(payload = state.latest || {}) {
     : `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
+  const rawSymbols = Number(opportunity.raw_symbols || 0);
+  const selectedSymbols = Number(opportunity.selected_symbols || 0);
+  byId("ops-opportunity").textContent = opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static";
+  byId("ops-opportunity-meta").textContent = opportunity.enabled
+    ? `${fmtNumber(rawSymbols)} raw · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`
+    : "dynamic scan off";
   byId("ops-macro").textContent = macro.regime || marketStanceText(breadth);
   const macroRiskText = Number.isFinite(Number(macro.risk_score)) ? `${fmtNumber(macro.risk_score)} risk` : "risk pending";
   byId("ops-macro-meta").textContent = `${macroRiskText} · ${marketStanceText(breadth)}`;
@@ -4926,6 +4933,10 @@ function bindControls() {
           setView("positions");
           return;
         }
+        if (target === "opportunity-health") {
+          setView("decisions");
+          return;
+        }
         if (target === "cycle-health") {
           setView("decisions");
           return;
@@ -4945,6 +4956,10 @@ function bindControls() {
       }
       if (target === "risk-health") {
         openSettingsTab("risk");
+        return;
+      }
+      if (target === "opportunity-health") {
+        showDetails("Opportunity Scan", state.latest?.opportunity_scan || {});
         return;
       }
       if (target === "cycle-health") {

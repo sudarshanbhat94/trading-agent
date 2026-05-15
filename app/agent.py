@@ -12,6 +12,7 @@ from .macro import GlobalIntelligenceService
 from .market_data import MarketDataError, MarketDataProvider
 from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context
 from .models import Decision, utc_now
+from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
 from .strategy import StrategyEngine
 from .trading_rules import build_position_summary, build_self_audit
@@ -69,6 +70,7 @@ class TradingAgentService:
         self._last_cycle_duration_seconds: float | None = None
         self._universe_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
+        self.opportunity_scanner = OpportunityScanner(strategy.settings)
 
     @property
     def running(self) -> bool:
@@ -108,7 +110,14 @@ class TradingAgentService:
             scan_universe = filter_universe_for_open_markets(full_universe, session_context)
             if not scan_universe:
                 return await self._run_market_closed_prep(started, full_universe, pre_positions, session_context)
-        universe = self._cycle_universe(scan_universe, pre_positions)
+        dynamic_scan_enabled = bool(getattr(self.strategy.settings, "dynamic_opportunity_scan_enabled", True))
+        raw_scan_limit = (
+            max(0, int(getattr(self.strategy.settings, "dynamic_scan_raw_limit", 500) or 0))
+            if dynamic_scan_enabled
+            else None
+        )
+        raw_universe = self._cycle_universe(scan_universe, pre_positions, limit_override=raw_scan_limit)
+        universe = raw_universe
         self._log(
             "INFO",
             "cycle",
@@ -116,20 +125,24 @@ class TradingAgentService:
             "Agent cycle started",
             {
                 "enabled_universe_size": len(full_universe),
+                "open_scan_universe_size": len(scan_universe),
                 "market_region": self.market_region,
                 "open_regions": session_context.get("open_regions"),
                 "closed_regions": session_context.get("closed_regions"),
                 "market_data_policy": session_context.get("data_policy"),
-                "cycle_universe_size": len(universe),
+                "raw_scan_universe_size": len(raw_universe),
                 "symbols_per_cycle": self.universe_symbols_per_cycle,
+                "dynamic_opportunity_scan_enabled": dynamic_scan_enabled,
+                "dynamic_scan_raw_limit": raw_scan_limit,
             },
         )
-        quotes = await self.market_data.get_quotes(universe)
+        quotes = await self.market_data.get_quotes(raw_universe)
         if not quotes:
             raise MarketDataError(f"{self.market_data.source_name} returned no quotes for the enabled universe")
-        resolved_instruments = [row for row in universe if row.get("upstox_instrument_key")]
+        resolved_instruments = [row for row in raw_universe if row.get("upstox_instrument_key")]
         if resolved_instruments:
             self.db.upsert_universe_rows(resolved_instruments, disable_missing=False)
+        self.db.upsert_quotes(quotes)
         self._log(
             "INFO",
             "market_data",
@@ -137,11 +150,58 @@ class TradingAgentService:
             f"Fetched {len(quotes)} quotes from {self.market_data.source_name}",
             {
                 "provider": self.market_data.source_name,
+                "requested_symbols": len(raw_universe),
                 "quote_count": len(quotes),
                 "source_counts": _source_counts(quotes),
                 "provider_diagnostics": _market_data_diagnostics(self.market_data),
             },
         )
+        if dynamic_scan_enabled:
+            self._cycle_phase = "opportunity_scan"
+            raw_cached_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
+            scan_result = self.opportunity_scanner.rank(raw_universe, quotes, raw_cached_sets, pre_positions)
+            universe = scan_result.selected_universe
+            scan_summary = scan_result.summary
+            if not universe:
+                fallback_limit = max(1, int(getattr(self.strategy.settings, "dynamic_scan_candidate_limit", 120) or 120))
+                universe = self._fallback_quoted_universe(raw_universe, quotes, pre_positions, fallback_limit)
+                scan_summary = {
+                    **scan_summary,
+                    "fallback_reason": "no_symbols_passed_opportunity_filters",
+                    "selected_symbols": len(universe),
+                    "top_candidates": [
+                        {"symbol": row.get("symbol"), "bucket": "Watch", "setup": "fallback_quote_pass"}
+                        for row in universe[:25]
+                    ],
+                }
+            self.db.set_state("opportunity_scan", scan_summary)
+            self._log(
+                "INFO",
+                "scanner",
+                "dynamic_opportunity_scan_completed",
+                f"Opportunity scan selected {len(universe)} of {len(raw_universe)} raw symbols",
+                {
+                    "raw_symbols": len(raw_universe),
+                    "quoted_symbols": len(quotes),
+                    "selected_symbols": len(universe),
+                    "candidate_limit": scan_summary.get("candidate_limit"),
+                    "rejected_counts": scan_summary.get("rejected_counts"),
+                    "setup_counts": scan_summary.get("setup_counts"),
+                    "top_symbols": [item.get("symbol") for item in scan_summary.get("top_candidates", [])[:12]],
+                    "fallback_reason": scan_summary.get("fallback_reason"),
+                },
+            )
+        else:
+            self.db.set_state(
+                "opportunity_scan",
+                {
+                    "enabled": False,
+                    "mode": "static_cycle_universe",
+                    "scanned_at": utc_now(),
+                    "raw_symbols": len(raw_universe),
+                    "selected_symbols": len(universe),
+                },
+            )
         self._cycle_phase = "candles"
         cached_sets_before = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
         candle_fetch_universe, candle_fetch_plan = self._candle_fetch_universe(universe, cached_sets_before)
@@ -172,7 +232,6 @@ class TradingAgentService:
             },
         )
         self._cycle_phase = "persist_market_data"
-        self.db.upsert_quotes(quotes)
         self.db.upsert_candles(fresh_candles)
         candle_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
         candles = {
@@ -754,8 +813,9 @@ class TradingAgentService:
         self,
         full_universe: list[dict[str, Any]],
         positions: dict[str, dict[str, Any]],
+        limit_override: int | None = None,
     ) -> list[dict[str, Any]]:
-        limit = self.universe_symbols_per_cycle
+        limit = self.universe_symbols_per_cycle if limit_override is None else max(0, int(limit_override or 0))
         if limit <= 0 or limit >= len(full_universe):
             return full_universe
         if not full_universe:
@@ -769,6 +829,30 @@ class TradingAgentService:
                 if row["symbol"] in positions and row["symbol"] not in selected_symbols:
                     selected.append(row)
                     selected_symbols.add(row["symbol"])
+        return selected
+
+    def _fallback_quoted_universe(
+        self,
+        full_universe: list[dict[str, Any]],
+        quotes: dict[str, Any],
+        positions: dict[str, dict[str, Any]],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        for row in full_universe:
+            symbol = row["symbol"]
+            if symbol in positions:
+                selected.append(row)
+                selected_symbols.add(symbol)
+        for row in full_universe:
+            symbol = row["symbol"]
+            if symbol in selected_symbols or symbol not in quotes:
+                continue
+            selected.append(row)
+            selected_symbols.add(symbol)
+            if len(selected) >= limit:
+                break
         return selected
 
     async def _market_breadth_by_region(
@@ -842,6 +926,7 @@ class TradingAgentService:
         }
         universe_summary = self.db.universe_summary()
         options_context = self.db.get_state("options_intelligence_context", {})
+        opportunity_scan = self.db.get_state("opportunity_scan", {})
         self_audit = self.db.get_state("self_audit")
         if not self_audit or "overall_score_pct" not in self_audit:
             self_audit = build_self_audit(
@@ -896,6 +981,7 @@ class TradingAgentService:
             "market_breadth": self.db.get_state("market_breadth_context", {}),
             "sector_rotation_context": _sector_rotation_summary(self.db.get_state("sector_rotation_context", {})),
             "options_intelligence": _options_intelligence_summary(options_context),
+            "opportunity_scan": opportunity_scan,
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
             "self_audit": self_audit,
             "llm_usage": self.db.llm_usage_summary(),
