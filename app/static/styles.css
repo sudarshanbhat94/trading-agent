@@ -10376,3 +10376,387 @@ body.sidebar-collapsed .app-sidebar .nav-item .nav-icon {
     display: inline-grid !important;
   }
 }
+
+/* Dark theme hardening: final cascade for older light surfaces across every view. */
+html[data-theme="dark"],
+html:has(body[data-theme="dark"]) {
+  background: #0b0e13;
+  color-scheme: dark;
+}
+
+body[data-theme="dark"] {
+  --surface-0: #0b0e13;
+  --surface-1: #121720;
+  --surface-2: #1a212d;
+  --surface-3: #253041;
+  --text-primary: #f3f6fb;
+  --text-secondary: #a7b1c2;
+  --text-muted: #748095;
+  --border-color: rgba(223, 231, 243, 0.1);
+  --bg: var(--surface-0);
+  --surface: var(--surface-1);
+  --surface-soft: var(--surface-2);
+  --surface-strong: var(--surface-3);
+  --ink: var(--text-primary);
+  --muted: var(--text-secondary);
+  --line: var(--border-color);
+  --line-strong: rgba(223, 231, 243, 0.18);
+  --chrome: var(--surface-0);
+  --chrome-soft: var(--surface-1);
+  --chrome-line: var(--border-color);
+  --terminal-bg: var(--surface-0);
+  --terminal-panel: var(--surface-1);
+  --terminal-panel-2: var(--surface-2);
+  --terminal-line: var(--border-color);
+  --terminal-line-bright: rgba(223, 231, 243, 0.18);
+  --terminal-text: var(--text-primary);
+  --terminal-muted: var(--text-secondary);
+  --red-soft: rgba(229, 72, 77, 0.12);
+  --amber-soft: rgba(245, 158, 11, 0.13);
+  --green-soft: rgba(0, 166, 125, 0.13);
+  --shadow: 0 18px 52px rgba(0, 0, 0, 0.42);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.34), 0 12px 32px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 24px 60px rgba(0, 0, 0, 0.48);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 46%, var(--surface-0)), var(--surface-0) 280px),
+    var(--surface-0) !important;
+  color: var(--text-primary);
+}
+
+body[data-theme="dark"] :is(.login-screen, .app-shell, .terminal-body, .workspace) {
+  background:
+    radial-gradient(circle at top left, rgba(11, 99, 246, 0.1), transparent 320px),
+    var(--surface-0) !important;
+  color: var(--text-primary);
+}
+
+body[data-theme="dark"] :is(
+  .terminal-topbar,
+  .market-tape,
+  .app-sidebar,
+  .market-rail,
+  .cycle-stamp,
+  .rail-head,
+  .rail-search,
+  .rail-footer,
+  .login-card,
+  .panel,
+  .dashboard-card,
+  .kpi,
+  .portfolio-strip,
+  .ops-card,
+  .connect-card,
+  .macro-table-shell,
+  .settings-group,
+  .admin-terminal,
+  #settings-view .settings-tab-shell,
+  #settings-view .settings-tab-panel.active,
+  #settings-view .settings-actions,
+  .provider-key-card,
+  .signal-history-card,
+  .strategy-plan-card,
+  .tracked-idea-card,
+  .decision-feed-card,
+  .sentiment-card,
+  .product-action-card,
+  .product-track-item,
+  .credit-popover,
+  .user-menu-dropdown,
+  .confirm-card,
+  .detail-drawer,
+  .account-metrics div,
+  .account-note,
+  .manual-analysis-card > div,
+  .analysis-result-shell,
+  .analysis-chart,
+  .analysis-metric-strip div,
+  .analysis-hero,
+  .decision-detail-hero,
+  .score-radar,
+  .decision-reason-block,
+  .decision-review-grid > div,
+  .llm-formatted-review article,
+  .audit-hero,
+  .audit-section,
+  .audit-card,
+  .raw-audit,
+  .detail-list div,
+  .mini-grid button,
+  .suggestion-card,
+  .suggestion-score div,
+  .suggestion-plan span,
+  .signal-metric-strip div,
+  .signal-trade-strip span,
+  .strategy-plan-stats span,
+  .plan-symbol,
+  .tracked-metrics span,
+  .target-ladder span,
+  .sector-row,
+  .sector-tile,
+  .empty-state,
+  .empty-table-state,
+  .product-empty,
+  .table-wrap
+) {
+  border-color: var(--border-color) !important;
+  background: var(--surface-1) !important;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+}
+
+body[data-theme="dark"] :is(
+  .panel-head,
+  .admin-terminal-head,
+  .settings-tabs,
+  .connect-card-head,
+  .settings-actions,
+  .drawer-head,
+  .credit-popover-head,
+  .user-menu-dropdown button,
+  .product-action-metrics button,
+  .credit-popover-summary div,
+  .credit-popover-ledger button,
+  .market-workspace-tabs,
+  .market-tabs,
+  .page-filter-bar,
+  .order-filter-tabs,
+  .analysis-tabs,
+  .chart-pills span,
+  .signal-audit-row span,
+  .audit-chips span,
+  .target-ladder.empty
+) {
+  border-color: var(--border-color) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 86%, var(--surface-1)), var(--surface-2)) !important;
+  color: var(--text-secondary);
+}
+
+body[data-theme="dark"] :is(
+  .terminal-topbar,
+  .market-tape,
+  .app-sidebar,
+  .credit-popover,
+  .user-menu-dropdown
+) {
+  background: color-mix(in srgb, var(--surface-1) 90%, transparent) !important;
+  backdrop-filter: blur(18px);
+}
+
+body[data-theme="dark"] :is(input, select, textarea) {
+  border-color: var(--border-color) !important;
+  background: color-mix(in srgb, var(--surface-2) 88%, var(--surface-1)) !important;
+  color: var(--text-primary) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+body[data-theme="dark"] :is(input, textarea)::placeholder {
+  color: var(--text-muted) !important;
+}
+
+body[data-theme="dark"] :is(
+  button,
+  .icon-button,
+  .market-tape-action,
+  .rail-action,
+  .settings-tab,
+  .market-tab,
+  .market-workspace-tab,
+  .page-filter-bar button,
+  .order-filter-tabs button,
+  .analysis-tabs button,
+  .row-actions button,
+  .signal-card-actions button
+) {
+  border-color: var(--border-color) !important;
+  background: color-mix(in srgb, var(--surface-2) 78%, var(--surface-1)) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(button:hover, .row-actions button:hover, .signal-card-actions button:hover) {
+  border-color: rgba(223, 231, 243, 0.2);
+  background: color-mix(in srgb, var(--surface-3) 70%, var(--surface-2));
+}
+
+body[data-theme="dark"] button.primary {
+  border-color: color-mix(in srgb, var(--color-brand-primary) 78%, #ffffff) !important;
+  background: linear-gradient(180deg, #2c7bff, var(--color-brand-primary)) !important;
+  color: #ffffff !important;
+  box-shadow: 0 10px 22px rgba(11, 99, 246, 0.28) !important;
+}
+
+body[data-theme="dark"] :is(
+  .market-workspace-tab.active,
+  .market-tab.active,
+  .settings-tab.active,
+  .page-filter-bar button.active,
+  .order-filter-tabs button.active,
+  .analysis-tabs button.active,
+  .nav-item.active,
+  .signal-card-actions button:first-child
+) {
+  border-color: color-mix(in srgb, var(--color-brand-primary) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--color-brand-primary) 16%, var(--surface-1)) !important;
+  color: var(--text-primary);
+}
+
+body[data-theme="dark"] :is(.mark, .terminal-topbar .mark, .nav-item .nav-icon) {
+  border-color: var(--border-color);
+  background: color-mix(in srgb, var(--surface-2) 82%, var(--surface-1)) !important;
+}
+
+body[data-theme="dark"] :is(
+  .brand h1,
+  .login-brand h1,
+  .workspace-head h2,
+  .panel-head h3,
+  .admin-terminal-head h3,
+  .connect-card-head h4,
+  .settings-group h3,
+  .kpi strong,
+  .ops-card strong,
+  .console-row strong,
+  .rail-head strong,
+  .rail-footer strong,
+  .signal-symbol-row strong,
+  .signal-card-title strong,
+  .strategy-plan-top strong,
+  .tracked-idea-main strong,
+  .target-ladder strong,
+  td strong
+) {
+  color: var(--text-primary) !important;
+}
+
+body[data-theme="dark"] :is(
+  .brand p,
+  .login-brand p,
+  .workspace-head p,
+  .panel-head p,
+  .panel-head span,
+  .admin-terminal-head p,
+  .connect-card-head p,
+  .connect-card-head span,
+  .settings-inline-status,
+  .field label,
+  .kpi span,
+  .kpi small,
+  .ops-card span,
+  .ops-card small,
+  .rail-head span,
+  .rail-footer span,
+  .account-metrics span,
+  .manual-analysis-card span,
+  .signal-card-title small,
+  .signal-metric-strip small,
+  .signal-trade-strip small,
+  .signal-reason-row span,
+  .signal-audit-row span,
+  .strategy-plan-card p,
+  .strategy-plan-stats small,
+  .strategy-capital-rule,
+  .plan-symbol small,
+  .tracked-idea-main small,
+  .tracked-metrics small,
+  .target-ladder small,
+  .target-ladder em,
+  .sentiment-headlines span,
+  .analysis-data-note,
+  .market-tape-empty
+) {
+  color: var(--text-secondary) !important;
+}
+
+body[data-theme="dark"] table {
+  color: var(--text-primary);
+}
+
+body[data-theme="dark"] th {
+  border-color: var(--border-color) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+}
+
+body[data-theme="dark"] td {
+  border-color: var(--border-color) !important;
+  color: var(--text-primary);
+}
+
+body[data-theme="dark"] tbody tr:hover {
+  background: color-mix(in srgb, var(--color-brand-primary) 8%, var(--surface-1)) !important;
+}
+
+body[data-theme="dark"] :is(.pill, .tag, .source, .session-pill, .mode-pill, .credit-chip, .user-avatar, .nav-item strong, .lifecycle-pill, .signal-rank, .strategy-risk-pill) {
+  border-color: var(--border-color) !important;
+  background: color-mix(in srgb, var(--surface-2) 84%, var(--surface-1)) !important;
+  color: var(--text-secondary) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+body[data-theme="dark"] :is(.positive, .buy, td.positive, td.positive strong, .pnl-value.positive, .pnl-value.positive strong, .lifecycle-pill.positive) {
+  color: #5ee0b8 !important;
+}
+
+body[data-theme="dark"] :is(.negative, .sell, td.negative, td.negative strong, .pnl-value.negative, .pnl-value.negative strong, .lifecycle-pill.negative) {
+  color: #f27d88 !important;
+}
+
+body[data-theme="dark"] :is(.pill.running, .source.live, .tag.buy, .tag.open, .tag.fundamental, .tag.actionable, .lifecycle-pill.open, .lifecycle-pill.positive, .market-tape-item.positive, .plan-symbol.positive, .target-ladder .hit) {
+  border-color: rgba(94, 224, 184, 0.24);
+  background: rgba(0, 166, 125, 0.13) !important;
+  color: #5ee0b8;
+}
+
+body[data-theme="dark"] :is(.pill.stopped, .pill.warning, .source.delayed, .tag.hold, .tag.watch, .tag.momentum, .lifecycle-pill.warning, .plan-symbol.warning) {
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.13) !important;
+  color: #f5c46b;
+}
+
+body[data-theme="dark"] :is(.tag.sell, .tag.speculative, .lifecycle-pill.negative, .market-tape-item.negative, .plan-symbol.negative) {
+  border-color: rgba(242, 125, 136, 0.24);
+  background: rgba(229, 72, 77, 0.12) !important;
+  color: #f27d88;
+}
+
+body[data-theme="dark"] :is(.error-box, .error-box.warning) {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: rgba(245, 158, 11, 0.12) !important;
+  color: #f5c46b;
+}
+
+body[data-theme="dark"] .error-box:not(.warning) {
+  border-color: rgba(242, 125, 136, 0.24);
+  background: rgba(229, 72, 77, 0.12) !important;
+  color: #f27d88;
+}
+
+body[data-theme="dark"] .terminal-chart {
+  background:
+    linear-gradient(90deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+    radial-gradient(circle at 50% 42%, rgba(11, 99, 246, 0.14), transparent 34%),
+    var(--surface-1) !important;
+  background-size: 56px 56px, 56px 56px, auto, auto;
+}
+
+body[data-theme="dark"] :is(pre, .raw-audit pre) {
+  border-color: var(--border-color) !important;
+  background: #0f141d !important;
+  color: var(--text-primary) !important;
+}
+
+body[data-theme="dark"] .market-tape-viewport::before {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--surface-1) 94%, transparent), transparent) !important;
+}
+
+body[data-theme="dark"] .market-tape-viewport::after {
+  background: linear-gradient(270deg, color-mix(in srgb, var(--surface-1) 94%, transparent), transparent) !important;
+}
+
+body[data-theme="dark"] ::selection {
+  background: rgba(44, 123, 255, 0.36);
+  color: #ffffff;
+}
