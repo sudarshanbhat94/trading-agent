@@ -10766,3 +10766,24 @@ body[data-theme="dark"] ::selection {
   background: rgba(44, 123, 255, 0.36);
   color: #ffffff;
 }
+
+/* Light theme contrast fix for strategy plan stock chips. */
+body:not([data-theme="dark"]) .plan-symbol strong {
+  color: var(--text-primary) !important;
+}
+
+body:not([data-theme="dark"]) .plan-symbol small {
+  color: var(--text-secondary) !important;
+}
+
+body:not([data-theme="dark"]) .plan-symbol.positive strong {
+  color: var(--color-buy) !important;
+}
+
+body:not([data-theme="dark"]) .plan-symbol.warning strong {
+  color: var(--color-hold) !important;
+}
+
+body:not([data-theme="dark"]) .plan-symbol.negative strong {
+  color: var(--color-sell) !important;
+}
