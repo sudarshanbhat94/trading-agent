@@ -176,6 +176,10 @@ class UserSignalSessionManager:
         status.setdefault("auto_trade", {})
         status.setdefault("last_decision_count", 0)
         status.setdefault("symbols_per_cycle", self._symbol_limit({}, _estimated_signal_credit_charge()))
+        monitor_symbols = db.user_monitor_symbols(user_id)
+        status["monitor_scope"] = "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY"
+        status["monitor_symbols_count"] = len(monitor_symbols)
+        status["monitor_symbols_sample"] = monitor_symbols[:12]
         status["running"] = self.is_running(user_id)
         return status
 
@@ -211,6 +215,7 @@ class UserSignalSessionManager:
                 detail=f"Insufficient credits or daily budget to start signals. Estimated need: {estimated_charge:.4f} credits.",
             )
         _market_data_provider_for_user(user, settings.market_region)
+        monitor_symbols = db.user_monitor_symbols(user_id)
         self._status[user_id] = {
             "running": True,
             "phase": "starting",
@@ -222,6 +227,9 @@ class UserSignalSessionManager:
             "last_llm_activity": {},
             "last_decision_count": 0,
             "symbols_per_cycle": self._symbol_limit(credit_summary, estimated_charge),
+            "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
+            "monitor_symbols_count": len(monitor_symbols),
+            "monitor_symbols_sample": monitor_symbols[:12],
         }
         self._tasks[user_id] = asyncio.create_task(self._loop(user_id))
         db.insert_agent_log(
@@ -268,6 +276,10 @@ class UserSignalSessionManager:
         if not full_universe:
             return []
         limit = self._symbol_limit(credit_summary, estimated_charge)
+        monitor_symbols = db.user_monitor_symbols(user_id)
+        if monitor_symbols:
+            monitor_universe = self._monitor_universe(user_id, full_universe, limit, monitor_symbols)
+            return monitor_universe
         opportunity_universe = self._opportunity_universe(user_id, full_universe, limit)
         if opportunity_universe:
             return opportunity_universe
@@ -276,6 +288,23 @@ class UserSignalSessionManager:
         start = self._cursors.get(user_id, 0) % len(full_universe)
         selected = [full_universe[(start + index) % len(full_universe)] for index in range(limit)]
         self._cursors[user_id] = (start + limit) % len(full_universe)
+        return selected
+
+    def _monitor_universe(
+        self,
+        user_id: int,
+        full_universe: list[dict[str, Any]],
+        limit: int,
+        symbols: list[str],
+    ) -> list[dict[str, Any]]:
+        row_by_symbol = {str(row.get("symbol") or "").upper(): row for row in full_universe}
+        custom_rows = [row_by_symbol[symbol] for symbol in symbols if symbol in row_by_symbol]
+        if not custom_rows:
+            return []
+        capped_limit = max(1, min(limit, len(custom_rows)))
+        start = self._cursors.get(user_id, 0) % len(custom_rows)
+        selected = [custom_rows[(start + index) % len(custom_rows)] for index in range(capped_limit)]
+        self._cursors[user_id] = (start + capped_limit) % len(custom_rows)
         return selected
 
     def _opportunity_universe(
@@ -1303,6 +1332,44 @@ async def set_my_signal_execution_mode(payload: dict[str, Any], request: Request
     }
 
 
+@app.post("/api/me/monitor-symbols")
+async def set_my_monitor_symbols(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    raw_symbols = payload.get("symbols", payload.get("monitor_symbols", payload.get("watchlist", "")))
+    requested = db.normalize_monitor_symbols(raw_symbols)
+    accepted, invalid = _validated_monitor_symbols(requested)
+    if requested and not accepted:
+        raise HTTPException(status_code=400, detail=f"No valid enabled symbols found: {', '.join(invalid[:12])}")
+    updated_user = db.update_user_monitor_symbols(int(user["id"]), accepted)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.insert_agent_log(
+        "INFO",
+        "user_session",
+        "user_monitor_symbols_updated",
+        f"{user['username']} updated monitored symbols",
+        {
+            "user_id": user["id"],
+            "monitor_symbols_count": len(accepted),
+            "invalid_symbols": invalid[:20],
+            "monitor_scope": "CUSTOM" if accepted else "DYNAMIC_OPPORTUNITY",
+        },
+    )
+    return {
+        "ok": True,
+        "user": updated_user,
+        "monitor_symbols": accepted,
+        "monitor_symbols_count": len(accepted),
+        "monitor_scope": "CUSTOM" if accepted else "DYNAMIC_OPPORTUNITY",
+        "invalid_symbols": invalid,
+        "message": (
+            f"Monitoring {len(accepted)} custom symbol(s)."
+            if accepted
+            else "Custom symbol list cleared. Dynamic opportunity scan is active."
+        ),
+    }
+
+
 @app.post("/api/me/paper-cash")
 async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
@@ -1590,6 +1657,10 @@ async def account_details(request: Request) -> dict[str, Any]:
         payload["paper"]["cash"] = user_portfolio["cash"]
         payload["signal_execution_mode"] = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
         payload["signal_execution_mode_message"] = _signal_execution_mode_message(payload["signal_execution_mode"])
+        monitor_symbols = db.user_monitor_symbols(int(user["id"]))
+        payload["monitor_symbols"] = monitor_symbols
+        payload["monitor_symbols_count"] = len(monitor_symbols)
+        payload["monitor_scope"] = "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY"
     return payload
 
 
@@ -2594,6 +2665,17 @@ def _require_signal_user(request: Request) -> dict[str, Any]:
     return user
 
 
+def _validated_monitor_symbols(symbols: list[str]) -> tuple[list[str], list[str]]:
+    requested = db.normalize_monitor_symbols(symbols)
+    if not requested:
+        return [], []
+    rows = db.get_universe(enabled_only=True, market_region="BOTH")
+    known = {str(row.get("symbol") or "").upper() for row in rows}
+    accepted = [symbol for symbol in requested if symbol in known]
+    invalid = [symbol for symbol in requested if symbol not in known]
+    return accepted, invalid
+
+
 def _market_data_provider_for_user(user: dict[str, Any], market_region: str = "IN"):
     region = normalize_market_region(market_region)
     if region == "US":
@@ -3037,12 +3119,17 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
 
     universe = user_signal_sessions.select_universe(user_id, full_universe, credit_before, estimated_charge)
     if not universe:
+        if db.user_monitor_symbols(user_id):
+            raise RuntimeError("none of your monitored symbols are available in the currently open market/universe")
         raise RuntimeError("no enabled universe symbols available for user signal session")
+    monitor_symbols = db.user_monitor_symbols(user_id)
     set_phase(
         "market_quotes",
         {
             "symbol_count": len(universe),
             "symbols_sample": [row.get("symbol") for row in universe[:10]],
+            "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
+            "monitor_symbols_count": len(monitor_symbols),
         },
     )
 
@@ -3232,6 +3319,9 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
         "last_decision_count": len(tagged_decisions),
         "last_action_counts": action_counts,
         "symbols_per_cycle": len(universe),
+        "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
+        "monitor_symbols_count": len(monitor_symbols),
+        "monitor_symbols_sample": monitor_symbols[:12],
         "credit_balance": credit_after.get("credit_balance"),
         "daily_credits_remaining": credit_after.get("daily_credits_remaining"),
         "budget_policy": budget_policy,

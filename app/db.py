@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -49,6 +50,33 @@ def _normalize_signal_execution_mode(value: Any) -> str:
         "AUTO_LIVE": "AUTO_LIVE",
     }
     return aliases.get(mode, "SIGNAL_ONLY")
+
+
+def _normalize_monitor_symbols(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = re.split(r"[\s,;]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = [str(item or "") for item in value]
+    else:
+        raw_items = []
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        token = str(raw or "").strip().upper()
+        if not token:
+            continue
+        if ":" in token:
+            token = token.rsplit(":", 1)[-1]
+        for suffix in (".NS", ".BO", ".NSE", ".BSE"):
+            if token.endswith(suffix):
+                token = token[: -len(suffix)]
+                break
+        token = "".join(char for char in token if char.isalnum() or char in {"&", "-", "_"})
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        symbols.append(token[:32])
+    return symbols
 
 
 NSE_INDUSTRY_FALLBACKS: dict[str, str] = {
@@ -508,6 +536,7 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
             "updated_at": row.get("broker_updated_at"),
         },
     }
+    monitor_symbols = _normalize_monitor_symbols(_json_load(row.get("monitor_symbols_json")) or [])
     return {
         "id": int(row["id"]),
         "username": row["username"],
@@ -522,6 +551,9 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "daily_credit_limit": round(float(row.get("daily_credit_limit") or 0.0), 6),
         "paper_cash_by_market": paper_cash_by_market,
         "broker_accounts": broker_accounts,
+        "monitor_symbols": monitor_symbols,
+        "monitor_symbols_count": len(monitor_symbols),
+        "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "last_login_at": row.get("last_login_at"),
@@ -745,6 +777,7 @@ class Database:
                     kite_api_key text not null default '',
                     kite_access_token text not null default '',
                     kite_token_scope text not null default '',
+                    monitor_symbols_json text not null default '[]',
                     broker_updated_at text,
                     created_at text not null,
                     updated_at text not null,
@@ -881,6 +914,7 @@ class Database:
             self._ensure_column(conn, "users", "paper_cash_in", "real")
             self._ensure_column(conn, "users", "paper_cash_us", "real")
             self._ensure_column(conn, "users", "signal_execution_mode", "text not null default 'SIGNAL_ONLY'")
+            self._ensure_column(conn, "users", "monitor_symbols_json", "text not null default '[]'")
             conn.execute(
                 """
                 create index if not exists idx_llm_usage_user_ts
@@ -1175,6 +1209,25 @@ class Database:
             conn.execute(
                 "update users set signal_execution_mode = ?, updated_at = ? where id = ?",
                 (normalized, utc_now(), user_id),
+            )
+        user = self.user_by_id(user_id)
+        return _public_user(user) if user else None
+
+    def normalize_monitor_symbols(self, value: Any) -> list[str]:
+        return _normalize_monitor_symbols(value)
+
+    def user_monitor_symbols(self, user_id: int) -> list[str]:
+        user = self.user_by_id(user_id)
+        if not user:
+            return []
+        return _normalize_monitor_symbols(_json_load(user.get("monitor_symbols_json")) or [])
+
+    def update_user_monitor_symbols(self, user_id: int, symbols: Any) -> dict[str, Any] | None:
+        normalized = _normalize_monitor_symbols(symbols)
+        with self.connect() as conn:
+            conn.execute(
+                "update users set monitor_symbols_json = ?, updated_at = ? where id = ?",
+                (json.dumps(normalized), utc_now(), user_id),
             )
         user = self.user_by_id(user_id)
         return _public_user(user) if user else None

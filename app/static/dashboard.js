@@ -1371,7 +1371,7 @@ function renderShell(payload = state.latest || {}) {
       ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · background scan` : "background scan waiting")
       : userSession.last_cycle_at
       ? `${fmtTime(userSession.last_cycle_at)} · ${fmtCredits(userSession.last_credit_charge || 0)} credits`
-      : `${userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30} symbols per cycle`);
+      : `${userSession.monitor_scope === "CUSTOM" ? `${fmtNumber(userSession.monitor_symbols_count || 0)} custom` : (userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30)} symbols per cycle`);
   const phase = String(state.auth?.admin ? payload.cycle?.phase || "" : userSession.phase || payload.cycle?.phase || "").toLowerCase();
   const scanBusy = controlRunning && phase && !["idle", "sleep", "shared_backend"].includes(phase);
   const runButton = byId("dashboard-run-btn");
@@ -2079,6 +2079,7 @@ function renderAccount(account) {
   const cashPool = paper.cash_pool_by_market || state.auth?.user?.paper_cash_by_market || {};
   const indiaCashPool = Number(cashPool.IN ?? (Number(indiaPaper.cash || 0) + Number(indiaPaper.invested || 0)));
   const usCashPool = Number(cashPool.US ?? (Number(usPaper.cash || 0) + Number(usPaper.invested || 0)));
+  const monitorSymbols = account.monitor_symbols || state.auth?.user?.monitor_symbols || [];
   const cashEditor = state.auth?.admin ? "" : `
     <form id="paper-cash-form" class="paper-cash-form">
       <label>
@@ -2108,6 +2109,17 @@ function renderAccount(account) {
       <small id="signal-mode-status">${escapeHtml(account.signal_execution_mode_message || "Signals are saved only until you enable auto paper or guarded live mode.")}</small>
     </form>
   `;
+  const monitorEditor = state.auth?.admin ? "" : `
+    <form id="monitor-symbols-form" class="paper-cash-form monitor-symbols-form">
+      <label class="wide">
+        <span>Monitor Only These Stocks</span>
+        <textarea id="monitor-symbols-input" rows="3" placeholder="IDEA, RELIANCE, TCS">${escapeHtml((monitorSymbols || []).join(", "))}</textarea>
+      </label>
+      <button id="save-monitor-symbols-btn" type="submit">Save List</button>
+      <button id="clear-monitor-symbols-btn" type="button">Use Dynamic Scan</button>
+      <small id="monitor-symbols-status">${monitorSymbols.length ? `${fmtNumber(monitorSymbols.length)} custom symbol(s) active` : "Empty list uses the dynamic opportunity scan."}</small>
+    </form>
+  `;
   const userUpstoxPersonal = userUpstox.connected && userUpstox.scope === "user";
   const userKitePersonal = userKite.connected && userKite.scope === "user";
   const userFeedLabel = userUpstoxPersonal
@@ -2127,6 +2139,7 @@ function renderAccount(account) {
       <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
       <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
       <div><span>Signal Action</span><strong>${escapeHtml(signalModeLabel(signalExecutionMode))}</strong></div>
+      <div><span>Monitor Scope</span><strong>${monitorSymbols.length ? `${fmtNumber(monitorSymbols.length)} custom` : "Dynamic"}</strong></div>
       <div><span>Broker Sync</span><strong>${escapeHtml(brokerSync.status_label || brokerSync.status || "Not Connected")}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
       <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
@@ -2134,6 +2147,7 @@ function renderAccount(account) {
     </div>
     ${cashEditor}
     ${signalModeEditor}
+    ${monitorEditor}
     <div class="account-note">
       <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
       <span>${state.auth?.admin ? "Admins manage users, credits, and runtime broker connections. Signals are run from user accounts." : "Signals and symbol analysis consume this user's credits and use this user's broker feed when connected."}</span>
@@ -2148,7 +2162,48 @@ function renderAccount(account) {
   if (cashForm) cashForm.addEventListener("submit", savePaperCash);
   const signalModeForm = byId("signal-mode-form");
   if (signalModeForm) signalModeForm.addEventListener("submit", saveSignalExecutionMode);
+  const monitorForm = byId("monitor-symbols-form");
+  if (monitorForm) monitorForm.addEventListener("submit", saveMonitorSymbols);
+  const clearMonitorButton = byId("clear-monitor-symbols-btn");
+  if (clearMonitorButton) clearMonitorButton.addEventListener("click", clearMonitorSymbols);
   renderUserBrokerStatus();
+}
+
+async function saveMonitorSymbols(event) {
+  event.preventDefault();
+  const status = byId("monitor-symbols-status");
+  const symbols = byId("monitor-symbols-input")?.value || "";
+  if (status) status.textContent = "saving";
+  try {
+    const response = await fetch("/api/me/monitor-symbols", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      if (status) status.textContent = payload.detail || "save failed";
+      return;
+    }
+    if (state.auth?.user) {
+      state.auth.user.monitor_symbols = payload.monitor_symbols || [];
+      state.auth.user.monitor_symbols_count = payload.monitor_symbols_count || 0;
+      state.auth.user.monitor_scope = payload.monitor_scope;
+    }
+    const invalid = payload.invalid_symbols || [];
+    if (status) status.textContent = invalid.length
+      ? `saved ${fmtNumber(payload.monitor_symbols_count || 0)} · ignored ${invalid.slice(0, 4).join(", ")}`
+      : payload.message || "saved";
+    await loadAuthenticatedData();
+  } catch (error) {
+    if (status) status.textContent = "save failed";
+  }
+}
+
+async function clearMonitorSymbols() {
+  const input = byId("monitor-symbols-input");
+  if (input) input.value = "";
+  await saveMonitorSymbols({ preventDefault() {} });
 }
 
 async function saveSignalExecutionMode(event) {

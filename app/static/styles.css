@@ -1218,7 +1218,12 @@ td.reason {
   font-weight: 700;
 }
 
-.paper-cash-form input {
+.paper-cash-form .wide {
+  grid-column: 1 / -1;
+}
+
+.paper-cash-form input,
+.paper-cash-form textarea {
   width: 100%;
   min-height: 38px;
   border: 1px solid var(--line);
@@ -1226,6 +1231,12 @@ td.reason {
   background: #f8fafc;
   color: var(--ink);
   padding: 0 10px;
+}
+
+.paper-cash-form textarea {
+  min-height: 72px;
+  padding: 9px 10px;
+  resize: vertical;
 }
 
 .paper-cash-form button {

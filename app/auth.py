@@ -41,6 +41,36 @@ def normalize_role(value: str) -> str:
     return role if role in {"admin", "user"} else "user"
 
 
+def _normalize_monitor_symbols(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                value = parsed
+            else:
+                value = re.split(r"[\s,;]+", value)
+        except json.JSONDecodeError:
+            value = re.split(r"[\s,;]+", value)
+    raw_items = value if isinstance(value, list) else []
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        token = str(raw or "").strip().upper()
+        if not token:
+            continue
+        if ":" in token:
+            token = token.rsplit(":", 1)[-1]
+        for suffix in (".NS", ".BO", ".NSE", ".BSE"):
+            if token.endswith(suffix):
+                token = token[: -len(suffix)]
+                break
+        token = "".join(char for char in token if char.isalnum() or char in {"&", "-", "_"})
+        if token and token not in seen:
+            seen.add(token)
+            symbols.append(token[:32])
+    return symbols
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
@@ -187,6 +217,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "IN": round(float(user["paper_cash_in"]), 2) if user.get("paper_cash_in") is not None else None,
         "US": round(float(user["paper_cash_us"]), 2) if user.get("paper_cash_us") is not None else None,
     }
+    monitor_symbols = _normalize_monitor_symbols(user.get("monitor_symbols_json") or [])
     return {
         "id": int(user["id"]),
         "username": user["username"],
@@ -196,6 +227,9 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),
         "daily_credit_limit": round(float(user.get("daily_credit_limit") or 0.0), 6),
         "paper_cash_by_market": paper_cash_by_market,
+        "monitor_symbols": monitor_symbols,
+        "monitor_symbols_count": len(monitor_symbols),
+        "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
         "broker_accounts": {
             "indstocks": {
                 "connected": bool(user.get("indstocks_access_token")),
