@@ -28,6 +28,12 @@ class OpportunityScanner:
             0.1,
             float(getattr(settings, "dynamic_scan_breakout_distance_pct", 3.0) or 3.0),
         )
+        self.sentiment_enabled = bool(getattr(settings, "dynamic_scan_sentiment_enabled", True))
+        self.sentiment_weight = _clamp(
+            float(getattr(settings, "dynamic_scan_sentiment_weight", 0.12) or 0.0),
+            0.0,
+            0.3,
+        )
 
     def rank(
         self,
@@ -35,9 +41,11 @@ class OpportunityScanner:
         quotes: dict[str, Quote],
         candle_sets: dict[str, dict[str, list[Candle]]] | None = None,
         positions: dict[str, dict[str, Any]] | None = None,
+        sentiment_by_symbol: dict[str, dict[str, Any]] | None = None,
     ) -> OpportunityScanResult:
         candle_sets = candle_sets or {}
         positions = positions or {}
+        sentiment_by_symbol = sentiment_by_symbol or {}
         rejected_counts: dict[str, int] = {}
         scored: list[dict[str, Any]] = []
         forced: list[dict[str, Any]] = []
@@ -55,7 +63,13 @@ class OpportunityScanner:
                 else:
                     self._count(rejected_counts, "missing_quote")
                 continue
-            item = self._score_row(row, quote, candle_sets.get(symbol) or {}, in_position)
+            item = self._score_row(
+                row,
+                quote,
+                candle_sets.get(symbol) or {},
+                in_position,
+                sentiment_by_symbol.get(symbol) or {},
+            )
             if item["rejected"] and not in_position:
                 self._count(rejected_counts, item["reject_reason"])
                 continue
@@ -92,10 +106,18 @@ class OpportunityScanner:
             "top_candidates": candidates[:25],
             "setup_counts": self._counts(item.get("setup") for item in selected_items),
             "bucket_counts": self._counts(item.get("bucket") for item in selected_items),
+            "positive_news_candidates": sum(
+                1
+                for item in selected_items
+                if ((item.get("sentiment") or {}).get("positive_catalyst"))
+            ),
+            "negative_news_filtered": rejected_counts.get("negative_news_catalyst", 0),
             "filters": {
                 "min_price": self.min_price,
                 "min_turnover_inr": self.min_turnover,
                 "breakout_distance_pct": self.breakout_distance_pct,
+                "sentiment_enabled": self.sentiment_enabled,
+                "sentiment_weight": self.sentiment_weight,
             },
         }
         return OpportunityScanResult(
@@ -111,11 +133,13 @@ class OpportunityScanner:
         quote: Quote,
         candle_set: dict[str, list[Candle]],
         in_position: bool,
+        sentiment_detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").upper()
         price = max(float(quote.price or 0.0), 0.0)
         candles = candle_set.get("analysis") or candle_set.get("daily") or candle_set.get("intraday") or []
         metrics = self._metrics(price, quote, candles)
+        sentiment = self._sentiment_metrics(sentiment_detail or {})
         reasons: list[str] = []
         reject_reason = ""
 
@@ -125,6 +149,8 @@ class OpportunityScanner:
             reject_reason = "below_min_price"
         elif metrics["turnover"] < self.min_turnover and not in_position:
             reject_reason = "below_min_turnover"
+        elif sentiment["negative_catalyst"] and not in_position:
+            reject_reason = "negative_news_catalyst"
 
         liquidity = self._liquidity_score(metrics["turnover"])
         trend = self._trend_score(price, metrics)
@@ -132,7 +158,7 @@ class OpportunityScanner:
         momentum = self._momentum_score(metrics)
         volume = self._volume_score(metrics)
         risk = self._risk_score(metrics)
-        score = (
+        base_score = (
             liquidity * 0.20
             + trend * 0.22
             + breakout * 0.24
@@ -140,6 +166,7 @@ class OpportunityScanner:
             + volume * 0.10
             + risk * 0.08
         )
+        score = _clamp(base_score + sentiment["boost"], 0.0, 1.0)
 
         if metrics["distance_to_55d_high_pct"] is not None and metrics["distance_to_55d_high_pct"] <= self.breakout_distance_pct:
             reasons.append(f"near 55D high ({metrics['distance_to_55d_high_pct']:.1f}% away)")
@@ -151,10 +178,18 @@ class OpportunityScanner:
             reasons.append("volume expansion")
         if momentum >= 0.65:
             reasons.append("momentum improving")
+        if sentiment["positive_catalyst"]:
+            reasons.append(
+                f"positive news catalyst ({sentiment['score']:+.2f}, {sentiment['headline_count']} headlines)"
+            )
+        elif sentiment["negative_catalyst"]:
+            reasons.append(
+                f"negative news risk ({sentiment['score']:+.2f}, {sentiment['headline_count']} headlines)"
+            )
         if risk < 0.35:
             reasons.append("risk/reward needs caution")
 
-        setup = self._setup(metrics, trend, breakout, momentum, volume)
+        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment)
         bucket = self._bucket(score, risk, reject_reason)
         return {
             "symbol": symbol,
@@ -168,6 +203,7 @@ class OpportunityScanner:
             "forced_inclusion": bool(in_position),
             "reasons": reasons or ["quote/liquidity pass"],
             "metrics": metrics,
+            "sentiment": sentiment,
             "components": {
                 "liquidity": round(liquidity, 4),
                 "trend": round(trend, 4),
@@ -175,6 +211,7 @@ class OpportunityScanner:
                 "momentum": round(momentum, 4),
                 "volume": round(volume, 4),
                 "risk": round(risk, 4),
+                "sentiment": round(sentiment["boost"], 4),
             },
         }
 
@@ -301,7 +338,54 @@ class OpportunityScanner:
             return 0.55
         return 0.25
 
-    def _setup(self, metrics: dict[str, Any], trend: float, breakout: float, momentum: float, volume: float) -> str:
+    def _sentiment_metrics(self, detail: dict[str, Any]) -> dict[str, Any]:
+        if not self.sentiment_enabled or not detail:
+            return {
+                "score": 0.0,
+                "confidence": 0.0,
+                "headline_count": 0,
+                "event_count": 0,
+                "boost": 0.0,
+                "positive_catalyst": False,
+                "negative_catalyst": False,
+                "headlines": [],
+                "asof": None,
+            }
+        score = _clamp(_float_or_none(detail.get("score")) or 0.0, -1.0, 1.0)
+        confidence = _clamp(_float_or_none(detail.get("confidence")) or 0.0, 0.0, 1.0)
+        headlines = detail.get("headlines")
+        if not isinstance(headlines, list):
+            headlines = []
+        events = detail.get("events")
+        if not isinstance(events, list):
+            events = []
+        headline_count = int(detail.get("headline_count") or len(headlines) or 0)
+        event_count = len(events)
+        evidence = _clamp(max(confidence, min((headline_count + event_count) / 6.0, 1.0)), 0.0, 1.0)
+        boost = score * evidence * self.sentiment_weight
+        return {
+            "score": round(score, 4),
+            "confidence": round(confidence, 4),
+            "headline_count": headline_count,
+            "event_count": event_count,
+            "boost": round(boost, 4),
+            "positive_catalyst": score >= 0.18 and evidence >= 0.30 and headline_count + event_count > 0,
+            "negative_catalyst": score <= -0.30 and evidence >= 0.35 and headline_count + event_count > 0,
+            "headlines": [str(item)[:180] for item in headlines[:3]],
+            "asof": detail.get("ts") or detail.get("asof"),
+        }
+
+    def _setup(
+        self,
+        metrics: dict[str, Any],
+        trend: float,
+        breakout: float,
+        momentum: float,
+        volume: float,
+        sentiment: dict[str, Any],
+    ) -> str:
+        if sentiment.get("positive_catalyst") and (volume >= 0.50 or breakout >= 0.55 or momentum >= 0.55):
+            return "news_catalyst"
         if breakout >= 0.70 and volume >= 0.60:
             return "breakout_continuation"
         if trend >= 0.65 and momentum >= 0.60:
@@ -326,6 +410,7 @@ class OpportunityScanner:
 
     def _public_item(self, item: dict[str, Any]) -> dict[str, Any]:
         metrics = item.get("metrics") or {}
+        sentiment = item.get("sentiment") or {}
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -336,6 +421,16 @@ class OpportunityScanner:
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),
+            "sentiment": {
+                "score": sentiment.get("score"),
+                "confidence": sentiment.get("confidence"),
+                "headline_count": sentiment.get("headline_count"),
+                "event_count": sentiment.get("event_count"),
+                "positive_catalyst": sentiment.get("positive_catalyst"),
+                "negative_catalyst": sentiment.get("negative_catalyst"),
+                "headlines": sentiment.get("headlines", []),
+                "asof": sentiment.get("asof"),
+            },
             "price": metrics.get("price"),
             "turnover": metrics.get("turnover"),
             "distance_to_55d_high_pct": metrics.get("distance_to_55d_high_pct"),

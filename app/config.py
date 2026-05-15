@@ -64,6 +64,9 @@ class Settings:
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
     dynamic_scan_min_turnover_inr: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_INR", 50_000_000.0)
     dynamic_scan_breakout_distance_pct: float = _float("DYNAMIC_SCAN_BREAKOUT_DISTANCE_PCT", 3.0)
+    dynamic_scan_sentiment_enabled: bool = _bool("DYNAMIC_SCAN_SENTIMENT_ENABLED", True)
+    dynamic_scan_news_probe_limit: int = _int("DYNAMIC_SCAN_NEWS_PROBE_LIMIT", 16)
+    dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
@@ -292,6 +295,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_min_turnover_inr", "label": "Dynamic Min Turnover INR", "type": "number", "category": "Market Data", "min": 0, "step": 1000000},
     {"key": "dynamic_scan_breakout_distance_pct", "label": "Dynamic Breakout Distance %", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
+    {"key": "dynamic_scan_sentiment_enabled", "label": "Dynamic Sentiment Scan", "type": "boolean", "category": "Market Data"},
+    {"key": "dynamic_scan_news_probe_limit", "label": "Dynamic News Probe/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 1},
+    {"key": "dynamic_scan_sentiment_weight", "label": "Dynamic Sentiment Weight", "type": "number", "category": "Market Data", "min": 0, "max": 0.3, "step": 0.01},
     {"key": "upstox_access_token", "label": "Upstox Analytics Token", "type": "secret", "category": "Market Data"},
     {"key": "upstox_api_base_url", "label": "Upstox API URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_candle_interval", "label": "Upstox Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},

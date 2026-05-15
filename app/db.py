@@ -3700,6 +3700,41 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def latest_sentiment_by_symbol(self, symbols: list[str], max_age_days: int = 7) -> dict[str, dict[str, Any]]:
+        normalized = list(dict.fromkeys(str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()))
+        if not normalized:
+            return {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(int(max_age_days or 7), 1))).isoformat()
+        rows: list[sqlite3.Row] = []
+        with self.connect() as conn:
+            for index in range(0, len(normalized), 800):
+                chunk = normalized[index : index + 800]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(
+                    conn.execute(
+                        f"""
+                        select s.*, {_market_region_case("u")} as market_region
+                        from sentiment_events s
+                        left join universe u on u.symbol = s.symbol
+                        where s.symbol in ({placeholders}) and s.ts >= ?
+                        order by s.symbol, s.id desc
+                        """,
+                        (*chunk, cutoff),
+                    ).fetchall()
+                )
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            symbol = str(item.get("symbol") or "").upper()
+            if not symbol or symbol in latest:
+                continue
+            headlines = _json_load(item.get("headlines_json"))
+            events = _json_load(item.get("events_json"))
+            item["headlines"] = headlines if isinstance(headlines, list) else []
+            item["events"] = events if isinstance(events, list) else []
+            latest[symbol] = item
+        return latest
+
 
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any]:
     return dict(row) if row is not None else {}

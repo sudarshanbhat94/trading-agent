@@ -69,6 +69,7 @@ class TradingAgentService:
         self._cycle_phase = "idle"
         self._last_cycle_duration_seconds: float | None = None
         self._universe_cursor = 0
+        self._news_probe_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
         self.opportunity_scanner = OpportunityScanner(strategy.settings)
 
@@ -159,9 +160,33 @@ class TradingAgentService:
         if dynamic_scan_enabled:
             self._cycle_phase = "opportunity_scan"
             raw_cached_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
-            scan_result = self.opportunity_scanner.rank(raw_universe, quotes, raw_cached_sets, pre_positions)
+            sentiment_by_symbol: dict[str, dict[str, Any]] = {}
+            news_probe_summary: dict[str, Any] = {"enabled": False, "reason": "sentiment_scan_disabled"}
+            if bool(getattr(self.strategy.settings, "enable_news_sentiment", True)) and bool(
+                getattr(self.strategy.settings, "dynamic_scan_sentiment_enabled", True)
+            ):
+                news_probe_rows = self._news_probe_universe(raw_universe, quotes, pre_positions)
+                if news_probe_rows:
+                    news_probe_summary = await self.strategy.sentiment.refresh_watchlist_news(
+                        news_probe_rows,
+                        limit=len(news_probe_rows),
+                        allow_llm=False,
+                        reason="dynamic_opportunity_scan",
+                    )
+                sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
+                    [row["symbol"] for row in raw_universe],
+                    max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
+                )
+            scan_result = self.opportunity_scanner.rank(
+                raw_universe,
+                quotes,
+                raw_cached_sets,
+                pre_positions,
+                sentiment_by_symbol,
+            )
             universe = scan_result.selected_universe
             scan_summary = scan_result.summary
+            scan_summary["news_probe"] = news_probe_summary
             if not universe:
                 fallback_limit = max(1, int(getattr(self.strategy.settings, "dynamic_scan_candidate_limit", 120) or 120))
                 universe = self._fallback_quoted_universe(raw_universe, quotes, pre_positions, fallback_limit)
@@ -187,6 +212,7 @@ class TradingAgentService:
                     "candidate_limit": scan_summary.get("candidate_limit"),
                     "rejected_counts": scan_summary.get("rejected_counts"),
                     "setup_counts": scan_summary.get("setup_counts"),
+                    "news_probe": scan_summary.get("news_probe"),
                     "top_symbols": [item.get("symbol") for item in scan_summary.get("top_candidates", [])[:12]],
                     "fallback_reason": scan_summary.get("fallback_reason"),
                 },
@@ -854,6 +880,66 @@ class TradingAgentService:
             if len(selected) >= limit:
                 break
         return selected
+
+    def _news_probe_universe(
+        self,
+        full_universe: list[dict[str, Any]],
+        quotes: dict[str, Any],
+        positions: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        limit = max(0, int(getattr(self.strategy.settings, "dynamic_scan_news_probe_limit", 16) or 0))
+        if limit <= 0 or not full_universe:
+            return []
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+
+        def add(row: dict[str, Any]) -> None:
+            symbol = row["symbol"]
+            if symbol in selected_symbols:
+                return
+            selected.append(row)
+            selected_symbols.add(symbol)
+
+        for row in full_universe:
+            if row["symbol"] in positions:
+                add(row)
+                if len(selected) >= limit:
+                    return selected
+
+        ranked = sorted(
+            [row for row in full_universe if row["symbol"] in quotes],
+            key=lambda row: self._news_probe_priority(row, quotes[row["symbol"]]),
+            reverse=True,
+        )
+        for row in ranked[: max(1, limit // 2)]:
+            add(row)
+            if len(selected) >= limit:
+                return selected
+
+        start = self._news_probe_cursor % len(full_universe)
+        for index in range(len(full_universe)):
+            row = full_universe[(start + index) % len(full_universe)]
+            if row["symbol"] not in quotes:
+                continue
+            add(row)
+            if len(selected) >= limit:
+                self._news_probe_cursor = (start + index + 1) % len(full_universe)
+                return selected
+        self._news_probe_cursor = (start + len(full_universe)) % len(full_universe)
+        return selected
+
+    def _news_probe_priority(self, row: dict[str, Any], quote: Any) -> float:
+        price = _float_or_none(getattr(quote, "price", 0.0)) or 0.0
+        volume = _float_or_none(getattr(quote, "volume", 0.0)) or 0.0
+        high = _float_or_none(getattr(quote, "high", None))
+        low = _float_or_none(getattr(quote, "low", None))
+        open_price = _float_or_none(getattr(quote, "open", None))
+        turnover = price * volume
+        range_position = 0.0
+        if high and low and high > low:
+            range_position = (price - low) / (high - low)
+        day_change_abs = abs((price - open_price) / open_price) if open_price else 0.0
+        return turnover + (turnover * range_position * 0.25) + (turnover * min(day_change_abs, 0.08))
 
     async def _market_breadth_by_region(
         self,

@@ -1356,9 +1356,10 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   const rawSymbols = Number(opportunity.raw_symbols || 0);
   const selectedSymbols = Number(opportunity.selected_symbols || 0);
+  const newsCandidates = Number(opportunity.positive_news_candidates || 0);
   byId("ops-opportunity").textContent = opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static";
   byId("ops-opportunity-meta").textContent = opportunity.enabled
-    ? `${fmtNumber(rawSymbols)} raw · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`
+    ? `${fmtNumber(rawSymbols)} raw · ${fmtNumber(newsCandidates)} news · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`
     : "dynamic scan off";
   byId("ops-macro").textContent = macro.regime || marketStanceText(breadth);
   const macroRiskText = Number.isFinite(Number(macro.risk_score)) ? `${fmtNumber(macro.risk_score)} risk` : "risk pending";
