@@ -418,53 +418,57 @@
 
           <section id="account-view" class="view account-page">
             <div class="account-grid">
-              <div class="panel account-profile-panel">
-                <div class="panel-head"><h3>Profile</h3><span id="account-status">profile</span></div>
-                <div id="account-body" class="account-body"></div>
+              <div class="account-column">
+                <div class="panel account-profile-panel">
+                  <div class="panel-head"><h3>Profile</h3><span id="account-status">profile</span></div>
+                  <div id="account-body" class="account-body"></div>
+                </div>
+                <div class="panel account-credit-panel">
+                  <div class="panel-head"><h3>Credits</h3><span id="credits-status">loading</span></div>
+                  <div id="credits-body" class="account-body"></div>
+                </div>
               </div>
-              <div class="panel account-credit-panel">
-                <div class="panel-head"><h3>Credits</h3><span id="credits-status">loading</span></div>
-                <div id="credits-body" class="account-body"></div>
-              </div>
-              <div class="panel account-broker-panel">
-                <div class="panel-head"><h3>Broker Connections</h3><span id="user-broker-status">user feed</span></div>
-                <div class="account-body">
-                  <div class="connect-card">
-                    <div class="connect-card-head">
-                      <div>
-                        <h4>My Upstox</h4>
-                        <p>Optional personal feed. If empty, analytics uses the shared admin Upstox feed; live trading still requires your own broker token.</p>
+              <div class="account-column">
+                <div class="panel account-broker-panel">
+                  <div class="panel-head"><h3>Broker Connections</h3><span id="user-broker-status">user feed</span></div>
+                  <div class="account-body">
+                    <div class="connect-card">
+                      <div class="connect-card-head">
+                        <div>
+                          <h4>My Upstox</h4>
+                          <p>Optional personal feed. If empty, analytics uses the shared admin Upstox feed; live trading still requires your own broker token.</p>
+                        </div>
+                        <span id="my-upstox-status">not connected</span>
                       </div>
-                      <span id="my-upstox-status">not connected</span>
-                    </div>
-                    <div class="connect-grid">
-                      <input id="my-upstox-access-token" type="password" placeholder="Paste Upstox access token" autocomplete="off" />
-                      <button id="my-upstox-token-save-btn" class="primary" type="button">Save Upstox</button>
-                    </div>
-                  </div>
-                  <div class="connect-card">
-                    <div class="connect-card-head">
-                      <div>
-                        <h4>User Kite</h4>
-                        <p>Optional personal broker credentials for analytics override and live trading guard.</p>
+                      <div class="connect-grid">
+                        <input id="my-upstox-access-token" type="password" placeholder="Paste Upstox access token" autocomplete="off" />
+                        <button id="my-upstox-token-save-btn" class="primary" type="button">Save Upstox</button>
                       </div>
-                      <span id="my-kite-status">not connected</span>
                     </div>
-                    <div class="connect-grid">
-                      <input id="my-kite-api-key" type="password" placeholder="Kite API Key" autocomplete="off" />
-                      <input id="my-kite-access-token" type="password" placeholder="Kite Access Token" autocomplete="off" />
-                      <button id="my-kite-connect-btn" type="button">Save Kite</button>
+                    <div class="connect-card">
+                      <div class="connect-card-head">
+                        <div>
+                          <h4>User Kite</h4>
+                          <p>Optional personal broker credentials for analytics override and live trading guard.</p>
+                        </div>
+                        <span id="my-kite-status">not connected</span>
+                      </div>
+                      <div class="connect-grid">
+                        <input id="my-kite-api-key" type="password" placeholder="Kite API Key" autocomplete="off" />
+                        <input id="my-kite-access-token" type="password" placeholder="Kite Access Token" autocomplete="off" />
+                        <button id="my-kite-connect-btn" type="button">Save Kite</button>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-              <div class="panel account-quotes-panel">
-                <div class="panel-head"><h3>Market Feed Diagnostics</h3><span id="account-quote-count">0 quotes</span></div>
-                <div class="table-wrap page-table compact">
-                  <table>
-                    <thead><tr><th>Symbol</th><th>Price</th><th>Day %</th><th>Volume</th><th>Source</th><th>As Of</th></tr></thead>
-                    <tbody id="quotes-body"></tbody>
-                  </table>
+                <div class="panel account-quotes-panel">
+                  <div class="panel-head"><h3>Market Feed Diagnostics</h3><span id="account-quote-count">0 quotes</span></div>
+                  <div class="table-wrap page-table compact">
+                    <table>
+                      <thead><tr><th>Symbol</th><th>Price</th><th>Day %</th><th>Volume</th><th>Source</th><th>As Of</th></tr></thead>
+                      <tbody id="quotes-body"></tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             </div>

@@ -8745,30 +8745,11 @@ body {
   align-items: start;
 }
 
-.account-profile-panel,
-.account-credit-panel {
-  grid-column: 1;
-}
-
-.account-broker-panel,
-.account-quotes-panel {
-  grid-column: 2;
-}
-
-.account-profile-panel {
-  grid-row: 1;
-}
-
-.account-credit-panel {
-  grid-row: 2;
-}
-
-.account-broker-panel {
-  grid-row: 1 / span 2;
-}
-
-.account-quotes-panel {
-  grid-row: 3;
+.account-column {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  align-content: start;
 }
 
 .account-metrics {
@@ -8876,14 +8857,6 @@ body[data-theme="dark"] th {
   .decision-radar-section,
   .decision-review-grid {
     grid-template-columns: 1fr;
-  }
-
-  .account-profile-panel,
-  .account-credit-panel,
-  .account-broker-panel,
-  .account-quotes-panel {
-    grid-column: auto;
-    grid-row: auto;
   }
 }
 
