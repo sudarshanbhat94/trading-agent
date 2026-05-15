@@ -19,6 +19,7 @@ class OpportunityScanResult:
 _ACTIVE_OPPORTUNITY_SETUPS = {
     "news_catalyst",
     "breakout_continuation",
+    "intraday_momentum_probe",
     "near_breakout",
     "trend_momentum",
     "pullback_buy",
@@ -124,7 +125,7 @@ class OpportunityScanner:
             "selected_symbols": len(selected_universe),
             "forced_position_symbols": [item["symbol"] for item in selected_items if item.get("forced_inclusion")],
             "rejected_counts": rejected_counts,
-            "top_candidates": candidates[:25],
+            "top_candidates": candidates,
             "setup_counts": self._counts(item.get("setup") for item in selected_items),
             "bucket_counts": self._counts(item.get("bucket") for item in selected_items),
             "positive_news_candidates": sum(
@@ -210,11 +211,13 @@ class OpportunityScanner:
             reasons.append(
                 f"negative news risk ({sentiment['score']:+.2f}, {sentiment['headline_count']} headlines)"
             )
+        if int(metrics.get("history_candles") or 0) < 20:
+            reasons.append("daily history not loaded yet; intraday probe only")
         if risk < 0.35:
             reasons.append("risk/reward needs caution")
 
         setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment)
-        bucket = self._bucket(score, risk, reject_reason)
+        bucket = self._bucket(score, risk, reject_reason, metrics)
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -320,11 +323,11 @@ class OpportunityScanner:
             metrics.get("distance_to_20d_high_pct"),
             metrics.get("distance_to_55d_high_pct"),
             metrics.get("distance_to_252d_high_pct"),
-            metrics.get("day_high_distance_pct"),
         ]
         valid = [float(value) for value in distances if value is not None]
         if not valid:
-            return 0.35
+            day_pos = float(metrics.get("day_range_position") or 0.0)
+            return _clamp(0.25 + min(day_pos, 1.0) * 0.15, 0.0, 0.40)
         best_distance = min(valid)
         proximity = 1.0 - _clamp(best_distance / self.breakout_distance_pct, 0.0, 1.0)
         day_pos = float(metrics.get("day_range_position") or 0.0)
@@ -408,24 +411,41 @@ class OpportunityScanner:
         volume: float,
         sentiment: dict[str, Any],
     ) -> str:
-        if sentiment.get("positive_catalyst") and (volume >= 0.50 or breakout >= 0.55 or momentum >= 0.55):
+        history_candles = int(metrics.get("history_candles") or 0)
+        has_structural_history = history_candles >= 20
+        has_breakout_history = (
+            metrics.get("distance_to_20d_high_pct") is not None
+            or metrics.get("distance_to_55d_high_pct") is not None
+        )
+        day_range_position = float(metrics.get("day_range_position") or 0.0)
+        turnover = float(metrics.get("turnover") or 0.0)
+        if sentiment.get("positive_catalyst") and (
+            volume >= 0.50
+            or breakout >= 0.55
+            or momentum >= 0.55
+            or (turnover >= self.min_turnover * 2.0 and day_range_position >= 0.70)
+        ):
             return "news_catalyst"
-        if breakout >= 0.70 and volume >= 0.60:
+        if has_breakout_history and breakout >= 0.70 and volume >= 0.60:
             return "breakout_continuation"
-        if breakout >= 0.70 and (trend >= 0.55 or momentum >= 0.55 or sentiment.get("positive_catalyst")):
+        if has_breakout_history and breakout >= 0.70 and (trend >= 0.55 or momentum >= 0.55 or sentiment.get("positive_catalyst")):
             return "near_breakout"
-        if trend >= 0.65 and momentum >= 0.60:
+        if has_structural_history and trend >= 0.65 and momentum >= 0.60:
             return "trend_momentum"
         distance_sma20 = metrics.get("distance_to_sma20_pct")
-        if trend >= 0.65 and distance_sma20 is not None and -2.5 <= float(distance_sma20) <= 2.5:
+        if has_structural_history and trend >= 0.65 and distance_sma20 is not None and -2.5 <= float(distance_sma20) <= 2.5:
             return "pullback_buy"
-        if momentum >= 0.65 and volume >= 0.65:
+        if has_structural_history and momentum >= 0.65 and volume >= 0.65:
             return "smallcap_momentum"
+        if not has_structural_history and turnover >= self.min_turnover * 2.0 and day_range_position >= 0.70:
+            return "intraday_momentum_probe"
         return "watchlist_candidate"
 
-    def _bucket(self, score: float, risk: float, reject_reason: str) -> str:
+    def _bucket(self, score: float, risk: float, reject_reason: str, metrics: dict[str, Any]) -> str:
         if reject_reason:
             return "Avoid"
+        if int(metrics.get("history_candles") or 0) < 20 and score >= 0.58:
+            return "Small Size Only"
         if score >= 0.72 and risk >= 0.45:
             return "Actionable"
         if score >= 0.58:
