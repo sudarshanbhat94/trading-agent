@@ -106,6 +106,258 @@ def select_stock_candidates(db: Database, market: str = "BOTH", limit: int = 5) 
     }
 
 
+def breakout_scan(db: Database, market: str = "BOTH", limit: int = 10) -> dict[str, Any]:
+    market_region = normalize_market_region(market or "BOTH", default="BOTH")
+    limit = max(1, min(int(limit or 10), 25))
+    universe = db.get_universe(enabled_only=True, market_region=market_region)
+    universe_by_symbol = {str(row.get("symbol") or "").upper(): row for row in universe}
+    quote_rows = [
+        row
+        for row in db.latest_quotes()
+        if str(row.get("symbol") or "").upper() in universe_by_symbol
+        and (market_region == "BOTH" or str(row.get("market_region") or "").upper() == market_region)
+    ]
+    symbols = [str(row.get("symbol") or "").upper() for row in quote_rows]
+    candle_sets = db.recent_candle_sets_by_symbol(symbols)
+    candidates: list[dict[str, Any]] = []
+    skipped = {"missing_candles": 0, "insufficient_history": 0, "missing_pivot": 0}
+    for quote in quote_rows:
+        symbol = str(quote.get("symbol") or "").upper()
+        sets = candle_sets.get(symbol) or {}
+        candles = sets.get("daily") or sets.get("analysis") or []
+        if not candles:
+            skipped["missing_candles"] += 1
+            continue
+        if len(candles) < 30:
+            skipped["insufficient_history"] += 1
+            continue
+        row = universe_by_symbol.get(symbol, {})
+        candidate = _breakout_candidate(row, quote, candles)
+        if not candidate:
+            skipped["missing_pivot"] += 1
+            continue
+        candidates.append(candidate)
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("scanner_score") or 0.0),
+            float(item.get("volume_ratio_20d") or 0.0),
+            -abs(float(item.get("distance_to_pivot_pct") or 99.0)),
+        ),
+        reverse=True,
+    )
+    for index, item in enumerate(candidates, start=1):
+        item["rank"] = index
+    shortlist = candidates[:limit]
+    return {
+        "ok": True,
+        "source": "openstocks",
+        "feed": "rule_based_volume_breakout_scan",
+        "market": market_region,
+        "scanned": len(quote_rows),
+        "eligible_with_history": len(candidates),
+        "skipped": skipped,
+        "rules": [
+            "Rank high relative volume first, but require usable price/candle history.",
+            "Prefer price within 3% below to 5% above the prior 20/50-session pivot.",
+            "Prefer Stage2-style trend: price above 20DMA/50DMA, 20DMA above 50DMA, 50DMA rising.",
+            "Penalize extended entries, weak closes, failed two-day breakouts, and prices below 50DMA.",
+        ],
+        "candidates": shortlist,
+        "best_candidate": shortlist[0] if shortlist else None,
+        "next_step": "OpenClaw should deep-analyze only the top 1-3 candidates with /api/openclaw/analyze before suggesting a BUY.",
+    }
+
+
+def _breakout_candidate(row: dict[str, Any], quote: dict[str, Any], candles: list[Any]) -> dict[str, Any] | None:
+    closes = [_num(_candle_value(candle, "close")) for candle in candles]
+    highs = [_num(_candle_value(candle, "high")) for candle in candles]
+    lows = [_num(_candle_value(candle, "low")) for candle in candles]
+    volumes = [_num(_candle_value(candle, "volume")) for candle in candles]
+    if len(closes) < 30 or len(highs) < 30 or not any(highs[:-1]):
+        return None
+
+    price = _num(quote.get("price")) or closes[-1]
+    prior_20_highs = [value for value in highs[-21:-1] if value > 0]
+    prior_50_highs = [value for value in highs[-51:-1] if value > 0]
+    pivot_20 = max(prior_20_highs) if prior_20_highs else None
+    pivot_50 = max(prior_50_highs) if prior_50_highs else pivot_20
+    pivot = pivot_50 or pivot_20
+    if not pivot:
+        return None
+
+    distance_to_pivot_pct = ((price - pivot) / pivot) * 100
+    sma20 = _sma(closes, 20)
+    sma50 = _sma(closes, 50) or _sma(closes, 30)
+    previous_sma50 = _sma(closes[:-5], 50) or _sma(closes[:-5], 30)
+    sma50_slope_pct = ((sma50 - previous_sma50) / previous_sma50) * 100 if sma50 and previous_sma50 else 0.0
+    stage2_trend = bool(price > (sma20 or 0) and price > (sma50 or 0) and (sma20 or 0) > (sma50 or 0) and sma50_slope_pct > 0)
+
+    latest_volume = _num(quote.get("volume")) or volumes[-1]
+    avg_volume_20 = _avg([value for value in volumes[-21:-1] if value > 0])
+    volume_ratio = latest_volume / avg_volume_20 if avg_volume_20 else 0.0
+    turnover_value = price * latest_volume if price and latest_volume else 0.0
+
+    last_high = highs[-1]
+    last_low = lows[-1]
+    close_position = (closes[-1] - last_low) / (last_high - last_low) if last_high > last_low else 0.5
+    two_day_failed = _two_day_breakout_failed(closes, highs, pivot)
+    close_above_pivot = price >= pivot
+    near_pivot = -3.0 <= distance_to_pivot_pct <= 5.0
+    clean_breakout = close_above_pivot and distance_to_pivot_pct <= 3.0 and volume_ratio >= 1.5 and close_position >= 0.65
+
+    score = 0.0
+    score += min(volume_ratio / 3.0, 1.0) * 25.0
+    if 0 <= distance_to_pivot_pct <= 3:
+        score += 30.0
+    elif -3 <= distance_to_pivot_pct < 0:
+        score += 8.0 + (1 - abs(distance_to_pivot_pct) / 3.0) * 18.0
+    elif 3 < distance_to_pivot_pct <= 5:
+        score += 12.0 + (1 - ((distance_to_pivot_pct - 3.0) / 2.0)) * 8.0
+    elif -5 <= distance_to_pivot_pct < -3:
+        score += 5.0
+    if stage2_trend:
+        score += 20.0
+    else:
+        if sma20 and price > sma20:
+            score += 5.0
+        if sma20 and sma50 and sma20 > sma50:
+            score += 5.0
+        if sma50_slope_pct > 0:
+            score += 5.0
+    if close_position >= 0.75:
+        score += 10.0
+    elif close_position >= 0.6:
+        score += 5.0
+    if turnover_value > 0:
+        score += 5.0
+
+    risk_flags: list[str] = []
+    if two_day_failed:
+        risk_flags.append("two_day_breakout_failed")
+        score -= 20.0
+    if distance_to_pivot_pct > 8:
+        risk_flags.append("extended_more_than_8pct_from_pivot")
+        score -= 30.0
+    if volume_ratio and volume_ratio < 1:
+        risk_flags.append("volume_below_20d_average")
+        score -= 8.0
+    if sma50 and price < sma50:
+        risk_flags.append("below_50dma")
+        score -= 15.0
+
+    if clean_breakout:
+        candidate_type = "breakout_now"
+        readiness = "deep_analyze"
+    elif near_pivot and distance_to_pivot_pct < 0:
+        candidate_type = "near_pivot_watch"
+        readiness = "deep_analyze" if score >= 45 else "watch"
+    elif near_pivot:
+        candidate_type = "post_breakout_watch"
+        readiness = "deep_analyze" if score >= 50 else "watch"
+    else:
+        candidate_type = "volume_leader_not_near_breakout"
+        readiness = "watch" if score >= 35 else "low_priority"
+
+    return {
+        "symbol": str(quote.get("symbol") or row.get("symbol") or "").upper(),
+        "market_region": quote.get("market_region"),
+        "company_name": quote.get("company_name") or row.get("name"),
+        "exchange": quote.get("exchange") or row.get("exchange"),
+        "sector": row.get("sector"),
+        "industry": row.get("industry"),
+        "price": round(price, 4),
+        "source": quote.get("source"),
+        "asof": quote.get("ts"),
+        "scanner_score": round(max(0.0, min(score, 100.0)), 2),
+        "candidate_type": candidate_type,
+        "readiness": readiness,
+        "pivot": round(pivot, 4),
+        "prior_20d_pivot": round(pivot_20, 4) if pivot_20 else None,
+        "prior_50d_pivot": round(pivot_50, 4) if pivot_50 else None,
+        "distance_to_pivot_pct": round(distance_to_pivot_pct, 3),
+        "volume": round(latest_volume, 2),
+        "avg_volume_20d": round(avg_volume_20, 2) if avg_volume_20 else None,
+        "volume_ratio_20d": round(volume_ratio, 3) if volume_ratio else 0.0,
+        "turnover_value": round(turnover_value, 2),
+        "sma20": round(sma20, 4) if sma20 else None,
+        "sma50": round(sma50, 4) if sma50 else None,
+        "sma50_slope_pct": round(sma50_slope_pct, 3),
+        "stage2_trend": stage2_trend,
+        "close_position_in_range": round(close_position, 3),
+        "clean_breakout": clean_breakout,
+        "near_pivot": near_pivot,
+        "two_day_rule_failed": two_day_failed,
+        "risk_flags": risk_flags,
+        "plain_english": _breakout_plain_english(
+            symbol=str(quote.get("symbol") or row.get("symbol") or "").upper(),
+            candidate_type=candidate_type,
+            distance_pct=distance_to_pivot_pct,
+            volume_ratio=volume_ratio,
+            stage2=stage2_trend,
+            risk_flags=risk_flags,
+        ),
+    }
+
+
+def _breakout_plain_english(
+    *,
+    symbol: str,
+    candidate_type: str,
+    distance_pct: float,
+    volume_ratio: float,
+    stage2: bool,
+    risk_flags: list[str],
+) -> str:
+    if candidate_type == "breakout_now":
+        setup = f"{symbol} is breaking above pivot with {volume_ratio:.1f}x volume"
+    elif candidate_type == "near_pivot_watch":
+        setup = f"{symbol} is {abs(distance_pct):.1f}% below pivot with {volume_ratio:.1f}x volume"
+    elif candidate_type == "post_breakout_watch":
+        setup = f"{symbol} is {distance_pct:.1f}% above pivot after a breakout attempt"
+    else:
+        setup = f"{symbol} has volume activity but is not close enough to a clean pivot"
+    trend = "Stage2-style trend is present" if stage2 else "trend confirmation is incomplete"
+    risk = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
+    return f"{setup}. {trend}.{risk}"
+
+
+def _two_day_breakout_failed(closes: list[float], highs: list[float], pivot: float) -> bool:
+    if len(closes) < 4 or pivot <= 0:
+        return False
+    recent = list(zip(highs[-4:-1], closes[-4:-1]))
+    for index, (high, close) in enumerate(recent):
+        if high > pivot and close > pivot:
+            later = closes[-3 + index :]
+            return any(value < pivot for value in later)
+    return False
+
+
+def _candle_value(candle: Any, key: str) -> Any:
+    if isinstance(candle, dict):
+        return candle.get(key)
+    return getattr(candle, key, None)
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _avg(values: list[float]) -> float:
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else 0.0
+
+
+def _sma(values: list[float], length: int) -> float | None:
+    clean = [value for value in values if value > 0]
+    if len(clean) < length:
+        return None
+    recent = clean[-length:]
+    return sum(recent) / length
+
+
 class OpenClawNotifier:
     def __init__(self, settings: Settings, db: Database) -> None:
         self.settings = settings

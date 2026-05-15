@@ -3173,27 +3173,65 @@ function renderSuggestions(rows) {
         return;
       }
       if (action === "exit") {
-        manualExitPosition(row || { symbol: button.dataset.symbol, market_region: activeMarket }, button);
+        manualExitPosition(row || { symbol: button.dataset.symbol, market_region: state.activeMarket }, button);
         return;
       }
-      followIdea(Number(button.dataset.ideaId), action);
+      followIdea(row || Number(button.dataset.ideaId), action, button);
     });
   });
 }
 
-async function followIdea(ideaId, action) {
+function defaultPaperAmountForIdea(row = {}) {
+  const market = rowMarket(row);
+  const price = Number(row.latest_price || row.price || row.entry_price || 0);
+  const scoped = marketPortfolioFromPayload(state.latest || {}, market);
+  const accountPaper = state.account?.paper || {};
+  const accountPortfolio = accountPaper.portfolio_by_market?.[market] || accountPaper.portfolio?.portfolio_by_market?.[market] || {};
+  const cash = Number(scoped.cash ?? accountPortfolio.cash ?? 0);
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  if (!Number.isFinite(cash) || cash <= 0) return price;
+  const target = cash * 0.2;
+  if (target >= price) return Math.min(target, cash);
+  return price <= cash ? price : 0;
+}
+
+async function followIdea(rowOrId, action, button = null) {
+  const row = typeof rowOrId === "object" && rowOrId ? rowOrId : {};
+  const ideaId = Number(row.id || rowOrId || 0);
   if (!ideaId) return;
+  if (state.auth?.admin) {
+    showDetails("Paper Follow", {
+      status: "user_account_required",
+      message: "Paper and live follows are user-account actions. Sign in as a trading user, not admin, to follow ideas.",
+    });
+    return;
+  }
   const mode = action === "paper" ? "PAPER" : action === "live" ? "LIVE" : "TRACK";
-  const amount = mode === "PAPER" ? Number(prompt("Paper amount to allocate", "1000") || 0) : 0;
+  const amount = mode === "PAPER" ? defaultPaperAmountForIdea(row) : 0;
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = mode === "PAPER" ? "Papering..." : mode === "LIVE" ? "Requesting..." : "Tracking...";
+  }
   try {
     const response = await fetch(`/api/ideas/${ideaId}/follow`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode, amount }),
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (response.status === 401) {
+      handleUnauthorized(payload.detail || "Session expired. Sign in again.");
+      return;
+    }
     if (!response.ok) {
-      alert(payload.detail || "Could not update idea tracking");
+      showDetails("Follow Error", {
+        idea_id: ideaId,
+        mode,
+        amount,
+        message: payload.detail || "Could not update idea tracking",
+        response: payload,
+      });
       return;
     }
     if (Array.isArray(payload.ideas)) {
@@ -3217,9 +3255,21 @@ async function followIdea(ideaId, action) {
       const trackedCount = byId("tracked-count");
       if (trackedCount) trackedCount.textContent = `${marketTracked.length} active`;
       await refreshStatusOnly();
+      showDetails("Paper Follow", {
+        symbol: row.symbol,
+        mode,
+        amount,
+        follow: payload.follow,
+        exit_manager: payload.paper_exit_manager,
+      });
     }
   } catch (error) {
-    alert(networkErrorMessage(error, "idea tracking"));
+    showBackendError(networkErrorMessage(error, "idea tracking"), { idea_id: ideaId, mode, amount });
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 

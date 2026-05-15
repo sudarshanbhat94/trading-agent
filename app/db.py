@@ -2299,7 +2299,7 @@ class Database:
                 from user_idea_follows f
                 join signal_ideas i on i.id = f.idea_id
                 left join universe u on u.symbol = i.symbol
-                where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED')
+                where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
                 {market_sql}
                 order by f.updated_at desc, f.id desc
                 limit ?
@@ -2590,6 +2590,126 @@ class Database:
                 )
                 exited.append(item)
         return exited
+
+    def manage_user_follow_exits(self, user_id: int, market_region: str | None = None) -> dict[str, Any]:
+        market_clause, market_params = _market_region_where("u", market_region)
+        market_sql = f"and {market_clause}" if market_clause else ""
+        actions: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                f"""
+                select
+                    f.*,
+                    i.symbol,
+                    i.status as idea_status,
+                    i.latest_price as idea_latest_price,
+                    i.entry_price as idea_entry_price,
+                    i.current_return_pct,
+                    i.peak_return_pct,
+                    i.worst_return_pct,
+                    i.details_json as idea_details_json,
+                    {_market_region_case("u")} as market_region
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
+                where f.user_id = ?
+                  and f.status in ('ACTIVE','LIVE_REQUESTED')
+                  and f.qty > 0
+                  {market_sql}
+                order by f.updated_at desc, f.id desc
+                """,
+                (int(user_id), *market_params),
+            ).fetchall()
+            now = utc_now()
+            for row in rows:
+                item = _row_dict(row)
+                idea_details = self._decode_json(item.get("idea_details_json"))
+                follow_details = self._decode_json(item.get("details_json"))
+                action = _paper_exit_action(item, idea_details, follow_details)
+                if not action:
+                    continue
+                qty = int(item.get("qty") or 0)
+                entry_price = float(item.get("entry_price") or item.get("idea_entry_price") or 0.0)
+                latest_price = float(item.get("idea_latest_price") or item.get("latest_price") or entry_price or 0.0)
+                mode = str(item.get("mode") or "TRACK").upper()
+                event_key = str(action["key"])
+                exit_pct = float(action.get("exit_pct") or 100.0)
+                exit_qty = qty if action.get("full") else max(1, int(round(qty * max(min(exit_pct, 100.0), 0.0) / 100.0)))
+                exit_qty = min(qty, exit_qty)
+                if exit_qty <= 0:
+                    continue
+                remaining_qty = max(qty - exit_qty, 0)
+                realized_pnl = round((latest_price - entry_price) * exit_qty, 2)
+                remaining_invested = round(remaining_qty * entry_price, 2)
+                remaining_unrealized = round((latest_price - entry_price) * remaining_qty, 2)
+                return_pct = _return_pct(entry_price, latest_price)
+                management = follow_details.setdefault("exit_management", {})
+                events = management.setdefault("events", [])
+                events.append(
+                    {
+                        "key": event_key,
+                        "action": action.get("action"),
+                        "reason": action.get("reason"),
+                        "at": now,
+                        "mode": mode,
+                        "qty_before": qty,
+                        "exit_qty": exit_qty,
+                        "remaining_qty": remaining_qty,
+                        "entry_price": entry_price,
+                        "exit_price": latest_price,
+                        "realized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                    }
+                )
+                management["last_action"] = action.get("action")
+                management["last_action_label"] = action.get("label")
+                management["last_reason"] = action.get("reason")
+                management["last_action_at"] = now
+                management["realized_pnl_total"] = round(float(management.get("realized_pnl_total") or 0.0) + realized_pnl, 2)
+                management["closed_qty_total"] = int(management.get("closed_qty_total") or 0) + exit_qty
+                next_status = "EXITED" if remaining_qty <= 0 or action.get("full") else "ACTIVE"
+                if mode == "LIVE":
+                    next_status = "LIVE_EXIT_REQUESTED"
+                    management["live_note"] = "Live exit needs broker order confirmation; OpenStocks only records the guarded request."
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set status = ?, qty = ?, latest_price = ?, invested_amount = ?,
+                        unrealized_pnl = ?, return_pct = ?, updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        next_status,
+                        remaining_qty if mode != "LIVE" else qty,
+                        latest_price,
+                        remaining_invested if mode != "LIVE" else float(item.get("invested_amount") or 0.0),
+                        remaining_unrealized if mode != "LIVE" else round((latest_price - entry_price) * qty, 2),
+                        return_pct,
+                        now,
+                        json.dumps(follow_details, default=str, separators=(",", ":")),
+                        item["id"],
+                    ),
+                )
+                action_row = {
+                    "follow_id": item.get("id"),
+                    "idea_id": item.get("idea_id"),
+                    "symbol": item.get("symbol"),
+                    "market_region": item.get("market_region"),
+                    "mode": mode,
+                    "status": next_status,
+                    "action": action.get("action"),
+                    "label": action.get("label"),
+                    "reason": action.get("reason"),
+                    "qty_before": qty,
+                    "exit_qty": exit_qty,
+                    "remaining_qty": remaining_qty if mode != "LIVE" else qty,
+                    "exit_price": latest_price,
+                    "return_pct": return_pct,
+                    "realized_pnl": realized_pnl,
+                }
+                actions.append(action_row)
+        return {"checked": len(rows), "actions": actions, "action_count": len(actions)}
 
     def _refresh_user_follow_marks(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
@@ -3594,6 +3714,103 @@ def _return_pct(entry_price: float, latest_price: float) -> float:
     if entry <= 0:
         return 0.0
     return round(((latest - entry) / entry) * 100, 4)
+
+
+def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follow_details: dict[str, Any]) -> dict[str, Any] | None:
+    management = follow_details.get("exit_management") if isinstance(follow_details.get("exit_management"), dict) else {}
+    done = {
+        str(event.get("key") or "")
+        for event in management.get("events", [])
+        if isinstance(event, dict)
+    }
+    status = str(item.get("idea_status") or "").upper()
+    lifecycle = str(idea_details.get("lifecycle_status") or "").lower()
+    highest = str(idea_details.get("highest_target_hit") or "NONE").upper()
+    latest = _optional_float(item.get("idea_latest_price") or item.get("latest_price")) or 0.0
+    entry = _optional_float(item.get("entry_price") or item.get("idea_entry_price")) or 0.0
+    stop = _optional_float(idea_details.get("stop_loss"))
+    current_return = _return_pct(entry, latest)
+    worst_return = _optional_float(item.get("worst_return_pct")) or current_return
+    drawdown = idea_details.get("drawdown_status") if isinstance(idea_details.get("drawdown_status"), dict) else {}
+    risk_used_pct = 0.0
+    if entry > 0 and stop and entry > stop:
+        risk_used_pct = max(min(((entry - latest) / (entry - stop)) * 100.0, 100.0), 0.0)
+
+    if stop and latest > 0 and latest <= stop:
+        return _exit_action("STOP_LOSS", "EXIT_FULL", 100, "Stop loss hit; exit the followed paper position.", full=True)
+    if status == "STOP_HIT" or lifecycle == "stopped":
+        return _exit_action("STOP_HIT", "EXIT_FULL", 100, "Signal lifecycle says stop was hit; exit the followed position.", full=True)
+    if status == "EXIT_SIGNAL" or lifecycle == "exit_signal":
+        return _exit_action("EXIT_SIGNAL", "EXIT_FULL", 100, "Engine generated an exit signal; close the followed position.", full=True)
+    if status == "EXPIRED" or lifecycle == "expired":
+        return _exit_action("EXPIRED", "EXIT_FULL", 100, "Idea expired without fresh confirmation; close the followed position.", full=True)
+    if highest == "T3" or status == "TARGET_3_HIT" or lifecycle == "target_3_hit":
+        return _exit_action("TARGET_3", "EXIT_FULL", 100, "Final target reached; close or trail no more than a token remainder.", full=True)
+
+    t2_hit = highest in {"T2", "T3"} or status in {"TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T2")
+    if t2_hit and "TARGET_2_REDUCE" not in done:
+        return _exit_action(
+            "TARGET_2_REDUCE",
+            "REDUCE",
+            _target_exit_pct(idea_details, "T2", 50.0),
+            "T2 reached; book another tranche and trail the remaining quantity.",
+        )
+
+    t1_hit = highest in {"T1", "T2", "T3"} or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_1_hit", "target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T1")
+    if t1_hit and "TARGET_1_PARTIAL" not in done:
+        return _exit_action(
+            "TARGET_1_PARTIAL",
+            "REDUCE",
+            _target_exit_pct(idea_details, "T1", 35.0),
+            "T1 reached; book partial profit and move the remaining trade to tighter risk.",
+        )
+
+    near_stop = bool(drawdown.get("near_stop")) or risk_used_pct >= 65.0
+    before_t1 = not t1_hit
+    if before_t1 and (near_stop or current_return <= -2.0 or worst_return <= -3.0):
+        return _exit_action(
+            "RISK_EXIT_BEFORE_T1",
+            "EXIT_FULL",
+            100,
+            f"Adverse move before T1: return {current_return:.2f}%, worst {worst_return:.2f}%, risk used {risk_used_pct:.0f}%.",
+            full=True,
+        )
+    return None
+
+
+def _exit_action(key: str, action: str, exit_pct: float, reason: str, full: bool = False) -> dict[str, Any]:
+    return {
+        "key": key,
+        "action": action,
+        "label": "Exit" if full else "Reduce",
+        "exit_pct": float(exit_pct),
+        "reason": reason,
+        "full": bool(full),
+    }
+
+
+def _target_hit(details: dict[str, Any], label: str) -> bool:
+    target_label = str(label or "").upper()
+    for target in details.get("target_status", []) or []:
+        if not isinstance(target, dict):
+            continue
+        if str(target.get("label") or "").upper() == target_label and bool(target.get("hit")):
+            return True
+    return False
+
+
+def _target_exit_pct(details: dict[str, Any], label: str, default: float) -> float:
+    target_label = str(label or "").upper()
+    for collection in (details.get("target_status", []), details.get("targets", [])):
+        for target in collection or []:
+            if not isinstance(target, dict):
+                continue
+            if str(target.get("label") or "").upper() != target_label:
+                continue
+            pct = _optional_float(target.get("suggested_exit_pct"))
+            if pct and pct > 0:
+                return max(min(pct, 100.0), 1.0)
+    return default
 
 
 def _short_reason(value: Any, limit: int = 220) -> str:

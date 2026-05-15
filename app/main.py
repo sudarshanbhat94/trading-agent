@@ -45,6 +45,7 @@ from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
 from .openclaw_bridge import (
     OpenClawNotifier,
+    breakout_scan,
     bridge_context,
     default_openclaw_user,
     require_openclaw_bridge,
@@ -559,6 +560,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     if user and not is_admin:
         user_id = int(user["id"])
         paper_cash_by_market = _user_paper_cash_by_market(user)
+        paper_exit_manager = db.manage_user_follow_exits(user_id)
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
         user_positions = _user_follow_positions(tracked_ideas)
         snapshot["suggestions"] = db.latest_signal_ideas(50, user_id=user_id)
@@ -583,6 +585,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["paper_cash_pool_by_market"] = paper_cash_by_market
         snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["performance"] = db.performance_summary(user_id=user_id)
+        snapshot["paper_exit_manager"] = paper_exit_manager
         snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(
             tracked_ideas,
             user_portfolio,
@@ -629,6 +632,9 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
             continue
         entry_price = float(item.get("follow_entry_price") or item.get("entry_price") or 0.0)
         latest_price = float(item.get("follow_latest_price") or item.get("latest_price") or entry_price)
+        exit_management = item.get("follow_details", {}).get("exit_management", {}) if isinstance(item.get("follow_details"), dict) else {}
+        managed_action = str(exit_management.get("last_action_label") or "").strip()
+        managed_reason = str(exit_management.get("last_reason") or "").strip()
         position_summary = {
             "symbol": item.get("symbol"),
             "classification": "PAPER" if mode == "PAPER" else "LIVE_REQUEST",
@@ -638,8 +644,8 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
             "mtf_grade": item.get("details", {}).get("full_spectrum", {}).get("trend_context", {}).get("timeframe_alignment", {}).get("alignment_grade", "-"),
             "delivery_bias": item.get("details", {}).get("full_spectrum", {}).get("delivery_accumulation", {}).get("net_bias", "-"),
             "active_flags": item.get("risk_flags", []),
-            "recommended_action": "TRACK",
-            "reason": "User paper-tracked idea; live engine will keep marking P&L against latest price.",
+            "recommended_action": managed_action or "TRACK",
+            "reason": managed_reason or "User paper-tracked idea; live engine will keep marking P&L against latest price.",
             "price_label": "LTP",
             "price_source": "signal_idea_follow",
             "price_timestamp": item.get("follow_updated_at"),
@@ -1166,6 +1172,25 @@ async def openclaw_select_stocks(payload: dict[str, Any], request: Request) -> d
         "select_stocks",
         "OpenClaw requested stock candidates",
         {"market": result.get("market"), "candidate_count": len(result.get("candidates", []))},
+    )
+    return result
+
+
+@app.get("/api/openclaw/raw/breakout-scan")
+async def openclaw_breakout_scan(request: Request, market: str = "BOTH", limit: int = 10) -> dict[str, Any]:
+    require_openclaw_bridge(request, settings)
+    result = breakout_scan(db, market=market, limit=limit)
+    db.insert_agent_log(
+        "INFO",
+        "openclaw",
+        "breakout_scan",
+        "OpenClaw requested volume and breakout candidate scan",
+        {
+            "market": result.get("market"),
+            "scanned": result.get("scanned"),
+            "candidate_count": len(result.get("candidates", [])),
+            "best_symbol": (result.get("best_candidate") or {}).get("symbol"),
+        },
     )
     return result
 
@@ -2225,9 +2250,13 @@ async def ideas(request: Request) -> dict[str, Any]:
 async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
     mode = str(payload.get("mode") or "TRACK")
+    normalized_mode = mode.strip().upper()
     amount = _positive_float(payload.get("amount", 0), field="amount")
     qty = int(_positive_float(payload.get("qty", 0), field="qty"))
-    if mode.strip().upper() == "LIVE":
+    if normalized_mode == "PAPER" and amount <= 0 and qty <= 0:
+        idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
+        amount = _default_paper_follow_amount(user, idea)
+    if normalized_mode == "LIVE":
         idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
         _require_user_live_broker(user, normalize_market_region(idea.get("market_region") or "IN", default="IN"))
     try:
@@ -2235,6 +2264,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     except ValueError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    exit_manager = db.manage_user_follow_exits(int(user["id"]))
     db.insert_agent_log(
         "INFO",
         "ideas",
@@ -2246,8 +2276,13 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     return {
         "ok": True,
         "follow": follow,
+        "paper_exit_manager": exit_manager,
         "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
         "tracked_ideas": tracked_ideas,
+        "tracked_ideas_by_market": {
+            "IN": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="IN"),
+            "US": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="US"),
+        },
         "positions": _user_follow_positions(tracked_ideas),
     }
 
@@ -2444,6 +2479,23 @@ def _signal_idea_for_live_guard(idea_id: int, user_id: int) -> dict[str, Any]:
         if int(idea.get("id") or 0) == int(idea_id):
             return idea
     raise HTTPException(status_code=404, detail="Signal idea not found.")
+
+
+def _default_paper_follow_amount(user: dict[str, Any], idea: dict[str, Any]) -> float:
+    market = normalize_market_region(idea.get("market_region") or "IN", default="IN")
+    tracked = db.user_followed_signal_ideas(int(user["id"]), 200)
+    portfolio = _user_follow_portfolio(
+        tracked,
+        db.latest_portfolio() or {},
+        paper_cash_by_market=_user_paper_cash_by_market(user),
+    )
+    market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
+    cash = float(market_portfolio.get("cash") or 0.0)
+    price = float(idea.get("latest_price") or idea.get("price") or idea.get("entry_price") or 0.0)
+    amount = _auto_follow_amount(cash, price)
+    if amount <= 0 and price > 0 and (cash <= 0 or price <= cash):
+        return price
+    return amount
 
 
 def _require_user_live_broker(user: dict[str, Any], market_region: str) -> None:
@@ -2652,16 +2704,17 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         "active_buy_ideas": 0,
         "followed": 0,
         "exited": 0,
+        "managed_exits": [],
         "skipped": [],
         "follows": [],
         "exits": [],
     }
-    if mode == "SIGNAL_ONLY":
-        return summary
 
     user_id = int(user["id"])
     idea_mode = "LIVE" if mode == "AUTO_LIVE" else "PAPER"
     paper_cash_by_market = _user_paper_cash_by_market(user)
+    exit_management = db.manage_user_follow_exits(user_id)
+    summary["managed_exits"] = exit_management.get("actions", [])
     exit_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "SELL"}
     for symbol in sorted(exit_symbols):
         exited = db.exit_user_follow_position(user_id, symbol, reason="auto_exit_signal_sell")
@@ -2704,6 +2757,9 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
                 }
                 for item in exited
             )
+
+    if mode == "SIGNAL_ONLY":
+        return summary
 
     decision_buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "BUY"}
     active_buy_ideas = [
