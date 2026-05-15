@@ -16,12 +16,28 @@ class OpportunityScanResult:
     summary: dict[str, Any]
 
 
+_ACTIVE_OPPORTUNITY_SETUPS = {
+    "news_catalyst",
+    "breakout_continuation",
+    "near_breakout",
+    "trend_momentum",
+    "pullback_buy",
+    "smallcap_momentum",
+}
+
+
 class OpportunityScanner:
     """Ranks a broad quote universe before the expensive strategy/LLM pass."""
 
     def __init__(self, settings: Any) -> None:
         self.settings = settings
-        self.candidate_limit = max(1, int(getattr(settings, "dynamic_scan_candidate_limit", 120) or 120))
+        self.candidate_limit = max(1, int(getattr(settings, "dynamic_scan_candidate_limit", 60) or 60))
+        self.min_score = _clamp(
+            float(getattr(settings, "dynamic_scan_min_score", 0.58) or 0.0),
+            0.0,
+            1.0,
+        )
+        self.require_active_setup = bool(getattr(settings, "dynamic_scan_require_active_setup", True))
         self.min_price = max(0.0, float(getattr(settings, "dynamic_scan_min_price", 10.0) or 0.0))
         self.min_turnover = max(0.0, float(getattr(settings, "dynamic_scan_min_turnover_inr", 50_000_000.0) or 0.0))
         self.breakout_distance_pct = max(
@@ -76,6 +92,11 @@ class OpportunityScanner:
             if in_position and item["rejected"]:
                 item["forced_inclusion"] = True
                 item["reasons"].append("open position included for exit/risk management")
+            if not in_position:
+                quality_reject_reason = self._quality_reject_reason(item)
+                if quality_reject_reason:
+                    self._count(rejected_counts, quality_reject_reason)
+                    continue
             scored.append(item)
 
         scored.sort(key=lambda item: item["score"], reverse=True)
@@ -115,6 +136,9 @@ class OpportunityScanner:
             "filters": {
                 "min_price": self.min_price,
                 "min_turnover_inr": self.min_turnover,
+                "min_score": self.min_score,
+                "require_active_setup": self.require_active_setup,
+                "active_setups": sorted(_ACTIVE_OPPORTUNITY_SETUPS),
                 "breakout_distance_pct": self.breakout_distance_pct,
                 "sentiment_enabled": self.sentiment_enabled,
                 "sentiment_weight": self.sentiment_weight,
@@ -388,6 +412,8 @@ class OpportunityScanner:
             return "news_catalyst"
         if breakout >= 0.70 and volume >= 0.60:
             return "breakout_continuation"
+        if breakout >= 0.70 and (trend >= 0.55 or momentum >= 0.55 or sentiment.get("positive_catalyst")):
+            return "near_breakout"
         if trend >= 0.65 and momentum >= 0.60:
             return "trend_momentum"
         distance_sma20 = metrics.get("distance_to_sma20_pct")
@@ -407,6 +433,16 @@ class OpportunityScanner:
         if score >= 0.45:
             return "Watch"
         return "Avoid"
+
+    def _quality_reject_reason(self, item: dict[str, Any]) -> str:
+        if item.get("bucket") == "Avoid":
+            return "avoid_bucket_quality_gate"
+        score = _float_or_none(item.get("score")) or 0.0
+        if score < self.min_score:
+            return "below_opportunity_score"
+        if self.require_active_setup and item.get("setup") not in _ACTIVE_OPPORTUNITY_SETUPS:
+            return "no_active_opportunity_setup"
+        return ""
 
     def _public_item(self, item: dict[str, Any]) -> dict[str, Any]:
         metrics = item.get("metrics") or {}

@@ -188,14 +188,17 @@ class TradingAgentService:
             scan_summary = scan_result.summary
             scan_summary["news_probe"] = news_probe_summary
             if not universe:
-                fallback_limit = max(1, int(getattr(self.strategy.settings, "dynamic_scan_candidate_limit", 120) or 120))
+                fallback_limit = min(
+                    12,
+                    max(1, int(getattr(self.strategy.settings, "dynamic_scan_candidate_limit", 60) or 60)),
+                )
                 universe = self._fallback_quoted_universe(raw_universe, quotes, pre_positions, fallback_limit)
                 scan_summary = {
                     **scan_summary,
-                    "fallback_reason": "no_symbols_passed_opportunity_filters",
+                    "fallback_reason": "no_symbols_passed_opportunity_quality_gate",
                     "selected_symbols": len(universe),
                     "top_candidates": [
-                        {"symbol": row.get("symbol"), "bucket": "Watch", "setup": "fallback_quote_pass"}
+                        {"symbol": row.get("symbol"), "bucket": "Watch", "setup": "fallback_quote_momentum_probe"}
                         for row in universe[:25]
                     ],
                 }
@@ -871,9 +874,14 @@ class TradingAgentService:
             if symbol in positions:
                 selected.append(row)
                 selected_symbols.add(symbol)
-        for row in full_universe:
+        ranked = sorted(
+            [row for row in full_universe if row["symbol"] in quotes],
+            key=lambda row: self._news_probe_priority(row, quotes[row["symbol"]]),
+            reverse=True,
+        )
+        for row in ranked:
             symbol = row["symbol"]
-            if symbol in selected_symbols or symbol not in quotes:
+            if symbol in selected_symbols:
                 continue
             selected.append(row)
             selected_symbols.add(symbol)

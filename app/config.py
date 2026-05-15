@@ -60,7 +60,9 @@ class Settings:
     universe_symbols_per_cycle: int = _int("UNIVERSE_SYMBOLS_PER_CYCLE", 0)
     dynamic_opportunity_scan_enabled: bool = _bool("DYNAMIC_OPPORTUNITY_SCAN_ENABLED", True)
     dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 500)
-    dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 120)
+    dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 60)
+    dynamic_scan_min_score: float = _float("DYNAMIC_SCAN_MIN_SCORE", 0.58)
+    dynamic_scan_require_active_setup: bool = _bool("DYNAMIC_SCAN_REQUIRE_ACTIVE_SETUP", True)
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
     dynamic_scan_min_turnover_inr: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_INR", 50_000_000.0)
     dynamic_scan_breakout_distance_pct: float = _float("DYNAMIC_SCAN_BREAKOUT_DISTANCE_PCT", 3.0)
@@ -292,6 +294,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_opportunity_scan_enabled", "label": "Dynamic Opportunity Scan", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_raw_limit", "label": "Dynamic Raw Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 50},
     {"key": "dynamic_scan_candidate_limit", "label": "Dynamic Candidates/Cycle", "type": "number", "category": "Market Data", "min": 1, "step": 10},
+    {"key": "dynamic_scan_min_score", "label": "Dynamic Min Opportunity Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
+    {"key": "dynamic_scan_require_active_setup", "label": "Require Active Setup", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_min_turnover_inr", "label": "Dynamic Min Turnover INR", "type": "number", "category": "Market Data", "min": 0, "step": 1000000},
     {"key": "dynamic_scan_breakout_distance_pct", "label": "Dynamic Breakout Distance %", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
