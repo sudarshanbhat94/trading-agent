@@ -197,6 +197,17 @@ function fmtPct(value) {
   return Number.isFinite(Number(value)) ? `${number.format(Number(value))}%` : "-";
 }
 
+function displayValue(value, fallback = "Not available") {
+  const text = String(value ?? "").trim();
+  if (!text || text === "-" || text === "--" || text.toUpperCase() === "DATA_MISSING") return fallback;
+  return text;
+}
+
+function symbolInitials(value) {
+  const text = String(value || "OS").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  return (text || "OS").slice(0, 2);
+}
+
 function fmtTime(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -386,6 +397,34 @@ function confidencePercent(row = {}) {
     .filter(Number.isFinite)
     .map((value) => (value > 0 && value <= 1 ? value * 100 : value));
   return values.length ? Math.max(...values) : 0;
+}
+
+function decisionScorePercent(row = {}) {
+  const audit = decisionAudit(row);
+  const score = audit.score_breakdown || {};
+  const values = [
+    row.confidence,
+    row.overall_score_pct,
+    row.score_percent,
+    score.score_percent,
+    row.score,
+  ]
+    .map(Number)
+    .filter(Number.isFinite)
+    .map((value) => (value > 0 && value <= 1 ? value * 100 : value));
+  const combined = Number(score.combined ?? row.combined_score);
+  if (Number.isFinite(combined)) values.push(combined >= -1 && combined <= 1 ? (combined + 1) * 50 : combined);
+  return values.length ? Math.max(...values) : 0;
+}
+
+function sortDecisionRows(rows = []) {
+  return (rows || []).slice().sort((a, b) => {
+    const scoreDelta = decisionScorePercent(b) - decisionScorePercent(a);
+    if (scoreDelta !== 0) return scoreDelta;
+    const timeDelta = (rowTimestamp(b)?.getTime() || 0) - (rowTimestamp(a)?.getTime() || 0);
+    if (timeDelta !== 0) return timeDelta;
+    return String(a.symbol || "").localeCompare(String(b.symbol || ""));
+  });
 }
 
 function rowActionText(row = {}) {
@@ -726,7 +765,7 @@ function deterministicReasonFromText(text, action = "HOLD") {
 
 function humanizeReasonText(text, action = "HOLD") {
   const value = String(text || "").trim();
-  if (!value) return "-";
+  if (!value || value === "-") return "Decision narrative is still being built from the next scan.";
   if (/tools\s+technical=/i.test(value)) return deterministicReasonFromText(value, action);
   if (/^[a-z0-9_]+$/i.test(value)) return reasonFromSnakeCase(value);
   if (/Fundamental Confirmation Gate:\s*\{/i.test(value)) {
@@ -1039,7 +1078,7 @@ function renderProductActionPanel(payload, suggestions, trackedIdeas, positions,
         <button type="button" data-view-jump="decisions">
           <span>Market Stance</span>
           <strong class="${escapeHtml(cssToken(breadth.breadth_regime || "neutral"))}">${escapeHtml(stance)}</strong>
-          <small>${fmtPct(breadth.pct_above_50dma || 0)} above 50-DMA</small>
+          <small>${Number(breadth.symbols_checked || 0) ? `${fmtPct(breadth.pct_above_50dma || 0)} above 50-DMA` : "Breadth history building"}</small>
         </button>
         <button type="button" data-view-jump="${state.auth?.admin ? "users" : "account"}">
           <span>${state.auth?.admin ? "Access" : "Credits"}</span>
@@ -1084,8 +1123,8 @@ function renderProductTrackingPanel(trackedIdeas = [], positions = [], suggestio
       return `<article class="product-track-item" role="button" tabindex="0" data-track-index="${index}">
         <div>
           <span class="product-track-type">Position</span>
-          <strong>${escapeHtml(row.symbol || "-")}</strong>
-          <small>${escapeHtml(summary.recommended_action || "HOLD")} · ${escapeHtml(shortValue(summary.reason || row.strategy || "-", 90))}</small>
+          <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+          <small>${escapeHtml(summary.recommended_action || "HOLD")} · ${escapeHtml(shortValue(summary.reason || row.strategy || "Position is being monitored.", 90))}</small>
         </div>
         <div class="product-track-values">
           <strong class="${pnlClass(pnl)}">${fmtMarketMoney(pnl, itemMarket)}</strong>
@@ -1099,7 +1138,7 @@ function renderProductTrackingPanel(trackedIdeas = [], positions = [], suggestio
     return `<article class="product-track-item" role="button" tabindex="0" data-track-index="${index}">
       <div>
         <span class="product-track-type">${escapeHtml(item.type === "idea" ? "Ready idea" : "Tracked idea")}</span>
-        <strong>${escapeHtml(row.symbol || "-")}</strong>
+        <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
         <small>${escapeHtml(lifecycle.label)} · ${escapeHtml(ideaTimelineText(row))}</small>
       </div>
       <div class="product-track-values">
@@ -1158,10 +1197,10 @@ function renderMarketBreadth(breadth) {
   const panel = byId("market-breadth-panel");
   if (!panel) return;
   const regime = breadth.breadth_regime || "neutral";
-  const hasGap = Boolean(breadth.data_gap);
+  const checked = Number(breadth.symbols_checked || 0);
+  const hasGap = Boolean(breadth.data_gap) || checked <= 0;
   byId("breadth-status").textContent = hasGap ? "building history" : marketStanceText(breadth);
   const pct50 = Number(breadth.pct_above_50dma || 0);
-  const checked = Number(breadth.symbols_checked || 0);
   const checkedLabel = checked ? `${checked} symbols` : "this market";
   const helpText = hasGap
     ? `History is still loading for ${checkedLabel}. New BUY calls stay conservative until enough candles are available.`
@@ -1175,7 +1214,7 @@ function renderMarketBreadth(breadth) {
     <div class="progress-row">
       <span>Stocks above 50-DMA</span>
       <div class="progress-track"><div style="width:${Math.max(0, Math.min(pct50, 100))}%"></div></div>
-      <strong>${fmtPct(pct50)}</strong>
+      <strong>${checked ? fmtPct(pct50) : "Awaiting data"}</strong>
     </div>
     <div class="mini-grid">
       <button type="button" data-breadth-detail="adr"><span>Advancers / Decliners</span><strong>${fmtNumber(breadth.advance_decline_ratio)}</strong></button>
@@ -1199,12 +1238,13 @@ function renderSectorRotation(context) {
     seen.add(key);
     return true;
   }).slice(0, 9);
-  byId("sector-status").textContent = sectors.length ? `${sectors.length} sectors` : "waiting";
+  byId("sector-status").textContent = sectors.length ? `${sectors.length} sectors` : "building";
   const tile = (sector) => {
     const rs = Number(sector.sector_vs_nifty_rs ?? sector.sector_return_5d ?? 0);
     const clamped = Math.max(-2, Math.min(2, rs));
     const heat = ((clamped + 2) / 4) * 100;
-    return `<button class="sector-tile" type="button" style="--heat:${heat}%">
+    const tone = pnlClass(rs) || "flat";
+    return `<button class="sector-tile sector-${tone}" type="button" style="--heat:${heat}%">
       <span>${escapeHtml(sector.sector || "-")}</span>
       <strong class="${pnlClass(rs)}">${fmtPct(rs)}</strong>
       <small>${escapeHtml(`${humanLabel(sector.sector_stage || "neutral")} · rank ${sector.sector_rank || "-"}`)}</small>
@@ -1310,7 +1350,8 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
   byId("ops-macro").textContent = macro.regime || marketStanceText(breadth);
-  byId("ops-macro-meta").textContent = `${fmtNumber(macro.risk_score)} risk · ${marketStanceText(breadth)}`;
+  const macroRiskText = Number.isFinite(Number(macro.risk_score)) ? `${fmtNumber(macro.risk_score)} risk` : "risk pending";
+  byId("ops-macro-meta").textContent = `${macroRiskText} · ${marketStanceText(breadth)}`;
   byId("ops-cycle").textContent = controlRunning ? (state.auth?.admin ? "Running" : "Scanning") : "Paused";
   byId("ops-cycle-meta").textContent = state.auth?.admin
     ? (payload.last_cycle_at ? `${fmtTime(payload.last_cycle_at)} · ${plainSetting("agent_interval_seconds", "-")}s` : "manual run pending")
@@ -2154,7 +2195,7 @@ function renderSentiment(rows) {
     : 0;
   const moodScore = scoredRows.length ? Math.max(0, Math.min(100, 50 + avg * 50)) : 0;
   const moodLabel = !scoredRows.length
-    ? "Data missing"
+    ? "Awaiting news"
     : moodScore >= 80
       ? "Extreme Greed"
       : moodScore >= 62
@@ -2179,7 +2220,7 @@ function renderSentiment(rows) {
   if (!rows.length) {
     body.innerHTML = emptyBlock(
       `No ${activeMarketLabel()} sentiment events yet`,
-      "Run symbol analysis or wait for the next cycle to attach verified headlines. Missing sentiment is treated as DATA_MISSING, not neutral.",
+      "Run symbol analysis or wait for the next cycle to attach verified headlines. Missing sentiment is marked as unavailable, never treated as neutral.",
       "Analyze Symbol",
       "analyze",
     );
@@ -2199,15 +2240,15 @@ function renderSentiment(rows) {
       const confidence = Math.max(0, Math.min(100, Number(row.confidence || 0) * 100));
       return `<article class="sentiment-card" role="button" tabindex="0" data-index="${index}">
         <div class="sentiment-card-head">
-          <strong>${escapeHtml(row.symbol || "-")}</strong>
-          <span class="tag ${tone}">${hasNews ? fmtNumber(row.score) : "DATA_MISSING"}</span>
+          <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+          <span class="tag ${tone}">${hasNews ? fmtNumber(row.score) : "No news"}</span>
         </div>
         <div class="score-ring small" style="--score:${confidence}">
           <strong>${hasNews ? fmtNumber(confidence) : "-"}</strong>
           <small>%</small>
         </div>
         <p>${hasNews ? `${row.headline_count || 0} verified items analysed` : "No recent verified headlines from connected news feeds."}</p>
-        <div class="sentiment-headlines">${headlines.length ? headlines.slice(0, 3).map((headline) => `<span>${escapeHtml(headline)}</span>`).join("") : `<span>DATA_MISSING</span>`}</div>
+        <div class="sentiment-headlines">${headlines.length ? headlines.slice(0, 3).map((headline) => `<span>${escapeHtml(headline)}</span>`).join("") : `<span>No verified headlines yet</span>`}</div>
       </article>`;
     })
     .join("");
@@ -2739,7 +2780,7 @@ function renderStrategyPlans(rows) {
       const symbolList = ideas.length
         ? ideas.map((idea) => {
             const life = ideaLifecycle(idea);
-            return `<span class="plan-symbol ${escapeHtml(life.className)}"><strong>${escapeHtml(idea.symbol || "-")}</strong><small>${escapeHtml(life.label)} · ${fmtPct(idea.current_return_pct || 0)}</small></span>`;
+            return `<span class="plan-symbol ${escapeHtml(life.className)}"><strong>${escapeHtml(displayValue(idea.symbol, "Symbol"))}</strong><small>${escapeHtml(life.label)} · ${fmtPct(idea.current_return_pct || 0)}</small></span>`;
           }).join("")
         : `<span class="plan-symbol empty">No ${escapeHtml(activeMarketLabel())} stocks in this plan yet</span>`;
       const followRow = state.auth?.admin
@@ -2880,7 +2921,7 @@ function positionRowHtml(row, compact = false) {
   const gates = flags.length
     ? flags.slice(0, 3).map((flag) => `<span class="gate-pill warning">${escapeHtml(humanLabel(flag))}</span>`).join("")
     : `<span class="gate-pill positive">Clear</span>`;
-  const symbolCell = `<div class="symbol-cell"><span class="symbol-logo">${escapeHtml(String(row.symbol || "--").slice(0, 2))}</span><div><strong>${escapeHtml(row.symbol || "-")}</strong><small>${escapeHtml(row.company_name || row.strategy || "-")}</small></div></div>`;
+  const symbolCell = `<div class="symbol-cell"><span class="symbol-logo">${escapeHtml(symbolInitials(row.symbol))}</span><div><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong><small>${escapeHtml(displayValue(row.company_name || row.strategy, "Position"))}</small></div></div>`;
   if (compact) {
     return `<tr>
       <td>${symbolCell}</td>
@@ -2981,11 +3022,11 @@ function renderTrackedIdeas(rows) {
       const returnPct = Number(row.return_pct || row.user_follow?.return_pct || 0);
       const market = rowMarket(row);
       const lifecycle = ideaLifecycle(row);
-      return `<article class="tracked-idea-card" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} tracked idea">
+      return `<article class="tracked-idea-card" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} tracked idea">
         <div class="tracked-idea-main">
           <div>
             <span class="signal-rank">${escapeHtml(mode)}</span>
-            <div class="tracked-title-row"><strong>${escapeHtml(row.symbol || "-")}</strong><span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span></div>
+            <div class="tracked-title-row"><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong><span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span></div>
             <small>${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))} · followed ${fmtTime(row.followed_at || row.user_follow?.created_at)}</small>
           </div>
           <div class="tracked-return ${pnlClass(returnPct)}">
@@ -3042,13 +3083,13 @@ function renderSuggestions(rows) {
       const followed = row.user_follow || null;
       const market = rowMarket(row);
       const lifecycle = ideaLifecycle(row);
-      return `<article class="signal-history-card signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(row.symbol)} idea audit">
+      return `<article class="signal-history-card signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} idea audit">
         <div class="signal-card-main">
           <div class="signal-card-title">
             <span class="signal-rank">Idea #${row.id || index + 1}</span>
             <div>
               <div class="signal-symbol-row">
-                <strong>${escapeHtml(row.symbol)}</strong>
+                <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
                 <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(row.suggestion || "WATCH")}</span>
                 <span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span>
                 ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
@@ -3189,7 +3230,7 @@ function renderMarketTape(rows, market = state.activeMarket) {
     .sort((a, b) => Math.abs(Number(quoteDayPct(b)) || 0) - Math.abs(Number(quoteDayPct(a)) || 0))
     .slice(0, 28);
   if (!ranked.length) {
-    track.innerHTML = `<span class="market-tape-empty">No ${escapeHtml(MARKET_LABELS[region] || region)} quotes yet</span>`;
+    track.innerHTML = `<span class="market-tape-empty">${escapeHtml(MARKET_LABELS[region] || region)} quotes awaiting feed</span>`;
     return;
   }
   const items = ranked.map((row) => marketTapeItem(row)).join("");
@@ -3209,7 +3250,7 @@ function marketTapeItem(row) {
   const dayPct = quoteDayPct(row);
   const cls = pnlClass(dayPct);
   return `<button class="market-tape-item ${cls}" type="button" data-quote-symbol="${escapeHtml(row.symbol)}">
-    <strong>${escapeHtml(row.symbol)}</strong>
+    <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
     <span>${fmtMarketMoney(row.price, market)}</span>
     <em>${fmtPct(dayPct)}</em>
   </button>`;
@@ -3218,12 +3259,13 @@ function marketTapeItem(row) {
 function quoteRow(row) {
   const dayPct = quoteDayPct(row);
   const market = rowMarket(row);
+  const source = displayValue(row.source, "Feed");
   return `<tr>
-        <td><strong>${escapeHtml(row.symbol)}</strong></td>
+        <td><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong></td>
         <td class="num">${fmtMarketMoney(row.price, market)}</td>
         <td class="num ${pnlClass(dayPct)}">${fmtPct(dayPct)}</td>
         <td class="num">${fmtCompact(row.volume)}</td>
-        <td><span class="source ${sourceClass(row.source)}">${escapeHtml(row.source)}</span></td>
+        <td><span class="source ${sourceClass(row.source)}">${escapeHtml(source)}</span></td>
         <td>${fmtTime(row.ts)}</td>
       </tr>`;
 }
@@ -3255,7 +3297,7 @@ function renderDecisions(rows, options = {}) {
   const body = byId("decisions-body");
   const detail = byId("decision-detail-panel");
   if (!body) return;
-  const visibleRows = rows.slice(0, 120);
+  const visibleRows = sortDecisionRows(rows).slice(0, 120);
   if (!visibleRows.length) {
     body.innerHTML = decisionFeedEmptyHtml(Boolean(options.controlRunning));
     if (detail) {
@@ -3285,30 +3327,31 @@ function renderDecisions(rows, options = {}) {
 function renderOverviewDecisions(rows, options = {}) {
   const body = byId("overview-decisions-body");
   const previewLimit = window.matchMedia?.("(max-width: 767px)")?.matches ? 3 : 5;
-  body.innerHTML = rows.length
-    ? rows
+  const rankedRows = sortDecisionRows(rows);
+  body.innerHTML = rankedRows.length
+    ? rankedRows
         .slice(0, previewLimit)
         .map((row, index) => decisionFeedCardHtml(row, index, true))
         .join("")
     : decisionFeedEmptyHtml(Boolean(options.controlRunning));
   [...body.querySelectorAll(".decision-feed-card")].forEach((card) => {
-    const row = rows[Number(card.dataset.index)];
+    const row = rankedRows[Number(card.dataset.index)];
     if (row) card.addEventListener("click", () => showDetails("Decision", row));
   });
 }
 
 function decisionFeedCardHtml(row, index, compact = false) {
   const action = String(row.action || "HOLD").toLowerCase();
-  const score = Math.max(Number(row.confidence || 0) * 100, Number(row.overall_score_pct || 0));
+  const score = decisionScorePercent(row);
   const tech = Number(row.technical_score || 0);
   const sentiment = Number(row.sentiment_score || 0);
   const reason = shortValue(readableDecisionReason(row), compact ? 150 : 240);
-  const initials = String(row.symbol || "--").slice(0, 2);
+  const initials = symbolInitials(row.symbol);
   return `<article class="decision-feed-card action-${escapeHtml(action)}" role="button" tabindex="0" data-index="${index}">
     <div class="decision-logo">${escapeHtml(initials)}</div>
     <div class="decision-main">
       <div class="decision-title-row">
-        <strong>${escapeHtml(row.symbol || "-")}</strong>
+        <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
         ${row.company_name ? `<small>${escapeHtml(row.company_name)}</small>` : ""}
         <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
         <span class="decision-time">${escapeHtml(fmtTime(row.ts))}</span>
@@ -3353,11 +3396,11 @@ function renderDecisionDetailPanel(row = {}) {
   ];
   panel.innerHTML = `
     <section class="decision-detail-hero">
-      <div class="decision-logo large">${escapeHtml(String(row.symbol || "--").slice(0, 2))}</div>
+      <div class="decision-logo large">${escapeHtml(symbolInitials(row.symbol))}</div>
       <div>
         <span>${escapeHtml(MARKET_LABELS[market] || market)} decision</span>
-        <h3>${escapeHtml(row.symbol || "-")}</h3>
-        <p>${fmtMarketMoney(row.price, market)} · ${escapeHtml(row.strategy || context.best_strategy?.name || "-")} · ${escapeHtml(fmtTime(row.ts))}</p>
+        <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
+        <p>${fmtMarketMoney(row.price, market)} · ${escapeHtml(displayValue(row.strategy || context.best_strategy?.name, "Strategy pending"))} · ${escapeHtml(fmtTime(row.ts))}</p>
       </div>
       <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
       <div class="score-ring large" style="--score:${confidence}"><strong>${fmtNumber(confidence)}</strong><small>%</small></div>
@@ -3505,8 +3548,8 @@ function renderOrders(rows) {
       return `<tr>
         <td>${fmtTime(row.ts)}</td>
         <td><span class="tag ${side}">${escapeHtml(row.side)}</span></td>
-        <td><strong>${escapeHtml(row.symbol)}</strong></td>
-        <td>${escapeHtml(row.strategy || "-")}</td>
+        <td><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong></td>
+        <td>${escapeHtml(displayValue(row.strategy, "Strategy pending"))}</td>
         <td class="num">${row.qty}</td>
         <td class="num">${fmtMarketMoney(row.price, market)}</td>
         <td class="num">${fmtMarketMoney(row.notional, market)}</td>
@@ -3654,7 +3697,7 @@ function positionSummaryHtml(summary = {}) {
         <div class="audit-card"><span>Classification</span><strong>${escapeHtml(summary.classification || "-")}</strong><small>${escapeHtml(summary.symbol || "")}</small></div>
         <div class="audit-card"><span>Overall Score</span><strong>${fmtPct(summary.overall_score_pct ?? 0)}</strong><small>${escapeHtml(summary.overall_grade || "-")} production readiness</small></div>
         <div class="audit-card"><span>Entry / MTF / Delivery</span><strong>${escapeHtml(`${summary.entry_grade || "-"} / ${summary.mtf_grade || "-"} / ${summary.delivery_bias || "-"}`)}</strong><small>effective ${escapeHtml(summary.effective_entry_grade || "-")}</small></div>
-        <div class="audit-card"><span>Sentiment</span><strong>${escapeHtml(summary.sentiment_status === "DATA_MISSING" ? "DATA_MISSING" : fmtNumber(summary.sentiment_score))}</strong><small>0.0 is not neutral</small></div>
+        <div class="audit-card"><span>Sentiment</span><strong>${escapeHtml(summary.sentiment_status === "DATA_MISSING" ? "Awaiting news" : fmtNumber(summary.sentiment_score))}</strong><small>0.0 is not neutral</small></div>
         <div class="audit-card"><span>Price</span><strong>${escapeHtml(summary.price_label || "-")}</strong><small>${escapeHtml(summary.price_source || "-")} · ${escapeHtml(summary.price_timestamp || "-")}</small></div>
         <div class="audit-card"><span>Flags</span><strong>${escapeHtml(flags.length ? flags.join(", ") : "CLEAR")}</strong><small>hard/soft rule state</small></div>
         <div class="audit-card"><span>Action</span><strong>${escapeHtml(summary.recommended_action || "-")}</strong><small>${escapeHtml(summary.reason || "-")}</small></div>
@@ -4470,10 +4513,10 @@ function renderManualAnalysis(payload) {
   byId("analyze-result").innerHTML = `
     <section class="analysis-result-shell">
       <header class="analysis-hero">
-        <div class="decision-logo large">${escapeHtml(String(payload.symbol || decision.symbol || "--").slice(0, 2))}</div>
+        <div class="decision-logo large">${escapeHtml(symbolInitials(payload.symbol || decision.symbol))}</div>
         <div>
           <span>${escapeHtml(resolvedNote)}</span>
-          <h3>${escapeHtml(payload.symbol || decision.symbol || "-")}</h3>
+          <h3>${escapeHtml(displayValue(payload.symbol || decision.symbol, "Symbol"))}</h3>
           <p>${escapeHtml(payload.company_name || decision.company_name || quote.company_name || fundamentals.company_name || "Symbol audit")}</p>
         </div>
         <div class="analysis-price">
@@ -4504,7 +4547,7 @@ function renderManualAnalysis(payload) {
           <div class="manual-analysis-card">
             <div><span>Decision</span><strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong><small>${escapeHtml(path)}</small></div>
             <div><span>Confidence</span><strong>${fmtNumber(Number(decision.confidence || 0) * 100)}%</strong><small>policy gates still apply</small></div>
-            <div><span>News Sentiment</span><strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "DATA_MISSING"}</strong><small>${headlines.length ? `${headlines.length} items` : escapeHtml(news.note || "No verified news")}</small></div>
+            <div><span>News Sentiment</span><strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "Awaiting news"}</strong><small>${headlines.length ? `${headlines.length} items` : escapeHtml(news.note || "No verified news")}</small></div>
             <div><span>Credits Used</span><strong>${fmtCredits(creditCharge)}</strong><small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small></div>
           </div>
           <p>${escapeHtml(readableDecisionReason(decision))}</p>
@@ -4614,10 +4657,11 @@ function bindControls() {
     });
   }
   const sidebarToggle = byId("sidebar-toggle-btn");
+  initializeSidebarState();
   if (sidebarToggle) {
     sidebarToggle.addEventListener("click", (event) => {
       event.stopPropagation();
-      setSidebarOpen(!document.body.classList.contains("sidebar-open"));
+      toggleSidebar();
     });
   }
   byId("sidebar-backdrop")?.addEventListener("click", () => setSidebarOpen(false));
@@ -4693,8 +4737,10 @@ function bindControls() {
   }
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
+    const navLabel = button.querySelector("span:not(.nav-icon)")?.textContent?.trim();
+    if (navLabel) button.setAttribute("aria-label", navLabel);
     button.addEventListener("click", () => {
-      setSidebarOpen(false);
+      if (isMobileSidebar()) setSidebarOpen(false);
       setView(button.dataset.view);
     });
   }
@@ -4714,6 +4760,7 @@ function bindControls() {
   });
   window.addEventListener("resize", () => {
     if (window.innerWidth > 767) setSidebarOpen(false);
+    syncSidebarControls();
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".user-menu")) {
@@ -4811,16 +4858,67 @@ function bindControls() {
   byId("logout-btn").addEventListener("click", logout);
 }
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "openstocks-sidebar-collapsed";
+
+function isMobileSidebar() {
+  return window.matchMedia("(max-width: 767px)").matches;
+}
+
+function readSidebarCollapsedPreference() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsedPreference(collapsed) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    /* ignore storage failures */
+  }
+}
+
+function initializeSidebarState() {
+  document.body.classList.remove("sidebar-open");
+  document.body.classList.toggle("sidebar-collapsed", readSidebarCollapsedPreference());
+  syncSidebarControls();
+}
+
+function toggleSidebar() {
+  if (isMobileSidebar()) {
+    setSidebarOpen(!document.body.classList.contains("sidebar-open"));
+    return;
+  }
+  setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+}
+
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle("sidebar-collapsed", Boolean(collapsed));
+  writeSidebarCollapsedPreference(Boolean(collapsed));
+  setSidebarOpen(false);
+  syncSidebarControls();
+}
+
 function setSidebarOpen(open) {
-  document.body.classList.toggle("sidebar-open", Boolean(open));
+  const shouldOpen = Boolean(open) && isMobileSidebar();
+  document.body.classList.toggle("sidebar-open", shouldOpen);
+  syncSidebarControls();
+}
+
+function syncSidebarControls() {
   const button = byId("sidebar-toggle-btn");
+  const mobile = isMobileSidebar();
+  const open = document.body.classList.contains("sidebar-open");
+  const collapsed = document.body.classList.contains("sidebar-collapsed");
   if (button) {
-    button.setAttribute("aria-expanded", open ? "true" : "false");
-    button.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
-    button.textContent = open ? "×" : "☰";
+    button.setAttribute("aria-expanded", mobile ? (open ? "true" : "false") : (collapsed ? "false" : "true"));
+    button.setAttribute("aria-label", mobile ? (open ? "Close navigation" : "Open navigation") : (collapsed ? "Expand navigation" : "Collapse navigation"));
+    button.textContent = mobile && open ? "×" : "☰";
   }
   const backdrop = byId("sidebar-backdrop");
-  if (backdrop) backdrop.hidden = !open;
+  if (backdrop) backdrop.hidden = !(mobile && open);
 }
 
 function setView(view) {
