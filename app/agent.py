@@ -232,8 +232,18 @@ class TradingAgentService:
                 },
             )
         self._cycle_phase = "candles"
-        cached_sets_before = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
+        benchmark_rows = self._relative_strength_benchmark_rows()
+        benchmark_symbols = [row["symbol"] for row in benchmark_rows]
+        cached_sets_before = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe] + benchmark_symbols)
         candle_fetch_universe, candle_fetch_plan = self._candle_fetch_universe(universe, cached_sets_before)
+        known_fetch_symbols = {row["symbol"] for row in candle_fetch_universe}
+        benchmark_fetch_universe, benchmark_fetch_plan = self._candle_fetch_universe(benchmark_rows, cached_sets_before)
+        for row in benchmark_fetch_universe:
+            if row["symbol"] not in known_fetch_symbols:
+                candle_fetch_universe.append(row)
+                known_fetch_symbols.add(row["symbol"])
+        candle_fetch_plan["relative_strength_benchmark_symbols"] = benchmark_symbols
+        candle_fetch_plan["relative_strength_benchmark_fetch"] = benchmark_fetch_plan
         fresh_candles = await self.market_data.get_candles(candle_fetch_universe) if candle_fetch_universe else {}
         fetched_at = datetime.now(timezone.utc)
         for row in candle_fetch_universe:
@@ -262,7 +272,7 @@ class TradingAgentService:
         )
         self._cycle_phase = "persist_market_data"
         self.db.upsert_candles(fresh_candles)
-        candle_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe])
+        candle_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in universe] + benchmark_symbols)
         candles = {
             symbol: sets.get("analysis") or sets.get("daily") or sets.get("intraday") or []
             for symbol, sets in candle_sets.items()
@@ -826,6 +836,46 @@ class TradingAgentService:
             stats["cache_ready"] += 1
         stats["fetch_symbols"] = len(selected)
         return selected, stats
+
+    def _relative_strength_benchmark_rows(self) -> list[dict[str, Any]]:
+        settings = self.strategy.settings
+        rows: list[dict[str, Any]] = []
+        key_map = _parse_symbol_map(getattr(settings, "rs_benchmark_instrument_keys_in", ""))
+        if self.market_region in {"IN", "BOTH"}:
+            for symbol in _csv_symbols(getattr(settings, "rs_benchmark_symbols_in", "")):
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "name": "Nifty 500" if symbol == "NIFTY500" else "Nifty 50" if symbol in {"NIFTY50", "NIFTY"} else symbol,
+                        "exchange": "NSE",
+                        "yahoo_symbol": "^CRSLDX" if symbol == "NIFTY500" else "^NSEI" if symbol in {"NIFTY50", "NIFTY"} else "",
+                        "upstox_instrument_key": key_map.get(symbol, ""),
+                        "sector": "Benchmark",
+                        "industry": "Market Index",
+                        "enabled": 0,
+                    }
+                )
+        if self.market_region in {"US", "BOTH"}:
+            for symbol in _csv_symbols(getattr(settings, "rs_benchmark_symbols_us", "")):
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "name": symbol,
+                        "exchange": "NYSEARCA" if symbol in {"SPY", "QQQ"} else "NASDAQ",
+                        "yahoo_symbol": symbol,
+                        "sector": "Benchmark",
+                        "industry": "Market ETF",
+                        "enabled": 0,
+                    }
+                )
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for row in rows:
+            symbol = row["symbol"]
+            if symbol and symbol not in seen:
+                unique.append(row)
+                seen.add(symbol)
+        return unique
 
     def _candles_are_stale(self, candles: list[Any], now: datetime, stale_after: timedelta) -> bool:
         if not candles:
@@ -1508,6 +1558,31 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _csv_symbols(value: Any) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw in str(value or "").replace(";", ",").split(","):
+        symbol = raw.strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def _parse_symbol_map(value: Any) -> dict[str, str]:
+    output: dict[str, str] = {}
+    for raw in str(value or "").split(","):
+        if ":" not in raw:
+            continue
+        symbol, mapped = raw.split(":", 1)
+        symbol = symbol.strip().upper()
+        mapped = mapped.strip()
+        if symbol and mapped:
+            output[symbol] = mapped
+    return output
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:

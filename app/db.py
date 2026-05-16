@@ -249,6 +249,7 @@ def _compact_full_spectrum(full: Any) -> dict[str, Any]:
             "breakout_quality": full.get("breakout_quality"),
             "price_volume_divergence": full.get("price_volume_divergence"),
             "timeframe_alignment": trend.get("timeframe_alignment"),
+            "relative_strength": full.get("relative_strength"),
             "sector_rotation": full.get("sector_rotation"),
             "delivery_accumulation": full.get("delivery_accumulation"),
             "options_intelligence": full.get("options_intelligence"),
@@ -337,6 +338,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
             "sector_rotation": context.get("sector_rotation"),
             "delivery_data": context.get("delivery_data"),
             "full_spectrum_summary": _compact_full_spectrum(full),
+            "universe_relative_strength": context.get("universe_relative_strength"),
             "universe_scan": context.get("universe_scan"),
             "recent_candle_count": context.get("recent_candle_count"),
         },
@@ -851,6 +853,14 @@ class Database:
                     primary key (symbol, date)
                 );
 
+                create table if not exists pattern_states (
+                    symbol text not null,
+                    pattern text not null,
+                    state_json text not null default '{}',
+                    updated_at text not null,
+                    primary key (symbol, pattern)
+                );
+
                 create index if not exists idx_market_ticks_symbol_ts
                     on market_ticks(symbol, ts);
                 create index if not exists idx_candles_symbol_ts
@@ -871,6 +881,8 @@ class Database:
                     on user_credit_ledger(user_id, ts);
                 create index if not exists idx_delivery_symbol_date
                     on delivery_data(symbol, date);
+                create index if not exists idx_pattern_states_pattern
+                    on pattern_states(pattern, updated_at);
                 create index if not exists idx_signal_ideas_symbol_status
                     on signal_ideas(symbol, status);
                 create index if not exists idx_user_idea_follows_user
@@ -2829,6 +2841,31 @@ class Database:
                 on conflict(key) do update set value = excluded.value
                 """,
                 (key, encoded),
+            )
+
+    def get_pattern_state(self, symbol: str, pattern: str, default: Any = None) -> Any:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select state_json from pattern_states where symbol = ? and pattern = ?",
+                (str(symbol or "").upper(), pattern),
+            ).fetchone()
+        if row is None:
+            return default
+        return self._decode_json(row["state_json"])
+
+    def upsert_pattern_state(self, symbol: str, pattern: str, state: dict[str, Any]) -> None:
+        if not symbol or not pattern:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into pattern_states (symbol, pattern, state_json, updated_at)
+                values (?, ?, ?, ?)
+                on conflict(symbol, pattern) do update set
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (str(symbol).upper(), pattern, json.dumps(state, default=str), utc_now()),
             )
 
     def runtime_settings(self) -> dict[str, Any]:

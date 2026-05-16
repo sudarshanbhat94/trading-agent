@@ -69,6 +69,12 @@ class Settings:
     dynamic_scan_sentiment_enabled: bool = _bool("DYNAMIC_SCAN_SENTIMENT_ENABLED", True)
     dynamic_scan_news_probe_limit: int = _int("DYNAMIC_SCAN_NEWS_PROBE_LIMIT", 16)
     dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
+    rs_benchmark_symbols_in: str = os.getenv("RS_BENCHMARK_SYMBOLS_IN", "NIFTY500,NIFTY50").strip()
+    rs_benchmark_symbols_us: str = os.getenv("RS_BENCHMARK_SYMBOLS_US", "SPY,QQQ").strip()
+    rs_benchmark_instrument_keys_in: str = os.getenv(
+        "RS_BENCHMARK_INSTRUMENT_KEYS_IN",
+        "NIFTY500:NSE_INDEX|Nifty 500,NIFTY50:NSE_INDEX|Nifty 50",
+    ).strip()
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
@@ -302,6 +308,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_scan_sentiment_enabled", "label": "Dynamic Sentiment Scan", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_news_probe_limit", "label": "Dynamic News Probe/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_sentiment_weight", "label": "Dynamic Sentiment Weight", "type": "number", "category": "Market Data", "min": 0, "max": 0.3, "step": 0.01},
+    {"key": "rs_benchmark_symbols_in", "label": "India RS Benchmarks", "type": "text", "category": "Market Data"},
+    {"key": "rs_benchmark_symbols_us", "label": "US RS Benchmarks", "type": "text", "category": "Market Data"},
+    {"key": "rs_benchmark_instrument_keys_in", "label": "India RS Benchmark Keys", "type": "text", "category": "Market Data"},
     {"key": "upstox_access_token", "label": "Upstox Analytics Token", "type": "secret", "category": "Market Data"},
     {"key": "upstox_api_base_url", "label": "Upstox API URL", "type": "text", "category": "Market Data"},
     {"key": "upstox_candle_interval", "label": "Upstox Candle Interval", "type": "select", "category": "Market Data", "choices": ["1minute", "30minute", "day", "week", "month"]},

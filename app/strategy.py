@@ -152,6 +152,7 @@ class StrategyEngine:
             )
             options_data = {} if market_region == "US" else ((options_context or {}).get("symbols") or {}).get(symbol, {})
             sector_context = ((symbol_sector_rotation or {}).get("symbols") or {}).get(symbol, {})
+            pattern_state = self._pattern_state(symbol)
             pre_filter = self._pre_filter_context(
                 symbol=symbol,
                 row=row,
@@ -179,7 +180,9 @@ class StrategyEngine:
                 market_breadth=symbol_breadth,
                 macro_event_context=macro_event_context,
                 timeframe_candles=timeframe_candles,
+                pattern_state=pattern_state,
             )
+            self._persist_pattern_state_updates(symbol, context)
             context["pre_filter"] = pre_filter
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
@@ -887,7 +890,9 @@ class StrategyEngine:
                 market_breadth=market_breadth,
                 macro_event_context=item.get("macro_event_context") or {},
                 timeframe_candles=item.get("timeframe_candles") or {},
+                pattern_state=self._pattern_state(item["symbol"]),
             )
+            self._persist_pattern_state_updates(item["symbol"], context)
             context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
             combined = deterministic_score(context)
             item["sentiment_score"] = sentiment_score
@@ -913,18 +918,38 @@ class StrategyEngine:
         rs_score = (rs_percentile - 50.0) / 50.0
         return (action_boost * 0.5) + (combined * 0.24) + (rs_score * 0.10) + (strategy * 0.10) + (technical * 0.04) + (sentiment * 0.02)
 
+    def _pattern_state(self, symbol: str) -> dict[str, Any]:
+        db = getattr(self.sentiment, "db", None)
+        if db is None or not hasattr(db, "get_pattern_state"):
+            return {}
+        state = db.get_pattern_state(symbol, "darvas_box", {}) or {}
+        return {"darvas_box": state if isinstance(state, dict) else {}}
+
+    def _persist_pattern_state_updates(self, symbol: str, context: dict[str, Any]) -> None:
+        db = getattr(self.sentiment, "db", None)
+        if db is None or not hasattr(db, "upsert_pattern_state"):
+            return
+        for signal in context.get("strategy_signals") or []:
+            if signal.get("name") != "darvas_box_breakout":
+                continue
+            update = ((signal.get("metadata") or {}).get("state_update") or {})
+            if isinstance(update, dict) and update:
+                db.upsert_pattern_state(symbol, "darvas_box", update)
+            break
+
     def _apply_universe_relative_strength(
         self,
         scan_items: list[dict[str, Any]],
         positions: dict[str, dict[str, Any]],
         candles_by_symbol: dict[str, list[Candle]],
     ) -> None:
+        benchmark_returns = self._benchmark_returns(candles_by_symbol)
         returns_by_market: dict[str, list[float]] = defaultdict(list)
         for item in scan_items:
             ret = _return_pct_from_candles(item.get("candles") or [], 63)
             if ret is None:
                 continue
-            returns_by_market[str(item.get("row", {}).get("market_region") or item.get("market_region") or market_region_for_row(item["row"]))].append(ret)
+            returns_by_market[market_region_for_row(item["row"])].append(ret)
             item["_rs_63_return"] = ret
 
         sorted_by_market = {
@@ -936,12 +961,14 @@ class StrategyEngine:
             return
 
         for item in scan_items:
-            market = str(item.get("row", {}).get("market_region") or item.get("market_region") or market_region_for_row(item["row"]))
+            market = market_region_for_row(item["row"])
             universe_returns = sorted_by_market.get(market)
             ret = item.get("_rs_63_return")
             if not universe_returns or ret is None:
                 continue
             percentile = _percentile_rank(float(ret), universe_returns)
+            benchmark = benchmark_returns.get(market)
+            relative_vs_benchmark = float(ret) - float(benchmark["return_pct"]) if benchmark else None
             bucket = "top_decile" if percentile >= 90 else "leadership" if percentile >= 80 else "lagging" if percentile < 40 else "neutral"
             profile = {
                 "available": True,
@@ -950,7 +977,15 @@ class StrategyEngine:
                 "percentile_63": round(percentile, 2),
                 "bucket": bucket,
                 "universe_size": len(universe_returns),
-                "note": "ranked against scanned symbols in the same market, not just absolute momentum",
+                "benchmark_symbol": benchmark.get("symbol") if benchmark else None,
+                "benchmark_return_63_pct": round(float(benchmark["return_pct"]), 4) if benchmark else None,
+                "relative_vs_benchmark_pct": round(relative_vs_benchmark, 4) if relative_vs_benchmark is not None else None,
+                "official_benchmark_available": bool(benchmark),
+                "note": (
+                    "ranked against scanned peers and the configured market benchmark"
+                    if benchmark
+                    else "ranked against scanned peers; configured benchmark candles unavailable"
+                ),
             }
             context = item.get("context") or {}
             context["universe_relative_strength"] = profile
@@ -961,10 +996,17 @@ class StrategyEngine:
                     "universe_return_63_pct": profile["return_pct"],
                     "universe_percentile_63": profile["percentile_63"],
                     "universe_bucket": bucket,
+                    "benchmark_symbol": profile["benchmark_symbol"],
+                    "benchmark_return_63_pct": profile["benchmark_return_63_pct"],
+                    "relative_vs_benchmark_pct": profile["relative_vs_benchmark_pct"],
                     "universe_note": profile["note"],
                 }
             )
-            if percentile >= 80:
+            if relative_vs_benchmark is not None and relative_vs_benchmark >= 2.0 and percentile >= 60:
+                relative_strength["bias"] = "outperforming"
+            elif relative_vs_benchmark is not None and relative_vs_benchmark <= -2.0:
+                relative_strength["bias"] = "underperforming"
+            elif percentile >= 80:
                 relative_strength["bias"] = "outperforming"
             elif percentile < 40:
                 relative_strength["bias"] = "underperforming"
@@ -979,6 +1021,21 @@ class StrategyEngine:
                 item.get("macro_event_context") or {},
                 context.get("market_breadth_context") or {},
             )
+
+    def _benchmark_returns(self, candles_by_symbol: dict[str, list[Candle]]) -> dict[str, dict[str, Any]]:
+        output: dict[str, dict[str, Any]] = {}
+        candidates = {
+            "IN": _csv_symbols(getattr(self.settings, "rs_benchmark_symbols_in", "")),
+            "US": _csv_symbols(getattr(self.settings, "rs_benchmark_symbols_us", "")),
+        }
+        for market, symbols in candidates.items():
+            for symbol in symbols:
+                ret = _return_pct_from_candles(candles_by_symbol.get(symbol) or [], 63)
+                if ret is None:
+                    continue
+                output[market] = {"symbol": symbol, "return_pct": ret}
+                break
+        return output
 
     def _confidence_for_action(
         self,
@@ -1337,6 +1394,18 @@ def _percentile_rank(value: float, sorted_values: list[float]) -> float:
         return 50.0
     below_or_equal = sum(1 for item in sorted_values if item <= value)
     return max(min((below_or_equal / len(sorted_values)) * 100.0, 100.0), 0.0)
+
+
+def _csv_symbols(value: Any) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw in str(value or "").replace(";", ",").split(","):
+        symbol = raw.strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
 
 
 def _execution_cost_bps(settings: Settings) -> float:

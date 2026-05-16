@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .models import Candle
@@ -26,6 +26,7 @@ class StrategySignal:
     direction: str
     confidence: float
     notes: list[str]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -37,6 +38,7 @@ def evaluate_strategy_presets(
     intraday_candles: list[Candle] | None = None,
     market_breadth: dict[str, Any] | None = None,
     sector_context: dict[str, Any] | None = None,
+    pattern_state: dict[str, Any] | None = None,
 ) -> list[StrategySignal]:
     closes = [candle.close for candle in candles]
     highs = [candle.high for candle in candles]
@@ -60,7 +62,7 @@ def evaluate_strategy_presets(
         _fifty_two_week_high_momentum(candles, quote_price),
         _minervini_trend_template(closes, quote_price),
         _vcp_breakout(candles, quote_price),
-        _darvas_box_breakout(highs, lows, closes, volumes, quote_price),
+        _darvas_box_breakout(candles, quote_price, (pattern_state or {}).get("darvas_box") or {}),
         _ema_pullback_continuation(closes, quote_price),
         _bollinger_squeeze_breakout(closes, volumes, quote_price),
         _rsi_mean_reversion(closes, quote_price),
@@ -404,42 +406,45 @@ def _vcp_breakout(candles: list[Candle], quote_price: float) -> StrategySignal:
 
 
 def _darvas_box_breakout(
-    highs: list[float],
-    lows: list[float],
-    closes: list[float],
-    volumes: list[float],
+    candles: list[Candle],
     quote_price: float,
+    state: dict[str, Any] | None = None,
 ) -> StrategySignal:
-    if len(highs) < 25 or len(lows) < 25 or len(closes) < 25:
+    if len(candles) < 25:
         return StrategySignal("darvas_box_breakout", 0.0, "HOLD", 0.0, ["need at least 25 candles for confirmed Darvas box"])
 
-    setup_highs = highs[:-1]
-    setup_lows = lows[:-1]
-    start = max(0, len(setup_highs) - 60)
-    pivot_index: int | None = None
-    for index in range(len(setup_highs) - 4, start - 1, -1):
-        pivot_high = setup_highs[index]
-        held_three_sessions = all(setup_highs[index + offset] <= pivot_high for offset in range(1, 4))
-        not_broken_before_current = all(high <= pivot_high for high in setup_highs[index + 1 :])
-        if held_three_sessions and not_broken_before_current:
-            pivot_index = index
-            break
-    if pivot_index is None:
-        return StrategySignal("darvas_box_breakout", 0.0, "HOLD", 0.0, ["no static 3-session Darvas pivot confirmed"])
+    state = state if isinstance(state, dict) else {}
+    current = candles[-1]
+    box = _active_darvas_box_from_state(state)
+    source = "persisted_state"
+    if box is None:
+        box = _find_confirmed_darvas_box(candles[:-1])
+        source = "reconstructed_from_history"
+    if box is None:
+        return StrategySignal(
+            "darvas_box_breakout",
+            0.0,
+            "HOLD",
+            0.0,
+            ["no static 3-session Darvas pivot confirmed"],
+            {"state_update": _darvas_state_update(None, current, "NO_BOX", source)},
+        )
 
-    box_high = setup_highs[pivot_index]
-    box_low = min(setup_lows[pivot_index + 1 :] or setup_lows[pivot_index:])
+    box_high = float(box["box_high"])
+    box_low = float(box["box_low"])
     box_width_pct = ((box_high - box_low) / box_low) * 100 if box_low else 100
-    box_duration = len(setup_highs) - pivot_index
-    baseline_volume = _mean(volumes[-21:-1])
-    volume_ratio = volumes[-1] / baseline_volume if baseline_volume else 1
-    confirmed_breakout = quote_price > box_high and closes[-1] >= box_high
-    volume_confirmed = volume_ratio >= 1.3 and closes[-1] > closes[-2]
+    box_duration = _darvas_box_duration(candles, box)
+    baseline_volume = _mean(candle.volume for candle in candles[-21:-1])
+    volume_ratio = current.volume / baseline_volume if baseline_volume else 1.0
+    confirmed_breakout = quote_price > box_high and current.close >= box_high
+    downside_break = quote_price < box_low or current.close < box_low
+    volume_confirmed = volume_ratio >= 1.3 and len(candles) >= 2 and current.close > candles[-2].close
     score = 0.0
     notes: list[str] = []
+    status = "ACTIVE"
     if 5 <= box_duration <= 45:
         score += 0.2
-        notes.append("static box held after pivot")
+        notes.append("static Darvas box held after pivot")
     if box_width_pct <= 15:
         score += 0.25
         notes.append("compact box")
@@ -453,8 +458,101 @@ def _darvas_box_breakout(
         notes.append("breakout volume confirmation")
     elif confirmed_breakout:
         notes.append("breakout needs volume confirmation")
-    direction = "BUY" if score >= 0.75 and confirmed_breakout and volume_confirmed else "HOLD"
-    return StrategySignal("darvas_box_breakout", round(score, 3), direction, round(score, 3), notes)
+    if downside_break:
+        score = min(score, 0.2)
+        status = "INVALIDATED"
+        notes.append("box invalidated by downside break")
+    elif confirmed_breakout and volume_confirmed:
+        status = "BROKEN_UP"
+    direction = "BUY" if score >= 0.75 and status == "BROKEN_UP" else "HOLD"
+    state_update = _darvas_state_update(box, current, status, source)
+    state_update["box_duration_candles"] = box_duration
+    metadata = {
+        "box_high": round(box_high, 4),
+        "box_low": round(box_low, 4),
+        "box_width_pct": round(box_width_pct, 4),
+        "box_duration_candles": box_duration,
+        "volume_ratio": round(volume_ratio, 4),
+        "state_source": source,
+        "state_update": state_update,
+    }
+    return StrategySignal("darvas_box_breakout", round(score, 3), direction, round(score, 3), notes, metadata)
+
+
+def _active_darvas_box_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
+    if str(state.get("status") or "").upper() != "ACTIVE":
+        return None
+    box_high = _float_or_none(state.get("box_high"))
+    box_low = _float_or_none(state.get("box_low"))
+    if box_high is None or box_low is None or box_high <= box_low or box_low <= 0:
+        return None
+    return {
+        "box_high": box_high,
+        "box_low": box_low,
+        "pivot_index": int(state.get("pivot_index") or 0),
+        "pivot_ts": state.get("pivot_ts"),
+        "confirmed_at": state.get("confirmed_at"),
+        "box_duration_candles": int(state.get("box_duration_candles") or 0),
+    }
+
+
+def _darvas_box_duration(candles: list[Candle], box: dict[str, Any]) -> int:
+    pivot_ts = box.get("pivot_ts")
+    if pivot_ts:
+        for index, candle in enumerate(candles):
+            if candle.ts == pivot_ts:
+                return max(0, len(candles) - index)
+    return max(0, int(box.get("box_duration_candles") or 0))
+
+
+def _find_confirmed_darvas_box(candles: list[Candle]) -> dict[str, Any] | None:
+    if len(candles) < 24:
+        return None
+    start = max(0, len(candles) - 60)
+    for index in range(len(candles) - 4, start - 1, -1):
+        pivot_high = candles[index].high
+        if pivot_high <= 0:
+            continue
+        held_three_sessions = all(candles[index + offset].high <= pivot_high for offset in range(1, 4))
+        not_broken_after_confirmation = all(candle.high <= pivot_high for candle in candles[index + 4 :])
+        if not held_three_sessions or not not_broken_after_confirmation:
+            continue
+        confirmation_slice = candles[index + 1 : index + 4]
+        if not confirmation_slice:
+            continue
+        box_low = min(candle.low for candle in confirmation_slice)
+        if box_low <= 0 or ((pivot_high - box_low) / box_low) * 100 > 22:
+            continue
+        return {
+            "box_high": pivot_high,
+            "box_low": box_low,
+            "pivot_index": index,
+            "pivot_ts": candles[index].ts,
+            "confirmed_at": candles[index + 3].ts,
+        }
+    return None
+
+
+def _darvas_state_update(box: dict[str, Any] | None, candle: Candle, status: str, source: str) -> dict[str, Any]:
+    payload = {
+        "status": status,
+        "source": source,
+        "last_candle_ts": candle.ts,
+        "last_close": round(float(candle.close), 4),
+    }
+    if box:
+        payload.update(
+            {
+                "box_high": round(float(box["box_high"]), 4),
+                "box_low": round(float(box["box_low"]), 4),
+                "pivot_index": int(box.get("pivot_index") or 0),
+                "pivot_ts": box.get("pivot_ts"),
+                "confirmed_at": box.get("confirmed_at"),
+            }
+        )
+        if status in {"ACTIVE", "BROKEN_UP"}:
+            payload["status"] = "ACTIVE" if status == "ACTIVE" else "BROKEN_UP"
+    return payload
 
 
 def _ema_pullback_continuation(closes: list[float], quote_price: float) -> StrategySignal:
@@ -903,6 +1001,13 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(float(value or 0.0), 1.0))
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalized_signal(signal: StrategySignal) -> StrategySignal:
     score = _clamp01(signal.score)
     confidence = _clamp01(signal.confidence)
@@ -912,4 +1017,5 @@ def _normalized_signal(signal: StrategySignal) -> StrategySignal:
         direction=signal.direction,
         confidence=round(confidence, 3),
         notes=signal.notes,
+        metadata=signal.metadata,
     )

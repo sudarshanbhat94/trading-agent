@@ -31,6 +31,7 @@ def build_symbol_tool_context(
     market_breadth: dict[str, Any] | None = None,
     macro_event_context: dict[str, Any] | None = None,
     timeframe_candles: dict[str, list[Candle]] | None = None,
+    pattern_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timeframe_candles = timeframe_candles or {}
     analysis_candles = timeframe_candles.get("analysis") or timeframe_candles.get("daily") or candles
@@ -49,6 +50,7 @@ def build_symbol_tool_context(
         intraday_candles=intraday_candles,
         market_breadth=market_breadth,
         sector_context=sector_context,
+        pattern_state=pattern_state,
     )
     best_strategy = choose_best_strategy(strategy_signals)
     normalized_global_context = global_context or {

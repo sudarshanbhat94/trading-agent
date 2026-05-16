@@ -1669,64 +1669,22 @@ def _backtest_snapshot(
     strategy_signals: list[dict[str, Any]] | None = None,
     risk_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if len(candles) < 40:
-        return {"available": False, "reason": "need at least 40 candles"}
+    if len(candles) < 60:
+        return {"available": False, "reason": "need at least 60 candles for setup-wise validation"}
     cost_bps = float((risk_limits or {}).get("execution_cost_bps") or 0.0)
     strategy_snapshot = strategy_backtest_snapshot(candles, execution_cost_bps=cost_bps)
-    closes = [candle.close for candle in candles]
-    trades = []
-    position: dict[str, Any] | None = None
-    for index in range(20, len(candles)):
-        price = closes[index]
-        sma20 = _mean(closes[index - 20 : index])
-        volume_ratio = _volume_ratio([candle.volume for candle in candles[: index + 1]], 20)
-        if position is None and price > sma20 and (volume_ratio or 0) >= 1.1:
-            stop = price * 0.96
-            target = price * 1.08
-            position = {"entry": price, "stop": stop, "target": target, "entry_index": index}
-            continue
-        if position is None:
-            continue
-        exit_reason = None
-        if price <= position["stop"]:
-            exit_reason = "stop"
-        elif price >= position["target"]:
-            exit_reason = "target"
-        elif index - position["entry_index"] >= 12:
-            exit_reason = "time"
-        if exit_reason:
-            pnl_pct = ((price - position["entry"]) / position["entry"]) * 100 if position["entry"] else 0
-            trades.append({"pnl_pct": pnl_pct, "exit": exit_reason})
-            position = None
-    if not trades:
-        return {
-            "available": True,
-            "engine": "per_strategy_daily_backtest_plus_legacy_proxy",
-            "trades": 0,
-            "expectancy": 0.0,
-            "win_rate": 0.0,
-            "max_drawdown_proxy": 0.0,
-            "execution_cost_bps": cost_bps,
-            **strategy_snapshot,
-        }
-    wins = [trade for trade in trades if trade["pnl_pct"] > 0]
-    expectancy = _mean([trade["pnl_pct"] for trade in trades])
-    equity = 0.0
-    peak = 0.0
-    max_drawdown = 0.0
-    for trade in trades:
-        equity += trade["pnl_pct"]
-        peak = max(peak, equity)
-        max_drawdown = min(max_drawdown, equity - peak)
+    best = strategy_snapshot.get("best_strategy_backtest") or {}
     return {
         "available": True,
-        "engine": "per_strategy_daily_backtest_plus_legacy_proxy",
-        "trades": len(trades),
-        "win_rate": _round(len(wins) / len(trades)),
-        "expectancy": _round(expectancy),
-        "max_drawdown_proxy": _round(max_drawdown),
-        "last_5_trades": [{"pnl_pct": _round(trade["pnl_pct"]), "exit": trade["exit"]} for trade in trades[-5:]],
+        "engine": strategy_snapshot.get("backtest_engine"),
+        "trades": best.get("trades", 0),
+        "win_rate": best.get("win_rate", 0.0),
+        "expectancy": best.get("expectancy_pct", 0.0),
+        "max_drawdown_proxy": best.get("max_drawdown_pct", 0.0),
+        "last_5_trades": best.get("last_5", []),
         "execution_cost_bps": cost_bps,
+        "validation_scope": "setup_wise_walk_forward",
+        "legacy_proxy_removed": True,
         **strategy_snapshot,
     }
 
