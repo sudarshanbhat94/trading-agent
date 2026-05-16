@@ -10787,7 +10787,7 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
     right: auto;
     bottom: 0;
     left: 0;
-    width: min(calc(100vw - 18px), 380px);
+    width: min(92vw, 360px);
     max-width: none;
     height: calc(100dvh - var(--topbar-height));
     overflow: hidden;
@@ -10836,13 +10836,13 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
   body.sidebar-open .app-sidebar .nav-item,
   body.sidebar-collapsed .app-sidebar .nav-item {
     display: grid !important;
-    grid-template-columns: 34px minmax(0, 1fr) minmax(32px, max-content);
-    gap: 12px;
+    grid-template-columns: 38px minmax(0, 1fr) clamp(38px, 18vw, 78px);
+    column-gap: 12px;
     align-items: center;
     width: 100%;
     min-width: 0;
     min-height: 58px;
-    padding: 0 12px;
+    padding: 0 14px 0 12px;
     overflow: hidden;
     border: 0;
     border-left: 4px solid transparent;
@@ -10884,10 +10884,15 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
     justify-self: end;
     align-items: center;
     justify-content: center;
-    min-width: 32px;
-    max-width: min(88px, 24vw);
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    width: auto;
+    min-width: 34px;
+    max-width: 100%;
     min-height: 28px;
-    padding: 0 9px;
+    margin: 0;
+    padding: 0 8px;
     overflow: hidden;
     border-radius: 999px;
     font-size: 12px;
