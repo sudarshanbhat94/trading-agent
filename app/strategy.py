@@ -22,6 +22,12 @@ def should_call_llm(signal: dict[str, Any]) -> bool:
 
 def _llm_prefilter_reason(signal: dict[str, Any]) -> str | None:
     context = signal.get("context") if isinstance(signal.get("context"), dict) else signal
+    position = context.get("position") if isinstance(context.get("position"), dict) else {}
+    try:
+        if float(position.get("qty") or 0.0) > 0:
+            return None
+    except (TypeError, ValueError):
+        pass
     full = context.get("full_spectrum_analysis") or {}
     system_audit = context.get("system_gate_audit") or {}
     if signal.get("hard_blocked") is True or system_audit.get("hard_blocked") is True:
@@ -89,8 +95,8 @@ class StrategyEngine:
         timeframe_candles_by_symbol = timeframe_candles_by_symbol or {}
         risk_limits = {
             "max_positions": self.settings.max_positions,
-            "max_position_pct": self.settings.max_position_pct,
-            "max_order_value_pct": self.settings.max_order_value_pct,
+            "max_position_pct": min(float(self.settings.max_position_pct), 0.15),
+            "max_order_value_pct": min(float(self.settings.max_order_value_pct), 0.15),
             "stop_loss_pct": self.settings.stop_loss_pct,
             "take_profit_pct": self.settings.take_profit_pct,
             "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
@@ -204,6 +210,7 @@ class StrategyEngine:
                 await asyncio.sleep(0)
 
         await self._refresh_candidate_sentiment(scan_items, positions, candles_by_symbol, risk_limits, global_context, institutional_context, market_breadth)
+        self._apply_universe_relative_strength(scan_items, positions, candles_by_symbol)
         ranked = sorted(scan_items, key=self._scan_priority, reverse=True)
         for rank, item in enumerate(ranked, start=1):
             context = item["context"]
@@ -214,7 +221,7 @@ class StrategyEngine:
                 "priority_score": round(self._scan_priority_score(item), 4),
                 "selection_basis": (
                     "LLM primary reviews open positions first for exit risk, then non-HOLD candidates, "
-                    "then highest-ranked symbols by combined score, full-spectrum layers, strategy confidence, technical score, and sentiment"
+                    "then highest-ranked symbols by combined score, universe relative strength, full-spectrum layers, strategy confidence, technical score, and sentiment"
                 ),
             }
 
@@ -656,9 +663,10 @@ class StrategyEngine:
         if correlation_gate.get("warning"):
             sizing_grade["modifier_details"].append(correlation_gate.get("warning"))
             sizing_grade["final_multiplier"] = round(max(float(sizing_grade["final_multiplier"]) * 0.5, 0.0), 4)
+            max_position_pct = min(float(self.settings.max_position_pct), 0.15)
             sizing_grade["recommended_max_position_pct"] = min(
-                self.settings.max_position_pct,
-                self.settings.max_position_pct * sizing_grade["final_multiplier"],
+                max_position_pct,
+                max_position_pct * sizing_grade["final_multiplier"],
             )
         context["sizing_grade"] = sizing_grade
         evaluated_gates = [
@@ -685,7 +693,14 @@ class StrategyEngine:
             return "HOLD"
         if combined >= threshold and confluence_total >= 16 and scorecard.get("buy_ready") and not has_position:
             return "BUY"
-        if (combined <= -0.38 or exit_pressure) and has_position:
+        if has_position and combined <= -0.38:
+            context["score_weakness_exit_review"] = {
+                "combined": round(combined, 4),
+                "review_threshold": -0.38,
+                "policy": "no_direct_sell_from_composite_score",
+                "recommended_action": "risk_review_or_trail_stop",
+            }
+        if exit_pressure and has_position:
             return "SELL"
         return "HOLD"
 
@@ -894,7 +909,76 @@ class StrategyEngine:
 
     def _scan_priority_score(self, item: dict[str, Any]) -> float:
         action_boost, combined, strategy, technical, sentiment = self._scan_priority(item)
-        return (action_boost * 0.5) + (combined * 0.28) + (strategy * 0.12) + (technical * 0.06) + (sentiment * 0.04)
+        rs_percentile = float(((item.get("context") or {}).get("universe_relative_strength") or {}).get("percentile_63") or 50.0)
+        rs_score = (rs_percentile - 50.0) / 50.0
+        return (action_boost * 0.5) + (combined * 0.24) + (rs_score * 0.10) + (strategy * 0.10) + (technical * 0.04) + (sentiment * 0.02)
+
+    def _apply_universe_relative_strength(
+        self,
+        scan_items: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+        candles_by_symbol: dict[str, list[Candle]],
+    ) -> None:
+        returns_by_market: dict[str, list[float]] = defaultdict(list)
+        for item in scan_items:
+            ret = _return_pct_from_candles(item.get("candles") or [], 63)
+            if ret is None:
+                continue
+            returns_by_market[str(item.get("row", {}).get("market_region") or item.get("market_region") or market_region_for_row(item["row"]))].append(ret)
+            item["_rs_63_return"] = ret
+
+        sorted_by_market = {
+            market: sorted(values)
+            for market, values in returns_by_market.items()
+            if len(values) >= 5
+        }
+        if not sorted_by_market:
+            return
+
+        for item in scan_items:
+            market = str(item.get("row", {}).get("market_region") or item.get("market_region") or market_region_for_row(item["row"]))
+            universe_returns = sorted_by_market.get(market)
+            ret = item.get("_rs_63_return")
+            if not universe_returns or ret is None:
+                continue
+            percentile = _percentile_rank(float(ret), universe_returns)
+            bucket = "top_decile" if percentile >= 90 else "leadership" if percentile >= 80 else "lagging" if percentile < 40 else "neutral"
+            profile = {
+                "available": True,
+                "window": "63_candles",
+                "return_pct": round(float(ret), 4),
+                "percentile_63": round(percentile, 2),
+                "bucket": bucket,
+                "universe_size": len(universe_returns),
+                "note": "ranked against scanned symbols in the same market, not just absolute momentum",
+            }
+            context = item.get("context") or {}
+            context["universe_relative_strength"] = profile
+            full = context.get("full_spectrum_analysis") or {}
+            relative_strength = full.setdefault("relative_strength", {})
+            relative_strength.update(
+                {
+                    "universe_return_63_pct": profile["return_pct"],
+                    "universe_percentile_63": profile["percentile_63"],
+                    "universe_bucket": bucket,
+                    "universe_note": profile["note"],
+                }
+            )
+            if percentile >= 80:
+                relative_strength["bias"] = "outperforming"
+            elif percentile < 40:
+                relative_strength["bias"] = "underperforming"
+            else:
+                relative_strength["bias"] = "neutral"
+            item["score_breakdown"] = deterministic_score_breakdown(context)
+            item["combined"] = item["score_breakdown"]["combined"]
+            item["action"] = self._action_from_context(item["symbol"], item["combined"], positions, context, candles_by_symbol)
+            item["confidence"] = self._confidence_for_action(
+                item["action"],
+                item["combined"],
+                item.get("macro_event_context") or {},
+                context.get("market_breadth_context") or {},
+            )
 
     def _confidence_for_action(
         self,
@@ -936,10 +1020,10 @@ class StrategyEngine:
             key=self._exit_review_priority,
             reverse=True,
         )
-        action_candidates = [item for item in eligible if item["action"] != "HOLD"]
-        add(action_candidates)
+        action_candidates = [item for item in eligible if item["action"] != "HOLD" and not self._has_open_position(item)]
+        add(open_positions)
         if len(selected) < limit:
-            add(open_positions)
+            add(action_candidates)
         if len(selected) < limit:
             add(eligible)
         return set(selected)
@@ -1029,7 +1113,8 @@ class StrategyEngine:
             multiplier *= 0.5
             modifiers.append("breadth_bear_warning x0.5")
         multiplier = max(min(multiplier, 2.0), 0.0)
-        recommended = min(self.settings.max_position_pct, self.settings.max_position_pct * multiplier)
+        max_position_pct = min(float(self.settings.max_position_pct), 0.15)
+        recommended = min(max_position_pct, max_position_pct * multiplier)
         return {
             "final_multiplier": round(multiplier, 4),
             "base_multiplier": base,
@@ -1075,7 +1160,7 @@ class StrategyEngine:
                 "failed": scorecard.get("must_pass_failed", []),
                 "hard_veto": (scorecard.get("hard_veto") or {}).get("failed", []),
             },
-            "sell_threshold": -0.38,
+            "score_weakness_review_threshold": -0.38,
             "buy_requires_no_existing_position": True,
             "buy_requires_no_new_longs_clear": True,
             "sell_requires_existing_position": True,
@@ -1107,7 +1192,7 @@ class StrategyEngine:
                 "unrealized_pnl_pct": round(pnl_pct, 4),
                 "hard_stop_price": round(avg_price * (1 - self.settings.stop_loss_pct), 4) if avg_price else None,
                 "take_profit_price": round(avg_price * (1 + self.settings.take_profit_pct), 4) if avg_price else None,
-                "deterministic_exit": "SELL if combined <= -0.38, hard stop hit, or take-profit hit",
+                "deterministic_exit": "SELL on hard stop, take-profit, persistent distribution, or explicit invalidation; composite weakness only triggers risk review",
                 "scorecard_exit": "SELL if a hard veto, severe negative sentiment, or high-conflict condition appears",
                 "llm_exit_review": "primary mode reviews open positions before new entries when within LLM Symbols/Cycle limit",
             }
@@ -1119,7 +1204,7 @@ class StrategyEngine:
                 "action_reason": action_reason,
                 "action_policy": {
                     "BUY": "combined score >= 0.35, confluence >= 16/26, institutional scorecard buy_ready=true, no existing long position, and no no-new-longs override",
-                    "SELL": "existing long position plus combined score <= -0.38, LLM exit call, hard stop, take-profit, or invalidation trigger",
+                    "SELL": "existing long position plus LLM exit call, hard stop, take-profit, persistent distribution, or explicit invalidation trigger",
                     "HOLD": "score/action gates did not permit a trade",
                 },
                 "score_breakdown": score_breakdown,
@@ -1235,6 +1320,23 @@ def _round(value: Any, digits: int = 4) -> float | None:
         return round(float(value), digits)
     except (TypeError, ValueError):
         return None
+
+
+def _return_pct_from_candles(candles: list[Candle], window: int) -> float | None:
+    closes = [float(candle.close) for candle in candles if candle.close]
+    if len(closes) <= window:
+        return None
+    base = closes[-window - 1]
+    if base <= 0:
+        return None
+    return ((closes[-1] - base) / base) * 100
+
+
+def _percentile_rank(value: float, sorted_values: list[float]) -> float:
+    if not sorted_values:
+        return 50.0
+    below_or_equal = sum(1 for item in sorted_values if item <= value)
+    return max(min((below_or_equal / len(sorted_values)) * 100.0, 100.0), 0.0)
 
 
 def _execution_cost_bps(settings: Settings) -> float:

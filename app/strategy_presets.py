@@ -62,7 +62,7 @@ def evaluate_strategy_presets(
         _vcp_breakout(candles, quote_price),
         _darvas_box_breakout(highs, lows, closes, volumes, quote_price),
         _ema_pullback_continuation(closes, quote_price),
-        _bollinger_squeeze_breakout(closes, quote_price),
+        _bollinger_squeeze_breakout(closes, volumes, quote_price),
         _rsi_mean_reversion(closes, quote_price),
         _donchian_momentum_breakout(highs, lows, closes, volumes, quote_price),
         _volume_price_accumulation(candles, quote_price),
@@ -328,26 +328,78 @@ def _minervini_trend_template(closes: list[float], quote_price: float) -> Strate
     return StrategySignal("minervini_trend_template", round(score, 3), direction, round(score, 3), notes)
 
 
+def _split_evenly(values: list[Candle], parts: int) -> list[list[Candle]]:
+    if parts <= 0:
+        return []
+    size = len(values) // parts
+    output: list[list[Candle]] = []
+    for index in range(parts):
+        start = index * size
+        end = (index + 1) * size if index < parts - 1 else len(values)
+        output.append(values[start:end])
+    return output
+
+
+def _base_range_pct(candles: list[Candle]) -> float | None:
+    lows = [candle.low for candle in candles if candle.low]
+    highs = [candle.high for candle in candles if candle.high]
+    if not lows or not highs:
+        return None
+    low = min(lows)
+    return ((max(highs) - low) / low) * 100 if low else None
+
+
 def _vcp_breakout(candles: list[Candle], quote_price: float) -> StrategySignal:
-    ranges = [((candle.high - candle.low) / candle.close) for candle in candles[-30:] if candle.close]
-    volumes = [candle.volume for candle in candles[-30:]]
-    early_range = _mean(ranges[:10])
-    late_range = _mean(ranges[-10:])
-    volume_dryup = _mean(volumes[-5:]) < _mean(volumes[:15]) * 0.75 if len(volumes) >= 20 else False
-    pivot = max(candle.high for candle in candles[-15:-1])
-    breakout = quote_price > pivot
+    if len(candles) < 45:
+        return StrategySignal("vcp_breakout", 0.0, "HOLD", 0.0, ["need at least 45 candles for VCP base"])
+
+    base = candles[-65:] if len(candles) >= 65 else candles[-45:]
+    setup = base[:-1]
+    current = base[-1]
+    if len(setup) < 44:
+        return StrategySignal("vcp_breakout", 0.0, "HOLD", 0.0, ["need completed base before breakout candle"])
+
+    thirds = _split_evenly(setup, 3)
+    contraction_ranges = [_base_range_pct(segment) for segment in thirds]
+    progressive_contraction = (
+        all(value is not None for value in contraction_ranges)
+        and contraction_ranges[1] <= contraction_ranges[0] * 0.85
+        and contraction_ranges[2] <= contraction_ranges[1] * 0.85
+    )
+    base_high = max(candle.high for candle in setup)
+    base_low = min(candle.low for candle in setup)
+    base_width_pct = ((base_high - base_low) / base_low) * 100 if base_low else 100.0
+    early_volume = _mean(candle.volume for candle in setup[: max(12, len(setup) // 3)])
+    late_volume = _mean(candle.volume for candle in setup[-10:])
+    baseline_volume = _mean(candle.volume for candle in setup[-21:-1])
+    volume_dryup = bool(early_volume) and late_volume <= early_volume * 0.75
+    volume_ratio = (current.volume / baseline_volume) if baseline_volume else None
+    breakout = quote_price > base_high and current.close >= base_high * 0.995
+    breakout_volume = volume_ratio is not None and volume_ratio >= 1.25
     score = 0.0
     notes: list[str] = []
-    if late_range < early_range * 0.65:
+    if progressive_contraction:
         score += 0.35
-        notes.append("range contraction")
+        notes.append("three-leg volatility contraction")
+    else:
+        notes.append("contraction cycles not progressive")
+    if 4 <= len(setup) // 5 <= 13 and base_width_pct <= 35:
+        score += 0.15
+        notes.append("base duration/width acceptable")
+    elif base_width_pct > 35:
+        notes.append("base too wide for clean VCP")
     if volume_dryup:
-        score += 0.25
+        score += 0.20
         notes.append("volume dry-up")
     if breakout:
-        score += 0.35
-        notes.append("pivot breakout")
-    direction = "BUY" if score >= 0.65 else "HOLD"
+        score += 0.20
+        notes.append("breakout through full-base pivot")
+    if breakout_volume:
+        score += 0.15
+        notes.append("breakout volume confirmation")
+    elif breakout:
+        notes.append("breakout needs volume confirmation")
+    direction = "BUY" if score >= 0.75 and breakout and breakout_volume else "HOLD"
     return StrategySignal("vcp_breakout", round(score, 3), direction, round(score, 3), notes)
 
 
@@ -358,23 +410,50 @@ def _darvas_box_breakout(
     volumes: list[float],
     quote_price: float,
 ) -> StrategySignal:
-    box_high = max(highs[-20:-1])
-    box_low = min(lows[-20:-1])
+    if len(highs) < 25 or len(lows) < 25 or len(closes) < 25:
+        return StrategySignal("darvas_box_breakout", 0.0, "HOLD", 0.0, ["need at least 25 candles for confirmed Darvas box"])
+
+    setup_highs = highs[:-1]
+    setup_lows = lows[:-1]
+    start = max(0, len(setup_highs) - 60)
+    pivot_index: int | None = None
+    for index in range(len(setup_highs) - 4, start - 1, -1):
+        pivot_high = setup_highs[index]
+        held_three_sessions = all(setup_highs[index + offset] <= pivot_high for offset in range(1, 4))
+        not_broken_before_current = all(high <= pivot_high for high in setup_highs[index + 1 :])
+        if held_three_sessions and not_broken_before_current:
+            pivot_index = index
+            break
+    if pivot_index is None:
+        return StrategySignal("darvas_box_breakout", 0.0, "HOLD", 0.0, ["no static 3-session Darvas pivot confirmed"])
+
+    box_high = setup_highs[pivot_index]
+    box_low = min(setup_lows[pivot_index + 1 :] or setup_lows[pivot_index:])
     box_width_pct = ((box_high - box_low) / box_low) * 100 if box_low else 100
-    baseline_volume = _mean(volumes[-20:-1])
+    box_duration = len(setup_highs) - pivot_index
+    baseline_volume = _mean(volumes[-21:-1])
     volume_ratio = volumes[-1] / baseline_volume if baseline_volume else 1
+    confirmed_breakout = quote_price > box_high and closes[-1] >= box_high
+    volume_confirmed = volume_ratio >= 1.3 and closes[-1] > closes[-2]
     score = 0.0
     notes: list[str] = []
-    if box_width_pct <= 12:
+    if 5 <= box_duration <= 45:
+        score += 0.2
+        notes.append("static box held after pivot")
+    if box_width_pct <= 15:
         score += 0.25
         notes.append("compact box")
-    if quote_price > box_high:
-        score += 0.45
+    elif box_width_pct > 22:
+        notes.append("box too wide")
+    if confirmed_breakout:
+        score += 0.25
         notes.append("box breakout")
-    if volume_ratio > 1.3 and closes[-1] > closes[-2]:
-        score += 0.2
+    if volume_confirmed:
+        score += 0.25
         notes.append("breakout volume confirmation")
-    direction = "BUY" if score >= 0.6 else "HOLD"
+    elif confirmed_breakout:
+        notes.append("breakout needs volume confirmation")
+    direction = "BUY" if score >= 0.75 and confirmed_breakout and volume_confirmed else "HOLD"
     return StrategySignal("darvas_box_breakout", round(score, 3), direction, round(score, 3), notes)
 
 
@@ -396,7 +475,7 @@ def _ema_pullback_continuation(closes: list[float], quote_price: float) -> Strat
     return StrategySignal("ema_pullback_continuation", round(score, 3), direction, round(score, 3), notes)
 
 
-def _bollinger_squeeze_breakout(closes: list[float], quote_price: float) -> StrategySignal:
+def _bollinger_squeeze_breakout(closes: list[float], volumes: list[float], quote_price: float) -> StrategySignal:
     recent = closes[-20:]
     basis = _mean(recent)
     sigma = _pstdev(recent) if len(recent) > 1 else 0
@@ -409,15 +488,26 @@ def _bollinger_squeeze_breakout(closes: list[float], quote_price: float) -> Stra
         if sample_mean:
             prior_widths.append(((4 * _pstdev(sample)) / sample_mean) * 100)
     squeeze = bool(prior_widths) and width_pct <= sorted(prior_widths)[max(0, int(len(prior_widths) * 0.2) - 1)]
+    baseline_volume = _mean(volumes[-21:-1]) if len(volumes) >= 21 else 0.0
+    volume_ratio = volumes[-1] / baseline_volume if baseline_volume else None
+    volume_confirmed = volume_ratio is not None and volume_ratio >= 1.25
     score = 0.0
     notes: list[str] = []
     if squeeze:
-        score += 0.35
+        score += 0.3
         notes.append("low volatility squeeze")
     if quote_price > upper:
-        score += 0.4
+        score += 0.25
         notes.append("upper band breakout")
-    direction = "BUY" if score >= 0.6 else "HOLD"
+    if volume_confirmed:
+        score += 0.25
+        notes.append("volume confirms squeeze break")
+    elif quote_price > upper:
+        notes.append("upper band break needs volume confirmation")
+    if len(closes) >= 2 and closes[-1] > closes[-2]:
+        score += 0.08
+        notes.append("close momentum positive")
+    direction = "BUY" if score >= 0.7 and squeeze and quote_price > upper and volume_confirmed else "HOLD"
     return StrategySignal("bollinger_squeeze_breakout", round(score, 3), direction, round(score, 3), notes)
 
 
@@ -698,16 +788,19 @@ def _ema(values: list[float], window: int) -> float | None:
 def _rsi(values: list[float], window: int) -> float | None:
     if len(values) <= window:
         return None
-    gains = []
-    losses = []
-    for previous, current in zip(values[-(window + 1) :], values[-window:]):
+    gains: list[float] = []
+    losses: list[float] = []
+    for previous, current in zip(values, values[1:]):
         change = current - previous
-        gains.append(max(change, 0))
-        losses.append(abs(min(change, 0)))
-    average_gain = _mean(gains)
-    average_loss = _mean(losses)
+        gains.append(max(change, 0.0))
+        losses.append(abs(min(change, 0.0)))
+    average_gain = _mean(gains[:window])
+    average_loss = _mean(losses[:window])
+    for gain, loss in zip(gains[window:], losses[window:]):
+        average_gain = ((average_gain * (window - 1)) + gain) / window
+        average_loss = ((average_loss * (window - 1)) + loss) / window
     if average_loss == 0:
-        return 100.0
+        return 100.0 if average_gain > 0 else 50.0
     rs = average_gain / average_loss
     return 100 - (100 / (1 + rs))
 

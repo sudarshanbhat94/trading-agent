@@ -37,21 +37,19 @@ def _ema(values: list[float], window: int) -> float | None:
 def _rsi(values: list[float], window: int = 14) -> float | None:
     if len(values) <= window:
         return None
-    gains = []
-    losses = []
-    recent = values[-(window + 1) :]
-    for previous, current in zip(recent, recent[1:]):
+    gains: list[float] = []
+    losses: list[float] = []
+    for previous, current in zip(values, values[1:]):
         change = current - previous
-        if change >= 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(change))
-    average_gain = sum(gains) / window
-    average_loss = sum(losses) / window
+        gains.append(max(change, 0.0))
+        losses.append(abs(min(change, 0.0)))
+    average_gain = sum(gains[:window]) / window
+    average_loss = sum(losses[:window]) / window
+    for gain, loss in zip(gains[window:], losses[window:]):
+        average_gain = ((average_gain * (window - 1)) + gain) / window
+        average_loss = ((average_loss * (window - 1)) + loss) / window
     if average_loss == 0:
-        return 100.0
+        return 100.0 if average_gain > 0 else 50.0
     relative_strength = average_gain / average_loss
     return 100 - (100 / (1 + relative_strength))
 

@@ -230,7 +230,7 @@ class PaperBroker:
         allocation_cap = rule_audit.get("allocation_cap_multiplier")
         if allocation_cap is not None:
             max_position_pct = min(float(max_position_pct), self.settings.max_position_pct * float(allocation_cap))
-        absolute_cap = self.settings.max_position_pct * 1.5
+        absolute_cap = min(float(self.settings.max_position_pct), 0.15)
         max_position_pct = min(float(max_position_pct), absolute_cap)
         max_position_value = portfolio_equity * max_position_pct
         if current_value >= max_position_value:

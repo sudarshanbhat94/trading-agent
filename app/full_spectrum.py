@@ -1118,15 +1118,17 @@ def _planned_stop(price: float, atr: float, stop_pct: float, support: float | No
     if price <= 0:
         return 0.0, "invalid_price"
     risk_floor = price * 0.006
-    risk_ceiling = price * 0.065
-    target_risk = max(float(atr or 0.0) * 1.15, price * stop_pct, risk_floor)
+    risk_ceiling = price * 0.08
+    atr_value = max(float(atr or 0.0), 0.0)
+    target_risk = max(atr_value * 1.5 if atr_value else price * stop_pct, risk_floor)
     if support and 0 < support < price:
         support_stop = support - max(float(atr or 0.0) * 0.25, price * 0.002)
         support_risk = price - support_stop
-        if risk_floor <= support_risk <= risk_ceiling:
+        max_support_risk = max(target_risk * 1.25, target_risk + price * 0.005)
+        if risk_floor <= support_risk <= min(risk_ceiling, max_support_risk):
             return max(support_stop, price - risk_ceiling), "nearest_support_minus_atr_buffer"
     risk = min(max(target_risk, risk_floor), risk_ceiling)
-    return price - risk, "atr_or_configured_pct"
+    return price - risk, "atr_1_5x" if atr_value else "configured_pct_fallback"
 
 
 def _planned_targets(
@@ -2670,16 +2672,19 @@ def _vwap(candles: list[Candle]) -> float | None:
 def _rsi(values: list[float], window: int) -> float | None:
     if len(values) <= window:
         return None
-    gains = []
-    losses = []
-    for previous, current in zip(values[-(window + 1) :], values[-window:]):
+    gains: list[float] = []
+    losses: list[float] = []
+    for previous, current in zip(values, values[1:]):
         change = current - previous
-        gains.append(max(change, 0))
-        losses.append(abs(min(change, 0)))
-    avg_gain = _mean(gains)
-    avg_loss = _mean(losses)
+        gains.append(max(change, 0.0))
+        losses.append(abs(min(change, 0.0)))
+    avg_gain = _mean(gains[:window])
+    avg_loss = _mean(losses[:window])
+    for gain, loss in zip(gains[window:], losses[window:]):
+        avg_gain = ((avg_gain * (window - 1)) + gain) / window
+        avg_loss = ((avg_loss * (window - 1)) + loss) / window
     if avg_loss == 0:
-        return 100.0
+        return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 

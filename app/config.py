@@ -94,8 +94,8 @@ class Settings:
 
     initial_cash_inr: float = _float("INITIAL_CASH_INR", 10_000)
     max_positions: int = _int("MAX_POSITIONS", 5)
-    max_position_pct: float = _float("MAX_POSITION_PCT", 0.25)
-    max_order_value_pct: float = _float("MAX_ORDER_VALUE_PCT", 0.2)
+    max_position_pct: float = _float("MAX_POSITION_PCT", 0.15)
+    max_order_value_pct: float = _float("MAX_ORDER_VALUE_PCT", 0.1)
     max_trades_per_cycle: int = _int("MAX_TRADES_PER_CYCLE", 2)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.035)
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.08)
@@ -202,7 +202,7 @@ class Settings:
     llm_temperature: float = _float("LLM_TEMPERATURE", 0.05)
     llm_top_p: float = _float("LLM_TOP_P", 0.7)
     llm_max_tokens: int = _int("LLM_MAX_TOKENS", 4096)
-    llm_max_symbols_per_cycle: int = _int("LLM_MAX_SYMBOLS_PER_CYCLE", 1)
+    llm_max_symbols_per_cycle: int = _int("LLM_MAX_SYMBOLS_PER_CYCLE", 3)
     llm_primary_min_confidence: float = _float("LLM_PRIMARY_MIN_CONFIDENCE", 0.62)
     llm_reasoning_effort: str = os.getenv("LLM_REASONING_EFFORT", "high").strip().lower()
     llm_thinking_enabled: bool = _bool("LLM_THINKING_ENABLED", True)
@@ -336,8 +336,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "llm_thinking_enabled", "label": "DeepSeek Thinking", "type": "boolean", "category": "LLM Brain"},
     {"key": "llm_timeout_seconds", "label": "LLM Timeout Seconds", "type": "number", "category": "LLM Brain", "min": 5, "step": 5},
     {"key": "max_positions", "label": "Max Positions", "type": "number", "category": "Risk", "min": 1, "step": 1},
-    {"key": "max_position_pct", "label": "Max Position %", "type": "number", "category": "Risk", "min": 0.01, "max": 1, "step": 0.01},
-    {"key": "max_order_value_pct", "label": "Max Order %", "type": "number", "category": "Risk", "min": 0.01, "max": 1, "step": 0.01},
+    {"key": "max_position_pct", "label": "Max Position %", "type": "number", "category": "Risk", "min": 0.01, "max": 0.15, "step": 0.01},
+    {"key": "max_order_value_pct", "label": "Max Order %", "type": "number", "category": "Risk", "min": 0.01, "max": 0.15, "step": 0.01},
     {"key": "max_trades_per_cycle", "label": "Max Trades/Cycle", "type": "number", "category": "Risk", "min": 1, "step": 1},
     {"key": "stop_loss_pct", "label": "Stop Loss %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},
     {"key": "take_profit_pct", "label": "Take Profit %", "type": "number", "category": "Risk", "min": 0, "max": 2, "step": 0.005},
