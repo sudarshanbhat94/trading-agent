@@ -1877,18 +1877,27 @@ function renderUsers(rows) {
       const active = Boolean(user.active);
       const credits = user.credit_usage || {};
       const upstox = user.broker_accounts?.upstox || {};
+      const sharedUpstox = state.account?.upstox || {};
       const kite = user.broker_accounts?.kite || {};
       const assigned = user.assigned_llm || {};
       const signalMode = String(user.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
-      const upstoxLabel = upstox.connected ? (upstox.scope === "user" ? "personal" : "shared") : "off";
+      const upstoxEffective = Boolean(upstox.connected || sharedUpstox.connected);
+      const upstoxLabel = upstox.connected
+        ? (upstox.scope === "user" ? "personal" : "shared data")
+        : sharedUpstox.connected
+          ? "shared data"
+          : "off";
       const kiteLabel = kite.connected ? (kite.scope === "user" ? "personal" : "saved") : "off";
+      const brokerSubLabel = upstoxEffective && upstox.scope !== "user"
+        ? `analytics only${kite.connected ? ` · Kite ${kiteLabel}` : ""}`
+        : `Kite ${kiteLabel}`;
       return `<tr data-user-id="${user.id}">
         <td><strong>${escapeHtml(user.username)}</strong></td>
         <td><span class="source ${user.role === "admin" ? "live" : ""}">${escapeHtml(user.role)}</span><br><small>${escapeHtml(assigned.provider || "default")} · ${escapeHtml(assigned.model || "default")}</small></td>
         <td><strong>${fmtCredits(user.credit_balance || credits.credit_balance || 0)}</strong><br><small>daily ${fmtCredits(user.daily_credit_limit || credits.daily_credit_limit || 0)}</small></td>
         <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
         <td><span class="tag ${signalModeClass(signalMode)}">${escapeHtml(signalModeLabel(signalMode))}</span></td>
-        <td><span class="tag ${upstox.connected ? "open" : "watch"}">Upstox ${upstoxLabel}</span><br><small>Kite ${kiteLabel}</small></td>
+        <td><span class="tag ${upstoxEffective ? "open" : "watch"}">Upstox ${upstoxLabel}</span><br><small>${escapeHtml(brokerSubLabel)}</small></td>
         <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
@@ -2169,6 +2178,20 @@ function renderAccount(account) {
   renderUserBrokerStatus();
 }
 
+async function refreshAccountAndUsers() {
+  try {
+    const accountResponse = await fetch("/api/account");
+    if (accountResponse.ok) {
+      renderAccount(await accountResponse.json());
+    }
+    if (state.auth?.admin) {
+      fetchUsers();
+    }
+  } catch {
+    /* Keep the current screen usable; the regular status refresh will retry. */
+  }
+}
+
 async function saveMonitorSymbols(event) {
   event.preventDefault();
   const status = byId("monitor-symbols-status");
@@ -2443,10 +2466,11 @@ function renderUserBrokerStatus() {
   const kiteStatus = byId("my-kite-status");
   const brokerStatus = byId("user-broker-status");
   const upstoxPersonal = upstox.connected && upstox.scope === "user";
+  const upstoxShared = !upstoxPersonal && Boolean(upstox.connected || sharedUpstox.connected);
   const kitePersonal = kite.connected && kite.scope === "user";
   if (upstoxStatus) {
-    upstoxStatus.textContent = upstoxPersonal ? "personal connected" : upstox.connected ? "shared analytics" : "not connected";
-    upstoxStatus.className = `settings-inline-status ${upstox.connected ? "positive" : ""}`;
+    upstoxStatus.textContent = upstoxPersonal ? "personal connected" : upstoxShared ? "using shared analytics" : "not connected";
+    upstoxStatus.className = `settings-inline-status ${upstoxPersonal || upstoxShared ? "positive" : ""}`;
   }
   if (kiteStatus) {
     kiteStatus.textContent = kitePersonal ? "personal connected" : kite.api_key_saved ? "key saved" : "not connected";
@@ -2552,6 +2576,7 @@ async function saveSettings() {
     }
     renderSettings(payload.config);
     render(payload.status);
+    await refreshAccountAndUsers();
     fetchLogs();
     const savedAt = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     byId("settings-status").textContent = `saved at ${savedAt}`;
@@ -2710,6 +2735,7 @@ async function connectUpstox() {
     }
     if (payload.config) renderSettings(payload.config);
     if (payload.status) render(payload.status);
+    await refreshAccountAndUsers();
     fetchLogs();
     showDetails("Upstox Connect", {
       ok: payload.ok,
