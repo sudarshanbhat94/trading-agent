@@ -11186,3 +11186,283 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Trader-first UI pass: home actions first, position risk plain and scannable. */
+.product-action-panel {
+  margin-bottom: 14px;
+}
+
+.dashboard-grid > .positions-preview-card {
+  order: 1;
+}
+
+.dashboard-grid > .product-track-panel {
+  order: 2;
+}
+
+.dashboard-grid > .decision-feed-panel {
+  order: 3;
+}
+
+.dashboard-grid > .sector-heatmap-card {
+  order: 4;
+}
+
+.dashboard-grid > .health-card {
+  order: 5;
+}
+
+.position-summary-strip {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.position-summary-strip .warning,
+.position-action-callout.warning strong,
+.position-flags-summary.warning {
+  color: var(--color-hold);
+}
+
+.position-flags-summary.muted {
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.position-row td {
+  height: auto;
+  padding: 12px 10px;
+  vertical-align: top;
+}
+
+.position-row .symbol-cell {
+  min-width: 190px;
+}
+
+.position-mode-pill,
+.position-flags-summary {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 76%, var(--surface-1));
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.position-mode-pill.paper {
+  color: var(--color-brand-primary);
+}
+
+.position-mode-pill.live {
+  color: var(--color-buy);
+}
+
+.position-mode-pill.tracked {
+  color: var(--text-secondary);
+}
+
+.position-mode-note,
+.position-updated + small,
+.position-row td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.position-price-pair,
+.position-risk-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(86px, 1fr));
+  gap: 8px;
+  min-width: 190px;
+}
+
+.position-risk-stack {
+  grid-template-columns: repeat(3, minmax(74px, 1fr));
+  min-width: 260px;
+}
+
+.position-risk-stack.compact {
+  grid-template-columns: repeat(2, minmax(74px, 1fr));
+  min-width: 170px;
+}
+
+.position-price-pair span,
+.position-risk-stack span {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-1) 78%, var(--surface-2));
+}
+
+.position-price-pair strong,
+.position-risk-stack strong,
+.position-pnl-cell strong,
+.position-updated {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.position-pnl-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+}
+
+.position-pnl-cell strong {
+  font-size: 16px;
+}
+
+.position-action-callout {
+  display: grid;
+  gap: 5px;
+  min-width: 220px;
+  max-width: 340px;
+}
+
+.position-action-callout strong {
+  color: var(--color-brand-primary);
+  font-size: 14px;
+}
+
+.position-action-callout.negative strong {
+  color: var(--color-sell);
+}
+
+.position-action-callout.open strong {
+  color: var(--color-buy);
+}
+
+.position-action-callout small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.position-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.position-row-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+}
+
+.positions-preview-card .position-action-callout {
+  min-width: 180px;
+}
+
+.positions-preview-card .position-action-callout small,
+.positions-preview-card .position-flags-summary {
+  display: none;
+}
+
+body[data-theme="dark"] :is(.position-mode-pill, .position-flags-summary, .position-price-pair span, .position-risk-stack span) {
+  border-color: var(--border-color) !important;
+  background: color-mix(in srgb, var(--surface-2) 84%, var(--surface-1)) !important;
+}
+
+body[data-theme="dark"] .position-row-actions .danger-outline {
+  color: #f27d88 !important;
+}
+
+@media (max-width: 900px) {
+  .position-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #positions-view .page-table {
+    overflow: visible;
+  }
+
+  #positions-view table,
+  #positions-view tbody,
+  #positions-view tr,
+  #positions-view td {
+    display: block;
+    width: 100%;
+  }
+
+  #positions-view thead {
+    display: none;
+  }
+
+  #positions-view tbody {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  #positions-view tr.position-row {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--surface-1);
+  }
+
+  #positions-view tr.position-row td {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 0;
+    border: 0;
+  }
+
+  #positions-view tr.position-row td::before {
+    content: attr(data-label);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  #positions-view tr.position-row td[data-label="Symbol"] {
+    grid-template-columns: 1fr;
+  }
+
+  #positions-view tr.position-row td[data-label="Symbol"]::before {
+    display: none;
+  }
+
+  #positions-view .position-price-pair,
+  #positions-view .position-risk-stack,
+  #positions-view .position-action-callout,
+  #positions-view .position-pnl-cell {
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .position-summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  #positions-view tr.position-row td {
+    grid-template-columns: 1fr;
+  }
+
+  .position-price-pair,
+  .position-risk-stack,
+  .position-risk-stack.compact {
+    grid-template-columns: 1fr;
+  }
+}

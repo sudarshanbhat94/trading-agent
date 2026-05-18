@@ -168,6 +168,8 @@
               <button id="paper-banner-dismiss" class="icon-button" type="button" aria-label="Dismiss paper mode banner">×</button>
             </div>
 
+            <section id="product-action-panel" class="product-action-panel" aria-label="Trading brief"></section>
+
             <section class="kpis portfolio-strip" aria-label="Portfolio summary">
               <button class="kpi" type="button" data-detail-type="portfolio"><span>Portfolio equity</span><strong id="kpi-equity">-</strong><small id="kpi-equity-delta">today -</small></button>
               <button class="kpi" type="button" data-detail-type="pnl"><span>Unrealised P&amp;L</span><strong id="kpi-unrealized">-</strong><small id="kpi-unrealized-pct">-</small></button>
@@ -227,13 +229,13 @@
                 <div class="panel-head">
                   <div class="panel-title-stack">
                     <h3>Positions</h3>
-                    <p>Top open positions by current P&amp;L.</p>
+                    <p>Open positions with next action, stop, target, and P&amp;L.</p>
                   </div>
                   <button type="button" data-view-jump="positions">View all →</button>
                 </div>
                 <div class="table-wrap page-table compact">
                   <table>
-                    <thead><tr><th>Symbol</th><th>Score</th><th>Qty</th><th>LTP</th><th>Day %</th><th>Market value</th><th>P&amp;L</th><th>Gates</th><th>Action</th></tr></thead>
+                    <thead><tr><th>Symbol</th><th>Mode</th><th>Entry / LTP</th><th>P&amp;L</th><th>Stop / T1</th><th>Next action</th><th>Details</th></tr></thead>
                     <tbody id="overview-positions-body"></tbody>
                   </table>
                 </div>
@@ -351,11 +353,17 @@
 
           <section id="positions-view" class="view">
             <div class="panel full">
-              <div class="panel-head"><div class="panel-title-stack"><h3>Positions</h3><p>Open paper/live holdings with current score, gates, P&amp;L, and exit action.</p></div><span id="position-count">0 open</span></div>
+              <div class="panel-head">
+                <div class="panel-title-stack"><h3>Positions</h3><p>Open paper/live holdings with P&amp;L, stop, targets, and the next risk action.</p></div>
+                <div class="panel-actions">
+                  <button type="button" data-view-jump="account">Trading History</button>
+                  <span id="position-count">0 open</span>
+                </div>
+              </div>
               <div id="positions-summary-strip" class="position-summary-strip"></div>
               <div class="table-wrap page-table">
                 <table>
-                  <thead><tr><th>Symbol</th><th>Score</th><th>Qty</th><th>Avg price</th><th>LTP</th><th>Day %</th><th>Market value</th><th>P&amp;L</th><th>P&amp;L %</th><th>Gates</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Symbol</th><th>Mode</th><th>Qty</th><th>Entry / LTP</th><th>P&amp;L</th><th>Stop / Targets</th><th>Next action</th><th>Updated</th></tr></thead>
                   <tbody id="positions-body"></tbody>
                 </table>
               </div>

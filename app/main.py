@@ -691,6 +691,41 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     return snapshot
 
 
+def _position_target_at(targets: list[Any], index: int) -> dict[str, Any]:
+    if index >= len(targets):
+        return {}
+    target = targets[index]
+    if not isinstance(target, dict):
+        return {}
+    return {
+        "label": target.get("label") or f"T{index + 1}",
+        "price": target.get("price"),
+        "hit": bool(target.get("hit")),
+        "basis": target.get("basis"),
+        "probability_label": target.get("probability_label"),
+        "suggested_exit_pct": target.get("suggested_exit_pct"),
+        "distance_pct": target.get("distance_pct"),
+    }
+
+
+def _follow_position_exit_plan(item: dict[str, Any]) -> dict[str, Any]:
+    target_status = item.get("target_status") if isinstance(item.get("target_status"), list) else []
+    targets = target_status or (item.get("targets") if isinstance(item.get("targets"), list) else [])
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    timeline = item.get("timeline") if isinstance(item.get("timeline"), dict) else {}
+    return {
+        "horizon": timeline.get("label") or timeline.get("name") or "swing_3_to_7_days",
+        "entry_zone": item.get("entry_zone") or details.get("entry_zone"),
+        "stop_loss": item.get("stop_loss") or details.get("stop_loss"),
+        "target_1": _position_target_at(targets, 0),
+        "target_2": _position_target_at(targets, 1),
+        "target_3": _position_target_at(targets, 2),
+        "invalidation": details.get("invalidation") or {},
+        "monitoring_checklist": details.get("monitoring_checklist") or [],
+        "plan": "Use the stop as the hard invalidation. Book partial profit at T1, reduce again near T2, and trail or close near T3 unless risk asks for an earlier exit.",
+    }
+
+
 def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     positions: list[dict[str, Any]] = []
     for item in tracked_ideas:
@@ -703,6 +738,9 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
         exit_management = item.get("follow_details", {}).get("exit_management", {}) if isinstance(item.get("follow_details"), dict) else {}
         managed_action = str(exit_management.get("last_action_label") or "").strip()
         managed_reason = str(exit_management.get("last_reason") or "").strip()
+        exit_plan = _follow_position_exit_plan(item)
+        target_status = item.get("target_status") if isinstance(item.get("target_status"), list) else []
+        targets = item.get("targets") if isinstance(item.get("targets"), list) else []
         position_summary = {
             "symbol": item.get("symbol"),
             "classification": "PAPER" if mode == "PAPER" else "LIVE_REQUEST",
@@ -721,15 +759,31 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
         positions.append(
             {
                 "symbol": item.get("symbol"),
+                "company_name": item.get("company_name"),
                 "market_region": item.get("market_region") or "IN",
                 "exchange": item.get("exchange"),
                 "sector": item.get("sector"),
+                "industry": item.get("industry"),
+                "mode": mode,
+                "mode_label": "Paper" if mode == "PAPER" else "Live request",
                 "qty": qty,
                 "avg_price": entry_price,
                 "market_price": latest_price,
+                "entry_zone": item.get("entry_zone"),
+                "stop_loss": item.get("stop_loss"),
+                "stop_status": item.get("stop_status"),
+                "targets": targets,
+                "target_status": target_status,
+                "highest_target_hit": item.get("highest_target_hit", "NONE"),
+                "lifecycle_status": item.get("lifecycle_status"),
+                "return_pct": item.get("return_pct", 0),
+                "execution_state": item.get("execution_state"),
+                "execution_state_label": item.get("execution_state_label"),
                 "realized_pnl": 0.0,
+                "opened_at": item.get("followed_at"),
                 "updated_at": item.get("follow_updated_at"),
                 "strategy": item.get("strategy"),
+                "exit_plan": exit_plan,
                 "details_json": json.dumps(
                     {
                         "source": "user_idea_follow",
@@ -737,6 +791,14 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
                         "idea_id": item.get("idea_id"),
                         "mode": mode,
                         "return_pct": item.get("return_pct", 0),
+                        "exit_management": exit_management,
+                        "entry_zone": item.get("entry_zone"),
+                        "stop_loss": item.get("stop_loss"),
+                        "stop_status": item.get("stop_status"),
+                        "targets": targets,
+                        "target_status": target_status,
+                        "highest_target_hit": item.get("highest_target_hit", "NONE"),
+                        "lifecycle_status": item.get("lifecycle_status"),
                     },
                     separators=(",", ":"),
                 ),
