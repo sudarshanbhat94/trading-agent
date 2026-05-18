@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .market_regions import INDIA_EXCHANGES
 from .models import Candle, Quote
 from .strategy_backtest import strategy_backtest_snapshot
 
@@ -1421,11 +1422,16 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
     beta = _float_or_none(row.get("beta"))
     eps_ttm = _float_or_none(row.get("eps_ttm"))
     ratio_available = any(value is not None for value in (pe, forward_pe, pb, market_cap, beta, eps_ttm))
+    quote_type = str(row.get("yahoo_quote_type") or row.get("security_type") or "").strip().upper()
+    exchange = str(row.get("exchange") or "").strip().upper()
+    sector = str(row.get("sector") or "").strip().upper()
+    industry = str(row.get("industry") or "").strip().upper()
+    is_etf = quote_type == "ETF" or exchange in {"ARCA", "NYSEARCA"} or "ETF" in {sector, industry}
     score = 0.0
     reasons = []
     if ratio_available:
         score += 0.08
-        reasons.append("market reference ratios available")
+        reasons.append("Yahoo/reference market ratios available")
     if pe is not None and 0 < pe <= 65:
         score += 0.05
         reasons.append("PE is within a tradable range")
@@ -1450,6 +1456,10 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
         quality_bucket = "event_positive_with_ratios"
     elif positive_event:
         quality_bucket = "event_positive"
+    elif is_etf and ratio_available:
+        quality_bucket = "etf_reference_available"
+    elif is_etf:
+        quality_bucket = "etf_reference_pending"
     elif ratio_available:
         quality_bucket = "reference_ratios_available"
     else:
@@ -1457,26 +1467,44 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
     unavailable_fields = []
     if not ratio_available:
         unavailable_fields.extend(["PE/PB/market-cap reference"])
-    unavailable_fields.extend(
-        [
-            "revenue/profit growth",
-            "debt/equity",
-            "ROE/ROCE",
-            "promoter holding and pledge",
-            "cash-flow quality",
-            "quarterly trend",
-        ]
-    )
+    if is_etf:
+        unavailable_fields.extend(["ETF holdings, expense ratio, and fund-flow depth"])
+    else:
+        unavailable_fields.extend(
+            [
+                "revenue/profit growth",
+                "debt/equity",
+                "ROE/ROCE",
+                "promoter holding and pledge",
+                "cash-flow quality",
+                "quarterly trend",
+            ]
+        )
     return {
         "available": bool(announcements) or ratio_available,
         "score": _round(max(min(score, 1.0), -1.0)),
         "quality_bucket": quality_bucket,
+        "source": row.get("fundamental_source") or ("yahoo_quote" if ratio_available and exchange not in INDIA_EXCHANGES else "reference"),
+        "asof": row.get("fundamental_asof"),
+        "security_type": "ETF" if is_etf else quote_type or None,
         "pe": _round(pe, 2),
         "forward_pe": _round(forward_pe, 2),
         "pb": _round(pb, 2),
         "market_cap": _round(market_cap, 2),
         "beta": _round(beta, 3),
         "eps_ttm": _round(eps_ttm, 3),
+        "metrics": {
+            "pe": _round(pe, 2),
+            "trailing_pe": _round(pe, 2),
+            "forward_pe": _round(forward_pe, 2),
+            "pb": _round(pb, 2),
+            "price_to_book": _round(pb, 2),
+            "market_cap": _round(market_cap, 2),
+            "beta": _round(beta, 3),
+            "eps_ttm": _round(eps_ttm, 3),
+            "security_type": "ETF" if is_etf else quote_type or None,
+            "reference_data_available": ratio_available,
+        },
         "checked": [
             "Yahoo/reference quote ratios when available",
             "official announcement keyword proxy",
@@ -2001,10 +2029,10 @@ def _news_event_section(
         evidence.append("news sentiment neutral")
     else:
         evidence.append("news sentiment negative")
-    if fundamental.get("quality_bucket") == "event_positive":
+    if fundamental.get("quality_bucket") in {"event_positive", "event_positive_with_ratios"}:
         score += 2
         evidence.append("positive official event keyword")
-    elif fundamental.get("quality_bucket") == "unknown":
+    elif fundamental.get("quality_bucket") in {"unknown", "etf_reference_pending"}:
         score += 1
         evidence.append("fundamental event data neutral/unknown")
     if not corporate_risk.get("high_impact_risk"):
@@ -2049,11 +2077,20 @@ def _fundamental_section(fundamental: dict[str, Any], corporate_risk: dict[str, 
     score = 0
     evidence = []
     bucket = fundamental.get("quality_bucket")
-    if bucket == "event_positive":
+    if bucket == "event_positive_with_ratios":
+        score += 5
+        evidence.append("positive event plus reference ratios available")
+    elif bucket == "event_positive":
         score += 4
+    elif bucket in {"reference_ratios_available", "etf_reference_available"}:
+        score += 3
+        evidence.append("Yahoo/reference ratios available")
     elif bucket == "unknown":
         score += 1
         evidence.append("real fundamental ratios unavailable; neutral placeholder capped")
+    elif bucket == "etf_reference_pending":
+        score += 1
+        evidence.append("ETF company fundamentals not applicable; ETF depth still pending")
     evidence.append(f"fundamental bucket {bucket or 'unknown'}")
     if not corporate_risk.get("high_impact_risk"):
         score += 2

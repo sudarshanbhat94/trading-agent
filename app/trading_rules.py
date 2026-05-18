@@ -239,14 +239,33 @@ def classify_stock(full_spectrum: dict[str, Any]) -> dict[str, Any]:
     loss_making = bool(metrics.get("loss_making")) or str(fundamental.get("quality_bucket") or "").lower() == "event_risk"
     revenue_qoq = _first_float(metrics, "revenue_growth_qoq_pct", "revenue_qoq_pct")
     data_available = revenue_growth is not None and pat_growth is not None and ocf_positive is not None
+    reference_available = bool(metrics.get("reference_data_available")) or any(
+        _first_float(metrics, key) is not None
+        for key in ("pe", "trailing_pe", "forward_pe", "pb", "price_to_book", "market_cap", "eps_ttm")
+    )
+    quality_bucket = str(fundamental.get("quality_bucket") or "").lower()
+    security_type = str(metrics.get("security_type") or fundamental.get("security_type") or "").upper()
+    is_etf = security_type == "ETF" or quality_bucket.startswith("etf_")
     if data_available and revenue_growth >= 10 and pat_growth >= 10 and bool(ocf_positive):
         classification = "FUNDAMENTAL"
         cap = 1.0
         reason = "revenue growth, PAT growth, and operating cash flow criteria are met"
-    elif loss_making or (revenue_qoq is not None and revenue_qoq < 0) or not data_available:
+    elif loss_making or (revenue_qoq is not None and revenue_qoq < 0):
         classification = "SPECULATIVE"
         cap = 0.3
-        reason = "fundamental data is unavailable or does not clear loss/revenue checks"
+        reason = "loss/event-risk or negative revenue checks are present"
+    elif is_etf and reference_available:
+        classification = "MOMENTUM"
+        cap = 0.6
+        reason = "ETF reference data is available; company revenue/PAT/cash-flow rules are not applicable"
+    elif reference_available or quality_bucket in {"reference_ratios_available", "event_positive_with_ratios"}:
+        classification = "MOMENTUM"
+        cap = 0.6
+        reason = "Yahoo/reference ratios are available but full growth and cash-flow data is incomplete"
+    elif not data_available:
+        classification = "SPECULATIVE"
+        cap = 0.3
+        reason = "fundamental data is unavailable"
     else:
         classification = "MOMENTUM"
         cap = 0.6
@@ -262,6 +281,8 @@ def classify_stock(full_spectrum: dict[str, Any]) -> dict[str, Any]:
             "revenue_growth_qoq_pct": revenue_qoq,
             "loss_making": loss_making,
             "fundamental_data_available": data_available,
+            "reference_data_available": reference_available,
+            "security_type": security_type or None,
         },
     }
 

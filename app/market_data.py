@@ -248,33 +248,38 @@ class YahooMarketDataProvider(MarketDataProvider):
         self.interval = settings.yahoo_candle_interval
         self.range = settings.yahoo_candle_range
         self.last_quote_diagnostics: dict[str, Any] = {}
+        self._crumb: str | None = None
         self.headers = {
             "Accept": "application/json",
-            "User-Agent": "OpenStocks/1.0 (+paper-trading-dashboard)",
+            "User-Agent": "Mozilla/5.0 OpenStocks/1.0 (+paper-trading-dashboard)",
         }
 
     async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
         symbols = [self._yahoo_symbol(row) for row in universe]
         by_yahoo = dict(zip(symbols, universe))
         quotes: dict[str, Quote] = {}
-        diagnostics: dict[str, Any] = {"requested": len(universe), "chunks": 0, "chunk_errors": [], "chart_errors": 0}
+        diagnostics: dict[str, Any] = {
+            "requested": len(universe),
+            "chunks": 0,
+            "chunk_errors": [],
+            "chart_errors": 0,
+            "crumb_refreshes": 0,
+            "reference_data_enriched": 0,
+        }
         async with httpx.AsyncClient(timeout=10, headers=self.headers, follow_redirects=True) as client:
             for i in range(0, len(symbols), 40):
                 chunk = symbols[i : i + 40]
                 diagnostics["chunks"] += 1
                 try:
-                    response = await client.get(
-                        "https://query1.finance.yahoo.com/v7/finance/quote",
-                        params={"symbols": ",".join(chunk)},
-                    )
-                    response.raise_for_status()
-                    data = response.json()
+                    data = await self._fetch_quote_chunk(client, chunk, diagnostics)
                 except Exception as exc:
                     diagnostics["chunk_errors"].append(_market_data_error_summary(exc))
                     continue
                 for item in data.get("quoteResponse", {}).get("result", []):
                     yahoo_symbol = item.get("symbol")
                     row = by_yahoo.get(yahoo_symbol)
+                    if row and self._apply_yahoo_reference_data(row, item):
+                        diagnostics["reference_data_enriched"] += 1
                     price = item.get("regularMarketPrice")
                     if price is None:
                         price = item.get("postMarketPrice") or item.get("preMarketPrice")
@@ -305,6 +310,86 @@ class YahooMarketDataProvider(MarketDataProvider):
         self.last_quote_diagnostics = diagnostics
         return quotes
 
+    async def _fetch_quote_chunk(
+        self,
+        client: httpx.AsyncClient,
+        symbols: list[str],
+        diagnostics: dict[str, Any],
+    ) -> dict[str, Any]:
+        params = {"symbols": ",".join(symbols)}
+        response = await client.get("https://query1.finance.yahoo.com/v7/finance/quote", params=params)
+        if response.status_code not in {401, 403}:
+            response.raise_for_status()
+            return response.json()
+
+        crumb = await self._ensure_crumb(client)
+        if not crumb:
+            response.raise_for_status()
+        diagnostics["crumb_refreshes"] += 1
+        response = await client.get(
+            "https://query1.finance.yahoo.com/v7/finance/quote",
+            params={**params, "crumb": crumb},
+        )
+        if response.status_code in {401, 403}:
+            self._crumb = None
+        response.raise_for_status()
+        return response.json()
+
+    async def _ensure_crumb(self, client: httpx.AsyncClient) -> str | None:
+        if self._crumb:
+            return self._crumb
+        crumb_headers = {"Accept": "*/*", "User-Agent": self.headers["User-Agent"]}
+        try:
+            # Yahoo sets the A3 cookie on fc.yahoo.com even though the page
+            # returns 404; that cookie is required for the quote crumb.
+            await client.get("https://fc.yahoo.com", headers=crumb_headers)
+            response = await client.get("https://query1.finance.yahoo.com/v1/test/getcrumb", headers=crumb_headers)
+            response.raise_for_status()
+            crumb = response.text.strip()
+        except Exception:
+            return None
+        if not crumb or "<" in crumb or " " in crumb:
+            return None
+        self._crumb = crumb
+        return crumb
+
+    def _apply_yahoo_reference_data(self, row: dict[str, Any], item: dict[str, Any]) -> bool:
+        if not self._is_us_row(row):
+            return False
+        updated = False
+        numeric_fields = {
+            "market_cap": "marketCap",
+            "trailing_pe": "trailingPE",
+            "forward_pe": "forwardPE",
+            "price_to_book": "priceToBook",
+            "eps_ttm": "epsTrailingTwelveMonths",
+            "eps_forward": "epsForward",
+            "fifty_two_week_high": "fiftyTwoWeekHigh",
+            "fifty_two_week_low": "fiftyTwoWeekLow",
+            "average_daily_volume_10d": "averageDailyVolume10Day",
+        }
+        for target, yahoo_key in numeric_fields.items():
+            value = _float_any(item.get(yahoo_key))
+            if value is None:
+                continue
+            row[target] = value
+            updated = True
+        if row.get("trailing_pe") is not None:
+            row["pe"] = row["trailing_pe"]
+        if row.get("price_to_book") is not None:
+            row["pb"] = row["price_to_book"]
+
+        quote_type = str(item.get("quoteType") or item.get("typeDisp") or "").strip().upper()
+        if quote_type:
+            row["yahoo_quote_type"] = quote_type
+            row["security_type"] = "ETF" if quote_type == "ETF" else quote_type
+        if item.get("currency"):
+            row["currency"] = item.get("currency")
+        if updated:
+            row["fundamental_source"] = "yahoo_quote"
+            row["fundamental_asof"] = self._epoch_to_iso(item.get("regularMarketTime"))
+        return updated
+
     async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
         output: dict[str, list[Candle]] = {}
         semaphore = asyncio.Semaphore(6)
@@ -332,6 +417,7 @@ class YahooMarketDataProvider(MarketDataProvider):
         if price is None:
             return None
         indicators = result.get("indicators", {}).get("quote", [{}])[0]
+        self._apply_yahoo_chart_reference_data(row, meta)
         return Quote(
             symbol=row["symbol"],
             price=float(price),
@@ -343,6 +429,23 @@ class YahooMarketDataProvider(MarketDataProvider):
             close=meta.get("previousClose"),
             volume=self._last_value(indicators.get("volume")),
         )
+
+    def _apply_yahoo_chart_reference_data(self, row: dict[str, Any], meta: dict[str, Any]) -> None:
+        if not self._is_us_row(row):
+            return
+        for target, yahoo_key in (
+            ("fifty_two_week_high", "fiftyTwoWeekHigh"),
+            ("fifty_two_week_low", "fiftyTwoWeekLow"),
+        ):
+            value = _float_any(meta.get(yahoo_key))
+            if value is not None:
+                row[target] = value
+        instrument_type = str(meta.get("instrumentType") or "").strip().upper()
+        if instrument_type:
+            row["yahoo_quote_type"] = instrument_type
+            row["security_type"] = "ETF" if instrument_type == "ETF" else instrument_type
+        if meta.get("currency"):
+            row["currency"] = meta.get("currency")
 
     async def _candles_from_chart(self, client: httpx.AsyncClient, row: dict[str, Any]) -> list[Candle]:
         if self._is_us_row(row) and str(self.interval or "").lower() != "1d":
