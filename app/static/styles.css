@@ -1190,16 +1190,14 @@ td.reason {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
+  align-items: start;
 }
 
-.account-history-panel {
+.account-history-section {
   display: grid;
   gap: 10px;
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  padding: 12px;
+  align-self: start;
 }
 
 .account-history-head {
@@ -1222,13 +1220,16 @@ td.reason {
 }
 
 .account-history-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
   overflow-x: auto;
 }
 
 .account-history-table {
   width: 100%;
-  min-width: 720px;
+  min-width: 760px;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .account-history-table th,
@@ -1248,6 +1249,41 @@ td.reason {
 .account-history-table td {
   color: var(--ink);
   font-size: 13px;
+  white-space: normal;
+}
+
+.account-history-table th:nth-child(1),
+.account-history-table td:nth-child(1) {
+  width: 22%;
+}
+
+.account-history-table th:nth-child(2),
+.account-history-table td:nth-child(2) {
+  width: 11%;
+}
+
+.account-history-table th:nth-child(3),
+.account-history-table td:nth-child(3) {
+  width: 9%;
+}
+
+.account-history-table th:nth-child(4),
+.account-history-table td:nth-child(4) {
+  width: 13%;
+}
+
+.account-history-table th:nth-child(5),
+.account-history-table td:nth-child(5) {
+  width: 13%;
+}
+
+.account-history-table th:nth-child(6),
+.account-history-table td:nth-child(6) {
+  width: 32%;
+}
+
+.account-history-table .num {
+  white-space: nowrap;
 }
 
 .account-history-table td > strong,
@@ -8850,8 +8886,8 @@ body {
 
 .account-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 0.48fr) minmax(0, 0.52fr);
-  gap: 14px;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(460px, 1.1fr);
+  gap: 16px;
   align-items: start;
 }
 
@@ -8862,12 +8898,50 @@ body {
   align-content: start;
 }
 
-.account-metrics {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+body[data-view="account"] .workspace {
+  width: 100%;
+  max-width: none;
+}
+
+.account-page {
+  width: 100%;
+}
+
+.account-profile-panel {
+  grid-column: 1;
+}
+
+.account-broker-panel {
+  grid-column: 2;
+}
+
+.account-history-panel {
+  grid-column: 1 / -1;
+}
+
+.account-credit-panel {
+  grid-column: 1;
 }
 
 .account-quotes-panel {
-  max-height: 440px;
+  grid-column: 2;
+}
+
+.account-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.account-history-body {
+  padding: 14px;
+}
+
+.account-history-grid {
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.account-quotes-panel {
+  max-height: none;
 }
 
 .toast-stack {
@@ -8966,6 +9040,18 @@ body[data-theme="dark"] th {
   .account-grid,
   .decision-radar-section,
   .decision-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-profile-panel,
+  .account-broker-panel,
+  .account-history-panel,
+  .account-credit-panel,
+  .account-quotes-panel {
+    grid-column: 1;
+  }
+
+  .account-history-grid {
     grid-template-columns: 1fr;
   }
 }

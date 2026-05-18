@@ -2377,6 +2377,24 @@ function renderAccount(account) {
       : upstox.connected
         ? "shared Upstox analytics"
         : "not connected";
+  const accountHistoryMarkup = `
+    <div class="account-history-grid">
+      <section class="account-history-section">
+        <div class="account-history-head">
+          <strong>Open Paper / Live</strong>
+          <span>${fmtNumber(openFollowHistory.length)} active</span>
+        </div>
+        ${renderAccountFollowTable(openFollowHistory, { emptyTitle: "No open paper or live positions", emptyText: "Follow a BUY idea as Paper or Live request to see it here.", limit: 20 })}
+      </section>
+      <section class="account-history-section">
+        <div class="account-history-head">
+          <strong>Position History</strong>
+          <span>${fmtNumber(closedFollowHistory.length)} recent</span>
+        </div>
+        ${renderAccountFollowTable(closedFollowHistory, { emptyTitle: "No closed positions yet", emptyText: "Exited paper and live-request positions will stay visible here.", limit: 30 })}
+      </section>
+    </div>
+  `;
   byId("account-status").textContent = userFeedLabel;
   byId("account-body").innerHTML = `
     <div class="account-metrics">
@@ -2411,23 +2429,11 @@ function renderAccount(account) {
       <span>${escapeHtml(brokerSync.note || "Connect a personal broker token to reconcile live requests with broker positions.")}</span>
       ${(brokerReconcile.unmatched_live_requests || []).length ? `<span>${fmtNumber((brokerReconcile.unmatched_live_requests || []).length)} live request(s) are not matched to a broker position.</span>` : ""}
     </div>
-    <div class="account-history-grid">
-      <section class="account-history-panel">
-        <div class="account-history-head">
-          <strong>Open Paper / Live</strong>
-          <span>${fmtNumber(openFollowHistory.length)} active</span>
-        </div>
-        ${renderAccountFollowTable(openFollowHistory, { emptyTitle: "No open paper or live positions", emptyText: "Follow a BUY idea as Paper or Live request to see it here.", limit: 20 })}
-      </section>
-      <section class="account-history-panel">
-        <div class="account-history-head">
-          <strong>Position History</strong>
-          <span>${fmtNumber(closedFollowHistory.length)} recent</span>
-        </div>
-        ${renderAccountFollowTable(closedFollowHistory, { emptyTitle: "No closed positions yet", emptyText: "Exited paper and live-request positions will stay visible here.", limit: 30 })}
-      </section>
-    </div>
   `;
+  const historyBody = byId("account-history-body");
+  if (historyBody) historyBody.innerHTML = accountHistoryMarkup;
+  const historyStatus = byId("account-history-status");
+  if (historyStatus) historyStatus.textContent = `${fmtNumber(openFollowHistory.length)} open · ${fmtNumber(closedFollowHistory.length)} closed`;
   const cashForm = byId("paper-cash-form");
   if (cashForm) cashForm.addEventListener("submit", savePaperCash);
   const signalModeForm = byId("signal-mode-form");
@@ -5430,6 +5436,7 @@ function syncResponsiveShellControls() {
 function setView(view) {
   const drawer = byId("detail-drawer");
   if (drawer) drawer.classList.remove("open");
+  document.body.dataset.view = view;
   for (const item of document.querySelectorAll(".nav-item")) {
     item.classList.toggle("active", item.dataset.view === view);
   }
