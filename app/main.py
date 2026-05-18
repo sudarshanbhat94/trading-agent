@@ -667,6 +667,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
                     "last_error": snapshot.get("last_error"),
                     "shared_backend": True,
                     "message": "Signals come from the shared backend engine. Use Run Now to start your own credit-budgeted scan.",
+                    "auto_trade": snapshot.get("shared_auto_trade") or shared_status.get("auto_trade") or {},
                 }
             )
         snapshot["user_signal_session"] = _sanitize_private_llm_metadata(shared_status)
@@ -3046,7 +3047,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
     ]
     summary["active_buy_ideas"] = len(active_buy_ideas)
-    buy_symbols = decision_buy_symbols or {
+    buy_symbols = decision_buy_symbols | {
         str(idea.get("symbol") or "").upper()
         for idea in active_buy_ideas
         if _auto_follow_idea_fresh_enough(idea, decision_buy_symbols)

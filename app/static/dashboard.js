@@ -354,6 +354,64 @@ function marketDataLabel(payload = state.latest || {}, market = state.activeMark
   };
 }
 
+function autoFollowReasonText(item = {}) {
+  const reason = String(item.reason || "").trim();
+  const mapped = {
+    already_followed_symbol: "already paper-followed",
+    already_followed: "already followed",
+    recent_risk_exit_cooldown: "cooling down after a risk exit",
+    active_buy_not_fresh_enough_for_auto_follow: "not fresh enough or outside the entry zone",
+    insufficient_paper_cash_for_position_size: "paper cash/position cap is too small for one share",
+    live_unavailable_shared_engine_needs_user_broker_session: "live needs the user's own broker session",
+    market_closed: "market is closed",
+  };
+  if (mapped[reason]) return mapped[reason];
+  if (/amount is too small/i.test(reason)) return "paper amount is too small for one share";
+  return reason ? reasonFromSnakeCase(reason) : "waiting for the next eligible BUY";
+}
+
+function autoTradeSummary(payload = state.latest || {}, market = state.activeMarket) {
+  const session = payload.user_signal_session || {};
+  const autoTrade = session.auto_trade || payload.shared_auto_trade || {};
+  const mode = String(session.signal_execution_mode || autoTrade.mode || state.auth?.user?.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
+  const enabled = ["AUTO_PAPER", "AUTO_LIVE"].includes(mode) && autoTrade.enabled !== false;
+  const followed = Number(autoTrade.followed || 0);
+  const skipped = Array.isArray(autoTrade.skipped) ? autoTrade.skipped : [];
+  const meaningfulSkip = skipped.find((item) => !["already_followed", "already_followed_symbol"].includes(String(item.reason || "")))
+    || skipped[0];
+  if (!enabled) {
+    return {
+      label: signalModeLabel(mode),
+      value: "Off",
+      note: "BUY ideas are saved until Auto paper is enabled in Account.",
+      tone: "watch",
+    };
+  }
+  if (followed > 0) {
+    return {
+      label: signalModeLabel(mode),
+      value: `${fmtNumber(followed)} followed`,
+      note: skipped.length ? `${fmtNumber(skipped.length)} skipped by cash, cooldown, or entry rules.` : "New eligible BUY ideas were paper-followed.",
+      tone: "open",
+    };
+  }
+  if (meaningfulSkip) {
+    const symbol = meaningfulSkip.symbol ? `${meaningfulSkip.symbol}: ` : "";
+    return {
+      label: signalModeLabel(mode),
+      value: "No new add",
+      note: `${symbol}${autoFollowReasonText(meaningfulSkip)}.`,
+      tone: "warning",
+    };
+  }
+  return {
+    label: signalModeLabel(mode),
+    value: "Ready",
+    note: "No fresh eligible BUY needed a new paper position in the last cycle.",
+    tone: "open",
+  };
+}
+
 function scoreToProductLabel(score) {
   const value = Number(score);
   if (!Number.isFinite(value)) return { label: "Not scored", tone: "neutral" };
@@ -1090,10 +1148,7 @@ function renderProductActionPanel(payload, suggestions, trackedIdeas, positions,
   });
   const pnl = Number(portfolio.unrealized_pnl || 0);
   const pnlPct = Number(portfolio.invested) > 0 ? (pnl / Number(portfolio.invested)) * 100 : 0;
-  const credits = state.credits || {};
-  const creditText = state.auth?.admin
-    ? "Admin view"
-    : `${fmtCredits(credits.daily_credits_remaining ?? state.auth?.user?.credit_balance ?? 0)} credits left today`;
+  const autoSummary = autoTradeSummary(payload, market);
   const lastDecision = decisions?.[0];
   const lastReason = lastDecision ? readableDecisionReason(lastDecision) : "";
   let headline = "Waiting for the first scan";
@@ -1122,7 +1177,6 @@ function renderProductActionPanel(payload, suggestions, trackedIdeas, positions,
     tone = "neutral";
   }
   const stance = marketStanceText(breadth);
-  const score = scoreToProductLabel(payload.self_audit?.overall_score_pct);
   panel.innerHTML = `
     <article class="product-action-card ${escapeHtml(tone)}">
       <div class="product-action-primary">
@@ -1151,9 +1205,9 @@ function renderProductActionPanel(payload, suggestions, trackedIdeas, positions,
           <small>${Number(breadth.symbols_checked || 0) ? `${fmtPct(breadth.pct_above_50dma || 0)} above 50-DMA` : "Breadth history building"}</small>
         </button>
         <button type="button" data-view-jump="${state.auth?.admin ? "users" : "account"}">
-          <span>${state.auth?.admin ? "Access" : "Credits"}</span>
-          <strong>${escapeHtml(creditText)}</strong>
-          <small>${escapeHtml(score.label)} trade-safety score</small>
+          <span>${escapeHtml(autoSummary.label)}</span>
+          <strong class="${escapeHtml(autoSummary.tone)}">${escapeHtml(autoSummary.value)}</strong>
+          <small>${escapeHtml(shortValue(autoSummary.note, 92))}</small>
         </button>
       </div>
     </article>

@@ -2604,6 +2604,26 @@ class Database:
                 self._refresh_user_follow_marks(conn)
                 row = conn.execute("select * from user_idea_follows where id = ?", (existing_follow["id"],)).fetchone()
                 return _row_dict(row) if row else {}
+            if mode in {"PAPER", "LIVE"}:
+                existing_symbol_follow = conn.execute(
+                    """
+                    select f.*
+                    from user_idea_follows f
+                    join signal_ideas i on i.id = f.idea_id
+                    where f.user_id = ?
+                      and upper(i.symbol) = upper(?)
+                      and f.status in ('ACTIVE','LIVE_REQUESTED')
+                      and f.mode in ('PAPER','LIVE')
+                      and f.qty > 0
+                    order by f.id desc
+                    limit 1
+                    """,
+                    (user_id, idea["symbol"]),
+                ).fetchone()
+                if existing_symbol_follow:
+                    self._refresh_user_follow_marks(conn)
+                    row = conn.execute("select * from user_idea_follows where id = ?", (existing_symbol_follow["id"],)).fetchone()
+                    return _row_dict(row) if row else {}
             conn.execute(
                 """
                 insert into user_idea_follows (

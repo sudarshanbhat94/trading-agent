@@ -68,6 +68,7 @@ class TradingAgentService:
         self._cycle_started_at: str | None = None
         self._cycle_phase = "idle"
         self._last_cycle_duration_seconds: float | None = None
+        self._last_shared_auto_trade: dict[str, Any] = {}
         self._universe_cursor = 0
         self._news_probe_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
@@ -473,6 +474,7 @@ class TradingAgentService:
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
         shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
+        self._last_shared_auto_trade = shared_auto_trade
         executed_count = self._execute_top_decisions(decisions, portfolio["equity"]) if self.execute_trades else 0
         if not self.execute_trades:
             self._log(
@@ -694,7 +696,7 @@ class TradingAgentService:
                 and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
             ]
             summary["active_buy_ideas_checked"] += len(active_buy_ideas)
-            candidate_buy_symbols = buy_symbols or {
+            candidate_buy_symbols = buy_symbols | {
                 str(idea.get("symbol") or "").upper()
                 for idea in active_buy_ideas
                 if _auto_follow_idea_fresh_enough(idea, buy_symbols)
@@ -1199,6 +1201,7 @@ class TradingAgentService:
             "opportunity_scan": opportunity_scan,
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
             "self_audit": self_audit,
+            "shared_auto_trade": self._last_shared_auto_trade,
             "llm_usage": self.db.llm_usage_summary(),
         }
 

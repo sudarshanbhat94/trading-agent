@@ -10923,3 +10923,72 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
     box-shadow: 22px 0 62px rgba(0, 0, 0, 0.42);
   }
 }
+
+/* Final tracked-card overrides: keep paper P&L and Indian price ladders from colliding. */
+.tracked-ideas-list {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}
+
+.tracked-idea-card {
+  overflow: hidden;
+}
+
+.tracked-idea-main {
+  grid-template-columns: 1fr;
+  gap: 9px;
+}
+
+.tracked-title-row {
+  min-width: 0;
+}
+
+.tracked-title-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tracked-return {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+}
+
+.tracked-return strong,
+.tracked-return small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tracked-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.tracked-metrics span,
+.target-ladder span {
+  overflow: hidden;
+}
+
+.tracked-metrics strong,
+.target-ladder strong {
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.18;
+}
+
+.target-ladder.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 920px) {
+  .tracked-ideas-list {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+
+  .tracked-metrics,
+  .target-ladder.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
