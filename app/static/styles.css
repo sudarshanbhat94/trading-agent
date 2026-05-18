@@ -11576,3 +11576,107 @@ body[data-theme="dark"] .position-row-actions .danger-outline {
   min-height: 66px;
   border-radius: var(--radius-md);
 }
+
+/* Dark cockpit header pass: outrank the broad dark :is() block so the top tape stays readable. */
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .terminal-topbar {
+  border-bottom-color: rgba(210, 224, 244, 0.12) !important;
+  background: rgba(9, 13, 20, 0.98) !important;
+  box-shadow: 0 1px 0 rgba(210, 224, 244, 0.08), 0 12px 34px rgba(0, 0, 0, 0.32);
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .global-search input {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: #111827 !important;
+  color: #eef4ff !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape {
+  border-bottom-color: rgba(210, 224, 244, 0.1) !important;
+  background: #080d15 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 8px 24px rgba(0, 0, 0, 0.24);
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-label {
+  color: #dbe7f6 !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-label strong {
+  color: #eaf2ff !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-label span {
+  border-color: rgba(45, 212, 191, 0.4) !important;
+  background: rgba(45, 212, 191, 0.18) !important;
+  color: #9af5e0 !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: #121a27 !important;
+  color: #dbe7f6 !important;
+  opacity: 1;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item strong {
+  color: #f7fbff !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item span {
+  color: #b8c4d8 !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item em {
+  color: #cbd7ea !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item.positive {
+  border-color: rgba(52, 211, 153, 0.34) !important;
+  background: rgba(16, 185, 129, 0.14) !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item.positive em {
+  color: #34d399 !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item.negative {
+  border-color: rgba(251, 113, 133, 0.34) !important;
+  background: rgba(244, 63, 94, 0.14) !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-item.negative em {
+  color: #fb7185 !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-viewport::before {
+  background: linear-gradient(90deg, #080d15 0%, transparent 100%) !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-viewport::after {
+  background: linear-gradient(270deg, #080d15 0%, transparent 100%) !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-tape-action,
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .cycle-stamp {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: #111827 !important;
+  color: #eef4ff !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-workspace-tabs {
+  border-color: rgba(148, 163, 184, 0.22) !important;
+  background: #0c1320 !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-workspace-tab {
+  color: #9aa8bd !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-workspace-tab.active {
+  border-color: rgba(45, 212, 191, 0.38) !important;
+  background: #102034 !important;
+  color: #ecfeff !important;
+}
+
+body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-workspace-tab.active strong {
+  color: #7dd3fc !important;
+}
