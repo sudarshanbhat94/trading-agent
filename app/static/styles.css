@@ -11680,3 +11680,343 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
 body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-cascade-2) .market-workspace-tab.active strong {
   color: #7dd3fc !important;
 }
+
+/* Mobile all-pages pass: keep every workspace view inside the phone viewport. */
+@media (max-width: 767px) {
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  .app-shell,
+  .terminal-body,
+  .workspace,
+  .view,
+  .view.active,
+  .panel,
+  .panel.full,
+  .dashboard-card,
+  .connect-card,
+  .macro-table-shell,
+  .admin-terminal,
+  #settings-view .admin-terminal,
+  #settings-view .settings-tab-shell,
+  #settings-view .settings-tab-panel,
+  #settings-view .settings-tab-panel.active {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0 !important;
+  }
+
+  .terminal-topbar {
+    grid-template-columns: 42px minmax(0, 1fr) 42px !important;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .terminal-topbar .brand {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .terminal-topbar .brand h1,
+  .terminal-topbar .brand p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .market-tape {
+    grid-template-columns: auto minmax(0, 1fr) !important;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .market-tape-label {
+    min-width: 0;
+  }
+
+  .market-tape-label strong {
+    display: none;
+  }
+
+  .market-tape-viewport {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .market-tape-track {
+    max-width: none;
+  }
+
+  .terminal-body {
+    padding: 14px 12px max(88px, calc(28px + env(safe-area-inset-bottom))) !important;
+  }
+
+  .workspace-head {
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-items: stretch;
+  }
+
+  .workspace-head > *,
+  .workspace-head h2,
+  .workspace-head p {
+    min-width: 0;
+  }
+
+  .market-workspace-tabs {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .market-workspace-tab {
+    min-width: 0;
+  }
+
+  .market-workspace-tab span,
+  .market-workspace-tab strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-filter-bar,
+  .order-filter-tabs,
+  .analysis-tabs,
+  #settings-view .settings-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .page-filter-bar::-webkit-scrollbar,
+  .order-filter-tabs::-webkit-scrollbar,
+  .analysis-tabs::-webkit-scrollbar,
+  #settings-view .settings-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .page-filter-bar button,
+  .order-filter-tabs button,
+  .analysis-tabs button,
+  #settings-view .settings-tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .portfolio-strip,
+  .dashboard-grid,
+  .dashboard-admin-row,
+  .split-layout,
+  .admin-layout,
+  .account-grid,
+  .symbol-lab,
+  .decision-split,
+  .decision-radar-section,
+  .decision-review-grid,
+  .analysis-metric-strip,
+  .manual-analysis-card,
+  .provider-key-grid,
+  .model-default-grid,
+  .connect-grid,
+  #settings-view .settings-fields-grid,
+  #settings-view .settings-group {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .panel-head,
+  .admin-terminal-head,
+  .connect-card-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+    text-align: left;
+  }
+
+  .panel-head > *,
+  .admin-terminal-head > *,
+  .connect-card-head > *,
+  .panel-title-stack,
+  .connect-card-head div {
+    min-width: 0;
+  }
+
+  .panel-head h3,
+  .admin-terminal-head h3,
+  .connect-card-head h4 {
+    overflow-wrap: anywhere;
+  }
+
+  .panel-head span,
+  .admin-terminal-head span,
+  .connect-card-head span {
+    justify-self: start;
+  }
+
+  .connect-grid,
+  .model-default-grid,
+  .provider-key-grid {
+    padding: 12px;
+  }
+
+  .connect-grid input,
+  .connect-grid select,
+  .connect-grid button,
+  .model-default-grid input,
+  .model-default-grid select,
+  .model-default-grid button,
+  .provider-key-card input,
+  .symbol-search input,
+  .symbol-search select,
+  .symbol-search button,
+  .settings-form input,
+  .settings-form select,
+  .settings-actions button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  #settings-view .admin-terminal {
+    display: block !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  #settings-view .settings-tab-shell {
+    display: block;
+    min-height: 0;
+    overflow: hidden;
+    padding: 12px;
+  }
+
+  #settings-view .settings-tab-panel {
+    padding: 0;
+  }
+
+  #settings-view .settings-tab-panel.active {
+    display: grid;
+    gap: 12px;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  #settings-view .settings-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 12px;
+  }
+
+  .table-wrap,
+  .page-table,
+  .account-history-table-wrap,
+  .audit-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  .table-wrap table {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  th,
+  td {
+    max-width: min(260px, 72vw);
+    white-space: nowrap;
+  }
+
+  td.reason,
+  .logs-table td:nth-child(5),
+  #orders-view td:last-child,
+  #users-view td:last-child {
+    white-space: normal;
+  }
+
+  .decision-feed-card,
+  .decision-feed-panel .decision-feed-card {
+    grid-template-columns: 40px minmax(0, 1fr) !important;
+    align-items: start;
+    justify-items: stretch;
+    text-align: left;
+  }
+
+  .decision-feed-card .decision-main,
+  .decision-feed-card p,
+  .decision-title-row {
+    min-width: 0;
+    text-align: left;
+  }
+
+  .decision-feed-card .score-ring,
+  .decision-feed-panel .score-ring {
+    grid-column: 2;
+    justify-self: start;
+    width: 48px;
+    height: 48px;
+    margin-top: 4px;
+  }
+
+  .score-ring::after,
+  .decision-feed-panel .score-ring::after {
+    display: none;
+  }
+
+  .decision-detail-hero,
+  .analysis-hero {
+    grid-template-columns: 44px minmax(0, 1fr) !important;
+    align-items: start;
+  }
+
+  .decision-detail-hero .score-ring,
+  .analysis-price {
+    grid-column: 1 / -1;
+  }
+
+  .analysis-side-tools,
+  .analyze-result {
+    grid-column: 1 !important;
+    min-width: 0;
+  }
+
+  .chip-row {
+    display: flex;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .chip-row button {
+    flex: 0 0 auto;
+  }
+
+  .toast-stack,
+  .credit-popover,
+  .user-menu-dropdown {
+    right: 10px;
+    left: 10px;
+    width: auto;
+    max-width: none;
+  }
+}
