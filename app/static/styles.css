@@ -8571,17 +8571,20 @@ body {
   font-size: 12px;
 }
 
-.llm-formatted-review {
+.llm-formatted-review,
+.openstocks-formatted-view {
   display: grid;
   gap: 10px;
 }
 
-.llm-formatted-review article {
+.llm-formatted-review article,
+.openstocks-formatted-view article {
   border-left: 3px solid var(--color-brand-primary);
   padding-left: 10px;
 }
 
 .llm-formatted-review h5,
+.openstocks-formatted-view h5,
 .decision-review-grid h4,
 .decision-reason-block h4 {
   margin: 0 0 7px;
@@ -8590,6 +8593,7 @@ body {
 }
 
 .llm-formatted-review p,
+.openstocks-formatted-view p,
 .decision-reason-block p {
   color: var(--text-secondary);
   line-height: 1.5;
@@ -10463,6 +10467,7 @@ body[data-theme="dark"] :is(
   .decision-reason-block,
   .decision-review-grid > div,
   .llm-formatted-review article,
+  .openstocks-formatted-view article,
   .audit-hero,
   .audit-section,
   .audit-card,

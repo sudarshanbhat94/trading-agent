@@ -1119,7 +1119,7 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
             llm_activity.update(
                 {
                     "status": "disabled",
-                    "message": "OpenStocks Brain was requested, but this user has no enabled LLM provider/API key. No LLM credits were used.",
+                    "message": "OpenStocks View was requested, but this user has no enabled review provider/API key. No review credits were used.",
                     "billable": False,
                     "credits_charged": 0.0,
                     "raw_provider_credits": 0.0,
@@ -1129,7 +1129,7 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
             llm_activity.update(
                 {
                     "status": "manual_review_failed",
-                    "message": "OpenStocks Brain was requested, but the manual review failed before a billable provider response. No LLM credits were used.",
+                    "message": "OpenStocks View was requested, but the review failed before a billable provider response. No review credits were used.",
                     "billable": False,
                     "credits_charged": 0.0,
                     "raw_provider_credits": 0.0,
@@ -1169,7 +1169,7 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
         raise HTTPException(
             status_code=402,
             detail=(
-                "The analysis completed, but the final LLM charge exceeded the user's available credits. "
+                "The analysis completed, but the final OpenStocks View charge exceeded the user's available credits. "
                 "Add credits or raise the daily budget before running another signal."
             ),
         ) from exc
@@ -1210,7 +1210,11 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
         "reference_data": {
             "source": reference_data.get("source"),
             "data_gaps": reference_data.get("data_gaps", []),
+            "unavailable_fields": reference_data.get("unavailable_fields", []),
             "derived_from_candles": reference_data.get("derived_from_candles", []),
+            "sources": reference_data.get("sources", []),
+            "field_sources": reference_data.get("field_sources", {}),
+            "reference_errors": reference_data.get("reference_errors", []),
         },
         "candle_count": len(analysis_candles.get(symbol, [])),
         "timeframe_candle_counts": {
@@ -1269,7 +1273,7 @@ async def _manual_llm_review_if_requested(
             {
                 "executed": True,
                 "status": "already_reviewed",
-                "reason": "The strategy engine already used OpenStocks Brain for this manual analysis.",
+                "reason": "The strategy engine already used OpenStocks View for this manual analysis.",
                 "decision_path": decision_path,
             }
         )
@@ -1280,7 +1284,7 @@ async def _manual_llm_review_if_requested(
             "requested": True,
             "executed": False,
             "status": "disabled",
-            "reason": "LLM provider/API key is not enabled for this user.",
+            "reason": "OpenStocks View provider/API key is not enabled for this user.",
         }
         public.update(details["manual_llm_review"])
         return {
@@ -1309,7 +1313,7 @@ async def _manual_llm_review_if_requested(
     context["manual_llm_review"] = {
         "requested": True,
         "prefilter_bypassed": True,
-        "reason": "Manual symbol analysis explicitly requested OpenStocks Brain evidence.",
+        "reason": "Manual symbol analysis explicitly requested OpenStocks View evidence.",
     }
 
     context_token = current_user_id.set(user_id)
@@ -1342,7 +1346,7 @@ async def _manual_llm_review_if_requested(
         "original_decision_path": decision_path,
         "original_action": decision.action,
         "final_action": reviewed.action,
-        "note": "Manual Analyze bypassed the scanner candidate lane for LLM evidence; system risk gates still control tradability.",
+        "note": "Manual Analyze bypassed the scanner candidate lane for OpenStocks View evidence; system risk gates still control tradability.",
     }
     public.update(reviewed_details["manual_llm_review"])
     return {
@@ -3244,7 +3248,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
                 "user_id": user_id,
                 "market_session": session_context,
                 "news": news_summary,
-                "readiness_note": "Markets are closed, so no quote/candle/LLM scan or credit charge was made. News prep was refreshed for tomorrow.",
+                "readiness_note": "Markets are closed, so no quote/candle/OpenStocks View scan or credit charge was made. News prep was refreshed for tomorrow.",
             }
             db.set_state("tomorrow_prep_context", prep_context)
             credit_summary = db.user_credit_summary(user_id, include_ledger=False)
@@ -3252,7 +3256,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
                 "INFO",
                 "user_session",
                 "market_closed_skip_user_signal_cycle",
-                f"Skipped market-data and LLM scan for {user.get('username')} because selected markets are closed.",
+                f"Skipped market-data and OpenStocks View scan for {user.get('username')} because selected markets are closed.",
                 {
                     "user_id": user_id,
                     "username": user.get("username"),
@@ -3692,19 +3696,19 @@ def _llm_activity_from_decisions(decisions: list[Any], usage: dict[str, Any]) ->
     credits_charged = raw_credits if billable else 0.0
     if calls and billable:
         status = "completed_billable"
-        message = f"OpenStocks Brain completed the review lane and used {credits_charged:.2f} credits."
+        message = f"OpenStocks View completed the review and used {credits_charged:.2f} credits."
     elif calls:
         status = "completed_unusable_not_charged"
-        message = "OpenStocks Brain returned provider output, but it was not usable as a strict trading decision. No credits were charged."
+        message = "OpenStocks View returned provider output, but it was not usable as a strict trading decision. No credits were charged."
     elif attempted:
         status = "attempted_no_billable_tokens"
-        message = "OpenStocks Brain was selected and attempted analysis, but the provider returned no billable token usage. No credits were charged."
+        message = "OpenStocks View was selected and attempted analysis, but the provider returned no billable token usage. No credits were charged."
     elif selected:
         status = "selected_not_attempted"
-        message = "OpenStocks Brain was selected, but no provider attempt was completed in this cycle. No credits were charged."
+        message = "OpenStocks View was selected, but no provider attempt was completed in this cycle. No credits were charged."
     else:
         status = "not_selected"
-        message = "No symbol reached the OpenStocks Brain review lane in this cycle. No LLM credits were used."
+        message = "No symbol reached OpenStocks View in this cycle. No review credits were used."
     return {
         "status": status,
         "message": message,
@@ -3792,78 +3796,117 @@ async def _analysis_reference_data(
     yahoo_symbol = str(row.get("yahoo_symbol") or "").strip() or (str(row.get("symbol") or "").upper() if region == "US" else f"{str(row.get('symbol') or '').upper()}.NS")
     fundamentals: dict[str, Any] = {
         "company_name": row.get("name"),
-        "source": "yahoo_quote_reference",
+        "source": "reference_feed",
         "market_region": region,
     }
+    field_sources: dict[str, str] = {}
+    sources_used: list[str] = []
+    reference_errors: list[str] = []
     data_gaps: list[str] = []
+    unavailable_fields: list[str] = []
     derived_from_candles: list[str] = []
     headers = {"Accept": "application/json", "User-Agent": "OpenStocks/1.0 (+symbol-analysis)"}
-    try:
-        async with httpx.AsyncClient(timeout=8, headers=headers, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=8, headers=headers, follow_redirects=True) as client:
+        try:
             response = await client.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": yahoo_symbol})
             response.raise_for_status()
             item = ((response.json().get("quoteResponse") or {}).get("result") or [{}])[0]
-    except Exception as exc:
-        item = {}
-        try:
-            async with httpx.AsyncClient(timeout=8, headers=headers, follow_redirects=True) as client:
+            if isinstance(item, dict) and item:
+                _merge_yahoo_quote_reference(fundamentals, field_sources, item)
+                sources_used.append("yahoo_quote_reference")
+        except Exception as exc:
+            reference_errors.append(f"yahoo_quote_reference:{exc.__class__.__name__}")
+
+        if _missing_reference_fields(fundamentals, ("pe", "forward_pe", "pb", "market_cap", "beta", "eps_ttm")):
+            try:
+                response = await client.get(
+                    f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{yahoo_symbol}",
+                    params={"modules": "summaryDetail,defaultKeyStatistics,price,financialData"},
+                )
+                response.raise_for_status()
+                summary = ((response.json().get("quoteSummary") or {}).get("result") or [{}])[0]
+                if isinstance(summary, dict) and summary:
+                    _merge_yahoo_summary_reference(fundamentals, field_sources, summary)
+                    sources_used.append("yahoo_quote_summary_reference")
+            except Exception as exc:
+                reference_errors.append(f"yahoo_quote_summary_reference:{exc.__class__.__name__}")
+
+        if region == "IN" and _missing_reference_fields(fundamentals, ("pe", "market_cap", "week_52_high", "week_52_low")):
+            try:
+                nse_headers = {
+                    **headers,
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                    ),
+                    "Referer": f"https://www.nseindia.com/get-quotes/equity?symbol={str(row.get('symbol') or '').upper()}",
+                }
+                response = await client.get(
+                    "https://www.nseindia.com/api/quote-equity",
+                    params={"symbol": str(row.get("symbol") or "").upper()},
+                    headers=nse_headers,
+                )
+                response.raise_for_status()
+                nse_quote = response.json()
+                if isinstance(nse_quote, dict) and nse_quote:
+                    _merge_nse_quote_reference(fundamentals, field_sources, nse_quote, quote_payload)
+                    sources_used.append("nse_quote_reference")
+            except Exception as exc:
+                reference_errors.append(f"nse_quote_reference:{exc.__class__.__name__}")
+
+        if _missing_reference_fields(fundamentals, ("week_52_high", "week_52_low")):
+            try:
                 response = await client.get(
                     f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}",
                     params={"range": "1y", "interval": "1d", "includePrePost": "false"},
                 )
                 response.raise_for_status()
                 result = ((response.json().get("chart") or {}).get("result") or [{}])[0]
-                item = result.get("meta") or {}
-                fundamentals["source"] = "yahoo_chart_reference"
-        except Exception as chart_exc:
-            data_gaps.append(f"yahoo_reference_unavailable:{exc.__class__.__name__}")
-            data_gaps.append(f"yahoo_chart_reference_unavailable:{chart_exc.__class__.__name__}")
+                chart_meta = result.get("meta") or {}
+                if isinstance(chart_meta, dict) and chart_meta:
+                    _merge_yahoo_quote_reference(fundamentals, field_sources, chart_meta, source="yahoo_chart_reference")
+                    sources_used.append("yahoo_chart_reference")
+            except Exception as exc:
+                reference_errors.append(f"yahoo_chart_reference:{exc.__class__.__name__}")
 
-    field_map = {
-        "pe": "trailingPE",
-        "forward_pe": "forwardPE",
-        "pb": "priceToBook",
-        "market_cap": "marketCap",
-        "week_52_high": "fiftyTwoWeekHigh",
-        "week_52_low": "fiftyTwoWeekLow",
-        "volume": "regularMarketVolume",
-        "average_volume_10d": "averageDailyVolume10Day",
-        "average_volume_3m": "averageDailyVolume3Month",
-        "beta": "beta",
-        "eps_ttm": "epsTrailingTwelveMonths",
-    }
-    for target, source in field_map.items():
-        value = _json_number(item.get(source))
-        if value is not None:
-            fundamentals[target] = value
-    fundamentals["company_name"] = item.get("longName") or item.get("shortName") or fundamentals.get("company_name")
-    if item.get("currency"):
-        fundamentals["currency"] = item.get("currency")
-    if item.get("quoteType"):
-        fundamentals["quote_type"] = item.get("quoteType")
-    if item.get("exchange"):
-        fundamentals["exchange"] = item.get("exchange")
+    if sources_used:
+        fundamentals["source"] = sources_used[0]
+        fundamentals["sources"] = _dedupe(sources_used)
+    else:
+        fundamentals["source"] = "reference_unavailable"
 
     if fundamentals.get("week_52_high") is None or fundamentals.get("week_52_low") is None:
         candle_levels = _candle_52w_levels(candles)
         if fundamentals.get("week_52_high") is None and candle_levels.get("week_52_high") is not None:
             fundamentals["week_52_high"] = candle_levels["week_52_high"]
+            field_sources["week_52_high"] = "candles"
             derived_from_candles.append("week_52_high")
         if fundamentals.get("week_52_low") is None and candle_levels.get("week_52_low") is not None:
             fundamentals["week_52_low"] = candle_levels["week_52_low"]
+            field_sources["week_52_low"] = "candles"
             derived_from_candles.append("week_52_low")
 
     if _json_number(quote_payload.get("volume")) is not None and _json_number(quote_payload.get("volume")) > 0:
         fundamentals["volume"] = quote_payload.get("volume")
+        field_sources["volume"] = str(quote_payload.get("source") or "market_data")
     if quote_payload.get("close") is not None:
         fundamentals["previous_close"] = quote_payload.get("close")
 
-    for required in ("pe", "pb", "market_cap", "week_52_high", "week_52_low"):
+    for required in ("week_52_high", "week_52_low"):
         if fundamentals.get(required) is None:
             data_gaps.append(required)
 
+    for optional in ("pe", "pb", "market_cap", "forward_pe", "beta", "eps_ttm"):
+        if fundamentals.get(optional) is None:
+            unavailable_fields.append(optional)
+
+    if field_sources:
+        fundamentals["field_sources"] = field_sources
+
     row_fields = {
         "name": fundamentals.get("company_name") or row.get("name"),
+        "sector": fundamentals.get("sector") or row.get("sector"),
+        "industry": fundamentals.get("industry") or row.get("industry"),
         "pe": fundamentals.get("pe"),
         "forward_pe": fundamentals.get("forward_pe"),
         "pb": fundamentals.get("pb"),
@@ -3878,7 +3921,11 @@ async def _analysis_reference_data(
         "fundamentals": fundamentals,
         "row_fields": {key: value for key, value in row_fields.items() if value is not None and value != ""},
         "data_gaps": _dedupe(data_gaps),
+        "unavailable_fields": _dedupe(unavailable_fields),
         "derived_from_candles": derived_from_candles,
+        "sources": _dedupe(sources_used),
+        "field_sources": field_sources,
+        "reference_errors": _dedupe(reference_errors),
     }
 
 
@@ -3894,7 +3941,176 @@ def _candle_52w_levels(candles: list[Any]) -> dict[str, float | None]:
     }
 
 
+def _missing_reference_fields(fundamentals: dict[str, Any], fields: tuple[str, ...]) -> bool:
+    return any(fundamentals.get(field) is None for field in fields)
+
+
+def _set_reference_number(
+    fundamentals: dict[str, Any],
+    field_sources: dict[str, str],
+    field: str,
+    value: Any,
+    source: str,
+    *,
+    positive_only: bool = True,
+) -> bool:
+    number = _json_number(value)
+    if number is None or (positive_only and number <= 0):
+        return False
+    fundamentals[field] = number
+    field_sources[field] = source
+    return True
+
+
+def _merge_yahoo_quote_reference(
+    fundamentals: dict[str, Any],
+    field_sources: dict[str, str],
+    item: dict[str, Any],
+    *,
+    source: str = "yahoo_quote_reference",
+) -> None:
+    field_map = {
+        "pe": "trailingPE",
+        "forward_pe": "forwardPE",
+        "pb": "priceToBook",
+        "market_cap": "marketCap",
+        "week_52_high": "fiftyTwoWeekHigh",
+        "week_52_low": "fiftyTwoWeekLow",
+        "volume": "regularMarketVolume",
+        "average_volume_10d": "averageDailyVolume10Day",
+        "average_volume_3m": "averageDailyVolume3Month",
+        "beta": "beta",
+        "eps_ttm": "epsTrailingTwelveMonths",
+    }
+    for target, source_field in field_map.items():
+        _set_reference_number(
+            fundamentals,
+            field_sources,
+            target,
+            item.get(source_field),
+            source,
+            positive_only=target not in {"beta", "eps_ttm"},
+        )
+    fundamentals["company_name"] = item.get("longName") or item.get("shortName") or fundamentals.get("company_name")
+    for key in ("currency", "quoteType", "exchange"):
+        if item.get(key):
+            target = "quote_type" if key == "quoteType" else key
+            fundamentals[target] = item.get(key)
+
+
+def _merge_yahoo_summary_reference(
+    fundamentals: dict[str, Any],
+    field_sources: dict[str, str],
+    summary: dict[str, Any],
+) -> None:
+    paths_by_field: dict[str, tuple[tuple[str, ...], ...]] = {
+        "pe": (("summaryDetail", "trailingPE"), ("defaultKeyStatistics", "trailingPE")),
+        "forward_pe": (("summaryDetail", "forwardPE"), ("defaultKeyStatistics", "forwardPE")),
+        "pb": (("defaultKeyStatistics", "priceToBook"),),
+        "market_cap": (("price", "marketCap"), ("summaryDetail", "marketCap")),
+        "week_52_high": (("summaryDetail", "fiftyTwoWeekHigh"),),
+        "week_52_low": (("summaryDetail", "fiftyTwoWeekLow"),),
+        "volume": (("summaryDetail", "volume"),),
+        "average_volume_10d": (("summaryDetail", "averageDailyVolume10Day"),),
+        "average_volume_3m": (("summaryDetail", "averageVolume"),),
+        "beta": (("summaryDetail", "beta"), ("defaultKeyStatistics", "beta")),
+        "eps_ttm": (("defaultKeyStatistics", "trailingEps"),),
+    }
+    for field, paths in paths_by_field.items():
+        for path in paths:
+            if _set_reference_number(
+                fundamentals,
+                field_sources,
+                field,
+                _nested_value(summary, path),
+                "yahoo_quote_summary_reference",
+                positive_only=field not in {"beta", "eps_ttm"},
+            ):
+                break
+    price = summary.get("price") if isinstance(summary.get("price"), dict) else {}
+    fundamentals["company_name"] = _yahoo_text(price.get("longName")) or _yahoo_text(price.get("shortName")) or fundamentals.get("company_name")
+    currency = _yahoo_text(price.get("currency"))
+    if currency:
+        fundamentals["currency"] = currency
+    exchange = _yahoo_text(price.get("exchangeName")) or _yahoo_text(price.get("exchange"))
+    if exchange:
+        fundamentals["exchange"] = exchange
+
+
+def _merge_nse_quote_reference(
+    fundamentals: dict[str, Any],
+    field_sources: dict[str, str],
+    nse_quote: dict[str, Any],
+    quote_payload: dict[str, Any],
+) -> None:
+    info = nse_quote.get("info") if isinstance(nse_quote.get("info"), dict) else {}
+    metadata = nse_quote.get("metadata") if isinstance(nse_quote.get("metadata"), dict) else {}
+    price_info = nse_quote.get("priceInfo") if isinstance(nse_quote.get("priceInfo"), dict) else {}
+    security_info = nse_quote.get("securityInfo") if isinstance(nse_quote.get("securityInfo"), dict) else {}
+    industry_info = nse_quote.get("industryInfo") if isinstance(nse_quote.get("industryInfo"), dict) else {}
+
+    _set_reference_number(fundamentals, field_sources, "pe", metadata.get("pdSymbolPe"), "nse_quote_reference")
+    week_high_low = price_info.get("weekHighLow") if isinstance(price_info.get("weekHighLow"), dict) else {}
+    _set_reference_number(fundamentals, field_sources, "week_52_high", week_high_low.get("max"), "nse_quote_reference")
+    _set_reference_number(fundamentals, field_sources, "week_52_low", week_high_low.get("min"), "nse_quote_reference")
+
+    issued_size = _json_number(security_info.get("issuedSize"))
+    live_price = (
+        _json_number(quote_payload.get("price"))
+        or _json_number(price_info.get("lastPrice"))
+        or _json_number(price_info.get("close"))
+        or _json_number(price_info.get("previousClose"))
+    )
+    if issued_size and live_price:
+        _set_reference_number(
+            fundamentals,
+            field_sources,
+            "market_cap",
+            issued_size * live_price,
+            "nse_quote_reference",
+        )
+
+    fundamentals["company_name"] = info.get("companyName") or fundamentals.get("company_name")
+    fundamentals["currency"] = fundamentals.get("currency") or "INR"
+    fundamentals["exchange"] = fundamentals.get("exchange") or "NSE"
+    fundamentals["sector"] = industry_info.get("sector") or metadata.get("pdSectorInd") or fundamentals.get("sector")
+    fundamentals["industry"] = (
+        industry_info.get("basicIndustry")
+        or industry_info.get("industry")
+        or metadata.get("industry")
+        or info.get("industry")
+        or fundamentals.get("industry")
+    )
+
+
+def _nested_value(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _yahoo_text(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("fmt") or value.get("longFmt") or value.get("raw")
+    return str(value or "").strip()
+
+
 def _json_number(value: Any) -> float | None:
+    if isinstance(value, dict):
+        if "raw" in value:
+            return _json_number(value.get("raw"))
+        if "fmt" in value:
+            return _json_number(value.get("fmt"))
+        if "longFmt" in value:
+            return _json_number(value.get("longFmt"))
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if text.upper() in {"", "-", "--", "NA", "N/A", "NONE", "NULL"}:
+            return None
+        value = text
     try:
         number = float(value)
         return number if number == number else None

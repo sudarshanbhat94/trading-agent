@@ -32,7 +32,7 @@ const SETTINGS_TAB_CATEGORIES = {
   broker: new Set(["Live Protection"]),
   markets: new Set(["Market Data"]),
   runtime: new Set(["Runtime", "Agent Cycle"]),
-  ai: new Set(["LLM Brain", "Sentiment"]),
+  ai: new Set(["OpenStocks View", "Sentiment"]),
   risk: new Set(["Risk"]),
   users: new Set(["Access Control", "User Credits"]),
   calendar: new Set(["Macro Calendar"]),
@@ -77,8 +77,15 @@ function byId(id) {
   return document.getElementById(id);
 }
 
+function numericValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function fmtMoney(value) {
-  return Number.isFinite(Number(value)) ? money.format(Number(value)) : "-";
+  const parsed = numericValue(value);
+  return parsed !== null ? money.format(parsed) : "-";
 }
 
 function normalizeUiMarket(value) {
@@ -117,8 +124,9 @@ function scopedMarketContext(context = {}, market = state.activeMarket) {
 }
 
 function fmtMarketMoney(value, market = "IN") {
-  if (!Number.isFinite(Number(value))) return "-";
-  return normalizeUiMarket(market) === "US" ? usdPrice.format(Number(value)) : money.format(Number(value));
+  const parsed = numericValue(value);
+  if (parsed === null) return "-";
+  return normalizeUiMarket(market) === "US" ? usdPrice.format(parsed) : money.format(parsed);
 }
 
 function marketCurrencyLabel(market = state.activeMarket) {
@@ -162,39 +170,44 @@ function portfolioMetricsForMarket(portfolio = {}, positions = [], market = "IN"
 }
 
 function fmtNumber(value) {
-  return Number.isFinite(Number(value)) ? number.format(Number(value)) : "-";
+  const parsed = numericValue(value);
+  return parsed !== null ? number.format(parsed) : "-";
 }
 
 function firstFinite(...values) {
   for (const value of values) {
-    const numberValue = Number(value);
-    if (Number.isFinite(numberValue)) return numberValue;
+    const numberValue = numericValue(value);
+    if (numberValue !== null) return numberValue;
   }
   return null;
 }
 
 function firstPositiveFinite(...values) {
   for (const value of values) {
-    const numberValue = Number(value);
-    if (Number.isFinite(numberValue) && numberValue > 0) return numberValue;
+    const numberValue = numericValue(value);
+    if (numberValue !== null && numberValue > 0) return numberValue;
   }
   return null;
 }
 
 function fmtCompact(value) {
-  return Number.isFinite(Number(value)) ? compactNumber.format(Number(value)) : "-";
+  const parsed = numericValue(value);
+  return parsed !== null ? compactNumber.format(parsed) : "-";
 }
 
 function fmtUsd(value) {
-  return Number.isFinite(Number(value)) ? usd.format(Number(value)) : "-";
+  const parsed = numericValue(value);
+  return parsed !== null ? usd.format(parsed) : "-";
 }
 
 function fmtCredits(value) {
-  return Number.isFinite(Number(value)) ? creditsFmt.format(Number(value)) : "-";
+  const parsed = numericValue(value);
+  return parsed !== null ? creditsFmt.format(parsed) : "-";
 }
 
 function fmtPct(value) {
-  return Number.isFinite(Number(value)) ? `${number.format(Number(value))}%` : "-";
+  const parsed = numericValue(value);
+  return parsed !== null ? `${number.format(parsed)}%` : "-";
 }
 
 function displayValue(value, fallback = "Not available") {
@@ -613,12 +626,12 @@ function reasonFromSnakeCase(value, fallback = "-") {
     risk_override_no_new_longs: "Risk overrides are active, so OpenStocks is not opening a new long.",
     portfolio_concentration_correlation_too_high: "The portfolio already has too much correlated exposure, so this BUY is blocked.",
     bottom_quartile_distribution: "The sector is weak and in distribution, so the stock needs exceptional confirmation before buying.",
-    llm_primary_failed_safe_hold: "The LLM did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
-    llm_buy_blocked_by_system_rules: "The LLM wanted to buy, but hard system rules blocked the trade.",
-    llm_primary_unavailable_no_trade: "Primary LLM approval is required, but the LLM is unavailable, so OpenStocks forced HOLD.",
-    llm_primary_required_no_unreviewed_trade: "The symbol was not reviewed by the primary LLM in this cycle, so OpenStocks forced HOLD.",
-    llm_failed_or_timed_out_deterministic_trade_preserved: "The LLM did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
-    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current LLM review limit; new trades now require LLM approval, so this should be HOLD.",
+    llm_primary_failed_safe_hold: "OpenStocks View did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
+    llm_buy_blocked_by_system_rules: "OpenStocks View wanted to buy, but hard system rules blocked the trade.",
+    llm_primary_unavailable_no_trade: "OpenStocks View approval is required, but it is unavailable, so OpenStocks forced HOLD.",
+    llm_primary_required_no_unreviewed_trade: "The symbol was not reviewed by OpenStocks View in this cycle, so OpenStocks forced HOLD.",
+    llm_failed_or_timed_out_deterministic_trade_preserved: "OpenStocks View did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
+    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current OpenStocks View limit; new trades now require that review, so this should be HOLD.",
     time_stop_no_progress_15_sessions: "The position has not moved enough after 15 sessions, so OpenStocks is exiting dead capital.",
     overall_score_below_55_no_new_longs: "The production-readiness score is below 55%, so OpenStocks is not opening a fresh long.",
     fundamentals_unknown_needs_news_or_delivery_confirmation: "Fundamentals are still unknown, news/sentiment is missing, and delivery accumulation is not confirmed.",
@@ -627,6 +640,63 @@ function reasonFromSnakeCase(value, fallback = "-") {
   };
   if (mapped[text]) return mapped[text];
   return compactSentence(humanLabel(text).toLowerCase());
+}
+
+function plainDecisionPath(value) {
+  const text = String(value || "").trim();
+  const mapped = {
+    llm_review: "OpenStocks View",
+    llm_review_failed: "OpenStocks View failed safely",
+    llm_primary: "OpenStocks View",
+    manual_exit: "Manual exit",
+    deterministic_audit: "Rules engine",
+  };
+  if (!text || text === "-") return "Rules engine";
+  return mapped[text] || humanLabel(text);
+}
+
+function referenceFieldLabel(value) {
+  const mapped = {
+    pe: "PE",
+    forward_pe: "forward PE",
+    pb: "PB",
+    market_cap: "market cap",
+    week_52_high: "52-week high",
+    week_52_low: "52-week low",
+    eps_ttm: "EPS TTM",
+    beta: "beta",
+  };
+  return mapped[String(value || "").toLowerCase()] || humanLabel(value).toLowerCase();
+}
+
+function referenceSourceLabel(value) {
+  const mapped = {
+    nse_quote_reference: "NSE quote reference",
+    yahoo_quote_reference: "Yahoo quote reference",
+    yahoo_quote_summary_reference: "Yahoo fundamentals reference",
+    yahoo_chart_reference: "Yahoo chart reference",
+    candles: "price candles",
+    market_data: "market data",
+    reference_feed: "reference feed",
+    reference_unavailable: "reference feed unavailable",
+  };
+  return mapped[String(value || "").toLowerCase()] || humanLabel(value);
+}
+
+function analysisReferenceNoteHtml(referenceData = {}, payload = {}) {
+  const sources = Array.isArray(referenceData.sources) && referenceData.sources.length
+    ? referenceData.sources.map(referenceSourceLabel).join(", ")
+    : referenceData.source ? referenceSourceLabel(referenceData.source) : "";
+  const hardGaps = (referenceData.data_gaps || []).filter(Boolean).map(referenceFieldLabel);
+  const unavailable = (referenceData.unavailable_fields || []).filter(Boolean).map(referenceFieldLabel);
+  const derived = (referenceData.derived_from_candles || []).filter(Boolean).map(referenceFieldLabel);
+  const parts = [];
+  if (sources) parts.push(`Reference sources checked: ${sources}.`);
+  if (derived.length) parts.push(`${derived.join(", ")} derived from ${payload.candle_count || 0} candles.`);
+  if (unavailable.length) parts.push(`${unavailable.join(", ")} not reported by the connected public feeds, so OpenStocks treats them as unavailable, not as bad fundamentals.`);
+  if (hardGaps.length) parts.push(`Still missing for this analysis: ${hardGaps.join(", ")}.`);
+  if (!parts.length) return "";
+  return `<p class="analysis-data-note">${escapeHtml(parts.join(" "))}</p>`;
 }
 
 function gateValueText(gateName, value, market = "IN") {
@@ -778,10 +848,10 @@ function humanizeReasonText(text, action = "HOLD") {
     });
   }
   return value
-    .replace(/llm_primary_required_no_unreviewed_trade/g, "LLM approval was required before trading, so OpenStocks held")
-    .replace(/llm_primary_failed_safe_hold/g, "LLM failed, so OpenStocks held safely")
-    .replace(/llm_primary_unavailable_no_trade/g, "LLM was unavailable, so OpenStocks held safely")
-    .replace(/llm_failed_deterministic_action_preserved/g, "LLM failed, so OpenStocks held safely")
+    .replace(/llm_primary_required_no_unreviewed_trade/g, "OpenStocks View approval was required before trading, so OpenStocks held")
+    .replace(/llm_primary_failed_safe_hold/g, "OpenStocks View failed, so OpenStocks held safely")
+    .replace(/llm_primary_unavailable_no_trade/g, "OpenStocks View was unavailable, so OpenStocks held safely")
+    .replace(/llm_failed_deterministic_action_preserved/g, "OpenStocks View failed, so OpenStocks held safely")
     .replace(/failed_gates=\[([^\]]*)\]/gi, (_, gates) => {
       const readable = gates
         .split(",")
@@ -824,7 +894,7 @@ function readableDecisionReason(row = {}) {
     return reasonFromSnakeCase(pre.elimination_reason);
   }
   if (audit.llm_error) {
-    return `LLM did not return a usable decision, so OpenStocks used the safe ${action} result.`;
+    return `OpenStocks View did not return a usable decision, so OpenStocks used the safe ${action} result.`;
   }
   if (action === "BUY") {
     return `BUY candidate: combined score ${fmtNumber(combinedValue)} vs ${fmtNumber(threshold)} required, confluence ${confluenceValue ?? "-"}/26 (${confluenceTier}), and institutional readiness is ${scorecard.buy_ready ? "clear" : "being monitored"}.`;
@@ -1306,9 +1376,9 @@ function renderShell(payload = state.latest || {}) {
     : llmProvider === "groq"
       ? plainSetting("groq_model", "qwen/qwen3-32b")
       : llmProvider === "assigned"
-        ? "OpenStocks Brain"
+        ? "OpenStocks View"
       : "offline";
-  const llmDisplay = llmProvider === "assigned" ? "OpenStocks Brain" : llmProvider;
+  const llmDisplay = llmProvider === "assigned" ? "OpenStocks View" : llmProvider;
   const llmUsage = payload.llm_usage?.today_utc || {};
   const llmActivity = userSession.last_llm_activity || {};
   const llmUsageText = llmUsage.calls
@@ -1316,7 +1386,7 @@ function renderShell(payload = state.latest || {}) {
     : `${llmModel || "model unset"}`;
 
   byId("top-provider").textContent = state.auth?.admin ? provider : feed.title;
-  byId("top-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "off" : llmModel) : "OpenStocks Brain";
+  byId("top-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "off" : llmModel) : "OpenStocks View";
   byId("top-execution").textContent = state.auth?.admin ? plainSetting("execution_mode", runtime.execution_mode || "-") : marketCurrencyLabel(activeMarket);
 
   const feedPending = isFeedPending(payload);
@@ -1345,7 +1415,7 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-feed-meta").textContent = feedPending
     ? "quotes paused until token/feed is ready"
     : feed.meta;
-  byId("ops-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks Brain";
+  byId("ops-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks View";
   const userCreditMeta = state.credits
     ? `${fmtCredits(state.credits.credits_used_today || 0)} credits used today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
     : `${fmtCredits(llmActivity.credits_charged || 0)} credits last cycle`;
@@ -1715,8 +1785,8 @@ function renderCreditPopoverBody(credits, policy = {}) {
       ${(ledger || []).slice(0, 5).map((row) => `<button type="button">
         <span>${escapeHtml(humanLabel(row.entry_type || "usage"))}</span>
         <strong class="${pnlClass(row.amount)}">${fmtCredits(row.amount)}</strong>
-        <small>${escapeHtml(row.description || "OpenStocks Brain review")} · ${fmtTime(row.ts)}</small>
-      </button>`).join("") || `<div class="empty-state product-empty"><strong>No LLM calls yet</strong><span>Last five credit events will appear here.</span></div>`}
+        <small>${escapeHtml(row.description || "OpenStocks View")} · ${fmtTime(row.ts)}</small>
+      </button>`).join("") || `<div class="empty-state product-empty"><strong>No review calls yet</strong><span>Last five credit events will appear here.</span></div>`}
     </div>
     <small class="credit-policy-note">${fmtCredits(policy.estimated_signal_credit || 0)} estimated credits per signal review.</small>
   `;
@@ -3157,7 +3227,7 @@ function renderSuggestions(rows) {
   if (!rows.length) {
     body.innerHTML = emptyBlock(
       `No ${activeMarketLabel()} signal history yet`,
-      "The shared engine will publish only ideas that survive the data, entry, risk, sentiment, and LLM decision gates.",
+      "The shared engine will publish only ideas that survive the data, entry, risk, sentiment, and OpenStocks View gates.",
       "View Engine Checks",
       "decisions",
     );
@@ -3478,7 +3548,7 @@ function renderDecisions(rows, options = {}) {
     if (detail) {
       detail.innerHTML = emptyBlock(
         "No decision selected",
-        "When decisions arrive, select one to inspect the score radar, LLM reasoning, gates, and timeline.",
+        "When decisions arrive, select one to inspect the score radar, OpenStocks View, gates, and timeline.",
         "Analyze Symbol",
         "analyze",
       );
@@ -3566,7 +3636,7 @@ function renderDecisionDetailPanel(row = {}) {
     ["Quote", `${fmtMarketMoney(row.price || context.quote?.price, market)} from ${context.quote?.source || row.source || "market feed"}`],
     ["Score", `${fmtNumber(score.combined ?? row.combined_score)} combined · ${full.confluence_score?.total ?? row.confluence ?? "-"} confluence`],
     ["Gates", failedGatesFromAudit(audit, context).length ? `${failedGatesFromAudit(audit, context).length} blockers` : "hard gates clear"],
-    ["Brain", audit.llm_error ? "OpenStocks Brain failed safely" : (audit.decision_path || "deterministic audit")],
+    ["OpenStocks View", audit.llm_error ? "failed safely" : plainDecisionPath(audit.decision_path || "deterministic_audit")],
     ["Decision", `${row.action || "HOLD"} · ${fmtNumber(confidence)}% confidence`],
   ];
   panel.innerHTML = `
@@ -3590,8 +3660,8 @@ function renderDecisionDetailPanel(row = {}) {
     </section>
     <section class="decision-review-grid">
       <div>
-        <h4>OpenStocks Brain Review</h4>
-        ${formattedLlmReasonHtml(llm, audit)}
+        <h4>OpenStocks View</h4>
+        ${formattedLlmReasonHtml(llm, audit, row)}
       </div>
       <div>
         <h4>Timeline</h4>
@@ -3641,18 +3711,54 @@ function scoreRadarSvg(metrics = []) {
   </div>`;
 }
 
-function formattedLlmReasonHtml(llm = {}, audit = {}) {
-  const sections = [];
-  const reason = llm.reason || llm.summary || audit.action_reason || "";
-  if (reason) sections.push(["Conclusion", reason]);
-  if (Array.isArray(llm.evidence) && llm.evidence.length) sections.push(["Technical analysis", llm.evidence.slice(0, 5).join(" ")]);
-  if (Array.isArray(llm.risk_checks) && llm.risk_checks.length) sections.push(["Risk assessment", llm.risk_checks.slice(0, 5).join(" ")]);
-  if (Array.isArray(llm.data_gaps) && llm.data_gaps.length) sections.push(["Data gaps", llm.data_gaps.slice(0, 5).join(" ")]);
+function plainInsightText(value, action = "HOLD") {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object") return shortValue(value, 260);
+  const text = String(value).trim();
+  if (!text) return "";
+  if (/^[a-z0-9_]+$/i.test(text)) return reasonFromSnakeCase(text);
+  return humanizeReasonText(text, action);
+}
+
+function listValue(items) {
+  return Array.isArray(items) ? items : items ? [items] : [];
+}
+
+function plainInsightList(items, action = "HOLD", limit = 5) {
+  return listValue(items)
+    .map((item) => plainInsightText(item, action))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function sentenceFromList(items, fallback = "") {
+  const clean = (items || []).filter(Boolean);
+  return clean.length ? clean.map((item) => compactSentence(item)).join(" ") : fallback;
+}
+
+function formattedLlmReasonHtml(llm = {}, audit = {}, decision = {}) {
+  const action = String(audit.final_action || decision.action || llm.action || "HOLD").toUpperCase();
+  const reason = plainInsightText(llm.reason || llm.summary || audit.action_reason || "", action);
+  const evidence = plainInsightList(llm.evidence, action, 5);
+  const checklist = plainInsightList(llm.checklist, action, 4);
+  const risks = plainInsightList([...listValue(llm.risk_checks), ...listValue(llm.invalidators)], action, 6);
+  const monitoring = plainInsightList(llm.monitoring_checklist, action, 5);
+  const dataLimits = plainInsightList(llm.data_gaps, action, 5);
+  const fallbackReason = decision.symbol
+    ? readableDecisionReason({ ...decision, details: audit })
+    : "";
+  const sections = [
+    ["Bottom line", reason || fallbackReason],
+    ["What is working", sentenceFromList(evidence, checklist.length ? sentenceFromList(checklist) : "")],
+    ["What is missing", sentenceFromList(dataLimits, audit.llm_error ? "OpenStocks View could not complete, so the safer rules-engine decision was used." : "")],
+    ["Risk to watch", sentenceFromList(risks)],
+    ["What would change the view", sentenceFromList(monitoring)],
+  ].filter(([, text]) => text);
   if (!sections.length) {
-    return `<div class="empty-state product-empty"><strong>No LLM narrative captured</strong><span>This decision still used deterministic gates and safe policy checks.</span></div>`;
+    return `<div class="empty-state product-empty"><strong>No OpenStocks View captured</strong><span>This decision still used price, volume, risk gates, and strategy rules.</span></div>`;
   }
-  return `<div class="llm-formatted-review">
-    ${sections.map(([title, text]) => `<article><h5>${escapeHtml(title)}</h5><p>${escapeHtml(shortValue(text, 520))}</p></article>`).join("")}
+  return `<div class="openstocks-formatted-view">
+    ${sections.map(([title, text]) => `<article><h5>${escapeHtml(title)}</h5><p>${escapeHtml(shortValue(text, 620))}</p></article>`).join("")}
   </div>`;
 }
 
@@ -3913,7 +4019,7 @@ function decisionDetailHtml(row) {
       label: "Decision audit",
       symbol: row.symbol,
       action: row.action,
-      status: audit.decision_path || row.strategy || "-",
+      status: plainDecisionPath(audit.decision_path || row.strategy || "-"),
       meta: `${fmtNumber(Number(row.confidence) * 100)}% confidence · ${fmtMarketMoney(row.price, market)}`,
     })}
     <section class="audit-section">
@@ -3922,7 +4028,7 @@ function decisionDetailHtml(row) {
       ${auditList("Main Reasons", decisionReasonHighlights(row))}
       <div class="audit-chips">
         <span>Strategy: ${escapeHtml(row.strategy || context.best_strategy?.name || "-")}</span>
-        <span>Path: ${escapeHtml(humanLabel(audit.decision_path || "-"))}</span>
+        <span>Path: ${escapeHtml(plainDecisionPath(audit.decision_path || "-"))}</span>
         <span>At: ${escapeHtml(fmtTime(row.ts))}</span>
       </div>
     </section>
@@ -4105,7 +4211,7 @@ function preFilterHtml(audit, context, market = "IN") {
 function llmOutputHtml(llm, audit) {
   const admin = Boolean(state.auth?.admin);
   return `<section class="audit-section">
-    <h4>LLM Evidence</h4>
+    <h4>OpenStocks View Evidence</h4>
     <div class="audit-cards two">
       <div class="audit-card">
         <span>Requested Action</span>
@@ -4114,7 +4220,7 @@ function llmOutputHtml(llm, audit) {
       </div>
       <div class="audit-card">
         <span>Analysed By</span>
-        <strong>${admin ? escapeHtml(audit.model || llm.model || "-") : "OpenStocks Brain"}</strong>
+        <strong>${admin ? escapeHtml(audit.model || llm.model || "-") : "OpenStocks View"}</strong>
         <small>${admin ? `${escapeHtml(audit.provider || llm.provider || "-")} · ` : ""}${escapeHtml(audit.analysis_mode || llm.analysis_mode || "single_context")}</small>
       </div>
       <div class="audit-card">
@@ -4123,7 +4229,7 @@ function llmOutputHtml(llm, audit) {
         <small>minimum ${fmtNumber(Number(audit.confidence_gate?.minimum_required || 0) * 100)}%</small>
       </div>
     </div>
-    ${admin ? objectCardsHtml("LLM Routing", {
+    ${admin ? objectCardsHtml("Review Routing", {
       configured_provider: audit.configured_provider,
       configured_model: audit.configured_model,
       selected_provider: audit.provider,
@@ -4136,10 +4242,10 @@ function llmOutputHtml(llm, audit) {
     ${auditList("Checklist", llm.checklist)}
     ${auditList("Risk Checks", llm.risk_checks)}
     ${auditList("Invalidators", llm.invalidators)}
-    ${objectCardsHtml("LLM Signal Plan", llm.signal_plan)}
-    ${objectCardsHtml("LLM Trade Plan", llm.trade_plan)}
-    ${auditList("LLM Monitoring Checklist", llm.monitoring_checklist)}
-    ${auditList("LLM Data Gaps", llm.data_gaps)}
+    ${objectCardsHtml("Signal Plan", llm.signal_plan)}
+    ${objectCardsHtml("Trade Plan", llm.trade_plan)}
+    ${auditList("Monitoring Checklist", llm.monitoring_checklist)}
+    ${auditList("Data Limits", llm.data_gaps)}
 	  </section>`;
 }
 
@@ -4149,16 +4255,16 @@ function llmPayloadHtml(audit, context = {}) {
   const selection = context.llm_primary_selection || {};
   if (!payload) {
     return `<section class="audit-section">
-      <h4>LLM Payload</h4>
+      <h4>Review Payload</h4>
       <div class="audit-cards">
-        <div class="audit-card"><span>Status</span><strong>${selection.selected ? "not captured" : "not sent"}</strong><small>${selection.selected ? "This older decision predates payload capture." : "This symbol was not selected for the LLM lane in this cycle."}</small></div>
-        <div class="audit-card"><span>Candidate Limit</span><strong>${escapeHtml(selection.candidate_limit ?? "-")}</strong><small>${selection.required ? "primary LLM required" : "LLM not required"}</small></div>
+        <div class="audit-card"><span>Status</span><strong>${selection.selected ? "not captured" : "not sent"}</strong><small>${selection.selected ? "This older decision predates payload capture." : "This symbol was not selected for OpenStocks View in this cycle."}</small></div>
+        <div class="audit-card"><span>Candidate Limit</span><strong>${escapeHtml(selection.candidate_limit ?? "-")}</strong><small>${selection.required ? "OpenStocks View required" : "OpenStocks View not required"}</small></div>
       </div>
     </section>`;
   }
   const sections = Array.isArray(payload.included_sections) ? payload.included_sections.join(", ") : "-";
   return `<section class="audit-section">
-    <h4>LLM Payload</h4>
+    <h4>Review Payload</h4>
     <div class="audit-cards">
       <div class="audit-card"><span>Market</span><strong>${escapeHtml(payload.market_region || "-")}</strong><small>${escapeHtml(payload.currency || "-")} context</small></div>
       <div class="audit-card"><span>Input Estimate</span><strong>${fmtNumber(payload.estimated_input_tokens)}</strong><small>approx tokens from prompt chars</small></div>
@@ -4200,7 +4306,7 @@ function riskGateHtml(audit, market = "IN") {
       <div class="audit-card"><span>BUY Threshold</span><strong>${fmtNumber(buyThreshold)}</strong><small>combined score required before a fresh long</small></div>
       <div class="audit-card"><span>Open Position</span><strong>${(gates.has_existing_position ?? Number(context.position?.qty || 0) > 0) ? "yes" : "no"}</strong><small>${fmtNumber(currentOpenPositions)} / ${fmtNumber(maxPositions)} positions used</small></div>
       <div class="audit-card"><span>Institutional Gate</span><strong class="${scorecardClass}">${scorecardStatus}</strong><small>${escapeHtml(failedScorecardItems.map(reasonFromSnakeCase).join(" ") || "must-pass checks clear")}</small></div>
-      <div class="audit-card"><span>LLM Review</span><strong>${llmSelected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(llmLimit ?? "-")}</small></div>
+      <div class="audit-card"><span>OpenStocks View</span><strong>${llmSelected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(llmLimit ?? "-")}</small></div>
     </div>
 	    ${auditList("Failed Gates", failed.length ? failed.map((gate) => humanizeGateFailure(gate, market)) : ["No hard gate failed."])}
     <details class="raw-audit"><summary>Technical risk-gate data</summary><pre>${escapeHtml(JSON.stringify(gates, null, 2))}</pre></details>
@@ -4633,7 +4739,7 @@ async function analyzeSymbol(event) {
   }, 1000);
   button.disabled = true;
   byId("analyze-status").textContent = `analyzing ${market}:${symbol}...`;
-  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk gates, and OpenStocks Brain review if enabled...</div>`;
+  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk gates, and OpenStocks View if enabled...</div>`;
   try {
     const response = await fetch("/api/analyze-symbol", {
       method: "POST",
@@ -4672,6 +4778,7 @@ function renderManualAnalysis(payload) {
   const context = details.context || {};
   const full = decisionFullSpectrum(details);
   const path = details.decision_path || decision.strategy || "-";
+  const pathLabel = plainDecisionPath(path);
   const news = payload.news || {};
   const fundamentals = payload.fundamentals || {};
   const referenceData = payload.reference_data || {};
@@ -4701,11 +4808,7 @@ function renderManualAnalysis(payload) {
     { label: "52W high", value: high52, kind: "money", empty: "derived after candles load" },
     { label: "52W low", value: low52, kind: "money", empty: "derived after candles load" },
   ];
-  const referenceNote = (referenceData.derived_from_candles || []).length
-    ? `52-week levels derived from ${payload.candle_count || 0} candles.`
-    : referenceData.source
-      ? `Reference data: ${humanLabel(referenceData.source)}.`
-      : "";
+  const referenceNoteHtml = analysisReferenceNoteHtml(referenceData, payload);
   byId("analyze-result").innerHTML = `
     <section class="analysis-result-shell">
       <header class="analysis-hero">
@@ -4729,19 +4832,19 @@ function renderManualAnalysis(payload) {
       <div class="analysis-metric-strip">
         ${metrics.map((metric) => metricCardHtml(metric, market)).join("")}
       </div>
-      ${referenceNote || referenceData.data_gaps?.length ? `<p class="analysis-data-note">${escapeHtml(referenceNote || "Some reference fields are not available from the connected feed.")}${referenceData.data_gaps?.length ? ` Missing: ${escapeHtml(referenceData.data_gaps.join(", "))}.` : ""}</p>` : ""}
+      ${referenceNoteHtml}
       <div class="analysis-tabs" role="tablist" aria-label="Analysis result sections">
         <button class="active" type="button" data-analysis-tab="overview">Overview</button>
         <button type="button" data-analysis-tab="chart">Chart</button>
         <button type="button" data-analysis-tab="strategy">Strategy</button>
         <button type="button" data-analysis-tab="sentiment">Sentiment</button>
         <button type="button" data-analysis-tab="risk">Risk</button>
-        <button type="button" data-analysis-tab="llm">LLM Review</button>
+        <button type="button" data-analysis-tab="llm">OpenStocks View</button>
       </div>
       <div class="analysis-tab-panels">
         <section class="analysis-tab-panel active" data-analysis-panel="overview">
           <div class="manual-analysis-card">
-            <div><span>Decision</span><strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong><small>${escapeHtml(path)}</small></div>
+            <div><span>Decision</span><strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong><small>${escapeHtml(pathLabel)}</small></div>
             <div><span>Confidence</span><strong>${fmtNumber(Number(decision.confidence || 0) * 100)}%</strong><small>policy gates still apply</small></div>
             <div><span>News Sentiment</span><strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "Awaiting news"}</strong><small>${headlines.length ? `${headlines.length} items` : escapeHtml(news.note || "No verified news")}</small></div>
             <div><span>Credits Used</span><strong>${fmtCredits(creditCharge)}</strong><small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small></div>
@@ -4764,7 +4867,7 @@ function renderManualAnalysis(payload) {
         <section class="analysis-tab-panel" data-analysis-panel="llm">
           <button id="manual-detail-btn" type="button">Open Full Analysis</button>
           ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
-          ${details.llm_output ? formattedLlmReasonHtml(details.llm_output, details) : `<p class="muted">OpenStocks Brain evidence was not captured for this result. Re-run Analyze after checking credits and the user LLM provider/API key.</p>`}
+          ${details.llm_output ? formattedLlmReasonHtml(details.llm_output, details, decision) : `<p class="muted">OpenStocks View was not captured for this result. Re-run Analyze after checking credits and the user's review provider/API key.</p>`}
           ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
         </section>
       </div>
@@ -4791,10 +4894,11 @@ function bindAnalysisTabs() {
 function metricCardHtml(metric, market = "IN") {
   const value = metric.value;
   let rendered = "-";
-  if (Number.isFinite(Number(value))) {
-    if (metric.kind === "money") rendered = fmtMarketMoney(value, market);
-    else if (metric.kind === "compact") rendered = fmtCompact(value);
-    else rendered = fmtNumber(value);
+  const parsed = numericValue(value);
+  if (parsed !== null) {
+    if (metric.kind === "money") rendered = fmtMarketMoney(parsed, market);
+    else if (metric.kind === "compact") rendered = fmtCompact(parsed);
+    else rendered = fmtNumber(parsed);
   } else if (value) {
     rendered = String(value);
   }
