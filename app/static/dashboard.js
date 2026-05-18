@@ -546,8 +546,22 @@ function latestCycleCutoff(rows = []) {
 
 function applySuggestionFilter(rows = []) {
   const filter = pageFilter("suggestions");
-  if (filter === "all") return rows;
-  return (rows || []).filter((row) => ideaMatchesFilter(row, filter));
+  const scoped = filter === "all" ? rows : (rows || []).filter((row) => ideaMatchesFilter(row, filter));
+  return sortSuggestionRows(scoped);
+}
+
+function sortSuggestionRows(rows = []) {
+  return (rows || []).slice().sort((a, b) => {
+    const confidenceDelta = confidencePercent(b) - confidencePercent(a);
+    if (confidenceDelta !== 0) return confidenceDelta;
+    const confluenceDelta = Number(b.confluence || 0) - Number(a.confluence || 0);
+    if (confluenceDelta !== 0) return confluenceDelta;
+    const returnDelta = Number(b.current_return_pct || 0) - Number(a.current_return_pct || 0);
+    if (returnDelta !== 0) return returnDelta;
+    const timeDelta = (rowTimestamp(b)?.getTime() || 0) - (rowTimestamp(a)?.getTime() || 0);
+    if (timeDelta !== 0) return timeDelta;
+    return String(a.symbol || "").localeCompare(String(b.symbol || ""));
+  });
 }
 
 function ideaMatchesFilter(row = {}, filter = pageFilter("suggestions")) {
@@ -3593,6 +3607,7 @@ function renderTrackedIdeas(rows) {
 
 function renderSuggestions(rows) {
   const body = byId("suggestions-body");
+  rows = sortSuggestionRows(rows || []);
   if (!rows.length) {
     body.innerHTML = emptyBlock(
       `No ${activeMarketLabel()} signal history yet`,

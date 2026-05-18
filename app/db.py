@@ -2335,11 +2335,13 @@ class Database:
                 left join universe u on u.symbol = i.symbol
                 {where_sql}
                 order by
+                    confidence desc,
+                    overall_score_pct desc,
+                    confluence desc,
+                    combined_score desc,
                     case status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
                     signal_type = 'BUY' desc,
                     current_return_pct desc,
-                    combined_score desc,
-                    confluence desc,
                     last_seen_at desc
                 limit ?
                 """,
