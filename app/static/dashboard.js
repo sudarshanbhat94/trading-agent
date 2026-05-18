@@ -3242,10 +3242,11 @@ function renderPositions(rows) {
     const needsReview = rows.filter(positionNeedsAction).length;
     const deployed = rows.reduce((sum, row) => sum + Number(row.avg_price || 0) * Number(row.qty || 0), 0);
     const pnl = rows.reduce((sum, row) => sum + (Number(row.market_price || 0) - Number(row.avg_price || 0)) * Number(row.qty || 0), 0);
+    const pnlPct = deployed > 0 ? (pnl / deployed) * 100 : 0;
     const market = normalizeUiMarket(state.activeMarket);
     summary.innerHTML = `
       <button type="button"><span>Deployed</span><strong>${fmtMarketMoney(deployed, market)}</strong></button>
-      <button type="button"><span>Unrealised P&L</span><strong class="${pnlClass(pnl)}">${fmtMarketMoney(pnl, market)}</strong></button>
+      <button type="button"><span>Unrealised P&L</span><strong class="${pnlClass(pnl)}">${fmtMarketMoney(pnl, market)}</strong><small class="${pnlClass(pnlPct)}">${fmtPct(pnlPct)}</small></button>
       <button type="button"><span>Winners</span><strong class="positive">${fmtNumber(winners)}</strong></button>
       <button type="button"><span>Losers</span><strong class="negative">${fmtNumber(losers)}</strong></button>
       <button type="button"><span>Need Action</span><strong class="${needsReview ? "warning" : "positive"}">${fmtNumber(needsReview)}</strong></button>
@@ -3253,7 +3254,7 @@ function renderPositions(rows) {
   }
   if (!rows.length) {
     body.innerHTML = emptyTableRow(
-      8,
+      7,
       `No open ${activeMarketLabel()} positions`,
       "The agent will open positions when it finds qualifying opportunities.",
       "Run agent cycle",
@@ -3417,9 +3418,11 @@ function positionPnlHtml(row = {}, market = "IN") {
   const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
   const pnlPct = Number(row.avg_price) > 0 ? ((Number(row.market_price) - Number(row.avg_price)) / Number(row.avg_price)) * 100 : 0;
   const marketValue = Number(row.market_price) * Number(row.qty);
-  return `<div class="position-pnl-cell ${pnlClass(pnl)}">
-    <strong>${fmtMarketMoney(pnl, market)}</strong>
-    <small>${fmtPct(pnlPct)} · value ${fmtMarketMoney(marketValue, market)}</small>
+  const tone = pnlClass(pnl);
+  return `<div class="position-pnl-cell ${tone}">
+    <strong class="${tone}">${fmtMarketMoney(pnl, market)}</strong>
+    <small class="${tone}">${fmtPct(pnlPct)} unrealised</small>
+    <small>value ${fmtMarketMoney(marketValue, market)}</small>
   </div>`;
 }
 
@@ -3467,9 +3470,7 @@ function positionRowHtml(row, compact = false) {
   const mode = positionModeState(row);
   const symbolCell = `<div class="symbol-cell"><span class="symbol-logo">${escapeHtml(symbolInitials(row.symbol))}</span><div><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong><small>${escapeHtml(displayValue(row.company_name || row.strategy, "Position"))}</small></div></div>`;
   const modeCell = `<span class="position-mode-pill ${escapeHtml(mode.className)}">${escapeHtml(mode.label)}</span><small class="position-mode-note">${escapeHtml(mode.note)}</small>`;
-  const updated = summary.price_timestamp || row.updated_at;
   const tradeState = positionTradeStateLabel(row, mode);
-  const opened = row.opened_at ? ` · opened ${fmtTime(row.opened_at)}` : "";
   if (compact) {
     return `<tr class="position-row compact">
       <td data-label="Symbol">${symbolCell}</td>
@@ -3484,7 +3485,7 @@ function positionRowHtml(row, compact = false) {
   return `<tr class="position-row">
     <td data-label="Symbol">${symbolCell}</td>
     <td data-label="Mode">${modeCell}</td>
-    <td data-label="Qty" class="num quantity">${fmtNumber(row.qty)}<br><small>${escapeHtml(tradeState)}${escapeHtml(opened)}</small></td>
+    <td data-label="Qty" class="num quantity">${fmtNumber(row.qty)}<br><small>${escapeHtml(tradeState)}</small></td>
     <td data-label="Entry / LTP" aria-live="polite">${positionPriceHtml(row, market)}</td>
     <td data-label="P&L">${positionPnlHtml(row, market)}</td>
     <td data-label="Stop / Targets">${positionRiskHtml(row, market)}</td>
@@ -3495,7 +3496,6 @@ function positionRowHtml(row, compact = false) {
         <button type="button" class="row-link">Details →</button>
       </div>
     </td>
-    <td data-label="Updated"><span class="position-updated">${escapeHtml(fmtTime(updated))}</span><small>${escapeHtml(summary.price_source || "position")}</small></td>
   </tr>`;
 }
 
