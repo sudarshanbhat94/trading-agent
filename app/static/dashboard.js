@@ -1159,7 +1159,7 @@ function renderProductActionPanel(payload, suggestions, trackedIdeas, positions,
   let cta = { label: "Analyze Symbol", view: "analyze" };
   let tone = "neutral";
   if (reviewPositions.length) {
-    headline = `${reviewPositions.length} position${reviewPositions.length === 1 ? "" : "s"} need review`;
+    headline = `${reviewPositions.length} position${reviewPositions.length === 1 ? " needs" : "s need"} review`;
     note = "Risk, stop, or target rules are asking for attention before adding fresh exposure.";
     cta = { label: "Open Positions", view: "positions" };
     tone = "warning";

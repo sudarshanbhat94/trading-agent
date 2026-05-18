@@ -11466,3 +11466,113 @@ body[data-theme="dark"] .position-row-actions .danger-outline {
     grid-template-columns: 1fr;
   }
 }
+
+/* Wide trading cockpit pass: use desktop width and make position data feel like trade state, not nested cards. */
+@media (min-width: 1280px) {
+  .terminal-body {
+    padding: 14px 16px 36px;
+  }
+
+  .workspace {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+  }
+
+  .dashboard-grid {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .dashboard-grid > .positions-preview-card {
+    grid-column: span 8;
+  }
+
+  .dashboard-grid > .product-track-panel {
+    grid-column: span 4;
+  }
+
+  .dashboard-grid > .decision-feed-panel,
+  .dashboard-grid > .sector-heatmap-card {
+    grid-column: span 6;
+  }
+
+  .dashboard-grid > .health-card {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1600px) {
+  .product-action-card {
+    grid-template-columns: minmax(360px, 0.72fr) minmax(720px, 1fr);
+  }
+
+  .product-action-metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .portfolio-strip .kpi {
+    min-height: 72px;
+  }
+}
+
+.positions-preview-card .page-table {
+  max-height: none;
+}
+
+.positions-preview-card .position-row td {
+  padding-block: 10px;
+}
+
+.position-price-pair span,
+.position-risk-stack span {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.position-price-pair span + span,
+.position-risk-stack span + span {
+  padding-left: 10px;
+  border-left: 1px solid var(--border-color);
+}
+
+.position-price-pair small,
+.position-risk-stack small {
+  margin-top: 0;
+  text-transform: uppercase;
+}
+
+.position-price-pair strong,
+.position-risk-stack strong {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.position-action-callout {
+  gap: 3px;
+}
+
+.positions-preview-card .position-action-callout strong {
+  font-size: 13px;
+}
+
+.positions-preview-card .position-row .symbol-cell {
+  min-width: 150px;
+}
+
+.product-track-panel {
+  align-self: stretch;
+}
+
+.product-track-list {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.product-track-item {
+  min-height: 66px;
+  border-radius: var(--radius-md);
+}
