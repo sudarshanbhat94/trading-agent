@@ -2901,7 +2901,7 @@ class Database:
     def _refresh_user_follow_marks(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
             """
-            select f.id, f.qty, f.entry_price, f.invested_amount, i.latest_price
+            select f.id, f.qty, f.entry_price, f.invested_amount, f.details_json, i.latest_price
             from user_idea_follows f
             join signal_ideas i on i.id = f.idea_id
             where f.status in ('ACTIVE','LIVE_REQUESTED')
@@ -2915,13 +2915,20 @@ class Database:
             invested = float(row["invested_amount"] or (qty * entry_price))
             pnl = (latest_price - entry_price) * qty
             return_pct = _return_pct(entry_price, latest_price)
+            details = self._decode_json(row["details_json"])
+            mark_state = details.setdefault("mark_state", {})
+            previous_peak = _optional_float(mark_state.get("peak_return_pct"))
+            previous_worst = _optional_float(mark_state.get("worst_return_pct"))
+            mark_state["peak_return_pct"] = round(max(return_pct, previous_peak if previous_peak is not None else return_pct), 4)
+            mark_state["worst_return_pct"] = round(min(return_pct, previous_worst if previous_worst is not None else return_pct), 4)
+            mark_state["last_mark_at"] = now
             conn.execute(
                 """
                 update user_idea_follows
-                set latest_price = ?, invested_amount = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?
+                set latest_price = ?, invested_amount = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?, details_json = ?
                 where id = ?
                 """,
-                (latest_price, invested, round(pnl, 2), return_pct, now, row["id"]),
+                (latest_price, invested, round(pnl, 2), return_pct, now, json.dumps(details, default=str, separators=(",", ":")), row["id"]),
             )
 
     def insert_order(
@@ -3977,7 +3984,10 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
     entry = _optional_float(item.get("entry_price") or item.get("idea_entry_price")) or 0.0
     stop = _optional_float(idea_details.get("stop_loss"))
     current_return = _return_pct(entry, latest)
-    worst_return = _optional_float(item.get("worst_return_pct")) or current_return
+    mark_state = follow_details.get("mark_state") if isinstance(follow_details.get("mark_state"), dict) else {}
+    worst_return = _optional_float(mark_state.get("worst_return_pct"))
+    if worst_return is None:
+        worst_return = current_return
     drawdown = idea_details.get("drawdown_status") if isinstance(idea_details.get("drawdown_status"), dict) else {}
     risk_used_pct = 0.0
     if entry > 0 and stop and entry > stop:
