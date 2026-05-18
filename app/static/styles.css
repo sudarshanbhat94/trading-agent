@@ -12020,3 +12020,342 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
     max-width: none;
   }
 }
+
+/* Ideas list view: dense trader scan rows instead of audit-card grids. */
+#suggestions-view .signal-history-list,
+#suggestions-view .strategy-plan-grid,
+#suggestions-view .tracked-ideas-list {
+  display: grid;
+  grid-template-columns: 1fr !important;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+#suggestions-view .strategy-plan-card {
+  grid-template-columns: minmax(220px, 0.95fr) minmax(210px, 1fr) minmax(250px, 1.05fr) minmax(230px, 1fr) minmax(210px, 0.9fr);
+  grid-template-areas:
+    "plan desc stats symbols follow"
+    "plan rule stats symbols follow";
+  align-items: center;
+  min-height: 76px;
+  gap: 8px 12px;
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+#suggestions-view .strategy-plan-top {
+  grid-area: plan;
+}
+
+#suggestions-view .strategy-plan-card p {
+  grid-area: desc;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+#suggestions-view .strategy-plan-stats {
+  grid-area: stats;
+}
+
+#suggestions-view .plan-symbol-list {
+  grid-area: symbols;
+}
+
+#suggestions-view .plan-follow-row,
+#suggestions-view .plan-admin-note {
+  grid-area: follow;
+}
+
+#suggestions-view .strategy-capital-rule {
+  grid-area: rule;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.signal-history-row {
+  grid-template-columns: minmax(250px, 1fr) minmax(300px, 1.18fr) minmax(142px, 0.5fr) 128px;
+  grid-template-areas:
+    "symbol trade return actions"
+    "state reason meta actions";
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 82px;
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.tracked-idea-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.18fr) minmax(220px, 0.95fr) minmax(220px, 0.95fr) minmax(160px, 0.68fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 74px;
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.signal-list-symbol {
+  display: grid;
+  grid-area: symbol;
+  gap: 6px;
+  align-items: start;
+  min-width: 0;
+}
+
+.tracked-list-symbol {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.signal-list-symbol .signal-symbol-row strong,
+.tracked-list-symbol .tracked-title-row strong {
+  font-size: 18px;
+  line-height: 1.05;
+}
+
+.signal-list-symbol small,
+.tracked-list-symbol small,
+.signal-list-return small,
+.signal-list-reason span,
+.signal-list-meta span,
+.signal-list-state small,
+.signal-list-trade small,
+.tracked-list-prices small,
+.tracked-list-risk small,
+.tracked-idea-row .tracked-return small {
+  color: var(--text-secondary, var(--muted));
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.signal-list-state,
+.signal-list-trade,
+.tracked-list-prices,
+.tracked-list-risk {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.signal-list-state {
+  grid-area: state;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.signal-list-trade {
+  grid-area: trade;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.tracked-list-prices,
+.tracked-list-risk {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.signal-list-state span,
+.signal-list-trade span,
+.tracked-list-prices span,
+.tracked-list-risk span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border-left: 1px solid var(--border-color, var(--terminal-line));
+  padding-left: 8px;
+}
+
+.signal-list-state strong,
+.signal-list-trade strong,
+.tracked-list-prices strong,
+.tracked-list-risk strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.signal-list-return {
+  display: grid;
+  grid-area: return;
+  gap: 3px;
+  min-width: 0;
+}
+
+.signal-list-return strong,
+.tracked-idea-row .tracked-return strong {
+  font-size: 18px;
+  line-height: 1.05;
+}
+
+.signal-list-reason {
+  display: grid;
+  grid-area: reason;
+  gap: 3px;
+  min-width: 0;
+}
+
+.signal-list-reason p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-list-meta {
+  display: flex;
+  grid-area: meta;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.signal-list-meta span {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 22px;
+  border: 1px solid var(--border-color, var(--terminal-line));
+  border-radius: 999px;
+  background: var(--surface-0, #0a111a);
+  font-weight: 800;
+  padding: 0 7px;
+}
+
+.signal-list-meta .warning {
+  border-color: rgba(255, 189, 74, 0.38);
+  background: rgba(255, 189, 74, 0.11);
+  color: var(--amber, #ffd58b);
+}
+
+.signal-history-row .signal-card-actions {
+  display: grid;
+  grid-area: actions;
+  grid-template-columns: 1fr;
+  justify-content: stretch;
+  justify-self: stretch;
+  min-width: 0;
+}
+
+.signal-history-row .signal-card-actions button {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+}
+
+.tracked-idea-row .tracked-return {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+  min-width: 0;
+  text-align: right;
+}
+
+@media (max-width: 1280px) {
+  #suggestions-view .strategy-plan-card {
+    grid-template-columns: minmax(0, 1fr) minmax(250px, 0.9fr) minmax(230px, 0.86fr);
+    grid-template-areas:
+      "plan stats follow"
+      "desc symbols follow"
+      "rule symbols follow";
+  }
+
+  .tracked-idea-row {
+    grid-template-columns: minmax(0, 1.1fr) minmax(220px, 0.9fr) minmax(160px, 0.65fr);
+  }
+
+  .tracked-list-risk {
+    display: none;
+  }
+}
+
+@media (max-width: 980px) {
+  .signal-history-row {
+    grid-template-columns: minmax(0, 1fr) 128px;
+    grid-template-areas:
+      "symbol actions"
+      "trade actions"
+      "state return"
+      "reason meta";
+  }
+}
+
+@media (max-width: 760px) {
+  #suggestions-view .signal-history-list,
+  #suggestions-view .strategy-plan-grid,
+  #suggestions-view .tracked-ideas-list {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  #suggestions-view .strategy-plan-card {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "plan"
+      "desc"
+      "stats"
+      "symbols"
+      "follow"
+      "rule";
+    min-height: auto;
+    padding: 12px;
+  }
+
+  .signal-history-row,
+  .tracked-idea-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    min-height: auto;
+    padding: 12px;
+  }
+
+  .signal-history-row {
+    grid-template-areas:
+      "symbol"
+      "state"
+      "trade"
+      "return"
+      "reason"
+      "meta"
+      "actions";
+  }
+
+  .signal-list-state,
+  .signal-list-trade,
+  .tracked-list-prices,
+  .tracked-list-risk {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tracked-list-risk {
+    display: grid;
+  }
+
+  .signal-list-reason p {
+    white-space: normal;
+  }
+
+  .signal-history-row .signal-card-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .signal-history-row .signal-card-actions:has(button:nth-child(2):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tracked-idea-row .tracked-return {
+    justify-items: start;
+    text-align: left;
+  }
+}

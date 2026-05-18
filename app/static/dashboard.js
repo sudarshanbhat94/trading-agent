@@ -3557,25 +3557,31 @@ function renderTrackedIdeas(rows) {
       const returnPct = Number(row.return_pct || row.user_follow?.return_pct || 0);
       const market = rowMarket(row);
       const lifecycle = ideaLifecycle(row);
-      return `<article class="tracked-idea-card" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} tracked idea">
-        <div class="tracked-idea-main">
+      const targets = row.targets || [];
+      const t1 = targets[0] || {};
+      const t3 = targets[2] || {};
+      return `<article class="tracked-idea-card tracked-idea-row" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} tracked idea">
+        <div class="tracked-list-symbol">
+          <span class="signal-rank">${escapeHtml(mode)}</span>
           <div>
-            <span class="signal-rank">${escapeHtml(mode)}</span>
             <div class="tracked-title-row"><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong><span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span></div>
             <small>${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))} · followed ${fmtTime(row.followed_at || row.user_follow?.created_at)}</small>
           </div>
-          <div class="tracked-return ${pnlClass(returnPct)}">
-            <strong>${fmtPct(returnPct)}</strong>
-            <small>${fmtMarketMoney(pnl, market)} unrealized</small>
-          </div>
         </div>
-        <div class="tracked-metrics">
+        <div class="tracked-list-prices">
           <span><small>Qty</small><strong>${fmtNumber(qty)}</strong></span>
           <span><small>Entry</small><strong>${fmtMarketMoney(entry, market)}</strong></span>
           <span><small>LTP</small><strong>${fmtMarketMoney(latest, market)}</strong></span>
-          <span><small>Invested</small><strong>${fmtMarketMoney(invested, market)}</strong></span>
         </div>
-        ${targetLadderHtml(row, market, true)}
+        <div class="tracked-list-risk">
+          <span><small>Stop</small><strong class="negative">${fmtMarketMoney(row.stop_loss, market)}</strong></span>
+          <span><small>T1</small><strong class="positive">${fmtMarketMoney(t1.price, market)}</strong></span>
+          <span><small>Final</small><strong class="positive">${fmtMarketMoney(t3.price, market)}</strong></span>
+        </div>
+        <div class="tracked-return ${pnlClass(returnPct)}">
+          <strong>${fmtPct(returnPct)}</strong>
+          <small>${fmtMarketMoney(pnl, market)} unrealized · ${fmtMarketMoney(invested, market)} invested</small>
+        </div>
       </article>`;
     })
     .join("");
@@ -3623,58 +3629,55 @@ function renderSuggestions(rows) {
       const worstReturn = Number(row.worst_return_pct || 0);
       const market = rowMarket(row);
       const lifecycle = ideaLifecycle(row);
-      return `<article class="signal-history-card signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} idea audit">
-        <div class="signal-card-main">
-          <div class="signal-card-title">
-            <span class="signal-rank">Idea #${row.id || index + 1}</span>
-            <div>
-              <div class="signal-symbol-row">
-                <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-                <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(displaySignal)}</span>
-                <span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span>
-                ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
-              </div>
-              <small>${fmtMarketMoney(row.price || row.latest_price, market)} · ${escapeHtml(MARKET_LABELS[market] || market)} · ${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))}</small>
+      return `<article class="signal-history-card signal-history-row signal-${escapeHtml(cssToken(action))} ${index === 0 ? "featured" : ""}" role="button" tabindex="0" data-index="${index}" aria-label="Open ${escapeHtml(displayValue(row.symbol, "symbol"))} idea audit">
+        <div class="signal-list-symbol">
+          <span class="signal-rank">Idea #${row.id || index + 1}</span>
+          <div>
+            <div class="signal-symbol-row">
+              <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+              <span class="tag ${escapeHtml(cssToken(action))}">${escapeHtml(displaySignal)}</span>
+              <span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span>
+              ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
             </div>
+            <small>${fmtMarketMoney(row.price || row.latest_price, market)} · ${escapeHtml(MARKET_LABELS[market] || market)} · ${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))}</small>
           </div>
-          ${followedActive
-            ? `<div class="signal-card-actions">
-                <button type="button" data-idea-action="details" data-idea-id="${escapeHtml(row.id)}">Manage</button>
-                <button type="button" class="danger-outline" data-idea-action="exit" data-idea-id="${escapeHtml(row.id)}" data-symbol="${escapeHtml(row.symbol || "")}">Exit</button>
-              </div>`
-            : `<div class="signal-card-actions">
-                <button type="button" data-idea-action="track" data-idea-id="${escapeHtml(row.id)}">Track</button>
-                <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}">Paper</button>
-                <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}">Live</button>
-              </div>`}
         </div>
-        <div class="signal-metric-strip">
-          <div><span>Fresh Action</span><strong>${escapeHtml(readiness)}</strong><small>${latestSystemAction ? `engine ${escapeHtml(latestSystemAction)}` : `${fmtNumber(confidence)}% confidence`}</small></div>
-          <div><span>Setup</span><strong>${escapeHtml(setupBucket)}</strong><small>${escapeHtml(row.setup_bucket || "-")}</small></div>
-          <div><span>Confluence</span><strong>${escapeHtml(row.confluence ?? "-")}/26</strong><small>${escapeHtml(row.tier || "-")}</small></div>
-          <div><span>Execution</span><strong>${escapeHtml(executionLabel)}</strong><small>${escapeHtml(row.execution_state || "SIGNAL_ONLY")}</small></div>
-          <div><span>Since Signal</span><strong class="${pnlClass(currentReturn)}">${fmtPct(currentReturn)}</strong><small>best ${fmtPct(peakReturn)} · worst ${fmtPct(worstReturn)}</small></div>
+        <div class="signal-list-state">
+          <span><small>Fresh Action</small><strong>${escapeHtml(readiness)}</strong></span>
+          <span><small>Setup</small><strong>${escapeHtml(setupBucket)}</strong></span>
+          <span><small>Execution</small><strong>${escapeHtml(executionLabel)}</strong></span>
         </div>
-        ${targetLadderHtml(row, market)}
-        <div class="signal-trade-strip">
+        <div class="signal-list-trade">
           <span><small>Entry</small><strong>${formatZone(row.entry_zone, market)}</strong></span>
           <span><small>Stop</small><strong class="negative">${fmtMarketMoney(row.stop_loss, market)}</strong></span>
           <span><small>Target 1</small><strong class="positive">${fmtMarketMoney(t1.price, market)}</strong></span>
           <span><small>Final Target</small><strong class="positive">${fmtMarketMoney(t3.price, market)}</strong></span>
         </div>
-        <div class="signal-reason-row">
+        <div class="signal-list-return">
+          <span><small>Since Signal</small><strong class="${pnlClass(currentReturn)}">${fmtPct(currentReturn)}</strong></span>
+          <small>best ${fmtPct(peakReturn)} · worst ${fmtPct(worstReturn)} · ${latestSystemAction ? `engine ${escapeHtml(latestSystemAction)}` : `${fmtNumber(confidence)}% confidence`}</small>
+        </div>
+        <div class="signal-list-reason">
           <span>Reason</span>
-          <p>${escapeHtml(shortValue(row.display_reason || readableDecisionReason(row), 220))}</p>
+          <p>${escapeHtml(shortValue(row.display_reason || readableDecisionReason(row), 170))}</p>
         </div>
-        <div class="signal-audit-row">
-          <span>Full audit</span>
+        <div class="signal-list-meta">
           <span>${escapeHtml(row.latest_decision_id ? `Decision #${row.latest_decision_id}` : "Decision audit")}</span>
-          ${latestSystemAction ? `<span>Latest engine: ${escapeHtml(latestSystemAction)}</span>` : ""}
-          <span>Setup: ${escapeHtml(setupBucket)}</span>
-          <span>Execution: ${escapeHtml(executionLabel)}</span>
-          ${riskFlags.map((flag) => `<span class="warning">${escapeHtml(humanLabel(flag))}</span>`).join("")}
-          ${institutionalFlags.map((flag) => `<span>${escapeHtml(flag)}</span>`).join("")}
+          <span>Confluence ${escapeHtml(row.confluence ?? "-")}/26</span>
+          <span>${escapeHtml(row.tier || "-")}</span>
+          ${riskFlags.slice(0, 1).map((flag) => `<span class="warning">${escapeHtml(humanLabel(flag))}</span>`).join("")}
+          ${institutionalFlags.slice(0, 1).map((flag) => `<span>${escapeHtml(flag)}</span>`).join("")}
         </div>
+        ${followedActive
+          ? `<div class="signal-card-actions">
+              <button type="button" data-idea-action="details" data-idea-id="${escapeHtml(row.id)}">Manage</button>
+              <button type="button" class="danger-outline" data-idea-action="exit" data-idea-id="${escapeHtml(row.id)}" data-symbol="${escapeHtml(row.symbol || "")}">Exit</button>
+            </div>`
+          : `<div class="signal-card-actions">
+              <button type="button" data-idea-action="track" data-idea-id="${escapeHtml(row.id)}">Track</button>
+              <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}">Paper</button>
+              <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}">Live</button>
+            </div>`}
       </article>`;
     })
     .join("");
