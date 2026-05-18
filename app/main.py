@@ -3063,6 +3063,22 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         if not symbol or symbol in seen_symbols:
             continue
         seen_symbols.add(symbol)
+        reentry_block = db.recent_user_symbol_exit(
+            user_id,
+            symbol,
+            cooldown_hours=max(int(settings.auto_follow_reentry_cooldown_hours or 24), 1),
+        )
+        if reentry_block:
+            summary["skipped"].append(
+                {
+                    "symbol": symbol,
+                    "reason": "recent_risk_exit_cooldown",
+                    "exit_key": reentry_block.get("exit_key"),
+                    "exit_reason": reentry_block.get("exit_reason"),
+                    "cooldown_minutes_left": reentry_block.get("cooldown_minutes_left"),
+                }
+            )
+            continue
         if symbol in active_follow_symbols:
             summary["skipped"].append({"symbol": symbol, "reason": "already_followed_symbol"})
             continue

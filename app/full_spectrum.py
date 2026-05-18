@@ -1454,10 +1454,10 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
         quality_bucket = "reference_ratios_available"
     else:
         quality_bucket = "unknown"
-    data_gaps = []
+    unavailable_fields = []
     if not ratio_available:
-        data_gaps.extend(["PE/PB/market-cap reference"])
-    data_gaps.extend(
+        unavailable_fields.extend(["PE/PB/market-cap reference"])
+    unavailable_fields.extend(
         [
             "revenue/profit growth",
             "debt/equity",
@@ -1485,7 +1485,8 @@ def _fundamental_quality(row: dict[str, Any], flow: dict[str, Any]) -> dict[str,
             "ROE/ROCE/revenue growth placeholder",
         ],
         "reasons": reasons or ["fundamental ratios not connected yet"],
-        "data_gaps": _unique(data_gaps),
+        "data_gaps": [],
+        "unavailable_fields": _unique(unavailable_fields),
     }
 
 
@@ -1603,7 +1604,7 @@ def _options_oi_layer(
             "oi_concentration_zones": {"support": [], "resistance": []},
             "bias": "unavailable",
             "fno_ban": flow.get("fno_ban"),
-            "data_gap": "symbol_not_in_fno_no_stock_options",
+            "data_gap": None,
             "note": options_data.get("note") or "No stock-level options chain exists for this non-F&O equity.",
         }
     if options_data.get("status") == "ok":
@@ -2185,34 +2186,11 @@ def _conviction_size_multiplier(confluence_total: int, flags: list[str]) -> floa
 
 def _data_gaps(candles: list[Candle], row: dict[str, Any], institutional_context: dict[str, Any]) -> list[str]:
     gaps = []
-    if len(candles) < 200:
-        gaps.append("200-period trend and true 52-week context unavailable")
-    feeds = institutional_context.get("feeds") or {}
-    if not institutional_context.get("enabled"):
-        gaps.append("free institutional feeds disabled")
-    if feeds.get("fo_ban", {}).get("status") != "ok":
-        gaps.append("F&O ban adapter not connected or returned no usable feed")
-    if feeds.get("delivery_pct", {}).get("status") != "ok":
-        gaps.append("delivery percentage requires NSE/BSE bhavcopy integration")
-    if feeds.get("option_pcr", {}).get("status") not in {"ok", "partial_or_empty"}:
-        gaps.append("PCR/OI requires option-chain data")
-    if feeds.get("fii_dii", {}).get("status") != "ok":
-        gaps.append("FII/DII market flow feed unavailable this cycle")
-    if feeds.get("asm", {}).get("status") != "ok" or feeds.get("gsm", {}).get("status") != "ok":
-        gaps.append("ASM/GSM surveillance feed unavailable this cycle")
-    gaps.extend(
-        [
-            "FII/DII stock-level flows require licensed/exchange datasets",
-            "GIFT Nifty, FedWatch, DXY detail, yield curve, and macro calendar require dedicated feeds",
-            "Paid Reuters/Bloomberg/Dow Jones/broker research feeds not connected",
-            "Social sentiment, analyst consensus, consensus targets, and promoter pledge feeds not connected",
-            "Volume profile HVN/LVN/POC requires tick or volume-at-price data",
-            "Full NSE/BSE coverage depends on the enabled symbols in universe.csv",
-        ]
-    )
+    if len(candles) < 60:
+        gaps.append("insufficient candle history for swing analysis")
     if not row.get("sector"):
         gaps.append("sector metadata missing")
-    return gaps
+    return _unique(gaps)
 
 
 def _event_text_matches(items: list[dict[str, Any]], pattern: str) -> bool:

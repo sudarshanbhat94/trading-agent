@@ -97,7 +97,14 @@ def evaluate_rules_for_context(
 
     earnings = earnings_calendar_audit(macro_event, macro_calendar_context)
     if earnings.get("stale_or_empty") and earnings.get("result_season"):
-        data_gap("EARNINGS_CALENDAR_STALE", "earnings calendar is empty or stale during result season", earnings)
+        soft_flags.append(
+            {
+                "flag": "EARNINGS_CALENDAR_UNAVAILABLE",
+                "reason": "earnings calendar is unavailable during result season; reduce size but do not reject the setup without a known event date",
+                "value": earnings,
+                "sizing": "reduce_only",
+            }
+        )
     if earnings.get("known_earnings_block"):
         hard("EARNINGS_LOCKOUT", "known earnings date is within 10 trading days", earnings)
 
@@ -357,7 +364,7 @@ def build_position_summary(
         action = "EXIT"
     elif "DELIVERY_CONFLICT" in flags:
         action = "TRAIL STOP"
-    elif "GRADE_VIOLATION" in flags or "EARNINGS_CALENDAR_STALE" in flags:
+    elif "GRADE_VIOLATION" in flags:
         action = "REVIEW"
     elif audit.get("hard_blocked"):
         action = "HARD BLOCKED"
@@ -466,8 +473,6 @@ def _position_reason(action: str, audit: dict[str, Any]) -> str:
         reasons: list[str] = []
         if "GRADE_VIOLATION" in flags:
             reasons.append("entry grade is WATCH or missing")
-        if "EARNINGS_CALENDAR_STALE" in flags:
-            reasons.append("earnings date is not reliable during result season")
         if "SECTOR_MISSING" in flags:
             reasons.append("sector or industry classification is missing")
         if "SUSPECT_BREAKOUT" in flags:
@@ -491,7 +496,6 @@ def rule_quality_score_pct(audit: dict[str, Any]) -> float:
         "GRADE_VIOLATION": 35.0,
         "DELIVERY_CONFLICT": 25.0,
         "SUSPECT_BREAKOUT": 15.0,
-        "EARNINGS_CALENDAR_STALE": 15.0,
         "SECTOR_MISSING": 10.0,
         "MTF_HARD_BLOCK": 30.0,
         "EARNINGS_LOCKOUT": 35.0,

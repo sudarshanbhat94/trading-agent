@@ -103,6 +103,7 @@ class Settings:
     max_position_pct: float = _float("MAX_POSITION_PCT", 0.15)
     max_order_value_pct: float = _float("MAX_ORDER_VALUE_PCT", 0.1)
     max_trades_per_cycle: int = _int("MAX_TRADES_PER_CYCLE", 2)
+    auto_follow_reentry_cooldown_hours: int = _int("AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS", 24)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.035)
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.08)
     daily_loss_limit_pct: float = _float("DAILY_LOSS_LIMIT_PCT", 0.025)
@@ -348,6 +349,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "max_position_pct", "label": "Max Position %", "type": "number", "category": "Risk", "min": 0.01, "max": 0.15, "step": 0.01},
     {"key": "max_order_value_pct", "label": "Max Order %", "type": "number", "category": "Risk", "min": 0.01, "max": 0.15, "step": 0.01},
     {"key": "max_trades_per_cycle", "label": "Max Trades/Cycle", "type": "number", "category": "Risk", "min": 1, "step": 1},
+    {"key": "auto_follow_reentry_cooldown_hours", "label": "Auto Re-entry Cooldown Hours", "type": "number", "category": "Risk", "min": 1, "step": 1},
     {"key": "stop_loss_pct", "label": "Stop Loss %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},
     {"key": "take_profit_pct", "label": "Take Profit %", "type": "number", "category": "Risk", "min": 0, "max": 2, "step": 0.005},
     {"key": "daily_loss_limit_pct", "label": "Daily Loss Limit %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},

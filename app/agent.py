@@ -184,9 +184,63 @@ class TradingAgentService:
                 pre_positions,
                 sentiment_by_symbol,
             )
+            prefetch_rows = [
+                row
+                for row in scan_result.selected_universe
+                if _analysis_history_count(raw_cached_sets.get(str(row.get("symbol") or "").upper()) or {}) < 20
+            ]
+            history_prefetch_summary: dict[str, Any] = {
+                "requested_symbols": 0,
+                "symbols_with_candles": 0,
+                "reranked": False,
+            }
+            if prefetch_rows:
+                self._cycle_phase = "opportunity_history_prefetch"
+                prefetch_error = None
+                try:
+                    prefetch_candles = await self.market_data.get_candles(prefetch_rows)
+                except Exception as exc:
+                    prefetch_candles = {}
+                    prefetch_error = f"{exc.__class__.__name__}: {str(exc)[:220]}"
+                if prefetch_candles:
+                    self.db.upsert_candles(prefetch_candles)
+                    raw_cached_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
+                    scan_result = self.opportunity_scanner.rank(
+                        raw_universe,
+                        quotes,
+                        raw_cached_sets,
+                        pre_positions,
+                        sentiment_by_symbol,
+                    )
+                history_prefetch_summary = {
+                    "requested_symbols": len(prefetch_rows),
+                    "symbols_with_candles": len(prefetch_candles),
+                    "reranked": bool(prefetch_candles),
+                    "sample_symbols": [row.get("symbol") for row in prefetch_rows[:12]],
+                    "error": prefetch_error,
+                }
             universe = scan_result.selected_universe
             scan_summary = scan_result.summary
             scan_summary["news_probe"] = news_probe_summary
+            scan_summary["history_prefetch"] = history_prefetch_summary
+            thin_history_symbols = {
+                str(row.get("symbol") or "").upper()
+                for row in universe
+                if str(row.get("symbol") or "").upper() not in pre_positions
+                and _analysis_history_count(raw_cached_sets.get(str(row.get("symbol") or "").upper()) or {}) < 20
+            }
+            if thin_history_symbols:
+                universe = [row for row in universe if str(row.get("symbol") or "").upper() not in thin_history_symbols]
+                scan_summary["selected_symbols"] = len(universe)
+                scan_summary["top_candidates"] = [
+                    item
+                    for item in scan_summary.get("top_candidates", [])
+                    if str(item.get("symbol") or "").upper() not in thin_history_symbols
+                ]
+                rejected = dict(scan_summary.get("rejected_counts") or {})
+                rejected["insufficient_history_after_prefetch"] = rejected.get("insufficient_history_after_prefetch", 0) + len(thin_history_symbols)
+                scan_summary["rejected_counts"] = rejected
+                scan_summary["history_filtered_symbols"] = sorted(thin_history_symbols)[:25]
             if not universe:
                 fallback_limit = min(
                     12,
@@ -675,6 +729,23 @@ class TradingAgentService:
                 if not symbol or symbol in seen_symbols:
                     continue
                 seen_symbols.add(symbol)
+                reentry_block = self.db.recent_user_symbol_exit(
+                    int(user["id"]),
+                    symbol,
+                    cooldown_hours=max(int(getattr(self.strategy.settings, "auto_follow_reentry_cooldown_hours", 24) or 24), 1),
+                )
+                if reentry_block:
+                    summary["skipped"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "symbol": symbol,
+                            "reason": "recent_risk_exit_cooldown",
+                            "exit_key": reentry_block.get("exit_key"),
+                            "exit_reason": reentry_block.get("exit_reason"),
+                            "cooldown_minutes_left": reentry_block.get("cooldown_minutes_left"),
+                        }
+                    )
+                    continue
                 if symbol in active_follow_symbols:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed_symbol"})
                     continue
@@ -1533,6 +1604,11 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if current_return < -1.5:
         return False
     return _price_inside_entry_zone(idea, cushion_pct=0.003)
+
+
+def _analysis_history_count(candle_sets: dict[str, list[Any]]) -> int:
+    candles = candle_sets.get("analysis") or candle_sets.get("daily") or candle_sets.get("intraday") or []
+    return len(candles)
 
 
 def _price_inside_entry_zone(idea: dict[str, Any], cushion_pct: float = 0.0) -> bool:

@@ -153,6 +153,16 @@ NSE_INDUSTRY_FALLBACKS: dict[str, str] = {
 }
 
 
+REENTRY_BLOCK_EXIT_KEYS = {
+    "STOP_LOSS",
+    "STOP_HIT",
+    "RISK_EXIT_BEFORE_T1",
+    "EXIT_SIGNAL",
+    "EXPIRED",
+    "auto_exit_signal_sell",
+}
+
+
 def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -181,6 +191,29 @@ def _parse_dt(value: Any) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def _sector_from_industry(industry: Any) -> str:
+    text = str(industry or "").lower()
+    if not text:
+        return ""
+    if any(token in text for token in ("bank", "nbfc", "finance", "insurance", "housing finance", "gold loan")):
+        return "Financial Services"
+    if any(token in text for token in ("it services", "software", "technology", "telecom", "electronics")):
+        return "Technology & Telecom"
+    if any(token in text for token in ("pharma", "healthcare", "hospital", "diagnostic")):
+        return "Healthcare"
+    if any(token in text for token in ("auto", "passenger cars", "vehicle", "tyre", "component")):
+        return "Automobiles"
+    if any(token in text for token in ("power", "renewable", "hydro", "wind", "gas", "oil", "coal", "transmission")):
+        return "Energy & Utilities"
+    if any(token in text for token in ("steel", "copper", "aluminium", "iron ore", "cement", "chemical", "fertil", "mining")):
+        return "Materials"
+    if any(token in text for token in ("construction", "infra", "rail", "port", "airport", "logistics", "engineering", "epc")):
+        return "Infrastructure"
+    if any(token in text for token in ("fmcg", "foods", "paint", "jewellery", "textiles", "retail", "consumer")):
+        return "Consumer"
+    return ""
 
 
 def _json_load(value: Any) -> Any:
@@ -960,6 +993,7 @@ class Database:
             self._ensure_column(conn, "users", "broker_updated_at", "text")
             self._seed_strategy_plans(conn)
             self._backfill_signal_plan_codes(conn)
+            self._backfill_universe_metadata(conn)
             self._ensure_column(conn, "users", "created_at", "text not null default ''")
             self._ensure_column(conn, "users", "updated_at", "text not null default ''")
             self._ensure_column(conn, "users", "last_login_at", "text")
@@ -968,6 +1002,26 @@ class Database:
         rows = conn.execute(f"pragma table_info({table})").fetchall()
         if column not in {row["name"] for row in rows}:
             conn.execute(f"alter table {table} add column {column} {definition}")
+
+    def _backfill_universe_metadata(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            select symbol, name, exchange, sector, industry
+            from universe
+            where coalesce(sector, '') = '' or coalesce(industry, '') = ''
+            """
+        ).fetchall()
+        for row in rows:
+            normalized = self._normalize_universe_row(dict(row))
+            conn.execute(
+                """
+                update universe
+                set sector = case when coalesce(sector, '') = '' then ? else sector end,
+                    industry = case when coalesce(industry, '') = '' then ? else industry end
+                where symbol = ?
+                """,
+                (normalized["sector"], normalized["industry"], normalized["symbol"]),
+            )
 
     def _seed_strategy_plans(self, conn: sqlite3.Connection) -> None:
         now = utc_now()
@@ -1686,8 +1740,11 @@ class Database:
         symbol = str(row.get("symbol", "")).strip().upper()
         exchange = str(row.get("exchange") or "NSE").strip().upper() or "NSE"
         default_yahoo_symbol = f"{symbol}.NS" if exchange == "NSE" else f"{symbol}.BO" if exchange == "BSE" else symbol
-        sector = row.get("sector") or ""
         industry = row.get("industry") or (NSE_INDUSTRY_FALLBACKS.get(symbol, "") if exchange in INDIA_EXCHANGES else "")
+        sector = row.get("sector") or _sector_from_industry(industry)
+        if not sector and exchange in INDIA_EXCHANGES:
+            sector = "NSE Listed Equity"
+            industry = industry or "NSE Listed Equity"
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -2655,6 +2712,71 @@ class Database:
                 )
                 exited.append(item)
         return exited
+
+    def recent_user_symbol_exit(
+        self,
+        user_id: int,
+        symbol: str,
+        cooldown_hours: int = 24,
+    ) -> dict[str, Any] | None:
+        symbol = str(symbol or "").strip().upper()
+        if not symbol or cooldown_hours <= 0:
+            return None
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(int(cooldown_hours), 1))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select
+                    f.*,
+                    i.symbol,
+                    i.first_seen_at as idea_first_seen_at,
+                    i.last_seen_at as idea_last_seen_at
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where f.user_id = ?
+                  and upper(i.symbol) = ?
+                  and f.status in ('EXITED','LIVE_EXIT_REQUESTED')
+                order by f.updated_at desc, f.id desc
+                limit 8
+                """,
+                (int(user_id), symbol),
+            ).fetchall()
+        for row in rows:
+            item = _row_dict(row)
+            details = self._decode_json(item.get("details_json"))
+            management = details.get("exit_management") if isinstance(details.get("exit_management"), dict) else {}
+            events = [event for event in management.get("events", []) if isinstance(event, dict)]
+            latest_event = events[-1] if events else {}
+            manual_exit = details.get("manual_exit") if isinstance(details.get("manual_exit"), dict) else {}
+            key = str(latest_event.get("key") or manual_exit.get("reason") or management.get("last_action") or "").strip()
+            if key not in REENTRY_BLOCK_EXIT_KEYS:
+                continue
+            exited_at = (
+                _parse_dt(latest_event.get("at"))
+                or _parse_dt(manual_exit.get("exited_at"))
+                or _parse_dt(management.get("last_action_at"))
+                or _parse_dt(item.get("updated_at"))
+            )
+            if not exited_at or exited_at < cutoff:
+                continue
+            minutes_left = max(int(((exited_at + timedelta(hours=cooldown_hours)) - datetime.now(timezone.utc)).total_seconds() // 60), 0)
+            return {
+                "symbol": symbol,
+                "follow_id": item.get("id"),
+                "idea_id": item.get("idea_id"),
+                "exit_key": key,
+                "exit_reason": latest_event.get("reason") or manual_exit.get("reason") or management.get("last_reason") or key,
+                "exited_at": exited_at.isoformat(),
+                "cooldown_hours": int(cooldown_hours),
+                "cooldown_minutes_left": minutes_left,
+                "return_pct": item.get("return_pct"),
+                "realized_pnl": (
+                    latest_event.get("realized_pnl")
+                    if latest_event
+                    else manual_exit.get("realized_pnl")
+                ),
+            }
+        return None
 
     def manage_user_follow_exits(self, user_id: int, market_region: str | None = None) -> dict[str, Any]:
         market_clause, market_params = _market_region_where("u", market_region)

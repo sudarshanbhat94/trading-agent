@@ -279,7 +279,7 @@ def _not_fno_context(symbol: str, exc: Exception) -> dict[str, Any]:
         "symbol": symbol,
         "updated_at": utc_now(),
         "error": f"{exc.__class__.__name__}: {str(exc)[:220]}",
-        "data_gap": "symbol_not_in_fno_no_stock_options",
+        "data_gap": None,
         "note": "No stock-level PCR, Max Pain, or OI concentration is available because this equity is not in NSE F&O.",
         "buy_suppressed": False,
         "max_pain": None,
