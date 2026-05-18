@@ -165,6 +165,7 @@ function portfolioMetricsForMarket(portfolio = {}, positions = [], market = "IN"
     invested,
     market_value: marketValue,
     equity: cash + marketValue,
+    realized_pnl: Number(portfolio.realized_pnl || 0),
     unrealized_pnl: unrealized,
   };
 }
@@ -226,6 +227,13 @@ function fmtTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function fmtDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 function getNSESession(now = new Date()) {
@@ -2196,6 +2204,101 @@ async function updateUser(userId, patch) {
   }
 }
 
+function followModeLabel(row = {}) {
+  const mode = String(row.mode || row.classification || "").toUpperCase();
+  if (mode === "PAPER") return "Paper";
+  if (mode === "LIVE" || mode === "LIVE_REQUEST") return "Live request";
+  return humanLabel(mode || "Track");
+}
+
+function followStateLabel(row = {}) {
+  const status = String(row.status || row.follow_status || "").toUpperCase();
+  const state = String(row.state || "").toUpperCase();
+  if (status === "LIVE_EXIT_REQUESTED" || state === "EXIT_PENDING") return "Exit requested";
+  if (state === "OPEN" || ["ACTIVE", "LIVE_REQUESTED"].includes(status)) return "Open";
+  if (status === "EXITED" || state === "CLOSED") return "Closed";
+  return humanLabel(status || state || "Open");
+}
+
+function followReasonText(row = {}) {
+  const state = String(row.state || "").toUpperCase();
+  const status = String(row.status || "").toUpperCase();
+  if (state === "OPEN" && status === "ACTIVE") return "Open position.";
+  if (status === "LIVE_REQUESTED") return "Live order request pending.";
+  const reason = row.exit_reason || row.reason || row.status || row.state;
+  return reasonFromSnakeCase(reason, humanLabel(reason || "Position update"));
+}
+
+function renderAccountFollowTable(rows = [], options = {}) {
+  const emptyTitle = options.emptyTitle || "No positions";
+  const emptyText = options.emptyText || "Positions will appear here after you follow an idea.";
+  const visibleRows = (rows || []).slice(0, options.limit || 30);
+  if (!visibleRows.length) {
+    return `<div class="account-history-empty"><strong>${escapeHtml(emptyTitle)}</strong><span>${escapeHtml(emptyText)}</span></div>`;
+  }
+  const body = visibleRows.map((row) => {
+    const market = rowMarket(row);
+    const modeClass = cssToken(row.mode || row.classification || "track");
+    const stateClass = cssToken(row.state || row.status || "open");
+    const entryQty = Number(row.entry_qty ?? row.qty ?? 0);
+    const openQty = Number(row.qty ?? 0);
+    const entryPrice = Number(row.entry_price ?? row.avg_price ?? 0);
+    const latestPrice = Number(row.latest_price ?? row.market_price ?? row.exit_price ?? entryPrice);
+    const exitPrice = Number(row.exit_price ?? latestPrice);
+    const realized = Number(row.realized_pnl || 0);
+    const unrealized = Number(row.unrealized_pnl || 0);
+    const statusLabel = followStateLabel(row);
+    const isOpen = statusLabel === "Open";
+    const secondaryPrice = isOpen ? latestPrice : exitPrice;
+    const pnl = isOpen ? realized + unrealized : realized;
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(row.symbol || "-")}</strong>
+          <small>${escapeHtml(row.company_name || row.strategy || MARKET_LABELS[market] || market)}</small>
+        </td>
+        <td>
+          <span class="trade-mode-pill mode-${modeClass}">${escapeHtml(followModeLabel(row))}</span>
+          <small class="trade-state state-${stateClass}">${escapeHtml(statusLabel)}</small>
+        </td>
+        <td class="num">
+          ${fmtNumber(entryQty)}
+          <small>${isOpen ? `${fmtNumber(openQty)} open` : `${fmtNumber(row.closed_qty || entryQty)} closed`}</small>
+        </td>
+        <td class="num">
+          ${fmtMarketMoney(entryPrice, market)}
+          <small>${isOpen ? "LTP" : "Exit"} ${fmtMarketMoney(secondaryPrice, market)}</small>
+        </td>
+        <td class="num ${pnlClass(pnl)}">
+          <strong>${fmtMarketMoney(pnl, market)}</strong>
+          <small>${isOpen ? `${fmtMarketMoney(realized, market)} realized · ${fmtMarketMoney(unrealized, market)} open` : `${fmtPct(row.return_pct)} return`}</small>
+        </td>
+        <td>
+          <span>${escapeHtml(followReasonText(row))}</span>
+          <small>${fmtDateTime(row.opened_at)}${row.closed_at ? ` - ${fmtDateTime(row.closed_at)}` : ""}</small>
+        </td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="account-history-table-wrap">
+      <table class="account-history-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Mode</th>
+            <th class="num">Qty</th>
+            <th class="num">Price</th>
+            <th class="num">P&L</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderAccount(account) {
   state.account = account;
   const paper = account.paper || {};
@@ -2205,6 +2308,18 @@ function renderAccount(account) {
   const portfolio = paper.portfolio || {};
   const portfolioByMarket = paper.portfolio_by_market || portfolio.portfolio_by_market || {};
   const trackedIdeas = account.tracked_ideas || [];
+  const followHistory = paper.follow_history || account.follow_history || [];
+  const openFollowHistory = followHistory.filter((row) => {
+    const state = String(row.state || "").toUpperCase();
+    const status = String(row.status || "").toUpperCase();
+    return state === "OPEN" || ["ACTIVE", "LIVE_REQUESTED"].includes(status);
+  });
+  const closedFollowHistory = (paper.closed_positions || followHistory.filter((row) => String(row.state || "").toUpperCase() !== "OPEN")).slice(0, 40);
+  const paperOpenCount = openFollowHistory.filter((row) => String(row.mode || "").toUpperCase() === "PAPER").length;
+  const liveRequestCount = followHistory.filter((row) => String(row.mode || "").toUpperCase() === "LIVE").length;
+  const closedPaperCount = followHistory.filter((row) => (
+    String(row.mode || "").toUpperCase() === "PAPER" && String(row.state || "").toUpperCase() !== "OPEN"
+  )).length;
   const userUpstox = state.auth?.user?.broker_accounts?.upstox || {};
   const userKite = state.auth?.user?.broker_accounts?.kite || {};
   const indiaPaper = portfolioByMarket.IN || portfolioMetricsForMarket(portfolio, filterRowsByMarket(paper.positions || [], "IN"), "IN");
@@ -2224,7 +2339,7 @@ function renderAccount(account) {
         <input id="paper-cash-us" type="number" min="0" step="0.01" value="${Number.isFinite(usCashPool) ? usCashPool : ""}" />
       </label>
       <button id="save-paper-cash-btn" type="submit">Save Cash</button>
-      <small id="paper-cash-status">Starting paper cash per market; active paper ideas reduce available cash.</small>
+      <small id="paper-cash-status">Starting paper cash per market; realized paper profit/loss is applied automatically.</small>
     </form>
   `;
   const signalExecutionMode = String(account.signal_execution_mode || state.auth?.user?.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
@@ -2268,14 +2383,20 @@ function renderAccount(account) {
       <div><span>Mode</span><strong>${paper.mode || "-"}</strong></div>
       <div><span>India Cash</span><strong>${fmtMarketMoney(indiaPaper.cash, "IN")}</strong></div>
       <div><span>India Equity</span><strong>${fmtMarketMoney(indiaPaper.equity, "IN")}</strong></div>
+      <div><span>India Realized</span><strong class="${pnlClass(indiaPaper.realized_pnl)}">${fmtMarketMoney(indiaPaper.realized_pnl, "IN")}</strong></div>
+      ${Number(indiaPaper.cash_deficit || 0) > 0 ? `<div><span>India Cash Gap</span><strong class="negative">${fmtMarketMoney(indiaPaper.cash_deficit, "IN")}</strong></div>` : ""}
       <div><span>US Cash</span><strong>${fmtMarketMoney(usPaper.cash, "US")}</strong></div>
       <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
+      <div><span>US Realized</span><strong class="${pnlClass(usPaper.realized_pnl)}">${fmtMarketMoney(usPaper.realized_pnl, "US")}</strong></div>
+      ${Number(usPaper.cash_deficit || 0) > 0 ? `<div><span>US Cash Gap</span><strong class="negative">${fmtMarketMoney(usPaper.cash_deficit, "US")}</strong></div>` : ""}
       <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
       <div><span>Signal Action</span><strong>${escapeHtml(signalModeLabel(signalExecutionMode))}</strong></div>
       <div><span>Monitor Scope</span><strong>${monitorSymbols.length ? `${fmtNumber(monitorSymbols.length)} custom` : "Dynamic"}</strong></div>
       <div><span>Broker Sync</span><strong>${escapeHtml(brokerSync.status_label || brokerSync.status || "Not Connected")}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
-      <div><span>Paper Positions</span><strong>${fmtNumber((paper.positions || []).length)}</strong></div>
+      <div><span>Open Paper</span><strong>${fmtNumber(paperOpenCount)}</strong></div>
+      <div><span>Live Requests</span><strong>${fmtNumber(liveRequestCount)}</strong></div>
+      <div><span>Closed Paper</span><strong>${fmtNumber(closedPaperCount)}</strong></div>
       <div><span>Broker Positions</span><strong>${fmtNumber(brokerReconcile.broker_position_symbols || brokerSync.positions_count || 0)}</strong></div>
     </div>
     ${cashEditor}
@@ -2289,6 +2410,22 @@ function renderAccount(account) {
       <strong>Broker sync</strong>
       <span>${escapeHtml(brokerSync.note || "Connect a personal broker token to reconcile live requests with broker positions.")}</span>
       ${(brokerReconcile.unmatched_live_requests || []).length ? `<span>${fmtNumber((brokerReconcile.unmatched_live_requests || []).length)} live request(s) are not matched to a broker position.</span>` : ""}
+    </div>
+    <div class="account-history-grid">
+      <section class="account-history-panel">
+        <div class="account-history-head">
+          <strong>Open Paper / Live</strong>
+          <span>${fmtNumber(openFollowHistory.length)} active</span>
+        </div>
+        ${renderAccountFollowTable(openFollowHistory, { emptyTitle: "No open paper or live positions", emptyText: "Follow a BUY idea as Paper or Live request to see it here.", limit: 20 })}
+      </section>
+      <section class="account-history-panel">
+        <div class="account-history-head">
+          <strong>Position History</strong>
+          <span>${fmtNumber(closedFollowHistory.length)} recent</span>
+        </div>
+        ${renderAccountFollowTable(closedFollowHistory, { emptyTitle: "No closed positions yet", emptyText: "Exited paper and live-request positions will stay visible here.", limit: 30 })}
+      </section>
     </div>
   `;
   const cashForm = byId("paper-cash-form");

@@ -623,6 +623,8 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id)
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
+        follow_history = db.user_follow_history(user_id, 120)
+        realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
         snapshot["suggestions"] = db.latest_signal_ideas(50, user_id=user_id)
         snapshot["signal_ideas"] = snapshot["suggestions"]
@@ -635,15 +637,19 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
             "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN"),
             "US": db.user_followed_signal_ideas(user_id, 100, market_region="US"),
         }
+        snapshot["follow_history"] = follow_history
+        snapshot["follow_history_by_market"] = _rows_by_market(follow_history)
         user_portfolio = _user_follow_portfolio(
             tracked_ideas,
             snapshot.get("portfolio", {}),
             paper_cash_by_market=paper_cash_by_market,
+            realized_pnl_by_market=realized_pnl_by_market,
         )
         snapshot["positions"] = user_positions
         snapshot["portfolio"] = user_portfolio
         snapshot["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
         snapshot["paper_cash_pool_by_market"] = paper_cash_by_market
+        snapshot["paper_realized_pnl_by_market"] = realized_pnl_by_market
         snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["performance"] = db.performance_summary(user_id=user_id)
         snapshot["paper_exit_manager"] = paper_exit_manager
@@ -740,21 +746,43 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
     return positions
 
 
+def _rows_by_market(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    output: dict[str, list[dict[str, Any]]] = {"IN": [], "US": []}
+    for row in rows:
+        market = normalize_market_region(row.get("market_region") or "IN", default="IN")
+        output.setdefault(market, []).append(row)
+    return output
+
+
 def _user_follow_portfolio(
     tracked_ideas: list[dict[str, Any]],
     fallback: dict[str, Any],
     market_region: str | None = None,
     paper_cash_by_market: dict[str, Any] | None = None,
+    realized_pnl_by_market: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     region = normalize_market_region(market_region or "BOTH", default="BOTH")
     if region == "BOTH":
         by_market = {
-            "IN": _user_follow_portfolio(tracked_ideas, fallback, "IN", paper_cash_by_market=paper_cash_by_market),
-            "US": _user_follow_portfolio(tracked_ideas, fallback, "US", paper_cash_by_market=paper_cash_by_market),
+            "IN": _user_follow_portfolio(
+                tracked_ideas,
+                fallback,
+                "IN",
+                paper_cash_by_market=paper_cash_by_market,
+                realized_pnl_by_market=realized_pnl_by_market,
+            ),
+            "US": _user_follow_portfolio(
+                tracked_ideas,
+                fallback,
+                "US",
+                paper_cash_by_market=paper_cash_by_market,
+                realized_pnl_by_market=realized_pnl_by_market,
+            ),
         }
         return {
             **(fallback or {}),
             "cash": round(sum(float(row["cash"]) for row in by_market.values()), 2),
+            "cash_deficit": round(sum(float(row.get("cash_deficit") or 0.0) for row in by_market.values()), 2),
             "invested": round(sum(float(row["invested"]) for row in by_market.values()), 2),
             "market_value": round(sum(float(row["market_value"]) for row in by_market.values()), 2),
             "equity": round(sum(float(row["equity"]) for row in by_market.values()), 2),
@@ -766,21 +794,28 @@ def _user_follow_portfolio(
     paper_items = [
         item
         for item in tracked_ideas
-        if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"} and int(item.get("qty") or 0) > 0
+        if str(item.get("mode") or "").upper() == "PAPER" and int(item.get("qty") or 0) > 0
         and normalize_market_region(item.get("market_region") or "IN", default="IN") == region
     ]
     invested = sum(float(item.get("invested_amount") or 0.0) for item in paper_items)
     market_value = sum(float(item.get("follow_latest_price") or item.get("latest_price") or 0.0) * int(item.get("qty") or 0) for item in paper_items)
     unrealized = sum(float(item.get("unrealized_pnl") or 0.0) for item in paper_items)
-    cash = max(base_cash - invested, 0.0)
+    try:
+        realized_pnl = float((realized_pnl_by_market or {}).get(region) or 0.0)
+    except (TypeError, ValueError):
+        realized_pnl = 0.0
+    raw_cash = base_cash + realized_pnl - invested
+    cash = max(raw_cash, 0.0)
     return {
         "market_region": region,
         "currency": "USD" if region == "US" else "INR",
         "cash": round(cash, 2),
+        "cash_deficit": round(abs(min(raw_cash, 0.0)), 2),
+        "starting_cash": round(base_cash, 2),
         "invested": round(invested, 2),
         "market_value": round(market_value, 2),
-        "equity": round(cash + market_value, 2),
-        "realized_pnl": 0.0,
+        "equity": round(raw_cash + market_value, 2),
+        "realized_pnl": round(realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
     }
 
@@ -802,7 +837,7 @@ def _user_equity_curve_by_market(
         rows = [
             item
             for item in tracked_ideas
-            if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
+            if str(item.get("mode") or "").upper() == "PAPER"
             and int(item.get("qty") or 0) > 0
             and normalize_market_region(item.get("market_region") or "IN", default="IN") == market
         ]
@@ -1554,11 +1589,14 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
 
     paper_cash_by_market = _user_paper_cash_by_market(updated_user)
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    follow_history = db.user_follow_history(int(user["id"]), 120)
+    realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     account_payload = await account.snapshot()
     user_portfolio = _user_follow_portfolio(
         tracked_ideas,
         account_payload["paper"].get("portfolio", {}),
         paper_cash_by_market=paper_cash_by_market,
+        realized_pnl_by_market=realized_pnl_by_market,
     )
     db.insert_agent_log(
         "INFO",
@@ -1573,6 +1611,7 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
         "paper": {
             "cash": user_portfolio["cash"],
             "cash_pool_by_market": paper_cash_by_market,
+            "realized_pnl_by_market": realized_pnl_by_market,
             "cash_by_market": {
                 market: row.get("cash", 0.0)
                 for market, row in (user_portfolio.get("portfolio_by_market") or {}).items()
@@ -1580,6 +1619,8 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
             "portfolio": user_portfolio,
             "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
             "positions": _user_follow_positions(tracked_ideas),
+            "follow_history": follow_history,
+            "closed_positions": [row for row in follow_history if str(row.get("state") or "").upper() != "OPEN"],
         },
     }
 
@@ -1797,16 +1838,24 @@ async def account_details(request: Request) -> dict[str, Any]:
     if user.get("role") != "admin":
         paper_cash_by_market = _user_paper_cash_by_market(user)
         tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+        follow_history = db.user_follow_history(int(user["id"]), 120)
+        realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
         user_portfolio = _user_follow_portfolio(
             tracked_ideas,
             payload["paper"].get("portfolio", {}),
             paper_cash_by_market=paper_cash_by_market,
+            realized_pnl_by_market=realized_pnl_by_market,
         )
         payload["tracked_ideas"] = tracked_ideas
+        payload["follow_history"] = follow_history
+        payload["follow_history_by_market"] = _rows_by_market(follow_history)
         payload["paper"]["positions"] = _user_follow_positions(tracked_ideas)
+        payload["paper"]["follow_history"] = follow_history
+        payload["paper"]["closed_positions"] = [row for row in follow_history if str(row.get("state") or "").upper() != "OPEN"]
         payload["paper"]["portfolio"] = user_portfolio
         payload["paper"]["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
         payload["paper"]["cash_pool_by_market"] = paper_cash_by_market
+        payload["paper"]["realized_pnl_by_market"] = realized_pnl_by_market
         payload["paper"]["cash_by_market"] = {
             market: row.get("cash", 0.0)
             for market, row in (user_portfolio.get("portfolio_by_market") or {}).items()
@@ -2539,17 +2588,39 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         {"user_id": user.get("id"), "idea_id": idea_id, "mode": mode, "amount": amount, "qty": qty},
     )
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    follow_history = db.user_follow_history(int(user["id"]), 120)
+    paper_cash_by_market = _user_paper_cash_by_market(user)
+    realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
+    user_portfolio = _user_follow_portfolio(
+        tracked_ideas,
+        db.latest_portfolio() or {},
+        paper_cash_by_market=paper_cash_by_market,
+        realized_pnl_by_market=realized_pnl_by_market,
+    )
     return {
         "ok": True,
         "follow": follow,
         "paper_exit_manager": exit_manager,
         "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
         "tracked_ideas": tracked_ideas,
+        "follow_history": follow_history,
+        "follow_history_by_market": _rows_by_market(follow_history),
         "tracked_ideas_by_market": {
             "IN": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="IN"),
             "US": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="US"),
         },
         "positions": _user_follow_positions(tracked_ideas),
+        "portfolio": user_portfolio,
+        "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+        "paper": {
+            "positions": _user_follow_positions(tracked_ideas),
+            "follow_history": follow_history,
+            "closed_positions": [row for row in follow_history if str(row.get("state") or "").upper() != "OPEN"],
+            "portfolio": user_portfolio,
+            "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+            "cash_pool_by_market": paper_cash_by_market,
+            "realized_pnl_by_market": realized_pnl_by_market,
+        },
     }
 
 
@@ -2606,6 +2677,15 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
         },
     )
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    follow_history = db.user_follow_history(int(user["id"]), 120)
+    paper_cash_by_market = _user_paper_cash_by_market(user)
+    realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
+    user_portfolio = _user_follow_portfolio(
+        tracked_ideas,
+        db.latest_portfolio() or {},
+        paper_cash_by_market=paper_cash_by_market,
+        realized_pnl_by_market=realized_pnl_by_market,
+    )
     return {
         "ok": True,
         "plan": plan,
@@ -2613,7 +2693,20 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
         "skipped": skipped,
         "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
         "tracked_ideas": tracked_ideas,
+        "follow_history": follow_history,
+        "follow_history_by_market": _rows_by_market(follow_history),
         "positions": _user_follow_positions(tracked_ideas),
+        "portfolio": user_portfolio,
+        "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+        "paper": {
+            "positions": _user_follow_positions(tracked_ideas),
+            "follow_history": follow_history,
+            "closed_positions": [row for row in follow_history if str(row.get("state") or "").upper() != "OPEN"],
+            "portfolio": user_portfolio,
+            "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+            "cash_pool_by_market": paper_cash_by_market,
+            "realized_pnl_by_market": realized_pnl_by_market,
+        },
         "strategy_plans": db.strategy_plans(),
     }
 
@@ -2754,6 +2847,7 @@ def _default_paper_follow_amount(user: dict[str, Any], idea: dict[str, Any]) -> 
         tracked,
         db.latest_portfolio() or {},
         paper_cash_by_market=_user_paper_cash_by_market(user),
+        realized_pnl_by_market=db.user_follow_realized_pnl_by_market(int(user["id"])),
     )
     market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
     cash = float(market_portfolio.get("cash") or 0.0)
@@ -2990,6 +3084,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
     user_id = int(user["id"])
     idea_mode = "LIVE" if mode == "AUTO_LIVE" else "PAPER"
     paper_cash_by_market = _user_paper_cash_by_market(user)
+    realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
     exit_management = db.manage_user_follow_exits(user_id)
     summary["managed_exits"] = exit_management.get("actions", [])
     exit_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "SELL"}
@@ -3035,6 +3130,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
                 for item in exited
             )
 
+    realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
     if mode == "SIGNAL_ONLY":
         return summary
 
@@ -3113,6 +3209,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
             tracked,
             db.latest_portfolio() or {},
             paper_cash_by_market=paper_cash_by_market,
+            realized_pnl_by_market=realized_pnl_by_market,
         )
         market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
         cash = float(market_portfolio.get("cash") or 0.0)

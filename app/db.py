@@ -2471,6 +2471,158 @@ class Database:
             output.append(_decorate_signal_idea_item(item))
         return output
 
+    def user_follow_history(
+        self,
+        user_id: int,
+        limit: int = 100,
+        market_region: str | None = None,
+    ) -> list[dict[str, Any]]:
+        market_clause, market_params = _market_region_where("u", market_region)
+        market_sql = f"and {market_clause}" if market_clause else ""
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                f"""
+                select
+                    f.id as follow_id,
+                    f.user_id,
+                    f.idea_id,
+                    f.mode,
+                    f.status as follow_status,
+                    f.qty,
+                    f.entry_price,
+                    f.latest_price as follow_latest_price,
+                    f.invested_amount,
+                    f.unrealized_pnl,
+                    f.return_pct,
+                    f.created_at as opened_at,
+                    f.updated_at as updated_at,
+                    f.details_json as follow_details_json,
+                    i.symbol,
+                    i.strategy,
+                    i.signal_type,
+                    i.status as idea_status,
+                    i.latest_price as idea_latest_price,
+                    i.last_seen_at as idea_last_seen_at,
+                    {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name,
+                    u.sector as sector,
+                    u.industry as industry
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
+                where f.user_id = ?
+                  and f.mode in ('PAPER','LIVE')
+                  {market_sql}
+                order by f.updated_at desc, f.id desc
+                limit ?
+                """,
+                (int(user_id), *market_params, max(1, min(int(limit), 500))),
+            ).fetchall()
+        history: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_dict(row)
+            follow_details = self._decode_json(item.pop("follow_details_json", "{}"))
+            if not isinstance(follow_details, dict):
+                follow_details = {}
+            management = follow_details.get("exit_management") if isinstance(follow_details.get("exit_management"), dict) else {}
+            events = [event for event in management.get("events", []) if isinstance(event, dict)]
+            latest_event = events[-1] if events else {}
+            manual_exit = follow_details.get("manual_exit") if isinstance(follow_details.get("manual_exit"), dict) else {}
+            mode = str(item.get("mode") or "TRACK").upper()
+            status = str(item.get("follow_status") or "").upper()
+            current_qty = int(item.get("qty") or 0)
+            closed_qty = int(_optional_float(management.get("closed_qty_total")) or 0)
+            manual_qty = int(_optional_float(manual_exit.get("qty")) or 0)
+            entry_qty = max(current_qty + closed_qty, manual_qty, current_qty)
+            remaining_qty = current_qty if status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} else 0
+            entry_price = float(item.get("entry_price") or 0.0)
+            latest_price = float(item.get("idea_latest_price") or item.get("follow_latest_price") or entry_price or 0.0)
+            exit_price = (
+                _optional_float(manual_exit.get("exit_price"))
+                or _optional_float(latest_event.get("exit_price"))
+                or latest_price
+            )
+            closed_at = (
+                manual_exit.get("exited_at")
+                or management.get("last_action_at")
+                or (item.get("updated_at") if status in {"EXITED", "LIVE_EXIT_REQUESTED"} else None)
+            )
+            realized_pnl = _follow_realized_pnl(follow_details)
+            return_pct = (
+                _optional_float(manual_exit.get("return_pct"))
+                or _optional_float(latest_event.get("return_pct"))
+                or _optional_float(item.get("return_pct"))
+                or _return_pct(entry_price, exit_price)
+            )
+            exit_reason = (
+                manual_exit.get("reason")
+                or management.get("last_reason")
+                or latest_event.get("reason")
+                or management.get("last_action_label")
+                or status
+            )
+            history.append(
+                {
+                    "follow_id": item.get("follow_id"),
+                    "idea_id": item.get("idea_id"),
+                    "symbol": item.get("symbol"),
+                    "company_name": item.get("company_name"),
+                    "market_region": normalize_market_region(item.get("market_region") or "IN", default="IN"),
+                    "exchange": item.get("exchange"),
+                    "sector": item.get("sector"),
+                    "industry": item.get("industry"),
+                    "mode": mode,
+                    "mode_label": "Paper" if mode == "PAPER" else "Live request",
+                    "status": status,
+                    "state": "OPEN" if status in {"ACTIVE", "LIVE_REQUESTED"} else "EXIT_PENDING" if status == "LIVE_EXIT_REQUESTED" else "CLOSED",
+                    "qty": remaining_qty,
+                    "entry_qty": entry_qty,
+                    "closed_qty": (closed_qty or manual_qty) if status == "EXITED" else closed_qty,
+                    "entry_price": entry_price,
+                    "latest_price": latest_price,
+                    "exit_price": exit_price if status in {"EXITED", "LIVE_EXIT_REQUESTED"} or realized_pnl else None,
+                    "invested_amount": float(item.get("invested_amount") or 0.0),
+                    "entry_notional": round(entry_qty * entry_price, 2),
+                    "market_value": round(remaining_qty * latest_price, 2),
+                    "unrealized_pnl": float(item.get("unrealized_pnl") or 0.0) if remaining_qty > 0 else 0.0,
+                    "realized_pnl": realized_pnl,
+                    "cash_effect": realized_pnl if mode == "PAPER" else 0.0,
+                    "return_pct": round(float(return_pct), 4),
+                    "exit_reason": str(exit_reason or "").strip(),
+                    "strategy": item.get("strategy"),
+                    "signal_type": item.get("signal_type"),
+                    "opened_at": item.get("opened_at"),
+                    "closed_at": closed_at,
+                    "updated_at": item.get("updated_at"),
+                }
+            )
+        return history
+
+    def user_follow_realized_pnl_by_market(self, user_id: int) -> dict[str, float]:
+        totals: dict[str, float] = {"IN": 0.0, "US": 0.0}
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select
+                    f.details_json,
+                    {_market_region_case("u")} as market_region
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
+                where f.user_id = ?
+                  and f.mode = 'PAPER'
+                """,
+                (int(user_id),),
+            ).fetchall()
+        for row in rows:
+            item = _row_dict(row)
+            market = normalize_market_region(item.get("market_region") or "IN", default="IN")
+            details = self._decode_json(item.get("details_json"))
+            totals[market] = round(float(totals.get(market, 0.0)) + _follow_realized_pnl(details), 2)
+        return totals
+
     def strategy_plans(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             plan_rows = conn.execute(
@@ -3988,6 +4140,25 @@ def _return_pct(entry_price: float, latest_price: float) -> float:
     if entry <= 0:
         return 0.0
     return round(((latest - entry) / entry) * 100, 4)
+
+
+def _follow_realized_pnl(details: Any) -> float:
+    if not isinstance(details, dict):
+        return 0.0
+    realized = 0.0
+    management = details.get("exit_management") if isinstance(details.get("exit_management"), dict) else {}
+    management_total = _optional_float(management.get("realized_pnl_total"))
+    if management_total is not None:
+        realized += management_total
+    else:
+        events = management.get("events", [])
+        if isinstance(events, list):
+            realized += sum(_optional_float(event.get("realized_pnl")) or 0.0 for event in events if isinstance(event, dict))
+    manual_exit = details.get("manual_exit") if isinstance(details.get("manual_exit"), dict) else {}
+    manual_realized = _optional_float(manual_exit.get("realized_pnl"))
+    if manual_realized is not None:
+        realized += manual_realized
+    return round(realized, 2)
 
 
 def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follow_details: dict[str, Any]) -> dict[str, Any] | None:
