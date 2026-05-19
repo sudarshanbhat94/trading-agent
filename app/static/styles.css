@@ -14413,3 +14413,276 @@ body[data-theme="dark"] .ai-cockpit-action::after {
     align-items: flex-start;
   }
 }
+
+/* Pitch dark theme pass: final owner for the dark palette across all pages. */
+body[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --surface-0: #000000;
+  --surface-1: #050505;
+  --surface-2: #0a0a0a;
+  --surface-3: #111111;
+  --surface: var(--surface-1);
+  --surface-soft: var(--surface-2);
+  --surface-strong: var(--surface-3);
+  --chrome: #000000;
+  --chrome-soft: #050505;
+  --chrome-line: rgba(255, 255, 255, 0.1);
+  --terminal-bg: #000000;
+  --terminal-panel: #050505;
+  --terminal-panel-2: #0a0a0a;
+  --terminal-line: rgba(255, 255, 255, 0.1);
+  --terminal-line-bright: rgba(255, 255, 255, 0.17);
+  --text-primary: #f7f8fa;
+  --text-secondary: #b4bac4;
+  --text-muted: #767d89;
+  --ink: var(--text-primary);
+  --muted: var(--text-secondary);
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.18);
+  --border-color: rgba(255, 255, 255, 0.1);
+  --shadow: 0 22px 56px rgba(0, 0, 0, 0.72);
+  --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.52);
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.025), 0 18px 44px rgba(0, 0, 0, 0.42);
+  --shadow-md: 0 30px 70px rgba(0, 0, 0, 0.62);
+  background: #000000 !important;
+  color: var(--text-primary) !important;
+}
+
+html:has(body[data-theme="dark"]),
+body[data-theme="dark"] :is(.login-screen, .app-shell, .terminal-body, .workspace, .view) {
+  background: #000000 !important;
+  color: var(--text-primary) !important;
+}
+
+body[data-theme="dark"] :is(.terminal-topbar, .market-tape, .app-sidebar, .market-rail) {
+  border-color: var(--border-color) !important;
+  background: rgba(0, 0, 0, 0.96) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035), 0 24px 58px rgba(0, 0, 0, 0.46) !important;
+}
+
+body[data-theme="dark"] :is(
+  .panel,
+  .dashboard-card,
+  .connect-card,
+  .admin-terminal,
+  .macro-table-shell,
+  .view > .panel.full,
+  .split-layout > .panel,
+  .admin-layout > .panel,
+  .user-list-panel,
+  .decision-feed-card,
+  .sentiment-card,
+  .strategy-plan-card,
+  .analysis-result-shell,
+  .account-profile-panel,
+  .account-broker-panel,
+  .account-history-panel,
+  .account-credit-panel,
+  .account-quotes-panel,
+  .product-action-card,
+  .tracked-idea-card,
+  .product-track-item,
+  .credit-popover,
+  .user-menu-dropdown,
+  .confirm-card,
+  .detail-drawer,
+  .login-card,
+  .ai-cockpit-strip
+) {
+  border-color: var(--border-color) !important;
+  background: #050505 !important;
+  color: var(--text-primary) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+body[data-theme="dark"] :is(
+  .panel-head,
+  .admin-terminal-head,
+  .settings-tabs,
+  .settings-tab-shell,
+  .settings-tab-panel.active,
+  .settings-actions,
+  .connect-card-head,
+  .drawer-head,
+  .credit-popover-head,
+  .rail-head,
+  .rail-search,
+  .rail-footer,
+  .market-workspace-tabs,
+  .market-tabs,
+  .order-filter-tabs,
+  .analysis-tabs,
+  .page-filter-bar,
+  .table-wrap,
+  .page-table,
+  .account-history-table-wrap
+) {
+  border-color: var(--border-color) !important;
+  background: #080808 !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(
+  .kpi,
+  .ops-card,
+  .account-metrics div,
+  .manual-analysis-card div,
+  .manual-analysis-card > div,
+  .product-action-metrics button,
+  .strategy-plan-stats span,
+  .plan-symbol,
+  .tracked-metrics span,
+  .target-ladder span,
+  .sector-row,
+  .sector-tile,
+  .empty-state,
+  .empty-table-state,
+  .product-empty,
+  .ai-cockpit-cell,
+  .ai-cockpit-action,
+  .provider-key-card,
+  .signal-history-card,
+  .analysis-chart,
+  .analysis-metric-strip div,
+  .analysis-hero,
+  .decision-detail-hero,
+  .score-radar,
+  .decision-reason-block,
+  .decision-review-grid > div,
+  .llm-formatted-review article,
+  .openstocks-formatted-view article,
+  .audit-hero,
+  .audit-section,
+  .audit-card,
+  .raw-audit,
+  .detail-list div,
+  .mini-grid button,
+  .suggestion-card,
+  .suggestion-score div,
+  .suggestion-plan span,
+  .signal-metric-strip div,
+  .signal-trade-strip span
+) {
+  border-color: rgba(255, 255, 255, 0.09) !important;
+  background: #0a0a0a !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(input, select, textarea, .global-search input, .rail-search input, .symbol-search input, .settings-form input, .settings-form select, .field input, .field select, .connect-grid input) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #030303 !important;
+  color: var(--text-primary) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035) !important;
+}
+
+body[data-theme="dark"] :is(
+  button:not(.primary),
+  .icon-button,
+  .market-tape-action,
+  .rail-action,
+  .settings-tab,
+  .market-tab,
+  .market-workspace-tab,
+  .page-filter-bar button,
+  .order-filter-tabs button,
+  .analysis-tabs button,
+  .row-actions button,
+  .signal-card-actions button
+) {
+  border-color: rgba(255, 255, 255, 0.11) !important;
+  background: #090909 !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(button:not(.primary):hover, .row-actions button:hover, .signal-card-actions button:hover) {
+  border-color: rgba(122, 162, 255, 0.34) !important;
+  background: #111111 !important;
+}
+
+body[data-theme="dark"] :is(
+  .market-workspace-tab.active,
+  .market-tab.active,
+  .settings-tab.active,
+  .page-filter-bar button.active,
+  .order-filter-tabs button.active,
+  .analysis-tabs button.active,
+  .nav-item.active,
+  .signal-card-actions button:first-child
+) {
+  border-color: color-mix(in srgb, var(--color-brand-primary) 42%, rgba(255, 255, 255, 0.14)) !important;
+  background: color-mix(in srgb, var(--color-brand-primary) 15%, #050505) !important;
+  color: #ffffff !important;
+}
+
+body[data-theme="dark"] :is(table, tbody, tr) {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+body[data-theme="dark"] :is(th, thead th) {
+  border-color: rgba(255, 255, 255, 0.09) !important;
+  background: #0d0d0d !important;
+  color: var(--text-muted) !important;
+}
+
+body[data-theme="dark"] :is(td, tbody td) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+body[data-theme="dark"] tbody tr:hover {
+  background: color-mix(in srgb, var(--color-brand-primary) 8%, #050505) !important;
+}
+
+body[data-theme="dark"] :is(.pill, .tag, .source, .session-pill, .mode-pill, .credit-chip, .user-avatar, .nav-item strong, .lifecycle-pill, .signal-rank, .strategy-risk-pill, .market-tape-item) {
+  border-color: rgba(255, 255, 255, 0.11) !important;
+  background: #0d0d0d !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(.mark, .terminal-topbar .mark, .nav-item .nav-icon) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #080808 !important;
+  color: var(--text-secondary) !important;
+}
+
+body[data-theme="dark"] .terminal-chart {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    #030303 !important;
+  background-size: 56px 56px, 56px 56px, auto !important;
+}
+
+body[data-theme="dark"] :is(pre, .raw-audit pre) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #030303 !important;
+  color: var(--text-primary) !important;
+}
+
+body[data-theme="dark"] .market-tape-viewport::before {
+  background: linear-gradient(90deg, #000000 0%, transparent 100%) !important;
+}
+
+body[data-theme="dark"] .market-tape-viewport::after {
+  background: linear-gradient(270deg, #000000 0%, transparent 100%) !important;
+}
+
+@media (max-width: 767px) {
+  body[data-theme="dark"] .app-sidebar,
+  body[data-theme="dark"].sidebar-collapsed .app-sidebar,
+  body[data-theme="dark"].sidebar-open .app-sidebar {
+    background: #000000 !important;
+    box-shadow: 22px 0 58px rgba(0, 0, 0, 0.72) !important;
+  }
+
+  body[data-theme="dark"] .sidebar-backdrop {
+    background: rgba(0, 0, 0, 0.72) !important;
+  }
+}
