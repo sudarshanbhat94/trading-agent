@@ -2321,57 +2321,45 @@ function renderAccountFollowTable(rows = [], options = {}) {
     const secondaryPrice = isOpen ? latestPrice : exitPrice;
     const pnl = isOpen ? realized + unrealized : realized;
     return `
-      <tr class="account-history-row">
-        <td data-label="Symbol">
-          <strong>${escapeHtml(row.symbol || "-")}</strong>
-          <small>${escapeHtml(row.company_name || row.strategy || MARKET_LABELS[market] || market)}</small>
-        </td>
-        <td data-label="Mode">
-          <span class="trade-mode-pill mode-${modeClass}">${escapeHtml(followModeLabel(row))}</span>
-          <small class="trade-state state-${stateClass}">${escapeHtml(statusLabel)}</small>
-        </td>
-        <td class="num account-history-stack" data-label="Qty">
-          <div class="account-history-stack-inner">
+      <article class="account-history-card">
+        <div class="account-history-card-main">
+          <div class="account-history-symbol">
+            <strong>${escapeHtml(row.symbol || "-")}</strong>
+            <small>${escapeHtml(row.company_name || row.strategy || MARKET_LABELS[market] || market)}</small>
+          </div>
+          <div class="account-history-mode">
+            <span class="trade-mode-pill mode-${modeClass}">${escapeHtml(followModeLabel(row))}</span>
+            <small class="trade-state state-${stateClass}">${escapeHtml(statusLabel)}</small>
+          </div>
+        </div>
+        <div class="account-history-metrics">
+          <div>
+            <span>Qty</span>
             <strong>${fmtNumber(entryQty)}</strong>
             <small>${isOpen ? `${fmtNumber(openQty)} open` : `${fmtNumber(row.closed_qty || entryQty)} closed`}</small>
           </div>
-        </td>
-        <td class="num account-history-stack" data-label="Price">
-          <div class="account-history-stack-inner">
+          <div>
+            <span>Entry</span>
             <strong>${fmtTradeMoney(entryPrice, market)}</strong>
             <small>${isOpen ? "LTP" : "Exit"} ${fmtTradeMoney(secondaryPrice, market)}</small>
           </div>
-        </td>
-        <td class="num account-history-pnl ${pnlClass(pnl)}" data-label="P&L">
-          <div class="account-history-stack-inner">
+          <div class="account-history-pnl ${pnlClass(pnl)}">
+            <span>P&L</span>
             <strong>${fmtTradeMoney(pnl, market)}</strong>
-            <small>${isOpen ? `${fmtTradeMoney(realized, market)} realized · ${fmtTradeMoney(unrealized, market)} open` : `${fmtPct(row.return_pct)} return`}</small>
+            <small>${isOpen ? `${fmtTradeMoney(realized, market)} realized / ${fmtTradeMoney(unrealized, market)} open` : `${fmtPct(row.return_pct)} return`}</small>
           </div>
-        </td>
-        <td data-label="Reason">
-          <div class="account-history-reason">
-            <strong>${escapeHtml(followReasonText(row))}</strong>
-            <small>${fmtDateTime(row.opened_at)}${row.closed_at ? ` - ${fmtDateTime(row.closed_at)}` : ""}</small>
-          </div>
-        </td>
-      </tr>
+        </div>
+        <div class="account-history-reason">
+          <span>Reason</span>
+          <strong>${escapeHtml(followReasonText(row))}</strong>
+          <small>${fmtDateTime(row.opened_at)}${row.closed_at ? ` - ${fmtDateTime(row.closed_at)}` : ""}</small>
+        </div>
+      </article>
     `;
   }).join("");
   return `
-    <div class="account-history-table-wrap">
-      <table class="account-history-table">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Mode</th>
-            <th class="num">Qty</th>
-            <th class="num">Price</th>
-            <th class="num">P&L</th>
-            <th>Reason</th>
-          </tr>
-        </thead>
-        <tbody>${body}</tbody>
-      </table>
+    <div class="account-history-card-list">
+      ${body}
     </div>
   `;
 }

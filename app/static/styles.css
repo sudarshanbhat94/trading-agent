@@ -14686,3 +14686,247 @@ body[data-theme="dark"] .market-tape-viewport::after {
     background: rgba(0, 0, 0, 0.72) !important;
   }
 }
+
+/* Mobile layout repair: account history is card-first, not table-compressed. */
+.account-history-card-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.account-history-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-1) 92%, var(--surface-2));
+  padding: 14px;
+}
+
+.account-history-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.account-history-symbol,
+.account-history-mode,
+.account-history-reason,
+.account-history-metrics > div {
+  display: grid;
+  min-width: 0;
+}
+
+.account-history-symbol {
+  gap: 4px;
+}
+
+.account-history-symbol strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-history-symbol small,
+.account-history-mode small,
+.account-history-metrics small,
+.account-history-reason small {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.account-history-mode {
+  gap: 6px;
+  justify-items: end;
+}
+
+.account-history-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.account-history-metrics > div {
+  gap: 4px;
+  min-height: 74px;
+  align-content: start;
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 70%, var(--surface-1));
+  padding: 10px;
+}
+
+.account-history-metrics span,
+.account-history-reason span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.account-history-metrics strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  line-height: 1.15;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-history-reason {
+  gap: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent);
+  padding-top: 12px;
+}
+
+.account-history-reason strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+body[data-theme="dark"] :is(.account-history-card, .account-history-metrics > div) {
+  border-color: rgba(255, 255, 255, 0.09) !important;
+  background: #0a0a0a !important;
+}
+
+body[data-theme="dark"] .account-history-card {
+  background: #050505 !important;
+}
+
+@media (max-width: 767px) {
+  .account-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 14px !important;
+  }
+
+  .account-page,
+  .account-body,
+  .account-history-body,
+  .account-history-section,
+  .account-history-card,
+  .connect-card,
+  .paper-cash-form,
+  .monitor-symbols-form {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .account-history-body {
+    padding: 12px !important;
+  }
+
+  .account-history-grid {
+    gap: 14px !important;
+  }
+
+  .account-history-head {
+    align-items: start;
+    padding: 0 2px;
+  }
+
+  .account-history-head strong {
+    font-size: 18px !important;
+    line-height: 1.2;
+  }
+
+  .account-history-head span {
+    flex: 0 0 auto;
+    padding-top: 2px;
+    text-align: right;
+  }
+
+  .account-history-card {
+    gap: 13px;
+    border-radius: 14px;
+    padding: 14px;
+  }
+
+  .account-history-card-main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .account-history-symbol strong {
+    white-space: normal;
+  }
+
+  .account-history-mode {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .account-history-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-history-metrics > div {
+    min-height: 78px;
+    padding: 10px;
+  }
+
+  .account-history-metrics > div.account-history-pnl {
+    grid-column: 1 / -1;
+  }
+
+  .connect-grid,
+  .paper-cash-form,
+  .monitor-symbols-form {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .connect-grid input,
+  .connect-grid button,
+  .paper-cash-form input,
+  .paper-cash-form select,
+  .paper-cash-form button,
+  .monitor-symbols-form textarea {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .table-wrap,
+  .page-table,
+  .account-history-table-wrap {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .account-history-card {
+    padding: 12px;
+  }
+
+  .account-history-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .account-history-metrics > div.account-history-pnl {
+    grid-column: auto;
+  }
+
+  .account-history-metrics > div {
+    min-height: 0;
+  }
+}
