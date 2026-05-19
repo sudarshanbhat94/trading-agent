@@ -13034,3 +13034,391 @@ body[data-theme="dark"] :is(.panel, .dashboard-card, .connect-card, .macro-table
     padding: 12px;
   }
 }
+
+/* Positions/account fit pass: keep trade numbers visible and make mobile read as app cards. */
+#positions-view .page-table table {
+  width: 100%;
+  min-width: 980px;
+  table-layout: fixed;
+}
+
+#positions-view .page-table th,
+#positions-view .page-table td {
+  max-width: none;
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: normal;
+}
+
+#positions-view .page-table th:nth-child(1),
+#positions-view .page-table td:nth-child(1) {
+  width: 13%;
+}
+
+#positions-view .page-table th:nth-child(2),
+#positions-view .page-table td:nth-child(2) {
+  width: 8%;
+}
+
+#positions-view .page-table th:nth-child(3),
+#positions-view .page-table td:nth-child(3) {
+  width: 5%;
+}
+
+#positions-view .page-table th:nth-child(4),
+#positions-view .page-table td:nth-child(4) {
+  width: 12%;
+}
+
+#positions-view .page-table th:nth-child(5),
+#positions-view .page-table td:nth-child(5) {
+  width: 11%;
+}
+
+#positions-view .page-table th:nth-child(6),
+#positions-view .page-table td:nth-child(6) {
+  width: 32%;
+}
+
+#positions-view .page-table th:nth-child(7),
+#positions-view .page-table td:nth-child(7) {
+  width: 19%;
+}
+
+#positions-view .position-price-pair,
+#positions-view .position-risk-stack {
+  min-width: 0;
+  gap: 6px;
+}
+
+#positions-view .position-price-pair {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+#positions-view .position-risk-stack {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+#positions-view .position-risk-stack.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#positions-view .position-price-pair span,
+#positions-view .position-risk-stack span {
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 5px;
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-1) 82%, var(--surface-2));
+}
+
+#positions-view .position-price-pair span {
+  min-height: 42px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+#positions-view .position-price-pair span + span,
+#positions-view .position-risk-stack span + span {
+  padding-left: 5px;
+}
+
+#positions-view .position-price-pair small,
+#positions-view .position-risk-stack small {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#positions-view .position-price-pair strong,
+#positions-view .position-risk-stack strong,
+#positions-view .position-pnl-cell strong,
+#positions-view .position-summary-strip strong,
+.account-history-table .num,
+.account-history-stack-inner strong,
+.account-history-pnl strong {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: normal;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+#positions-view .position-price-pair strong,
+#positions-view .position-risk-stack strong {
+  font-size: 11.5px;
+  line-height: 1.15;
+}
+
+#positions-view .position-price-pair strong {
+  justify-self: start;
+  font-size: 12px;
+}
+
+#positions-view .symbol-cell > div,
+#positions-view .symbol-cell small {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#positions-view .symbol-cell small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#positions-view .position-mode-note,
+#positions-view .quantity small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#positions-view .position-mode-note {
+  display: none;
+}
+
+#positions-view .quantity small {
+  display: none;
+}
+
+#positions-view .position-pnl-cell {
+  min-width: 0;
+}
+
+#positions-view .position-pnl-cell strong {
+  font-size: 14px;
+}
+
+#positions-view .position-pnl-cell small,
+.account-history-pnl small {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+#positions-view .position-action-callout {
+  min-width: 0;
+  max-width: none;
+}
+
+.account-history-table {
+  min-width: 980px;
+  table-layout: fixed;
+}
+
+.account-history-table th,
+.account-history-table td {
+  max-width: none;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.account-history-table th:nth-child(1),
+.account-history-table td:nth-child(1) {
+  width: 17%;
+}
+
+.account-history-table th:nth-child(2),
+.account-history-table td:nth-child(2) {
+  width: 12%;
+}
+
+.account-history-table th:nth-child(3),
+.account-history-table td:nth-child(3) {
+  width: 8%;
+}
+
+.account-history-table th:nth-child(4),
+.account-history-table td:nth-child(4) {
+  width: 14%;
+}
+
+.account-history-table th:nth-child(5),
+.account-history-table td:nth-child(5) {
+  width: 16%;
+}
+
+.account-history-table th:nth-child(6),
+.account-history-table td:nth-child(6) {
+  width: 33%;
+}
+
+.account-history-stack-inner {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+}
+
+.account-history-reason {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.account-history-reason strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  white-space: normal;
+}
+
+.account-history-reason small,
+.account-history-table td > small,
+.account-history-stack-inner small,
+.account-history-pnl small {
+  color: var(--text-secondary);
+  line-height: 1.35;
+  white-space: normal;
+}
+
+body:not([data-theme="dark"]) :is(.symbol-cell strong, .account-history-table td, .account-history-reason strong, #positions-view .position-price-pair strong, #positions-view .position-risk-stack strong:not(.negative):not(.positive), #positions-view .position-pnl-cell small:not(.positive):not(.negative), .rail-table td, #quotes-body td, #overview-quotes-body td) {
+  color: #172033;
+}
+
+body[data-theme="dark"] :is(.account-history-table-wrap, #positions-view tr.position-row, #positions-view .position-price-pair span, #positions-view .position-risk-stack span, .account-history-empty) {
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: color-mix(in srgb, var(--surface-2) 82%, var(--surface-1)) !important;
+}
+
+body[data-theme="dark"] :is(.account-history-table td, .account-history-reason strong, #positions-view .position-price-pair strong, #positions-view .position-risk-stack strong:not(.negative):not(.positive), #positions-view .position-pnl-cell small:not(.positive):not(.negative)) {
+  color: #e8eef8 !important;
+}
+
+@media (max-width: 900px) {
+  #positions-view .page-table table {
+    min-width: 0;
+  }
+
+  #positions-view tr.position-row td {
+    max-width: none;
+  }
+
+  #positions-view .position-risk-stack,
+  #positions-view .position-risk-stack.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-sidebar,
+  body.sidebar-collapsed .app-sidebar {
+    transform: translateX(-105%) !important;
+  }
+
+  body.sidebar-open .app-sidebar {
+    transform: translateX(0) !important;
+  }
+
+  body.sidebar-open .app-sidebar .nav-section-label {
+    display: block !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  body.sidebar-open .app-sidebar .nav-item {
+    display: grid !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  body.sidebar-open .app-sidebar .nav-item span:not(.nav-icon),
+  body.sidebar-open .app-sidebar .nav-item strong {
+    display: inline-flex !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  body.sidebar-open .app-sidebar .nav-item strong {
+    justify-content: center;
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .account-history-table-wrap {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .account-history-table,
+  .account-history-table tbody,
+  .account-history-table tr,
+  .account-history-table td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .account-history-table thead {
+    display: none;
+  }
+
+  .account-history-table tbody {
+    display: grid;
+    gap: 10px;
+  }
+
+  .account-history-table tr.account-history-row {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--surface-1);
+  }
+
+  .account-history-table td {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+  }
+
+  .account-history-table td::before {
+    content: attr(data-label);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .account-history-table td[data-label="Symbol"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .account-history-table td[data-label="Symbol"]::before {
+    display: none;
+  }
+
+  .account-history-stack-inner {
+    justify-items: start;
+    text-align: left;
+  }
+}
+
+@media (max-width: 420px) {
+  #positions-view tr.position-row td,
+  .account-history-table td {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #positions-view .position-price-pair strong,
+  #positions-view .position-risk-stack strong {
+    font-size: 11px;
+  }
+}

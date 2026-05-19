@@ -69,6 +69,20 @@ const usdPrice = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 6,
 });
 
+const inrTradeMoney = new Intl.NumberFormat("en-IN", {
+  style: "currency",
+  currency: "INR",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const usdTradeMoney = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 const creditsFmt = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 4,
 });
@@ -127,6 +141,12 @@ function fmtMarketMoney(value, market = "IN") {
   const parsed = numericValue(value);
   if (parsed === null) return "-";
   return normalizeUiMarket(market) === "US" ? usdPrice.format(parsed) : money.format(parsed);
+}
+
+function fmtTradeMoney(value, market = "IN") {
+  const parsed = numericValue(value);
+  if (parsed === null) return "-";
+  return normalizeUiMarket(market) === "US" ? usdTradeMoney.format(parsed) : inrTradeMoney.format(parsed);
 }
 
 function marketCurrencyLabel(market = state.activeMarket) {
@@ -2251,9 +2271,9 @@ function renderAccountFollowTable(rows = [], options = {}) {
     const stateClass = cssToken(row.state || row.status || "open");
     const entryQty = Number(row.entry_qty ?? row.qty ?? 0);
     const openQty = Number(row.qty ?? 0);
-    const entryPrice = Number(row.entry_price ?? row.avg_price ?? 0);
-    const latestPrice = Number(row.latest_price ?? row.market_price ?? row.exit_price ?? entryPrice);
-    const exitPrice = Number(row.exit_price ?? latestPrice);
+    const entryPrice = firstFinite(row.entry_price, row.avg_price);
+    const latestPrice = firstFinite(row.latest_price, row.market_price, row.exit_price, entryPrice);
+    const exitPrice = firstFinite(row.exit_price, latestPrice);
     const realized = Number(row.realized_pnl || 0);
     const unrealized = Number(row.unrealized_pnl || 0);
     const statusLabel = followStateLabel(row);
@@ -2261,30 +2281,38 @@ function renderAccountFollowTable(rows = [], options = {}) {
     const secondaryPrice = isOpen ? latestPrice : exitPrice;
     const pnl = isOpen ? realized + unrealized : realized;
     return `
-      <tr>
-        <td>
+      <tr class="account-history-row">
+        <td data-label="Symbol">
           <strong>${escapeHtml(row.symbol || "-")}</strong>
           <small>${escapeHtml(row.company_name || row.strategy || MARKET_LABELS[market] || market)}</small>
         </td>
-        <td>
+        <td data-label="Mode">
           <span class="trade-mode-pill mode-${modeClass}">${escapeHtml(followModeLabel(row))}</span>
           <small class="trade-state state-${stateClass}">${escapeHtml(statusLabel)}</small>
         </td>
-        <td class="num">
-          ${fmtNumber(entryQty)}
-          <small>${isOpen ? `${fmtNumber(openQty)} open` : `${fmtNumber(row.closed_qty || entryQty)} closed`}</small>
+        <td class="num account-history-stack" data-label="Qty">
+          <div class="account-history-stack-inner">
+            <strong>${fmtNumber(entryQty)}</strong>
+            <small>${isOpen ? `${fmtNumber(openQty)} open` : `${fmtNumber(row.closed_qty || entryQty)} closed`}</small>
+          </div>
         </td>
-        <td class="num">
-          ${fmtMarketMoney(entryPrice, market)}
-          <small>${isOpen ? "LTP" : "Exit"} ${fmtMarketMoney(secondaryPrice, market)}</small>
+        <td class="num account-history-stack" data-label="Price">
+          <div class="account-history-stack-inner">
+            <strong>${fmtTradeMoney(entryPrice, market)}</strong>
+            <small>${isOpen ? "LTP" : "Exit"} ${fmtTradeMoney(secondaryPrice, market)}</small>
+          </div>
         </td>
-        <td class="num ${pnlClass(pnl)}">
-          <strong>${fmtMarketMoney(pnl, market)}</strong>
-          <small>${isOpen ? `${fmtMarketMoney(realized, market)} realized · ${fmtMarketMoney(unrealized, market)} open` : `${fmtPct(row.return_pct)} return`}</small>
+        <td class="num account-history-pnl ${pnlClass(pnl)}" data-label="P&L">
+          <div class="account-history-stack-inner">
+            <strong>${fmtTradeMoney(pnl, market)}</strong>
+            <small>${isOpen ? `${fmtTradeMoney(realized, market)} realized · ${fmtTradeMoney(unrealized, market)} open` : `${fmtPct(row.return_pct)} return`}</small>
+          </div>
         </td>
-        <td>
-          <span>${escapeHtml(followReasonText(row))}</span>
-          <small>${fmtDateTime(row.opened_at)}${row.closed_at ? ` - ${fmtDateTime(row.closed_at)}` : ""}</small>
+        <td data-label="Reason">
+          <div class="account-history-reason">
+            <strong>${escapeHtml(followReasonText(row))}</strong>
+            <small>${fmtDateTime(row.opened_at)}${row.closed_at ? ` - ${fmtDateTime(row.closed_at)}` : ""}</small>
+          </div>
         </td>
       </tr>
     `;
@@ -3245,8 +3273,8 @@ function renderPositions(rows) {
     const pnlPct = deployed > 0 ? (pnl / deployed) * 100 : 0;
     const market = normalizeUiMarket(state.activeMarket);
     summary.innerHTML = `
-      <button type="button"><span>Deployed</span><strong>${fmtMarketMoney(deployed, market)}</strong></button>
-      <button type="button"><span>Unrealised P&L</span><strong class="${pnlClass(pnl)}">${fmtMarketMoney(pnl, market)}</strong><small class="${pnlClass(pnlPct)}">${fmtPct(pnlPct)}</small></button>
+      <button type="button"><span>Deployed</span><strong>${fmtTradeMoney(deployed, market)}</strong></button>
+      <button type="button"><span>Unrealised P&L</span><strong class="${pnlClass(pnl)}">${fmtTradeMoney(pnl, market)}</strong><small class="${pnlClass(pnlPct)}">${fmtPct(pnlPct)}</small></button>
       <button type="button"><span>Winners</span><strong class="positive">${fmtNumber(winners)}</strong></button>
       <button type="button"><span>Losers</span><strong class="negative">${fmtNumber(losers)}</strong></button>
       <button type="button"><span>Need Action</span><strong class="${needsReview ? "warning" : "positive"}">${fmtNumber(needsReview)}</strong></button>
@@ -3409,8 +3437,8 @@ function positionFlagsHtml(flags = []) {
 
 function positionPriceHtml(row = {}, market = "IN") {
   return `<div class="position-price-pair">
-    <span><small>Entry</small><strong>${fmtMarketMoney(row.avg_price, market)}</strong></span>
-    <span><small>${escapeHtml(row.position_summary?.price_label || "LTP")}</small><strong>${fmtMarketMoney(row.market_price, market)}</strong></span>
+    <span><small>Entry</small><strong>${fmtTradeMoney(row.avg_price, market)}</strong></span>
+    <span><small>${escapeHtml(row.position_summary?.price_label || "LTP")}</small><strong>${fmtTradeMoney(row.market_price, market)}</strong></span>
   </div>`;
 }
 
@@ -3420,10 +3448,19 @@ function positionPnlHtml(row = {}, market = "IN") {
   const marketValue = Number(row.market_price) * Number(row.qty);
   const tone = pnlClass(pnl);
   return `<div class="position-pnl-cell ${tone}">
-    <strong class="${tone}">${fmtMarketMoney(pnl, market)}</strong>
+    <strong class="${tone}">${fmtTradeMoney(pnl, market)}</strong>
     <small class="${tone}">${fmtPct(pnlPct)} unrealised</small>
-    <small>value ${fmtMarketMoney(marketValue, market)}</small>
+    <small>value ${fmtTradeMoney(marketValue, market)}</small>
   </div>`;
+}
+
+function positionTargetTile(label, target = {}, market = "IN") {
+  const hit = Boolean(target.hit || String(target.status || "").toLowerCase() === "hit" || target.reached);
+  const labelText = hit ? `${label} hit` : label;
+  return `<span class="${hit ? "hit" : ""}">
+    <small>${escapeHtml(labelText)}</small>
+    <strong class="${hit ? "positive" : ""}">${fmtTradeMoney(target.price, market)}</strong>
+  </span>`;
 }
 
 function positionRiskHtml(row = {}, market = "IN", compact = false) {
@@ -3434,14 +3471,15 @@ function positionRiskHtml(row = {}, market = "IN", compact = false) {
   const t3 = targets[2] || {};
   if (compact) {
     return `<div class="position-risk-stack compact">
-      <span><small>Stop</small><strong class="negative">${fmtMarketMoney(exit.stop_loss, market)}</strong></span>
-      <span><small>T1</small><strong class="${t1.hit ? "positive" : ""}">${fmtMarketMoney(t1.price, market)}</strong></span>
+      <span><small>Stop</small><strong class="negative">${fmtTradeMoney(exit.stop_loss, market)}</strong></span>
+      ${positionTargetTile("T1", t1, market)}
     </div>`;
   }
   return `<div class="position-risk-stack">
-    <span><small>Stop</small><strong class="negative">${fmtMarketMoney(exit.stop_loss, market)}</strong></span>
-    <span><small>T1 ${t1.hit ? "hit" : ""}</small><strong class="${t1.hit ? "positive" : ""}">${fmtMarketMoney(t1.price, market)}</strong></span>
-    <span><small>T2 / T3</small><strong>${fmtMarketMoney(t2.price, market)} / ${fmtMarketMoney(t3.price, market)}</strong></span>
+    <span><small>Stop</small><strong class="negative">${fmtTradeMoney(exit.stop_loss, market)}</strong></span>
+    ${positionTargetTile("T1", t1, market)}
+    ${positionTargetTile("T2", t2, market)}
+    ${positionTargetTile("T3", t3, market)}
   </div>`;
 }
 
@@ -3584,17 +3622,17 @@ function renderTrackedIdeas(rows) {
         </div>
         <div class="tracked-list-prices">
           <span><small>Qty</small><strong>${fmtNumber(qty)}</strong></span>
-          <span><small>Entry</small><strong>${fmtMarketMoney(entry, market)}</strong></span>
-          <span><small>LTP</small><strong>${fmtMarketMoney(latest, market)}</strong></span>
+          <span><small>Entry</small><strong>${fmtTradeMoney(entry, market)}</strong></span>
+          <span><small>LTP</small><strong>${fmtTradeMoney(latest, market)}</strong></span>
         </div>
         <div class="tracked-list-risk">
-          <span><small>Stop</small><strong class="negative">${fmtMarketMoney(row.stop_loss, market)}</strong></span>
-          <span><small>T1</small><strong class="positive">${fmtMarketMoney(t1.price, market)}</strong></span>
-          <span><small>Final</small><strong class="positive">${fmtMarketMoney(t3.price, market)}</strong></span>
+          <span><small>Stop</small><strong class="negative">${fmtTradeMoney(row.stop_loss, market)}</strong></span>
+          <span><small>T1</small><strong class="positive">${fmtTradeMoney(t1.price, market)}</strong></span>
+          <span><small>Final</small><strong class="positive">${fmtTradeMoney(t3.price, market)}</strong></span>
         </div>
         <div class="tracked-return ${pnlClass(returnPct)}">
           <strong>${fmtPct(returnPct)}</strong>
-          <small>${fmtMarketMoney(pnl, market)} unrealized · ${fmtMarketMoney(invested, market)} invested</small>
+          <small>${fmtTradeMoney(pnl, market)} unrealized · ${fmtTradeMoney(invested, market)} invested</small>
         </div>
       </article>`;
     })
@@ -3654,7 +3692,7 @@ function renderSuggestions(rows) {
               <span class="lifecycle-pill ${escapeHtml(lifecycle.className)}">${escapeHtml(lifecycle.label)}</span>
               ${followed ? `<span class="signal-followed">${escapeHtml(followed.mode)} ${fmtPct(followed.return_pct || 0)}</span>` : ""}
             </div>
-            <small>${fmtMarketMoney(row.price || row.latest_price, market)} · ${escapeHtml(MARKET_LABELS[market] || market)} · ${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))}</small>
+            <small>${fmtTradeMoney(row.price || row.latest_price, market)} · ${escapeHtml(MARKET_LABELS[market] || market)} · ${escapeHtml(row.strategy || "-")} · ${escapeHtml(ideaTimelineText(row))}</small>
           </div>
         </div>
         <div class="signal-list-state">
@@ -3664,9 +3702,9 @@ function renderSuggestions(rows) {
         </div>
         <div class="signal-list-trade">
           <span><small>Entry</small><strong>${formatZone(row.entry_zone, market)}</strong></span>
-          <span><small>Stop</small><strong class="negative">${fmtMarketMoney(row.stop_loss, market)}</strong></span>
-          <span><small>Target 1</small><strong class="positive">${fmtMarketMoney(t1.price, market)}</strong></span>
-          <span><small>Final Target</small><strong class="positive">${fmtMarketMoney(t3.price, market)}</strong></span>
+          <span><small>Stop</small><strong class="negative">${fmtTradeMoney(row.stop_loss, market)}</strong></span>
+          <span><small>Target 1</small><strong class="positive">${fmtTradeMoney(t1.price, market)}</strong></span>
+          <span><small>Final Target</small><strong class="positive">${fmtTradeMoney(t3.price, market)}</strong></span>
         </div>
         <div class="signal-list-return">
           <span><small>Since Signal</small><strong class="${pnlClass(currentReturn)}">${fmtPct(currentReturn)}</strong></span>
@@ -4190,7 +4228,7 @@ function targetLadderHtml(row = {}, market = "IN", compact = false) {
       const hit = Boolean(target.hit);
       return `<span class="${hit ? "hit" : "pending"}">
         <small>${escapeHtml(target.label || "-")}</small>
-        <strong>${fmtMarketMoney(target.price, market)}</strong>
+        <strong>${fmtTradeMoney(target.price, market)}</strong>
         <em>${hit ? "hit" : escapeHtml(target.probability_label || "pending")}</em>
       </span>`;
     }).join("")}
@@ -4509,7 +4547,7 @@ function normalizedTargets(targets) {
 function exitPlanMini(exit, market = "IN") {
   if (!exit || !Object.keys(exit).length) return `<span class="muted">pending</span>`;
   const t1 = exit.target_1 || {};
-  return `<span class="exit-mini">SL ${fmtMarketMoney(exit.stop_loss, market)} · T1 ${fmtMarketMoney(t1.price, market)}</span>`;
+  return `<span class="exit-mini">SL ${fmtTradeMoney(exit.stop_loss, market)} · T1 ${fmtTradeMoney(t1.price, market)}</span>`;
 }
 
 function exitPlanHtml(exit, market = "IN") {
@@ -4519,10 +4557,10 @@ function exitPlanHtml(exit, market = "IN") {
     <div class="audit-cards">
       <div class="audit-card"><span>When</span><strong>${escapeHtml(exit.horizon || "swing_3_to_7_days")}</strong><small>review every cycle</small></div>
       <div class="audit-card"><span>Entry Zone</span><strong>${escapeHtml(formatZone(exit.entry_zone, market))}</strong><small>avoid chasing outside plan</small></div>
-      <div class="audit-card"><span>Hard Stop</span><strong class="negative">${fmtMarketMoney(exit.stop_loss, market)}</strong><small>exit if invalidated</small></div>
-      <div class="audit-card"><span>Target 1</span><strong class="positive">${fmtMarketMoney(exit.target_1?.price, market)}</strong><small>R:R ${escapeHtml(exit.target_1?.rr ?? "-")}</small></div>
-      <div class="audit-card"><span>Target 2</span><strong class="positive">${fmtMarketMoney(exit.target_2?.price, market)}</strong><small>R:R ${escapeHtml(exit.target_2?.rr ?? "-")}</small></div>
-      <div class="audit-card"><span>Target 3</span><strong class="positive">${fmtMarketMoney(exit.target_3?.price, market)}</strong><small>${escapeHtml(exit.target_3?.rr ?? "-")}</small></div>
+      <div class="audit-card"><span>Hard Stop</span><strong class="negative">${fmtTradeMoney(exit.stop_loss, market)}</strong><small>exit if invalidated</small></div>
+      <div class="audit-card"><span>Target 1</span><strong class="positive">${fmtTradeMoney(exit.target_1?.price, market)}</strong><small>R:R ${escapeHtml(exit.target_1?.rr ?? "-")}</small></div>
+      <div class="audit-card"><span>Target 2</span><strong class="positive">${fmtTradeMoney(exit.target_2?.price, market)}</strong><small>R:R ${escapeHtml(exit.target_2?.rr ?? "-")}</small></div>
+      <div class="audit-card"><span>Target 3</span><strong class="positive">${fmtTradeMoney(exit.target_3?.price, market)}</strong><small>${escapeHtml(exit.target_3?.rr ?? "-")}</small></div>
     </div>
     <p>${escapeHtml(exit.plan || "-")}</p>
     ${objectCardsHtml("Invalidation", exit.invalidation)}
@@ -4533,8 +4571,8 @@ function exitPlanHtml(exit, market = "IN") {
 function formatZone(zone, market = "IN") {
   if (!Array.isArray(zone) || !zone.length) return "-";
   return zone.length === 1
-    ? fmtMarketMoney(zone[0], market)
-    : `${fmtMarketMoney(zone[0], market)} - ${fmtMarketMoney(zone[zone.length - 1], market)}`;
+    ? fmtTradeMoney(zone[0], market)
+    : `${fmtTradeMoney(zone[0], market)} - ${fmtTradeMoney(zone[zone.length - 1], market)}`;
 }
 
 function auditHero({ label, symbol, action, status, meta }) {
