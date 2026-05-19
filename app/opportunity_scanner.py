@@ -183,13 +183,17 @@ class OpportunityScanner:
         momentum = self._momentum_score(metrics)
         volume = self._volume_score(metrics)
         risk = self._risk_score(metrics)
+        data_quality = self._data_quality(row, quote, metrics, sentiment)
+        if data_quality["reject_reason"] and not in_position and not reject_reason:
+            reject_reason = data_quality["reject_reason"]
         base_score = (
-            liquidity * 0.20
-            + trend * 0.22
-            + breakout * 0.24
-            + momentum * 0.16
-            + volume * 0.10
-            + risk * 0.08
+            liquidity * 0.17
+            + trend * 0.20
+            + breakout * 0.22
+            + momentum * 0.15
+            + volume * 0.09
+            + risk * 0.07
+            + data_quality["score"] * 0.10
         )
         score = _clamp(base_score + sentiment["boost"], 0.0, 1.0)
 
@@ -213,6 +217,8 @@ class OpportunityScanner:
             )
         if int(metrics.get("history_candles") or 0) < 20:
             reasons.append("daily history not loaded yet; intraday probe only")
+        if data_quality["missing"]:
+            reasons.append(f"data gaps: {', '.join(data_quality['missing'][:3])}")
         if risk < 0.35:
             reasons.append("risk/reward needs caution")
 
@@ -231,6 +237,7 @@ class OpportunityScanner:
             "reasons": reasons or ["quote/liquidity pass"],
             "metrics": metrics,
             "sentiment": sentiment,
+            "data_quality": data_quality,
             "components": {
                 "liquidity": round(liquidity, 4),
                 "trend": round(trend, 4),
@@ -238,6 +245,7 @@ class OpportunityScanner:
                 "momentum": round(momentum, 4),
                 "volume": round(volume, 4),
                 "risk": round(risk, 4),
+                "data_quality": round(data_quality["score"], 4),
                 "sentiment": round(sentiment["boost"], 4),
             },
         }
@@ -365,6 +373,47 @@ class OpportunityScanner:
             return 0.55
         return 0.25
 
+    def _data_quality(
+        self,
+        row: dict[str, Any],
+        quote: Quote,
+        metrics: dict[str, Any],
+        sentiment: dict[str, Any],
+    ) -> dict[str, Any]:
+        region = market_region_for_row(row)
+        missing: list[str] = []
+        source = str(quote.source or "").lower()
+        history = int(metrics.get("history_candles") or 0)
+        if history < 20:
+            missing.append("daily_history")
+        if metrics.get("volume_ratio") is None:
+            missing.append("volume_baseline")
+        if region == "US":
+            if "yahoo" not in source and not any(token in source for token in ("alpaca", "polygon")):
+                missing.append("us_screening_quote_source")
+        else:
+            if not any(token in source for token in ("upstox", "kite", "nubra", "indstocks", "yahoo")):
+                missing.append("in_screening_quote_source")
+        if self.sentiment_enabled and not sentiment.get("headline_count") and not sentiment.get("event_count"):
+            missing.append("news_sentiment")
+        score = 1.0
+        if history < 20:
+            score -= 0.45
+        elif history < 55:
+            score -= 0.18
+        if metrics.get("volume_ratio") is None:
+            score -= 0.18
+        if self.sentiment_enabled and "news_sentiment" in missing:
+            score -= 0.08
+        reject_reason = "insufficient_screening_data" if history < 20 and not sentiment.get("positive_catalyst") else ""
+        return {
+            "score": _clamp(score, 0.0, 1.0),
+            "missing": missing,
+            "reject_reason": reject_reason,
+            "history_candles": history,
+            "quote_source": quote.source,
+        }
+
     def _sentiment_metrics(self, detail: dict[str, Any]) -> dict[str, Any]:
         if not self.sentiment_enabled or not detail:
             return {
@@ -467,6 +516,7 @@ class OpportunityScanner:
     def _public_item(self, item: dict[str, Any]) -> dict[str, Any]:
         metrics = item.get("metrics") or {}
         sentiment = item.get("sentiment") or {}
+        data_quality = item.get("data_quality") or {}
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -477,6 +527,11 @@ class OpportunityScanner:
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),
+            "data_quality": {
+                "score": data_quality.get("score"),
+                "missing": data_quality.get("missing", []),
+                "quote_source": data_quality.get("quote_source"),
+            },
             "sentiment": {
                 "score": sentiment.get("score"),
                 "confidence": sentiment.get("confidence"),

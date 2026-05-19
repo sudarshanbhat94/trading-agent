@@ -32,6 +32,10 @@ def _llm_prefilter_reason(signal: dict[str, Any]) -> str | None:
     system_audit = context.get("system_gate_audit") or {}
     if signal.get("hard_blocked") is True or system_audit.get("hard_blocked") is True:
         return "hard_blocked"
+    strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
+    if strategy_logic.get("hard_blocks"):
+        first = (strategy_logic.get("hard_blocks") or [{}])[0]
+        return f"phase3_strategy_blocked:{first.get('flag') or 'unknown'}"
 
     stage = signal.get("stage")
     if stage is None:
@@ -107,6 +111,10 @@ class StrategyEngine:
             "portfolio_equity": portfolio_equity or 0.0,
             "execution_cost_bps": _execution_cost_bps(self.settings),
         }
+        try:
+            performance_feedback = self.sentiment.db.strategy_performance_feedback()
+        except Exception:
+            performance_feedback = {}
 
         scan_items: list[dict[str, Any]] = []
         breadth_regime = (market_breadth or {}).get("breadth_regime")
@@ -181,6 +189,7 @@ class StrategyEngine:
                 macro_event_context=macro_event_context,
                 timeframe_candles=timeframe_candles,
                 pattern_state=pattern_state,
+                performance_feedback=performance_feedback,
             )
             self._persist_pattern_state_updates(symbol, context)
             context["pre_filter"] = pre_filter
@@ -513,6 +522,7 @@ class StrategyEngine:
         stage = full_spectrum.get("stage_analysis") or {}
         entry = full_spectrum.get("entry_quality") or {}
         breakout = full_spectrum.get("breakout_quality") or {}
+        strategy_logic = full_spectrum.get("strategy_logic_filters") if isinstance(full_spectrum.get("strategy_logic_filters"), dict) else {}
         divergence = full_spectrum.get("price_volume_divergence") or {}
         alignment = ((full_spectrum.get("trend_context") or {}).get("timeframe_alignment") or {})
         options_oi = full_spectrum.get("options_oi") or {}
@@ -556,7 +566,16 @@ class StrategyEngine:
         def fail(gate: str, value: Any, reason: str) -> None:
             failed_gates.append({"gate": gate, "value": value, "reason": reason})
 
-        if pre_filter.get("buy_blocked") and not has_position:
+        pre_filter_block_reason = str(pre_filter.get("elimination_reason") or "")
+        phase3_event_thesis = strategy_logic.get("event_driven_thesis") if isinstance(strategy_logic.get("event_driven_thesis"), dict) else {}
+        phase3_hard_flags = {str(block.get("flag") or "") for block in strategy_logic.get("hard_blocks") or []}
+        event_driven_earnings_override = (
+            pre_filter.get("block_gate") == "macro_calendar_gate"
+            and pre_filter_block_reason == "earnings_lockout"
+            and phase3_event_thesis.get("supported")
+            and "EARNINGS_LOCKOUT_NOT_EVENT_DRIVEN" not in phase3_hard_flags
+        )
+        if pre_filter.get("buy_blocked") and not has_position and not event_driven_earnings_override:
             fail(pre_filter.get("block_gate", "pre_filter"), pre_filter.get("block_value"), pre_filter.get("elimination_reason", "pre_filter_block"))
         for block in rule_audit.get("hard_blocks") or []:
             fail(
@@ -564,6 +583,13 @@ class StrategyEngine:
                 block.get("value"),
                 block.get("reason") or str(block.get("flag") or "hard_block"),
             )
+        for block in strategy_logic.get("hard_blocks") or []:
+            if not has_position:
+                fail(
+                    f"phase3_{block.get('flag', 'strategy_logic')}",
+                    block.get("value"),
+                    block.get("reason") or "phase3_strategy_logic_block",
+                )
         if entry_grade == "D":
             fail("entry_grade_gate", entry_grade, "extended_entry_no_new_longs")
         if effective_entry_grade == "WATCH":
@@ -581,6 +607,9 @@ class StrategyEngine:
             )
         if breakout.get("two_day_rule_failed"):
             fail("breakout_quality_gate", True, "false_breakout_two_day_rule_failed")
+        breakout_volume = strategy_logic.get("breakout_volume") if isinstance(strategy_logic.get("breakout_volume"), dict) else {}
+        if breakout_volume.get("suspect_without_volume"):
+            fail("breakout_volume_gate", breakout_volume, "suspect_breakout_without_volume")
         if stage and not stage.get("buy_permitted", True):
             fail("stage_buy_permitted", stage.get("stage"), "stage_analysis_not_stage2_markup")
         if divergence.get("climax_volume_top"):
@@ -675,8 +704,10 @@ class StrategyEngine:
         evaluated_gates = [
             *list(pre_filter.get("gates") or []),
             {"gate": "system_rule_gates", "passed": not rule_audit.get("hard_blocked"), "value": rule_audit.get("hard_blocks")},
+            {"gate": "phase2_data_readiness", "passed": bool((context.get("data_readiness") or {}).get("trade_decision_ready", True)), "value": context.get("data_readiness")},
+            {"gate": "phase3_strategy_logic", "passed": bool(strategy_logic.get("passed", True)), "value": strategy_logic},
             {"gate": "entry_grade_gate", "passed": effective_entry_grade in {"A", "B", "C"}, "value": {"entry_grade": entry_grade, "effective_entry_grade": effective_entry_grade}},
-            {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed"), "value": breakout},
+            {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed") and not breakout_volume.get("suspect_without_volume"), "value": breakout},
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
             {"gate": "alignment_gate", "passed": alignment_grade != "D", "value": alignment_grade},
             {"gate": "overall_quality_gate", "passed": has_position or overall_score_pct >= 55, "value": {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")}},
@@ -790,10 +821,14 @@ class StrategyEngine:
             elimination_reason = elimination_reason or "market_breadth_bear_confirmed_no_new_longs"
         earnings_trading_days = macro_event_context.get("earnings_trading_days_away")
         earnings_days = macro_event_context.get("earnings_days_away")
-        if earnings_trading_days is not None:
-            earnings_block = 0 <= int(earnings_trading_days) <= 10 and not has_position
+        event_thesis = _macro_event_driven_thesis(macro_event_context)
+        earnings_trading_value = _float_or_none(earnings_trading_days)
+        earnings_days_value = _float_or_none(earnings_days)
+        if earnings_trading_value is not None:
+            earnings_window = 0 <= earnings_trading_value <= 10
         else:
-            earnings_block = earnings_days is not None and 0 <= int(earnings_days) <= 14 and not has_position
+            earnings_window = earnings_days_value is not None and 0 <= earnings_days_value <= 14
+        earnings_block = earnings_window and not event_thesis.get("supported") and not has_position
         monthly_expiry_block = bool(
             macro_event_context.get("is_monthly_expiry_day")
             or macro_event_context.get("is_monthly_expiry_eve")
@@ -809,7 +844,7 @@ class StrategyEngine:
             if monthly_expiry_block
             else None
         )
-        gates.append({"gate": "earnings_gate", "passed": not macro_failed, "value": macro_event_context})
+        gates.append({"gate": "earnings_gate", "passed": not macro_failed, "value": {"macro_event_context": macro_event_context, "event_thesis": event_thesis}})
         if macro_failed:
             buy_blocked = True
             block_gate = block_gate or "macro_calendar_gate"
@@ -891,6 +926,7 @@ class StrategyEngine:
                 macro_event_context=item.get("macro_event_context") or {},
                 timeframe_candles=item.get("timeframe_candles") or {},
                 pattern_state=self._pattern_state(item["symbol"]),
+                performance_feedback=performance_feedback,
             )
             self._persist_pattern_state_updates(item["symbol"], context)
             context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
@@ -1135,6 +1171,7 @@ class StrategyEngine:
         breadth = context.get("market_breadth_context") or {}
         rule_audit = context.get("system_gate_audit") or {}
         classification = rule_audit.get("classification") or {}
+        strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
         tier = confluence.get("tier", "NO_SIGNAL")
         base = {
             "MAXIMUM_CONVICTION": 1.5,
@@ -1150,9 +1187,15 @@ class StrategyEngine:
         multiplier *= entry_mod
         modifiers.append(f"effective_entry_grade={effective_entry_grade} x{entry_mod}")
         allocation_cap = float(rule_audit.get("allocation_cap_multiplier") if rule_audit else 1.0)
+        phase3_size_cap = _float_or_none((strategy_logic.get("sizing") or {}).get("max_multiplier")) if strategy_logic else None
+        if phase3_size_cap is not None:
+            allocation_cap = min(allocation_cap, phase3_size_cap)
         if allocation_cap < 1.0:
             multiplier = min(multiplier, allocation_cap)
             modifiers.append(f"classification_gate={classification.get('classification', 'unknown')} cap {allocation_cap}")
+        if classification.get("classification") == "SPECULATIVE":
+            multiplier = min(multiplier, 0.15)
+            modifiers.append("speculative_tiny_size_cap=0.15")
         atr_pct = indicators.get("atr_pct")
         if atr_pct is not None and float(atr_pct) > 4:
             multiplier *= 0.6
@@ -1235,6 +1278,7 @@ class StrategyEngine:
             "portfolio_correlation_gate": context.get("portfolio_correlation_gate"),
             "sizing_grade": context.get("sizing_grade"),
             "system_gate_audit": context.get("system_gate_audit"),
+            "data_readiness": context.get("data_readiness"),
             "llm_primary_fallback": context.get("llm_primary_fallback"),
             "llm_primary_rule_blocked": context.get("llm_primary_rule_blocked"),
         }
@@ -1269,6 +1313,7 @@ class StrategyEngine:
                 "overall_grade": (context.get("system_gate_audit") or {}).get("overall_grade"),
                 "pre_filter": context.get("pre_filter"),
                 "system_gate_audit": context.get("system_gate_audit"),
+                "data_readiness": context.get("data_readiness"),
                 "sizing_grade": context.get("sizing_grade"),
                 "llm_primary_fallback": context.get("llm_primary_fallback"),
                 "risk_gates": gates,
@@ -1343,6 +1388,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "timeframe_data": context.get("timeframe_data"),
         "sector_rotation": context.get("sector_rotation"),
         "delivery_data": context.get("delivery_data"),
+        "data_readiness": context.get("data_readiness"),
+        "performance_feedback": context.get("performance_feedback"),
         "system_gate_audit": context.get("system_gate_audit"),
         "pre_filter": context.get("pre_filter"),
         "decision_gate_context": context.get("decision_gate_context"),
@@ -1460,6 +1507,30 @@ def _delivery_distribution_sessions(delivery: dict[str, Any]) -> int:
         except (TypeError, ValueError):
             continue
     return 1 if str(delivery.get("bias") or "").lower() == "distribution" else 0
+
+
+def _macro_event_driven_thesis(macro_event_context: dict[str, Any]) -> dict[str, Any]:
+    evidence = []
+    for key in ("event_driven", "explicit_event_driven", "earnings_event_driven", "allow_earnings_trade", "catalyst_trade"):
+        if macro_event_context.get(key) is True:
+            evidence.append(f"macro_context.{key}=true")
+    text = " ".join(
+        str(macro_event_context.get(key) or "").lower()
+        for key in ("strategy", "strategy_type", "thesis", "event_thesis", "catalyst")
+    )
+    if "event-driven" in text or "event driven" in text or "catalyst" in text or "earnings trade" in text:
+        evidence.append("macro_context contains explicit event/catalyst thesis")
+    return {
+        "supported": bool(evidence),
+        "evidence": list(dict.fromkeys(evidence)),
+    }
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_time(value: Any) -> datetime | None:

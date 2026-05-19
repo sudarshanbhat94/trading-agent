@@ -42,6 +42,12 @@ def _market_data_provider(default: str = "upstox") -> str:
     return provider if provider in choices else default
 
 
+def _us_market_data_provider(default: str = "yahoo") -> str:
+    provider = os.getenv("US_MARKET_DATA_PROVIDER", default).strip().lower()
+    choices = {"yahoo", "alpaca", "alpaca_yahoo", "polygon", "polygon_yahoo"}
+    return provider if provider in choices else default
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str = os.getenv("HOST", "0.0.0.0")
@@ -103,7 +109,7 @@ class Settings:
     max_position_pct: float = _float("MAX_POSITION_PCT", 0.15)
     max_order_value_pct: float = _float("MAX_ORDER_VALUE_PCT", 0.1)
     max_trades_per_cycle: int = _int("MAX_TRADES_PER_CYCLE", 2)
-    auto_follow_reentry_cooldown_hours: int = _int("AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS", 24)
+    auto_follow_reentry_cooldown_hours: int = _int("AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS", 48)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.035)
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.08)
     daily_loss_limit_pct: float = _float("DAILY_LOSS_LIMIT_PCT", 0.025)
@@ -137,6 +143,15 @@ class Settings:
     yahoo_candle_interval: str = os.getenv("YAHOO_CANDLE_INTERVAL", "1d")
     yahoo_candle_range: str = os.getenv("YAHOO_CANDLE_RANGE", "1y")
     enable_yahoo_candle_fallback: bool = _bool("ENABLE_YAHOO_CANDLE_FALLBACK", False)
+    us_market_data_provider: str = _us_market_data_provider("yahoo")
+    us_intraday_candle_lookback_days: int = _int("US_INTRADAY_CANDLE_LOOKBACK_DAYS", 5)
+    us_daily_candle_lookback_days: int = _int("US_DAILY_CANDLE_LOOKBACK_DAYS", 420)
+    alpaca_api_key: str = os.getenv("ALPACA_API_KEY", "")
+    alpaca_api_secret: str = os.getenv("ALPACA_API_SECRET", "")
+    alpaca_data_base_url: str = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
+    alpaca_data_feed: str = os.getenv("ALPACA_DATA_FEED", "iex").strip().lower()
+    polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
+    polygon_base_url: str = os.getenv("POLYGON_BASE_URL", "https://api.polygon.io").rstrip("/")
     nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
     nubra_phone: str = os.getenv("NUBRA_PHONE", "")
     nubra_mpin: str = os.getenv("NUBRA_MPIN", "")
@@ -209,7 +224,7 @@ class Settings:
     llm_temperature: float = _float("LLM_TEMPERATURE", 0.05)
     llm_top_p: float = _float("LLM_TOP_P", 0.7)
     llm_max_tokens: int = _int("LLM_MAX_TOKENS", 4096)
-    llm_max_symbols_per_cycle: int = _int("LLM_MAX_SYMBOLS_PER_CYCLE", 3)
+    llm_max_symbols_per_cycle: int = _int("LLM_MAX_SYMBOLS_PER_CYCLE", 8)
     llm_primary_min_confidence: float = _float("LLM_PRIMARY_MIN_CONFIDENCE", 0.62)
     llm_reasoning_effort: str = os.getenv("LLM_REASONING_EFFORT", "high").strip().lower()
     llm_thinking_enabled: bool = _bool("LLM_THINKING_ENABLED", True)
@@ -241,6 +256,9 @@ SECRET_FIELDS = {
     "upstox_api_secret",
     "upstox_access_token",
     "upstox_sandbox_access_token",
+    "alpaca_api_key",
+    "alpaca_api_secret",
+    "polygon_api_key",
     "nubra_session_token",
     "nubra_phone",
     "nubra_mpin",
@@ -323,6 +341,15 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "upstox_candle_fetch_timeout_seconds", "label": "Upstox Candle Timeout", "type": "number", "category": "Market Data", "min": 5, "step": 5},
     {"key": "yahoo_candle_interval", "label": "Yahoo Candle Interval", "type": "select", "category": "Market Data", "choices": ["5m", "15m", "30m", "60m", "1d", "1wk"]},
     {"key": "yahoo_candle_range", "label": "Yahoo Candle Range", "type": "select", "category": "Market Data", "choices": ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"]},
+    {"key": "us_market_data_provider", "label": "US Data Provider", "type": "select", "category": "Market Data", "choices": ["yahoo", "alpaca", "alpaca_yahoo", "polygon", "polygon_yahoo"]},
+    {"key": "us_intraday_candle_lookback_days", "label": "US Intraday Lookback Days", "type": "number", "category": "Market Data", "min": 1, "max": 30, "step": 1},
+    {"key": "us_daily_candle_lookback_days", "label": "US Daily Lookback Days", "type": "number", "category": "Market Data", "min": 30, "step": 30},
+    {"key": "alpaca_api_key", "label": "Alpaca API Key", "type": "secret", "category": "Market Data"},
+    {"key": "alpaca_api_secret", "label": "Alpaca API Secret", "type": "secret", "category": "Market Data"},
+    {"key": "alpaca_data_base_url", "label": "Alpaca Data URL", "type": "text", "category": "Market Data"},
+    {"key": "alpaca_data_feed", "label": "Alpaca Feed", "type": "select", "category": "Market Data", "choices": ["iex", "sip"]},
+    {"key": "polygon_api_key", "label": "Polygon API Key", "type": "secret", "category": "Market Data"},
+    {"key": "polygon_base_url", "label": "Polygon API URL", "type": "text", "category": "Market Data"},
     {"key": "llm_provider", "label": "LLM Provider", "type": "select", "category": "LLM Brain", "choices": ["deepseek", "groq", "offline"]},
     {"key": "llm_decision_mode", "label": "Decision Mode", "type": "select", "category": "LLM Brain", "choices": ["offline", "review", "primary"]},
     {"key": "deepseek_api_key", "label": "DeepSeek API Key", "type": "secret", "category": "LLM Brain"},
@@ -340,7 +367,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "llm_temperature", "label": "LLM Temperature", "type": "number", "category": "LLM Brain", "min": 0, "max": 2, "step": 0.01},
     {"key": "llm_top_p", "label": "LLM Top P", "type": "number", "category": "LLM Brain", "min": 0, "max": 1, "step": 0.01},
     {"key": "llm_max_tokens", "label": "LLM Max Tokens", "type": "number", "category": "LLM Brain", "min": 24, "step": 128},
-    {"key": "llm_max_symbols_per_cycle", "label": "LLM Symbols/Cycle", "type": "number", "category": "LLM Brain", "min": 1, "step": 1},
+    {"key": "llm_max_symbols_per_cycle", "label": "LLM Symbols/Cycle", "type": "number", "category": "LLM Brain", "min": 8, "step": 1},
     {"key": "llm_primary_min_confidence", "label": "Min LLM Confidence", "type": "number", "category": "LLM Brain", "min": 0, "max": 1, "step": 0.01},
     {"key": "llm_reasoning_effort", "label": "Reasoning Effort", "type": "select", "category": "LLM Brain", "choices": ["none", "high", "max"]},
     {"key": "llm_thinking_enabled", "label": "DeepSeek Thinking", "type": "boolean", "category": "LLM Brain"},
@@ -349,7 +376,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "max_position_pct", "label": "Max Position %", "type": "number", "category": "Risk", "min": 0.01, "max": 0.15, "step": 0.01},
     {"key": "max_order_value_pct", "label": "Max Order %", "type": "number", "category": "Risk", "min": 0.01, "max": 0.15, "step": 0.01},
     {"key": "max_trades_per_cycle", "label": "Max Trades/Cycle", "type": "number", "category": "Risk", "min": 1, "step": 1},
-    {"key": "auto_follow_reentry_cooldown_hours", "label": "Auto Re-entry Cooldown Hours", "type": "number", "category": "Risk", "min": 1, "step": 1},
+    {"key": "auto_follow_reentry_cooldown_hours", "label": "Auto Re-entry Cooldown Hours", "type": "number", "category": "Risk", "min": 48, "step": 1},
     {"key": "stop_loss_pct", "label": "Stop Loss %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},
     {"key": "take_profit_pct", "label": "Take Profit %", "type": "number", "category": "Risk", "min": 0, "max": 2, "step": 0.005},
     {"key": "daily_loss_limit_pct", "label": "Daily Loss Limit %", "type": "number", "category": "Risk", "min": 0, "max": 1, "step": 0.005},
@@ -434,6 +461,14 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
     if key == "yahoo_candle_range":
         candle_range = str(value).strip()
         return candle_range if candle_range in {"5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"} else "1y"
+    if key == "us_market_data_provider":
+        provider = str(value).strip().lower()
+        return provider if provider in {"yahoo", "alpaca", "alpaca_yahoo", "polygon", "polygon_yahoo"} else "yahoo"
+    if key in {"alpaca_data_base_url", "polygon_base_url"}:
+        return str(value).strip().rstrip("/") or getattr(base, key)
+    if key == "alpaca_data_feed":
+        feed = str(value).strip().lower()
+        return feed if feed in {"iex", "sip"} else "iex"
     if key == "llm_provider":
         provider = str(value).strip().lower()
         return provider if provider in {"deepseek", "groq", "offline"} else "deepseek"
@@ -455,6 +490,10 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
     if key == "llm_reasoning_effort":
         effort = str(value).strip().lower()
         return effort if effort in {"none", "high", "max"} else "high"
+    if key == "llm_max_symbols_per_cycle":
+        return max(int(value), 8)
+    if key == "auto_follow_reentry_cooldown_hours":
+        return max(int(value), 48)
     current = getattr(base, key)
     if isinstance(current, bool):
         if isinstance(value, bool):

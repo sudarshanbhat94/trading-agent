@@ -38,6 +38,7 @@ def full_spectrum_analysis(
     market_breadth: dict[str, Any] | None = None,
     macro_event_context: dict[str, Any] | None = None,
     timeframe_candles: dict[str, list[Candle]] | None = None,
+    performance_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timeframe_candles = timeframe_candles or {}
     intraday_candles = timeframe_candles.get("intraday") or []
@@ -114,6 +115,16 @@ def full_spectrum_analysis(
         options_oi=options_oi,
     )
     trade_plan = _trade_plan(quote.price, key_levels, indicators, confluence, risk_limits, liquidity, backtest, options_oi)
+    strategy_logic = _phase3_strategy_logic_filters(
+        entry_quality=entry_quality,
+        breakout_quality=breakout_quality,
+        indicators=indicators,
+        delivery=delivery,
+        institutional_flow=flow,
+        options_oi=options_oi,
+        macro_event_context=macro_event_context or {},
+        fundamental=fundamental,
+    )
     scorecard = _institutional_scorecard(
         price=quote.price,
         data_quality=data_quality,
@@ -133,6 +144,7 @@ def full_spectrum_analysis(
         institutional_flow=flow,
         confluence=confluence,
         trade_plan=trade_plan,
+        strategy_logic=strategy_logic,
     )
     risk_overrides = _risk_overrides(
         global_context,
@@ -153,6 +165,7 @@ def full_spectrum_analysis(
         delivery,
         macro_event_context or {},
         options_oi,
+        strategy_logic,
     )
     signal_plan = _signal_plan(row, quote.price, trend_context, confluence, trade_plan, risk_overrides, scorecard)
     monitoring = _monitoring_checklist(quote.price, trade_plan, confluence, risk_overrides, scorecard)
@@ -178,6 +191,7 @@ def full_spectrum_analysis(
         "price_volume_divergence": price_volume_divergence,
         "entry_quality": entry_quality,
         "breakout_quality": breakout_quality,
+        "strategy_logic_filters": strategy_logic,
         "key_levels": key_levels,
         "fibonacci": fib,
         "indicator_suite": indicators,
@@ -193,6 +207,7 @@ def full_spectrum_analysis(
         "sector_rotation": sector_rotation,
         "market_breadth": market_breadth or {},
         "macro_event_context": macro_event_context or {},
+        "performance_feedback": performance_feedback or {},
         "options_oi": options_oi,
         "backtest_snapshot": backtest,
         "signal_conflicts": conflicts,
@@ -536,6 +551,9 @@ def _false_breakout_filter(candles: list[Candle], quote_price: float) -> dict[st
         risk_score = 0.8
     if two_day_failed:
         risk_score = 1.0
+    repeated = _repeated_failed_breakouts(candles)
+    if repeated.get("repeated_failed_breakouts"):
+        risk_score = max(risk_score, 0.85)
     return {
         "is_breakout_attempt": is_attempt,
         "breakout_quality": breakout_quality,
@@ -543,8 +561,312 @@ def _false_breakout_filter(candles: list[Candle], quote_price: float) -> dict[st
         "prior_resistance": _round(prior_resistance),
         "close_in_upper_range": close_in_upper_range,
         "volume_expansion": volume_expansion,
+        "failed_breakout_count": repeated.get("failed_breakout_count", 0),
+        "repeated_failed_breakouts": repeated.get("repeated_failed_breakouts", False),
+        "failed_breakout_events": repeated.get("failed_breakout_events", []),
         "false_breakout_risk_score": risk_score,
     }
+
+
+def _repeated_failed_breakouts(candles: list[Candle], lookback: int = 80) -> dict[str, Any]:
+    if len(candles) < 35:
+        return {"failed_breakout_count": 0, "repeated_failed_breakouts": False, "failed_breakout_events": []}
+    events = []
+    start = max(21, len(candles) - lookback)
+    end = max(start, len(candles) - 1)
+    for idx in range(start, end):
+        prior = candles[max(0, idx - 20) : idx]
+        if len(prior) < 10:
+            continue
+        resistance = max(candle.high for candle in prior)
+        candle = candles[idx]
+        if not resistance or candle.close <= resistance * 1.003:
+            continue
+        follow = candles[idx + 1 : min(len(candles), idx + 6)]
+        failed = any(item.close < resistance * 0.995 for item in follow)
+        if failed:
+            events.append(
+                {
+                    "ts": candle.ts,
+                    "breakout_close": _round(candle.close),
+                    "prior_resistance": _round(resistance),
+                }
+            )
+    return {
+        "failed_breakout_count": len(events),
+        "repeated_failed_breakouts": len(events) >= 2,
+        "failed_breakout_events": events[-3:],
+    }
+
+
+def _phase3_strategy_logic_filters(
+    entry_quality: dict[str, Any],
+    breakout_quality: dict[str, Any],
+    indicators: dict[str, Any],
+    delivery: dict[str, Any],
+    institutional_flow: dict[str, Any],
+    options_oi: dict[str, Any],
+    macro_event_context: dict[str, Any],
+    fundamental: dict[str, Any],
+) -> dict[str, Any]:
+    hard_blocks: list[dict[str, Any]] = []
+    penalties: list[dict[str, Any]] = []
+
+    def hard(flag: str, reason: str, value: Any = None) -> None:
+        hard_blocks.append({"flag": flag, "reason": reason, "value": value})
+
+    def penalty(flag: str, reason: str, value: Any = None, score_penalty: float = 0.0, size_multiplier: float | None = None) -> None:
+        payload = {"flag": flag, "reason": reason, "value": value, "score_penalty": score_penalty}
+        if size_multiplier is not None:
+            payload["size_multiplier"] = size_multiplier
+        penalties.append(payload)
+
+    distance = _float_or_none(entry_quality.get("distance_from_pivot_pct"))
+    if distance is not None and distance > 5.0:
+        hard(
+            "PRICE_EXTENDED_FROM_PIVOT",
+            "fresh long is more than 5% above pivot; wait for reset or tighter base",
+            {"distance_from_pivot_pct": _round(distance), "pivot": entry_quality.get("pivot")},
+        )
+    elif distance is not None and distance > 2.0:
+        penalty(
+            "ENTRY_NOT_FRESH_FROM_PIVOT",
+            "entry is no longer fresh from pivot; position size must be reduced",
+            {"distance_from_pivot_pct": _round(distance), "pivot": entry_quality.get("pivot")},
+            score_penalty=4.0,
+            size_multiplier=0.85,
+        )
+
+    volume_ratio = _float_or_none(indicators.get("volume_ratio_20"))
+    volume_confirmed = bool(
+        breakout_quality.get("volume_expansion")
+        or entry_quality.get("volume_confirmation")
+        or (volume_ratio is not None and volume_ratio >= 1.5)
+    )
+    breakout_state = str(breakout_quality.get("breakout_quality") or "").lower()
+    if breakout_state == "suspect" and not volume_confirmed:
+        hard(
+            "SUSPECT_BREAKOUT_WITHOUT_VOLUME",
+            "suspect breakout has no volume expansion; do not buy until volume confirms",
+            {"breakout_quality": breakout_quality, "volume_ratio_20": _round(volume_ratio)},
+        )
+    elif breakout_state == "suspect":
+        penalty(
+            "SUSPECT_BREAKOUT_REDUCED_SIZE",
+            "breakout is still suspect even with some volume evidence",
+            {"breakout_quality": breakout_quality, "volume_ratio_20": _round(volume_ratio)},
+            score_penalty=8.0,
+            size_multiplier=0.5,
+        )
+    if breakout_quality.get("two_day_rule_failed"):
+        hard("FAILED_BREAKOUT_TWO_DAY_RULE", "two-day breakout rule failed", breakout_quality)
+    if volume_ratio is None:
+        penalty(
+            "VOLUME_RATIO_MISSING",
+            "20-period volume ratio is unavailable; reduce confidence",
+            None,
+            score_penalty=4.0,
+            size_multiplier=0.75,
+        )
+    elif volume_ratio < 0.8:
+        penalty(
+            "LOW_VOLUME_RATIO",
+            "volume ratio below 0.8x shows weak participation",
+            {"volume_ratio_20": _round(volume_ratio)},
+            score_penalty=12.0,
+            size_multiplier=0.5,
+        )
+    elif volume_ratio < 1.1:
+        penalty(
+            "WEAK_VOLUME_RATIO",
+            "volume ratio below 1.1x is not enough for a momentum entry",
+            {"volume_ratio_20": _round(volume_ratio)},
+            score_penalty=6.0,
+            size_multiplier=0.75,
+        )
+
+    failed_count = int(_float_or_none(breakout_quality.get("failed_breakout_count")) or 0)
+    if failed_count >= 2:
+        penalty(
+            "REPEATED_FAILED_BREAKOUTS",
+            "symbol has multiple recent failed breakout attempts",
+            {
+                "failed_breakout_count": failed_count,
+                "events": breakout_quality.get("failed_breakout_events", []),
+            },
+            score_penalty=min(18.0, 10.0 + max(failed_count - 2, 0) * 3.0),
+            size_multiplier=0.5,
+        )
+
+    event_thesis = _event_driven_thesis(macro_event_context, fundamental, institutional_flow)
+    earnings_window = _earnings_window(macro_event_context)
+    if earnings_window.get("active") and not event_thesis.get("supported"):
+        hard(
+            "EARNINGS_LOCKOUT_NOT_EVENT_DRIVEN",
+            "known earnings window blocks fresh BUY unless an explicit event-driven thesis is present",
+            earnings_window,
+        )
+    elif earnings_window.get("active"):
+        penalty(
+            "EARNINGS_EVENT_DRIVEN_TINY_SIZE",
+            "event-driven earnings setup must use tiny size until event risk clears",
+            {"earnings": earnings_window, "event_thesis": event_thesis},
+            score_penalty=6.0,
+            size_multiplier=0.25,
+        )
+
+    sponsorship = _institutional_sponsorship(delivery, institutional_flow, options_oi)
+    if not sponsorship.get("supported"):
+        penalty(
+            "INSTITUTIONAL_SPONSORSHIP_MISSING",
+            "institutional label is not allowed without delivery, block-deal, fund-flow, or options-accumulation evidence",
+            sponsorship,
+            score_penalty=10.0,
+            size_multiplier=0.75,
+        )
+
+    size_cap = 1.0
+    for item in penalties:
+        multiplier = _float_or_none(item.get("size_multiplier"))
+        if multiplier is not None:
+            size_cap = min(size_cap, multiplier)
+    return {
+        "version": "phase3-strategy-logic-v1",
+        "passed": not hard_blocks,
+        "hard_blocks": hard_blocks,
+        "penalties": penalties,
+        "score_penalty": _round(sum(float(item.get("score_penalty") or 0.0) for item in penalties)),
+        "sizing": {
+            "max_multiplier": _round(size_cap),
+            "policy": "hard blocks prevent fresh BUY; penalties reduce score and position size",
+        },
+        "pivot_extension": {
+            "distance_from_pivot_pct": _round(distance),
+            "max_buy_distance_pct": 5.0,
+            "too_extended": bool(distance is not None and distance > 5.0),
+        },
+        "breakout_volume": {
+            "breakout_quality": breakout_state or None,
+            "volume_ratio_20": _round(volume_ratio),
+            "volume_confirmed": volume_confirmed,
+            "suspect_without_volume": breakout_state == "suspect" and not volume_confirmed,
+        },
+        "event_driven_thesis": event_thesis,
+        "earnings_window": earnings_window,
+        "institutional_sponsorship": sponsorship,
+    }
+
+
+def _earnings_window(macro_event_context: dict[str, Any]) -> dict[str, Any]:
+    trading_days = macro_event_context.get("earnings_trading_days_away")
+    days = macro_event_context.get("earnings_days_away")
+    active = False
+    trading_value = _float_or_none(trading_days)
+    days_value = _float_or_none(days)
+    if trading_value is not None:
+        active = 0 <= trading_value <= 10
+    elif days_value is not None:
+        active = 0 <= days_value <= 14
+    return {
+        "active": active,
+        "earnings_days_away": days,
+        "earnings_trading_days_away": trading_days,
+        "source": macro_event_context.get("source"),
+    }
+
+
+def _event_driven_thesis(
+    macro_event_context: dict[str, Any],
+    fundamental: dict[str, Any],
+    institutional_flow: dict[str, Any],
+) -> dict[str, Any]:
+    evidence = []
+    explicit_keys = (
+        "event_driven",
+        "explicit_event_driven",
+        "earnings_event_driven",
+        "allow_earnings_trade",
+        "catalyst_trade",
+    )
+    for key in explicit_keys:
+        if macro_event_context.get(key) is True:
+            evidence.append(f"macro_context.{key}=true")
+    text_values = [
+        macro_event_context.get("strategy"),
+        macro_event_context.get("strategy_type"),
+        macro_event_context.get("thesis"),
+        macro_event_context.get("event_thesis"),
+        macro_event_context.get("catalyst"),
+    ]
+    joined = " ".join(str(value or "").lower() for value in text_values)
+    if "event-driven" in joined or "event driven" in joined or "catalyst" in joined or "earnings trade" in joined:
+        evidence.append("macro_context contains explicit event/catalyst thesis")
+    if str(fundamental.get("quality_bucket") or "").lower() in {"event_positive", "event_positive_with_ratios"}:
+        evidence.append("positive official event in fundamental quality")
+    announcements = institutional_flow.get("official_announcements") or []
+    if _event_text_matches(announcements, r"order|contract|approval|dividend|bonus|split|upgrade"):
+        evidence.append("positive official announcement catalyst")
+    return {
+        "supported": bool(evidence),
+        "evidence": _unique(evidence),
+        "policy": "earnings-window BUY requires explicit event-driven/catalyst evidence",
+    }
+
+
+def _institutional_sponsorship(
+    delivery: dict[str, Any],
+    institutional_flow: dict[str, Any],
+    options_oi: dict[str, Any],
+) -> dict[str, Any]:
+    evidence = []
+    delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
+    delivery_score = _float_or_none(delivery.get("delivery_score"))
+    delivery_pct = _float_or_none(delivery.get("delivery_pct") or delivery.get("delivery_percentage"))
+    if delivery.get("institutional_fingerprint") or delivery.get("fingerprint"):
+        evidence.append("delivery institutional fingerprint")
+    if delivery_bias == "accumulation" and ((delivery_score is not None and delivery_score > 0) or (delivery_pct is not None and delivery_pct >= 50)):
+        evidence.append("delivery accumulation")
+    if institutional_flow.get("bulk_deals"):
+        evidence.append("recent bulk/block deal evidence")
+    if _positive_fund_flow(institutional_flow.get("fii_dii_flow")):
+        evidence.append("positive FII/DII or fund-flow feed")
+    market_bias_score = _float_or_none((institutional_flow.get("market_bias") or {}).get("score"))
+    if market_bias_score is not None and market_bias_score >= 0.15:
+        evidence.append("positive institutional market-bias score")
+    option_bias = str(options_oi.get("bias") or "").lower()
+    pcr = _float_or_none(options_oi.get("pcr_oi") or options_oi.get("market_pcr_proxy"))
+    max_pain_distance = _float_or_none(options_oi.get("max_pain_distance_pct"))
+    if option_bias in {"put_heavy_supportive", "max_pain_above_supportive"}:
+        evidence.append("supportive options accumulation/OI bias")
+    if pcr is not None and pcr >= 1.2:
+        evidence.append("put-heavy PCR support")
+    if max_pain_distance is not None and max_pain_distance > 3:
+        evidence.append("max pain above price/supportive")
+    return {
+        "supported": bool(evidence),
+        "evidence": _unique(evidence),
+        "missing_if_false": [
+            "delivery accumulation/fingerprint",
+            "bulk or block deal evidence",
+            "positive fund-flow/FII-DII feed",
+            "supportive options accumulation/OI",
+        ] if not evidence else [],
+    }
+
+
+def _positive_fund_flow(feed: Any) -> bool:
+    if not isinstance(feed, dict):
+        return False
+    for key in ("score", "net", "net_flow", "net_buy", "net_purchase", "fii_net", "dii_net"):
+        value = _float_or_none(feed.get(key))
+        if value is not None and value > 0:
+            return True
+    items = feed.get("items")
+    if isinstance(items, dict):
+        return any(_positive_fund_flow(item) for item in items.values() if isinstance(item, dict))
+    if isinstance(items, list):
+        return any(_positive_fund_flow(item) for item in items if isinstance(item, dict))
+    return False
 
 
 def _tested_level(values: list[float], mode: str) -> tuple[float | None, int]:
@@ -971,7 +1293,9 @@ def _risk_overrides(
     delivery: dict[str, Any],
     macro_event_context: dict[str, Any],
     options_oi: dict[str, Any],
+    strategy_logic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    strategy_logic = strategy_logic or {}
     atr_pct = indicators.get("atr_pct")
     flags = []
     if global_context.get("regime") == "risk-off" and global_context.get("risk_score", 0) <= -0.28:
@@ -1019,6 +1343,12 @@ def _risk_overrides(
         flags.append("delivery_distribution_no_new_longs")
     if options_oi.get("buy_suppressed"):
         flags.append("options_max_pain_8pct_below_no_new_longs")
+    for block in strategy_logic.get("hard_blocks") or []:
+        flag = str(block.get("flag") or "phase3_strategy_block").lower()
+        flags.append(f"phase3_{flag}_no_new_longs")
+    for item in strategy_logic.get("penalties") or []:
+        flag = str(item.get("flag") or "phase3_strategy_penalty").lower()
+        flags.append(f"phase3_{flag}_reduce_size")
     symbol_flags = institutional_flow.get("symbol_flags", {})
     if symbol_flags.get("asm"):
         flags.append("asm_surveillance_no_new_longs")
@@ -1027,6 +1357,10 @@ def _risk_overrides(
     if symbol_flags.get("fno_ban"):
         flags.append("fo_ban_no_new_longs")
     no_new_longs = any(flag.endswith("_no_new_longs") for flag in flags)
+    size_multiplier = _conviction_size_multiplier(confluence.get("total", 0), flags)
+    phase3_size_cap = _float_or_none((strategy_logic.get("sizing") or {}).get("max_multiplier"))
+    if phase3_size_cap is not None:
+        size_multiplier = min(size_multiplier, phase3_size_cap)
     return {
         "flags": flags,
         "absolute_no_trade_conditions_checked": [
@@ -1039,9 +1373,16 @@ def _risk_overrides(
             "corporate event risk",
             "signal conflict severity",
             "institutional scorecard hard vetoes",
+            "Phase 3 pivot/breakout/earnings strategy logic",
         ],
         "no_new_longs": no_new_longs,
-        "size_multiplier": _conviction_size_multiplier(confluence.get("total", 0), flags),
+        "size_multiplier": _round(size_multiplier),
+        "phase3_strategy_logic": {
+            "passed": strategy_logic.get("passed"),
+            "hard_blocks": strategy_logic.get("hard_blocks", []),
+            "penalties": strategy_logic.get("penalties", []),
+            "size_cap": phase3_size_cap,
+        },
         "risk_per_trade_pct": min(float(risk_limits.get("max_order_value_pct", 0.04) or 0.04), 0.02),
     }
 
@@ -1765,7 +2106,9 @@ def _institutional_scorecard(
     institutional_flow: dict[str, Any],
     confluence: dict[str, Any],
     trade_plan: dict[str, Any],
+    strategy_logic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    strategy_logic = strategy_logic or {}
     symbol_flags = institutional_flow.get("symbol_flags") or {}
     hard_veto = []
     warnings = []
@@ -1794,6 +2137,8 @@ def _institutional_scorecard(
         hard_veto.append("severe_negative_news_sentiment")
     if atr_pct is not None and atr_pct > 8:
         hard_veto.append("extreme_atr_volatility")
+    for block in strategy_logic.get("hard_blocks") or []:
+        hard_veto.append(f"phase3_{str(block.get('flag') or 'strategy_logic').lower()}")
 
     if data_quality.get("score", 0) < 75:
         warnings.append("limited_history_reduces_confidence")
@@ -1801,6 +2146,8 @@ def _institutional_scorecard(
         warnings.append("thin_liquidity_reduce_position_size")
     if conflicts.get("severity") == "medium":
         warnings.append("medium_signal_conflict")
+    for item in strategy_logic.get("penalties") or []:
+        warnings.append(f"phase3_{str(item.get('flag') or 'strategy_penalty').lower()}")
 
     sections = [
         _market_regime_section(global_context, institutional_flow, filters),
@@ -1814,7 +2161,8 @@ def _institutional_scorecard(
         _backtest_section(backtest),
         _risk_reward_section(price, indicators, trade_plan),
     ]
-    total = sum(section["score"] for section in sections)
+    phase3_penalty = float(strategy_logic.get("score_penalty") or 0.0)
+    total = max(sum(section["score"] for section in sections) - phase3_penalty, 0.0)
     max_score = sum(section["max"] for section in sections)
     min_entry_score = 75
     strict_confluence = 16
@@ -1836,6 +2184,11 @@ def _institutional_scorecard(
         must_pass_failed.append("risk_reward_min_5")
     if sentiment_score < -0.2:
         must_pass_failed.append("sentiment_not_bearish")
+    sponsorship = strategy_logic.get("institutional_sponsorship") or {}
+    if not sponsorship.get("supported"):
+        must_pass_failed.append("institutional_sponsorship_required")
+    if strategy_logic.get("hard_blocks"):
+        must_pass_failed.append("phase3_strategy_logic_clear")
 
     buy_ready = not must_pass_failed
     return {
@@ -1850,8 +2203,10 @@ def _institutional_scorecard(
         "hard_veto": {"passed": not hard_veto, "failed": _unique(hard_veto)},
         "must_pass_failed": _unique(must_pass_failed),
         "warnings": _unique(warnings),
+        "phase3_penalty": _round(phase3_penalty),
+        "institutional_sponsorship": sponsorship,
         "sections": section_map,
-        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, and sentiment is not bearish.",
+        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and institutional sponsorship is proven.",
         "exit_rule": "For open positions, exit on hard stop, target/invalidation, breakdown, severe negative news, high conflict, or global risk-off.",
         "accuracy_note": "No market system can guarantee 90% accuracy; this scorecard is designed to improve expectancy by rejecting low-quality trades.",
     }

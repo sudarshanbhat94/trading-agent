@@ -50,6 +50,12 @@ def normalize_market_data_provider_name(value: Any) -> str:
     return provider if provider in choices else "upstox"
 
 
+def normalize_us_market_data_provider_name(value: Any) -> str:
+    provider = str(value or "yahoo").strip().lower()
+    choices = {"yahoo", "alpaca", "alpaca_yahoo", "polygon", "polygon_yahoo"}
+    return provider if provider in choices else "yahoo"
+
+
 class MarketDataProvider(ABC):
     source_name: str
 
@@ -559,6 +565,239 @@ class YahooMarketDataProvider(MarketDataProvider):
         if interval in {"1d", "1wk"}:
             return 320
         return 160
+
+
+class AlpacaMarketDataProvider(MarketDataProvider):
+    source_name = "alpaca-live"
+
+    def __init__(self, settings: Settings) -> None:
+        self.api_key = settings.alpaca_api_key
+        self.api_secret = settings.alpaca_api_secret
+        self.base_url = settings.alpaca_data_base_url.rstrip("/")
+        self.feed = settings.alpaca_data_feed or "iex"
+        self.intraday_lookback_days = max(1, int(settings.us_intraday_candle_lookback_days or 5))
+        self.daily_lookback_days = max(30, int(settings.us_daily_candle_lookback_days or 420))
+        self.last_quote_diagnostics: dict[str, Any] = {}
+        self.last_candle_diagnostics: dict[str, Any] = {}
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "APCA-API-KEY-ID": self.api_key,
+            "APCA-API-SECRET-KEY": self.api_secret,
+        }
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        if not self.api_key or not self.api_secret:
+            raise MarketDataError("Alpaca provider needs ALPACA_API_KEY and ALPACA_API_SECRET")
+        rows = [row for row in universe if market_region_for_row(row) == "US"]
+        quotes: dict[str, Quote] = {}
+        diagnostics = {"requested": len(rows), "chunks": 0, "errors": [], "missing_symbols": []}
+        async with httpx.AsyncClient(timeout=10, headers=self._headers()) as client:
+            for chunk in _chunks(rows, 100):
+                diagnostics["chunks"] += 1
+                symbols = [str(row["symbol"]).upper() for row in chunk]
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/v2/stocks/quotes/latest",
+                        params={"symbols": ",".join(symbols), "feed": self.feed},
+                    )
+                    response.raise_for_status()
+                    payload = response.json().get("quotes") or {}
+                except Exception as exc:
+                    diagnostics["errors"].append(_market_data_error_summary(exc))
+                    continue
+                for row in chunk:
+                    symbol = str(row["symbol"]).upper()
+                    item = payload.get(symbol) or {}
+                    ask = _float_any(item.get("ap"))
+                    bid = _float_any(item.get("bp"))
+                    price = ((ask + bid) / 2.0) if ask and bid else ask or bid
+                    if not price:
+                        continue
+                    quotes[symbol] = Quote(
+                        symbol=symbol,
+                        price=float(price),
+                        source=self.source_name,
+                        asof=str(item.get("t") or utc_now()),
+                        open=None,
+                        high=None,
+                        low=None,
+                        close=None,
+                        volume=None,
+                    )
+        diagnostics["returned"] = len(quotes)
+        diagnostics["missing_symbols"] = [row["symbol"] for row in rows if row["symbol"] not in quotes][:20]
+        self.last_quote_diagnostics = diagnostics
+        if rows and not quotes:
+            raise MarketDataError(f"Alpaca returned no US quotes; diagnostics={diagnostics}")
+        return quotes
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        if not self.api_key or not self.api_secret:
+            raise MarketDataError("Alpaca provider needs ALPACA_API_KEY and ALPACA_API_SECRET")
+        rows = [row for row in universe if market_region_for_row(row) == "US"]
+        output: dict[str, list[Candle]] = {}
+        diagnostics = {"requested": len(rows), "intervals": ["1Min", "1Day"], "errors": [], "completed_requests": 0}
+        async with httpx.AsyncClient(timeout=18, headers=self._headers()) as client:
+            for timeframe, lookback_days, source_suffix in (
+                ("1Min", self.intraday_lookback_days, "1minute"),
+                ("1Day", self.daily_lookback_days, "day"),
+            ):
+                for chunk in _chunks(rows, 50):
+                    symbols = [str(row["symbol"]).upper() for row in chunk]
+                    start = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+                    try:
+                        response = await client.get(
+                            f"{self.base_url}/v2/stocks/bars",
+                            params={
+                                "symbols": ",".join(symbols),
+                                "timeframe": timeframe,
+                                "start": start,
+                                "limit": 10000,
+                                "adjustment": "raw",
+                                "feed": self.feed,
+                            },
+                        )
+                        response.raise_for_status()
+                        bars = response.json().get("bars") or {}
+                    except Exception as exc:
+                        diagnostics["errors"].append(_market_data_error_summary(exc))
+                        continue
+                    diagnostics["completed_requests"] += 1
+                    for symbol, items in bars.items():
+                        candles = [_alpaca_bar_to_candle(symbol, item, f"{self.source_name}:{source_suffix}") for item in items or []]
+                        output.setdefault(symbol, []).extend([item for item in candles if item is not None])
+        self.last_candle_diagnostics = {**diagnostics, "symbols_with_candles": len(output)}
+        return output
+
+
+class PolygonMarketDataProvider(MarketDataProvider):
+    source_name = "polygon-live"
+
+    def __init__(self, settings: Settings) -> None:
+        self.api_key = settings.polygon_api_key
+        self.base_url = settings.polygon_base_url.rstrip("/")
+        self.intraday_lookback_days = max(1, int(settings.us_intraday_candle_lookback_days or 5))
+        self.daily_lookback_days = max(30, int(settings.us_daily_candle_lookback_days or 420))
+        self.last_quote_diagnostics: dict[str, Any] = {}
+        self.last_candle_diagnostics: dict[str, Any] = {}
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        if not self.api_key:
+            raise MarketDataError("Polygon provider needs POLYGON_API_KEY")
+        rows = [row for row in universe if market_region_for_row(row) == "US"]
+        quotes: dict[str, Quote] = {}
+        diagnostics = {"requested": len(rows), "chunks": 0, "errors": [], "missing_symbols": []}
+        async with httpx.AsyncClient(timeout=10) as client:
+            for chunk in _chunks(rows, 75):
+                diagnostics["chunks"] += 1
+                symbols = [str(row["symbol"]).upper() for row in chunk]
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/v2/snapshot/locale/us/markets/stocks/tickers",
+                        params={"tickers": ",".join(symbols), "apiKey": self.api_key},
+                    )
+                    response.raise_for_status()
+                    items = response.json().get("tickers") or []
+                except Exception as exc:
+                    diagnostics["errors"].append(_market_data_error_summary(exc))
+                    continue
+                for item in items:
+                    symbol = str(item.get("ticker") or "").upper()
+                    day = item.get("day") or {}
+                    prev = item.get("prevDay") or {}
+                    trade = item.get("lastTrade") or {}
+                    price = _float_any(trade.get("p")) or _float_any(day.get("c")) or _float_any(prev.get("c"))
+                    if not symbol or not price:
+                        continue
+                    quotes[symbol] = Quote(
+                        symbol=symbol,
+                        price=float(price),
+                        source=self.source_name,
+                        asof=_polygon_ts_to_iso(trade.get("t") or item.get("updated")),
+                        open=_float_any(day.get("o")),
+                        high=_float_any(day.get("h")),
+                        low=_float_any(day.get("l")),
+                        close=_float_any(prev.get("c")),
+                        volume=_float_any(day.get("v")),
+                    )
+        diagnostics["returned"] = len(quotes)
+        diagnostics["missing_symbols"] = [row["symbol"] for row in rows if row["symbol"] not in quotes][:20]
+        self.last_quote_diagnostics = diagnostics
+        if rows and not quotes:
+            raise MarketDataError(f"Polygon returned no US quotes; diagnostics={diagnostics}")
+        return quotes
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        if not self.api_key:
+            raise MarketDataError("Polygon provider needs POLYGON_API_KEY")
+        rows = [row for row in universe if market_region_for_row(row) == "US"]
+        output: dict[str, list[Candle]] = {}
+        diagnostics = {"requested": len(rows), "intervals": ["minute", "day"], "errors": [], "completed_requests": 0}
+        semaphore = asyncio.Semaphore(6)
+        async with httpx.AsyncClient(timeout=18) as client:
+            tasks = [
+                asyncio.create_task(self._fetch_aggs(client, semaphore, row, "minute", self.intraday_lookback_days, "1minute"))
+                for row in rows
+            ] + [
+                asyncio.create_task(self._fetch_aggs(client, semaphore, row, "day", self.daily_lookback_days, "day"))
+                for row in rows
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in results:
+            if isinstance(item, Exception):
+                diagnostics["errors"].append(_market_data_error_summary(item))
+                continue
+            if not item:
+                continue
+            symbol, candles = item
+            diagnostics["completed_requests"] += 1
+            output.setdefault(symbol, []).extend(candles)
+        self.last_candle_diagnostics = {**diagnostics, "symbols_with_candles": len(output)}
+        return output
+
+    async def _fetch_aggs(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        row: dict[str, Any],
+        span: str,
+        lookback_days: int,
+        source_suffix: str,
+    ) -> tuple[str, list[Candle]] | None:
+        async with semaphore:
+            symbol = str(row["symbol"]).upper()
+            end = date.today()
+            start = end - timedelta(days=lookback_days)
+            response = await client.get(
+                f"{self.base_url}/v2/aggs/ticker/{quote(symbol, safe='')}/range/1/{span}/{start.isoformat()}/{end.isoformat()}",
+                params={"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": self.api_key},
+            )
+            response.raise_for_status()
+            rows = response.json().get("results") or []
+            candles = [_polygon_bar_to_candle(symbol, item, f"{self.source_name}:{source_suffix}") for item in rows]
+            return symbol, [item for item in candles if item is not None]
+
+
+class AlpacaSetupRequiredProvider(MarketDataProvider):
+    source_name = "alpaca-not-connected"
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        raise MarketDataError("Alpaca API key/secret are not configured for US trade-decision data.")
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        raise MarketDataError("Alpaca API key/secret are not configured for US minute/daily candles.")
+
+
+class PolygonSetupRequiredProvider(MarketDataProvider):
+    source_name = "polygon-not-connected"
+
+    async def get_quotes(self, universe: list[dict[str, Any]]) -> dict[str, Quote]:
+        raise MarketDataError("Polygon API key is not configured for US trade-decision data.")
+
+    async def get_candles(self, universe: list[dict[str, Any]]) -> dict[str, list[Candle]]:
+        raise MarketDataError("Polygon API key is not configured for US minute/daily candles.")
 
 
 class IndStocksMarketDataProvider(MarketDataProvider):
@@ -1661,6 +1900,52 @@ def _float_any(value: Any) -> float | None:
         return None
 
 
+def _alpaca_bar_to_candle(symbol: str, item: dict[str, Any], source: str) -> Candle | None:
+    try:
+        return Candle(
+            symbol=str(symbol).upper(),
+            ts=str(item.get("t") or utc_now()),
+            open=float(item.get("o")),
+            high=float(item.get("h")),
+            low=float(item.get("l")),
+            close=float(item.get("c")),
+            volume=float(item.get("v") or 0),
+            source=source,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _polygon_bar_to_candle(symbol: str, item: dict[str, Any], source: str) -> Candle | None:
+    try:
+        return Candle(
+            symbol=str(symbol).upper(),
+            ts=_polygon_ts_to_iso(item.get("t")),
+            open=float(item.get("o")),
+            high=float(item.get("h")),
+            low=float(item.get("l")),
+            close=float(item.get("c")),
+            volume=float(item.get("v") or 0),
+            source=source,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _polygon_ts_to_iso(value: Any) -> str:
+    if not value:
+        return utc_now()
+    try:
+        numeric = float(value)
+        if numeric > 10_000_000_000_000:
+            numeric = numeric / 1_000_000_000
+        elif numeric > 10_000_000_000:
+            numeric = numeric / 1000
+        return datetime.fromtimestamp(numeric, timezone.utc).isoformat()
+    except Exception:
+        return utc_now()
+
+
 def _normalize_trade_symbol(value: str) -> str:
     text = str(value or "").strip().upper()
     for suffix in ("-EQ", "_EQ", ".EQ"):
@@ -1693,13 +1978,27 @@ def build_market_data_provider(settings: Settings) -> MarketDataProvider:
         return yahoo
 
     india_provider = _build_india_market_data_provider(settings, yahoo)
-    # Indian brokers resolve Indian exchange instruments. Keep the US desk on
-    # Yahoo's symbol feed so tickers such as ORCL/AAPL do not go through
-    # India-only instrument-key resolution.
-    us_provider = yahoo
+    us_provider = _build_us_market_data_provider(settings, yahoo)
     if region == "BOTH":
         return MarketRegionRoutingProvider(india_provider=india_provider, us_provider=us_provider)
     return us_provider if region == "US" else india_provider
+
+
+def _build_us_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:
+    provider = normalize_us_market_data_provider_name(getattr(settings, "us_market_data_provider", "yahoo"))
+    if provider == "yahoo":
+        return yahoo
+    if provider in {"alpaca", "alpaca_yahoo"}:
+        if not settings.alpaca_api_key or not settings.alpaca_api_secret:
+            return yahoo if provider == "alpaca_yahoo" else AlpacaSetupRequiredProvider()
+        primary = AlpacaMarketDataProvider(settings)
+        return HistoricalCandleFallbackProvider(primary, yahoo, min_candles=55) if provider == "alpaca_yahoo" else primary
+    if provider in {"polygon", "polygon_yahoo"}:
+        if not settings.polygon_api_key:
+            return yahoo if provider == "polygon_yahoo" else PolygonSetupRequiredProvider()
+        primary = PolygonMarketDataProvider(settings)
+        return HistoricalCandleFallbackProvider(primary, yahoo, min_candles=55) if provider == "polygon_yahoo" else primary
+    return yahoo
 
 
 def _build_india_market_data_provider(settings: Settings, yahoo: YahooMarketDataProvider) -> MarketDataProvider:

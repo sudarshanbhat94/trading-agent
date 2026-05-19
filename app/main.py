@@ -54,6 +54,7 @@ from .openclaw_bridge import (
 from .paper_broker import PaperBroker
 from .request_context import current_llm_usage_scope, current_user_id
 from .sector_rotation import SectorRotationService
+from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_skip_payload
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
 from .universe import UniverseService
@@ -3226,10 +3227,14 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         if not symbol or symbol in seen_symbols:
             continue
         seen_symbols.add(symbol)
+        quality_gate = auto_follow_quality_gate(idea)
+        if not quality_gate.get("passed"):
+            summary["skipped"].append({"symbol": symbol, **quality_skip_payload(quality_gate)})
+            continue
         reentry_block = db.recent_user_symbol_exit(
             user_id,
             symbol,
-            cooldown_hours=max(int(settings.auto_follow_reentry_cooldown_hours or 24), 1),
+            cooldown_hours=max(int(settings.auto_follow_reentry_cooldown_hours or AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS), AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS),
         )
         if reentry_block:
             summary["skipped"].append(
@@ -3321,6 +3326,15 @@ def _auto_follow_amount(cash: float, price: float) -> float:
 
 def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[str]) -> bool:
     symbol = str(idea.get("symbol") or "").upper()
+    signal_type = str(idea.get("signal_type") or "").upper()
+    status = str(idea.get("status") or "").upper()
+    if signal_type != "BUY" or status not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+        return False
+    details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+    score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
+    grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
+    if score < 70 or grade not in {"A", "B"}:
+        return False
     if symbol in fresh_buy_symbols:
         return True
     if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":

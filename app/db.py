@@ -14,6 +14,7 @@ from .decision_contract import normalize_trade_targets, ranked_decision_rows
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
+from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, fresh_buy_quality_gate
 
 
 def _market_region_case(alias: str = "u") -> str:
@@ -265,6 +266,7 @@ def _compact_full_spectrum(full: Any) -> dict[str, Any]:
     signal_plan = full.get("signal_plan") if isinstance(full.get("signal_plan"), dict) else {}
     trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
     risk_overrides = full.get("risk_overrides") if isinstance(full.get("risk_overrides"), dict) else {}
+    strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
     return _bounded_for_storage(
         {
             "confluence_score": full.get("confluence_score"),
@@ -278,10 +280,15 @@ def _compact_full_spectrum(full: Any) -> dict[str, Any]:
             ),
             "trade_plan": _pick_keys(trade_plan, ["entry_zone", "stop_loss", "targets", "risk_reward"]),
             "risk_overrides": _pick_keys(risk_overrides, ["no_new_longs", "flags", "size_multiplier"]),
+            "strategy_logic_filters": _pick_keys(
+                strategy_logic,
+                ["passed", "hard_blocks", "penalties", "score_penalty", "pivot_extension", "breakout_volume", "event_driven_thesis", "institutional_sponsorship"],
+            ),
             "stage_analysis": full.get("stage_analysis"),
             "entry_quality": full.get("entry_quality"),
             "breakout_quality": full.get("breakout_quality"),
             "price_volume_divergence": full.get("price_volume_divergence"),
+            "performance_feedback": full.get("performance_feedback"),
             "timeframe_alignment": trend.get("timeframe_alignment"),
             "relative_strength": full.get("relative_strength"),
             "sector_rotation": full.get("sector_rotation"),
@@ -314,6 +321,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
                 "grade_violation_count",
                 "delivery_conflict_count",
                 "price_mismatch_count",
+                "data_readiness",
             ],
         )
     else:
@@ -334,6 +342,8 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
         "overall_grade": audit.get("overall_grade"),
         "pre_filter": audit.get("pre_filter") or context.get("pre_filter"),
         "system_gate_audit": system_gate,
+        "data_readiness": audit.get("data_readiness") or context.get("data_readiness"),
+        "performance_feedback": context.get("performance_feedback"),
         "sizing_grade": audit.get("sizing_grade") or context.get("sizing_grade"),
         "llm_primary_fallback": audit.get("llm_primary_fallback") or context.get("llm_primary_fallback"),
         "risk_gates": _pick_keys(
@@ -350,6 +360,8 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
                 "portfolio_correlation_gate",
                 "sizing_grade",
                 "system_gate_audit",
+                "data_readiness",
+                "performance_feedback",
                 "llm_primary_fallback",
                 "llm_primary_rule_blocked",
             ],
@@ -371,6 +383,8 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
             "macro_event_context": context.get("macro_event_context"),
             "sector_rotation": context.get("sector_rotation"),
             "delivery_data": context.get("delivery_data"),
+            "data_readiness": context.get("data_readiness"),
+            "performance_feedback": context.get("performance_feedback"),
             "full_spectrum_summary": _compact_full_spectrum(full),
             "universe_relative_strength": context.get("universe_relative_strength"),
             "universe_scan": context.get("universe_scan"),
@@ -1863,16 +1877,27 @@ class Database:
         if not symbols:
             return {}
         intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source_like="upstox-live:%minute")
+        alpaca_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=240, source_like="alpaca-live:%minute")
+        polygon_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=240, source_like="polygon-live:%minute")
         legacy_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source="upstox-live")
         daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=260, source="upstox-live:day")
+        alpaca_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="alpaca-live:day")
+        polygon_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="polygon-live:day")
         indstocks_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source_like="indstocks-live:%day")
         yahoo_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="yahoo-delayed")
         weekly = self.recent_candles_by_symbol(symbols, limit_per_symbol=160, source="upstox-live:week")
         indstocks_weekly = self.recent_candles_by_symbol(symbols, limit_per_symbol=160, source_like="indstocks-live:%week")
         output: dict[str, dict[str, list[Candle]]] = {}
         for symbol in symbols:
-            intraday_candles = intraday.get(symbol) or legacy_intraday.get(symbol) or []
-            daily_candles = daily.get(symbol) or indstocks_daily.get(symbol) or yahoo_daily.get(symbol) or self._resample_daily(intraday_candles)
+            intraday_candles = intraday.get(symbol) or alpaca_intraday.get(symbol) or polygon_intraday.get(symbol) or legacy_intraday.get(symbol) or []
+            daily_candles = (
+                daily.get(symbol)
+                or alpaca_daily.get(symbol)
+                or polygon_daily.get(symbol)
+                or indstocks_daily.get(symbol)
+                or yahoo_daily.get(symbol)
+                or self._resample_daily(intraday_candles)
+            )
             weekly_candles = weekly.get(symbol) or indstocks_weekly.get(symbol) or self._resample_weekly(daily_candles)
             analysis_candles = daily_candles or intraday_candles
             output[symbol] = {
@@ -2127,6 +2152,7 @@ class Database:
                         status = "EXIT_SIGNAL"
                     existing_details = self._decode_json(existing["details_json"])
                     preserve_active_buy = _should_preserve_active_buy(existing, idea, row)
+                    duplicate_active_buy = _is_duplicate_active_buy_refresh(existing, idea, row, now)
                     if preserve_active_buy:
                         status = "ACTIVE"
                         idea["signal_type"] = "BUY"
@@ -2157,6 +2183,39 @@ class Database:
                             "reason": "A live BUY idea remains active until stop, expiry, target completion, or explicit exit. HOLD means monitor/no add.",
                         }
                         idea["details"]["latest_system_action"] = row.get("action")
+                    elif duplicate_active_buy:
+                        status = "ACTIVE"
+                        idea["signal_type"] = "BUY"
+                        original_buy_reason = (
+                            existing_details.get("original_buy_reason")
+                            or existing_details.get("reason")
+                            or existing["reason"]
+                        )
+                        latest_buy_reason = idea["details"].get("reason") or row.get("reason")
+                        if original_buy_reason:
+                            idea["reason"] = str(original_buy_reason)[:1000]
+                            idea["details"]["reason"] = original_buy_reason
+                            idea["details"]["original_buy_reason"] = original_buy_reason
+                        if latest_buy_reason:
+                            idea["details"]["latest_monitor_reason"] = latest_buy_reason
+                        continuity = {
+                            "preserved": True,
+                            "duplicate_active_buy": True,
+                            "previous_signal_type": existing["signal_type"],
+                            "previous_status": existing["status"],
+                            "latest_engine_action": row.get("action"),
+                            "latest_engine_status": idea["status"],
+                            "cooldown_hours": DUPLICATE_BUY_COOLDOWN_HOURS,
+                            "reason": "BUY is already active; repeated BUY refresh is monitor/no fresh add during cooldown.",
+                        }
+                        idea["details"]["why_changed"] = _why_changed_payload(
+                            original_buy_reason,
+                            latest_buy_reason,
+                            str(row.get("action") or ""),
+                            continuity,
+                        )
+                        idea["details"]["signal_continuity"] = continuity
+                        idea["details"]["latest_system_action"] = row.get("action")
                     status, idea_details = _refresh_idea_lifecycle(
                         existing_details,
                         idea["details"],
@@ -2167,7 +2226,7 @@ class Database:
                         idea["plan_code"],
                         existing["first_seen_at"],
                     )
-                    if preserve_active_buy and status in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+                    if (preserve_active_buy or duplicate_active_buy) and status in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
                         idea["signal_type"] = "BUY"
                     conn.execute(
                         """
@@ -2686,6 +2745,21 @@ class Database:
             if idea is None:
                 raise ValueError("idea not found")
             latest_price = float(idea["latest_price"] or idea["entry_price"] or 0.0)
+            idea_details = self._decode_json(idea["details_json"])
+            if mode in {"PAPER", "LIVE"}:
+                quality_gate = fresh_buy_quality_gate(
+                    {
+                        "action": idea_details.get("action") or idea["signal_type"],
+                        "signal_type": idea["signal_type"],
+                        "status": idea["status"],
+                        "overall_score_pct": idea["overall_score_pct"],
+                        "overall_grade": idea["overall_grade"],
+                        "hard_blocked": idea_details.get("hard_blocked"),
+                        "details": idea_details,
+                    }
+                )
+                if not quality_gate.get("passed"):
+                    raise ValueError(f"phase1_quality_gate:{quality_gate.get('reason')}")
             if qty <= 0 and amount > 0 and latest_price > 0:
                 qty = int(float(amount) // latest_price)
             if mode in {"PAPER", "LIVE"} and qty <= 0:
@@ -3865,6 +3939,7 @@ class Database:
         closed = winners + losers
         realized = float(position_data.get("realized_pnl") or 0.0)
         learning = self.post_trade_learning_summary(user_id=user_id)
+        strategy_feedback = self.strategy_performance_feedback(user_id=user_id)
         return {
             "orders": {
                 "total": int(order_data.get("total_orders") or 0),
@@ -3889,6 +3964,134 @@ class Database:
                 "max_drawdown_pct": round(max_drawdown * 100, 4),
             },
             "post_trade_learning": learning,
+            "strategy_performance_feedback": strategy_feedback,
+        }
+
+    def strategy_performance_feedback(self, user_id: int | None = None, limit: int = 2000) -> dict[str, Any]:
+        where_parts = ["f.mode in ('PAPER','LIVE')"]
+        params: list[Any] = []
+        if user_id is not None:
+            where_parts.append("f.user_id = ?")
+            params.append(int(user_id))
+        where_sql = " and ".join(where_parts)
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                f"""
+                select
+                    f.id as follow_id,
+                    f.user_id,
+                    f.mode,
+                    f.status as follow_status,
+                    f.qty,
+                    f.entry_price as follow_entry_price,
+                    f.latest_price as follow_latest_price,
+                    f.return_pct as follow_return_pct,
+                    f.unrealized_pnl,
+                    f.created_at as followed_at,
+                    f.updated_at as follow_updated_at,
+                    f.details_json as follow_details_json,
+                    i.id as idea_id,
+                    i.symbol,
+                    i.strategy,
+                    i.plan_code,
+                    i.signal_type,
+                    i.status as idea_status,
+                    i.first_seen_at,
+                    i.last_seen_at,
+                    i.entry_price as idea_entry_price,
+                    i.latest_price as idea_latest_price,
+                    i.current_return_pct,
+                    i.peak_return_pct,
+                    i.worst_return_pct,
+                    i.details_json as idea_details_json,
+                    {_market_region_case("u")} as market_region,
+                    u.exchange,
+                    u.sector,
+                    u.industry
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
+                where {where_sql}
+                order by f.updated_at desc, f.id desc
+                limit ?
+                """,
+                (*params, max(1, min(int(limit or 2000), 5000))),
+            ).fetchall()
+            plan_rows = conn.execute(
+                """
+                select code, name
+                from strategy_plans
+                where enabled = 1
+                order by code
+                """
+            ).fetchall()
+
+        groups = {
+            "overall": _empty_performance_group("overall", "all"),
+            "by_market": {},
+            "by_strategy": {},
+            "by_plan": {},
+            "by_strategy_market": {},
+        }
+        recent_closed: list[dict[str, Any]] = []
+        for row in rows:
+            record = _performance_feedback_record(_row_dict(row))
+            _add_performance_record(groups["overall"], record)
+            market = record["market_region"]
+            strategy = record["strategy"]
+            plan = record["plan_code"]
+            strategy_market = f"{strategy}|{market}"
+            _add_performance_record(
+                groups["by_market"].setdefault(market, _empty_performance_group("market", market)),
+                record,
+            )
+            _add_performance_record(
+                groups["by_strategy"].setdefault(strategy, _empty_performance_group("strategy", strategy)),
+                record,
+            )
+            _add_performance_record(
+                groups["by_plan"].setdefault(plan, _empty_performance_group("plan", plan)),
+                record,
+            )
+            _add_performance_record(
+                groups["by_strategy_market"].setdefault(
+                    strategy_market,
+                    _empty_performance_group("strategy_market", strategy_market, strategy=strategy, market_region=market),
+                ),
+                record,
+            )
+            if record["closed"] and len(recent_closed) < 20:
+                recent_closed.append(_compact_performance_record(record))
+        for plan_row in plan_rows:
+            code = str(plan_row["code"] or "").strip()
+            if code:
+                group = groups["by_plan"].setdefault(code, _empty_performance_group("plan", code))
+                group["name"] = plan_row["name"]
+
+        finalized_by_market = [_finalize_performance_group(group) for group in groups["by_market"].values()]
+        finalized_by_strategy = [_finalize_performance_group(group) for group in groups["by_strategy"].values()]
+        finalized_by_plan = [_finalize_performance_group(group) for group in groups["by_plan"].values()]
+        finalized_by_strategy_market = [_finalize_performance_group(group) for group in groups["by_strategy_market"].values()]
+        return {
+            "version": "phase4-performance-feedback-v1",
+            "scope": "user" if user_id is not None else "all_users",
+            "user_id": user_id,
+            "sampled_follows": len(rows),
+            "overall": _finalize_performance_group(groups["overall"]),
+            "by_market": sorted(finalized_by_market, key=lambda item: (item["closed_trades"], item["expectancy_pct"]), reverse=True),
+            "by_strategy": sorted(finalized_by_strategy, key=lambda item: (item["closed_trades"], item["expectancy_pct"]), reverse=True),
+            "by_plan": sorted(finalized_by_plan, key=lambda item: (item["closed_trades"], item["expectancy_pct"]), reverse=True),
+            "by_strategy_market": sorted(finalized_by_strategy_market, key=lambda item: (item["closed_trades"], item["expectancy_pct"]), reverse=True),
+            "recent_closed_trades": recent_closed,
+            "definitions": {
+                "win_rate": "closed winners divided by closed trades.",
+                "average_gain_loss": "average closed-trade return for winners and losers.",
+                "stop_hit_rate": "closed trades exited by stop/risk-stop divided by closed trades.",
+                "time_to_target_1": "hours from follow open to first T1 hit when T1 data exists.",
+                "mae_mfe": "MAE/MFE use marked worst/peak return percentages while the idea or follow was active.",
+                "expectancy": "average closed-trade return percentage, grouped by market, strategy, plan, and strategy-market.",
+            },
         }
 
     def post_trade_learning_summary(self, user_id: int | None = None, limit: int = 800) -> dict[str, Any]:
@@ -4155,6 +4358,228 @@ def _follow_realized_pnl(details: Any) -> float:
     return round(realized, 2)
 
 
+def _performance_feedback_record(item: dict[str, Any]) -> dict[str, Any]:
+    follow_details = _json_load(item.get("follow_details_json"))
+    follow_details = follow_details if isinstance(follow_details, dict) else {}
+    idea_details = _json_load(item.get("idea_details_json"))
+    idea_details = idea_details if isinstance(idea_details, dict) else {}
+    management = follow_details.get("exit_management") if isinstance(follow_details.get("exit_management"), dict) else {}
+    events = [event for event in management.get("events", []) if isinstance(event, dict)]
+    latest_event = events[-1] if events else {}
+    manual_exit = follow_details.get("manual_exit") if isinstance(follow_details.get("manual_exit"), dict) else {}
+    mark_state = follow_details.get("mark_state") if isinstance(follow_details.get("mark_state"), dict) else {}
+    status = str(item.get("follow_status") or "").upper()
+    mode = str(item.get("mode") or "").upper()
+    closed = status in {"EXITED", "LIVE_EXIT_REQUESTED"}
+    entry_price = _optional_float(item.get("follow_entry_price") or item.get("idea_entry_price")) or 0.0
+    latest_price = _optional_float(item.get("follow_latest_price") or item.get("idea_latest_price")) or entry_price
+    return_pct = (
+        _optional_float(manual_exit.get("return_pct"))
+        or _optional_float(latest_event.get("return_pct"))
+        or _optional_float(item.get("follow_return_pct"))
+        or _return_pct(entry_price, latest_price)
+    )
+    realized_pnl = _follow_realized_pnl(follow_details)
+    peak = (
+        _optional_float(mark_state.get("peak_return_pct"))
+        or _optional_float(item.get("peak_return_pct"))
+        or max(return_pct, _optional_float(item.get("current_return_pct")) or return_pct)
+    )
+    worst = (
+        _optional_float(mark_state.get("worst_return_pct"))
+        or _optional_float(item.get("worst_return_pct"))
+        or min(return_pct, _optional_float(item.get("current_return_pct")) or return_pct)
+    )
+    target_status = [target for target in idea_details.get("target_status", []) if isinstance(target, dict)]
+    t1 = next((target for target in target_status if str(target.get("label") or "").upper() == "T1"), {})
+    t1_hit = bool(t1.get("hit"))
+    t1_hit_at = _parse_dt(t1.get("hit_at"))
+    opened_at = _parse_dt(item.get("followed_at")) or _parse_dt(item.get("first_seen_at"))
+    time_to_t1_hours = None
+    if t1_hit and t1_hit_at and opened_at:
+        time_to_t1_hours = max((t1_hit_at - opened_at).total_seconds() / 3600, 0.0)
+    lifecycle = str(idea_details.get("lifecycle_status") or "").lower()
+    exit_keys = {
+        str(event.get("key") or "").upper()
+        for event in events
+        if str(event.get("key") or "").strip()
+    }
+    manual_reason = str(manual_exit.get("reason") or "").upper()
+    stop_hit = (
+        status == "STOP_HIT"
+        or str(item.get("idea_status") or "").upper() == "STOP_HIT"
+        or lifecycle == "stopped"
+        or any(key in {"STOP_LOSS", "STOP_HIT", "RISK_EXIT_BEFORE_T1"} for key in exit_keys)
+        or "STOP" in manual_reason
+    )
+    strategy = str(item.get("strategy") or "unknown").strip() or "unknown"
+    plan = str(item.get("plan_code") or strategy or "unclassified").strip() or "unclassified"
+    market = normalize_market_region(item.get("market_region") or "IN", default="IN")
+    return {
+        "follow_id": item.get("follow_id"),
+        "idea_id": item.get("idea_id"),
+        "symbol": item.get("symbol"),
+        "market_region": market,
+        "exchange": item.get("exchange"),
+        "strategy": strategy,
+        "plan_code": plan,
+        "mode": mode,
+        "status": status,
+        "closed": closed,
+        "entry_price": round(entry_price, 4),
+        "latest_price": round(latest_price, 4),
+        "return_pct": round(float(return_pct or 0.0), 4),
+        "realized_pnl": round(realized_pnl, 2),
+        "mae_pct": round(float(worst or 0.0), 4),
+        "mfe_pct": round(float(peak or 0.0), 4),
+        "t1_hit": t1_hit,
+        "time_to_t1_hours": round(time_to_t1_hours, 4) if time_to_t1_hours is not None else None,
+        "stop_hit": stop_hit,
+        "opened_at": item.get("followed_at") or item.get("first_seen_at"),
+        "closed_at": manual_exit.get("exited_at") or management.get("last_action_at") or (item.get("follow_updated_at") if closed else None),
+        "exit_keys": sorted(exit_keys),
+    }
+
+
+def _empty_performance_group(
+    group_type: str,
+    key: str,
+    strategy: str | None = None,
+    market_region: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "group_type": group_type,
+        "key": key,
+        "strategy": strategy,
+        "market_region": market_region,
+        "trades": 0,
+        "closed_trades": 0,
+        "open_trades": 0,
+        "winners": 0,
+        "losers": 0,
+        "stop_hits": 0,
+        "target_1_hits": 0,
+        "_closed_returns": [],
+        "_gains": [],
+        "_losses": [],
+        "_realized": [],
+        "_mae": [],
+        "_mfe": [],
+        "_time_to_t1": [],
+        "sample_symbols": [],
+    }
+
+
+def _add_performance_record(group: dict[str, Any], record: dict[str, Any]) -> None:
+    group["trades"] += 1
+    if record.get("closed"):
+        group["closed_trades"] += 1
+        ret = float(record.get("return_pct") or 0.0)
+        group["_closed_returns"].append(ret)
+        group["_realized"].append(float(record.get("realized_pnl") or 0.0))
+        if ret > 0:
+            group["winners"] += 1
+            group["_gains"].append(ret)
+        else:
+            group["losers"] += 1
+            group["_losses"].append(ret)
+        if record.get("stop_hit"):
+            group["stop_hits"] += 1
+    else:
+        group["open_trades"] += 1
+    if record.get("t1_hit"):
+        group["target_1_hits"] += 1
+    if record.get("time_to_t1_hours") is not None:
+        group["_time_to_t1"].append(float(record["time_to_t1_hours"]))
+    group["_mae"].append(float(record.get("mae_pct") or 0.0))
+    group["_mfe"].append(float(record.get("mfe_pct") or 0.0))
+    symbol = str(record.get("symbol") or "").upper()
+    if symbol and len(group["sample_symbols"]) < 8 and symbol not in group["sample_symbols"]:
+        group["sample_symbols"].append(symbol)
+    if group.get("strategy") is None:
+        group["strategy"] = record.get("strategy")
+    if group.get("market_region") is None:
+        group["market_region"] = record.get("market_region")
+
+
+def _finalize_performance_group(group: dict[str, Any]) -> dict[str, Any]:
+    closed = int(group.get("closed_trades") or 0)
+    trades = int(group.get("trades") or 0)
+    returns = list(group.pop("_closed_returns", []))
+    gains = list(group.pop("_gains", []))
+    losses = list(group.pop("_losses", []))
+    realized = list(group.pop("_realized", []))
+    mae_values = list(group.pop("_mae", []))
+    mfe_values = list(group.pop("_mfe", []))
+    t1_times = list(group.pop("_time_to_t1", []))
+    output = dict(group)
+    output.update(
+        {
+            "win_rate": round(float(output["winners"]) / closed, 4) if closed else 0.0,
+            "average_gain_pct": _avg(gains),
+            "average_loss_pct": _avg(losses),
+            "average_realized_pnl": _avg(realized, digits=2),
+            "stop_hit_rate": round(float(output["stop_hits"]) / closed, 4) if closed else 0.0,
+            "target_1_hit_rate": round(float(output["target_1_hits"]) / trades, 4) if trades else 0.0,
+            "avg_time_to_target_1_hours": _avg(t1_times),
+            "max_adverse_excursion_pct": round(min(mae_values), 4) if mae_values else 0.0,
+            "avg_mae_pct": _avg(mae_values),
+            "max_favorable_excursion_pct": round(max(mfe_values), 4) if mfe_values else 0.0,
+            "avg_mfe_pct": _avg(mfe_values),
+            "expectancy_pct": _avg(returns),
+            "expectancy_amount": _avg(realized, digits=2),
+            "feedback_score": _performance_feedback_score(returns, output["winners"], closed, output["stop_hits"]),
+            "evidence_quality": _performance_evidence_quality(closed),
+        }
+    )
+    return output
+
+
+def _compact_performance_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": record.get("symbol"),
+        "market_region": record.get("market_region"),
+        "strategy": record.get("strategy"),
+        "plan_code": record.get("plan_code"),
+        "return_pct": record.get("return_pct"),
+        "realized_pnl": record.get("realized_pnl"),
+        "mae_pct": record.get("mae_pct"),
+        "mfe_pct": record.get("mfe_pct"),
+        "t1_hit": record.get("t1_hit"),
+        "time_to_t1_hours": record.get("time_to_t1_hours"),
+        "stop_hit": record.get("stop_hit"),
+        "closed_at": record.get("closed_at"),
+    }
+
+
+def _avg(values: list[float], digits: int = 4) -> float:
+    return round(sum(values) / len(values), digits) if values else 0.0
+
+
+def _performance_feedback_score(returns: list[float], winners: int, closed: int, stop_hits: int) -> float:
+    if closed <= 0:
+        return 0.0
+    expectancy = _avg(returns)
+    win_rate = float(winners) / closed
+    stop_rate = float(stop_hits) / closed
+    score = (expectancy / 5.0) + ((win_rate - 0.5) * 0.8) - (stop_rate * 0.35)
+    if closed < 5:
+        score *= 0.45
+    elif closed < 12:
+        score *= 0.7
+    return round(max(min(score, 1.0), -1.0), 4)
+
+
+def _performance_evidence_quality(closed: int) -> str:
+    if closed >= 30:
+        return "usable"
+    if closed >= 12:
+        return "thin"
+    if closed > 0:
+        return "anecdotal"
+    return "none"
+
+
 def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follow_details: dict[str, Any]) -> dict[str, Any] | None:
     management = follow_details.get("exit_management") if isinstance(follow_details.get("exit_management"), dict) else {}
     done = {
@@ -4271,7 +4696,10 @@ def _why_changed_payload(
     latest_action = str(latest_action or "HOLD").upper()
     original = _short_reason(original_buy_reason, 260)
     latest = _short_reason(latest_monitor_reason, 320)
-    if latest_action == "BUY":
+    continuity = continuity if isinstance(continuity, dict) else {}
+    if continuity.get("duplicate_active_buy") or continuity.get("already_active_buy"):
+        summary = "Already active. Repeated BUY is treated as position monitoring, not a new entry."
+    elif latest_action == "BUY":
         summary = "Fresh BUY is currently confirmed by the latest engine cycle."
     elif original and latest:
         summary = f"BUY preserved. Latest engine action {latest_action} because {latest}"
@@ -4349,8 +4777,22 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
         class_name = "warning"
         reason = "Idea timeline has expired."
     elif signal_type == "BUY" and status in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
-        if latest_action == "BUY" and not continuity:
-            display_signal = "Fresh Buy"
+        duplicate_active = bool(continuity.get("duplicate_active_buy") or continuity.get("already_active_buy"))
+        follow_mode = str(follow.get("mode") or item.get("mode") or "").upper()
+        if followed_active and follow_mode == "PAPER":
+            display_signal = "Paper Entered"
+            fresh_action = "NO_FRESH_ADD"
+            reason = "Paper position is already entered; this idea is now being monitored."
+        elif followed_active:
+            display_signal = "Position Monitor"
+            fresh_action = "NO_FRESH_ADD"
+            reason = "Position is already active; this idea is now being monitored."
+        elif duplicate_active:
+            display_signal = "Already Active"
+            fresh_action = "NO_FRESH_ADD"
+            reason = why_changed.get("summary") or "Already active; repeated BUY is monitor/no fresh add during cooldown."
+        elif latest_action == "BUY" and not continuity:
+            display_signal = "Actionable"
             fresh_action = "BUY_NOW"
             reason = "Fresh BUY passed the current entry and risk gates."
         elif drawdown_review["risk_review"]:
@@ -4358,16 +4800,27 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
             fresh_action = "NO_FRESH_ADD"
             reason = drawdown_review["reason"] or "Active BUY is in adverse movement; review risk before adding."
         else:
-            display_signal = "Active Buy"
+            display_signal = "Position Monitor"
             fresh_action = "NO_FRESH_ADD"
             reason = why_changed.get("summary") or "Active BUY remains valid; latest cycle is monitor/no fresh add until a new BUY confirmation or exit."
-        trade_state = "ACTIVE_BUY"
+        trade_state = {
+            "Paper Entered": "PAPER_ENTERED",
+            "Actionable": "ACTIONABLE",
+            "Already Active": "POSITION_MONITOR",
+            "Position Monitor": "POSITION_MONITOR",
+        }.get(display_signal, "POSITION_MONITOR")
         class_name = "open"
         if drawdown_review["risk_review"]:
             trade_state = "RISK_REVIEW"
             class_name = "warning"
         if current_return < 0:
             reason = f"{reason} Current return is {current_return:.2f}% from the original signal."
+    elif signal_type == "WATCH" or status == "WATCH" or lifecycle == "watch":
+        display_signal = "Watch"
+        fresh_action = "WATCH"
+        trade_state = "WATCH"
+        class_name = "warning"
+        reason = "Setup is being monitored but is not a fresh BUY."
     elif followed_active and drawdown_review["risk_review"]:
         display_signal = "Risk Review"
         fresh_action = "NO_FRESH_ADD"
@@ -4382,12 +4835,6 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
         trade_state = "POSITION_MONITOR"
         class_name = "open"
         reason = why_changed.get("summary") or "Followed position is active; this is position monitoring, not a fresh entry."
-    elif signal_type == "WATCH" or status == "WATCH" or lifecycle == "watch":
-        display_signal = "Watch"
-        fresh_action = "WATCH"
-        trade_state = "WATCH"
-        class_name = "warning"
-        reason = "Setup is being monitored but is not a fresh BUY."
     else:
         display_signal = "Monitor"
         fresh_action = "NO_TRADE"
@@ -4401,7 +4848,7 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
         "display_signal": display_signal,
         "fresh_action": fresh_action,
         "fresh_action_label": {
-            "BUY_NOW": "Fresh Buy",
+            "BUY_NOW": "Actionable",
             "NO_FRESH_ADD": "No Fresh Add",
             "WATCH": "Watch",
             "EXIT": "Exit",
@@ -4468,12 +4915,16 @@ def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: 
 
 
 def _execution_state_payload(item: dict[str, Any]) -> dict[str, str]:
+    signal_type = str(item.get("signal_type") or item.get("suggestion") or "").upper()
+    status_label = str(item.get("status") or "").upper()
     follow = item.get("user_follow") if isinstance(item.get("user_follow"), dict) else {}
     mode = str(follow.get("mode") or item.get("mode") or "").upper()
     status = str(follow.get("status") or item.get("follow_status") or "").upper()
     qty = _optional_int(follow.get("qty") if follow else item.get("qty")) or 0
     if not follow and not mode:
         return {"state": "SIGNAL_ONLY", "label": "Signal Only", "note": "Not tracked or auto-followed for this user."}
+    if signal_type == "WATCH" or status_label == "WATCH":
+        return {"state": "WATCH", "label": "Watch", "note": "Watch only; no paper or live entry is allowed."}
     if mode == "TRACK":
         return {"state": "TRACKED", "label": "Tracked", "note": "Tracking only; no paper or live order."}
     if status in {"REJECTED", "FAILED"}:
@@ -4483,7 +4934,7 @@ def _execution_state_payload(item: dict[str, Any]) -> dict[str, str]:
     if status in {"FILLED", "ACCEPTED", "PARTIAL"}:
         return {"state": status, "label": status.title(), "note": "Broker/order lifecycle has advanced beyond request state."}
     if mode == "PAPER" and status == "ACTIVE" and qty > 0:
-        return {"state": "PAPER_ACTIVE", "label": "Paper Active", "note": "Paper position is active and marked to latest price."}
+        return {"state": "PAPER_ENTERED", "label": "Paper Entered", "note": "Paper position is active and marked to latest price."}
     if mode == "LIVE" and status == "LIVE_REQUESTED":
         return {"state": "LIVE_REQUESTED", "label": "Live Requested", "note": "Guarded live request was created; broker fill must be reconciled."}
     if mode == "LIVE" and status == "LIVE_EXIT_REQUESTED":
@@ -4506,6 +4957,11 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
     signal_plan = full.get("signal_plan") if isinstance(full.get("signal_plan"), dict) else {}
     risk = full.get("risk_overrides") if isinstance(full.get("risk_overrides"), dict) else {}
+    strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
+    breakout = full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {}
+    entry_quality = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+    decision_gate = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
+    data_readiness = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
     score_breakdown = audit.get("score_breakdown") if isinstance(audit.get("score_breakdown"), dict) else {}
     system_audit = audit.get("system_gate_audit") or context.get("system_gate_audit") or {}
     if not isinstance(system_audit, dict):
@@ -4514,19 +4970,12 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     combined = float(score_breakdown.get("combined") or 0.0)
     confluence_total = float(confluence.get("total") or 0.0)
     hard_blocked = bool(system_audit.get("hard_blocked"))
-    signal_type = "NO_TRADE"
-    status = "MONITORING"
-    if action == "BUY" and not hard_blocked:
-        signal_type = "BUY"
-        status = "ACTIVE"
-    elif confluence_total >= 16 and combined >= 0.20 and float(system_audit.get("overall_score_pct") or 0.0) >= 55 and action != "SELL":
-        signal_type = "WATCH"
-        status = "WATCH"
-    elif action == "SELL":
-        signal_type = "EXIT"
-        status = "EXIT_SIGNAL"
-    else:
-        return None
+    overall_score = system_audit.get("overall_score_pct")
+    if overall_score in (None, ""):
+        overall_score = audit.get("overall_score_pct")
+    if overall_score in (None, ""):
+        overall_score = score_breakdown.get("score_percent")
+    overall_grade = system_audit.get("overall_grade") or audit.get("overall_grade")
     price = _optional_float(row.get("price")) or 0.0
     targets = trade_plan.get("targets")
     if not isinstance(targets, list):
@@ -4539,12 +4988,55 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "stop_loss": trade_plan.get("stop_loss"),
         "targets": targets,
         "risk_flags": risk.get("flags", []),
-        "overall_score_pct": system_audit.get("overall_score_pct"),
-        "overall_grade": system_audit.get("overall_grade"),
+        "overall_score_pct": overall_score,
+        "overall_grade": overall_grade,
+        "hard_blocked": hard_blocked,
+        "hard_blocks": system_audit.get("hard_blocks", []),
+        "soft_flags": system_audit.get("soft_flags", []),
+        "failed_gates": decision_gate.get("failed_gates", []),
+        "data_readiness": data_readiness,
+        "entry_quality": entry_quality,
+        "breakout_quality": breakout,
+        "strategy_logic_filters": strategy_logic,
         "reason": audit.get("action_reason") or row.get("reason"),
         "classification": system_audit.get("classification"),
         "allocation_cap_multiplier": system_audit.get("allocation_cap_multiplier"),
     }
+    quality_gate = fresh_buy_quality_gate(
+        {
+            "action": action,
+            "signal_type": "BUY" if action == "BUY" else action,
+            "status": "ACTIVE" if action == "BUY" else action,
+            "overall_score_pct": overall_score,
+            "overall_grade": overall_grade,
+            "hard_blocked": hard_blocked,
+            "details": details,
+        }
+    )
+    details["quality_gate"] = quality_gate
+    signal_type = "NO_TRADE"
+    status = "MONITORING"
+    if action == "BUY" and not hard_blocked and quality_gate.get("passed"):
+        signal_type = "BUY"
+        status = "ACTIVE"
+    elif action == "SELL":
+        signal_type = "EXIT"
+        status = "EXIT_SIGNAL"
+    elif action == "BUY" and not hard_blocked:
+        signal_type = "WATCH"
+        status = "WATCH"
+        details["decision_readiness"] = "monitor_only"
+        details["quality_downgrade"] = {
+            "from": "BUY",
+            "to": "WATCH",
+            "reason": quality_gate.get("reason"),
+            "message": quality_gate.get("message"),
+        }
+    elif confluence_total >= 16 and combined >= 0.20 and float(overall_score or 0.0) >= 55 and action != "SELL":
+        signal_type = "WATCH"
+        status = "WATCH"
+    else:
+        return None
     if signal_type == "BUY":
         details["original_buy_reason"] = audit.get("action_reason") or row.get("reason")
     plan_code = _strategy_plan_code(str(row.get("strategy") or ""), action, price, full, system_audit)
@@ -4558,8 +5050,8 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "confidence": float(row.get("confidence") or 0.0),
         "combined_score": combined,
         "confluence": confluence_total,
-        "overall_score_pct": float(system_audit.get("overall_score_pct") or 0.0),
-        "overall_grade": str(system_audit.get("overall_grade") or ""),
+        "overall_score_pct": float(overall_score or 0.0),
+        "overall_grade": str(overall_grade or ""),
         "reason": str(audit.get("action_reason") or row.get("reason") or "")[:1000],
         "details": details,
     }
@@ -4577,7 +5069,27 @@ def _should_preserve_active_buy(existing: sqlite3.Row, idea: dict[str, Any], row
         return False
     if action in {"SELL", "EXIT"} or incoming_signal == "EXIT" or incoming_status == "EXIT_SIGNAL":
         return False
+    quality_gate = (idea.get("details") or {}).get("quality_gate") if isinstance(idea.get("details"), dict) else {}
+    if action == "BUY" and isinstance(quality_gate, dict) and quality_gate.get("passed") is False:
+        return False
     return action == "HOLD" or incoming_signal in {"WATCH", "NO_TRADE"} or incoming_status in {"WATCH", "MONITORING"}
+
+
+def _is_duplicate_active_buy_refresh(existing: sqlite3.Row, idea: dict[str, Any], row: dict[str, Any], now_iso: str) -> bool:
+    if str(existing["signal_type"] or "").upper() != "BUY":
+        return False
+    if str(existing["status"] or "").upper() not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+        return False
+    if str(row.get("action") or "").upper() != "BUY":
+        return False
+    if str(idea.get("signal_type") or "").upper() != "BUY":
+        return False
+    first_seen = _parse_dt(existing["first_seen_at"])
+    now_dt = _parse_dt(now_iso)
+    if not first_seen or not now_dt:
+        return True
+    age_hours = (now_dt - first_seen).total_seconds() / 3600
+    return age_hours < DUPLICATE_BUY_COOLDOWN_HOURS
 
 
 def _strategy_plan_code(

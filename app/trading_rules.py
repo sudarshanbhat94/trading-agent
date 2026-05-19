@@ -31,10 +31,12 @@ def evaluate_rules_for_context(
     quote = context.get("quote") or {}
     sentiment = context.get("sentiment") or {}
     macro_event = context.get("macro_event_context") or {}
+    data_readiness = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
     sector_context = full.get("sector_rotation") or context.get("sector_rotation") or {}
     delivery = full.get("delivery_accumulation") or context.get("delivery_data") or {}
     entry = full.get("entry_quality") or {}
     breakout = full.get("breakout_quality") or {}
+    phase3 = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
     divergence = full.get("price_volume_divergence") or {}
     alignment = ((full.get("trend_context") or {}).get("timeframe_alignment") or {})
     options_oi = full.get("options_oi") or context.get("options_intelligence") or {}
@@ -57,6 +59,51 @@ def evaluate_rules_for_context(
     price = price_integrity(quote, market_health)
     if price.get("price_mismatch"):
         hard("PRICE_MISMATCH", "two available price references differ by more than 1%", price)
+
+    has_position = bool(context.get("position", {}).get("qty"))
+    if data_readiness and not has_position:
+        for gap in data_readiness.get("hard_gaps") or []:
+            hard(
+                "DATA_READINESS_BLOCK",
+                f"Phase 2 data missing: {gap.get('label') or gap.get('key')}",
+                {
+                    "key": gap.get("key"),
+                    "source": gap.get("source"),
+                    "note": gap.get("note"),
+                    "market_region": data_readiness.get("market_region"),
+                    "policy": data_readiness.get("policy"),
+                },
+            )
+        for gap in data_readiness.get("soft_gaps") or []:
+            data_gap(
+                f"DATA_GAP_{str(gap.get('key') or 'UNKNOWN').upper()}",
+                f"Phase 2 data gap: {gap.get('label') or gap.get('key')}",
+                {"key": gap.get("key"), "source": gap.get("source"), "note": gap.get("note")},
+            )
+    if phase3:
+        for block in phase3.get("hard_blocks") or []:
+            if has_position:
+                soft(
+                    str(block.get("flag") or "PHASE3_STRATEGY_BLOCK"),
+                    str(block.get("reason") or "Phase 3 strategy logic block"),
+                    block.get("value"),
+                )
+            else:
+                hard(
+                    str(block.get("flag") or "PHASE3_STRATEGY_BLOCK"),
+                    str(block.get("reason") or "Phase 3 strategy logic block"),
+                    block.get("value"),
+                )
+        for item in phase3.get("penalties") or []:
+            soft(
+                str(item.get("flag") or "PHASE3_STRATEGY_PENALTY"),
+                str(item.get("reason") or "Phase 3 strategy logic penalty"),
+                {
+                    "value": item.get("value"),
+                    "score_penalty": item.get("score_penalty"),
+                    "size_multiplier": item.get("size_multiplier"),
+                },
+            )
 
     options_available = options_oi.get("status") == "ok" and bool(options_oi.get("available", True))
     options_status = str(options_oi.get("status") or "")
@@ -105,10 +152,33 @@ def evaluate_rules_for_context(
                 "sizing": "reduce_only",
             }
         )
-    if earnings.get("known_earnings_block"):
-        hard("EARNINGS_LOCKOUT", "known earnings date is within 10 trading days", earnings)
+    event_driven = _phase3_event_driven_thesis(full, macro_event)
+    if earnings.get("known_earnings_block") and not event_driven.get("supported"):
+        if "EARNINGS_LOCKOUT_NOT_EVENT_DRIVEN" not in active_flags:
+            hard("EARNINGS_LOCKOUT", "known earnings date is within 10 trading days and no explicit event-driven thesis is present", earnings)
+    elif earnings.get("known_earnings_block"):
+        if "EARNINGS_EVENT_DRIVEN_TINY_SIZE" not in active_flags:
+            soft(
+                "EARNINGS_EVENT_DRIVEN_TINY_SIZE",
+                "earnings-window event-driven trade must use tiny size until the event clears",
+                {"earnings": earnings, "event_thesis": event_driven},
+            )
 
     classification = classify_stock(full)
+    if classification["classification"] == "SPECULATIVE":
+        soft(
+            "SPECULATIVE_TINY_SIZE_ONLY",
+            "speculative names are allowed only at tiny position size",
+            classification,
+        )
+
+    sponsorship = phase3.get("institutional_sponsorship") if isinstance(phase3.get("institutional_sponsorship"), dict) else _institutional_sponsorship_from_full(full)
+    if not sponsorship.get("supported") and "INSTITUTIONAL_SPONSORSHIP_MISSING" not in active_flags:
+        soft(
+            "INSTITUTIONAL_SPONSORSHIP_MISSING",
+            "institutional quality is not allowed without delivery, block-deal, fund-flow, or options-accumulation evidence",
+            sponsorship,
+        )
     delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "neutral").lower()
     if delivery_bias == "distribution":
         active_flags.append("DELIVERY_CONFLICT")
@@ -140,6 +210,11 @@ def evaluate_rules_for_context(
         )
 
     allocation_cap = float(classification["max_allocation_multiplier"])
+    if classification["classification"] == "SPECULATIVE":
+        allocation_cap = min(allocation_cap, 0.15)
+    phase3_size_cap = _float_or_none((phase3.get("sizing") or {}).get("max_multiplier")) if phase3 else None
+    if phase3_size_cap is not None:
+        allocation_cap = min(allocation_cap, phase3_size_cap)
     if effective_entry_grade == "WATCH":
         allocation_cap = 0.0
     if mtf_grade == "C":
@@ -154,6 +229,7 @@ def evaluate_rules_for_context(
         and classification["classification"] == "FUNDAMENTAL"
         and not active_flags
         and not sector_metadata_missing
+        and bool(sponsorship.get("supported"))
         and delivery_bias in {"accumulation", "neutral", ""}
         and not earnings.get("stale_or_empty")
         and sentiment_audit["status"] != "DATA_MISSING"
@@ -166,6 +242,9 @@ def evaluate_rules_for_context(
         "soft_flags": soft_flags,
         "active_flags": _unique(active_flags),
         "price": price,
+        "data_readiness": data_readiness,
+        "phase3_strategy_logic": phase3,
+        "institutional_sponsorship": sponsorship,
         "options": options,
         "sector": {
             "sector": sector or None,
@@ -329,6 +408,82 @@ def earnings_calendar_audit(
         "known_earnings_block": known_block,
         "earnings_events_loaded": len(earnings_events),
     }
+
+
+def _phase3_event_driven_thesis(full: dict[str, Any], macro_event_context: dict[str, Any]) -> dict[str, Any]:
+    phase3 = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
+    event_thesis = phase3.get("event_driven_thesis") if isinstance(phase3.get("event_driven_thesis"), dict) else {}
+    if event_thesis:
+        return event_thesis
+    evidence = []
+    for key in ("event_driven", "explicit_event_driven", "earnings_event_driven", "allow_earnings_trade", "catalyst_trade"):
+        if macro_event_context.get(key) is True:
+            evidence.append(f"macro_context.{key}=true")
+    text = " ".join(
+        str(macro_event_context.get(key) or "").lower()
+        for key in ("strategy", "strategy_type", "thesis", "event_thesis", "catalyst")
+    )
+    if "event-driven" in text or "event driven" in text or "catalyst" in text or "earnings trade" in text:
+        evidence.append("macro_context contains explicit event/catalyst thesis")
+    fundamental = full.get("fundamental_quality") or {}
+    if str(fundamental.get("quality_bucket") or "").lower() in {"event_positive", "event_positive_with_ratios"}:
+        evidence.append("positive official event in fundamental quality")
+    return {"supported": bool(evidence), "evidence": _unique(evidence)}
+
+
+def _institutional_sponsorship_from_full(full: dict[str, Any]) -> dict[str, Any]:
+    delivery = full.get("delivery_accumulation") or {}
+    flow = full.get("institutional_flow") or {}
+    options_oi = full.get("options_oi") or {}
+    evidence = []
+    delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
+    delivery_score = _float_or_none(delivery.get("delivery_score"))
+    delivery_pct = _float_or_none(delivery.get("delivery_pct") or delivery.get("delivery_percentage"))
+    if delivery.get("institutional_fingerprint") or delivery.get("fingerprint"):
+        evidence.append("delivery institutional fingerprint")
+    if delivery_bias == "accumulation" and ((delivery_score is not None and delivery_score > 0) or (delivery_pct is not None and delivery_pct >= 50)):
+        evidence.append("delivery accumulation")
+    if flow.get("bulk_deals"):
+        evidence.append("recent bulk/block deal evidence")
+    if _positive_fund_flow(flow.get("fii_dii_flow")):
+        evidence.append("positive FII/DII or fund-flow feed")
+    market_bias_score = _float_or_none((flow.get("market_bias") or {}).get("score"))
+    if market_bias_score is not None and market_bias_score >= 0.15:
+        evidence.append("positive institutional market-bias score")
+    option_bias = str(options_oi.get("bias") or "").lower()
+    pcr = _float_or_none(options_oi.get("pcr_oi") or options_oi.get("market_pcr_proxy"))
+    max_pain_distance = _float_or_none(options_oi.get("max_pain_distance_pct"))
+    if option_bias in {"put_heavy_supportive", "max_pain_above_supportive"}:
+        evidence.append("supportive options accumulation/OI bias")
+    if pcr is not None and pcr >= 1.2:
+        evidence.append("put-heavy PCR support")
+    if max_pain_distance is not None and max_pain_distance > 3:
+        evidence.append("max pain above price/supportive")
+    return {
+        "supported": bool(evidence),
+        "evidence": _unique(evidence),
+        "missing_if_false": [
+            "delivery accumulation/fingerprint",
+            "bulk or block deal evidence",
+            "positive fund-flow/FII-DII feed",
+            "supportive options accumulation/OI",
+        ] if not evidence else [],
+    }
+
+
+def _positive_fund_flow(feed: Any) -> bool:
+    if not isinstance(feed, dict):
+        return False
+    for key in ("score", "net", "net_flow", "net_buy", "net_purchase", "fii_net", "dii_net"):
+        value = _float_or_none(feed.get(key))
+        if value is not None and value > 0:
+            return True
+    items = feed.get("items")
+    if isinstance(items, dict):
+        return any(_positive_fund_flow(item) for item in items.values() if isinstance(item, dict))
+    if isinstance(items, list):
+        return any(_positive_fund_flow(item) for item in items if isinstance(item, dict))
+    return False
 
 
 def build_position_summary(
@@ -498,6 +653,14 @@ def _position_reason(action: str, audit: dict[str, Any]) -> str:
             reasons.append("sector or industry classification is missing")
         if "SUSPECT_BREAKOUT" in flags:
             reasons.append("breakout confirmation is suspect")
+        if "LOW_VOLUME_RATIO" in flags or "WEAK_VOLUME_RATIO" in flags:
+            reasons.append("volume participation is weak")
+        if "REPEATED_FAILED_BREAKOUTS" in flags:
+            reasons.append("recent breakouts have repeatedly failed")
+        if "SPECULATIVE_TINY_SIZE_ONLY" in flags:
+            reasons.append("speculative classification requires tiny size")
+        if "INSTITUTIONAL_SPONSORSHIP_MISSING" in flags:
+            reasons.append("institutional sponsorship evidence is missing")
         if (audit.get("sentiment") or {}).get("status") == "DATA_MISSING":
             reasons.append("sentiment data is missing")
         if (audit.get("classification") or {}).get("classification") == "SPECULATIVE":
@@ -514,12 +677,23 @@ def rule_quality_score_pct(audit: dict[str, Any]) -> float:
     flags = set(audit.get("active_flags") or [])
     flag_penalties = {
         "PRICE_MISMATCH": 50.0,
+        "DATA_READINESS_BLOCK": 32.0,
         "GRADE_VIOLATION": 35.0,
         "DELIVERY_CONFLICT": 25.0,
         "SUSPECT_BREAKOUT": 15.0,
         "SECTOR_MISSING": 10.0,
         "MTF_HARD_BLOCK": 30.0,
         "EARNINGS_LOCKOUT": 35.0,
+        "EARNINGS_LOCKOUT_NOT_EVENT_DRIVEN": 35.0,
+        "PRICE_EXTENDED_FROM_PIVOT": 35.0,
+        "SUSPECT_BREAKOUT_WITHOUT_VOLUME": 30.0,
+        "FAILED_BREAKOUT_TWO_DAY_RULE": 35.0,
+        "LOW_VOLUME_RATIO": 12.0,
+        "WEAK_VOLUME_RATIO": 6.0,
+        "REPEATED_FAILED_BREAKOUTS": 15.0,
+        "INSTITUTIONAL_SPONSORSHIP_MISSING": 12.0,
+        "SPECULATIVE_TINY_SIZE_ONLY": 10.0,
+        "EARNINGS_EVENT_DRIVEN_TINY_SIZE": 8.0,
         "POSITION_COUNT_LIMIT": 25.0,
     }
     for flag in flags:

@@ -1765,16 +1765,17 @@ def _decision_system_prompt(prompt_context: dict[str, Any]) -> str:
     return (
         f"You are OpenStocks Intelligence v2.0, an institutional-style dry-run analyst for {market_scope}. "
         f"All price and plan values are in {currency}. Use only the supplied MCP-style tool context for this exact symbol and market; ignore unrelated universe noise. "
-        "Use quote, candles, exact math indicators, candlestick facts, strategy_signals, sentiment/news, global market context, universe scan rank, full_spectrum_analysis, position, and risk limits. "
+        "Use quote, candles, exact math indicators, candlestick facts, strategy_signals, sentiment/news, global market context, universe scan rank, data_readiness, performance_feedback, full_spectrum_analysis, position, and risk limits. "
         f"{market_specific}"
-        "You must explicitly use stage_analysis, entry_quality.entry_grade, breakout_quality.two_day_rule_failed, price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, delivery_accumulation.institutional_fingerprint when applicable, and options_oi.max_pain_distance_pct when applicable. "
-        "BUY is permitted only in Stage2_Markup; entry grade D, failed breakout two-day rule, climax volume top, D timeframe alignment, or bear_confirmed breadth means HOLD. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
-        "system_gate_audit is mandatory and absolute: if hard_blocked is true or overall_score_pct is below 55, your action must be HOLD for new entries. Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
-        "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true. risk_checks must say whether each new gate passed or failed. If you recommend BUY while any new gate conflicts, acknowledge that conflict in reason. "
+        "You must explicitly use stage_analysis, entry_quality.entry_grade, strategy_logic_filters, breakout_quality.two_day_rule_failed, price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, delivery_accumulation.institutional_fingerprint when applicable, and options_oi.max_pain_distance_pct when applicable. "
+        "BUY is permitted only in Stage2_Markup; entry grade D, price more than 5% extended from pivot, suspect breakout without volume, failed breakout two-day rule, repeated failed breakouts, low volume ratio, climax volume top, D timeframe alignment, or bear_confirmed breadth means HOLD or reduced-size WATCH as dictated by system gates. Do not buy before earnings unless strategy_logic_filters.event_driven_thesis.supported is true. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
+        "system_gate_audit and data_readiness are mandatory and absolute: if hard_blocked is true, data_readiness.trade_decision_ready is false, or overall_score_pct is below 55, your action must be HOLD for new entries. Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
+        "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true and strategy_logic_filters.institutional_sponsorship.supported is true. risk_checks must say whether each new gate passed or failed. If you recommend BUY while any new gate conflicts, acknowledge that conflict in reason. "
         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, and data_gaps. "
         "Your entire response must be one JSON object. The first character must be { and the last character must be }. Do not include markdown, scratchpad, reasoning text, or commentary. "
         "Keep it compact: no newline characters inside strings, reason <= 280 characters, each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. action must be BUY, SELL, or HOLD. confidence is 0..1. strategy must be one of the supplied strategy_signals names or best_strategy.name. risk must be LOW, MEDIUM, or HIGH. "
         "Respect confluence_score: below 10 means HOLD, 10-15 watchlist only, 16+ may trade, 18+ high conviction, 22+ maximum conviction. For new BUY decisions, also require institutional_scorecard.buy_ready=true; hard vetoes or failed must-pass gates override your opinion. "
+        "Use Phase 4 performance_feedback as historical evidence: poor expectancy, low win rate, high stop-hit rate, or bad MAE for this strategy/market should reduce size or HOLD unless the current setup has exceptional clean evidence. "
         "If an existing long position is supplied, act as the exit/risk manager: SELL only when the hard stop, target/invalidation, technical breakdown, news shock, or risk-off regime justifies exit; otherwise HOLD with a concrete updated exit plan. "
         "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
     )
@@ -1787,7 +1788,7 @@ def _budget_decision_system_prompt(prompt_context: dict[str, Any]) -> str:
         f"You are OpenStocks Brain for {market_region} equities. Prices are in {currency}. "
         "Return one strict minified JSON object only, with no markdown or reasoning text. "
         "Required keys: action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, data_gaps. "
-        "Use only supplied data. HARD: new BUY=>HOLD if hard_blocked, stage!=Stage2_Markup, entry WATCH/D, 2-day breakout failed, climax top, MTF D, breadth bear_confirmed, or options buy_suppressed. "
+        "Use only supplied data. HARD: new BUY=>HOLD if hard_blocked, data_readiness.trade_decision_ready=false, stage!=Stage2_Markup, entry WATCH/D, 2-day breakout failed, climax top, MTF D, breadth bear_confirmed, or options buy_suppressed. "
         "Sentiment 0 means DATA_MISSING. Below confluence 16 is watch/HOLD unless already managing an open position. Keep reason under 180 chars and every list under 4 short items."
     )
 
@@ -1906,11 +1907,13 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
     stage = full.get("stage_analysis") or {}
     entry = full.get("entry_quality") or {}
     breakout = full.get("breakout_quality") or {}
+    strategy_logic = full.get("strategy_logic_filters") or {}
     divergence = full.get("price_volume_divergence") or {}
     sector = full.get("sector_rotation") or context.get("sector_rotation") or {}
     delivery = full.get("delivery_accumulation") or context.get("delivery_data") or {}
     breadth = full.get("market_breadth") or context.get("market_breadth_context") or {}
     macro_event = full.get("macro_event_context") or context.get("macro_event_context") or {}
+    performance_feedback = full.get("performance_feedback") or context.get("performance_feedback") or {}
     scorecard = full.get("institutional_scorecard") or {}
     market_region = _market_region_from_context(context)
     currency = "USD" if market_region == "US" else "INR"
@@ -1932,6 +1935,7 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
             "top_strategies": _top_strategy_signals(context.get("strategy_signals") or [], limit=3),
             "best_strategy": _short_object(context.get("best_strategy") or {}, ["name", "score", "direction", "confidence"], 80),
             "sentiment": context.get("sentiment"),
+            "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
             "global_regime": _compact_global_context(context.get("global_market_context") or {}, limit=5),
             "system_gate_audit": _compact_system_gate_audit(context.get("system_gate_audit") or {}),
             "decision_gates": _prune_empty(
@@ -1939,8 +1943,15 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
                     "stage": stage.get("stage"),
                     "stage_buy_permitted": stage.get("buy_permitted"),
                     "entry_grade": entry.get("entry_grade"),
+                    "distance_from_pivot_pct": entry.get("distance_from_pivot_pct"),
                     "breakout_quality": breakout.get("breakout_quality"),
                     "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+                    "phase3_passed": strategy_logic.get("passed"),
+                    "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
+                    "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5),
+                    "phase3_volume": strategy_logic.get("breakout_volume"),
+                    "phase3_institutional_sponsorship": strategy_logic.get("institutional_sponsorship"),
+                    "phase3_event_driven_thesis": strategy_logic.get("event_driven_thesis"),
                     "climax_volume_top": divergence.get("climax_volume_top"),
                     "alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
                     "sector_tier": sector.get("sector_tier"),
@@ -2006,11 +2017,13 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
     stage = full.get("stage_analysis") or {}
     entry = full.get("entry_quality") or {}
     breakout = full.get("breakout_quality") or {}
+    strategy_logic = full.get("strategy_logic_filters") or {}
     divergence = full.get("price_volume_divergence") or {}
     sector = full.get("sector_rotation") or context.get("sector_rotation") or {}
     delivery = full.get("delivery_accumulation") or context.get("delivery_data") or {}
     breadth = full.get("market_breadth") or context.get("market_breadth_context") or {}
     macro_event = full.get("macro_event_context") or context.get("macro_event_context") or {}
+    performance_feedback = full.get("performance_feedback") or context.get("performance_feedback") or {}
     scorecard = full.get("institutional_scorecard") or {}
     try:
         score_breakdown = context.get("score_breakdown") or deterministic_score_breakdown(context)
@@ -2057,6 +2070,7 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
             ),
             "best_strategy": _short_object(context.get("best_strategy") or {}, ["name", "score", "direction", "confidence"], 80),
             "sentiment": _short_object(sentiment, ["score", "confidence", "headline_count", "data_source", "label"], 120),
+            "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
             "must_pass_gates": _prune_empty(
                 {
                     "hard_blocked": (context.get("system_gate_audit") or {}).get("hard_blocked"),
@@ -2066,8 +2080,15 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                     "stage": stage.get("stage"),
                     "stage_buy_permitted": stage.get("buy_permitted"),
                     "entry_grade": entry.get("entry_grade"),
+                    "distance_from_pivot_pct": entry.get("distance_from_pivot_pct"),
                     "breakout_quality": breakout.get("breakout_quality"),
                     "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+                    "phase3_passed": strategy_logic.get("passed"),
+                    "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
+                    "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5),
+                    "phase3_volume": strategy_logic.get("breakout_volume"),
+                    "phase3_institutional_sponsorship": strategy_logic.get("institutional_sponsorship"),
+                    "phase3_event_driven_thesis": strategy_logic.get("event_driven_thesis"),
                     "climax_volume_top": divergence.get("climax_volume_top"),
                     "alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
                     "breadth_regime": breadth.get("breadth_regime"),
@@ -2183,6 +2204,7 @@ def _compact_full_spectrum_for_llm(
     stage = full.get("stage_analysis") or {}
     entry = full.get("entry_quality") or {}
     breakout = full.get("breakout_quality") or {}
+    strategy_logic = full.get("strategy_logic_filters") or {}
     divergence = full.get("price_volume_divergence") or {}
     sector = full.get("sector_rotation") or {}
     breadth = full.get("market_breadth") or {}
@@ -2194,6 +2216,7 @@ def _compact_full_spectrum_for_llm(
         }
     macro_event = full.get("macro_event_context") or {}
     indicators = full.get("indicator_suite") or {}
+    performance_feedback = full.get("performance_feedback") or {}
     return _prune_empty(
         {
             "decision_gates": _prune_empty(
@@ -2202,8 +2225,15 @@ def _compact_full_spectrum_for_llm(
                     "stage_confidence": stage.get("stage_confidence"),
                     "stage_buy_permitted": stage.get("buy_permitted"),
                     "entry_grade": entry.get("entry_grade"),
+                    "distance_from_pivot_pct": entry.get("distance_from_pivot_pct"),
                     "breakout_quality": breakout.get("breakout_quality"),
                     "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+                    "phase3_passed": strategy_logic.get("passed"),
+                    "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
+                    "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5 if rich else 3),
+                    "phase3_volume": strategy_logic.get("breakout_volume"),
+                    "phase3_institutional_sponsorship": strategy_logic.get("institutional_sponsorship"),
+                    "phase3_event_driven_thesis": strategy_logic.get("event_driven_thesis"),
                     "climax_volume_top": divergence.get("climax_volume_top"),
                     "timeframe_alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
                     "sector_tailwind": sector.get("sector_tailwind"),
@@ -2234,6 +2264,7 @@ def _compact_full_spectrum_for_llm(
                 }
             ),
             "technical_state": _compact_technical_state(trend, indicators, full),
+            "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
             "entry_and_levels": _compact_entry_levels(entry, breakout, full.get("key_levels") or {}),
             "risk_and_events": _compact_risk_events(risk_overrides, full, macro_event),
             "institutional_context": _compact_institutional_for_llm(
@@ -2330,6 +2361,49 @@ def _compact_entry_levels(entry: dict[str, Any], breakout: dict[str, Any], level
     )
 
 
+def _compact_performance_feedback_for_llm(feedback: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(feedback, dict) or not feedback or feedback.get("available") is False:
+        return _prune_empty(
+            {
+                "available": False,
+                "data_gap": feedback.get("data_gap") if isinstance(feedback, dict) else "performance_feedback_unavailable",
+            }
+        )
+
+    def compact_group(group: Any) -> dict[str, Any]:
+        if not isinstance(group, dict) or not group:
+            return {}
+        keys = [
+            "key",
+            "strategy",
+            "market_region",
+            "closed_trades",
+            "win_rate",
+            "average_gain_pct",
+            "average_loss_pct",
+            "stop_hit_rate",
+            "target_1_hit_rate",
+            "avg_time_to_target_1_hours",
+            "max_adverse_excursion_pct",
+            "max_favorable_excursion_pct",
+            "expectancy_pct",
+            "feedback_score",
+            "evidence_quality",
+        ]
+        return _prune_empty({key: group.get(key) for key in keys})
+
+    return _prune_empty(
+        {
+            "available": True,
+            "selected_strategy_market": compact_group(feedback.get("selected_strategy_market")),
+            "selected_strategy": compact_group(feedback.get("selected_strategy")),
+            "selected_market": compact_group(feedback.get("selected_market")),
+            "overall": compact_group(feedback.get("overall")),
+            "policy": feedback.get("policy"),
+        }
+    )
+
+
 def _compact_risk_events(
     risk_overrides: dict[str, Any],
     full: dict[str, Any],
@@ -2338,10 +2412,13 @@ def _compact_risk_events(
     conflicts = full.get("signal_conflicts") or {}
     event_risk = full.get("corporate_event_risk") or {}
     options_oi = full.get("options_oi") or {}
+    strategy_logic = full.get("strategy_logic_filters") or {}
     return _prune_empty(
         {
             "no_new_longs": risk_overrides.get("no_new_longs"),
             "risk_flags": _limit_list(risk_overrides.get("flags"), 10),
+            "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
+            "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5),
             "conflict_severity": conflicts.get("severity"),
             "conflicts": _limit_list(conflicts.get("conflicts"), 5),
             "expiry_day": macro_event.get("is_expiry_day"),
@@ -2364,6 +2441,7 @@ def _compact_institutional_for_llm(
     return _prune_empty(
         {
             "scorecard_reasons": _limit_list(scorecard.get("reasons"), 5 if rich else 3),
+            "institutional_sponsorship": scorecard.get("institutional_sponsorship"),
             "wyckoff_phase": structure.get("wyckoff_phase"),
             "market_structure": structure.get("market_structure"),
             "liquidity_sweep": structure.get("liquidity_sweep"),
@@ -2609,6 +2687,7 @@ def _policy_gate_action(
     stage = full_spectrum.get("stage_analysis") or {}
     entry = full_spectrum.get("entry_quality") or {}
     breakout = full_spectrum.get("breakout_quality") or {}
+    strategy_logic = full_spectrum.get("strategy_logic_filters") or {}
     divergence = full_spectrum.get("price_volume_divergence") or {}
     alignment = ((full_spectrum.get("trend_context") or {}).get("timeframe_alignment") or {})
     options_oi = full_spectrum.get("options_oi") or {}
@@ -2686,9 +2765,21 @@ def _policy_gate_action(
                 },
                 {
                     "gate": "breakout_quality_gate",
-                    "passed": not breakout.get("two_day_rule_failed"),
-                    "value": breakout.get("two_day_rule_failed"),
-                    "required": "two_day_rule_failed=false",
+                    "passed": not breakout.get("two_day_rule_failed") and not ((strategy_logic.get("breakout_volume") or {}).get("suspect_without_volume")),
+                    "value": {
+                        "two_day_rule_failed": breakout.get("two_day_rule_failed"),
+                        "breakout_volume": strategy_logic.get("breakout_volume"),
+                    },
+                    "required": "two_day_rule_failed=false and suspect breakout must have volume confirmation",
+                },
+                {
+                    "gate": "phase3_strategy_logic",
+                    "passed": bool(strategy_logic.get("passed", True)),
+                    "value": {
+                        "hard_blocks": strategy_logic.get("hard_blocks", []),
+                        "penalties": strategy_logic.get("penalties", []),
+                    },
+                    "required": "no Phase 3 hard blocks: pivot extension, suspect breakout without volume, or non-event earnings lockout",
                 },
                 {
                     "gate": "climax_volume_gate",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .data_readiness import assess_phase2_data_readiness, data_readiness_score
 from .full_spectrum import full_spectrum_analysis
 from .indicators import technical_snapshot
 from .market_regions import market_region_for_row
@@ -32,6 +33,7 @@ def build_symbol_tool_context(
     macro_event_context: dict[str, Any] | None = None,
     timeframe_candles: dict[str, list[Candle]] | None = None,
     pattern_state: dict[str, Any] | None = None,
+    performance_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timeframe_candles = timeframe_candles or {}
     analysis_candles = timeframe_candles.get("analysis") or timeframe_candles.get("daily") or candles
@@ -70,6 +72,11 @@ def build_symbol_tool_context(
     technical_dict = technical.to_dict()
     market_region = market_region_for_row(row)
     currency = "USD" if market_region == "US" else "INR"
+    selected_performance_feedback = _select_performance_feedback(
+        performance_feedback or {},
+        market_region=market_region,
+        strategy_name=best_strategy.name,
+    )
     if market_region == "US":
         normalized_institutional_context = {
             "enabled": False,
@@ -110,6 +117,26 @@ def build_symbol_tool_context(
             "weekly": weekly_candles,
             "analysis": analysis_candles,
         },
+        performance_feedback=selected_performance_feedback,
+    )
+    sentiment_payload = _sentiment_context(sentiment_score, sentiment_detail)
+    data_readiness = assess_phase2_data_readiness(
+        row=row,
+        quote=quote,
+        timeframe_candles={
+            "intraday": intraday_candles,
+            "daily": daily_candles,
+            "weekly": weekly_candles,
+            "analysis": analysis_candles,
+        },
+        sentiment=sentiment_payload,
+        delivery_data=delivery_data,
+        options_data=options_data,
+        sector_context=sector_context,
+        market_breadth=market_breadth,
+        macro_event_context=macro_event_context,
+        institutional_context=normalized_institutional_context,
+        full_spectrum=full_spectrum,
     )
     return {
         "tool_protocol": "mcp-style-json-context",
@@ -126,7 +153,7 @@ def build_symbol_tool_context(
         "candlestick_analysis": candle_tools,
         "strategy_signals": strategy_signal_dicts,
         "best_strategy": best_strategy.to_dict(),
-        "sentiment": _sentiment_context(sentiment_score, sentiment_detail),
+        "sentiment": sentiment_payload,
         "global_market_context": normalized_global_context,
         "institutional_context": normalized_institutional_context,
         "delivery_data": delivery_data or {},
@@ -134,6 +161,8 @@ def build_symbol_tool_context(
         "sector_rotation": sector_context or {},
         "market_breadth_context": market_breadth or {},
         "macro_event_context": macro_event_context or {},
+        "data_readiness": data_readiness,
+        "performance_feedback": selected_performance_feedback,
         "timeframe_data": {
             "analysis_candle_count": len(analysis_candles),
             "intraday_candle_count": len(intraday_candles),
@@ -161,6 +190,7 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     preset_score = float(context["best_strategy"]["score"])
     full_spectrum_score = _full_spectrum_score(context)
     delivery_score = _delivery_score(context)
+    readiness_score = data_readiness_score(context)
     sector_rotation_score = _sector_rotation_score(context)
     stage_score = _stage_score(context)
     divergence_score = _divergence_score(context)
@@ -181,8 +211,9 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
         {"name": "candlestick_analysis", "score": candle_score, "weight": round(0.10 * remaining, 4)},
         {"name": "best_strategy", "score": preset_score, "weight": round(0.15 * remaining, 4)},
         {"name": "sentiment", "score": sentiment, "weight": round(0.09 * remaining, 4)},
-        {"name": "full_spectrum_layers", "score": full_spectrum_score, "weight": round(0.10 * remaining, 4)},
-        {"name": "delivery_score", "score": delivery_score, "weight": round(0.08 * remaining, 4)},
+        {"name": "full_spectrum_layers", "score": full_spectrum_score, "weight": round(0.07 * remaining, 4)},
+        {"name": "delivery_score", "score": delivery_score, "weight": round(0.06 * remaining, 4)},
+        {"name": "phase2_data_readiness", "score": readiness_score, "weight": round(0.05 * remaining, 4)},
         {"name": "sector_rotation_score", "score": sector_rotation_score, "weight": round(0.07 * remaining, 4)},
         {"name": "stage_score", "score": stage_score, "weight": round(0.10 * remaining, 4)},
         {"name": "divergence_score", "score": divergence_score, "weight": round(0.06 * remaining, 4)},
@@ -194,7 +225,7 @@ def deterministic_score_breakdown(context: dict[str, Any]) -> dict[str, Any]:
     combined = max(min(raw, 1.0), -1.0)
     score_percent = round(((combined + 1.0) / 2.0) * 100.0, 1)
     return {
-        "formula": "technical_math*scaled_0.20 + candlestick_analysis*scaled_0.10 + best_strategy*scaled_0.15 + sentiment*scaled_0.09 + full_spectrum_layers*scaled_0.10 + delivery_score*scaled_0.08 + sector_rotation_score*scaled_0.07 + stage_score*scaled_0.10 + divergence_score*scaled_0.06 + entry_quality_score*scaled_0.05 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
+        "formula": "technical_math*scaled_0.20 + candlestick_analysis*scaled_0.10 + best_strategy*scaled_0.15 + sentiment*scaled_0.09 + full_spectrum_layers*scaled_0.07 + delivery_score*scaled_0.06 + phase2_data_readiness*scaled_0.05 + sector_rotation_score*scaled_0.07 + stage_score*scaled_0.10 + divergence_score*scaled_0.06 + entry_quality_score*scaled_0.05 + global_market_context*global_risk_weight + free_institutional_context*institutional_risk_weight",
         "components": [
             {
                 **component,
@@ -325,6 +356,105 @@ def _entry_quality_score(context: dict[str, Any]) -> float:
     return round(max(min((quality * 1.5) - 0.5, 1.0), -1.0), 4)
 
 
+def _select_performance_feedback(
+    feedback: dict[str, Any],
+    market_region: str,
+    strategy_name: str,
+) -> dict[str, Any]:
+    if not feedback:
+        return {
+            "available": False,
+            "data_gap": "no_closed_strategy_feedback_yet",
+            "policy": "Phase 4 will become useful after paper/live follows close.",
+        }
+    if "selected_strategy" in feedback or "selected_market" in feedback:
+        return feedback
+    strategy_key = str(strategy_name or "").strip().lower()
+    market_key = str(market_region or "").strip().upper()
+
+    def match(items: Any, predicate: Any) -> dict[str, Any]:
+        for item in items or []:
+            if isinstance(item, dict) and predicate(item):
+                return item
+        return {}
+
+    selected_market = match(
+        feedback.get("by_market"),
+        lambda item: str(item.get("key") or item.get("market_region") or "").upper() == market_key,
+    )
+    selected_strategy = match(
+        feedback.get("by_strategy"),
+        lambda item: str(item.get("key") or item.get("strategy") or "").lower() == strategy_key,
+    )
+    selected_strategy_market = match(
+        feedback.get("by_strategy_market"),
+        lambda item: str(item.get("strategy") or "").lower() == strategy_key
+        and str(item.get("market_region") or "").upper() == market_key,
+    )
+    return {
+        "available": True,
+        "version": feedback.get("version"),
+        "scope": feedback.get("scope"),
+        "selected_market": _compact_feedback_group(selected_market),
+        "selected_strategy": _compact_feedback_group(selected_strategy),
+        "selected_strategy_market": _compact_feedback_group(selected_strategy_market),
+        "overall": _compact_feedback_group(feedback.get("overall") if isinstance(feedback.get("overall"), dict) else {}),
+        "policy": "Use as historical feedback only; low sample sizes are anecdotal, not a hard veto.",
+    }
+
+
+def _compact_feedback_group(group: dict[str, Any]) -> dict[str, Any]:
+    if not group:
+        return {}
+    keys = [
+        "key",
+        "strategy",
+        "market_region",
+        "trades",
+        "closed_trades",
+        "open_trades",
+        "win_rate",
+        "average_gain_pct",
+        "average_loss_pct",
+        "stop_hit_rate",
+        "target_1_hit_rate",
+        "avg_time_to_target_1_hours",
+        "max_adverse_excursion_pct",
+        "max_favorable_excursion_pct",
+        "expectancy_pct",
+        "expectancy_amount",
+        "feedback_score",
+        "evidence_quality",
+    ]
+    return {key: group.get(key) for key in keys if key in group}
+
+
+def _performance_feedback_score(context: dict[str, Any]) -> float:
+    feedback = context.get("performance_feedback") or (context.get("full_spectrum_analysis") or {}).get("performance_feedback") or {}
+    if not feedback or feedback.get("available") is False:
+        return 0.0
+    candidates = [
+        feedback.get("selected_strategy_market"),
+        feedback.get("selected_strategy"),
+        feedback.get("selected_market"),
+        feedback.get("overall"),
+    ]
+    scores = []
+    for item in candidates:
+        if not isinstance(item, dict) or not item:
+            continue
+        closed = int(item.get("closed_trades") or 0)
+        score = item.get("feedback_score")
+        if score is None:
+            expectancy = float(item.get("expectancy_pct") or 0.0)
+            win_rate = float(item.get("win_rate") or 0.0)
+            stop_rate = float(item.get("stop_hit_rate") or 0.0)
+            score = (expectancy / 5.0) + ((win_rate - 0.5) * 0.8) - (stop_rate * 0.35)
+        weight = 1.0 if closed >= 12 else 0.6 if closed >= 5 else 0.3 if closed > 0 else 0.0
+        scores.append(float(score or 0.0) * weight)
+    return round(max(min(sum(scores[:2]) / max(len(scores[:2]), 1), 1.0), -1.0), 4) if scores else 0.0
+
+
 def _full_spectrum_score(context: dict[str, Any]) -> float:
     full = context.get("full_spectrum_analysis") or {}
     confluence = full.get("confluence_score") or {}
@@ -338,6 +468,7 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
     conflicts = full.get("signal_conflicts") or {}
     scorecard = full.get("institutional_scorecard") or {}
     sector = full.get("sector_rotation") or {}
+    strategy_logic = full.get("strategy_logic_filters") or {}
     confluence_total = int(confluence.get("total") or 0)
 
     total = float(confluence.get("total") or 0.0)
@@ -347,6 +478,11 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
 
     if risk.get("no_new_longs"):
         score -= 0.35
+    if strategy_logic.get("hard_blocks"):
+        score -= 0.4
+    phase3_penalty = float(strategy_logic.get("score_penalty") or 0.0)
+    if phase3_penalty:
+        score -= min(phase3_penalty / 100.0, 0.25)
     if scorecard.get("hard_veto", {}).get("failed"):
         score -= 0.35
     if scorecard.get("buy_ready"):
@@ -388,6 +524,9 @@ def _full_spectrum_score(context: dict[str, Any]) -> float:
         score -= 0.25
     if sector.get("sector_tier") == "bottom_quartile" and confluence_total < 18:
         score -= 0.15
+    feedback_score = _performance_feedback_score(context)
+    if feedback_score:
+        score += feedback_score * 0.12
     score += float((full.get("price_volume_divergence") or {}).get("divergence_score") or 0.0)
     return round(max(min(score, 1.0), -1.0), 4)
 
