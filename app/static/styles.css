@@ -12512,3 +12512,525 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
     grid-template-columns: 1fr;
   }
 }
+
+/* Product UI QA pass: final owner for navigation, ticker, and app surfaces. */
+:root {
+  --color-brand-danger: #b5475d;
+  --color-sell: #b5475d;
+  --red: #b5475d;
+  --red-soft: rgba(181, 71, 93, 0.1);
+  --sidebar-width: 232px;
+}
+
+body[data-theme="dark"] {
+  --color-brand-danger: #f0848f;
+  --color-sell: #f0848f;
+  --red: #f0848f;
+  --red-soft: rgba(240, 132, 143, 0.13);
+}
+
+body:not([data-theme="dark"]) :is(.negative, .sell, td.negative, td.negative strong, .pnl-value.negative, .pnl-value.negative strong) {
+  color: var(--color-sell) !important;
+}
+
+body:not([data-theme="dark"]) :is(.tag.sell, .tag.speculative, .lifecycle-pill.negative, .market-tape-item.negative, .plan-symbol.negative) {
+  border-color: rgba(181, 71, 93, 0.22);
+  background: rgba(181, 71, 93, 0.08) !important;
+  color: var(--color-sell);
+}
+
+body:not([data-theme="dark"]) :is(.market-tape-item strong, .market-tape-item span, .plan-symbol strong, .plan-symbol small, .tracked-idea-main strong, .tracked-idea-main small) {
+  color: #263244 !important;
+}
+
+body:not([data-theme="dark"]) .market-tape-item.negative em {
+  color: var(--color-sell) !important;
+}
+
+.terminal-topbar {
+  border-bottom-color: color-mix(in srgb, var(--border-color) 82%, transparent);
+  box-shadow: 0 1px 0 rgba(16, 24, 40, 0.03);
+}
+
+.app-sidebar {
+  width: var(--sidebar-width);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)), var(--surface-1));
+}
+
+.app-sidebar .nav {
+  gap: 5px;
+  padding: 16px 12px 18px;
+}
+
+.app-sidebar .nav-section-label {
+  margin: 12px 9px 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.app-sidebar .nav-item,
+body.sidebar-open .app-sidebar .nav-item {
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  min-height: 44px;
+  border-radius: 12px;
+  padding: 0 10px;
+}
+
+.app-sidebar .nav-item .nav-icon,
+body.sidebar-open .app-sidebar .nav-item .nav-icon,
+body.sidebar-collapsed .app-sidebar .nav-item .nav-icon {
+  width: 32px;
+  height: 32px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 86%, var(--surface-2)), var(--surface-2)) !important;
+  color: var(--text-secondary);
+  font-size: 0 !important;
+}
+
+.app-sidebar .nav-item .nav-icon::before {
+  content: attr(data-icon);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.app-sidebar .nav-item span:not(.nav-icon) {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.app-sidebar .nav-item strong {
+  min-width: 26px;
+  min-height: 22px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 74%, var(--surface-1));
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.app-sidebar .nav-item.active {
+  border-left-color: var(--color-brand-primary);
+  background: color-mix(in srgb, var(--color-brand-primary) 11%, var(--surface-1)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-primary) 9%, transparent);
+}
+
+.app-sidebar .nav-item.active .nav-icon {
+  border-color: color-mix(in srgb, var(--color-brand-primary) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--color-brand-primary) 14%, var(--surface-1)) !important;
+  color: var(--color-brand-primary);
+}
+
+body.sidebar-collapsed {
+  --sidebar-width: 66px;
+}
+
+body.sidebar-collapsed .app-sidebar .nav {
+  padding-inline: 8px;
+}
+
+body.sidebar-collapsed .app-sidebar .nav-item {
+  min-height: 44px;
+}
+
+.market-tape {
+  grid-template-columns: auto minmax(0, 1fr) 86px !important;
+  gap: 10px;
+  padding-inline: 14px 12px;
+}
+
+.market-tape-viewport {
+  min-width: 0;
+}
+
+.market-tape-track {
+  gap: 10px;
+}
+
+.market-tape-item {
+  min-width: max-content;
+  height: 28px;
+  padding: 0 10px;
+  gap: 6px;
+}
+
+.market-tape-item strong,
+.market-tape-item span,
+.market-tape-item em {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.market-tape-action {
+  min-width: 76px;
+}
+
+.panel,
+.dashboard-card,
+.connect-card,
+.macro-table-shell,
+.admin-terminal,
+.view > .panel.full,
+.split-layout > .panel,
+.admin-layout > .panel,
+.user-list-panel,
+.decision-feed-card {
+  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 28px rgba(16, 24, 40, 0.05);
+}
+
+body[data-theme="dark"] :is(.panel, .dashboard-card, .connect-card, .macro-table-shell, .admin-terminal, .view > .panel.full, .split-layout > .panel, .admin-layout > .panel, .user-list-panel, .decision-feed-card) {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02), 0 16px 34px rgba(0, 0, 0, 0.22) !important;
+}
+
+.panel-head,
+.admin-terminal-head,
+.connect-card-head {
+  padding: 14px 16px;
+}
+
+.panel-head h3,
+.admin-terminal-head h3,
+.connect-card-head h4 {
+  font-size: 16px;
+}
+
+.decision-split {
+  grid-template-columns: minmax(340px, 0.42fr) minmax(0, 0.58fr);
+}
+
+.decision-feed-card {
+  grid-template-columns: 40px minmax(0, 1fr) 62px;
+  align-items: start;
+  padding: 14px;
+}
+
+.decision-feed-card p {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-secondary);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.decision-feed-card .score-ring {
+  justify-self: end;
+  align-self: start;
+}
+
+.score-ring strong,
+.score-ring small {
+  line-height: 1;
+}
+
+.decision-detail-panel {
+  padding: 14px;
+}
+
+.strategy-plan-card,
+#suggestions-view .strategy-plan-card {
+  overflow: hidden;
+}
+
+#suggestions-view .plan-symbol-list,
+#suggestions-view .plan-symbol,
+#suggestions-view .plan-admin-note {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#suggestions-view .plan-admin-note {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.decision-radar-section,
+.decision-review-grid {
+  grid-template-columns: minmax(220px, 0.38fr) minmax(0, 0.62fr);
+}
+
+#users-view .admin-layout {
+  grid-template-columns: minmax(300px, 0.74fr) minmax(420px, 1.26fr);
+}
+
+.user-form {
+  gap: 9px;
+  padding: 14px;
+}
+
+.user-form input,
+.user-form select,
+.settings-form input,
+.settings-form select,
+.connect-grid input,
+.connect-grid button {
+  min-height: 40px;
+}
+
+#users-view .mini-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+#settings-view .admin-terminal {
+  max-width: 1180px;
+}
+
+#settings-view .settings-tabs {
+  padding: 12px;
+}
+
+#settings-view .settings-tab {
+  min-height: 34px;
+}
+
+#settings-view .settings-tab-shell {
+  padding: 14px;
+}
+
+.account-metrics div,
+.connect-card {
+  border-radius: 10px;
+}
+
+@media (max-width: 767px) {
+  body.sidebar-open {
+    overflow: hidden;
+  }
+
+  .terminal-topbar {
+    grid-template-columns: 40px minmax(0, 1fr) 40px !important;
+    padding-inline: 12px;
+  }
+
+  .app-sidebar,
+  body.sidebar-collapsed .app-sidebar,
+  body.sidebar-open .app-sidebar {
+    width: min(318px, calc(100vw - 56px));
+    max-width: none;
+    border-radius: 0 18px 18px 0;
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, var(--surface-2)), var(--surface-1)) !important;
+    box-shadow: 18px 0 46px rgba(15, 23, 42, 0.3);
+  }
+
+  body[data-theme="dark"] .app-sidebar,
+  body[data-theme="dark"].sidebar-collapsed .app-sidebar,
+  body[data-theme="dark"].sidebar-open .app-sidebar {
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 94%, var(--surface-2)), var(--surface-1)) !important;
+    box-shadow: 18px 0 52px rgba(0, 0, 0, 0.46);
+  }
+
+  .app-sidebar .nav,
+  body.sidebar-open .app-sidebar .nav,
+  body.sidebar-collapsed .app-sidebar .nav {
+    gap: 6px;
+    padding: 12px 10px max(16px, env(safe-area-inset-bottom));
+  }
+
+  .app-sidebar .nav-section-label,
+  body.sidebar-open .app-sidebar .nav-section-label,
+  body.sidebar-collapsed .app-sidebar .nav-section-label {
+    margin: 12px 10px 5px;
+    font-size: 10px;
+  }
+
+  .app-sidebar .nav-item,
+  body.sidebar-open .app-sidebar .nav-item,
+  body.sidebar-collapsed .app-sidebar .nav-item {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    min-height: 50px;
+    padding: 0 10px;
+    border-left-width: 3px;
+    border-radius: 13px;
+  }
+
+  .app-sidebar .nav-item span:not(.nav-icon),
+  body.sidebar-open .app-sidebar .nav-item span:not(.nav-icon),
+  body.sidebar-collapsed .app-sidebar .nav-item span:not(.nav-icon) {
+    font-size: 14px;
+    line-height: 1.1;
+  }
+
+  .app-sidebar .nav-item .nav-icon,
+  body.sidebar-open .app-sidebar .nav-item .nav-icon,
+  body.sidebar-collapsed .app-sidebar .nav-item .nav-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+  }
+
+  .app-sidebar .nav-item strong,
+  body.sidebar-open .app-sidebar .nav-item strong,
+  body.sidebar-collapsed .app-sidebar .nav-item strong {
+    min-width: 28px;
+    max-width: 64px;
+    min-height: 24px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
+
+  .market-tape {
+    grid-template-columns: minmax(0, 1fr) !important;
+    height: 40px;
+    padding: 0 8px;
+  }
+
+  .market-tape-label,
+  .market-tape-action {
+    display: none !important;
+  }
+
+  .market-tape-item {
+    height: 28px;
+    max-width: 164px;
+    padding: 0 9px;
+  }
+
+  .market-tape-item strong,
+  .market-tape-item span,
+  .market-tape-item em {
+    font-size: 10px;
+  }
+
+  .terminal-body {
+    padding: 14px 12px max(32px, calc(24px + env(safe-area-inset-bottom))) !important;
+  }
+
+  .panel,
+  .dashboard-card,
+  .connect-card,
+  .admin-terminal,
+  .view > .panel.full,
+  .split-layout > .panel,
+  .admin-layout > .panel,
+  .user-list-panel,
+  .decision-feed-card {
+    border-radius: 12px;
+  }
+
+  .panel-head,
+  .admin-terminal-head,
+  .connect-card-head {
+    padding: 13px 14px;
+  }
+
+  #decisions-view .decision-split {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 12px;
+    min-height: auto;
+  }
+
+  #decisions-view .decision-list-full {
+    max-height: none;
+  }
+
+  .decision-feed-card,
+  .decision-feed-panel .decision-feed-card {
+    grid-template-columns: 34px minmax(0, 1fr) 50px !important;
+    gap: 9px;
+    padding: 12px;
+  }
+
+  .decision-logo,
+  .symbol-logo {
+    width: 32px;
+    height: 32px;
+    font-size: 11px;
+  }
+
+  .decision-title-row {
+    gap: 6px;
+  }
+
+  .decision-title-row small {
+    display: none;
+  }
+
+  .decision-feed-card p {
+    margin-top: 6px;
+    font-size: 13px;
+    line-height: 1.35;
+    -webkit-line-clamp: 3;
+  }
+
+  .decision-feed-card .score-ring,
+  .decision-feed-panel .score-ring {
+    grid-column: 3 !important;
+    grid-row: 1 / span 2;
+    width: 48px;
+    height: 48px;
+    margin: 0 !important;
+    justify-self: end;
+    align-self: start;
+  }
+
+  .decision-feed-card .score-ring small,
+  .decision-feed-panel .score-ring small,
+  .score-ring.small small {
+    display: none !important;
+  }
+
+  .decision-feed-card .score-ring strong::after,
+  .decision-feed-panel .score-ring strong::after {
+    content: "%";
+    margin-left: 1px;
+    font-size: 9px;
+  }
+
+  .decision-bars {
+    gap: 5px;
+  }
+
+  .decision-bars b {
+    font-size: 9px;
+  }
+
+  .decision-detail-hero,
+  .analysis-hero {
+    grid-template-columns: 40px minmax(0, 1fr) 50px !important;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .decision-detail-hero .tag {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .decision-detail-hero .score-ring {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    width: 50px;
+    height: 50px;
+  }
+
+  .decision-radar-section,
+  .decision-review-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .score-radar svg {
+    min-height: 180px;
+  }
+
+  #users-view .admin-layout,
+  #settings-view .settings-fields-grid,
+  .connect-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .user-form,
+  #settings-view .settings-tab-shell,
+  #users-view .mini-grid {
+    padding: 12px;
+  }
+}

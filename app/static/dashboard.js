@@ -3162,7 +3162,7 @@ function renderStrategyPlans(rows) {
           }).join("")
         : `<span class="plan-symbol empty">No ${escapeHtml(activeMarketLabel())} stocks in this plan yet</span>`;
       const followRow = state.auth?.admin
-        ? `<div class="plan-admin-note compact">Admin managed · users follow with their own budget and credits</div>`
+        ? `<div class="plan-admin-note compact">Admin managed. Users follow with their own budget.</div>`
         : `<div class="plan-follow-row">
             <input type="number" min="0" step="100" inputmode="decimal" placeholder="Budget" data-plan-budget="${escapeHtml(row.code)}" />
             <button type="button" class="primary" data-plan-action="paper" data-plan-code="${escapeHtml(row.code)}">Follow Paper</button>

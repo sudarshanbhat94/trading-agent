@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=positions-pnl-fit-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=product-ui-pass-1" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -78,18 +78,18 @@
       <aside id="app-sidebar" class="app-sidebar" aria-label="Primary navigation">
         <nav class="nav" aria-label="OpenStocks views">
           <span class="nav-section-label">User</span>
-          <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon" aria-hidden="true">🏠</span><span>Dashboard</span><strong id="nav-overview-badge">on</strong></button>
-          <button class="nav-item" type="button" data-view="suggestions"><span class="nav-icon" aria-hidden="true">💡</span><span>Ideas</span><strong id="nav-suggestions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="analyze"><span class="nav-icon" aria-hidden="true">🔍</span><span>Analyze</span><strong>symbol</strong></button>
-          <button class="nav-item" type="button" data-view="positions"><span class="nav-icon" aria-hidden="true">📊</span><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true">📋</span><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon" aria-hidden="true">🤖</span><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="sentiment"><span class="nav-icon" aria-hidden="true">📰</span><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="account"><span class="nav-icon" aria-hidden="true">👤</span><span>Account</span><strong>paper</strong></button>
+          <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon" aria-hidden="true" data-icon="DB"></span><span>Dashboard</span><strong id="nav-overview-badge">on</strong></button>
+          <button class="nav-item" type="button" data-view="suggestions"><span class="nav-icon" aria-hidden="true" data-icon="ID"></span><span>Ideas</span><strong id="nav-suggestions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="analyze"><span class="nav-icon" aria-hidden="true" data-icon="AN"></span><span>Analyze</span><strong>symbol</strong></button>
+          <button class="nav-item" type="button" data-view="positions"><span class="nav-icon" aria-hidden="true" data-icon="PO"></span><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true" data-icon="OR"></span><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon" aria-hidden="true" data-icon="AI"></span><span>Decisions</span><strong id="nav-decisions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="sentiment"><span class="nav-icon" aria-hidden="true" data-icon="NW"></span><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="account"><span class="nav-icon" aria-hidden="true" data-icon="AC"></span><span>Account</span><strong>paper</strong></button>
           <span class="nav-section-label admin-only">Admin</span>
-          <button class="nav-item admin-only" type="button" data-view="logs"><span class="nav-icon" aria-hidden="true">📝</span><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
-          <button class="nav-item admin-only" type="button" data-view="users"><span class="nav-icon" aria-hidden="true">👥</span><span>Users</span><strong id="nav-users-badge">0</strong></button>
-          <button class="nav-item admin-only" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙️</span><span>Settings</span><strong>admin</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="logs"><span class="nav-icon" aria-hidden="true" data-icon="LG"></span><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="users"><span class="nav-icon" aria-hidden="true" data-icon="US"></span><span>Users</span><strong id="nav-users-badge">0</strong></button>
+          <button class="nav-item admin-only" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true" data-icon="ST"></span><span>Settings</span><strong>admin</strong></button>
         </nav>
       </aside>
 
@@ -697,6 +697,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=positions-pnl-fit-1"></script>
+    <script src="/static/dashboard.js?v=product-ui-pass-1"></script>
   </body>
 </html>
