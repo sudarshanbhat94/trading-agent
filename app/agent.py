@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .decision_contract import normalize_trade_targets
 from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .macro import GlobalIntelligenceService
@@ -1575,23 +1576,10 @@ def _exit_plan_from_trade_plan(
 
 
 def _monotonic_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = [dict(target) for target in targets if isinstance(target, dict)]
-    if len(normalized) < 3:
-        return normalized
-    t1_price = _float_or_none(normalized[0].get("price"))
-    t2_price = _float_or_none(normalized[1].get("price"))
-    t3_price = _float_or_none(normalized[2].get("price"))
-    if t2_price is None or t3_price is None or t3_price > t2_price:
-        return normalized
-    risk_step = (t2_price - t1_price) if t1_price is not None and t2_price > t1_price else max(t2_price * 0.01, 0.01)
-    original = dict(normalized[2])
-    normalized[2] = {
-        **original,
-        "price": round(t2_price + risk_step, 3),
-        "rr": original.get("rr") if original.get("rr") != "structure" else "3.5_or_structure",
-        "structure_reference": original.get("structure_reference", t3_price),
-        "note": "normalized so target ladder stays above T2; original structure target is retained as reference",
-    }
+    normalized = normalize_trade_targets(targets)
+    for target in normalized:
+        if target.get("rr") == "structure":
+            target["rr"] = "3.5_or_structure"
     return normalized
 
 

@@ -485,32 +485,42 @@ function pageFilter(group) {
   return state.pageFilters?.[group] || "all";
 }
 
+function scoreCandidatePercent(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed > 0 && parsed <= 1 ? parsed * 100 : parsed;
+}
+
 function confidencePercent(row = {}) {
   const values = [
+    row.rank_score,
+    row.confidence_pct,
     row.confidence,
     row.overall_score_pct,
     row.score_percent,
     row.score,
   ]
-    .map(Number)
-    .filter(Number.isFinite)
-    .map((value) => (value > 0 && value <= 1 ? value * 100 : value));
+    .map(scoreCandidatePercent)
+    .filter((value) => value !== null);
   return values.length ? Math.max(...values) : 0;
 }
 
 function decisionScorePercent(row = {}) {
+  const backendRank = scoreCandidatePercent(row.rank_score);
+  if (backendRank !== null) return Math.max(0, Math.min(100, backendRank));
   const audit = decisionAudit(row);
   const score = audit.score_breakdown || {};
   const values = [
-    row.confidence,
     row.overall_score_pct,
     row.score_percent,
     score.score_percent,
+    row.combined_score_pct,
+    row.confidence_pct,
+    row.confidence,
     row.score,
   ]
-    .map(Number)
-    .filter(Number.isFinite)
-    .map((value) => (value > 0 && value <= 1 ? value * 100 : value));
+    .map(scoreCandidatePercent)
+    .filter((value) => value !== null);
   const combined = Number(score.combined ?? row.combined_score);
   if (Number.isFinite(combined)) values.push(combined >= -1 && combined <= 1 ? (combined + 1) * 50 : combined);
   return values.length ? Math.max(...values) : 0;
@@ -1457,6 +1467,7 @@ function renderShell(payload = state.latest || {}) {
   const userSession = payload.user_signal_session || {};
   const activeMarket = normalizeUiMarket(state.activeMarket);
   const activeQuotes = filterRowsByMarket(payload.quotes || [], activeMarket);
+  const rankedDecisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const provider = health.provider || payload.provider || runtime.market_data_provider || "-";
   const feed = marketDataLabel(payload, activeMarket);
@@ -1475,6 +1486,8 @@ function renderShell(payload = state.latest || {}) {
   const llmUsageText = llmUsage.calls
     ? `${fmtCompact(llmUsage.total_tokens)} tok · ${fmtUsd(llmUsage.cost_usd)} today`
     : `${llmModel || "model unset"}`;
+  const executionMode = String(plainSetting("execution_mode", runtime.execution_mode || "paper")).toLowerCase();
+  const liveMode = executionMode === "live" || executionMode === "live_trading";
 
   byId("top-provider").textContent = state.auth?.admin ? provider : feed.title;
   byId("top-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "off" : llmModel) : "OpenStocks View";
@@ -1484,7 +1497,6 @@ function renderShell(payload = state.latest || {}) {
   const feedConnected = !feedPending && feed.hasQuotes;
   const paperBanner = byId("paper-mode-banner");
   if (paperBanner) {
-    const executionMode = String(plainSetting("execution_mode", runtime.execution_mode || "paper")).toLowerCase();
     let dismissed = false;
     try {
       dismissed = window.sessionStorage.getItem("openstocks-paper-banner-dismissed") === "1";
@@ -1497,10 +1509,8 @@ function renderShell(payload = state.latest || {}) {
   byId("feed-pill").className = `pill ${feedConnected ? feed.tone : "stopped"}`;
   const modePill = byId("mode-pill");
   if (modePill) {
-    const executionMode = String(plainSetting("execution_mode", runtime.execution_mode || "paper")).toLowerCase();
-    const live = executionMode === "live" || executionMode === "live_trading";
-    modePill.textContent = live ? "LIVE" : "PAPER";
-    modePill.className = `mode-pill ${live ? "live" : "paper"}`;
+    modePill.textContent = liveMode ? "LIVE" : "PAPER";
+    modePill.className = `mode-pill ${liveMode ? "live" : "paper"}`;
   }
   byId("ops-feed").textContent = feedConnected ? feed.title : "Connect feed";
   byId("ops-feed-meta").textContent = feedPending
@@ -1533,6 +1543,30 @@ function renderShell(payload = state.latest || {}) {
       : userSession.last_cycle_at
       ? `${fmtTime(userSession.last_cycle_at)} · ${fmtCredits(userSession.last_credit_charge || 0)} credits`
       : `${userSession.monitor_scope === "CUSTOM" ? `${fmtNumber(userSession.monitor_symbols_count || 0)} custom` : (userSession.symbols_per_cycle || plainSetting("universe_symbols_per_cycle", 30) || 30)} symbols per cycle`);
+  const cockpitReview = byId("ai-cockpit-review");
+  const cockpitReviewNote = byId("ai-cockpit-review-note");
+  const cockpitFeed = byId("ai-cockpit-feed");
+  const cockpitFeedNote = byId("ai-cockpit-feed-note");
+  const cockpitScan = byId("ai-cockpit-scan");
+  const cockpitScanNote = byId("ai-cockpit-scan-note");
+  const cockpitControl = byId("ai-cockpit-control");
+  const cockpitControlNote = byId("ai-cockpit-control-note");
+  const cockpitActionNote = byId("ai-cockpit-action-note");
+  const topDecision = rankedDecisions[0] || {};
+  const topDecisionScore = topDecision.symbol ? Math.round(decisionScorePercent(topDecision)) : 0;
+  if (cockpitReview) cockpitReview.textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks View";
+  if (cockpitReviewNote) cockpitReviewNote.textContent = !state.auth?.admin ? userCreditMeta : `${llmMode} · ${llmUsageText}`;
+  if (cockpitFeed) cockpitFeed.textContent = feedConnected ? feed.title : "Feed pending";
+  if (cockpitFeedNote) cockpitFeedNote.textContent = feedPending ? "quotes paused until broker/data token is ready" : feed.meta;
+  if (cockpitScan) cockpitScan.textContent = opportunity.enabled ? `${fmtNumber(selectedSymbols)}/${fmtNumber(rawSymbols)} candidates` : "Static scan";
+  if (cockpitScanNote) cockpitScanNote.textContent = opportunity.enabled
+    ? `${fmtNumber(newsCandidates)} news-backed · ${(opportunity.top_candidates || []).slice(0, 2).map((item) => item.symbol).filter(Boolean).join(", ") || "ranking"}`
+    : `${fmtNumber(rankedDecisions.length)} ranked decisions in ${activeMarketLabel()}`;
+  if (cockpitControl) cockpitControl.textContent = liveMode ? "Live guarded" : "Paper guarded";
+  if (cockpitControlNote) cockpitControlNote.textContent = `${plainSetting("max_positions", "-")} slots · ${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
+  if (cockpitActionNote) cockpitActionNote.textContent = topDecision.symbol
+    ? `${rankedDecisions.length} ranked · ${topDecision.symbol} ${topDecisionScore}%`
+    : `${rankedDecisions.length} ranked`;
   const phase = String(state.auth?.admin ? payload.cycle?.phase || "" : userSession.phase || payload.cycle?.phase || "").toLowerCase();
   const scanBusy = controlRunning && phase && !["idle", "sleep", "shared_backend"].includes(phase);
   const runButton = byId("dashboard-run-btn");
@@ -1575,9 +1609,15 @@ function updateMarketWorkspaceLabels(payload = state.latest || {}) {
   }
   const subtitle = byId("view-subtitle");
   if (subtitle) {
+    const adminSubtitles = {
+      account: "Profile, broker connections, cash ledger, and personal signal controls",
+      logs: "Agent events, market feed messages, and runtime trace",
+      users: "Admin users, roles, credits, and account access",
+      settings: "Risk limits, broker setup, scan scope, and execution mode",
+    };
     subtitle.textContent = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(currentView)
       ? `${label} market only · ${quotes.length} quotes · ${positions.length} positions · ${decisions.length} decisions`
-      : "Admin controls · split-market routing · runtime settings";
+      : adminSubtitles[currentView] || "Admin controls · split-market routing · runtime settings";
   }
   const railLabel = byId("rail-market-label");
   if (railLabel) railLabel.textContent = `${label} universe`;
@@ -3981,11 +4021,11 @@ function renderDecisions(rows, options = {}) {
     card.addEventListener("click", () => {
       for (const item of body.querySelectorAll(".decision-feed-card")) item.classList.remove("active");
       card.classList.add("active");
-      renderDecisionDetailPanel(row);
+      renderDecisionDetailFromRow(row);
     });
   });
   body.querySelector(".decision-feed-card")?.classList.add("active");
-  renderDecisionDetailPanel(visibleRows[0]);
+  renderDecisionDetailFromRow(visibleRows[0]);
 }
 
 function renderOverviewDecisions(rows, options = {}) {
@@ -4011,6 +4051,7 @@ function decisionFeedCardHtml(row, index, compact = false) {
   const sentiment = Number(row.sentiment_score || 0);
   const reason = shortValue(readableDecisionReason(row), compact ? 150 : 240);
   const initials = symbolInitials(row.symbol);
+  const scoreLabel = row.rank_reason || row.rank_score_source || "Score";
   return `<article class="decision-feed-card action-${escapeHtml(action)}" role="button" tabindex="0" data-index="${index}">
     <div class="decision-logo">${escapeHtml(initials)}</div>
     <div class="decision-main">
@@ -4024,7 +4065,7 @@ function decisionFeedCardHtml(row, index, compact = false) {
       <div class="decision-bars">
         <span><em style="width:${Math.max(0, Math.min(100, (tech + 1) * 50))}%"></em><b>Setup</b></span>
         <span><em style="width:${Math.max(0, Math.min(100, (sentiment + 1) * 50))}%"></em><b>News</b></span>
-        <span><em style="width:${Math.max(0, Math.min(100, score))}%"></em><b>Confidence</b></span>
+        <span><em style="width:${Math.max(0, Math.min(100, score))}%"></em><b>${escapeHtml(scoreLabel)}</b></span>
       </div>
     </div>
     <div class="score-ring" style="--score:${Math.max(0, Math.min(100, score))}">
@@ -4215,13 +4256,17 @@ function ideaTimelineText(row = {}) {
 }
 
 function targetLadderHtml(row = {}, market = "IN", compact = false) {
-  const targets = Array.isArray(row.target_status) && row.target_status.length
+  const rawTargets = Array.isArray(row.target_status) && row.target_status.length
     ? row.target_status
     : (Array.isArray(row.targets) ? row.targets : []).slice(0, 3).map((target, index) => ({
         label: target?.label || `T${index + 1}`,
         price: target?.price ?? target,
         hit: false,
       }));
+  const targets = normalizedTargets(rawTargets).map((target, index) => ({
+    ...(rawTargets[index] && typeof rawTargets[index] === "object" ? rawTargets[index] : {}),
+    ...target,
+  }));
   if (!targets.length) return `<div class="target-ladder empty">No targets published yet</div>`;
   return `<div class="target-ladder ${compact ? "compact" : ""}">
     ${targets.slice(0, 3).map((target) => {
@@ -4280,23 +4325,41 @@ function bindRowDetails(body, rows, title) {
   });
 }
 
-async function showDetails(title, value) {
-  byId("drawer-title").textContent = title;
-  byId("detail-drawer").classList.add("open");
-  byId("drawer-body").innerHTML = `<div class="empty-state">Loading details...</div>`;
-  let detailValue = value;
+async function fetchDetailValue(value) {
   if (value?.detail_url && !value.details_json) {
     try {
       const response = await fetch(value.detail_url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      detailValue = { ...value, ...(await response.json()) };
+      return { ...value, ...(await response.json()) };
     } catch (error) {
-      detailValue = {
+      return {
         ...value,
         detail_error: error.message || String(error),
       };
     }
   }
+  return value;
+}
+
+let decisionDetailRequestSeq = 0;
+
+async function renderDecisionDetailFromRow(row) {
+  const panel = byId("decision-detail-panel");
+  if (!panel || !row) return;
+  const requestSeq = ++decisionDetailRequestSeq;
+  if (row.detail_url && !row.details_json) {
+    panel.innerHTML = `<div class="empty-state">Loading decision audit...</div>`;
+  }
+  const detailValue = await fetchDetailValue(row);
+  if (requestSeq !== decisionDetailRequestSeq) return;
+  renderDecisionDetailPanel(detailValue);
+}
+
+async function showDetails(title, value) {
+  byId("drawer-title").textContent = title;
+  byId("detail-drawer").classList.add("open");
+  byId("drawer-body").innerHTML = `<div class="empty-state">Loading details...</div>`;
+  const detailValue = await fetchDetailValue(value);
   byId("drawer-body").innerHTML = detailHtml(detailValue);
 }
 
@@ -4527,20 +4590,25 @@ function exitPlanFromAudit(audit) {
 }
 
 function normalizedTargets(targets) {
-  const normalized = Array.isArray(targets) ? targets.map((target) => ({ ...(target || {}) })) : [];
-  if (normalized.length < 3) return normalized;
-  const t1 = Number(normalized[0]?.price);
-  const t2 = Number(normalized[1]?.price);
-  const t3 = Number(normalized[2]?.price);
-  if (!Number.isFinite(t2) || !Number.isFinite(t3) || t3 > t2) return normalized;
-  const riskStep = Number.isFinite(t1) && t2 > t1 ? t2 - t1 : Math.max(t2 * 0.01, 0.01);
-  normalized[2] = {
-    ...normalized[2],
-    price: t2 + riskStep,
-    rr: normalized[2].rr === "structure" ? "3.5_or_structure" : normalized[2].rr,
-    structure_reference: normalized[2].structure_reference ?? t3,
-    note: "Normalized above T2; original structure target is kept as reference.",
-  };
+  const normalized = Array.isArray(targets)
+    ? targets.slice(0, 3).map((target, index) => {
+        const payload = target && typeof target === "object" ? { ...target } : { price: target };
+        const price = numericValue(payload.price);
+        return price === null ? null : { ...payload, label: String(payload.label || `T${index + 1}`).toUpperCase(), price };
+      }).filter(Boolean)
+    : [];
+  let previous = null;
+  normalized.forEach((target) => {
+    if (previous !== null && Number(target.price) <= previous) {
+      const original = Number(target.price);
+      target.price = previous + Math.max(previous * 0.01, 0.01);
+      target.structure_reference = target.structure_reference ?? original;
+      target.basis = target.basis || "spacing_adjusted";
+      target.note = target.note || "Normalized so target ladder remains sequential.";
+      if (target.rr === "structure") target.rr = "3.5_or_structure";
+    }
+    previous = Number(target.price);
+  });
   return normalized;
 }
 

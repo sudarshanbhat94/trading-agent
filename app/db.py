@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .decision_contract import normalize_trade_targets, ranked_decision_rows
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
@@ -328,7 +329,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
         "decision_path": audit.get("decision_path"),
         "final_action": row.get("action") or audit.get("final_action"),
         "action_reason": audit.get("action_reason") or row.get("reason"),
-        "score_breakdown": _pick_keys(score_breakdown, ["combined", "formula", "components", "data_gaps"]),
+        "score_breakdown": _pick_keys(score_breakdown, ["combined", "score_percent", "score_percent_note", "formula", "components", "data_gaps"]),
         "overall_score_pct": audit.get("overall_score_pct"),
         "overall_grade": audit.get("overall_grade"),
         "pre_filter": audit.get("pre_filter") or context.get("pre_filter"),
@@ -398,24 +399,7 @@ def _plan_max_days(plan_code: str, fallback_status: str = "") -> int:
 
 
 def _normalize_targets(targets: Any) -> list[dict[str, Any]]:
-    if not isinstance(targets, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for index, target in enumerate(targets[:3], start=1):
-        if isinstance(target, dict):
-            price = _optional_float(target.get("price"))
-            label = str(target.get("label") or f"T{index}")
-            payload = dict(target)
-        else:
-            price = _optional_float(target)
-            label = f"T{index}"
-            payload = {"price": price}
-        if price is None or price <= 0:
-            continue
-        payload["label"] = label
-        payload["price"] = price
-        normalized.append(payload)
-    return normalized
+    return normalize_trade_targets(targets)
 
 
 def _refresh_idea_lifecycle(
@@ -3627,6 +3611,8 @@ class Database:
             return [dict(row) for row in rows]
 
     def latest_decisions(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 80), 500))
+        fetch_limit = max(limit, min(limit * 4, 1000))
         where_sql, params = _market_region_where("u", market_region)
         where_clause = f"where {where_sql}" if where_sql else ""
         with self.connect() as conn:
@@ -3639,18 +3625,21 @@ class Database:
                 order by d.id desc
                 limit ?
                 """,
-                (*params, limit),
+                (*params, fetch_limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return ranked_decision_rows(dict(row) for row in rows)[:limit]
 
     def latest_decision_summaries(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 80), 500))
+        fetch_limit = max(limit, min(limit * 4, 1000))
         where_sql, params = _market_region_where("u", market_region)
         where_clause = f"where {where_sql}" if where_sql else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
                 select d.id, d.ts, d.symbol, d.action, d.strategy, d.confidence, d.price,
-                    d.technical_score, d.sentiment_score, d.reason,
+                    d.technical_score, d.sentiment_score, d.reason, d.details_json,
+                    u.name as company_name,
                     {_market_region_case("u")} as market_region
                 from decisions d
                 left join universe u on u.symbol = d.symbol
@@ -3658,9 +3647,12 @@ class Database:
                 order by d.id desc
                 limit ?
                 """,
-                (*params, limit),
+                (*params, fetch_limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        ranked_rows = ranked_decision_rows(dict(row) for row in rows)[:limit]
+        for row in ranked_rows:
+            row.pop("details_json", None)
+        return ranked_rows
 
     def decision_by_id(self, decision_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:

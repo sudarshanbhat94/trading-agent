@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=positions-target-fit-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=ai-cockpit-2" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -160,6 +160,33 @@
             <div id="last-cycle" class="cycle-stamp">waiting</div>
           </div>
           <div id="error-box" class="error-box" hidden></div>
+
+          <section class="ai-cockpit-strip" aria-label="AI trading intelligence">
+            <div class="ai-cockpit-cell is-primary">
+              <span class="ai-cockpit-kicker">AI Review</span>
+              <strong id="ai-cockpit-review">Waiting</strong>
+              <small id="ai-cockpit-review-note">decision engine pending</small>
+            </div>
+            <div class="ai-cockpit-cell">
+              <span class="ai-cockpit-kicker">Data Feed</span>
+              <strong id="ai-cockpit-feed">Feed pending</strong>
+              <small id="ai-cockpit-feed-note">quotes waiting</small>
+            </div>
+            <div class="ai-cockpit-cell">
+              <span class="ai-cockpit-kicker">Opportunity Scan</span>
+              <strong id="ai-cockpit-scan">No scan</strong>
+              <small id="ai-cockpit-scan-note">candidate universe pending</small>
+            </div>
+            <div class="ai-cockpit-cell">
+              <span class="ai-cockpit-kicker">Human Guard</span>
+              <strong id="ai-cockpit-control">Paper</strong>
+              <small id="ai-cockpit-control-note">risk rules pending</small>
+            </div>
+            <button class="ai-cockpit-action" type="button" data-view-jump="decisions">
+              <span>Ranked Feed</span>
+              <strong id="ai-cockpit-action-note">0 decisions</strong>
+            </button>
+          </section>
 
           <section id="overview-view" class="view active dashboard-page">
             <div id="paper-mode-banner" class="paper-mode-banner">
@@ -697,6 +724,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=positions-target-fit-1"></script>
+    <script src="/static/dashboard.js?v=ai-cockpit-2"></script>
   </body>
 </html>
