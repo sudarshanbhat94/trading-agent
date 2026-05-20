@@ -221,7 +221,16 @@ class StrategyEngine:
             if len(scan_items) % 5 == 0:
                 await asyncio.sleep(0)
 
-        await self._refresh_candidate_sentiment(scan_items, positions, candles_by_symbol, risk_limits, global_context, institutional_context, market_breadth)
+        await self._refresh_candidate_sentiment(
+            scan_items,
+            positions,
+            candles_by_symbol,
+            risk_limits,
+            global_context,
+            institutional_context,
+            market_breadth,
+            performance_feedback,
+        )
         self._apply_universe_relative_strength(scan_items, positions, candles_by_symbol)
         ranked = sorted(scan_items, key=self._scan_priority, reverse=True)
         for rank, item in enumerate(ranked, start=1):
@@ -873,6 +882,7 @@ class StrategyEngine:
         global_context: dict[str, Any] | None,
         institutional_context: dict[str, Any] | None,
         market_breadth: dict[str, Any] | None,
+        performance_feedback: dict[str, Any] | None,
     ) -> None:
         if not self.settings.enable_news_sentiment or not scan_items:
             return
