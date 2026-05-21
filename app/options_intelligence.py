@@ -81,7 +81,12 @@ class OptionsIntelligenceService:
         quotes: dict[str, Quote],
     ) -> list[dict[str, Any]]:
         rows = [row for row in universe if row.get("symbol") in quotes and row.get("exchange", "NSE") == "NSE"]
-        limit = max(0, int(self.settings.options_symbols_per_cycle or 0))
+        # The strategy stage receives the already shortlisted opportunity set.
+        # Fetch OI for that full shortlist so a trade-grade candidate is not
+        # blocked merely because the rotating options cursor skipped it.
+        trade_candidate_limit = max(0, int(getattr(self.settings, "dynamic_scan_candidate_limit", 0) or 0))
+        configured_limit = max(0, int(self.settings.options_symbols_per_cycle or 0))
+        limit = max(configured_limit, min(len(rows), trade_candidate_limit))
         if limit <= 0 or limit >= len(rows):
             return rows
         if not rows:

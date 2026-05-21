@@ -1770,11 +1770,11 @@ def _decision_system_prompt(prompt_context: dict[str, Any]) -> str:
         "You must explicitly use stage_analysis, entry_quality.entry_grade, strategy_logic_filters, breakout_quality.two_day_rule_failed, price_volume_divergence.climax_volume_top, timeframe_alignment.alignment_grade, sector_rotation.sector_tailwind, sector_rotation.sector_headwind, market_breadth.breadth_regime, delivery_accumulation.institutional_fingerprint when applicable, and options_oi.max_pain_distance_pct when applicable. "
         "BUY is permitted only in Stage2_Markup; entry grade D, price more than 5% extended from pivot, suspect breakout without volume, failed breakout two-day rule, repeated failed breakouts, low volume ratio, climax volume top, D timeframe alignment, or bear_confirmed breadth means HOLD or reduced-size WATCH as dictated by system gates. Do not buy before earnings unless strategy_logic_filters.event_driven_thesis.supported is true. If options_oi.buy_suppressed is true because stock-level max pain is 8% or more below current price, HOLD. Evidence must state the value checked for each new gate. "
         "system_gate_audit and data_readiness are mandatory and absolute: if hard_blocked is true, data_readiness.trade_decision_ready is false, or overall_score_pct is below 55, your action must be HOLD for new entries. Sentiment score 0.0 means DATA_MISSING, not neutral. Use system_gate_audit.classification exactly as FUNDAMENTAL, MOMENTUM, or SPECULATIVE and respect its allocation cap. "
-        "Never call a setup institutional quality unless system_gate_audit.institutional_quality_allowed is true and strategy_logic_filters.institutional_sponsorship.supported is true. risk_checks must say whether each new gate passed or failed. If you recommend BUY while any new gate conflicts, acknowledge that conflict in reason. "
+        "Never call a setup institutional quality or flow-backed ready unless true institutional flow evidence is supplied. For US names without verified flow, call it a price-volume accumulation proxy. risk_checks must say whether each new gate passed or failed. If you recommend BUY while any new gate conflicts, acknowledge that conflict in reason. "
         "Return strict JSON only with keys action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, and data_gaps. "
         "Your entire response must be one JSON object. The first character must be { and the last character must be }. Do not include markdown, scratchpad, reasoning text, or commentary. "
         "Keep it compact: no newline characters inside strings, reason <= 280 characters, each list <= 5 short phrases, and trade_plan/signal_plan values must be short strings. action must be BUY, SELL, or HOLD. confidence is 0..1. strategy must be one of the supplied strategy_signals names or best_strategy.name. risk must be LOW, MEDIUM, or HIGH. "
-        "Respect confluence_score: below 10 means HOLD, 10-15 watchlist only, 16+ may trade, 18+ high conviction, 22+ maximum conviction. For new BUY decisions, also require institutional_scorecard.buy_ready=true; hard vetoes or failed must-pass gates override your opinion. "
+        "Respect confluence_score: below 10 means HOLD, 10-15 watchlist only, 16+ may trade, 18+ high conviction, 22+ maximum conviction. For new BUY decisions, also require the accumulation proxy scorecard buy_ready=true; hard vetoes or failed must-pass gates override your opinion. "
         "Use Phase 4 performance_feedback as historical evidence: poor expectancy, low win rate, high stop-hit rate, or bad MAE for this strategy/market should reduce size or HOLD unless the current setup has exceptional clean evidence. "
         "If an existing long position is supplied, act as the exit/risk manager: SELL only when the hard stop, target/invalidation, technical breakdown, news shock, or risk-off regime justifies exit; otherwise HOLD with a concrete updated exit plan. "
         "Never recommend leverage, short-selling, futures, options, or ignoring risk gates."
@@ -1950,7 +1950,7 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
                     "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
                     "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5),
                     "phase3_volume": strategy_logic.get("breakout_volume"),
-                    "phase3_institutional_sponsorship": strategy_logic.get("institutional_sponsorship"),
+                    "phase3_flow_or_accumulation_support": strategy_logic.get("institutional_sponsorship"),
                     "phase3_event_driven_thesis": strategy_logic.get("event_driven_thesis"),
                     "climax_volume_top": divergence.get("climax_volume_top"),
                     "alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
@@ -1960,7 +1960,7 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
                     "sector_headwind": sector.get("sector_headwind"),
                     "breadth_regime": breadth.get("breadth_regime"),
                     "delivery_bias": delivery.get("bias") or delivery.get("net_bias"),
-                    "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+                    "delivery_accumulation_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
                     "options_buy_suppressed": (full.get("options_oi") or {}).get("buy_suppressed"),
                     "expiry_day": macro_event.get("is_expiry_day"),
                     "earnings_days_away": macro_event.get("earnings_days_away"),
@@ -1971,8 +1971,8 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
                     "combined": (context.get("score_breakdown") or {}).get("combined"),
                     "confluence_total": confluence.get("total"),
                     "confluence_tier": confluence.get("tier"),
-                    "institutional_total": scorecard.get("total_score"),
-                    "institutional_buy_ready": scorecard.get("buy_ready"),
+                    "accumulation_proxy_total": scorecard.get("total_score"),
+                    "accumulation_proxy_ready": scorecard.get("buy_ready"),
                     "delivery_score": delivery.get("delivery_score"),
                     "sector_rotation_score": sector.get("sector_rotation_score"),
                     "divergence_score": divergence.get("divergence_score"),
@@ -1982,7 +1982,7 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
             "technical_state": _compact_technical_state(trend, indicators, full),
             "entry_and_levels": _compact_entry_levels(entry, breakout, full.get("key_levels") or {}),
             "risk_and_events": _compact_risk_events(full.get("risk_overrides") or {}, full, macro_event),
-            "institutional_context": _compact_institutional_for_llm(
+            "flow_and_accumulation_context": _compact_institutional_for_llm(
                 scorecard,
                 full.get("institutional_structure") or {},
                 delivery,
@@ -2087,13 +2087,13 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                     "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
                     "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5),
                     "phase3_volume": strategy_logic.get("breakout_volume"),
-                    "phase3_institutional_sponsorship": strategy_logic.get("institutional_sponsorship"),
+                    "phase3_flow_or_accumulation_support": strategy_logic.get("institutional_sponsorship"),
                     "phase3_event_driven_thesis": strategy_logic.get("event_driven_thesis"),
                     "climax_volume_top": divergence.get("climax_volume_top"),
                     "alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
                     "breadth_regime": breadth.get("breadth_regime"),
                     "delivery_bias": delivery.get("bias") or delivery.get("net_bias"),
-                    "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+                    "delivery_accumulation_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
                     "options_buy_suppressed": options_oi.get("buy_suppressed"),
                     "earnings_days_away": macro_event.get("earnings_days_away"),
                     "expiry_day": macro_event.get("is_expiry_day"),
@@ -2106,8 +2106,8 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                     "combined": score_breakdown.get("combined"),
                     "confluence_total": confluence.get("total"),
                     "confluence_tier": confluence.get("tier"),
-                    "institutional_score": scorecard.get("total_score"),
-                    "institutional_buy_ready": scorecard.get("buy_ready"),
+                    "accumulation_proxy_score": scorecard.get("total_score"),
+                    "accumulation_proxy_ready": scorecard.get("buy_ready"),
                     "delivery_score": delivery.get("delivery_score"),
                     "sector_rotation_score": sector.get("sector_rotation_score"),
                     "divergence_score": divergence.get("divergence_score"),
@@ -2232,14 +2232,14 @@ def _compact_full_spectrum_for_llm(
                     "phase3_hard_blocks": _limit_list(strategy_logic.get("hard_blocks"), 4),
                     "phase3_penalties": _limit_list(strategy_logic.get("penalties"), 5 if rich else 3),
                     "phase3_volume": strategy_logic.get("breakout_volume"),
-                    "phase3_institutional_sponsorship": strategy_logic.get("institutional_sponsorship"),
+                    "phase3_flow_or_accumulation_support": strategy_logic.get("institutional_sponsorship"),
                     "phase3_event_driven_thesis": strategy_logic.get("event_driven_thesis"),
                     "climax_volume_top": divergence.get("climax_volume_top"),
                     "timeframe_alignment_grade": (trend.get("timeframe_alignment") or {}).get("alignment_grade"),
                     "sector_tailwind": sector.get("sector_tailwind"),
                     "sector_headwind": sector.get("sector_headwind"),
                     "breadth_regime": breadth.get("breadth_regime"),
-                    "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+                    "delivery_accumulation_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
                     "market_region": market_region,
                     "expiry_day": macro_event.get("is_expiry_day"),
                     "earnings_days_away": macro_event.get("earnings_days_away"),
@@ -2252,10 +2252,10 @@ def _compact_full_spectrum_for_llm(
                     "confluence_total": confluence.get("total"),
                     "confluence_max": confluence.get("max"),
                     "confluence_tier": confluence.get("tier"),
-                    "institutional_total": scorecard.get("total_score"),
-                    "institutional_normalized": scorecard.get("normalized_score"),
-                    "institutional_buy_ready": scorecard.get("buy_ready"),
-                    "institutional_verdict": scorecard.get("verdict"),
+                    "accumulation_proxy_total": scorecard.get("total_score"),
+                    "accumulation_proxy_normalized": scorecard.get("normalized_score"),
+                    "accumulation_proxy_ready": scorecard.get("buy_ready"),
+                    "accumulation_proxy_verdict": scorecard.get("verdict"),
                     "delivery_score": delivery.get("delivery_score"),
                     "sector_rotation_score": sector.get("sector_rotation_score"),
                     "breadth_score": breadth.get("breadth_score"),
@@ -2441,14 +2441,14 @@ def _compact_institutional_for_llm(
     return _prune_empty(
         {
             "scorecard_reasons": _limit_list(scorecard.get("reasons"), 5 if rich else 3),
-            "institutional_sponsorship": scorecard.get("institutional_sponsorship"),
+            "flow_or_accumulation_support": scorecard.get("institutional_sponsorship"),
             "wyckoff_phase": structure.get("wyckoff_phase"),
             "market_structure": structure.get("market_structure"),
             "liquidity_sweep": structure.get("liquidity_sweep"),
-            "smart_money_bias": structure.get("smart_money_bias"),
+            "price_volume_bias": structure.get("smart_money_bias"),
             "delivery_bias": delivery.get("bias"),
             "delivery_score": delivery.get("delivery_score"),
-            "delivery_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
+            "delivery_accumulation_fingerprint": delivery.get("institutional_fingerprint") or delivery.get("fingerprint"),
             "flow_quality": institutional_flow.get("source_quality"),
             "market_bias": institutional_flow.get("market_bias"),
             "symbol_flags": institutional_flow.get("symbol_flags"),
@@ -2662,8 +2662,8 @@ def _policy_gate_profile(context: dict[str, Any], system_gate_audit: dict[str, A
             "scorecard_required": "hard veto clear, score >=72/100, and data quality/liquidity/trend/risk-reward must-pass gates clear",
         }
     return {
-        "name": "institutional_quality_swing",
-        "description": "institutional-quality profile: fresh BUY requires full scorecard readiness and production-readiness gates",
+        "name": "accumulation_quality_swing",
+        "description": "quality swing profile: fresh BUY requires accumulation proxy scorecard readiness and production-readiness gates",
         "min_overall": 55.0,
         "min_confluence": 16,
         "min_scorecard": 75.0,
@@ -2810,7 +2810,7 @@ def _policy_gate_action(
                     "required": f">= {gate_profile['min_confluence']}/26",
                 },
                 {
-                    "gate": "institutional_scorecard_buy_ready",
+                    "gate": "accumulation_proxy_scorecard_ready",
                     "passed": scorecard_profile_passed,
                     "value": {
                         "score": scorecard.get("total_score"),

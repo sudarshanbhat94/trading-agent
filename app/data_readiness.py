@@ -24,15 +24,17 @@ def assess_phase2_data_readiness(
     macro_event_context: dict[str, Any] | None,
     institutional_context: dict[str, Any] | None,
     full_spectrum: dict[str, Any] | None = None,
+    execution_mode: str = "paper",
 ) -> dict[str, Any]:
     """Market-specific Phase-2 data checklist for fresh trade decisions.
 
-    Yahoo/delayed daily data is acceptable for broad screening, but fresh trade
-    decisions need stronger market-specific data. Missing hard requirements
-    block fresh entries; missing soft requirements are exposed and penalized.
+    Free or delayed daily data is acceptable for broad screening only. Fresh
+    trade decisions, including paper trades, require the same market-specific
+    quote, candle, event, and flow confirmations as live analysis.
     """
 
     market = market_region_for_row(row)
+    mode = str(execution_mode or "paper").strip().lower()
     full_spectrum = full_spectrum or {}
     timeframe_candles = timeframe_candles or {}
     daily = timeframe_candles.get("daily") or timeframe_candles.get("analysis") or []
@@ -78,8 +80,8 @@ def assess_phase2_data_readiness(
     check("sentiment_news", "News/sentiment source checked", sentiment_status != "DATA_MISSING", SOFT, sentiment.get("source"))
 
     if market == "US":
-        realtime_source_ok = _source_has(quote_source, ("alpaca", "polygon"))
-        minute_source_ok = len(intraday) >= 20 and _source_has(intraday_source, ("alpaca", "polygon"))
+        realtime_source_ok = _source_has(quote_source, ("alpaca-sip", "polygon"))
+        minute_source_ok = len(intraday) >= 20 and _source_has(intraday_source, ("alpaca-sip", "polygon"))
         earnings_checked = not _has_gap(macro_event_context, "earnings_calendar_empty")
         analyst_checked = _contains_any(sentiment_headlines, ("analyst", "upgrade", "downgrade", "price target")) or _events_have(
             sentiment_events,
@@ -94,8 +96,21 @@ def assess_phase2_data_readiness(
         )
         short_interest_checked = bool(row.get("short_interest") or row.get("short_interest_pct") or options_data.get("short_interest"))
 
-        check("us_realtime_quote", "US real-time quote from Alpaca/Polygon", realtime_source_ok, HARD, quote_source)
-        check("us_minute_bars", "US minute bars from Alpaca/Polygon", minute_source_ok, HARD, intraday_source, f"{len(intraday)} candles")
+        check(
+            "us_realtime_quote",
+            "US consolidated real-time quote from Alpaca SIP/Polygon",
+            realtime_source_ok,
+            HARD,
+            quote_source,
+        )
+        check(
+            "us_minute_bars",
+            "US minute bars from Alpaca SIP/Polygon",
+            minute_source_ok,
+            HARD,
+            intraday_source,
+            f"{len(intraday)} candles",
+        )
         check("us_earnings_date", "US earnings-date/event calendar", earnings_checked, HARD, macro_event_context.get("source"))
         check("us_sec_filings", "SEC filings / EDGAR event check", sec_checked, HARD, row.get("cik") or sentiment.get("source"))
         check("us_analyst_revisions", "Analyst revisions / rating changes", analyst_checked, SOFT, sentiment.get("source"))
@@ -133,6 +148,8 @@ def assess_phase2_data_readiness(
     return {
         "phase": 2,
         "market_region": market,
+        "mode": "strict",
+        "execution_mode": mode,
         "screening_ready": not any(item["key"] in {"quote_price", "daily_history"} for item in hard_gaps),
         "trade_decision_ready": not hard_gaps,
         "score_pct": round(score, 1),
@@ -148,9 +165,9 @@ def assess_phase2_data_readiness(
             "sentiment": sentiment.get("source"),
         },
         "policy": (
-            "Yahoo/delayed daily data is screening-only; fresh trades need market-specific live/minute/event data."
+            "Free or delayed US data is screening-only unless it satisfies the same real-time, minute-bar, earnings, and SEC checks required for trade decisions."
             if market == "US"
-            else "India fresh trades need live broker candles plus NSE/BSE event, delivery, breadth, and OI context where applicable."
+            else "India fresh trades need live broker candles plus NSE/BSE event, delivery, breadth, and OI context where applicable, whether the execution is paper or live."
         ),
     }
 

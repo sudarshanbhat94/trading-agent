@@ -1372,7 +1372,7 @@ def _risk_overrides(
             "liquidity and circuit-risk proxy",
             "corporate event risk",
             "signal conflict severity",
-            "institutional scorecard hard vetoes",
+            "accumulation proxy scorecard hard vetoes",
             "Phase 3 pivot/breakout/earnings strategy logic",
         ],
         "no_new_longs": no_new_longs,
@@ -1650,7 +1650,7 @@ def _signal_plan(
         if direction == "LONG" and scorecard.get("buy_ready") and not risk_overrides.get("no_new_longs")
         else "monitor_only",
         "institutional_grade": scorecard.get("grade"),
-        "institutional_score": f"{scorecard.get('total_score', 0)}/{scorecard.get('max_score', 100)}",
+        "accumulation_proxy_score": f"{scorecard.get('total_score', 0)}/{scorecard.get('max_score', 100)}",
         "failed_must_pass": scorecard.get("must_pass_failed", []),
         "confluence": f"{confluence.get('total', 0)}/{confluence.get('max', 26)} {confluence.get('tier', 'NO_SIGNAL')}",
         "trend_alignment": {
@@ -1674,7 +1674,7 @@ def _monitoring_checklist(
     stop = trade_plan.get("stop_loss")
     checklist = [
         f"Re-score confluence every cycle; current score is {confluence.get('total', 0)}/26.",
-        f"Re-score institutional scorecard every cycle; current score is {scorecard.get('total_score', 0)}/100.",
+        f"Re-score accumulation proxy scorecard every cycle; current score is {scorecard.get('total_score', 0)}/100.",
         "Refresh quote, candles, global regime, and latest symbol news before acting.",
         "Block new long entries if global risk-off or no-new-longs override appears.",
     ]
@@ -2171,7 +2171,7 @@ def _institutional_scorecard(
     if hard_veto:
         must_pass_failed.append("hard_veto_clear")
     if total < min_entry_score:
-        must_pass_failed.append("institutional_score_min_75")
+        must_pass_failed.append("accumulation_proxy_score_min_75")
     if int(confluence.get("total", 0) or 0) < strict_confluence:
         must_pass_failed.append("confluence_min_16")
     if data_quality.get("score", 0) < 55:
@@ -2186,13 +2186,13 @@ def _institutional_scorecard(
         must_pass_failed.append("sentiment_not_bearish")
     sponsorship = strategy_logic.get("institutional_sponsorship") or {}
     if not sponsorship.get("supported"):
-        must_pass_failed.append("institutional_sponsorship_required")
+        must_pass_failed.append("flow_or_accumulation_support_required")
     if strategy_logic.get("hard_blocks"):
         must_pass_failed.append("phase3_strategy_logic_clear")
 
     buy_ready = not must_pass_failed
     return {
-        "version": "institutional-scorecard-v1",
+        "version": "accumulation-proxy-scorecard-v1",
         "total_score": _round(total),
         "max_score": max_score,
         "normalized_score": _round(total / max_score if max_score else 0),
@@ -2206,7 +2206,7 @@ def _institutional_scorecard(
         "phase3_penalty": _round(phase3_penalty),
         "institutional_sponsorship": sponsorship,
         "sections": section_map,
-        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and institutional sponsorship is proven.",
+        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and verified flow or accumulation evidence supports the setup.",
         "exit_rule": "For open positions, exit on hard stop, target/invalidation, breakdown, severe negative news, high conflict, or global risk-off.",
         "accuracy_note": "No market system can guarantee 90% accuracy; this scorecard is designed to improve expectancy by rejecting low-quality trades.",
     }
@@ -2645,7 +2645,7 @@ def _requirement_coverage(
         },
         "phase_9_confluence": {
             "status": "implemented_with_neutral_gaps",
-            "implemented": "26-point confluence score, 100-point institutional scorecard, hard vetoes, and tier thresholds; free FII/DII, PCR, ASM/GSM, announcements can contribute when available",
+            "implemented": "26-point confluence score, 100-point accumulation proxy scorecard, hard vetoes, and tier thresholds; free FII/DII, PCR, ASM/GSM, announcements can contribute when available",
             "gap": "missing institutional/feed-only factors are recorded as gaps instead of fabricated",
         },
         "phase_10_signal_output": {

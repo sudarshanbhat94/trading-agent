@@ -575,6 +575,7 @@ class AlpacaMarketDataProvider(MarketDataProvider):
         self.api_secret = settings.alpaca_api_secret
         self.base_url = settings.alpaca_data_base_url.rstrip("/")
         self.feed = settings.alpaca_data_feed or "iex"
+        self.source_name = f"alpaca-{self.feed}-live"
         self.intraday_lookback_days = max(1, int(settings.us_intraday_candle_lookback_days or 5))
         self.daily_lookback_days = max(30, int(settings.us_daily_candle_lookback_days or 420))
         self.last_quote_diagnostics: dict[str, Any] = {}

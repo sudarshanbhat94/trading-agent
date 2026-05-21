@@ -6,15 +6,16 @@ import re
 import sqlite3
 import threading
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .decision_contract import normalize_trade_targets, ranked_decision_rows
+from .decision_contract import current_decision_rows, normalize_trade_targets, ranked_decision_rows
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
-from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, fresh_buy_quality_gate
+from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, fresh_buy_quality_gate, trade_readiness_gate
 
 
 def _market_region_case(alias: str = "u") -> str:
@@ -225,21 +226,21 @@ def _json_load(value: Any) -> Any:
         return {}
 
 
-def _bounded_for_storage(value: Any, depth: int = 0, max_depth: int = 5) -> Any:
+def _bounded_for_storage(value: Any, depth: int = 0, max_depth: int = 5, dict_limit: int = 12, list_limit: int = 6) -> Any:
     if depth >= max_depth:
         return _storage_scalar(value)
     if isinstance(value, dict):
         output: dict[str, Any] = {}
         for index, (key, item) in enumerate(value.items()):
-            if index >= 12:
-                output["_truncated_keys"] = max(len(value) - 12, 0)
+            if index >= dict_limit:
+                output["_truncated_keys"] = max(len(value) - dict_limit, 0)
                 break
-            output[str(key)] = _bounded_for_storage(item, depth + 1, max_depth)
+            output[str(key)] = _bounded_for_storage(item, depth + 1, max_depth, dict_limit, list_limit)
         return output
     if isinstance(value, list):
-        trimmed = [_bounded_for_storage(item, depth + 1, max_depth) for item in value[:6]]
-        if len(value) > 6:
-            trimmed.append({"_truncated_items": len(value) - 6})
+        trimmed = [_bounded_for_storage(item, depth + 1, max_depth, dict_limit, list_limit) for item in value[:list_limit]]
+        if len(value) > list_limit:
+            trimmed.append({"_truncated_items": len(value) - list_limit})
         return trimmed
     return _storage_scalar(value)
 
@@ -256,6 +257,13 @@ def _pick_keys(source: Any, keys: Iterable[str]) -> dict[str, Any]:
     if not isinstance(source, dict):
         return {}
     return {key: source.get(key) for key in keys if key in source}
+
+
+def _first_dict(*values: Any) -> dict[str, Any]:
+    for value in values:
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def _compact_full_spectrum(full: Any) -> dict[str, Any]:
@@ -391,7 +399,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
             "recent_candle_count": context.get("recent_candle_count"),
         },
     }
-    return json.dumps(_bounded_for_storage(compact), default=str, separators=(",", ":"))
+    return json.dumps(_bounded_for_storage(compact, dict_limit=32), default=str, separators=(",", ":"))
 
 
 def _plan_max_days(plan_code: str, fallback_status: str = "") -> int:
@@ -1626,6 +1634,42 @@ class Database:
             "output_chars": int(row["output_chars"] or 0),
         }
 
+    def llm_usage_cost_for_system_scope(self, scope_id: str, after_id: int = 0) -> dict[str, Any]:
+        with self.connect() as conn:
+            if scope_id:
+                row = conn.execute(
+                    """
+                    select count(*) as calls,
+                        coalesce(sum(cost_usd), 0) as cost_usd,
+                        coalesce(sum(total_tokens), 0) as total_tokens,
+                        coalesce(sum(input_chars), 0) as input_chars,
+                        coalesce(sum(output_chars), 0) as output_chars
+                    from llm_usage_events
+                    where id > ? and user_id is null and scope_id = ?
+                    """,
+                    (after_id, scope_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    select count(*) as calls,
+                        coalesce(sum(cost_usd), 0) as cost_usd,
+                        coalesce(sum(total_tokens), 0) as total_tokens,
+                        coalesce(sum(input_chars), 0) as input_chars,
+                        coalesce(sum(output_chars), 0) as output_chars
+                    from llm_usage_events
+                    where id > ? and user_id is null
+                    """,
+                    (after_id,),
+                ).fetchone()
+        return {
+            "calls": int(row["calls"] or 0),
+            "cost_usd": round(float(row["cost_usd"] or 0.0), 8),
+            "total_tokens": int(row["total_tokens"] or 0),
+            "input_chars": int(row["input_chars"] or 0),
+            "output_chars": int(row["output_chars"] or 0),
+        }
+
     def update_user_broker(self, user_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         allowed = {
             "indstocks_access_token",
@@ -1873,15 +1917,62 @@ class Database:
         )
         return self._candle_rows_to_models(raw)
 
+    def candle_coverage_by_symbol(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        normalized_symbols = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            normalized = str(symbol or "").strip().upper()
+            if normalized and normalized not in seen:
+                normalized_symbols.append(normalized)
+                seen.add(normalized)
+        output: dict[str, dict[str, Any]] = {symbol: _empty_candle_coverage() for symbol in normalized_symbols}
+        if not normalized_symbols:
+            return output
+        with self.connect() as conn:
+            for chunk in _chunks(normalized_symbols, 500):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    select symbol, source, count(*) as candle_count, max(ts) as latest_ts
+                    from candles
+                    where symbol in ({placeholders})
+                    group by symbol, source
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    symbol = str(row["symbol"] or "").upper()
+                    source = str(row["source"] or "")
+                    bucket = _candle_source_bucket(source)
+                    if not bucket:
+                        continue
+                    coverage = output.setdefault(symbol, _empty_candle_coverage())
+                    source_count = int(row["candle_count"] or 0)
+                    latest_ts = row["latest_ts"]
+                    bucket_payload = coverage[bucket]
+                    bucket_payload["count"] += source_count
+                    bucket_payload["latest_ts"] = _latest_ts(bucket_payload.get("latest_ts"), latest_ts)
+                    source_payload = coverage["sources"].setdefault(source, {"count": 0, "latest_ts": None})
+                    source_payload["count"] += source_count
+                    source_payload["latest_ts"] = _latest_ts(source_payload.get("latest_ts"), latest_ts)
+        for coverage in output.values():
+            daily = coverage["daily"]
+            intraday = coverage["intraday"]
+            analysis = coverage["analysis"]
+            best = daily if int(daily.get("count") or 0) >= int(intraday.get("count") or 0) else intraday
+            analysis["count"] = int(best.get("count") or 0)
+            analysis["latest_ts"] = best.get("latest_ts")
+        return output
+
     def recent_candle_sets_by_symbol(self, symbols: list[str]) -> dict[str, dict[str, list[Candle]]]:
         if not symbols:
             return {}
         intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source_like="upstox-live:%minute")
-        alpaca_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=240, source_like="alpaca-live:%minute")
+        alpaca_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=240, source_like="alpaca%live:%minute")
         polygon_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=240, source_like="polygon-live:%minute")
         legacy_intraday = self.recent_candles_by_symbol(symbols, limit_per_symbol=120, source="upstox-live")
         daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=260, source="upstox-live:day")
-        alpaca_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="alpaca-live:day")
+        alpaca_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source_like="alpaca%live:day")
         polygon_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="polygon-live:day")
         indstocks_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source_like="indstocks-live:%day")
         yahoo_daily = self.recent_candles_by_symbol(symbols, limit_per_symbol=320, source="yahoo-delayed")
@@ -2111,6 +2202,127 @@ class Database:
                 """,
                 rows,
             )
+
+    def suppress_repeated_buy_decisions(
+        self,
+        decisions: Iterable[Decision],
+        cooldown_hours: int = DUPLICATE_BUY_COOLDOWN_HOURS,
+    ) -> list[Decision]:
+        """Convert repeated active BUY decisions into HOLD/monitor decisions.
+
+        This keeps the decision feed from publishing the same BUY every cycle
+        while preserving the existing active signal idea as position monitoring.
+        """
+
+        items = list(decisions)
+        if not items:
+            return []
+        cooldown = max(int(cooldown_hours or DUPLICATE_BUY_COOLDOWN_HOURS), 1)
+        now_dt = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            active_rows = conn.execute(
+                """
+                select symbol, strategy, status, first_seen_at, last_seen_at, reason
+                from signal_ideas
+                where signal_type = 'BUY'
+                  and status in ('ACTIVE','MONITORING','TARGET_1_HIT','TARGET_2_HIT')
+                order by last_seen_at desc, id desc
+                """
+            ).fetchall()
+            recent_buy_rows = conn.execute(
+                """
+                select symbol, strategy, action as status, ts as last_seen_at, reason
+                from decisions
+                where action = 'BUY'
+                order by id desc
+                limit 1000
+                """
+            ).fetchall()
+        active_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        active_by_symbol: dict[str, dict[str, Any]] = {}
+        for row in active_rows:
+            item = _row_dict(row)
+            symbol = str(item.get("symbol") or "").upper()
+            strategy = str(item.get("strategy") or "")
+            if not symbol:
+                continue
+            active_by_symbol.setdefault(symbol, item)
+            active_by_key.setdefault((symbol, strategy), item)
+        for row in recent_buy_rows:
+            item = _row_dict(row)
+            last_seen = _parse_dt(item.get("last_seen_at"))
+            if not last_seen or (now_dt - last_seen) > timedelta(hours=cooldown):
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            strategy = str(item.get("strategy") or "")
+            if not symbol:
+                continue
+            item["status"] = "RECENT_BUY_DECISION"
+            item["first_seen_at"] = item.get("last_seen_at")
+            active_by_symbol.setdefault(symbol, item)
+            active_by_key.setdefault((symbol, strategy), item)
+
+        output: list[Decision] = []
+        seen_buy_keys: set[tuple[str, str]] = set()
+        seen_buy_symbols: set[str] = set()
+        for decision in items:
+            if str(decision.action or "").upper() != "BUY":
+                output.append(decision)
+                continue
+            symbol = str(decision.symbol or "").upper()
+            strategy = str(decision.strategy or "")
+            key = (symbol, strategy)
+            active = active_by_key.get(key) or active_by_symbol.get(symbol)
+            duplicate_in_batch = key in seen_buy_keys or symbol in seen_buy_symbols
+            if not active:
+                if not duplicate_in_batch:
+                    seen_buy_keys.add(key)
+                    seen_buy_symbols.add(symbol)
+                    output.append(decision)
+                    continue
+                active = {"status": "CURRENT_BATCH", "strategy": strategy, "last_seen_at": None}
+            last_seen = _parse_dt(active.get("last_seen_at")) or _parse_dt(active.get("first_seen_at"))
+            within_cooldown = True
+            minutes_left = None
+            if last_seen:
+                cooldown_until = last_seen + timedelta(hours=cooldown)
+                within_cooldown = cooldown_until > now_dt
+                minutes_left = max(int((cooldown_until - now_dt).total_seconds() // 60), 0)
+            if not within_cooldown:
+                output.append(decision)
+                continue
+
+            audit = self._decode_json(decision.details_json)
+            audit["final_action"] = "HOLD"
+            audit["action_reason"] = "Already active; repeated BUY is position monitoring, not a new entry."
+            audit["duplicate_buy_suppression"] = {
+                "suppressed": True,
+                "reason": "already_active_buy_cooldown",
+                "cooldown_hours": cooldown,
+                "cooldown_minutes_left": minutes_left,
+                "active_status": active.get("status"),
+                "active_strategy": active.get("strategy"),
+                "active_last_seen_at": active.get("last_seen_at"),
+            }
+            context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
+            context["signal_continuity"] = {
+                "duplicate_active_buy": True,
+                "already_active_buy": True,
+                "reason": "Already active. Repeated BUY is treated as monitor/no fresh add.",
+                "cooldown_hours": cooldown,
+                "cooldown_minutes_left": minutes_left,
+            }
+            audit["context"] = context
+            output.append(
+                replace(
+                    decision,
+                    action="HOLD",
+                    confidence=min(float(decision.confidence or 0.0), 0.5),
+                    reason="Already active; repeated BUY is position monitoring, not a new entry.",
+                    details_json=json.dumps(audit, default=str, separators=(",", ":")),
+                )
+            )
+        return output
 
     def upsert_signal_ideas_from_decisions(self, decisions: Iterable[Decision]) -> None:
         rows = [decision.to_dict() for decision in decisions]
@@ -2360,7 +2572,6 @@ class Database:
         user_id: int | None = None,
         market_region: str | None = None,
     ) -> list[dict[str, Any]]:
-        self.refresh_signal_idea_marks()
         market_clause, market_params = _market_region_where("u", market_region)
         where_parts = ["i.status != 'REJECTED'"]
         if market_clause:
@@ -2378,10 +2589,10 @@ class Database:
                 left join universe u on u.symbol = i.symbol
                 {where_sql}
                 order by
-                    confidence desc,
                     overall_score_pct desc,
                     confluence desc,
                     combined_score desc,
+                    confidence desc,
                     case status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
                     signal_type = 'BUY' desc,
                     current_return_pct desc,
@@ -2439,7 +2650,6 @@ class Database:
         market_clause, market_params = _market_region_where("u", market_region)
         market_sql = f"and {market_clause}" if market_clause else ""
         with self.connect() as conn:
-            self._refresh_user_follow_marks(conn)
             rows = conn.execute(
                 f"""
                 select
@@ -2678,9 +2888,24 @@ class Database:
                     coalesce(max(i.peak_return_pct), 0) as best_return_pct,
                     coalesce(min(i.worst_return_pct), 0) as worst_return_pct
                 from strategy_plans p
-                left join signal_ideas i on i.plan_code = p.code
+                left join signal_ideas i on i.plan_code = p.code and i.status != 'REJECTED'
                 group by p.id
                 order by p.id
+                """
+            ).fetchall()
+            stats_rows = conn.execute(
+                f"""
+                select
+                    i.plan_code,
+                    {_market_region_case("u")} as market_region,
+                    count(i.id) as idea_count,
+                    coalesce(avg(i.current_return_pct), 0) as avg_return_pct,
+                    coalesce(max(i.peak_return_pct), 0) as best_return_pct,
+                    coalesce(min(i.worst_return_pct), 0) as worst_return_pct
+                from signal_ideas i
+                left join universe u on u.symbol = i.symbol
+                where i.plan_code != '' and i.status != 'REJECTED'
+                group by i.plan_code, market_region
                 """
             ).fetchall()
             idea_rows = conn.execute(
@@ -2704,6 +2929,7 @@ class Database:
             ).fetchall()
         plans = [_row_dict(row) for row in plan_rows]
         ideas_by_plan: dict[str, list[dict[str, Any]]] = {}
+        ideas_by_plan_market: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for row in idea_rows:
             item = _row_dict(row)
             details = self._decode_json(item.pop("details_json", "{}"))
@@ -2720,10 +2946,38 @@ class Database:
                     "timeline": details.get("timeline", {}),
                 }
             )
-            ideas_by_plan.setdefault(str(item.get("plan_code") or ""), []).append(item)
+            plan_code = str(item.get("plan_code") or "")
+            market = normalize_market_region(item.get("market_region") or "IN", default="IN")
+            item["market_region"] = market
+            ideas_by_plan.setdefault(plan_code, []).append(item)
+            ideas_by_plan_market.setdefault(plan_code, {}).setdefault(market, []).append(item)
+        stats_by_plan: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in stats_rows:
+            item = _row_dict(row)
+            plan_code = str(item.get("plan_code") or "")
+            market = normalize_market_region(item.get("market_region") or "IN", default="IN")
+            stats_by_plan.setdefault(plan_code, {})[market] = {
+                "idea_count": int(item.get("idea_count") or 0),
+                "avg_return_pct": round(float(item.get("avg_return_pct") or 0.0), 4),
+                "best_return_pct": round(float(item.get("best_return_pct") or 0.0), 4),
+                "worst_return_pct": round(float(item.get("worst_return_pct") or 0.0), 4),
+            }
         for plan in plans:
-            constituents = ideas_by_plan.get(str(plan.get("code") or ""), [])[:6]
+            plan_code = str(plan.get("code") or "")
+            constituents = ideas_by_plan.get(plan_code, [])[:6]
+            market_stats = {
+                "IN": {"idea_count": 0, "avg_return_pct": 0.0, "best_return_pct": 0.0, "worst_return_pct": 0.0},
+                "US": {"idea_count": 0, "avg_return_pct": 0.0, "best_return_pct": 0.0, "worst_return_pct": 0.0},
+            }
+            for market, stats in (stats_by_plan.get(plan_code) or {}).items():
+                market_stats[market] = stats
+            constituents_by_market = {
+                "IN": (ideas_by_plan_market.get(plan_code, {}).get("IN") or [])[:6],
+                "US": (ideas_by_plan_market.get(plan_code, {}).get("US") or [])[:6],
+            }
             plan["constituents"] = constituents
+            plan["constituents_by_market"] = constituents_by_market
+            plan["market_stats"] = market_stats
             plan["top_symbols"] = [item.get("symbol") for item in constituents[:5]]
             plan["active_idea_count"] = len(constituents)
             plan["timeline"] = plan.get("holding_period")
@@ -2754,6 +3008,8 @@ class Database:
                         "status": idea["status"],
                         "overall_score_pct": idea["overall_score_pct"],
                         "overall_grade": idea["overall_grade"],
+                        "confluence": idea["confluence"],
+                        "data_readiness": idea_details.get("data_readiness"),
                         "hard_blocked": idea_details.get("hard_blocked"),
                         "details": idea_details,
                     }
@@ -2861,6 +3117,174 @@ class Database:
             self._refresh_user_follow_marks(conn)
             row = conn.execute("select * from user_idea_follows where id = last_insert_rowid()").fetchone()
         return _row_dict(row) if row else {}
+
+    def exit_unsafe_active_follows(self, reason: str = "quality_gate_failed_after_follow") -> list[dict[str, Any]]:
+        exited: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                """
+                select
+                    f.*,
+                    i.symbol,
+                    i.signal_type,
+                    i.status as idea_status,
+                    i.overall_score_pct,
+                    i.overall_grade,
+                    i.confluence,
+                    i.latest_price as idea_latest_price,
+                    i.details_json as idea_details_json
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where f.status in ('ACTIVE','LIVE_REQUESTED')
+                  and upper(f.mode) in ('PAPER','LIVE')
+                  and f.qty > 0
+                order by f.id desc
+                """
+            ).fetchall()
+            now = utc_now()
+            for row in rows:
+                item = _row_dict(row)
+                idea_details = self._decode_json(item.get("idea_details_json"))
+                quality_gate = fresh_buy_quality_gate(
+                    {
+                        "action": idea_details.get("action") or item.get("signal_type"),
+                        "signal_type": item.get("signal_type"),
+                        "status": item.get("idea_status"),
+                        "overall_score_pct": item.get("overall_score_pct"),
+                        "overall_grade": item.get("overall_grade"),
+                        "confluence": item.get("confluence"),
+                        "data_readiness": idea_details.get("data_readiness"),
+                        "hard_blocked": idea_details.get("hard_blocked"),
+                        "details": idea_details,
+                    }
+                )
+                if quality_gate.get("passed"):
+                    continue
+                qty = int(item.get("qty") or 0)
+                entry_price = float(item.get("entry_price") or 0.0)
+                latest_price = float(item.get("idea_latest_price") or item.get("latest_price") or entry_price or 0.0)
+                realized_pnl = round((latest_price - entry_price) * qty, 2)
+                return_pct = _return_pct(entry_price, latest_price)
+                follow_details = self._decode_json(item.get("details_json"))
+                follow_details["safety_exit"] = {
+                    "reason": reason,
+                    "quality_reason": quality_gate.get("reason"),
+                    "quality_message": quality_gate.get("message"),
+                    "exited_at": now,
+                    "exit_price": latest_price,
+                    "qty": qty,
+                    "realized_pnl": realized_pnl,
+                    "return_pct": return_pct,
+                }
+                next_status = "LIVE_EXIT_REQUESTED" if str(item.get("mode") or "").upper() == "LIVE" else "EXITED"
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set status = ?, latest_price = ?, unrealized_pnl = ?, return_pct = ?,
+                        updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        next_status,
+                        latest_price,
+                        realized_pnl,
+                        return_pct,
+                        now,
+                        json.dumps(follow_details, default=str, separators=(",", ":")),
+                        item["id"],
+                    ),
+                )
+                item.update(
+                    {
+                        "status": next_status,
+                        "latest_price": latest_price,
+                        "unrealized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                        "quality_gate": quality_gate,
+                    }
+                )
+                exited.append(item)
+        return exited
+
+    def downgrade_non_tradeable_buy_ideas(self, reason: str = "tradeability_gate_cleanup") -> list[dict[str, Any]]:
+        """Move stale or weak BUY rows back to WATCH when they cannot be traded.
+
+        A BUY row should mean a currently actionable entry. Older preserved BUY
+        theses that fail today's tradeability gate remain useful, but only as
+        watchlist context.
+        """
+
+        downgraded: list[dict[str, Any]] = []
+        now = utc_now()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select i.*
+                from signal_ideas i
+                where i.signal_type = 'BUY'
+                  and i.status in ('ACTIVE','MONITORING')
+                  and not exists (
+                      select 1
+                      from user_idea_follows f
+                      where f.idea_id = i.id
+                        and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
+                        and upper(f.mode) in ('PAPER','LIVE')
+                        and f.qty > 0
+                  )
+                order by i.last_seen_at desc, i.id desc
+                """
+            ).fetchall()
+            for row in rows:
+                item = _row_dict(row)
+                details = self._decode_json(item.get("details_json"))
+                quality_gate = fresh_buy_quality_gate(
+                    {
+                        "action": details.get("action") or item.get("signal_type"),
+                        "signal_type": item.get("signal_type"),
+                        "status": item.get("status"),
+                        "overall_score_pct": item.get("overall_score_pct"),
+                        "overall_grade": item.get("overall_grade"),
+                        "confluence": item.get("confluence"),
+                        "data_readiness": details.get("data_readiness"),
+                        "hard_blocked": details.get("hard_blocked"),
+                        "details": details,
+                    }
+                )
+                if quality_gate.get("passed"):
+                    continue
+                details["quality_gate"] = quality_gate
+                details["decision_readiness"] = "monitor_only"
+                details["quality_downgrade"] = {
+                    "from": "BUY",
+                    "to": "WATCH",
+                    "reason": quality_gate.get("reason"),
+                    "message": quality_gate.get("message"),
+                    "cleanup_reason": reason,
+                    "downgraded_at": now,
+                }
+                details["latest_system_action"] = details.get("latest_system_action") or "HOLD"
+                details["display_note"] = quality_gate.get("message")
+                conn.execute(
+                    """
+                    update signal_ideas
+                    set signal_type = 'WATCH',
+                        status = 'WATCH',
+                        last_seen_at = ?,
+                        reason = ?,
+                        details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        now,
+                        str(quality_gate.get("message") or item.get("reason") or "BUY downgraded to watch by tradeability gate.")[:1000],
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        item["id"],
+                    ),
+                )
+                item.update({"signal_type": "WATCH", "status": "WATCH", "quality_gate": quality_gate})
+                downgraded.append(item)
+        return downgraded
 
     def exit_user_follow_position(
         self,
@@ -3701,7 +4125,7 @@ class Database:
                 """,
                 (*params, fetch_limit),
             ).fetchall()
-        return ranked_decision_rows(dict(row) for row in rows)[:limit]
+        return current_decision_rows(dict(row) for row in rows)[:limit]
 
     def latest_decision_summaries(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit or 80), 500))
@@ -3723,7 +4147,7 @@ class Database:
                 """,
                 (*params, fetch_limit),
             ).fetchall()
-        ranked_rows = ranked_decision_rows(dict(row) for row in rows)[:limit]
+        ranked_rows = current_decision_rows(dict(row) for row in rows)[:limit]
         for row in ranked_rows:
             row.pop("details_json", None)
         return ranked_rows
@@ -3975,7 +4399,6 @@ class Database:
             params.append(int(user_id))
         where_sql = " and ".join(where_parts)
         with self.connect() as conn:
-            self._refresh_user_follow_marks(conn)
             rows = conn.execute(
                 f"""
                 select
@@ -4595,6 +5018,11 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
     stop = _optional_float(idea_details.get("stop_loss"))
     current_return = _return_pct(entry, latest)
     mark_state = follow_details.get("mark_state") if isinstance(follow_details.get("mark_state"), dict) else {}
+    peak_return = _optional_float(mark_state.get("peak_return_pct"))
+    if peak_return is None:
+        peak_return = _optional_float(item.get("peak_return_pct"))
+    if peak_return is None:
+        peak_return = current_return
     worst_return = _optional_float(mark_state.get("worst_return_pct"))
     if worst_return is None:
         worst_return = current_return
@@ -4630,6 +5058,32 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
             "REDUCE",
             _target_exit_pct(idea_details, "T1", 35.0),
             "T1 reached; book partial profit and move the remaining trade to tighter risk.",
+        )
+
+    if "MFE_PROFIT_PROTECT" not in done:
+        if peak_return >= 4.0 and current_return <= max(0.75, peak_return * 0.25):
+            return _exit_action(
+                "MFE_PROFIT_PROTECT",
+                "EXIT_FULL",
+                100,
+                f"Trade gave back a {peak_return:.2f}% favorable move; protect capital instead of round-tripping.",
+                full=True,
+            )
+        if peak_return >= 2.5 and current_return <= 0.0:
+            return _exit_action(
+                "MFE_PROFIT_PROTECT",
+                "EXIT_FULL",
+                100,
+                f"Trade was up {peak_return:.2f}% but has returned to breakeven/loss; close before momentum failure deepens.",
+                full=True,
+            )
+
+    if peak_return >= 2.0 and current_return <= 0.25 and "MFE_BREAKEVEN_REDUCE" not in done:
+        return _exit_action(
+            "MFE_BREAKEVEN_REDUCE",
+            "REDUCE",
+            50,
+            f"Trade was up {peak_return:.2f}% but has faded near breakeven; reduce exposure and keep optionality.",
         )
 
     near_stop = bool(drawdown.get("near_stop")) or risk_used_pct >= 65.0
@@ -4779,6 +5233,15 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
     elif signal_type == "BUY" and status in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
         duplicate_active = bool(continuity.get("duplicate_active_buy") or continuity.get("already_active_buy"))
         follow_mode = str(follow.get("mode") or item.get("mode") or "").upper()
+        readiness = trade_readiness_gate(
+            {
+                **item,
+                "details": details,
+                "action": details.get("action") or signal_type,
+                "signal_type": signal_type,
+                "status": status,
+            }
+        )
         if followed_active and follow_mode == "PAPER":
             display_signal = "Paper Entered"
             fresh_action = "NO_FRESH_ADD"
@@ -4791,7 +5254,11 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
             display_signal = "Already Active"
             fresh_action = "NO_FRESH_ADD"
             reason = why_changed.get("summary") or "Already active; repeated BUY is monitor/no fresh add during cooldown."
-        elif latest_action == "BUY" and not continuity:
+        elif not readiness.get("passed"):
+            display_signal = "Watch"
+            fresh_action = "WATCH"
+            reason = readiness.get("message") or "BUY thesis needs stronger quality/data before it is actionable."
+        elif latest_action == "BUY" and not continuity and readiness.get("passed"):
             display_signal = "Actionable"
             fresh_action = "BUY_NOW"
             reason = "Fresh BUY passed the current entry and risk gates."
@@ -4808,8 +5275,11 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
             "Actionable": "ACTIONABLE",
             "Already Active": "POSITION_MONITOR",
             "Position Monitor": "POSITION_MONITOR",
+            "Watch": "WATCH",
         }.get(display_signal, "POSITION_MONITOR")
         class_name = "open"
+        if display_signal == "Watch":
+            class_name = "warning"
         if drawdown_review["risk_review"]:
             trade_state = "RISK_REVIEW"
             class_name = "warning"
@@ -4894,21 +5364,40 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
 def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: dict[str, Any]) -> dict[str, str]:
     status = str(item.get("status") or "").upper()
     signal_type = str(item.get("signal_type") or "").upper()
-    confluence = _optional_float(item.get("confluence")) or 0.0
-    overall = _optional_float(item.get("overall_score_pct")) or 0.0
     risk_flags = details.get("risk_flags") if isinstance(details.get("risk_flags"), list) else []
     classification = str((details.get("classification") or {}).get("classification") or "").upper() if isinstance(details.get("classification"), dict) else ""
     cap = _optional_float(details.get("allocation_cap_multiplier"))
+    readiness = trade_readiness_gate(
+        {
+            **item,
+            "details": details,
+            "action": details.get("action") or signal_type,
+            "signal_type": signal_type,
+            "status": status,
+        }
+    )
     if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT"} or signal_type == "EXIT":
         return {"bucket": "AVOID", "label": "Avoid", "reason": "Idea is closed, invalidated, or in exit mode."}
     if state.get("trade_state") == "RISK_REVIEW":
         return {"bucket": "RISK_REVIEW", "label": "Risk Review", "reason": "Adverse move is outside normal noise; do not add without review."}
-    if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and overall >= 65 and confluence >= 18 and not risk_flags and classification != "SPECULATIVE":
+    if state.get("fresh_action") == "WATCH" or state.get("trade_state") == "WATCH":
+        return {"bucket": "WATCH", "label": "Watch", "reason": "Setup is not actionable yet."}
+    if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and readiness.get("passed") and not risk_flags and classification != "SPECULATIVE":
         return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "Fresh BUY with strong score, confluence, and no active risk flags."}
     if signal_type == "BUY":
-        if classification == "SPECULATIVE" or (cap is not None and cap <= 0.3) or risk_flags or overall < 65:
-            return {"bucket": "SMALL_SIZE_ONLY", "label": "Small Size Only", "reason": "BUY thesis exists, but risk/data/quality profile requires reduced size."}
-        return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "BUY thesis is active and risk checks are acceptable."}
+        if not readiness.get("passed"):
+            return {
+                "bucket": "WATCH",
+                "label": "Watch",
+                "reason": readiness.get("message") or "BUY thesis is present, but it is not trade-ready.",
+            }
+        if readiness.get("passed") and classification != "SPECULATIVE" and not risk_flags and not (cap is not None and cap <= 0.3):
+            return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "BUY thesis is active and risk checks are acceptable."}
+        return {
+            "bucket": "SMALL_SIZE_ONLY",
+            "label": "Small Size Only",
+            "reason": readiness.get("message") or "BUY thesis exists, but risk/data/quality profile requires reduced size.",
+        }
     if signal_type == "WATCH" or status == "WATCH":
         return {"bucket": "WATCH", "label": "Watch", "reason": "Setup is not actionable yet."}
     return {"bucket": "AVOID", "label": "Avoid", "reason": "No active trade setup is available."}
@@ -4952,7 +5441,9 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, json.JSONDecodeError):
         audit = {}
     context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
-    full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+    context_summary = audit.get("context_summary") if isinstance(audit.get("context_summary"), dict) else {}
+    risk_gates = audit.get("risk_gates") if isinstance(audit.get("risk_gates"), dict) else {}
+    full = _first_dict(context.get("full_spectrum_analysis"), context_summary.get("full_spectrum_summary"))
     confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
     trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
     signal_plan = full.get("signal_plan") if isinstance(full.get("signal_plan"), dict) else {}
@@ -4960,12 +5451,18 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
     breakout = full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {}
     entry_quality = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
-    decision_gate = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
-    data_readiness = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+    decision_gate = _first_dict(context.get("decision_gate_context"), risk_gates.get("decision_gate_context"))
     score_breakdown = audit.get("score_breakdown") if isinstance(audit.get("score_breakdown"), dict) else {}
     system_audit = audit.get("system_gate_audit") or context.get("system_gate_audit") or {}
     if not isinstance(system_audit, dict):
         system_audit = {}
+    data_readiness = _first_dict(
+        context.get("data_readiness"),
+        audit.get("data_readiness"),
+        system_audit.get("data_readiness"),
+        risk_gates.get("data_readiness"),
+        context_summary.get("data_readiness"),
+    )
     action = str(row.get("action") or "HOLD").upper()
     combined = float(score_breakdown.get("combined") or 0.0)
     confluence_total = float(confluence.get("total") or 0.0)
@@ -4990,6 +5487,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "risk_flags": risk.get("flags", []),
         "overall_score_pct": overall_score,
         "overall_grade": overall_grade,
+        "confluence": confluence_total,
         "hard_blocked": hard_blocked,
         "hard_blocks": system_audit.get("hard_blocks", []),
         "soft_flags": system_audit.get("soft_flags", []),
@@ -5009,6 +5507,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
             "status": "ACTIVE" if action == "BUY" else action,
             "overall_score_pct": overall_score,
             "overall_grade": overall_grade,
+            "confluence": confluence_total,
             "hard_blocked": hard_blocked,
             "details": details,
         }
@@ -5055,6 +5554,50 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "reason": str(audit.get("action_reason") or row.get("reason") or "")[:1000],
         "details": details,
     }
+
+
+def _empty_candle_coverage() -> dict[str, Any]:
+    return {
+        "intraday": {"count": 0, "latest_ts": None},
+        "daily": {"count": 0, "latest_ts": None},
+        "weekly": {"count": 0, "latest_ts": None},
+        "analysis": {"count": 0, "latest_ts": None},
+        "sources": {},
+    }
+
+
+def _candle_source_bucket(source: str) -> str | None:
+    normalized = str(source or "").lower()
+    if not normalized:
+        return None
+    if normalized == "yahoo-delayed" or ":day" in normalized or ":1day" in normalized:
+        return "daily"
+    if ":week" in normalized or ":1week" in normalized:
+        return "weekly"
+    if (
+        "minute" in normalized
+        or normalized.endswith(":5m")
+        or normalized.endswith(":15m")
+        or normalized.endswith(":30m")
+        or normalized.endswith(":60m")
+        or normalized in {"upstox-live", "indstocks-live", "kite-live"}
+        or normalized.startswith("nubra")
+    ):
+        return "intraday"
+    return None
+
+
+def _latest_ts(current: Any, candidate: Any) -> Any:
+    if not current:
+        return candidate
+    if not candidate:
+        return current
+    return candidate if str(candidate) > str(current) else current
+
+
+def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
+    for index in range(0, len(items), max(1, size)):
+        yield items[index : index + size]
 
 
 def _should_preserve_active_buy(existing: sqlite3.Row, idea: dict[str, Any], row: dict[str, Any]) -> bool:

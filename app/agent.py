@@ -5,16 +5,19 @@ import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 from .decision_contract import normalize_trade_targets
 from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
+from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .market_data import MarketDataError, MarketDataProvider
 from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context
 from .models import Decision, utc_now
 from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
+from .request_context import current_llm_usage_scope, current_user_id
 from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_skip_payload
 from .strategy import StrategyEngine
 from .trading_rules import build_position_summary, build_self_audit
@@ -73,6 +76,7 @@ class TradingAgentService:
         self._last_shared_auto_trade: dict[str, Any] = {}
         self._universe_cursor = 0
         self._news_probe_cursor = 0
+        self._candle_backfill_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
         self.opportunity_scanner = OpportunityScanner(strategy.settings)
 
@@ -226,6 +230,16 @@ class TradingAgentService:
             scan_summary = scan_result.summary
             scan_summary["news_probe"] = news_probe_summary
             scan_summary["history_prefetch"] = history_prefetch_summary
+            scan_summary["enabled_universe_symbols"] = len(full_universe)
+            scan_summary["open_universe_symbols"] = len(scan_universe)
+            scan_summary["scanned_symbols_this_cycle"] = len(raw_universe)
+            scan_summary["raw_scan_limit"] = raw_scan_limit
+            scan_summary["scan_rotation_enabled"] = bool(
+                raw_scan_limit and raw_scan_limit > 0 and raw_scan_limit < len(scan_universe)
+            )
+            scan_summary["news_screened_symbols"] = int(news_probe_summary.get("symbols_requested") or 0)
+            scan_summary["news_events_found"] = int(news_probe_summary.get("events_found") or 0)
+            scan_summary["news_headlines_found"] = int(news_probe_summary.get("headlines_found") or 0)
             thin_history_symbols = {
                 str(row.get("symbol") or "").upper()
                 for row in universe
@@ -259,6 +273,14 @@ class TradingAgentService:
                         for row in universe[:25]
                     ],
                 }
+            scan_summary["by_market"] = _opportunity_scan_by_market(
+                scan_summary,
+                full_universe,
+                scan_universe,
+                raw_universe,
+                universe,
+                news_probe_summary,
+            )
             self.db.set_state("opportunity_scan", scan_summary)
             self._log(
                 "INFO",
@@ -278,15 +300,31 @@ class TradingAgentService:
                 },
             )
         else:
+            static_summary = {
+                "enabled": False,
+                "mode": "static_cycle_universe",
+                "scanned_at": utc_now(),
+                "raw_symbols": len(raw_universe),
+                "enabled_universe_symbols": len(full_universe),
+                "open_universe_symbols": len(scan_universe),
+                "scanned_symbols_this_cycle": len(raw_universe),
+                "raw_scan_limit": raw_scan_limit,
+                "scan_rotation_enabled": bool(
+                    raw_scan_limit and raw_scan_limit > 0 and raw_scan_limit < len(scan_universe)
+                ),
+                "selected_symbols": len(universe),
+            }
+            static_summary["by_market"] = _opportunity_scan_by_market(
+                static_summary,
+                full_universe,
+                scan_universe,
+                raw_universe,
+                universe,
+                {},
+            )
             self.db.set_state(
                 "opportunity_scan",
-                {
-                    "enabled": False,
-                    "mode": "static_cycle_universe",
-                    "scanned_at": utc_now(),
-                    "raw_symbols": len(raw_universe),
-                    "selected_symbols": len(universe),
-                },
+                static_summary,
             )
         self._cycle_phase = "candles"
         benchmark_rows = self._relative_strength_benchmark_rows()
@@ -299,8 +337,16 @@ class TradingAgentService:
             if row["symbol"] not in known_fetch_symbols:
                 candle_fetch_universe.append(row)
                 known_fetch_symbols.add(row["symbol"])
+        backfill_universe, backfill_plan = self._candle_backfill_universe(scan_universe, known_fetch_symbols)
+        for row in backfill_universe:
+            symbol = row["symbol"]
+            if symbol not in known_fetch_symbols:
+                candle_fetch_universe.append(row)
+                known_fetch_symbols.add(symbol)
         candle_fetch_plan["relative_strength_benchmark_symbols"] = benchmark_symbols
         candle_fetch_plan["relative_strength_benchmark_fetch"] = benchmark_fetch_plan
+        candle_fetch_plan["coverage_backfill"] = backfill_plan
+        self.db.set_state("candle_backfill_plan", backfill_plan)
         fresh_candles = await self.market_data.get_candles(candle_fetch_universe) if candle_fetch_universe else {}
         fetched_at = datetime.now(timezone.utc)
         for row in candle_fetch_universe:
@@ -430,25 +476,35 @@ class TradingAgentService:
             },
         )
         self._cycle_phase = "strategy_and_llm"
-        decisions = await asyncio.to_thread(
-            lambda: asyncio.run(
-                self.strategy.evaluate(
-                    universe,
-                    quotes,
-                    positions,
-                    candles,
-                    macro_context,
-                    institutional_context,
-                    options_context,
-                    self.delivery_service,
-                    market_breadth_context,
-                    sector_rotation_context,
-                    self.macro_calendar,
-                    candle_sets,
-                    portfolio.get("equity"),
+        shared_usage_after_id = self.db.latest_llm_usage_id()
+        shared_usage_scope = f"shared_agent_cycle:{uuid4().hex}"
+        shared_scope_token = current_llm_usage_scope.set(shared_usage_scope)
+        shared_user_token = current_user_id.set(None)
+        try:
+            decisions = await asyncio.to_thread(
+                lambda: asyncio.run(
+                    self.strategy.evaluate(
+                        universe,
+                        quotes,
+                        positions,
+                        candles,
+                        macro_context,
+                        institutional_context,
+                        options_context,
+                        self.delivery_service,
+                        market_breadth_context,
+                        sector_rotation_context,
+                        self.macro_calendar,
+                        candle_sets,
+                        portfolio.get("equity"),
+                    )
                 )
             )
-        )
+        finally:
+            current_user_id.reset(shared_user_token)
+            current_llm_usage_scope.reset(shared_scope_token)
+        shared_llm_usage = self.db.llm_usage_cost_for_system_scope(shared_usage_scope, shared_usage_after_id)
+        decisions = self.db.suppress_repeated_buy_decisions(decisions)
         action_counts: dict[str, int] = {}
         decision_paths: dict[str, int] = {}
         llm_error_count = 0
@@ -475,7 +531,33 @@ class TradingAgentService:
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
+        unsafe_follow_exits = self.db.exit_unsafe_active_follows(reason="cycle_quality_gate_safety_exit")
+        downgraded_buy_ideas = self.db.downgrade_non_tradeable_buy_ideas(reason="cycle_tradeability_cleanup")
         shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
+        shared_auto_trade["credit_billing"] = self._charge_shared_ai_cycle_to_users(
+            shared_llm_usage,
+            decisions,
+            universe,
+            shared_usage_scope,
+        )
+        if unsafe_follow_exits:
+            shared_auto_trade["safety_exited"] = [
+                {
+                    "user_id": item.get("user_id"),
+                    "symbol": item.get("symbol"),
+                    "mode": item.get("mode"),
+                    "quality_reason": (item.get("quality_gate") or {}).get("reason"),
+                }
+                for item in unsafe_follow_exits[:20]
+            ]
+        if downgraded_buy_ideas:
+            shared_auto_trade["downgraded_buy_ideas"] = [
+                {
+                    "symbol": item.get("symbol"),
+                    "quality_reason": (item.get("quality_gate") or {}).get("reason"),
+                }
+                for item in downgraded_buy_ideas[:20]
+            ]
         self._last_shared_auto_trade = shared_auto_trade
         executed_count = self._execute_top_decisions(decisions, portfolio["equity"]) if self.execute_trades else 0
         if not self.execute_trades:
@@ -602,6 +684,70 @@ class TradingAgentService:
             "readiness_note": "Closed-market prep only. Next live scan will run when the selected market session opens.",
         }
         self.db.set_state("tomorrow_prep_context", prep_context)
+        previous_scan = self.db.get_state("opportunity_scan", {})
+        last_open_scan: dict[str, Any] = {}
+        if isinstance(previous_scan, dict) and previous_scan.get("scan_paused") and isinstance(previous_scan.get("last_open_scan"), dict):
+            last_open_scan = dict(previous_scan.get("last_open_scan") or {})
+        elif isinstance(previous_scan, dict) and previous_scan.get("mode") == "dynamic_opportunity_scan":
+            last_open_scan = {
+                key: previous_scan.get(key)
+                for key in (
+                    "scanned_at",
+                    "raw_symbols",
+                    "scanned_symbols_this_cycle",
+                    "selected_symbols",
+                    "tradeable_screening_symbols",
+                    "open_universe_symbols",
+                    "enabled_universe_symbols",
+                )
+                if key in previous_scan
+            }
+            if isinstance(previous_scan.get("by_market"), dict):
+                last_open_scan["by_market"] = previous_scan.get("by_market")
+            last_open_scan["top_candidates"] = [
+                {
+                    "symbol": item.get("symbol"),
+                    "score": item.get("score"),
+                    "setup": item.get("setup"),
+                    "bucket": item.get("bucket"),
+                }
+                for item in (previous_scan.get("top_candidates") or [])[:5]
+                if isinstance(item, dict)
+            ]
+        closed_scan_summary = {
+            "enabled": True,
+            "mode": "market_closed_tomorrow_prep",
+            "scan_paused": True,
+            "scanned_at": utc_now(),
+            "raw_symbols": 0,
+            "quoted_symbols": 0,
+            "candidate_limit": getattr(self.strategy.settings, "dynamic_scan_candidate_limit", 60),
+            "selected_symbols": 0,
+            "tradeable_screening_symbols": 0,
+            "enabled_universe_symbols": len(full_universe),
+            "open_universe_symbols": 0,
+            "scanned_symbols_this_cycle": 0,
+            "raw_scan_limit": getattr(self.strategy.settings, "dynamic_scan_raw_limit", 500),
+            "scan_rotation_enabled": False,
+            "news_screened_symbols": int(news_summary.get("symbols_requested") or 0),
+            "news_events_found": int(news_summary.get("events_found") or 0),
+            "news_headlines_found": int(news_summary.get("headlines_found") or 0),
+            "news_covered_candidates": 0,
+            "verified_catalyst_candidates": 0,
+            "positive_news_candidates": 0,
+            "market_session": session_context,
+            "last_open_scan": last_open_scan,
+            "readiness_note": "Live opportunity scan is paused while selected markets are closed.",
+        }
+        closed_scan_summary["by_market"] = _opportunity_scan_by_market(
+            closed_scan_summary,
+            full_universe,
+            [],
+            [],
+            [],
+            news_summary,
+        )
+        self.db.set_state("opportunity_scan", closed_scan_summary)
         self._last_cycle_at = utc_now()
         self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
         self._cycle_started_at = None
@@ -820,6 +966,116 @@ class TradingAgentService:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": str(exc)})
         return summary
 
+    def _charge_shared_ai_cycle_to_users(
+        self,
+        usage: dict[str, Any],
+        decisions: list[Decision],
+        universe: list[dict[str, Any]],
+        usage_scope: str,
+    ) -> dict[str, Any]:
+        activity = _shared_llm_activity_from_decisions(decisions, usage)
+        billing = credit_breakdown_for_usage(
+            usage,
+            tokens_per_credit=getattr(self.strategy.settings, "credit_tokens_per_credit", 10),
+            margin_pct=getattr(self.strategy.settings, "credit_platform_margin_pct", 0.20),
+        )
+        summary: dict[str, Any] = {
+            "enabled": True,
+            "scope_id": usage_scope,
+            "calls": int(usage.get("calls") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+            "total_credits": billing.get("charged_credits", 0.0),
+            "billable": bool(activity.get("billable")),
+            "participants": 0,
+            "charged_users": 0,
+            "skipped_users": [],
+            "per_user_credits": 0.0,
+            "activity": activity,
+        }
+        if not usage.get("calls") or not activity.get("billable") or float(billing.get("charged_credits") or 0.0) <= 0:
+            return summary
+
+        users = [
+            user
+            for user in self.db.list_users()
+            if user.get("role") != "admin" and user.get("active")
+        ]
+        summary["participants"] = len(users)
+        if not users:
+            summary["billable"] = False
+            summary["reason"] = "no_active_users_to_bill"
+            return summary
+
+        participant_count = max(len(users), 1)
+        per_user_base = float(billing.get("base_credits") or 0.0) / participant_count
+        per_user_credits = float(billing.get("charged_credits") or 0.0) / participant_count
+        summary["per_user_credits"] = round(per_user_credits, 6)
+        symbols = [str(row.get("symbol") or "") for row in universe if row.get("symbol")]
+        top_symbols = [
+            str(decision.symbol or "").upper()
+            for decision in decisions[:12]
+            if str(decision.symbol or "").strip()
+        ]
+        for user in users:
+            user_id = int(user["id"])
+            can_spend, credit_before = self.db.user_has_credit_for(user_id, per_user_credits)
+            if not can_spend:
+                summary["skipped_users"].append(
+                    {
+                        "user_id": user_id,
+                        "username": user.get("username"),
+                        "reason": "insufficient_credits_or_daily_budget",
+                        "required_credits": round(per_user_credits, 6),
+                        "balance": credit_before.get("credit_balance"),
+                        "daily_remaining": credit_before.get("daily_credits_remaining"),
+                    }
+                )
+                continue
+            try:
+                self.db.charge_user_credits(
+                    user_id,
+                    per_user_base,
+                    "Shared AI opportunity cycle",
+                    {
+                        "usage_scope": usage_scope,
+                        "shared_cycle": True,
+                        "billing_model": "split_across_active_users",
+                        "participant_count": participant_count,
+                        "symbol_count": len(symbols),
+                        "symbols_sample": symbols[:25],
+                        "decision_count": len(decisions),
+                        "top_symbols": top_symbols,
+                        "llm_usage_total": usage,
+                        "llm_activity": activity,
+                        "credit_billing_total": billing,
+                        "credit_billing_user": {
+                            "base_credits": round(per_user_base, 6),
+                            "charged_credits": round(per_user_credits, 6),
+                            "platform_margin_pct": billing.get("platform_margin_pct"),
+                        },
+                    },
+                    margin_pct=float(billing.get("platform_margin_pct") or 0.0),
+                    minimum_charge=0.0,
+                )
+                summary["charged_users"] += 1
+            except ValueError as exc:
+                summary["skipped_users"].append(
+                    {
+                        "user_id": user_id,
+                        "username": user.get("username"),
+                        "reason": str(exc),
+                        "required_credits": round(per_user_credits, 6),
+                    }
+                )
+        self._log(
+            "INFO",
+            "credits",
+            "shared_ai_cycle_billed",
+            f"Billed shared AI cycle to {summary['charged_users']} of {summary['participants']} active users",
+            summary,
+        )
+        return summary
+
     def _auto_exit_followed_signal_ideas_for_user(
         self,
         user_id: int,
@@ -925,6 +1181,140 @@ class TradingAgentService:
             stats["cache_ready"] += 1
         stats["fetch_symbols"] = len(selected)
         return selected, stats
+
+    def _candle_backfill_universe(
+        self,
+        universe: list[dict[str, Any]],
+        excluded_symbols: set[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        settings = self.strategy.settings
+        enabled = bool(getattr(settings, "candle_backfill_enabled", True))
+        limit = max(0, int(getattr(settings, "candle_backfill_symbols_per_cycle", 40) or 0))
+        excluded_symbols = {str(symbol or "").upper() for symbol in (excluded_symbols or set())}
+        stats: dict[str, Any] = {
+            "enabled": enabled,
+            "limit": limit,
+            "universe_symbols": len(universe),
+            "excluded_active_fetch_symbols": len(excluded_symbols),
+            "selected_symbols": 0,
+            "missing_or_short_history": 0,
+            "stale_history": 0,
+            "recently_attempted": 0,
+            "cache_ready": 0,
+            "cursor_before": self._candle_backfill_cursor,
+            "cursor_after": self._candle_backfill_cursor,
+            "min_daily_candles": max(1, int(getattr(settings, "candle_backfill_min_daily_candles", 55) or 55)),
+            "min_intraday_candles": max(0, int(getattr(settings, "candle_backfill_min_intraday_candles", 20) or 20)),
+            "min_weekly_candles": max(0, int(getattr(settings, "candle_backfill_min_weekly_candles", 20) or 20)),
+        }
+        if not enabled or limit <= 0 or not universe:
+            return [], stats
+
+        symbols = [str(row.get("symbol") or "").upper() for row in universe if row.get("symbol")]
+        coverage_by_symbol = self.db.candle_coverage_by_symbol(symbols)
+        selected: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc)
+        retry_cooldown = timedelta(hours=max(1, int(getattr(settings, "candle_backfill_retry_hours", 6) or 6)))
+        stale_after = timedelta(hours=20)
+        stored_cursor = _int_or_none(self.db.get_state("candle_backfill_cursor", self._candle_backfill_cursor))
+        cursor = (stored_cursor if stored_cursor is not None else self._candle_backfill_cursor) % len(universe)
+        stats["cursor_before"] = cursor
+        next_cursor = cursor
+
+        for offset in range(len(universe)):
+            row = universe[(cursor + offset) % len(universe)]
+            symbol = str(row.get("symbol") or "").upper()
+            if not symbol or symbol in excluded_symbols:
+                continue
+            next_cursor = (cursor + offset + 1) % len(universe)
+            last_attempt = self._last_candle_fetch_at.get(symbol)
+            if last_attempt and now - last_attempt < retry_cooldown:
+                stats["recently_attempted"] += 1
+                continue
+            coverage = coverage_by_symbol.get(symbol) or {}
+            gaps = self._candle_coverage_gaps(row, coverage, now, stale_after)
+            if not gaps:
+                stats["cache_ready"] += 1
+                continue
+            if "stale_history" in gaps and len(gaps) == 1:
+                stats["stale_history"] += 1
+            else:
+                stats["missing_or_short_history"] += 1
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+
+        self._candle_backfill_cursor = next_cursor
+        self.db.set_state("candle_backfill_cursor", next_cursor)
+        stats["cursor_after"] = next_cursor
+        stats["selected_symbols"] = len(selected)
+        stats["sample_symbols"] = [row.get("symbol") for row in selected[:20]]
+        stats["provider_sources"] = sorted(_provider_source_names(self.market_data))
+        return selected, stats
+
+    def _candle_coverage_gaps(
+        self,
+        row: dict[str, Any],
+        coverage: dict[str, Any],
+        now: datetime,
+        stale_after: timedelta,
+    ) -> list[str]:
+        settings = self.strategy.settings
+        min_daily = max(1, int(getattr(settings, "candle_backfill_min_daily_candles", 55) or 55))
+        min_intraday = max(0, int(getattr(settings, "candle_backfill_min_intraday_candles", 20) or 20))
+        min_weekly = max(0, int(getattr(settings, "candle_backfill_min_weekly_candles", 20) or 20))
+        daily = coverage.get("daily") if isinstance(coverage.get("daily"), dict) else {}
+        intraday = coverage.get("intraday") if isinstance(coverage.get("intraday"), dict) else {}
+        weekly = coverage.get("weekly") if isinstance(coverage.get("weekly"), dict) else {}
+        analysis = coverage.get("analysis") if isinstance(coverage.get("analysis"), dict) else {}
+        daily_count = int(daily.get("count") or 0)
+        intraday_count = int(intraday.get("count") or 0)
+        weekly_count = int(weekly.get("count") or 0)
+        gaps: list[str] = []
+        market = market_region_for_row(row)
+        if market == "IN":
+            if self._provider_supports_live_minutes_for_market("IN"):
+                daily_count = _coverage_source_count(coverage, "daily", ("upstox", "kite", "nubra", "indstocks-live"))
+                intraday_count = _coverage_source_count(coverage, "intraday", ("upstox", "kite", "nubra", "indstocks-live"))
+                weekly_count = _coverage_source_count(coverage, "weekly", ("upstox", "kite", "nubra", "indstocks-live"))
+            if daily_count < min_daily:
+                gaps.append("daily_history")
+            if min_intraday and self._provider_supports_live_minutes_for_market("IN") and intraday_count < min_intraday:
+                gaps.append("intraday_history")
+            if min_weekly and weekly_count < min_weekly:
+                gaps.append("weekly_history")
+        elif market == "US":
+            if self._provider_supports_live_minutes_for_market("US"):
+                daily_count = _coverage_source_count(coverage, "daily", ("alpaca", "polygon"))
+                intraday_count = _coverage_source_count(coverage, "intraday", ("alpaca", "polygon"))
+            if daily_count < min_daily:
+                gaps.append("daily_history")
+            if min_intraday and self._provider_supports_live_minutes_for_market("US") and intraday_count < min_intraday:
+                gaps.append("intraday_history")
+        elif daily_count < min_daily:
+            gaps.append("daily_history")
+        latest_ts = analysis.get("latest_ts") or daily.get("latest_ts") or intraday.get("latest_ts")
+        latest = _parse_iso_datetime(latest_ts)
+        if latest is None:
+            if not gaps:
+                gaps.append("missing_timestamp")
+        else:
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
+            if now - latest.astimezone(timezone.utc) > stale_after and not gaps:
+                gaps.append("stale_history")
+        return gaps
+
+    def _provider_supports_live_minutes_for_market(self, market: str) -> bool:
+        names = _provider_source_names(self.market_data)
+        normalized = {name.lower() for name in names}
+        if market == "US":
+            return any(("alpaca" in name or "polygon" in name) and "not-connected" not in name for name in normalized)
+        return any(
+            any(token in name for token in ("upstox", "kite", "nubra", "indstocks-live"))
+            and "not-connected" not in name
+            for name in normalized
+        )
 
     def _relative_strength_benchmark_rows(self) -> list[dict[str, Any]]:
         settings = self.strategy.settings
@@ -1207,6 +1597,7 @@ class TradingAgentService:
             "universe_size": len(self.db.get_universe(enabled_only=True, market_region=self.market_region)),
             "market_health": market_health,
             "market_session": self.db.get_state("market_session_context", {}),
+            "candle_backfill": self.db.get_state("candle_backfill_plan", {}),
             "tomorrow_prep": self.db.get_state("tomorrow_prep_context", {}),
             "market_data_health": _market_data_diagnostics(self.market_data),
             "macro_context": self.db.get_state("macro_context", {}),
@@ -1495,6 +1886,57 @@ def _market_data_diagnostics(provider: MarketDataProvider) -> dict[str, Any]:
     return diagnostics
 
 
+def _provider_source_names(provider: Any) -> set[str]:
+    names: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if item is None:
+            return
+        source_name = str(getattr(item, "source_name", "") or "")
+        if source_name:
+            names.add(source_name)
+        for attr in ("primary", "fallback", "india_provider", "us_provider"):
+            child = getattr(item, attr, None)
+            if child is not None and child is not item:
+                visit(child)
+
+    visit(provider)
+    return names
+
+
+def _coverage_source_count(coverage: dict[str, Any], timeframe: str, tokens: tuple[str, ...]) -> int:
+    sources = coverage.get("sources") if isinstance(coverage.get("sources"), dict) else {}
+    count = 0
+    for source, payload in sources.items():
+        normalized = str(source or "").lower()
+        if not normalized or not any(token in normalized for token in tokens):
+            continue
+        if not _source_matches_timeframe(normalized, timeframe):
+            continue
+        if isinstance(payload, dict):
+            count += int(payload.get("count") or 0)
+    return count
+
+
+def _source_matches_timeframe(source: str, timeframe: str) -> bool:
+    normalized = str(source or "").lower()
+    if timeframe == "daily":
+        return normalized == "yahoo-delayed" or ":day" in normalized or ":1day" in normalized
+    if timeframe == "weekly":
+        return ":week" in normalized or ":1week" in normalized
+    if timeframe == "intraday":
+        return (
+            "minute" in normalized
+            or normalized.endswith(":5m")
+            or normalized.endswith(":15m")
+            or normalized.endswith(":30m")
+            or normalized.endswith(":60m")
+            or normalized in {"upstox-live", "indstocks-live", "kite-live"}
+            or normalized.startswith("nubra")
+        )
+    return False
+
+
 def _is_nse_regular_session_now() -> bool:
     now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     if now_ist.weekday() >= 5:
@@ -1647,6 +2089,175 @@ def _price_inside_entry_zone(idea: dict[str, Any], cushion_pct: float = 0.0) -> 
 def _float_or_none(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opportunity_scan_by_market(
+    summary: dict[str, Any],
+    full_universe: list[dict[str, Any]],
+    open_universe: list[dict[str, Any]],
+    raw_universe: list[dict[str, Any]],
+    selected_universe: list[dict[str, Any]],
+    news_summary: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    news_summary = news_summary or {}
+    rows_by_symbol = {
+        str(row.get("symbol") or "").upper(): row
+        for row in [*full_universe, *open_universe, *raw_universe, *selected_universe]
+        if row.get("symbol")
+    }
+    full_counts = _market_counts_for_rows(full_universe)
+    open_counts = _market_counts_for_rows(open_universe)
+    raw_counts = _market_counts_for_rows(raw_universe)
+    selected_counts = _market_counts_for_rows(selected_universe)
+    top_candidates = summary.get("top_candidates") if isinstance(summary.get("top_candidates"), list) else []
+    news_rows = news_summary.get("symbols") if isinstance(news_summary.get("symbols"), list) else []
+    last_open_by_market = {}
+    last_open_scan = summary.get("last_open_scan") if isinstance(summary.get("last_open_scan"), dict) else {}
+    if isinstance(last_open_scan.get("by_market"), dict):
+        last_open_by_market = last_open_scan.get("by_market") or {}
+
+    by_market: dict[str, dict[str, Any]] = {}
+    for region in ("IN", "US"):
+        region_top = [
+            _slim_candidate(item)
+            for item in top_candidates
+            if isinstance(item, dict) and _candidate_market_region(item, rows_by_symbol) == region
+        ]
+        region_news = [
+            item
+            for item in news_rows
+            if isinstance(item, dict)
+            and _symbol_market_region(str(item.get("symbol") or "").upper(), rows_by_symbol) == region
+        ]
+        news_events = sum(int(item.get("event_count") or 0) for item in region_news)
+        news_headlines = sum(int(item.get("headline_count") or 0) for item in region_news)
+        by_market[region] = {
+            "enabled": summary.get("enabled", True),
+            "mode": summary.get("mode"),
+            "market_region": region,
+            "scan_paused": bool(summary.get("scan_paused")),
+            "scanned_at": summary.get("scanned_at"),
+            "raw_symbols": raw_counts.get(region, 0),
+            "quoted_symbols": raw_counts.get(region, 0) if summary.get("scan_paused") else None,
+            "candidate_limit": summary.get("candidate_limit"),
+            "selected_symbols": selected_counts.get(region, 0),
+            "tradeable_screening_symbols": sum(
+                1 for item in region_top if (item.get("data_quality") or {}).get("tradeable_screening")
+            ),
+            "enabled_universe_symbols": full_counts.get(region, 0),
+            "open_universe_symbols": open_counts.get(region, 0),
+            "scanned_symbols_this_cycle": raw_counts.get(region, 0),
+            "raw_scan_limit": summary.get("raw_scan_limit"),
+            "scan_rotation_enabled": bool(
+                summary.get("raw_scan_limit")
+                and raw_counts.get(region, 0) > 0
+                and raw_counts.get(region, 0) < open_counts.get(region, 0)
+            ),
+            "news_screened_symbols": len(region_news),
+            "news_events_found": news_events,
+            "news_headlines_found": news_headlines,
+            "news_covered_candidates": sum(
+                1
+                for item in region_top
+                if int((item.get("sentiment") or {}).get("headline_count") or 0) > 0
+                or int((item.get("sentiment") or {}).get("event_count") or 0) > 0
+            ),
+            "verified_catalyst_candidates": sum(
+                1 for item in region_top if (item.get("sentiment") or {}).get("positive_catalyst")
+            ),
+            "positive_news_candidates": sum(
+                1 for item in region_top if (item.get("sentiment") or {}).get("positive_catalyst")
+            ),
+            "top_candidates": region_top[:25],
+            "last_open_scan": last_open_by_market.get(region, {}),
+            "readiness_note": summary.get("readiness_note"),
+        }
+    return by_market
+
+
+def _market_counts_for_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"IN": 0, "US": 0}
+    for row in rows:
+        region = market_region_for_row(row)
+        if region in counts:
+            counts[region] += 1
+    return counts
+
+
+def _candidate_market_region(item: dict[str, Any], rows_by_symbol: dict[str, dict[str, Any]]) -> str:
+    explicit = str(item.get("market_region") or "").upper()
+    if explicit in {"IN", "US"}:
+        return explicit
+    return _symbol_market_region(str(item.get("symbol") or "").upper(), rows_by_symbol)
+
+
+def _symbol_market_region(symbol: str, rows_by_symbol: dict[str, dict[str, Any]]) -> str:
+    row = rows_by_symbol.get(str(symbol or "").upper())
+    return market_region_for_row(row or {})
+
+
+def _slim_candidate(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item.get(key)
+        for key in (
+            "symbol",
+            "name",
+            "market_region",
+            "score",
+            "bucket",
+            "setup",
+            "data_quality",
+            "sentiment",
+            "price",
+            "turnover",
+            "volume_ratio",
+            "history_candles",
+        )
+        if key in item
+    }
+
+
+def _shared_llm_activity_from_decisions(decisions: list[Decision], usage: dict[str, Any]) -> dict[str, Any]:
+    selected = 0
+    attempted = 0
+    failed = 0
+    latest_reason = ""
+    for decision in decisions:
+        details = _json_object(getattr(decision, "details_json", None))
+        decision_path = str(details.get("decision_path") or "")
+        risk_gates = details.get("risk_gates") or {}
+        context = details.get("context") or {}
+        if (
+            decision_path.startswith("llm_")
+            or risk_gates.get("llm_deep_review_selected")
+            or (context.get("llm_primary_selection") or {}).get("selected")
+        ):
+            selected += 1
+        review = context.get("llm_primary_review") or {}
+        error = review.get("llm_error") or details.get("llm_error")
+        attempts = error.get("model_attempts") if isinstance(error, dict) else []
+        if attempts or review.get("reviewed") or decision_path.startswith("llm_"):
+            attempted += 1
+        if error:
+            failed += 1
+            latest_reason = str((error or {}).get("reason") or (error or {}).get("error") or latest_reason)[:180]
+    calls = int(usage.get("calls") or 0)
+    billable = bool(calls and not (attempted > 0 and failed >= attempted))
+    return {
+        "status": "completed_billable" if billable else ("completed_unusable_not_charged" if calls else "not_selected"),
+        "selected_symbols": selected,
+        "attempted_symbols": attempted,
+        "failed_symbols": failed,
+        "billable": billable,
+        "latest_failure": latest_reason,
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 

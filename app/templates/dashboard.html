@@ -233,7 +233,7 @@
                 <div class="panel-head">
                   <div class="panel-title-stack">
                     <h3>Decision Feed</h3>
-                    <p>AI decisions from the latest cycle with plain-English reasons.</p>
+                    <p>Decisions from the latest cycle with clear blockers and entry quality.</p>
                   </div>
                   <button type="button" data-view-jump="decisions">View all →</button>
                 </div>
@@ -371,7 +371,7 @@
                 <div id="analyze-result" class="analyze-result">
                   <div class="empty-state product-empty">
                     <strong>Run a focused symbol audit</strong>
-                    <span>Pick India or US, enter a symbol, and OpenStocks will check quote, candles, strategy rules, sentiment, risk gates, and LLM review when enabled.</span>
+                    <span>Pick India or US, enter a symbol, and OpenStocks will check quote, candles, strategy rules, sentiment, risk, and review notes when enabled.</span>
                   </div>
                 </div>
               </div>
@@ -425,11 +425,11 @@
                 <div id="decisions-body" class="decision-card-list decision-list-full"></div>
               </section>
               <section class="panel decision-detail-column">
-                <div class="panel-head"><div class="panel-title-stack"><h3>Decision Detail</h3><p>Score radar, LLM reasoning, risk gates, and timeline.</p></div><button id="decision-rerun-btn" type="button" data-view-jump="analyze">Re-run analysis</button></div>
+                <div class="panel-head"><div class="panel-title-stack"><h3>Decision Detail</h3><p>Decision summary, signal quality, risk checks, and timeline.</p></div><button id="decision-rerun-btn" type="button" data-view-jump="analyze">Re-run analysis</button></div>
                 <div id="decision-detail-panel" class="decision-detail-panel">
                   <div class="empty-state product-empty">
                     <strong>Select a decision</strong>
-                    <span>Click a decision card to inspect technical, sentiment, risk, macro, and LLM review details.</span>
+                    <span>Click a decision card to inspect setup, news, market context, risk, and review details.</span>
                   </div>
                 </div>
               </section>
@@ -675,7 +675,7 @@
                     <div class="connect-card-head">
                       <div>
                         <h4>Upcoming Macro Events</h4>
-                        <p>Events considered by the macro risk gates.</p>
+                        <p>Events considered by the market-risk checks.</p>
                       </div>
                       <span>next 10</span>
                     </div>

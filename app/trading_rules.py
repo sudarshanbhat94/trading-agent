@@ -660,7 +660,7 @@ def _position_reason(action: str, audit: dict[str, Any]) -> str:
         if "SPECULATIVE_TINY_SIZE_ONLY" in flags:
             reasons.append("speculative classification requires tiny size")
         if "INSTITUTIONAL_SPONSORSHIP_MISSING" in flags:
-            reasons.append("institutional sponsorship evidence is missing")
+            reasons.append("verified flow or accumulation evidence is missing")
         if (audit.get("sentiment") or {}).get("status") == "DATA_MISSING":
             reasons.append("sentiment data is missing")
         if (audit.get("classification") or {}).get("classification") == "SPECULATIVE":

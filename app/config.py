@@ -65,7 +65,7 @@ class Settings:
     nse_universe_series: str = os.getenv("NSE_UNIVERSE_SERIES", "EQ").strip().upper()
     universe_symbols_per_cycle: int = _int("UNIVERSE_SYMBOLS_PER_CYCLE", 0)
     dynamic_opportunity_scan_enabled: bool = _bool("DYNAMIC_OPPORTUNITY_SCAN_ENABLED", True)
-    dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 500)
+    dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 0)
     dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 60)
     dynamic_scan_min_score: float = _float("DYNAMIC_SCAN_MIN_SCORE", 0.58)
     dynamic_scan_require_active_setup: bool = _bool("DYNAMIC_SCAN_REQUIRE_ACTIVE_SETUP", True)
@@ -75,6 +75,12 @@ class Settings:
     dynamic_scan_sentiment_enabled: bool = _bool("DYNAMIC_SCAN_SENTIMENT_ENABLED", True)
     dynamic_scan_news_probe_limit: int = _int("DYNAMIC_SCAN_NEWS_PROBE_LIMIT", 16)
     dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
+    candle_backfill_enabled: bool = _bool("CANDLE_BACKFILL_ENABLED", True)
+    candle_backfill_symbols_per_cycle: int = _int("CANDLE_BACKFILL_SYMBOLS_PER_CYCLE", 40)
+    candle_backfill_min_daily_candles: int = _int("CANDLE_BACKFILL_MIN_DAILY_CANDLES", 55)
+    candle_backfill_min_intraday_candles: int = _int("CANDLE_BACKFILL_MIN_INTRADAY_CANDLES", 20)
+    candle_backfill_min_weekly_candles: int = _int("CANDLE_BACKFILL_MIN_WEEKLY_CANDLES", 20)
+    candle_backfill_retry_hours: int = _int("CANDLE_BACKFILL_RETRY_HOURS", 6)
     rs_benchmark_symbols_in: str = os.getenv("RS_BENCHMARK_SYMBOLS_IN", "NIFTY500,NIFTY50").strip()
     rs_benchmark_symbols_us: str = os.getenv("RS_BENCHMARK_SYMBOLS_US", "SPY,QQQ").strip()
     rs_benchmark_instrument_keys_in: str = os.getenv(
@@ -149,7 +155,7 @@ class Settings:
     alpaca_api_key: str = os.getenv("ALPACA_API_KEY", "")
     alpaca_api_secret: str = os.getenv("ALPACA_API_SECRET", "")
     alpaca_data_base_url: str = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
-    alpaca_data_feed: str = os.getenv("ALPACA_DATA_FEED", "iex").strip().lower()
+    alpaca_data_feed: str = os.getenv("ALPACA_DATA_FEED", "sip").strip().lower()
     polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
     polygon_base_url: str = os.getenv("POLYGON_BASE_URL", "https://api.polygon.io").rstrip("/")
     nubra_api_base_url: str = os.getenv("NUBRA_API_BASE_URL", "https://uatapi.nubra.io").rstrip("/")
@@ -317,7 +323,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "nse_universe_series", "label": "NSE Series", "type": "text", "category": "Market Data"},
     {"key": "universe_symbols_per_cycle", "label": "Symbols/Cycle (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
     {"key": "dynamic_opportunity_scan_enabled", "label": "Dynamic Opportunity Scan", "type": "boolean", "category": "Market Data"},
-    {"key": "dynamic_scan_raw_limit", "label": "Dynamic Raw Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 50},
+    {"key": "dynamic_scan_raw_limit", "label": "Full Scan Cap (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
     {"key": "dynamic_scan_candidate_limit", "label": "Dynamic Candidates/Cycle", "type": "number", "category": "Market Data", "min": 1, "step": 10},
     {"key": "dynamic_scan_min_score", "label": "Dynamic Min Opportunity Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
     {"key": "dynamic_scan_require_active_setup", "label": "Require Active Setup", "type": "boolean", "category": "Market Data"},
@@ -327,6 +333,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_scan_sentiment_enabled", "label": "Dynamic Sentiment Scan", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_news_probe_limit", "label": "Dynamic News Probe/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_sentiment_weight", "label": "Dynamic Sentiment Weight", "type": "number", "category": "Market Data", "min": 0, "max": 0.3, "step": 0.01},
+    {"key": "candle_backfill_enabled", "label": "Candle Backfill", "type": "boolean", "category": "Market Data"},
+    {"key": "candle_backfill_symbols_per_cycle", "label": "Backfill Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 10},
+    {"key": "candle_backfill_min_daily_candles", "label": "Backfill Min Daily Candles", "type": "number", "category": "Market Data", "min": 20, "step": 5},
+    {"key": "candle_backfill_min_intraday_candles", "label": "Backfill Min Intraday Candles", "type": "number", "category": "Market Data", "min": 0, "step": 5},
+    {"key": "candle_backfill_min_weekly_candles", "label": "Backfill Min Weekly Candles", "type": "number", "category": "Market Data", "min": 0, "step": 5},
+    {"key": "candle_backfill_retry_hours", "label": "Backfill Retry Hours", "type": "number", "category": "Market Data", "min": 1, "step": 1},
     {"key": "rs_benchmark_symbols_in", "label": "India RS Benchmarks", "type": "text", "category": "Market Data"},
     {"key": "rs_benchmark_symbols_us", "label": "US RS Benchmarks", "type": "text", "category": "Market Data"},
     {"key": "rs_benchmark_instrument_keys_in", "label": "India RS Benchmark Keys", "type": "text", "category": "Market Data"},
@@ -468,7 +480,7 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return str(value).strip().rstrip("/") or getattr(base, key)
     if key == "alpaca_data_feed":
         feed = str(value).strip().lower()
-        return feed if feed in {"iex", "sip"} else "iex"
+        return feed if feed in {"iex", "sip"} else "sip"
     if key == "llm_provider":
         provider = str(value).strip().lower()
         return provider if provider in {"deepseek", "groq", "offline"} else "deepseek"

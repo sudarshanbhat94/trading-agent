@@ -13,6 +13,7 @@ from .llm_brain import LLMBrain
 from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
 from .sentiment import SentimentService
+from .signal_quality import FRESH_BUY_MIN_SCORE
 from .trading_rules import evaluate_rules_for_context
 
 
@@ -28,35 +29,26 @@ def _llm_prefilter_reason(signal: dict[str, Any]) -> str | None:
             return None
     except (TypeError, ValueError):
         pass
-    full = context.get("full_spectrum_analysis") or {}
-    system_audit = context.get("system_gate_audit") or {}
-    if signal.get("hard_blocked") is True or system_audit.get("hard_blocked") is True:
-        return "hard_blocked"
-    strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
-    if strategy_logic.get("hard_blocks"):
-        first = (strategy_logic.get("hard_blocks") or [{}])[0]
-        return f"phase3_strategy_blocked:{first.get('flag') or 'unknown'}"
+    # The shortlist review should compare the best market opportunities even
+    # when trade gates will force HOLD. Trade blockers are enforced again after
+    # review by _llm_buy_block_reason, so analysis breadth does not weaken safety.
+    return None
 
-    stage = signal.get("stage")
-    if stage is None:
-        stage = (full.get("stage_analysis") or {}).get("stage")
-    if stage != "Stage2_Markup":
-        return f"stage_not_stage2:{stage or 'missing'}"
 
-    entry_grade = signal.get("entry_grade")
-    if entry_grade is None:
-        entry_grade = (full.get("entry_quality") or {}).get("entry_grade")
-    entry_grade = str(entry_grade or "").upper()
-    if entry_grade in {"WATCH", "D"}:
-        return f"entry_grade_blocked:{entry_grade}"
+def _llm_buy_block_reason(context: dict[str, Any]) -> str | None:
+    system_audit = context.get("system_gate_audit") if isinstance(context.get("system_gate_audit"), dict) else {}
+    if system_audit.get("hard_blocked") is True:
+        return "system_rules_hard_blocked_llm_buy"
 
-    risk_overrides = full.get("risk_overrides") or {}
-    no_new_longs = signal.get("no_new_longs")
-    if no_new_longs is None:
-        no_new_longs = risk_overrides.get("no_new_longs")
-    confidence = _signal_confidence(signal)
-    if no_new_longs is True and confidence < 0.7:
-        return f"no_new_longs_low_confidence:{confidence:.2f}"
+    data_readiness = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+    if data_readiness and data_readiness.get("trade_decision_ready") is not True:
+        return "data_readiness_not_trade_ready_llm_buy"
+
+    decision_gates = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
+    failed_gates = decision_gates.get("failed_gates") if isinstance(decision_gates.get("failed_gates"), list) else []
+    if failed_gates:
+        return "deterministic_buy_gates_failed_llm_buy"
+
     return None
 
 
@@ -190,6 +182,7 @@ class StrategyEngine:
                 timeframe_candles=timeframe_candles,
                 pattern_state=pattern_state,
                 performance_feedback=performance_feedback,
+                execution_mode=self.settings.execution_mode,
             )
             self._persist_pattern_state_updates(symbol, context)
             context["pre_filter"] = pre_filter
@@ -321,18 +314,17 @@ class StrategyEngine:
                         "deterministic_action_preserved": False,
                         "deterministic_action_blocked": llm_failed and item["action"] != "HOLD",
                     }
-                    llm_rule_blocked = (
-                        llm_decision.action == "BUY"
-                        and bool((context.get("system_gate_audit") or {}).get("hard_blocked"))
-                    )
-                    if llm_rule_blocked:
+                    llm_buy_block_reason = _llm_buy_block_reason(context) if llm_decision.action == "BUY" else None
+                    if llm_buy_block_reason:
                         context["llm_primary_rule_blocked"] = {
                             "llm_action": llm_decision.action,
-                            "reason": "system_rules_hard_blocked_llm_buy",
+                            "reason": llm_buy_block_reason,
                             "hard_blocks": (context.get("system_gate_audit") or {}).get("hard_blocks", []),
+                            "active_flags": (context.get("system_gate_audit") or {}).get("active_flags", []),
+                            "failed_gates": (context.get("decision_gate_context") or {}).get("failed_gates", []),
                         }
                         llm_failed = True
-                        llm_block_reason = "llm_buy_blocked_by_system_rules"
+                        llm_block_reason = "llm_buy_blocked_by_trade_gates"
                     if not llm_failed:
                         decisions.append(llm_decision)
                         continue
@@ -592,6 +584,10 @@ class StrategyEngine:
                 block.get("value"),
                 block.get("reason") or str(block.get("flag") or "hard_block"),
             )
+        data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+        has_data_readiness_block = any(str(block.get("flag") or "") == "DATA_READINESS_BLOCK" for block in rule_audit.get("hard_blocks") or [])
+        if not has_position and not has_data_readiness_block and data_ready.get("trade_decision_ready") is not True:
+            fail("phase2_data_readiness", data_ready or None, "phase2_data_not_trade_ready")
         for block in strategy_logic.get("hard_blocks") or []:
             if not has_position:
                 fail(
@@ -628,12 +624,15 @@ class StrategyEngine:
         if alignment_grade == "C":
             context["mtf_c_speculative_size_only"] = True
         overall_score_pct = float(rule_audit.get("overall_score_pct") or 0.0)
-        if not has_position and overall_score_pct < 55:
+        if not has_position and overall_score_pct < FRESH_BUY_MIN_SCORE:
             fail(
                 "overall_quality_gate",
                 {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")},
-                "overall_score_below_55_no_new_longs",
+                "overall_score_below_70_no_new_longs",
             )
+        performance_block = _performance_feedback_block(context.get("performance_feedback") or {})
+        if performance_block and not has_position:
+            fail("performance_feedback_gate", performance_block, performance_block["reason"])
         if delivery_is_distribution and not exceptional_setup:
             fail(
                 "delivery_distribution_gate",
@@ -713,13 +712,14 @@ class StrategyEngine:
         evaluated_gates = [
             *list(pre_filter.get("gates") or []),
             {"gate": "system_rule_gates", "passed": not rule_audit.get("hard_blocked"), "value": rule_audit.get("hard_blocks")},
-            {"gate": "phase2_data_readiness", "passed": bool((context.get("data_readiness") or {}).get("trade_decision_ready", True)), "value": context.get("data_readiness")},
+            {"gate": "phase2_data_readiness", "passed": bool((context.get("data_readiness") or {}).get("trade_decision_ready", False)), "value": context.get("data_readiness")},
             {"gate": "phase3_strategy_logic", "passed": bool(strategy_logic.get("passed", True)), "value": strategy_logic},
             {"gate": "entry_grade_gate", "passed": effective_entry_grade in {"A", "B", "C"}, "value": {"entry_grade": entry_grade, "effective_entry_grade": effective_entry_grade}},
             {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed") and not breakout_volume.get("suspect_without_volume"), "value": breakout},
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
             {"gate": "alignment_gate", "passed": alignment_grade != "D", "value": alignment_grade},
-            {"gate": "overall_quality_gate", "passed": has_position or overall_score_pct >= 55, "value": {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")}},
+            {"gate": "overall_quality_gate", "passed": has_position or overall_score_pct >= FRESH_BUY_MIN_SCORE, "value": {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")}},
+            {"gate": "performance_feedback_gate", "passed": not performance_block, "value": performance_block},
             {"gate": "delivery_distribution_gate", "passed": not delivery_is_distribution or exceptional_setup, "value": delivery},
             {"gate": "options_max_pain_gate", "passed": not options_oi.get("buy_suppressed"), "value": options_oi},
         ]
@@ -937,6 +937,7 @@ class StrategyEngine:
                 timeframe_candles=item.get("timeframe_candles") or {},
                 pattern_state=self._pattern_state(item["symbol"]),
                 performance_feedback=performance_feedback,
+                execution_mode=self.settings.execution_mode,
             )
             self._persist_pattern_state_updates(item["symbol"], context)
             context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
@@ -949,9 +950,11 @@ class StrategyEngine:
             item["action"] = self._action_from_context(item["symbol"], combined, positions, context, candles_by_symbol)
             item["confidence"] = self._confidence_for_action(item["action"], combined, item.get("macro_event_context") or {}, market_breadth)
 
-    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float]:
+    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+        opportunity_score = self._opportunity_priority_score(item)
         return (
             1.0 if item["action"] != "HOLD" else 0.0,
+            opportunity_score,
             abs(float(item["combined"])),
             abs(float(item["context"].get("best_strategy", {}).get("score", 0.0) or 0.0)),
             abs(float(item["technical"].score)),
@@ -959,10 +962,37 @@ class StrategyEngine:
         )
 
     def _scan_priority_score(self, item: dict[str, Any]) -> float:
-        action_boost, combined, strategy, technical, sentiment = self._scan_priority(item)
+        action_boost, opportunity, combined, strategy, technical, sentiment = self._scan_priority(item)
         rs_percentile = float(((item.get("context") or {}).get("universe_relative_strength") or {}).get("percentile_63") or 50.0)
         rs_score = (rs_percentile - 50.0) / 50.0
-        return (action_boost * 0.5) + (combined * 0.24) + (rs_score * 0.10) + (strategy * 0.10) + (technical * 0.04) + (sentiment * 0.02)
+        return (
+            (action_boost * 0.35)
+            + (opportunity * 0.25)
+            + (combined * 0.18)
+            + (rs_score * 0.08)
+            + (strategy * 0.08)
+            + (technical * 0.04)
+            + (sentiment * 0.02)
+        )
+
+    def _opportunity_priority_score(self, item: dict[str, Any]) -> float:
+        scan = (item.get("row") or {}).get("_opportunity_scan")
+        if not isinstance(scan, dict):
+            return 0.0
+        try:
+            score = max(min(float(scan.get("score") or 0.0), 1.0), 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        bucket = str(scan.get("bucket") or "").lower()
+        setup = str(scan.get("setup") or "").lower()
+        data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        if bucket == "actionable":
+            score += 0.06
+        if setup in {"news_catalyst", "breakout_continuation", "near_breakout"}:
+            score += 0.03
+        if data_quality.get("actionable_data_ready"):
+            score += 0.03
+        return max(min(score, 1.0), 0.0)
 
     def _pattern_state(self, symbol: str) -> dict[str, Any]:
         db = getattr(self.sentiment, "db", None)
@@ -1108,13 +1138,26 @@ class StrategyEngine:
         limit = max(int(self.settings.llm_max_symbols_per_cycle or 1), 1)
         selected: list[str] = []
         eligible = [item for item in ranked if should_call_llm(item)]
+        sector_counts: dict[str, int] = defaultdict(int)
+        strategy_counts: dict[str, int] = defaultdict(int)
+        sector_cap = max(2, limit // 4)
+        strategy_cap = max(2, limit // 3)
 
-        def add(items: list[dict[str, Any]]) -> None:
+        def add(items: list[dict[str, Any]], *, diversify: bool = False) -> None:
             for item in items:
                 symbol = item["symbol"]
                 if symbol in selected:
                     continue
+                sector = str((item.get("row") or {}).get("sector") or (item.get("context") or {}).get("sector") or "unknown")
+                strategy = str(((item.get("context") or {}).get("best_strategy") or {}).get("name") or item.get("strategy") or "unknown")
+                if diversify and (
+                    sector_counts[sector] >= sector_cap
+                    or strategy_counts[strategy] >= strategy_cap
+                ):
+                    continue
                 selected.append(symbol)
+                sector_counts[sector] += 1
+                strategy_counts[strategy] += 1
                 if len(selected) >= limit:
                     return
 
@@ -1126,9 +1169,13 @@ class StrategyEngine:
         action_candidates = [item for item in eligible if item["action"] != "HOLD" and not self._has_open_position(item)]
         add(open_positions)
         if len(selected) < limit:
-            add(action_candidates)
+            add(action_candidates, diversify=True)
         if len(selected) < limit:
-            add(eligible)
+            add(action_candidates, diversify=False)
+        if len(selected) < limit:
+            add(eligible, diversify=True)
+        if len(selected) < limit:
+            add(eligible, diversify=False)
         return set(selected)
 
     def _has_open_position(self, item: dict[str, Any]) -> bool:
@@ -1262,8 +1309,8 @@ class StrategyEngine:
             "max_positions": risk_limits.get("max_positions"),
             "buy_combined_threshold": (context.get("decision_gate_context") or {}).get("buy_threshold", 0.35),
             "buy_confluence_threshold": 16,
-            "buy_requires_institutional_scorecard_ready": True,
-            "institutional_scorecard": {
+            "buy_requires_accumulation_proxy_ready": True,
+            "accumulation_proxy_scorecard": {
                 "buy_ready": scorecard.get("buy_ready"),
                 "score": scorecard.get("total_score"),
                 "grade": scorecard.get("grade"),
@@ -1314,7 +1361,7 @@ class StrategyEngine:
                 "final_action": action,
                 "action_reason": action_reason,
                 "action_policy": {
-                    "BUY": "combined score >= 0.35, confluence >= 16/26, institutional scorecard buy_ready=true, no existing long position, and no no-new-longs override",
+                    "BUY": "combined score >= 0.35, confluence >= 16/26, scorecard ready=true, overall quality >=70 with grade A/B before publication/follow, no existing long position, and no no-new-longs override",
                     "SELL": "existing long position plus LLM exit call, hard stop, take-profit, persistent distribution, or explicit invalidation trigger",
                     "HOLD": "score/action gates did not permit a trade",
                 },
@@ -1534,6 +1581,36 @@ def _macro_event_driven_thesis(macro_event_context: dict[str, Any]) -> dict[str,
         "supported": bool(evidence),
         "evidence": list(dict.fromkeys(evidence)),
     }
+
+
+def _performance_feedback_block(feedback: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(feedback, dict) or feedback.get("available") is False:
+        return None
+    candidates = [
+        ("strategy_market", feedback.get("selected_strategy_market")),
+        ("strategy", feedback.get("selected_strategy")),
+        ("market", feedback.get("selected_market")),
+    ]
+    for scope, item in candidates:
+        if not isinstance(item, dict) or not item:
+            continue
+        closed = int(item.get("closed_trades") or 0)
+        if closed < 5:
+            continue
+        expectancy = _float_or_none(item.get("expectancy_pct")) or 0.0
+        stop_rate = _float_or_none(item.get("stop_hit_rate")) or 0.0
+        win_rate = _float_or_none(item.get("win_rate")) or 0.0
+        if expectancy <= -0.5 or stop_rate >= 0.55 or (closed >= 8 and win_rate < 0.35 and expectancy < 0):
+            return {
+                "scope": scope,
+                "key": item.get("key"),
+                "closed_trades": closed,
+                "expectancy_pct": expectancy,
+                "stop_hit_rate": stop_rate,
+                "win_rate": win_rate,
+                "reason": "historical strategy feedback is negative; require manual review before fresh BUY",
+            }
+    return None
 
 
 def _float_or_none(value: Any) -> float | None:

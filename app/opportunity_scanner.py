@@ -101,7 +101,7 @@ class OpportunityScanner:
             scored.append(item)
 
         scored.sort(key=lambda item: item["score"], reverse=True)
-        selected_items = scored[: self.candidate_limit]
+        selected_items = self._select_diverse(scored, self.candidate_limit)
         selected_symbols = {item["symbol"] for item in selected_items}
         for item in scored[self.candidate_limit :]:
             if item.get("forced_inclusion") and item["symbol"] not in selected_symbols:
@@ -113,8 +113,33 @@ class OpportunityScanner:
                 selected_symbols.add(item["symbol"])
 
         row_by_symbol = {str(row.get("symbol") or "").upper(): row for row in universe}
-        selected_universe = [row_by_symbol[item["symbol"]] for item in selected_items if item["symbol"] in row_by_symbol]
-        candidates = [self._public_item(item) for item in selected_items]
+        candidates: list[dict[str, Any]] = []
+        selected_universe: list[dict[str, Any]] = []
+        for rank, item in enumerate(selected_items, start=1):
+            public_item = self._public_item(item)
+            public_item["rank"] = rank
+            candidates.append(public_item)
+            row = row_by_symbol.get(item["symbol"])
+            if row:
+                selected_universe.append(
+                    {
+                        **row,
+                        "_opportunity_rank": rank,
+                        "_opportunity_score": public_item.get("score"),
+                        "_opportunity_scan": public_item,
+                    }
+                )
+        news_covered_candidates = sum(
+            1
+            for item in selected_items
+            if int((item.get("sentiment") or {}).get("headline_count") or 0) > 0
+            or int((item.get("sentiment") or {}).get("event_count") or 0) > 0
+        )
+        verified_catalyst_candidates = sum(
+            1
+            for item in selected_items
+            if ((item.get("sentiment") or {}).get("positive_catalyst"))
+        )
         summary = {
             "enabled": True,
             "mode": "dynamic_opportunity_scan",
@@ -123,16 +148,17 @@ class OpportunityScanner:
             "quoted_symbols": len(quotes),
             "candidate_limit": self.candidate_limit,
             "selected_symbols": len(selected_universe),
+            "tradeable_screening_symbols": sum(
+                1 for item in scored if (item.get("data_quality") or {}).get("tradeable_screening")
+            ),
             "forced_position_symbols": [item["symbol"] for item in selected_items if item.get("forced_inclusion")],
             "rejected_counts": rejected_counts,
             "top_candidates": candidates,
             "setup_counts": self._counts(item.get("setup") for item in selected_items),
             "bucket_counts": self._counts(item.get("bucket") for item in selected_items),
-            "positive_news_candidates": sum(
-                1
-                for item in selected_items
-                if ((item.get("sentiment") or {}).get("positive_catalyst"))
-            ),
+            "news_covered_candidates": news_covered_candidates,
+            "verified_catalyst_candidates": verified_catalyst_candidates,
+            "positive_news_candidates": verified_catalyst_candidates,
             "negative_news_filtered": rejected_counts.get("negative_news_catalyst", 0),
             "filters": {
                 "min_price": self.min_price,
@@ -228,6 +254,9 @@ class OpportunityScanner:
             "symbol": symbol,
             "name": row.get("name") or symbol,
             "market_region": market_region_for_row(row),
+            "sector": row.get("sector") or "",
+            "industry": row.get("industry") or "",
+            "exchange": row.get("exchange") or "",
             "score": round(score, 4),
             "bucket": bucket,
             "setup": setup,
@@ -384,6 +413,12 @@ class OpportunityScanner:
         missing: list[str] = []
         source = str(quote.source or "").lower()
         history = int(metrics.get("history_candles") or 0)
+        quote_age = _float_or_none(metrics.get("quote_age_seconds"))
+        max_quote_age_seconds = 96 * 3600
+        if quote_age is None:
+            missing.append("quote_timestamp")
+        elif quote_age > max_quote_age_seconds:
+            missing.append("stale_quote")
         if history < 20:
             missing.append("daily_history")
         if metrics.get("volume_ratio") is None:
@@ -391,6 +426,8 @@ class OpportunityScanner:
         if region == "US":
             if "yahoo" not in source and not any(token in source for token in ("alpaca", "polygon")):
                 missing.append("us_screening_quote_source")
+            if "yahoo" in source and not any(token in source for token in ("alpaca", "polygon", "iex", "sip")):
+                missing.append("us_realtime_intraday_for_actionable_trade")
         else:
             if not any(token in source for token in ("upstox", "kite", "nubra", "indstocks", "yahoo")):
                 missing.append("in_screening_quote_source")
@@ -403,15 +440,28 @@ class OpportunityScanner:
             score -= 0.18
         if metrics.get("volume_ratio") is None:
             score -= 0.18
+        if "stale_quote" in missing:
+            score -= 0.45
+        if "quote_timestamp" in missing:
+            score -= 0.10
+        if "us_realtime_intraday_for_actionable_trade" in missing:
+            score -= 0.12
         if self.sentiment_enabled and "news_sentiment" in missing:
             score -= 0.08
-        reject_reason = "insufficient_screening_data" if history < 20 and not sentiment.get("positive_catalyst") else ""
+        reject_reason = ""
+        if "stale_quote" in missing:
+            reject_reason = "stale_quote"
+        elif history < 20 and not sentiment.get("positive_catalyst"):
+            reject_reason = "insufficient_screening_data"
         return {
             "score": _clamp(score, 0.0, 1.0),
             "missing": missing,
             "reject_reason": reject_reason,
             "history_candles": history,
             "quote_source": quote.source,
+            "quote_age_seconds": quote_age,
+            "tradeable_screening": not reject_reason and history >= 55 and "stale_quote" not in missing,
+            "actionable_data_ready": not reject_reason and "us_realtime_intraday_for_actionable_trade" not in missing,
         }
 
     def _sentiment_metrics(self, detail: dict[str, Any]) -> dict[str, Any]:
@@ -437,16 +487,18 @@ class OpportunityScanner:
             events = []
         headline_count = int(detail.get("headline_count") or len(headlines) or 0)
         event_count = len(events)
-        evidence = _clamp(max(confidence, min((headline_count + event_count) / 6.0, 1.0)), 0.0, 1.0)
+        high_quality_event_count = _high_quality_event_count(events)
+        evidence = _clamp(confidence, 0.0, 1.0)
         boost = score * evidence * self.sentiment_weight
         return {
             "score": round(score, 4),
             "confidence": round(confidence, 4),
             "headline_count": headline_count,
             "event_count": event_count,
+            "high_quality_event_count": high_quality_event_count,
             "boost": round(boost, 4),
-            "positive_catalyst": score >= 0.18 and evidence >= 0.30 and headline_count + event_count > 0,
-            "negative_catalyst": score <= -0.30 and evidence >= 0.35 and headline_count + event_count > 0,
+            "positive_catalyst": score >= 0.22 and evidence >= 0.35 and high_quality_event_count > 0,
+            "negative_catalyst": score <= -0.30 and evidence >= 0.30 and high_quality_event_count > 0,
             "headlines": [str(item)[:180] for item in headlines[:3]],
             "asof": detail.get("ts") or detail.get("asof"),
         }
@@ -506,6 +558,9 @@ class OpportunityScanner:
     def _quality_reject_reason(self, item: dict[str, Any]) -> str:
         if item.get("bucket") == "Avoid":
             return "avoid_bucket_quality_gate"
+        data_quality = item.get("data_quality") if isinstance(item.get("data_quality"), dict) else {}
+        if data_quality.get("reject_reason"):
+            return str(data_quality["reject_reason"])
         score = _float_or_none(item.get("score")) or 0.0
         if score < self.min_score:
             return "below_opportunity_score"
@@ -531,6 +586,9 @@ class OpportunityScanner:
                 "score": data_quality.get("score"),
                 "missing": data_quality.get("missing", []),
                 "quote_source": data_quality.get("quote_source"),
+                "quote_age_seconds": data_quality.get("quote_age_seconds"),
+                "tradeable_screening": data_quality.get("tradeable_screening"),
+                "actionable_data_ready": data_quality.get("actionable_data_ready"),
             },
             "sentiment": {
                 "score": sentiment.get("score"),
@@ -550,6 +608,41 @@ class OpportunityScanner:
             "atr_pct": metrics.get("atr_pct"),
             "history_candles": metrics.get("history_candles"),
         }
+
+    def _select_diverse(self, scored: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        sector_counts: dict[str, int] = {}
+        setup_counts: dict[str, int] = {}
+        sector_cap = max(3, limit // 4)
+        setup_cap = max(5, limit // 3)
+
+        def try_add(item: dict[str, Any], enforce_caps: bool) -> None:
+            if len(selected) >= limit:
+                return
+            symbol = str(item.get("symbol") or "")
+            if not symbol or symbol in selected_symbols:
+                return
+            sector = str(item.get("sector") or item.get("market_region") or "unknown")
+            setup = str(item.get("setup") or "unknown")
+            if enforce_caps and (
+                sector_counts.get(sector, 0) >= sector_cap
+                or setup_counts.get(setup, 0) >= setup_cap
+            ):
+                return
+            selected.append(item)
+            selected_symbols.add(symbol)
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+            setup_counts[setup] = setup_counts.get(setup, 0) + 1
+
+        for item in scored:
+            try_add(item, enforce_caps=True)
+        if len(selected) < limit:
+            for item in scored:
+                try_add(item, enforce_caps=False)
+        return selected
 
     def _forced_item(self, row: dict[str, Any], reason: str) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").upper()
@@ -624,6 +717,21 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _high_quality_event_count(events: list[Any]) -> int:
+    count = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or event.get("label") or "").lower()
+        if event_type in {"", "neutral", "macro_sector"}:
+            continue
+        confidence = _float_or_none(event.get("confidence")) or 0.0
+        source_weight = _float_or_none(event.get("source_weight")) or 0.0
+        if confidence >= 0.30 and source_weight >= 0.55:
+            count += 1
+    return count
 
 
 def _round(value: float | None, digits: int = 4) -> float | None:

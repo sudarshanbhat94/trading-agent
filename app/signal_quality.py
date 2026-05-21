@@ -7,10 +7,21 @@ FRESH_BUY_MIN_SCORE = 70.0
 FRESH_BUY_ALLOWED_GRADES = {"A", "B"}
 DUPLICATE_BUY_COOLDOWN_HOURS = 48
 AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS = 48
+ACTIONABLE_MIN_CONFLUENCE = 18.0
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     """Strict Phase-1 gate for a fresh tradeable BUY idea."""
+
+    return trade_readiness_gate(item)
+
+
+def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
+    """Canonical gate for anything that wants to present or execute a fresh BUY.
+
+    Strategy, UI, manual follow, and auto-follow paths should all use this
+    result instead of inventing local score/grade thresholds.
+    """
 
     details = _details(item)
     signal_type = _upper(item.get("signal_type") or item.get("suggestion"))
@@ -40,6 +51,14 @@ def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     if grade not in FRESH_BUY_ALLOWED_GRADES:
         return _blocked("grade_not_a_or_b", "Fresh BUY requires grade A or B.", overall_grade=grade or None)
 
+    confluence = _number(item.get("confluence"), details.get("confluence"))
+    if confluence is not None and confluence < ACTIONABLE_MIN_CONFLUENCE:
+        return _blocked(
+            "confluence_below_actionable_minimum",
+            f"Fresh BUY requires confluence of at least {ACTIONABLE_MIN_CONFLUENCE:.0f}.",
+            confluence=confluence,
+        )
+
     risk_flags = _risk_flags(item, details)
     breakout = _breakout_payload(details)
     suspect_breakout = (
@@ -58,6 +77,21 @@ def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
             risk_flags=risk_flags,
         )
 
+    data_readiness = item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness")
+    if not isinstance(data_readiness, dict):
+        return _blocked("data_readiness_missing", "Fresh BUY requires Phase-2 data readiness evidence from a fresh scan.")
+    if data_readiness.get("trade_decision_ready") is not True:
+        missing = _missing_data_labels(data_readiness)
+        message = "Phase-2 data readiness is not complete for a fresh trade decision."
+        if missing:
+            message = f"Missing Phase-2 data: {', '.join(missing[:4])}."
+        return _blocked(
+            "data_readiness_not_trade_ready",
+            message,
+            data_readiness=data_readiness,
+            missing_data=missing,
+        )
+
     return {
         "passed": True,
         "fresh_buy_allowed": True,
@@ -65,8 +99,10 @@ def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
         "overall_score_pct": score,
         "overall_grade": grade,
         "min_score": FRESH_BUY_MIN_SCORE,
+        "min_confluence": ACTIONABLE_MIN_CONFLUENCE,
         "allowed_grades": sorted(FRESH_BUY_ALLOWED_GRADES),
         "risk_flags": risk_flags,
+        "data_readiness": data_readiness,
     }
 
 
@@ -74,6 +110,13 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     gate = fresh_buy_quality_gate(item)
     if not gate.get("passed"):
         return gate
+    fresh_action = _upper(item.get("fresh_action"))
+    if fresh_action and fresh_action != "BUY_NOW":
+        return _blocked(
+            "not_actionable_fresh_state",
+            "Auto-paper only follows ideas marked Actionable by the current tradeability state.",
+            fresh_action=fresh_action,
+        )
     if is_duplicate_active_buy_refresh(item):
         return _blocked(
             "duplicate_active_buy_cooldown",
@@ -99,8 +142,11 @@ def quality_skip_payload(gate: dict[str, Any]) -> dict[str, Any]:
         "overall_score_pct": gate.get("overall_score_pct"),
         "overall_grade": gate.get("overall_grade"),
         "min_score": gate.get("min_score", FRESH_BUY_MIN_SCORE),
+        "min_confluence": gate.get("min_confluence", ACTIONABLE_MIN_CONFLUENCE),
         "allowed_grades": gate.get("allowed_grades", sorted(FRESH_BUY_ALLOWED_GRADES)),
         "risk_flags": gate.get("risk_flags", []),
+        "missing_data": gate.get("missing_data", []),
+        "fresh_action": gate.get("fresh_action"),
     }
 
 
@@ -111,6 +157,7 @@ def _blocked(reason: str, message: str, **extra: Any) -> dict[str, Any]:
         "reason": reason,
         "message": message,
         "min_score": FRESH_BUY_MIN_SCORE,
+        "min_confluence": ACTIONABLE_MIN_CONFLUENCE,
         "allowed_grades": sorted(FRESH_BUY_ALLOWED_GRADES),
         **extra,
     }
@@ -151,3 +198,15 @@ def _number(*values: Any) -> float | None:
 
 def _upper(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _missing_data_labels(data_readiness: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for item in data_readiness.get("hard_gaps") or []:
+        if isinstance(item, dict):
+            labels.append(str(item.get("label") or item.get("key") or "").strip())
+        else:
+            labels.append(str(item or "").strip())
+    for item in data_readiness.get("missing_data") or []:
+        labels.append(str(item or "").strip())
+    return [label for label in dict.fromkeys(labels) if label]

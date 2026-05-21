@@ -51,7 +51,10 @@ class Phase1QualityGateTests(unittest.TestCase):
                 "status": "ACTIVE",
                 "overall_score_pct": 76,
                 "overall_grade": "B",
-                "details": {"breakout_quality": {"breakout_quality": "suspect", "volume_confirmation": True}},
+                "details": {
+                    "breakout_quality": {"breakout_quality": "suspect", "volume_confirmation": True},
+                    "data_readiness": {"trade_decision_ready": True},
+                },
             }
         )
 
@@ -157,6 +160,49 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["trade_state"], "WATCH")
         self.assertEqual(latest["execution_state"], "WATCH")
 
+    def test_safety_cleanup_exits_existing_watch_or_weak_paper_follows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            watch_id = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="WATCH",
+                score=84,
+                grade="A",
+            )
+            weak_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=52,
+                grade="D",
+            )
+            now = utc_now()
+            with db.connect() as conn:
+                for idea_id in (watch_id, weak_id):
+                    conn.execute(
+                        """
+                        insert into user_idea_follows (
+                            user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                            invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                        )
+                        values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 100, 1000, 0, 0, ?, ?, '{}')
+                        """,
+                        (idea_id, now, now),
+                    )
+
+            exited = db.exit_unsafe_active_follows()
+            active = [
+                item
+                for item in db.user_followed_signal_ideas(1, 20)
+                if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
+            ]
+
+        self.assertEqual(len(exited), 2)
+        self.assertEqual(active, [])
+        self.assertEqual({item["status"] for item in exited}, {"EXITED"})
+
     def test_manual_paper_follow_allows_strong_buy_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
@@ -218,6 +264,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             "overall_grade": grade,
             "hard_blocked": False,
             "hard_blocks": [],
+            "data_readiness": {"trade_decision_ready": True},
         }
         if details_extra:
             details.update(details_extra)

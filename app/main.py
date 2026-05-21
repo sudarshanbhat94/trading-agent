@@ -1545,7 +1545,7 @@ async def my_credit_summary(request: Request) -> dict[str, Any]:
             "daily_limit": summary.get("daily_credit_limit", 0.0),
             "daily_remaining": summary.get("daily_credits_remaining", 0.0),
             "estimated_signal_credit": _estimated_signal_credit_charge(),
-            "low_budget_mode": "OpenStocks automatically uses a leaner analysis path when today's remaining credits are tight.",
+            "low_budget_mode": "The market scan ranks eligible symbols first; credits apply to the reviewed shortlist.",
         },
     }
 

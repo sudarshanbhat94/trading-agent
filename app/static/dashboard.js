@@ -137,6 +137,15 @@ function scopedMarketContext(context = {}, market = state.activeMarket) {
   return byMarket?.[region] || context;
 }
 
+function scopedOpportunityScan(scan = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const byMarket = scan.by_market || scan.byMarket;
+  const scoped = byMarket?.[region];
+  return scoped && typeof scoped === "object"
+    ? { ...scan, ...scoped, by_market: byMarket }
+    : scan;
+}
+
 function fmtMarketMoney(value, market = "IN") {
   const parsed = numericValue(value);
   if (parsed === null) return "-";
@@ -527,13 +536,32 @@ function decisionScorePercent(row = {}) {
 }
 
 function sortDecisionRows(rows = []) {
-  return (rows || []).slice().sort((a, b) => {
+  return uniqueLatestDecisionRows(rows).sort((a, b) => {
     const scoreDelta = decisionScorePercent(b) - decisionScorePercent(a);
     if (scoreDelta !== 0) return scoreDelta;
     const timeDelta = (rowTimestamp(b)?.getTime() || 0) - (rowTimestamp(a)?.getTime() || 0);
     if (timeDelta !== 0) return timeDelta;
     return String(a.symbol || "").localeCompare(String(b.symbol || ""));
   });
+}
+
+function uniqueLatestDecisionRows(rows = []) {
+  const bySymbol = new Map();
+  for (const row of rows || []) {
+    const symbol = String(row?.symbol || "").toUpperCase();
+    if (!symbol) continue;
+    const current = bySymbol.get(symbol);
+    if (!current) {
+      bySymbol.set(symbol, row);
+      continue;
+    }
+    const rowTime = rowTimestamp(row)?.getTime() || 0;
+    const currentTime = rowTimestamp(current)?.getTime() || 0;
+    if (rowTime > currentTime || (rowTime === currentTime && Number(row.id || 0) > Number(current.id || 0))) {
+      bySymbol.set(symbol, row);
+    }
+  }
+  return [...bySymbol.values()];
 }
 
 function rowActionText(row = {}) {
@@ -743,7 +771,8 @@ function reasonFromSnakeCase(value, fallback = "-") {
     llm_failed_or_timed_out_deterministic_trade_preserved: "OpenStocks View did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
     llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current OpenStocks View limit; new trades now require that review, so this should be HOLD.",
     time_stop_no_progress_15_sessions: "The position has not moved enough after 15 sessions, so OpenStocks is exiting dead capital.",
-    overall_score_below_55_no_new_longs: "The production-readiness score is below 55%, so OpenStocks is not opening a fresh long.",
+    overall_score_below_55_no_new_longs: "The production-readiness score is below 70%, so OpenStocks is not opening a fresh long.",
+    overall_score_below_70_no_new_longs: "The production-readiness score is below 70%, so OpenStocks is not opening a fresh long.",
     fundamentals_unknown_needs_news_or_delivery_confirmation: "Fundamentals are still unknown, news/sentiment is missing, and delivery accumulation is not confirmed.",
     watch_entry_needs_exceptional_confirmation: "The setup is only WATCH grade, so it needs exceptional confirmation before a BUY.",
     delivery_distribution_no_new_longs: "Delivery data shows distribution, so OpenStocks is avoiding a fresh BUY.",
@@ -755,13 +784,13 @@ function reasonFromSnakeCase(value, fallback = "-") {
 function plainDecisionPath(value) {
   const text = String(value || "").trim();
   const mapped = {
-    llm_review: "OpenStocks View",
-    llm_review_failed: "OpenStocks View failed safely",
-    llm_primary: "OpenStocks View",
+    llm_review: "Review completed",
+    llm_review_failed: "Safe review",
+    llm_primary: "Review completed",
     manual_exit: "Manual exit",
-    deterministic_audit: "Rules engine",
+    deterministic_audit: "Rules review",
   };
-  if (!text || text === "-") return "Rules engine";
+  if (!text || text === "-") return "Rules review";
   return mapped[text] || humanLabel(text);
 }
 
@@ -992,7 +1021,6 @@ function readableDecisionReason(row = {}) {
   const full = decisionFullSpectrum(audit);
   const confluence = full.confluence_score || {};
   const scorecard = full.institutional_scorecard || {};
-  const threshold = audit.risk_gates?.decision_gate_context?.buy_threshold || pre.buy_threshold || 0.35;
   const combinedValue = score.combined ?? row.combined_score;
   const confluenceValue = confluence.total ?? row.confluence;
   const confluenceTier = confluence.tier || row.tier || "tier pending";
@@ -1004,20 +1032,16 @@ function readableDecisionReason(row = {}) {
     return reasonFromSnakeCase(pre.elimination_reason);
   }
   if (audit.llm_error) {
-    return `OpenStocks View did not return a usable decision, so OpenStocks used the safe ${action} result.`;
+    return `The review could not complete cleanly, so OpenStocks kept the safer ${action} decision.`;
   }
   if (action === "BUY") {
-    return `BUY candidate: combined score ${fmtNumber(combinedValue)} vs ${fmtNumber(threshold)} required, confluence ${confluenceValue ?? "-"}/26 (${confluenceTier}), and institutional readiness is ${scorecard.buy_ready ? "clear" : "being monitored"}.`;
+    return `BUY setup is actionable: price action, confirmation, and risk checks are aligned for a fresh entry.`;
   }
   if (action === "SELL") {
     return humanizeReasonText(audit.action_reason || row.reason || "Exit rule triggered.", action);
   }
   if (combinedValue !== undefined || confluenceValue !== undefined || scorecard.buy_ready !== undefined) {
-    const blockers = [];
-    if (combinedValue !== undefined) blockers.push(`combined score ${fmtNumber(combinedValue)} vs BUY threshold ${fmtNumber(threshold)}`);
-    if (confluenceValue !== undefined) blockers.push(`confluence ${confluenceValue}/26`);
-    if (scorecard.buy_ready === false) blockers.push(`institutional scorecard not buy-ready`);
-    return compactSentence(`HOLD because the setup is not strong enough yet: ${blockers.join(", ") || "BUY requirements were not met"}`);
+    return "HOLD for now. The setup does not have enough confirmation for a fresh entry yet.";
   }
   return humanizeReasonText(audit.action_reason || row.reason || "-", action);
 }
@@ -1037,14 +1061,14 @@ function decisionReasonHighlights(row = {}) {
   const alignment = (full.trend_context || {}).timeframe_alignment || {};
   const combinedValue = score.combined ?? row.combined_score;
   const confluenceValue = confluence.total ?? row.confluence;
-  if (combinedValue !== undefined) highlights.push(`Combined score: ${fmtNumber(combinedValue)}`);
-  if (confluenceValue !== undefined) highlights.push(`Confluence: ${confluenceValue}/26 (${confluence.tier || row.tier || "tier pending"})`);
+  if (combinedValue !== undefined) highlights.push(`Signal quality: ${fmtPct(Number(combinedValue) * 100)}`);
+  if (confluenceValue !== undefined) highlights.push(`Setup confirmation: ${confluenceValue}/26 (${humanLabel(confluence.tier || row.tier || "pending")})`);
   if (scorecard.total_score !== undefined) {
-    highlights.push(`Institutional scorecard: ${scorecard.total_score}/100, ${scorecard.buy_ready ? "buy-ready" : "not buy-ready"}`);
+    highlights.push(`Accumulation quality: ${scorecard.total_score}/100, ${scorecard.buy_ready ? "ready" : "not ready"}`);
   }
-  if (stage.stage) highlights.push(`Stage analysis: ${stage.stage} (${stage.buy_permitted ? "BUY permitted" : "BUY blocked"})`);
-  if (entry.entry_grade) highlights.push(`Entry quality: grade ${entry.entry_grade}, ${fmtPct(entry.distance_from_pivot_pct)} from pivot`);
-  if (alignment.alignment_grade) highlights.push(`Timeframe alignment: grade ${alignment.alignment_grade}`);
+  if (stage.stage) highlights.push(`Market stage: ${humanLabel(stage.stage)} (${stage.buy_permitted ? "entry allowed" : "entry blocked"})`);
+  if (entry.entry_grade) highlights.push(`Entry quality: ${entry.entry_grade}, ${fmtPct(entry.distance_from_pivot_pct)} from pivot`);
+  if (alignment.alignment_grade) highlights.push(`Timeframe alignment: ${alignment.alignment_grade}`);
   return highlights.length ? highlights : [readableDecisionReason(row)];
 }
 
@@ -1462,10 +1486,10 @@ function renderShell(payload = state.latest || {}) {
   const health = payload.market_health || {};
   const macro = payload.macro_context || {};
   const breadth = payload.market_breadth || {};
-  const opportunity = payload.opportunity_scan || {};
   const runtime = payload.runtime || {};
   const userSession = payload.user_signal_session || {};
   const activeMarket = normalizeUiMarket(state.activeMarket);
+  const opportunity = scopedOpportunityScan(payload.opportunity_scan || {}, activeMarket);
   const activeQuotes = filterRowsByMarket(payload.quotes || [], activeMarket);
   const rankedDecisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
@@ -1518,19 +1542,38 @@ function renderShell(payload = state.latest || {}) {
     : feed.meta;
   byId("ops-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks View";
   const userCreditMeta = state.credits
-    ? `${fmtCredits(state.credits.credits_used_today || 0)} credits used today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
+    ? `${fmtCredits(state.credits.credits_used_today || 0)} AI credits today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
     : `${fmtCredits(llmActivity.credits_charged || 0)} credits last cycle`;
   byId("ops-llm-meta").textContent = !state.auth?.admin
     ? userCreditMeta
     : `${llmMode} · ${llmUsageText}`;
   byId("ops-risk").textContent = `${plainSetting("max_positions", "-")} slots`;
   byId("ops-risk-meta").textContent = `${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
-  const rawSymbols = Number(opportunity.raw_symbols || 0);
+  const rawSymbols = Number(opportunity.scanned_symbols_this_cycle || opportunity.raw_symbols || 0);
   const selectedSymbols = Number(opportunity.selected_symbols || 0);
-  const newsCandidates = Number(opportunity.positive_news_candidates || 0);
-  byId("ops-opportunity").textContent = opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static";
+  const tradeableSymbols = Number(opportunity.tradeable_screening_symbols || 0);
+  const scanPaused = Boolean(opportunity.scan_paused || opportunity.mode === "market_closed_tomorrow_prep");
+  const lastOpenScan = opportunity.last_open_scan || {};
+  const lastOpenScanned = Number(lastOpenScan.scanned_symbols_this_cycle || lastOpenScan.raw_symbols || 0);
+  const openUniverseSymbols = Number(opportunity.open_universe_symbols || 0);
+  const enabledUniverseSymbols = Number(opportunity.enabled_universe_symbols || 0);
+  const universeSymbols = openUniverseSymbols || enabledUniverseSymbols || rawSymbols;
+  const newsCoveredCandidates = Number(opportunity.news_covered_candidates || 0);
+  const verifiedCatalysts = Number(opportunity.verified_catalyst_candidates || opportunity.positive_news_candidates || 0);
+  const newsScreenedSymbols = Number(opportunity.news_screened_symbols || opportunity.news_probe?.symbols_requested || 0);
+  const scanScopeText = universeSymbols > rawSymbols
+    ? `${fmtNumber(rawSymbols)}/cycle from ${fmtNumber(universeSymbols)} open`
+    : `${fmtNumber(rawSymbols)} scanned`;
+  const newsScopeText = newsCoveredCandidates > 0
+    ? `${fmtNumber(newsCoveredCandidates)} with news · ${fmtNumber(verifiedCatalysts)} verified catalysts`
+    : `${fmtNumber(newsScreenedSymbols)} news checked · ${fmtNumber(verifiedCatalysts)} verified catalysts`;
+  const pausedScanText = `${fmtNumber(enabledUniverseSymbols || universeSymbols)} enabled · ${fmtNumber(newsScreenedSymbols)} news prep · resumes at open`;
+  const lastOpenText = lastOpenScanned ? `last open scan ${fmtNumber(lastOpenScanned)} symbols` : "open scan pending";
+  byId("ops-opportunity").textContent = scanPaused ? "Market closed" : (opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static");
   byId("ops-opportunity-meta").textContent = opportunity.enabled
-    ? `${fmtNumber(rawSymbols)} raw · ${fmtNumber(newsCandidates)} news · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`
+    ? (scanPaused
+      ? pausedScanText
+      : `${scanScopeText} · ${fmtNumber(tradeableSymbols)} tradeable · ${newsScopeText} · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`)
     : "dynamic scan off";
   byId("ops-macro").textContent = macro.regime || marketStanceText(breadth);
   const macroRiskText = Number.isFinite(Number(macro.risk_score)) ? `${fmtNumber(macro.risk_score)} risk` : "risk pending";
@@ -1558,9 +1601,11 @@ function renderShell(payload = state.latest || {}) {
   if (cockpitReviewNote) cockpitReviewNote.textContent = !state.auth?.admin ? userCreditMeta : `${llmMode} · ${llmUsageText}`;
   if (cockpitFeed) cockpitFeed.textContent = feedConnected ? feed.title : "Feed pending";
   if (cockpitFeedNote) cockpitFeedNote.textContent = feedPending ? "quotes paused until broker/data token is ready" : feed.meta;
-  if (cockpitScan) cockpitScan.textContent = opportunity.enabled ? `${fmtNumber(selectedSymbols)}/${fmtNumber(rawSymbols)} candidates` : "Static scan";
+  if (cockpitScan) cockpitScan.textContent = scanPaused ? "Market closed" : (opportunity.enabled ? `${fmtNumber(selectedSymbols)}/${fmtNumber(tradeableSymbols || rawSymbols)} candidates` : "Static scan");
   if (cockpitScanNote) cockpitScanNote.textContent = opportunity.enabled
-    ? `${fmtNumber(newsCandidates)} news-backed · ${(opportunity.top_candidates || []).slice(0, 2).map((item) => item.symbol).filter(Boolean).join(", ") || "ranking"}`
+    ? (scanPaused
+      ? `${pausedScanText} · ${lastOpenText}`
+      : `${scanScopeText} · ${fmtNumber(verifiedCatalysts)} verified catalysts · ${(opportunity.top_candidates || []).slice(0, 2).map((item) => item.symbol).filter(Boolean).join(", ") || "ranking"}`)
     : `${fmtNumber(rankedDecisions.length)} ranked decisions in ${activeMarketLabel()}`;
   if (cockpitControl) cockpitControl.textContent = liveMode ? "Live guarded" : "Paper guarded";
   if (cockpitControlNote) cockpitControlNote.textContent = `${plainSetting("max_positions", "-")} slots · ${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
@@ -1865,8 +1910,9 @@ function renderCreditSummary(credits, policy = {}) {
     </form>
     <div class="account-note">
       <strong>Credit transparency</strong>
-      <span>Every completed brain review deducts credits from the daily budget and account balance.</span>
-      <span>OpenStocks automatically uses a leaner analysis path when today's remaining credits are tight.</span>
+      <span>OpenStocks View reviews debit credits from the daily budget and account balance, including shared AI cycles.</span>
+      <span>Pure quote refresh, candle refresh, market screening, and non-LLM news prep do not debit credits.</span>
+      <span>Full market screening ranks eligible symbols first; credits apply when the shortlisted ideas are reviewed.</span>
       <span>Estimated signal cost: ${fmtCredits(policy.estimated_signal_credit || 0)} credits.</span>
       ${llmActivity.message ? `<span>Last cycle: ${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</span>` : ""}
       ${autoTrade.mode ? `<span>Auto action: ${escapeHtml(signalModeLabel(autoTrade.mode))} · followed ${fmtNumber(autoTrade.followed || 0)} BUY ideas${(autoTrade.skipped || []).length ? ` · skipped ${(autoTrade.skipped || []).length}` : ""}</span>` : ""}
@@ -1919,7 +1965,7 @@ function renderCreditPopoverBody(credits, policy = {}) {
         <small>${escapeHtml(row.description || "OpenStocks View")} · ${fmtTime(row.ts)}</small>
       </button>`).join("") || `<div class="empty-state product-empty"><strong>No review calls yet</strong><span>Last five credit events will appear here.</span></div>`}
     </div>
-    <small class="credit-policy-note">${fmtCredits(policy.estimated_signal_credit || 0)} estimated credits per signal review.</small>
+    <small class="credit-policy-note">${fmtCredits(policy.estimated_signal_credit || 0)} estimated credits per review. Shared AI cycles are split across active users.</small>
   `;
 }
 
@@ -3210,13 +3256,20 @@ function renderStrategyPlans(rows) {
     .slice(0, 8)
     .map((row) => {
       const risk = humanLabel(row.risk_level || "Medium");
-      const ideas = (row.constituents || []).filter((idea) => rowMarket(idea) === market).slice(0, 4);
+      const marketStats = strategyPlanMarketStats(row, market);
+      const marketConstituents = ((row.constituents_by_market || {})[market] || (row.constituents || []).filter((idea) => rowMarket(idea) === market));
+      const ideas = marketConstituents.slice(0, 4);
       const symbolList = ideas.length
         ? ideas.map((idea) => {
             const life = ideaLifecycle(idea);
             return `<span class="plan-symbol ${escapeHtml(life.className)}"><strong>${escapeHtml(displayValue(idea.symbol, "Symbol"))}</strong><small>${escapeHtml(life.label)} · ${fmtPct(idea.current_return_pct || 0)}</small></span>`;
           }).join("")
+        : marketStats.idea_count > 0
+          ? `<span class="plan-symbol empty">${fmtNumber(marketStats.idea_count)} ${escapeHtml(activeMarketLabel())} stocks in this plan</span>`
         : `<span class="plan-symbol empty">No ${escapeHtml(activeMarketLabel())} stocks in this plan yet</span>`;
+      const sinceSignals = marketStats.idea_count > 0
+        ? `<strong class="${pnlClass(marketStats.avg_return_pct)}">${fmtPct(marketStats.avg_return_pct || 0)}</strong>`
+        : `<strong class="muted">No signals</strong>`;
       const followRow = state.auth?.admin
         ? `<div class="plan-admin-note compact">Admin managed. Users follow with their own budget.</div>`
         : `<div class="plan-follow-row">
@@ -3232,8 +3285,8 @@ function renderStrategyPlans(rows) {
       <p>${escapeHtml(shortValue(row.description || "-", 150))}</p>
       <div class="strategy-plan-stats">
         <span><small>Holding</small><strong>${escapeHtml(row.holding_period || "-")}</strong></span>
-        <span><small>${escapeHtml(activeMarketLabel())} Stocks</small><strong>${fmtNumber(ideas.length)}</strong></span>
-        <span><small>Since Signals</small><strong class="${pnlClass(row.avg_return_pct)}">${fmtPct(row.avg_return_pct || 0)}</strong></span>
+        <span><small>${escapeHtml(activeMarketLabel())} Stocks</small><strong>${fmtNumber(marketStats.idea_count)}</strong></span>
+        <span><small>Since Signals</small>${sinceSignals}</span>
       </div>
       <div class="plan-symbol-list">${symbolList}</div>
       ${followRow}
@@ -3255,6 +3308,26 @@ function renderStrategyPlans(rows) {
       followPlan(code, button.dataset.planAction, Number(input?.value || 0));
     });
   });
+}
+
+function strategyPlanMarketStats(row = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const stats = ((row.market_stats || row.by_market || {})[region]) || {};
+  const fallbackIdeas = (row.constituents || []).filter((idea) => rowMarket(idea) === region);
+  const ideaCount = numericValue(stats.idea_count);
+  const avgReturn = numericValue(stats.avg_return_pct);
+  const bestReturn = numericValue(stats.best_return_pct);
+  const worstReturn = numericValue(stats.worst_return_pct);
+  return {
+    idea_count: ideaCount !== null ? ideaCount : fallbackIdeas.length,
+    avg_return_pct: avgReturn !== null ? avgReturn : (
+      fallbackIdeas.length
+        ? fallbackIdeas.reduce((sum, idea) => sum + Number(idea.current_return_pct || 0), 0) / fallbackIdeas.length
+        : 0
+    ),
+    best_return_pct: bestReturn !== null ? bestReturn : 0,
+    worst_return_pct: worstReturn !== null ? worstReturn : 0,
+  };
 }
 
 async function followPlan(planCode, action, amount = 0) {
@@ -3704,6 +3777,10 @@ function renderSuggestions(rows) {
       const followedActive = followed && ["ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"].includes(String(followed.status || "").toUpperCase()) && Number(followed.qty || 0) > 0;
       const executionLabel = row.execution_state_label || (followed ? `${followed.mode} active` : "Signal Only");
       const setupBucket = row.setup_bucket_label || "-";
+      const canEnterTrade = String(row.fresh_action || "").toUpperCase() === "BUY_NOW";
+      const entryDisabled = canEnterTrade ? "" : "disabled";
+      const entryBlockReason = escapeHtml(row.setup_bucket_reason || row.display_reason || "Only actionable fresh BUY ideas can be paper/live entered.");
+      const tradeBlockText = canEnterTrade ? "" : shortValue(row.setup_bucket_reason || row.display_reason || "Not trade-ready", 70);
       const confidence = Number(row.confidence || 0) * 100;
       const currentReturn = Number(row.current_return_pct || 0);
       const peakReturn = Number(row.peak_return_pct || 0);
@@ -3746,6 +3823,7 @@ function renderSuggestions(rows) {
           <span>${escapeHtml(row.latest_decision_id ? `Decision #${row.latest_decision_id}` : "Decision audit")}</span>
           <span>Confluence ${escapeHtml(row.confluence ?? "-")}/26</span>
           <span>${escapeHtml(row.tier || "-")}</span>
+          ${tradeBlockText ? `<span class="warning">${escapeHtml(tradeBlockText)}</span>` : ""}
           ${riskFlags.slice(0, 1).map((flag) => `<span class="warning">${escapeHtml(humanLabel(flag))}</span>`).join("")}
           ${institutionalFlags.slice(0, 1).map((flag) => `<span>${escapeHtml(flag)}</span>`).join("")}
         </div>
@@ -3756,8 +3834,8 @@ function renderSuggestions(rows) {
             </div>`
           : `<div class="signal-card-actions">
               <button type="button" data-idea-action="track" data-idea-id="${escapeHtml(row.id)}">Track</button>
-              <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}">Paper</button>
-              <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}">Live</button>
+              <button type="button" data-idea-action="paper" data-idea-id="${escapeHtml(row.id)}" ${entryDisabled} title="${entryBlockReason}">Paper</button>
+              <button type="button" data-idea-action="live" data-idea-id="${escapeHtml(row.id)}" ${entryDisabled} title="${entryBlockReason}">Live</button>
             </div>`}
       </article>`;
     })
@@ -3995,7 +4073,7 @@ function renderDecisions(rows, options = {}) {
     if (detail) {
       detail.innerHTML = emptyBlock(
         "No decision selected",
-        "When decisions arrive, select one to inspect the score radar, OpenStocks View, gates, and timeline.",
+        "When decisions arrive, select one to inspect signal quality, review notes, risk checks, and timeline.",
         "Analyze Symbol",
         "analyze",
       );
@@ -4073,19 +4151,20 @@ function renderDecisionDetailPanel(row = {}) {
   const action = String(row.action || audit.final_action || "HOLD").toLowerCase();
   const confidence = Math.max(0, Math.min(100, Number(row.confidence || audit.confidence || 0) * 100));
   const score = audit.score_breakdown || {};
+  const strategyLabel = humanLabel(row.strategy || context.best_strategy?.name || "Strategy pending");
   const metrics = [
-    { label: "Tech", value: normalizedScore(row.technical_score ?? context.technical_math?.score) },
-    { label: "Sentiment", value: normalizedScore(row.sentiment_score ?? context.sentiment?.score) },
+    { label: "Setup", value: normalizedScore(row.technical_score ?? context.technical_math?.score) },
+    { label: "News", value: normalizedScore(row.sentiment_score ?? context.sentiment?.score) },
     { label: "Risk", value: normalizedScore(score.risk_score ?? full.risk_score ?? (full.risk_overrides?.no_new_longs ? -0.7 : 0.35)) },
-    { label: "Macro", value: normalizedScore(context.global_market_context?.risk_score ?? context.market_breadth?.breadth_score) },
+    { label: "Market", value: normalizedScore(context.global_market_context?.risk_score ?? context.market_breadth?.breadth_score) },
   ];
   const llm = audit.llm_output || {};
   const timeline = [
     ["Quote", `${fmtMarketMoney(row.price || context.quote?.price, market)} from ${context.quote?.source || row.source || "market feed"}`],
-    ["Score", `${fmtNumber(score.combined ?? row.combined_score)} combined · ${full.confluence_score?.total ?? row.confluence ?? "-"} confluence`],
-    ["Gates", failedGatesFromAudit(audit, context).length ? `${failedGatesFromAudit(audit, context).length} blockers` : "hard gates clear"],
-    ["OpenStocks View", audit.llm_error ? "failed safely" : plainDecisionPath(audit.decision_path || "deterministic_audit")],
-    ["Decision", `${row.action || "HOLD"} · ${fmtNumber(confidence)}% confidence`],
+    ["Quality", `${fmtPct(Number(score.combined ?? row.combined_score ?? 0) * 100)} signal quality · ${full.confluence_score?.total ?? row.confluence ?? "-"} confirmations`],
+    ["Checks", failedGatesFromAudit(audit, context).length ? `${failedGatesFromAudit(audit, context).length} item(s) need improvement` : "trade checks clear"],
+    ["Review", audit.llm_error ? "completed safely with rules" : humanLabel(plainDecisionPath(audit.decision_path || "deterministic_audit"))],
+    ["Decision", `${row.action || "HOLD"} · ${fmtNumber(confidence)}% conviction`],
   ];
   panel.innerHTML = `
     <section class="decision-detail-hero">
@@ -4093,22 +4172,22 @@ function renderDecisionDetailPanel(row = {}) {
       <div>
         <span>${escapeHtml(MARKET_LABELS[market] || market)} decision</span>
         <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
-        <p>${fmtMarketMoney(row.price, market)} · ${escapeHtml(displayValue(row.strategy || context.best_strategy?.name, "Strategy pending"))} · ${escapeHtml(fmtTime(row.ts))}</p>
+        <p>${fmtMarketMoney(row.price, market)} · ${escapeHtml(strategyLabel)} · ${escapeHtml(fmtTime(row.ts))}</p>
       </div>
       <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
-      <div class="score-ring large" style="--score:${confidence}"><strong>${fmtNumber(confidence)}</strong><small>%</small></div>
+      <div class="score-ring large decision-conviction-ring" style="--score:${confidence}"><strong>${fmtNumber(confidence)}</strong><small>%</small></div>
     </section>
     <section class="decision-radar-section">
       ${scoreRadarSvg(metrics)}
       <div class="decision-reason-block">
-        <h4>Plain-English Decision</h4>
+        <h4>Decision Summary</h4>
         <p>${escapeHtml(readableDecisionReason(row))}</p>
-        ${auditList("Key Evidence", decisionReasonHighlights(row).slice(0, 5))}
+        ${auditList("Primary Checks", decisionReasonHighlights(row).slice(0, 5))}
       </div>
     </section>
     <section class="decision-review-grid">
       <div>
-        <h4>OpenStocks View</h4>
+        <h4>Review Notes</h4>
         ${formattedLlmReasonHtml(llm, audit, row)}
       </div>
       <div>
@@ -4139,8 +4218,8 @@ function scoreRadarSvg(metrics = []) {
       ...metric,
       x: 90 + Math.cos(angle) * radius,
       y: 90 + Math.sin(angle) * radius,
-      lx: 90 + Math.cos(angle) * 83,
-      ly: 90 + Math.sin(angle) * 83,
+      lx: 90 + Math.cos(angle) * 72,
+      ly: 90 + Math.sin(angle) * 72,
     };
   });
   const polygon = points.map((point) => `${point.x},${point.y}`).join(" ");
@@ -4198,12 +4277,12 @@ function formattedLlmReasonHtml(llm = {}, audit = {}, decision = {}) {
   const sections = [
     ["Bottom line", reason || fallbackReason],
     ["What is working", sentenceFromList(evidence, checklist.length ? sentenceFromList(checklist) : "")],
-    ["What is missing", sentenceFromList(dataLimits, audit.llm_error ? "OpenStocks View could not complete, so the safer rules-engine decision was used." : "")],
+    ["What is missing", sentenceFromList(dataLimits, audit.llm_error ? "The review could not complete, so the safer decision was used." : "")],
     ["Risk to watch", sentenceFromList(risks)],
     ["What would change the view", sentenceFromList(monitoring)],
   ].filter(([, text]) => text);
   if (!sections.length) {
-    return `<div class="empty-state product-empty"><strong>No OpenStocks View captured</strong><span>This decision still used price, volume, risk gates, and strategy rules.</span></div>`;
+    return `<div class="empty-state product-empty"><strong>No review notes captured</strong><span>This decision still used price, volume, risk checks, and strategy rules.</span></div>`;
   }
   return `<div class="openstocks-formatted-view">
     ${sections.map(([title, text]) => `<article><h5>${escapeHtml(title)}</h5><p>${escapeHtml(shortValue(text, 620))}</p></article>`).join("")}
@@ -4845,7 +4924,7 @@ function fullSpectrumHtml(analysis, market = "IN") {
       <div class="audit-card"><span>Timeframes</span><strong>${fmtNumber(timeframeData.daily_candle_count)}D/${fmtNumber(timeframeData.weekly_candle_count)}W</strong><small>${escapeHtml(timeframeData.analysis_source || "-")}</small></div>
       <div class="audit-card"><span>Best Backtest</span><strong>${escapeHtml(bestBacktest.strategy || "-")}</strong><small>${fmtNumber(bestBacktest.expectancy_pct)}% exp · ${fmtNumber(bestBacktest.trades)} trades</small></div>
       <div class="audit-card"><span>Confluence</span><strong>${escapeHtml(confluence.total ?? "-")}/26</strong><small>${escapeHtml(confluence.tier || "-")}</small></div>
-      <div class="audit-card"><span>Institutional Score</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(`${scorecard.grade || "-"} · ${scorecard.buy_ready ? "buy ready" : "not ready"}`)}</small></div>
+      <div class="audit-card"><span>Accumulation Proxy</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(`${scorecard.grade || "-"} · ${scorecard.buy_ready ? "trade ready" : "not ready"}`)}</small></div>
       <div class="audit-card"><span>Daily Trend</span><strong>${escapeHtml(trend.daily || "-")}</strong><small>${escapeHtml(trend.structure || "-")}</small></div>
       <div class="audit-card"><span>Signal Direction</span><strong>${escapeHtml(tradePlan.direction || "-")}</strong><small>${escapeHtml(tradePlan.horizon || "-")}</small></div>
       <div class="audit-card"><span>Risk Overrides</span><strong>${escapeHtml(risk.no_new_longs ? "no new longs" : "clear")}</strong><small>${escapeHtml((risk.flags || []).join(", ") || "-")}</small></div>
@@ -4872,9 +4951,9 @@ function fullSpectrumHtml(analysis, market = "IN") {
     ${objectCardsHtml("Options / OI", analysis.options_oi)}
     ${objectCardsHtml("Backtest Snapshot", analysis.backtest_snapshot)}
     ${objectCardsHtml("Signal Conflicts", analysis.signal_conflicts)}
-    ${objectCardsHtml("Institutional Flow", analysis.institutional_flow)}
+    ${objectCardsHtml("Flow Evidence", analysis.institutional_flow)}
     ${objectCardsHtml("Key Levels", analysis.key_levels)}
-    ${objectCardsHtml("Institutional Structure", analysis.institutional_structure)}
+    ${objectCardsHtml("Accumulation Structure", analysis.institutional_structure)}
     ${auditList("Monitoring Checklist", analysis.monitoring_checklist)}
     ${auditList("Data Gaps", analysis.data_gaps)}
     <pre>${escapeHtml(JSON.stringify({
@@ -4901,10 +4980,10 @@ function scorecardHtml(scorecard) {
   if (!scorecard || typeof scorecard !== "object" || !Object.keys(scorecard).length) return "";
   const sections = scorecard.sections || {};
   return `<section class="audit-section">
-    <h4>Institutional Scorecard</h4>
+    <h4>Accumulation Proxy Scorecard</h4>
     <div class="audit-cards">
       <div class="audit-card"><span>Score</span><strong>${escapeHtml(scorecard.total_score ?? "-")}/100</strong><small>${escapeHtml(scorecard.grade || "-")}</small></div>
-      <div class="audit-card"><span>Buy Ready</span><strong>${escapeHtml(scorecard.buy_ready ? "yes" : "no")}</strong><small>${escapeHtml((scorecard.must_pass_failed || []).join(", ") || "all must-pass clear")}</small></div>
+      <div class="audit-card"><span>Trade Ready</span><strong>${escapeHtml(scorecard.buy_ready ? "yes" : "no")}</strong><small>${escapeHtml((scorecard.must_pass_failed || []).join(", ") || "all must-pass clear")}</small></div>
       <div class="audit-card"><span>Hard Veto</span><strong>${escapeHtml(scorecard.hard_veto?.passed ? "clear" : "blocked")}</strong><small>${escapeHtml((scorecard.hard_veto?.failed || []).join(", ") || "-")}</small></div>
       <div class="audit-card"><span>Warnings</span><strong>${escapeHtml((scorecard.warnings || []).length)}</strong><small>${escapeHtml((scorecard.warnings || []).join(", ") || "-")}</small></div>
     </div>
@@ -5214,7 +5293,7 @@ async function analyzeSymbol(event) {
   }, 1000);
   button.disabled = true;
   byId("analyze-status").textContent = `analyzing ${market}:${symbol}...`;
-  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk gates, and OpenStocks View if enabled...</div>`;
+  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk checks, and review notes if enabled...</div>`;
   try {
     const response = await fetch("/api/analyze-symbol", {
       method: "POST",
@@ -5620,7 +5699,7 @@ function bindControls() {
         return;
       }
       if (target === "opportunity-health") {
-        showDetails("Opportunity Scan", state.latest?.opportunity_scan || {});
+        showDetails(`${activeMarketLabel()} Opportunity Scan`, scopedOpportunityScan(state.latest?.opportunity_scan || {}, state.activeMarket));
         return;
       }
       if (target === "cycle-health") {

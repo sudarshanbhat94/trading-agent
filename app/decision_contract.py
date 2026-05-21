@@ -202,6 +202,26 @@ def ranked_decision_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     )
 
 
+def current_decision_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return one latest decision per symbol, then rank those current rows."""
+
+    latest_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        annotated = annotate_decision_row(dict(row))
+        symbol = str(annotated.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        current = latest_by_symbol.get(symbol)
+        if current is None:
+            latest_by_symbol[symbol] = annotated
+            continue
+        candidate_key = (_timestamp_sort_value(annotated), int(annotated.get("id") or 0))
+        current_key = (_timestamp_sort_value(current), int(current.get("id") or 0))
+        if candidate_key > current_key:
+            latest_by_symbol[symbol] = annotated
+    return ranked_decision_rows(latest_by_symbol.values())
+
+
 def normalize_trade_targets(targets: Any) -> list[dict[str, Any]]:
     if not isinstance(targets, list):
         return []

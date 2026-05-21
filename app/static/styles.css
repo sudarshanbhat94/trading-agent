@@ -7009,6 +7009,10 @@ body.is-user .rail-footer div:nth-child(2) span::after {
   white-space: nowrap;
 }
 
+.decision-detail-hero .decision-conviction-ring::after {
+  content: "conviction";
+}
+
 .score-ring {
   position: relative;
 }

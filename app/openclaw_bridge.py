@@ -238,9 +238,9 @@ def _breakout_candidate(row: dict[str, Any], quote: dict[str, Any], candles: lis
     if distance_to_pivot_pct > 8:
         risk_flags.append("extended_more_than_8pct_from_pivot")
         score -= 30.0
-    if volume_ratio and volume_ratio < 1:
-        risk_flags.append("volume_below_20d_average")
-        score -= 8.0
+    if volume_ratio and volume_ratio < 1.2:
+        risk_flags.append("volume_not_expanded")
+        score -= 12.0
     if sma50 and price < sma50:
         risk_flags.append("below_50dma")
         score -= 15.0
@@ -250,10 +250,10 @@ def _breakout_candidate(row: dict[str, Any], quote: dict[str, Any], candles: lis
         readiness = "deep_analyze"
     elif near_pivot and distance_to_pivot_pct < 0:
         candidate_type = "near_pivot_watch"
-        readiness = "deep_analyze" if score >= 45 else "watch"
+        readiness = "deep_analyze" if score >= 45 and volume_ratio >= 1.2 else "watch"
     elif near_pivot:
         candidate_type = "post_breakout_watch"
-        readiness = "deep_analyze" if score >= 50 else "watch"
+        readiness = "deep_analyze" if score >= 50 and volume_ratio >= 1.2 else "watch"
     else:
         candidate_type = "volume_leader_not_near_breakout"
         readiness = "watch" if score >= 35 else "low_priority"

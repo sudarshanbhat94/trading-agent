@@ -60,7 +60,7 @@ def evaluate_strategy_presets(
         _time_series_momentum_trend(candles, quote_price),
         _aggressive_relative_strength_breakout(candles, quote_price),
         _fifty_two_week_high_momentum(candles, quote_price),
-        _minervini_trend_template(closes, quote_price),
+        _minervini_trend_template(candles, quote_price),
         _vcp_breakout(candles, quote_price),
         _darvas_box_breakout(candles, quote_price, (pattern_state or {}).get("darvas_box") or {}),
         _ema_pullback_continuation(closes, quote_price),
@@ -127,12 +127,30 @@ def _normalized_momentum_factor(candles: list[Candle], quote_price: float) -> St
     if ret_63 < -3:
         score -= 0.12
         notes.append("recent 3-month momentum is negative")
-    if volume_ratio >= 1.1:
+    volume_confirmed = volume_ratio >= 1.2
+    fresh_location = distance_from_high <= 5 and (sma_50 is None or ((quote_price - sma_50) / sma_50) * 100 <= 12)
+    if volume_confirmed:
         score += 0.05
         notes.append("volume confirms interest")
-    direction = "BUY" if score >= 0.68 else "HOLD"
+    else:
+        notes.append("volume below fresh-entry confirmation threshold")
+    if not fresh_location:
+        score -= 0.10
+        notes.append("momentum setup is not fresh enough for auto-entry")
+    direction = "BUY" if score >= 0.74 and volume_confirmed and fresh_location else "HOLD"
     bounded = _clamp01(score)
-    return StrategySignal("normalized_momentum_factor", round(bounded, 3), direction, round(bounded, 3), notes)
+    return StrategySignal(
+        "normalized_momentum_factor",
+        round(bounded, 3),
+        direction,
+        round(bounded, 3),
+        notes,
+        {
+            "volume_ratio_20": round(volume_ratio, 3),
+            "fresh_entry_confirmed": direction == "BUY",
+            "fresh_location": fresh_location,
+        },
+    )
 
 
 def _time_series_momentum_trend(candles: list[Candle], quote_price: float) -> StrategySignal:
@@ -183,9 +201,19 @@ def _time_series_momentum_trend(candles: list[Candle], quote_price: float) -> St
     if volume_ratio >= 1.2:
         score += 0.06
         notes.append("volume confirms breakout interest")
-    direction = "BUY" if score >= 0.66 else "HOLD"
+    else:
+        notes.append("time-series entry lacks volume confirmation")
+    fresh_breakout = quote_price >= channel_high and volume_ratio >= 1.2
+    direction = "BUY" if score >= 0.70 and fresh_breakout else "HOLD"
     bounded = _clamp01(score)
-    return StrategySignal("time_series_momentum_trend", round(bounded, 3), direction, round(bounded, 3), notes)
+    return StrategySignal(
+        "time_series_momentum_trend",
+        round(bounded, 3),
+        direction,
+        round(bounded, 3),
+        notes,
+        {"volume_ratio_20": round(volume_ratio, 3), "fresh_entry_confirmed": fresh_breakout},
+    )
 
 
 def _aggressive_relative_strength_breakout(candles: list[Candle], quote_price: float) -> StrategySignal:
@@ -232,9 +260,20 @@ def _aggressive_relative_strength_breakout(candles: list[Candle], quote_price: f
     elif atr_pct > 9:
         score -= 0.12
         notes.append("volatility too wide for aggressive entry")
-    direction = "BUY" if score >= 0.68 else "HOLD"
+    fresh_pivot = bool(pivot and 0 <= ((quote_price - pivot) / pivot) <= 0.035)
+    volume_confirmed = volume_ratio >= 1.4
+    if not volume_confirmed:
+        notes.append("aggressive RS entry lacks required volume expansion")
+    direction = "BUY" if score >= 0.72 and fresh_pivot and volume_confirmed else "HOLD"
     bounded = _clamp01(score)
-    return StrategySignal("aggressive_relative_strength_breakout", round(bounded, 3), direction, round(bounded, 3), notes)
+    return StrategySignal(
+        "aggressive_relative_strength_breakout",
+        round(bounded, 3),
+        direction,
+        round(bounded, 3),
+        notes,
+        {"volume_ratio_20": round(volume_ratio, 3), "fresh_entry_confirmed": fresh_pivot and volume_confirmed},
+    )
 
 
 def _fifty_two_week_high_momentum(candles: list[Candle], quote_price: float) -> StrategySignal:
@@ -277,27 +316,52 @@ def _fifty_two_week_high_momentum(candles: list[Candle], quote_price: float) -> 
     if volume_ratio >= 1.15:
         score += 0.08
         notes.append("volume above recent average")
+    else:
+        notes.append("52-week-high entry lacks volume confirmation")
     if distance_from_50 > 18:
         score -= 0.12
         notes.append("extended above 50 SMA")
-    direction = "BUY" if score >= 0.64 else "HOLD"
+    fresh_entry = distance_from_high <= 8 and distance_from_50 <= 15 and volume_ratio >= 1.15
+    direction = "BUY" if score >= 0.72 and fresh_entry else "HOLD"
     bounded = _clamp01(score)
-    return StrategySignal("fifty_two_week_high_momentum", round(bounded, 3), direction, round(bounded, 3), notes)
+    return StrategySignal(
+        "fifty_two_week_high_momentum",
+        round(bounded, 3),
+        direction,
+        round(bounded, 3),
+        notes,
+        {
+            "volume_ratio_20": round(volume_ratio, 3),
+            "distance_from_high_pct": round(distance_from_high, 3),
+            "distance_from_50_sma_pct": round(distance_from_50, 3),
+            "fresh_entry_confirmed": fresh_entry,
+        },
+    )
 
 
 def choose_best_strategy(signals: list[StrategySignal]) -> StrategySignal:
     actionable = [signal for signal in signals if signal.direction != "HOLD"]
     if not actionable:
-        return max(signals, key=lambda signal: signal.confidence, default=signals[0])
+        return StrategySignal(
+            "no_actionable_strategy",
+            0.0,
+            "HOLD",
+            0.0,
+            ["no preset has a fresh actionable trigger"],
+        )
     return max(actionable, key=lambda signal: abs(signal.score) * signal.confidence)
 
 
-def _minervini_trend_template(closes: list[float], quote_price: float) -> StrategySignal:
+def _minervini_trend_template(candles: list[Candle], quote_price: float) -> StrategySignal:
+    closes = [candle.close for candle in candles]
+    volumes = [candle.volume for candle in candles]
     sma_50 = _sma(closes, 50)
     sma_150 = _sma(closes, 150)
     sma_200 = _sma(closes, 200)
     low_52 = min(closes[-252:]) if len(closes) >= 252 else min(closes)
     high_52 = max(closes[-252:]) if len(closes) >= 252 else max(closes)
+    volume_ratio = _volume_ratio(volumes, 20)
+    distance_from_50 = ((quote_price - sma_50) / sma_50) * 100 if sma_50 else 0.0
     notes: list[str] = []
     score = 0.0
 
@@ -325,9 +389,30 @@ def _minervini_trend_template(closes: list[float], quote_price: float) -> Strate
     if high_52 and quote_price >= high_52 * 0.75:
         score += 0.1
         notes.append("price within 25% of period high")
+    if volume_ratio >= 1.2:
+        score += 0.08
+        notes.append("volume confirms fresh institutional interest")
+    else:
+        notes.append("volume confirmation missing for Minervini-style entry")
+    if distance_from_50 > 12:
+        score -= 0.12
+        notes.append("extended above 50 SMA for fresh entry")
 
-    direction = "BUY" if score >= 0.68 else "HOLD"
-    return StrategySignal("minervini_trend_template", round(score, 3), direction, round(score, 3), notes)
+    fresh_entry = volume_ratio >= 1.2 and distance_from_50 <= 12
+    direction = "BUY" if score >= 0.78 and fresh_entry else "HOLD"
+    bounded = _clamp01(score)
+    return StrategySignal(
+        "minervini_trend_template",
+        round(bounded, 3),
+        direction,
+        round(bounded, 3),
+        notes,
+        {
+            "volume_ratio_20": round(volume_ratio, 3),
+            "distance_from_50_sma_pct": round(distance_from_50, 3),
+            "fresh_entry_confirmed": fresh_entry,
+        },
+    )
 
 
 def _split_evenly(values: list[Candle], parts: int) -> list[list[Candle]]:
@@ -660,8 +745,17 @@ def _donchian_momentum_breakout(
     if channel_low and ((channel_high - channel_low) / channel_low) <= 0.18:
         score += 0.12
         notes.append("controlled channel width")
-    direction = "BUY" if score >= 0.62 else "HOLD"
-    return StrategySignal("donchian_momentum_breakout", round(score, 3), direction, round(score, 3), notes)
+    direction = "BUY" if score >= 0.62 and volume_ratio >= 1.25 else "HOLD"
+    if volume_ratio < 1.25:
+        notes.append("Donchian breakout lacks required volume confirmation")
+    return StrategySignal(
+        "donchian_momentum_breakout",
+        round(score, 3),
+        direction,
+        round(score, 3),
+        notes,
+        {"volume_ratio_20": round(volume_ratio, 3), "fresh_entry_confirmed": direction == "BUY"},
+    )
 
 
 def _volume_price_accumulation(candles: list[Candle], quote_price: float) -> StrategySignal:

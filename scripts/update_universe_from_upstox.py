@@ -45,6 +45,7 @@ def main() -> None:
                 "base_price",
                 "enabled",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         writer.writerows(rows)

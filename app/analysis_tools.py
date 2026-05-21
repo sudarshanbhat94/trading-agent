@@ -34,6 +34,7 @@ def build_symbol_tool_context(
     timeframe_candles: dict[str, list[Candle]] | None = None,
     pattern_state: dict[str, Any] | None = None,
     performance_feedback: dict[str, Any] | None = None,
+    execution_mode: str = "paper",
 ) -> dict[str, Any]:
     timeframe_candles = timeframe_candles or {}
     analysis_candles = timeframe_candles.get("analysis") or timeframe_candles.get("daily") or candles
@@ -137,6 +138,7 @@ def build_symbol_tool_context(
         macro_event_context=macro_event_context,
         institutional_context=normalized_institutional_context,
         full_spectrum=full_spectrum,
+        execution_mode=execution_mode,
     )
     return {
         "tool_protocol": "mcp-style-json-context",
