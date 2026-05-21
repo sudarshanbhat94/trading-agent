@@ -1788,8 +1788,10 @@ def _budget_decision_system_prompt(prompt_context: dict[str, Any]) -> str:
         f"You are OpenStocks Brain for {market_region} equities. Prices are in {currency}. "
         "Return one strict minified JSON object only, with no markdown or reasoning text. "
         "Required keys: action, confidence, risk, strategy, reason, checklist, evidence, risk_checks, invalidators, signal_plan, confluence_score, trade_plan, monitoring_checklist, data_gaps. "
-        "Use only supplied data. HARD: new BUY=>HOLD if hard_blocked, data_readiness.trade_decision_ready=false, stage!=Stage2_Markup, entry WATCH/D, 2-day breakout failed, climax top, MTF D, breadth bear_confirmed, or options buy_suppressed. "
-        "Sentiment 0 means DATA_MISSING. Below confluence 16 is watch/HOLD unless already managing an open position. Keep reason under 180 chars and every list under 4 short items."
+        "Use the supplied analyst_packet as the evidence record: do not rely on scores alone when news, delivery, options/OI, flow, data readiness, breakout, volume, or performance details conflict. "
+        "HARD: new BUY=>HOLD if hard_blocked, data_readiness.trade_decision_ready=false, stage!=Stage2_Markup, entry WATCH/D, 2-day breakout failed, repeated failed breakouts with weak volume, climax top, MTF D, breadth bear_confirmed, or options buy_suppressed. "
+        "Sentiment 0 means DATA_MISSING unless analyst_packet.news_and_events has explicit verified catalyst details; cite actual headline/event evidence when using news. "
+        "Below confluence 16 is watch/HOLD unless already managing an open position. Keep reason under 180 chars and every list under 4 short items."
     )
 
 
@@ -1876,6 +1878,8 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or [], limit=8 if rich else 4),
             "best_strategy": context.get("best_strategy"),
             "sentiment": context.get("sentiment"),
+            "data_readiness": _compact_data_readiness_for_llm(context.get("data_readiness") or {}),
+            "analyst_packet": _analyst_packet_for_llm(context),
             "global_market_context": _compact_global_context(context.get("global_market_context") or {}, limit=16 if rich else 8),
             "institutional_context": institutional_prompt,
             "market_breadth_context": context.get("market_breadth_context"),
@@ -1934,7 +1938,9 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
             "candles": context.get("candlestick_analysis"),
             "top_strategies": _top_strategy_signals(context.get("strategy_signals") or [], limit=3),
             "best_strategy": _short_object(context.get("best_strategy") or {}, ["name", "score", "direction", "confidence"], 80),
-            "sentiment": context.get("sentiment"),
+            "sentiment": _compact_sentiment_for_llm(context.get("sentiment") or {}),
+            "data_readiness": _compact_data_readiness_for_llm(context.get("data_readiness") or {}),
+            "analyst_packet": _analyst_packet_for_llm(context),
             "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
             "global_regime": _compact_global_context(context.get("global_market_context") or {}, limit=5),
             "system_gate_audit": _compact_system_gate_audit(context.get("system_gate_audit") or {}),
@@ -2069,7 +2075,9 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                 else None
             ),
             "best_strategy": _short_object(context.get("best_strategy") or {}, ["name", "score", "direction", "confidence"], 80),
-            "sentiment": _short_object(sentiment, ["score", "confidence", "headline_count", "data_source", "label"], 120),
+            "sentiment": _compact_sentiment_for_llm(sentiment),
+            "data_readiness": _compact_data_readiness_for_llm(context.get("data_readiness") or {}),
+            "analyst_packet": _analyst_packet_for_llm(context),
             "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
             "must_pass_gates": _prune_empty(
                 {
@@ -2133,7 +2141,26 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
                     "invalidation": trade_plan.get("invalidation"),
                 }
             ),
+            "timeframe_data": _short_object(
+                context.get("timeframe_data") or {},
+                [
+                    "analysis_candle_count",
+                    "intraday_candle_count",
+                    "daily_candle_count",
+                    "weekly_candle_count",
+                    "analysis_source",
+                    "intraday_source",
+                    "daily_source",
+                    "weekly_source",
+                ],
+                80,
+            ),
             "data_quality": _short_object(full.get("data_quality") or {}, ["coverage", "analysis_candle_count", "daily_candle_count", "weekly_candle_count"], 80),
+            "recent_candles": [
+                _compact_candle(candle)
+                for candle in recent_candles[-8:]
+                if isinstance(candle, dict)
+            ],
             "recent_closes": [
                 _short_object(candle, ["ts", "close", "volume"], 80)
                 for candle in recent_candles[-2:]
@@ -2402,6 +2429,283 @@ def _compact_performance_feedback_for_llm(feedback: dict[str, Any]) -> dict[str,
             "policy": feedback.get("policy"),
         }
     )
+
+
+def _analyst_packet_for_llm(context: dict[str, Any]) -> dict[str, Any]:
+    full = context.get("full_spectrum_analysis") or {}
+    trend = full.get("trend_context") or {}
+    indicators = full.get("indicator_suite") or {}
+    strategy_logic = full.get("strategy_logic_filters") or {}
+    breakout = full.get("breakout_quality") or {}
+    entry = full.get("entry_quality") or {}
+    divergence = full.get("price_volume_divergence") or {}
+    delivery = full.get("delivery_accumulation") or context.get("delivery_data") or {}
+    institutional_flow = full.get("institutional_flow") or {}
+    options_oi = full.get("options_oi") or context.get("options_intelligence") or {}
+    corporate_events = full.get("corporate_event_risk") or {}
+    liquidity = full.get("liquidity_profile") or {}
+    macro_event = full.get("macro_event_context") or context.get("macro_event_context") or {}
+    sector = full.get("sector_rotation") or context.get("sector_rotation") or {}
+    breadth = full.get("market_breadth") or context.get("market_breadth_context") or {}
+    scorecard = full.get("institutional_scorecard") or {}
+    market_region = _market_region_from_context(context)
+    return _prune_empty(
+        {
+            "packet_version": "analyst-evidence-v1",
+            "instruction": "Use these evidence details directly; do not infer from scores when detailed evidence conflicts.",
+            "news_and_events": _compact_sentiment_for_llm(context.get("sentiment") or {}),
+            "data_readiness": _compact_data_readiness_for_llm(context.get("data_readiness") or {}),
+            "entry_breakout_volume": _prune_empty(
+                {
+                    "entry_quality": _packet_subset(
+                        entry,
+                        [
+                            "entry_grade",
+                            "effective_entry_grade",
+                            "distance_from_pivot_pct",
+                            "pivot",
+                            "volume_confirmation",
+                            "quality_score",
+                            "entry_note",
+                        ],
+                    ),
+                    "breakout_quality": _packet_subset(
+                        breakout,
+                        [
+                            "is_breakout_attempt",
+                            "breakout_quality",
+                            "two_day_rule_failed",
+                            "prior_resistance",
+                            "close_in_upper_range",
+                            "volume_expansion",
+                            "failed_breakout_count",
+                            "repeated_failed_breakouts",
+                            "failed_breakout_events",
+                            "false_breakout_risk_score",
+                        ],
+                    ),
+                    "phase3_strategy_logic": _packet_subset(
+                        strategy_logic,
+                        [
+                            "passed",
+                            "hard_blocks",
+                            "penalties",
+                            "score_penalty",
+                            "sizing",
+                            "pivot_extension",
+                            "breakout_volume",
+                            "event_driven_thesis",
+                            "earnings_window",
+                            "institutional_sponsorship",
+                        ],
+                    ),
+                    "price_volume_divergence": _packet_subset(
+                        divergence,
+                        [
+                            "divergence_score",
+                            "climax_volume_top",
+                            "volume_price_confirmation",
+                            "obv_confirmation",
+                            "cmf_confirmation",
+                            "volume_ratio_20",
+                        ],
+                    ),
+                    "liquidity_profile": _packet_subset(
+                        liquidity,
+                        [
+                            "avg_volume_20",
+                            "avg_traded_value_20",
+                            "volume_ratio_20",
+                            "last_move_pct",
+                            "liquidity_tier",
+                            "tradeable",
+                            "circuit_risk_proxy",
+                            "price_impact_risk",
+                        ],
+                    ),
+                    "indicator_confirmation": _packet_subset(
+                        indicators,
+                        [
+                            "atr_pct",
+                            "adx",
+                            "rsi_14",
+                            "volume_ratio_20",
+                            "obv_slope",
+                            "cmf_20",
+                            "moving_averages",
+                            "macd",
+                        ],
+                    ),
+                }
+            ),
+            "flow_delivery_options": _prune_empty(
+                {
+                    "institutional_scorecard": _packet_subset(
+                        scorecard,
+                        ["total_score", "grade", "buy_ready", "must_pass_failed", "warnings", "hard_veto", "reasons"],
+                    ),
+                    "delivery_accumulation": _packet_value(delivery, depth=3, list_limit=8),
+                    "institutional_flow": (
+                        _packet_subset(
+                            institutional_flow,
+                            [
+                                "available",
+                                "source_quality",
+                                "market_bias",
+                                "fii_dii_flow",
+                                "pcr_oi",
+                                "india_indices",
+                                "asm_gsm",
+                                "fno_ban",
+                                "official_announcements",
+                                "bulk_deals",
+                                "delivery_percentage",
+                                "symbol_flags",
+                                "note",
+                            ],
+                        )
+                        if market_region == "IN"
+                        else _packet_subset(
+                            institutional_flow,
+                            ["available", "source_quality", "symbol_flags", "market_bias", "note"],
+                        )
+                    ),
+                    "options_oi": _packet_subset(
+                        options_oi,
+                        [
+                            "available",
+                            "source",
+                            "audit_label",
+                            "status",
+                            "underlying_price",
+                            "pcr_oi",
+                            "market_pcr_proxy",
+                            "max_pain",
+                            "max_pain_distance_pct",
+                            "buy_suppressed",
+                            "buy_suppression_reason",
+                            "oi_concentration_zones",
+                            "strike_pcr",
+                            "top_oi_change",
+                            "bias",
+                            "fno_ban",
+                            "stock_option_status",
+                            "data_gap",
+                            "note",
+                        ],
+                    ),
+                    "corporate_events": _packet_value(corporate_events, depth=3, list_limit=8),
+                }
+            ),
+            "market_and_event_context": _prune_empty(
+                {
+                    "timeframe_alignment": (trend.get("timeframe_alignment") or {}),
+                    "sector_rotation": _packet_value(sector, depth=2, list_limit=8),
+                    "market_breadth": _packet_value(breadth, depth=2, list_limit=8),
+                    "macro_event_context": _packet_value(macro_event, depth=2, list_limit=8),
+                    "global_market_context": _compact_global_context(context.get("global_market_context") or {}, limit=8),
+                }
+            ),
+            "performance_feedback": _compact_performance_feedback_for_llm(
+                full.get("performance_feedback") or context.get("performance_feedback") or {}
+            ),
+            "data_gaps": _limit_list((full.get("data_gaps") or []) + ((context.get("data_readiness") or {}).get("missing_data") or []), 16),
+        }
+    )
+
+
+def _compact_sentiment_for_llm(sentiment: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(sentiment, dict):
+        return {}
+    return _prune_empty(
+        {
+            "score": sentiment.get("score"),
+            "status": sentiment.get("status") or sentiment.get("data_status"),
+            "confidence": sentiment.get("confidence"),
+            "headline_count": sentiment.get("headline_count") or len(sentiment.get("headlines") or []),
+            "headlines": _short_list(sentiment.get("headlines"), 8, 260),
+            "events": _compact_news_events_for_llm(sentiment.get("events") or [], limit=8),
+            "source": sentiment.get("source") or sentiment.get("data_source"),
+            "label": sentiment.get("label"),
+            "asof": sentiment.get("asof"),
+            "note": sentiment.get("note"),
+        }
+    )
+
+
+def _compact_news_events_for_llm(events: Any, limit: int = 8) -> list[dict[str, Any]]:
+    if not isinstance(events, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for event in events[:limit]:
+        if not isinstance(event, dict):
+            text = _short_scalar(event, 260)
+            if text:
+                output.append({"title": text})
+            continue
+        output.append(
+            _prune_empty(
+                {
+                    "title": _short_scalar(event.get("title") or event.get("headline"), 260),
+                    "source": event.get("source"),
+                    "published_at": event.get("published_at") or event.get("published"),
+                    "event_type": event.get("event_type") or event.get("label") or event.get("category"),
+                    "score": event.get("score"),
+                    "confidence": event.get("confidence"),
+                    "source_weight": event.get("source_weight"),
+                    "recency_weight": event.get("recency_weight"),
+                    "weighted_score": event.get("weighted_score"),
+                    "url": _short_scalar(event.get("url"), 180),
+                }
+            )
+        )
+    return output
+
+
+def _compact_data_readiness_for_llm(readiness: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(readiness, dict):
+        return {}
+    return _prune_empty(
+        {
+            "phase": readiness.get("phase"),
+            "market_region": readiness.get("market_region"),
+            "mode": readiness.get("mode"),
+            "execution_mode": readiness.get("execution_mode"),
+            "screening_ready": readiness.get("screening_ready"),
+            "trade_decision_ready": readiness.get("trade_decision_ready"),
+            "score_pct": readiness.get("score_pct"),
+            "grade": readiness.get("grade"),
+            "missing_data": _limit_list(readiness.get("missing_data"), 16),
+            "hard_gaps": _packet_value(readiness.get("hard_gaps") or [], depth=2, list_limit=12),
+            "soft_gaps": _packet_value(readiness.get("soft_gaps") or [], depth=2, list_limit=12),
+            "available_checks": _packet_value(readiness.get("available") or [], depth=2, list_limit=16),
+            "sources": readiness.get("sources"),
+            "policy": readiness.get("policy"),
+        }
+    )
+
+
+def _packet_subset(value: Any, keys: list[str], *, depth: int = 3, list_limit: int = 8) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return _prune_empty({key: _packet_value(value.get(key), depth=depth, list_limit=list_limit) for key in keys if key in value})
+
+
+def _packet_value(value: Any, *, depth: int = 3, list_limit: int = 8, text_length: int = 260) -> Any:
+    if depth <= 0:
+        return _short_scalar(value, text_length)
+    if isinstance(value, dict):
+        return _prune_empty(
+            {
+                _short_scalar(key, 80): _packet_value(item, depth=depth - 1, list_limit=list_limit, text_length=text_length)
+                for key, item in list(value.items())[:32]
+            }
+        )
+    if isinstance(value, list):
+        return [_packet_value(item, depth=depth - 1, list_limit=list_limit, text_length=text_length) for item in value[:list_limit]]
+    if isinstance(value, str):
+        return _short_scalar(value, text_length)
+    return value
 
 
 def _compact_risk_events(

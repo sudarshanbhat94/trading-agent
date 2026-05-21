@@ -4817,6 +4817,7 @@ function llmPayloadHtml(audit, context = {}) {
     </section>`;
   }
   const sections = Array.isArray(payload.included_sections) ? payload.included_sections.join(", ") : "-";
+  const compacted = Boolean(payload.storage_compacted);
   return `<section class="audit-section">
     <h4>Review Payload</h4>
     <div class="audit-cards">
@@ -4827,11 +4828,11 @@ function llmPayloadHtml(audit, context = {}) {
     </div>
     <p class="audit-formula">Sections sent: ${escapeHtml(sections)}</p>
     <details class="raw-audit">
-      <summary>Exact LLM system prompt</summary>
+      <summary>${compacted ? "Stored LLM system prompt" : "Exact LLM system prompt"}</summary>
       <pre>${escapeHtml(payload.system_prompt || "")}</pre>
     </details>
     <details class="raw-audit">
-      <summary>Exact LLM user context JSON</summary>
+      <summary>${compacted ? "Stored LLM user context JSON" : "Exact LLM user context JSON"}</summary>
       <pre>${escapeHtml(JSON.stringify(payload.user_context || {}, null, 2))}</pre>
     </details>
   </section>`;

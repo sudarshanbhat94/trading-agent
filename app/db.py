@@ -306,6 +306,31 @@ def _compact_full_spectrum(full: Any) -> dict[str, Any]:
     )
 
 
+def _compact_llm_prompt_audit(audit: Any) -> dict[str, Any] | None:
+    if not isinstance(audit, dict):
+        return None
+    user_context = audit.get("user_context") if isinstance(audit.get("user_context"), dict) else {}
+    return _bounded_for_storage(
+        {
+            "storage_compacted": True,
+            "market_region": audit.get("market_region"),
+            "currency": audit.get("currency"),
+            "model": audit.get("model"),
+            "mode": audit.get("mode"),
+            "system_prompt_chars": audit.get("system_prompt_chars"),
+            "context_chars": audit.get("context_chars"),
+            "estimated_input_tokens": audit.get("estimated_input_tokens"),
+            "included_sections": audit.get("included_sections"),
+            "context_sha256": audit.get("context_sha256"),
+            "system_prompt": audit.get("system_prompt"),
+            "user_context": user_context,
+        },
+        max_depth=6,
+        dict_limit=24,
+        list_limit=8,
+    )
+
+
 def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
     raw_text = raw_details or "{}"
     audit = _json_load(raw_text)
@@ -354,6 +379,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
         "performance_feedback": context.get("performance_feedback"),
         "sizing_grade": audit.get("sizing_grade") or context.get("sizing_grade"),
         "llm_primary_fallback": audit.get("llm_primary_fallback") or context.get("llm_primary_fallback"),
+        "llm_prompt_audit": _compact_llm_prompt_audit(audit.get("llm_prompt_audit")),
         "risk_gates": _pick_keys(
             risk_gates,
             [
@@ -3968,7 +3994,7 @@ class Database:
                     from decisions
                     where length(details_json) > ?
                         and (
-                            action = 'HOLD'
+                            (action = 'HOLD' and details_json not like '%"llm_prompt_audit"%')
                             or ts < ?
                         )
                         and id not in (select id from decisions order by id desc limit ?)
