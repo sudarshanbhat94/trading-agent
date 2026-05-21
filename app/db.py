@@ -4769,12 +4769,22 @@ class Database:
             events = _json_load(item.get("events_json"))
             item["headlines"] = headlines if isinstance(headlines, list) else []
             item["events"] = events if isinstance(events, list) else []
+            item["source"] = _first_event_source(item["events"])
             latest[symbol] = item
         return latest
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any]:
     return dict(row) if row is not None else {}
+
+
+def _first_event_source(events: Any) -> str | None:
+    if not isinstance(events, list):
+        return None
+    for event in events:
+        if isinstance(event, dict) and event.get("source"):
+            return str(event["source"])
+    return None
 
 
 def _return_pct(entry_price: float, latest_price: float) -> float:

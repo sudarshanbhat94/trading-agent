@@ -4,7 +4,7 @@ import json
 import unittest
 
 from app.db import _compact_decision_details
-from app.llm_brain import _groq_budget_context
+from app.llm_brain import _groq_budget_context, _llm_prompt_context
 
 
 class LLMAnalystPacketTests(unittest.TestCase):
@@ -21,6 +21,20 @@ class LLMAnalystPacketTests(unittest.TestCase):
         self.assertEqual(packet["flow_delivery_options"]["options_oi"]["max_pain_distance_pct"], 4.1)
         self.assertEqual(packet["entry_breakout_volume"]["breakout_quality"]["failed_breakout_count"], 2)
         self.assertIn("bulk_deals", packet["flow_delivery_options"]["institutional_flow"])
+
+    def test_deepseek_context_sends_decision_audit_and_rich_evidence(self) -> None:
+        context = _analyst_context()
+
+        payload = _llm_prompt_context(context, profile="rich")
+        packet = payload["analyst_packet"]
+
+        self.assertEqual(payload["tool_protocol"], "openstocks-rich-decision-context-v1")
+        self.assertEqual(payload["score_breakdown"]["combined"], 0.52)
+        self.assertEqual(payload["pre_filter"]["block_gate"], "entry_gate")
+        self.assertEqual(payload["decision_gate_context"]["failed_gates"][0]["gate"], "overall_quality_gate")
+        self.assertEqual(payload["sizing_grade"]["final_multiplier"], 0.5)
+        self.assertEqual(packet["decision_audit"]["pre_filter"]["block_gate"], "entry_gate")
+        self.assertEqual(packet["decision_audit"]["sizing_grade"]["recommended_max_position_pct"], 0.075)
 
     def test_compacted_decision_keeps_prompt_audit_reviewable(self) -> None:
         raw = json.dumps(
@@ -114,6 +128,32 @@ def _analyst_context() -> dict:
             "sources": {"quote": "upstox-live", "intraday": "upstox-live:minute"},
         },
         "score_breakdown": {"combined": 0.52},
+        "pre_filter": {
+            "pre_filter_stage": "completed",
+            "buy_threshold": 0.35,
+            "buy_blocked": True,
+            "block_gate": "entry_gate",
+            "block_value": {"entry_grade": "WATCH"},
+            "elimination_reason": "watch_entry_needs_confirmation",
+            "gates": [{"gate": "entry_gate", "passed": False, "value": {"entry_grade": "WATCH"}}],
+        },
+        "decision_gate_context": {
+            "buy_threshold": 0.35,
+            "breadth_regime": "bull_confirmed",
+            "failed_gates": [
+                {"gate": "overall_quality_gate", "value": {"overall_score_pct": 62}, "reason": "overall_score_below_70_no_new_longs"}
+            ],
+            "evaluated_gates": [{"gate": "overall_quality_gate", "passed": False}],
+        },
+        "sizing_grade": {
+            "base_multiplier": 1.0,
+            "final_multiplier": 0.5,
+            "recommended_max_position_pct": 0.075,
+            "modifier_details": ["entry WATCH x0.5"],
+            "classification": {"classification": "MOMENTUM", "max_allocation_multiplier": 0.5},
+        },
+        "portfolio_correlation_gate": {"block_buy": False, "warning": "sector exposure moderate"},
+        "llm_primary_selection": {"selected": True, "candidate_limit": 8, "prefilter_passed": True},
         "timeframe_data": {"daily_candle_count": 120, "intraday_candle_count": 64, "daily_source": "upstox-live:day"},
         "recent_candles": [
             {"ts": f"2026-05-{day:02d}", "open": 90 + day, "high": 92 + day, "low": 89 + day, "close": 91 + day, "volume": 1000000 + day}

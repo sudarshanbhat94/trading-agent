@@ -729,16 +729,14 @@ class LLMBrain:
         if self.settings.llm_provider == "groq":
             return _groq_budget_context(context), {"_llm_analysis_mode": "groq_budget_context"}
 
-        cycle_safe_context = _llm_prompt_context(context, profile="compact")
-        cycle_safe_json = json.dumps(cycle_safe_context, default=str, separators=(",", ":"))
-        if (
-            not self.settings.llm_rolling_context_enabled
-            or len(cycle_safe_json) <= self.settings.llm_rolling_context_threshold_chars
-        ):
-            return cycle_safe_context, {"_llm_analysis_mode": "single_context"}
-
         rich_context = _llm_prompt_context(context, profile="rich")
         rich_json = json.dumps(rich_context, default=str, separators=(",", ":"))
+        if (
+            not self.settings.llm_rolling_context_enabled
+            or len(rich_json) <= self.settings.llm_rolling_context_threshold_chars
+        ):
+            return rich_context, {"_llm_analysis_mode": "rich_single_context"}
+
         chunks = _chunk_text(
             rich_json,
             max(int(self.settings.llm_rolling_context_chunk_chars or 7000), 1000),
@@ -1878,6 +1876,7 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
             "strategy_signals": _top_strategy_signals(context.get("strategy_signals") or [], limit=8 if rich else 4),
             "best_strategy": context.get("best_strategy"),
             "sentiment": context.get("sentiment"),
+            "score_breakdown": _compact_score_breakdown_for_llm(context),
             "data_readiness": _compact_data_readiness_for_llm(context.get("data_readiness") or {}),
             "analyst_packet": _analyst_packet_for_llm(context),
             "global_market_context": _compact_global_context(context.get("global_market_context") or {}, limit=16 if rich else 8),
@@ -1894,6 +1893,11 @@ def _llm_prompt_context(context: dict[str, Any], profile: str = "compact") -> di
                 rich=rich,
                 market_region=market_region,
             ),
+            "pre_filter": _compact_pre_filter_for_llm(context.get("pre_filter") or {}),
+            "decision_gate_context": _compact_decision_gate_context_for_llm(context.get("decision_gate_context") or {}),
+            "sizing_grade": _compact_sizing_grade_for_llm(context.get("sizing_grade") or {}),
+            "portfolio_correlation_gate": context.get("portfolio_correlation_gate"),
+            "llm_primary_selection": context.get("llm_primary_selection"),
             "risk_limits": _compact_risk_limits(context.get("risk_limits") or {}),
             "universe_scan": context.get("universe_scan"),
             "recent_candles_tail": [_compact_candle(candle) for candle in recent_candles[-(16 if rich else 5):]],
@@ -1944,6 +1948,9 @@ def _compact_retry_context(context: dict[str, Any]) -> dict[str, Any]:
             "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
             "global_regime": _compact_global_context(context.get("global_market_context") or {}, limit=5),
             "system_gate_audit": _compact_system_gate_audit(context.get("system_gate_audit") or {}),
+            "pre_filter": _compact_pre_filter_for_llm(context.get("pre_filter") or {}),
+            "decision_gate_context": _compact_decision_gate_context_for_llm(context.get("decision_gate_context") or {}),
+            "sizing_grade": _compact_sizing_grade_for_llm(context.get("sizing_grade") or {}),
             "decision_gates": _prune_empty(
                 {
                     "stage": stage.get("stage"),
@@ -2079,6 +2086,9 @@ def _groq_budget_context(context: dict[str, Any]) -> dict[str, Any]:
             "data_readiness": _compact_data_readiness_for_llm(context.get("data_readiness") or {}),
             "analyst_packet": _analyst_packet_for_llm(context),
             "performance_feedback": _compact_performance_feedback_for_llm(performance_feedback),
+            "pre_filter": _compact_pre_filter_for_llm(context.get("pre_filter") or {}),
+            "decision_gate_context": _compact_decision_gate_context_for_llm(context.get("decision_gate_context") or {}),
+            "sizing_grade": _compact_sizing_grade_for_llm(context.get("sizing_grade") or {}),
             "must_pass_gates": _prune_empty(
                 {
                     "hard_blocked": (context.get("system_gate_audit") or {}).get("hard_blocked"),
@@ -2200,6 +2210,81 @@ def _compact_system_gate_audit(audit: dict[str, Any]) -> dict[str, Any]:
             "entry": audit.get("entry"),
             "mtf": audit.get("mtf"),
             "delivery": audit.get("delivery"),
+        }
+    )
+
+
+def _compact_score_breakdown_for_llm(context: dict[str, Any]) -> dict[str, Any]:
+    try:
+        score_breakdown = context.get("score_breakdown") or deterministic_score_breakdown(context)
+    except Exception:
+        score_breakdown = context.get("score_breakdown") or {}
+    components = score_breakdown.get("components") if isinstance(score_breakdown.get("components"), list) else []
+    return _prune_empty(
+        {
+            "combined": score_breakdown.get("combined"),
+            "score_percent": score_breakdown.get("score_percent"),
+            "formula": _short_scalar(score_breakdown.get("formula"), 320),
+            "components": [
+                _prune_empty(
+                    {
+                        "name": item.get("name"),
+                        "score": item.get("score"),
+                        "weight": item.get("weight"),
+                        "contribution": item.get("contribution"),
+                    }
+                )
+                for item in components[:10]
+                if isinstance(item, dict)
+            ],
+        }
+    )
+
+
+def _compact_pre_filter_for_llm(pre_filter: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(pre_filter, dict):
+        return {}
+    gates = pre_filter.get("gates") if isinstance(pre_filter.get("gates"), list) else []
+    return _prune_empty(
+        {
+            "pre_filter_stage": pre_filter.get("pre_filter_stage"),
+            "buy_threshold": pre_filter.get("buy_threshold"),
+            "buy_blocked": pre_filter.get("buy_blocked"),
+            "block_gate": pre_filter.get("block_gate"),
+            "block_value": _packet_value(pre_filter.get("block_value"), depth=2, list_limit=6),
+            "elimination_reason": pre_filter.get("elimination_reason"),
+            "gates": _packet_value(gates, depth=3, list_limit=10),
+        }
+    )
+
+
+def _compact_decision_gate_context_for_llm(gate_context: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(gate_context, dict):
+        return {}
+    return _prune_empty(
+        {
+            "buy_threshold": gate_context.get("buy_threshold"),
+            "breadth_regime": gate_context.get("breadth_regime"),
+            "breadth_thrust": gate_context.get("breadth_thrust"),
+            "failed_gates": _packet_value(gate_context.get("failed_gates") or [], depth=3, list_limit=16),
+            "evaluated_gates": _packet_value(gate_context.get("evaluated_gates") or [], depth=3, list_limit=18),
+        }
+    )
+
+
+def _compact_sizing_grade_for_llm(sizing: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(sizing, dict):
+        return {}
+    return _prune_empty(
+        {
+            "base_multiplier": sizing.get("base_multiplier"),
+            "final_multiplier": sizing.get("final_multiplier"),
+            "recommended_max_position_pct": sizing.get("recommended_max_position_pct"),
+            "modifier_details": _limit_list(sizing.get("modifier_details"), 10),
+            "classification": _packet_value(sizing.get("classification"), depth=2, list_limit=6),
+            "rule_allocation_cap_multiplier": sizing.get("rule_allocation_cap_multiplier"),
+            "portfolio_equity": sizing.get("portfolio_equity"),
+            "open_positions": sizing.get("open_positions"),
         }
     )
 
@@ -2609,6 +2694,17 @@ def _analyst_packet_for_llm(context: dict[str, Any]) -> dict[str, Any]:
             "performance_feedback": _compact_performance_feedback_for_llm(
                 full.get("performance_feedback") or context.get("performance_feedback") or {}
             ),
+            "decision_audit": _prune_empty(
+                {
+                    "score_breakdown": _compact_score_breakdown_for_llm(context),
+                    "pre_filter": _compact_pre_filter_for_llm(context.get("pre_filter") or {}),
+                    "decision_gate_context": _compact_decision_gate_context_for_llm(context.get("decision_gate_context") or {}),
+                    "system_gate_audit": _compact_system_gate_audit(context.get("system_gate_audit") or {}),
+                    "sizing_grade": _compact_sizing_grade_for_llm(context.get("sizing_grade") or {}),
+                    "portfolio_correlation_gate": context.get("portfolio_correlation_gate"),
+                    "llm_primary_selection": context.get("llm_primary_selection"),
+                }
+            ),
             "data_gaps": _limit_list((full.get("data_gaps") or []) + ((context.get("data_readiness") or {}).get("missing_data") or []), 16),
         }
     )
@@ -2647,6 +2743,7 @@ def _compact_news_events_for_llm(events: Any, limit: int = 8) -> list[dict[str, 
             _prune_empty(
                 {
                     "title": _short_scalar(event.get("title") or event.get("headline"), 260),
+                    "summary": _short_scalar(event.get("summary"), 360),
                     "source": event.get("source"),
                     "published_at": event.get("published_at") or event.get("published"),
                     "event_type": event.get("event_type") or event.get("label") or event.get("category"),

@@ -255,8 +255,16 @@ def _sentiment_context(score: float, detail: dict[str, Any] | None) -> dict[str,
         "headline_count": len(headlines),
         "headlines": headlines[:8],
         "events": (detail.get("events") or [])[:8],
+        "source": detail.get("source") or _first_event_source(detail.get("events") or []),
         "asof": detail.get("asof"),
     }
+
+
+def _first_event_source(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        if isinstance(event, dict) and event.get("source"):
+            return str(event["source"])
+    return None
 
 
 def _position_context(position: dict[str, Any] | None, quote: Quote) -> dict[str, Any]:

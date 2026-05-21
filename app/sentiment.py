@@ -19,6 +19,7 @@ from .config import Settings
 from .db import Database
 from .llm_usage import build_llm_usage_event
 from .market_regions import market_region_for_row
+from .market_data import normalize_upstox_access_token
 from .models import utc_now
 
 
@@ -38,6 +39,7 @@ SOURCE_WEIGHTS = {
     "business-standard.com": 0.72,
     "financialexpress.com": 0.68,
     "cnbctv18.com": 0.68,
+    "upstox.com": 0.72,
 }
 
 EVENT_PRIORS = {
@@ -106,6 +108,7 @@ class NewsEvent:
     source_weight: float
     recency_weight: float
     weighted_score: float
+    summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -131,7 +134,7 @@ class SentimentService:
             return {row["symbol"]: 0.0 for row in universe}
 
         symbols_to_refresh = self._next_symbols(universe)
-        await asyncio.gather(*(self._refresh(row) for row in symbols_to_refresh), return_exceptions=True)
+        await self._refresh_many(symbols_to_refresh)
         return {
             row["symbol"]: self._cache.get(row["symbol"], (0, SentimentResult(0.0, 0.0, [], [])))[1].score
             for row in universe
@@ -185,7 +188,7 @@ class SentimentService:
             for row in unique_rows
             if not self._cache.get(row["symbol"]) or now - self._cache[row["symbol"]][0] >= self.settings.news_cache_seconds
         ]
-        await asyncio.gather(*(self._refresh(row, allow_llm=allow_llm) for row in to_refresh), return_exceptions=True)
+        await self._refresh_many(to_refresh, allow_llm=allow_llm)
         payloads = {row["symbol"]: self.latest_for_symbol(row["symbol"]) for row in unique_rows}
         events_found = sum(len(item.get("events") or []) for item in payloads.values())
         headlines_found = sum(len(item.get("headlines") or []) for item in payloads.values())
@@ -239,11 +242,7 @@ class SentimentService:
             result = SentimentResult(score=0.0, confidence=0.0, headlines=[], events=[])
         else:
             try:
-                raw_items = await self._fetch_news_items(row)
-                events = self._dedupe_events([self._classify_item(item) for item in raw_items])
-                if self._llm_sentiment_enabled() and events:
-                    events = await self._llm_refine_events(row, events)
-                result = self._aggregate(events)
+                result = await self._result_from_raw_items(row, await self._fetch_news_items(row), allow_llm=True)
             except Exception as exc:
                 self.db.insert_agent_log(
                     "WARN",
@@ -282,27 +281,80 @@ class SentimentService:
             "headlines": result.headlines[:12],
             "events": [event.to_dict() for event in result.events[:12]],
             "data_status": "OK" if has_data else "DATA_MISSING",
+            "source": result.events[0].source if result.events else None,
             "note": "Latest verified headlines found" if has_data else "No recent verified news found from connected public news feeds",
             "asof": utc_now(),
         }
 
-    async def _refresh(self, row: dict[str, Any], *, allow_llm: bool = True) -> None:
+    async def _refresh_many(self, rows: list[dict[str, Any]], *, allow_llm: bool = True) -> None:
+        if not rows:
+            return
+        upstox_items_by_symbol = await self._fetch_upstox_news_items_for_rows(rows)
+        fallback_rows: list[dict[str, Any]] = []
+        handled_tasks = []
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip()
+            upstox_items = upstox_items_by_symbol.get(symbol)
+            if upstox_items:
+                handled_tasks.append(self._refresh_from_raw_items(row, upstox_items, allow_llm=allow_llm))
+            else:
+                fallback_rows.append(row)
+        if handled_tasks:
+            await asyncio.gather(*handled_tasks, return_exceptions=True)
+        if fallback_rows:
+            await asyncio.gather(
+                *(self._refresh(row, allow_llm=allow_llm, prefer_upstox=False) for row in fallback_rows),
+                return_exceptions=True,
+            )
+
+    async def _refresh_from_raw_items(
+        self,
+        row: dict[str, Any],
+        raw_items: list[dict[str, Any]],
+        *,
+        allow_llm: bool = True,
+    ) -> None:
         symbol = row["symbol"]
         try:
-            raw_items = await self._fetch_news_items(row)
-            events = self._dedupe_events([self._classify_item(item) for item in raw_items])
-            if allow_llm and self._llm_sentiment_enabled() and events:
-                events = await self._llm_refine_events(row, events)
-            result = self._aggregate(events)
+            result = await self._result_from_raw_items(row, raw_items, allow_llm=allow_llm)
         except Exception:
             result = SentimentResult(score=0.0, confidence=0.0, headlines=[], events=[])
         self._cache[symbol] = (time.monotonic(), result)
         self._persist(symbol, result)
 
-    async def _fetch_news_items(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _result_from_raw_items(
+        self,
+        row: dict[str, Any],
+        raw_items: list[dict[str, Any]],
+        *,
+        allow_llm: bool = True,
+    ) -> SentimentResult:
+        events = self._dedupe_events([self._classify_item(item) for item in raw_items])
+        if allow_llm and self._llm_sentiment_enabled() and events:
+            events = await self._llm_refine_events(row, events)
+        return self._aggregate(events)
+
+    async def _refresh(self, row: dict[str, Any], *, allow_llm: bool = True, prefer_upstox: bool = True) -> None:
+        symbol = row["symbol"]
+        try:
+            result = await self._result_from_raw_items(
+                row,
+                await self._fetch_news_items(row, prefer_upstox=prefer_upstox),
+                allow_llm=allow_llm,
+            )
+        except Exception:
+            result = SentimentResult(score=0.0, confidence=0.0, headlines=[], events=[])
+        self._cache[symbol] = (time.monotonic(), result)
+        self._persist(symbol, result)
+
+    async def _fetch_news_items(self, row: dict[str, Any], *, prefer_upstox: bool = True) -> list[dict[str, Any]]:
         company = row.get("name") or row["symbol"]
         symbol = row["symbol"]
         region = market_region_for_row(row)
+        if region == "IN" and prefer_upstox:
+            upstox_items = await self._fetch_upstox_news_items(row)
+            if upstox_items:
+                return upstox_items
         if region == "US":
             queries = [
                 f'"{company}" {symbol} stock earnings guidance when:{self.settings.news_lookback_days}d',
@@ -358,6 +410,54 @@ class SentimentService:
         if bing_items:
             return bing_items
         return await self._fetch_yahoo_finance_items(row)
+
+    async def _fetch_upstox_news_items(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        return (await self._fetch_upstox_news_items_for_rows([row])).get(str(row.get("symbol") or "").strip(), [])
+
+    async def _fetch_upstox_news_items_for_rows(self, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        token = normalize_upstox_access_token(self.settings.upstox_access_token)
+        if not token:
+            return {}
+        key_to_symbol: dict[str, str] = {}
+        for row in rows:
+            if market_region_for_row(row) != "IN":
+                continue
+            instrument_key = str(row.get("upstox_instrument_key") or "").strip()
+            symbol = str(row.get("symbol") or "").strip()
+            if instrument_key and symbol:
+                key_to_symbol[instrument_key] = symbol
+        if not key_to_symbol:
+            return {}
+        base_url = str(self.settings.upstox_api_base_url or "https://api.upstox.com/v2").rstrip("/")
+        output: dict[str, list[dict[str, Any]]] = {}
+        try:
+            async with httpx.AsyncClient(
+                timeout=8,
+                follow_redirects=True,
+                headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            ) as client:
+                keys = list(key_to_symbol)
+                for index in range(0, len(keys), 30):
+                    chunk = keys[index : index + 30]
+                    response = await client.get(
+                        f"{base_url}/news",
+                        params={
+                            "category": "instrument_keys",
+                            "instrument_keys": ",".join(chunk),
+                            "page_number": 1,
+                            "page_size": 10,
+                        },
+                    )
+                    response.raise_for_status()
+                    for item in _upstox_news_items_from_payload(response.json(), key_to_symbol):
+                        if not self._within_lookback(_parse_pubdate(item.get("published"))):
+                            continue
+                        symbol = key_to_symbol.get(str(item.get("instrument_key") or ""))
+                        if symbol:
+                            output.setdefault(symbol, []).append(item)
+        except Exception:
+            return {}
+        return output
 
     async def _fetch_bing_news_items(self, row: dict[str, Any]) -> list[dict[str, Any]]:
         company = str(row.get("name") or row.get("symbol") or "").strip()
@@ -515,10 +615,11 @@ class SentimentService:
         title = item["title"]
         source = item.get("source") or _domain(item.get("url", ""))
         published_at = _parse_pubdate(item.get("published"))
+        score_text = f"{title} {item.get('summary') or ''}".strip()
         source_weight = self._source_weight(source, item.get("url", ""))
         recency_weight = self._recency_weight(published_at)
-        event_type = self._event_type(title)
-        lexical_score = self._lexical_score(title)
+        event_type = self._event_type(score_text)
+        lexical_score = self._lexical_score(score_text)
         score = max(min(lexical_score + EVENT_PRIORS.get(event_type, 0.0), 1.0), -1.0)
         confidence = min(0.35 + abs(score) + (source_weight * 0.25), 0.95)
         weighted_score = score * confidence * source_weight * recency_weight
@@ -533,6 +634,7 @@ class SentimentService:
             source_weight=round(source_weight, 3),
             recency_weight=round(recency_weight, 3),
             weighted_score=round(weighted_score, 3),
+            summary=str(item.get("summary") or "").strip(),
         )
 
     def _dedupe_events(self, events: list[NewsEvent]) -> list[NewsEvent]:
@@ -627,6 +729,7 @@ class SentimentService:
                             source_weight=event.source_weight,
                             recency_weight=event.recency_weight,
                             weighted_score=round(weighted, 3),
+                            summary=event.summary,
                         )
                     )
                 attempts.append({"model": model, "status": "ok", "latency_ms": round((time.monotonic() - started) * 1000)})
@@ -810,6 +913,59 @@ def _parse_pubdate(value: str | None) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except Exception:
         return None
+
+
+def _upstox_news_items_from_payload(
+    payload: dict[str, Any],
+    instrument_key_to_symbol: dict[str, str],
+    *,
+    symbol: str | None = None,
+) -> list[dict[str, Any]]:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+    requested_symbol = str(symbol or "").upper()
+    items: list[dict[str, Any]] = []
+    for instrument_key, raw_news_items in data.items():
+        mapped_symbol = str(instrument_key_to_symbol.get(str(instrument_key)) or "").upper()
+        if requested_symbol and mapped_symbol and mapped_symbol != requested_symbol:
+            continue
+        if not isinstance(raw_news_items, list):
+            continue
+        for raw_item in raw_news_items:
+            if not isinstance(raw_item, dict):
+                continue
+            title = str(raw_item.get("heading") or raw_item.get("title") or "").strip()
+            if not title:
+                continue
+            published = _upstox_published_time(raw_item.get("published_time"))
+            if not published:
+                continue
+            items.append(
+                {
+                    "title": title,
+                    "summary": str(raw_item.get("summary") or "").strip(),
+                    "source": "Upstox News",
+                    "url": str(raw_item.get("article_link") or "").strip(),
+                    "published": published,
+                    "instrument_key": str(instrument_key),
+                }
+            )
+    return items
+
+
+def _upstox_published_time(value: Any) -> str | None:
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if timestamp > 1_000_000_000_000:
+        timestamp /= 1000.0
+    try:
+        published_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return published_at.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
 
 def _domain(url: str) -> str:
