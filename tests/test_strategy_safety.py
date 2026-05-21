@@ -12,6 +12,7 @@ from app.db import Database, _compact_decision_details, _paper_exit_action
 from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
+from app.strategy import StrategyEngine
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
 
 
@@ -296,6 +297,44 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result.summary["news_covered_candidates"], 1)
         self.assertEqual(result.summary["verified_catalyst_candidates"], 1)
         self.assertEqual(result.summary["positive_news_candidates"], 1)
+
+    def test_llm_shortlist_prioritizes_opportunity_scan_rank(self) -> None:
+        engine = StrategyEngine.__new__(StrategyEngine)
+        engine.settings = SimpleNamespace(llm_max_symbols_per_cycle=3, dynamic_scan_candidate_limit=5)
+
+        def item(symbol: str, rank: int, combined: float) -> dict[str, object]:
+            return {
+                "symbol": symbol,
+                "action": "HOLD",
+                "combined": combined,
+                "sentiment_score": 0.0,
+                "technical": SimpleNamespace(score=combined),
+                "context": {"best_strategy": {"score": combined}, "position": {}},
+                "row": {
+                    "_opportunity_rank": rank,
+                    "_opportunity_scan": {
+                        "rank": rank,
+                        "score": 0.95,
+                        "bucket": "Actionable",
+                        "setup": "breakout_continuation",
+                        "data_quality": {"actionable_data_ready": True},
+                    },
+                },
+            }
+
+        ranked = sorted(
+            [
+                item("SCAN1", 1, 0.10),
+                item("SCAN2", 2, 0.20),
+                item("SCAN3", 3, 0.30),
+                item("LOWERRANKHIGHCOMBINED", 5, 0.95),
+            ],
+            key=engine._scan_priority,
+            reverse=True,
+        )
+
+        self.assertEqual([row["symbol"] for row in ranked[:3]], ["SCAN1", "SCAN2", "SCAN3"])
+        self.assertEqual(engine._llm_candidate_symbols(ranked), {"SCAN1", "SCAN2", "SCAN3"})
 
     def test_opportunity_scan_rejects_stale_quotes(self) -> None:
         scanner = OpportunityScanner(_scanner_settings())

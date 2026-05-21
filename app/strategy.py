@@ -950,10 +950,12 @@ class StrategyEngine:
             item["action"] = self._action_from_context(item["symbol"], combined, positions, context, candles_by_symbol)
             item["confidence"] = self._confidence_for_action(item["action"], combined, item.get("macro_event_context") or {}, market_breadth)
 
-    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float, float, float]:
+        opportunity_rank = self._opportunity_rank_score(item)
         opportunity_score = self._opportunity_priority_score(item)
         return (
             1.0 if item["action"] != "HOLD" else 0.0,
+            opportunity_rank,
             opportunity_score,
             abs(float(item["combined"])),
             abs(float(item["context"].get("best_strategy", {}).get("score", 0.0) or 0.0)),
@@ -962,18 +964,30 @@ class StrategyEngine:
         )
 
     def _scan_priority_score(self, item: dict[str, Any]) -> float:
-        action_boost, opportunity, combined, strategy, technical, sentiment = self._scan_priority(item)
+        action_boost, opportunity_rank, opportunity, combined, strategy, technical, sentiment = self._scan_priority(item)
         rs_percentile = float(((item.get("context") or {}).get("universe_relative_strength") or {}).get("percentile_63") or 50.0)
         rs_score = (rs_percentile - 50.0) / 50.0
         return (
             (action_boost * 0.35)
-            + (opportunity * 0.25)
-            + (combined * 0.18)
+            + (opportunity_rank * 0.20)
+            + (opportunity * 0.16)
+            + (combined * 0.16)
             + (rs_score * 0.08)
             + (strategy * 0.08)
             + (technical * 0.04)
             + (sentiment * 0.02)
         )
+
+    def _opportunity_rank_score(self, item: dict[str, Any]) -> float:
+        row = item.get("row") or {}
+        scan = row.get("_opportunity_scan") if isinstance(row, dict) else None
+        if not isinstance(scan, dict):
+            return 0.0
+        rank = _float_or_none(row.get("_opportunity_rank") or scan.get("rank"))
+        if rank is None or rank <= 0:
+            return 0.0
+        limit = max(float(getattr(self.settings, "dynamic_scan_candidate_limit", 60) or 60), rank)
+        return max(min((limit - rank + 1.0) / limit, 1.0), 0.0)
 
     def _opportunity_priority_score(self, item: dict[str, Any]) -> float:
         scan = (item.get("row") or {}).get("_opportunity_scan")
