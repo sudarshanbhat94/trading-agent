@@ -70,6 +70,7 @@ def full_spectrum_analysis(
     )
     price_volume_divergence = _price_volume_divergence(candles, technical)
     entry_quality = _entry_grade(candles, quote.price, indicators)
+    entry_quality = _strategy_confirmed_entry_quality(entry_quality, strategy_signals)
     breakout_quality = _false_breakout_filter(candles, quote.price)
     fib = _fib_levels(candles)
     candlestick_v2 = _candlestick_v2(candles, candle_tools)
@@ -611,6 +612,41 @@ def _pullback_entry_quality(
         "entry_note": (
             f"{grade} pullback entry: price is below the breakout pivot but holding the rising 20/50 SMA zone "
             "with constructive RSI and acceptable participation."
+        ),
+    }
+
+
+def _strategy_confirmed_entry_quality(entry: dict[str, Any], strategy_signals: list[dict[str, Any]]) -> dict[str, Any]:
+    if str(entry.get("entry_grade") or "").upper() != "WATCH":
+        return entry
+    distance = _float_or_none(entry.get("distance_from_pivot_pct"))
+    if distance is None or distance < -4.0 or distance > 5.0:
+        return entry
+    candidates = [
+        signal
+        for signal in strategy_signals
+        if str(signal.get("direction") or "").upper() == "BUY"
+        and float(signal.get("score") or 0.0) >= 0.7
+        and isinstance(signal.get("metadata"), dict)
+        and signal["metadata"].get("fresh_entry_confirmed") is True
+    ]
+    if not candidates:
+        return entry
+    best = max(candidates, key=lambda item: float(item.get("score") or 0.0))
+    metadata = best.get("metadata") if isinstance(best.get("metadata"), dict) else {}
+    volume_ratio = _float_or_none(metadata.get("volume_ratio_20"))
+    volume_confirmed = bool(entry.get("volume_confirmation") or (volume_ratio is not None and volume_ratio >= 1.1))
+    grade = "A" if distance >= -1.5 and volume_confirmed else "B"
+    return {
+        **entry,
+        "entry_grade": grade,
+        "setup_type": "strategy_confirmed_entry",
+        "strategy_entry_confirmed_by": best.get("name"),
+        "strategy_entry_score": _round(float(best.get("score") or 0.0)),
+        "volume_confirmation": volume_confirmed,
+        "quality_score": max(float(entry.get("quality_score") or 0.0), 1.0 if grade == "A" else 0.75),
+        "entry_note": (
+            f"{grade} entry confirmed by {best.get('name')}: strategy preset marked a fresh BUY while price remains within the allowable pivot zone."
         ),
     }
 
@@ -2327,7 +2363,7 @@ def _institutional_scorecard(
     if sentiment_score < -0.2:
         must_pass_failed.append("sentiment_not_bearish")
     sponsorship = strategy_logic.get("institutional_sponsorship") or {}
-    if not sponsorship.get("supported") and not us_reference_momentum_ready:
+    if not sponsorship.get("supported") and not _us_reference_data_mode(delivery):
         must_pass_failed.append("flow_or_accumulation_support_required")
     if strategy_logic.get("hard_blocks"):
         must_pass_failed.append("phase3_strategy_logic_clear")

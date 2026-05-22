@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from app.decision_contract import current_decision_rows
 from app.db import Database, _compact_decision_details, _paper_exit_action
+from app.full_spectrum import _strategy_confirmed_entry_quality
 from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
 from app.opportunity_state import opportunity_state_from_signal_details
@@ -56,6 +57,28 @@ class StrategySafetyTests(unittest.TestCase):
         signals = evaluate_strategy_presets(candles, candles[-1].close)
 
         self.assertTrue(any(signal.direction == "BUY" for signal in signals))
+
+    def test_strategy_confirmed_entry_can_upgrade_below_pivot_watch_grade(self) -> None:
+        upgraded = _strategy_confirmed_entry_quality(
+            {
+                "entry_grade": "WATCH",
+                "distance_from_pivot_pct": -1.65,
+                "volume_confirmation": False,
+                "quality_score": 0.0,
+            },
+            [
+                {
+                    "name": "minervini_trend_template",
+                    "direction": "BUY",
+                    "score": 1.0,
+                    "metadata": {"fresh_entry_confirmed": True, "volume_ratio_20": 1.27},
+                }
+            ],
+        )
+
+        self.assertEqual(upgraded["entry_grade"], "B")
+        self.assertEqual(upgraded["setup_type"], "strategy_confirmed_entry")
+        self.assertTrue(upgraded["volume_confirmation"])
 
     def test_us_yahoo_reference_momentum_can_emit_buy_without_institutional_flow(self) -> None:
         engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())

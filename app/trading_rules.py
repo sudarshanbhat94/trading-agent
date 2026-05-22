@@ -175,7 +175,13 @@ def evaluate_rules_for_context(
 
     sponsorship = phase3.get("institutional_sponsorship") if isinstance(phase3.get("institutional_sponsorship"), dict) else _institutional_sponsorship_from_full(full)
     us_reference_momentum_ready = _us_reference_momentum_ready(full)
-    if not sponsorship.get("supported") and not us_reference_momentum_ready and "INSTITUTIONAL_SPONSORSHIP_MISSING" not in active_flags:
+    us_reference_delivery_mode = _us_reference_delivery_mode(delivery)
+    if (
+        not sponsorship.get("supported")
+        and not us_reference_momentum_ready
+        and not us_reference_delivery_mode
+        and "INSTITUTIONAL_SPONSORSHIP_MISSING" not in active_flags
+    ):
         soft(
             "INSTITUTIONAL_SPONSORSHIP_MISSING",
             "flow/accumulation support is missing; do not describe the setup as institutional without proof",
@@ -557,14 +563,18 @@ def _us_reference_momentum_ready(full: dict[str, Any]) -> bool:
     if scorecard.get("us_reference_momentum_ready"):
         return True
     delivery = full.get("delivery_accumulation") if isinstance(full.get("delivery_accumulation"), dict) else {}
-    source = str(delivery.get("source") or "").lower()
-    gap = str(delivery.get("data_gap") or "").lower()
-    market = str(delivery.get("market_region") or "").upper()
-    if not (market == "US" or source.startswith("us_") or "not_applicable_us" in gap or "us_equities" in gap):
+    if not _us_reference_delivery_mode(delivery):
         return False
     confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
     score = _float_or_none(scorecard.get("total_score") or scorecard.get("score")) or 0.0
     return score >= 55 and (_float_or_none(confluence.get("total")) or 0.0) >= 18
+
+
+def _us_reference_delivery_mode(delivery: dict[str, Any]) -> bool:
+    source = str(delivery.get("source") or "").lower()
+    gap = str(delivery.get("data_gap") or "").lower()
+    market = str(delivery.get("market_region") or "").upper()
+    return market == "US" or source.startswith("us_") or "not_applicable_us" in gap or "us_equities" in gap
 
 
 def _positive_fund_flow(feed: Any) -> bool:
