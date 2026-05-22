@@ -178,7 +178,7 @@ def _build_opportunity_state(
     summary = _summary_for_state(state, reasons, copy["summary"])
     next_step = _next_step_for_state(state, trade_plan, missing_data)
     publish_as_watch = state in ACTIONABLE_OPPORTUNITY_STATES or (
-        state == "DATA_NEEDED" and confluence_value >= 16 and score_value >= 65
+        state == "DATA_NEEDED" and confluence_value >= 16 and score_value >= 55
     )
 
     return {

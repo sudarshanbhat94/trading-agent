@@ -17,6 +17,7 @@ from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
 from .opportunity_state import is_signal_candidate_state, opportunity_state_from_signal_details
 from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, fresh_buy_quality_gate, trade_readiness_gate
+from .trading_rules import _score_grade
 
 
 def _market_region_case(alias: str = "u") -> str:
@@ -5526,6 +5527,14 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     if overall_score in (None, ""):
         overall_score = score_breakdown.get("score_percent")
     overall_grade = system_audit.get("overall_grade") or audit.get("overall_grade")
+    post_gate_score = _optional_float(overall_score)
+    pre_gate_score = _optional_float(score_breakdown.get("score_percent"))
+    data_not_trade_ready = bool(data_readiness) and data_readiness.get("trade_decision_ready") is not True
+    display_score = post_gate_score
+    display_grade = overall_grade
+    if data_not_trade_ready and pre_gate_score is not None and pre_gate_score > float(post_gate_score or 0.0):
+        display_score = pre_gate_score
+        display_grade = _score_grade(pre_gate_score)
     price = _optional_float(row.get("price")) or 0.0
     targets = trade_plan.get("targets")
     if not isinstance(targets, list):
@@ -5539,8 +5548,12 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "targets": targets,
         "risk_flags": risk.get("flags", []),
         "active_flags": system_audit.get("active_flags", []),
-        "overall_score_pct": overall_score,
-        "overall_grade": overall_grade,
+        "overall_score_pct": display_score,
+        "overall_grade": display_grade,
+        "tradeability_score_pct": post_gate_score,
+        "tradeability_grade": overall_grade,
+        "setup_score_pct": pre_gate_score,
+        "setup_grade": _score_grade(pre_gate_score) if pre_gate_score is not None else None,
         "confluence": confluence_total,
         "hard_blocked": hard_blocked,
         "hard_blocks": system_audit.get("hard_blocks", []),
@@ -5559,7 +5572,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
             "action": action,
             "signal_type": "BUY" if action == "BUY" else action,
             "status": "ACTIVE" if action == "BUY" else action,
-            "overall_score_pct": overall_score,
+            "overall_score_pct": post_gate_score,
             "overall_grade": overall_grade,
             "confluence": confluence_total,
             "hard_blocked": hard_blocked,
@@ -5587,7 +5600,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
             "message": quality_gate.get("message"),
         }
     elif (
-        (confluence_total >= 16 and combined >= 0.20 and float(overall_score or 0.0) >= 55)
+        (confluence_total >= 16 and combined >= 0.20 and float(display_score or 0.0) >= 55)
         or is_signal_candidate_state(details["opportunity_state"])
     ) and action != "SELL":
         signal_type = "WATCH"
@@ -5607,8 +5620,8 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "confidence": float(row.get("confidence") or 0.0),
         "combined_score": combined,
         "confluence": confluence_total,
-        "overall_score_pct": float(overall_score or 0.0),
-        "overall_grade": str(overall_grade or ""),
+        "overall_score_pct": float(display_score or 0.0),
+        "overall_grade": str(display_grade or ""),
         "reason": str(audit.get("action_reason") or row.get("reason") or "")[:1000],
         "details": details,
     }

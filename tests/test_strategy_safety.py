@@ -779,6 +779,89 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertTrue(state["publish_as_watch"])
         self.assertIn("no paper/live entry", state["next_step"])
 
+    def test_us_data_needed_candidate_is_published_without_becoming_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            db.upsert_universe_rows(
+                [
+                    {
+                        "symbol": "ALAB",
+                        "name": "Astera Labs",
+                        "exchange": "NASDAQ",
+                        "yahoo_symbol": "ALAB",
+                        "sector": "US Equity",
+                        "industry": "Semiconductors",
+                        "base_price": 100,
+                        "enabled": 1,
+                    }
+                ]
+            )
+            decision = Decision(
+                symbol="ALAB",
+                action="HOLD",
+                strategy="volume_price_accumulation",
+                confidence=0.28,
+                price=312.25,
+                technical_score=0.65,
+                sentiment_score=0.31,
+                reason="failed_gates=['system_rule_DATA_READINESS_BLOCK']",
+                asof=utc_now(),
+                details_json=json.dumps(
+                    {
+                        "final_action": "HOLD",
+                        "score_breakdown": {"combined": 0.284, "score_percent": 64.2},
+                        "system_gate_audit": {
+                            "overall_score_pct": 0.0,
+                            "overall_grade": "F",
+                            "hard_blocked": True,
+                            "active_flags": ["DATA_READINESS_BLOCK"],
+                            "hard_blocks": [{"flag": "DATA_READINESS_BLOCK", "reason": "missing trade-grade US data"}],
+                            "data_readiness": {
+                                "market_region": "US",
+                                "trade_decision_ready": False,
+                                "hard_gaps": [
+                                    {"key": "us_realtime_quote", "label": "US consolidated real-time quote"},
+                                    {"key": "us_minute_bars", "label": "US minute bars"},
+                                ],
+                                "soft_gaps": [{"key": "us_sec_filings", "label": "SEC filings / EDGAR event check"}],
+                                "missing_data": ["us_realtime_quote", "us_minute_bars", "us_sec_filings"],
+                            },
+                        },
+                        "context_summary": {
+                            "data_readiness": {
+                                "market_region": "US",
+                                "trade_decision_ready": False,
+                                "hard_gaps": [
+                                    {"key": "us_realtime_quote", "label": "US consolidated real-time quote"},
+                                    {"key": "us_minute_bars", "label": "US minute bars"},
+                                ],
+                                "missing_data": ["us_realtime_quote", "us_minute_bars", "us_sec_filings"],
+                            },
+                            "full_spectrum_summary": {
+                                "confluence_score": {"total": 20.0, "tier": "HIGH_CONVICTION"},
+                                "trade_plan": {"entry_zone": [310.0, 314.0], "stop_loss": 287.0, "targets": []},
+                                "entry_quality": {"entry_grade": "B", "distance_from_pivot_pct": 4.6},
+                                "breakout_quality": {"breakout_quality": "not_breakout", "two_day_rule_failed": False},
+                                "strategy_logic_filters": {"passed": True, "hard_blocks": [], "breakout_volume": {}},
+                                "risk_overrides": {"flags": []},
+                            },
+                        },
+                    }
+                ),
+            )
+
+            db.upsert_signal_ideas_from_decisions([decision])
+            [row] = db.latest_signal_ideas(5, market_region="US")
+
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
+        self.assertEqual(row["opportunity_state"], "DATA_NEEDED")
+        self.assertEqual(row["opportunity_label"], "Missing market evidence")
+        self.assertEqual(row["overall_score_pct"], 64.2)
+        self.assertEqual(row["details"]["tradeability_score_pct"], 0.0)
+        self.assertIn("US consolidated real-time quote", row["opportunity_next_step"])
+
     def test_performance_feedback_requires_strong_sample_before_hard_block(self) -> None:
         self.assertIsNone(
             _performance_feedback_block(

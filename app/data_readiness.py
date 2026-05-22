@@ -112,7 +112,7 @@ def assess_phase2_data_readiness(
             f"{len(intraday)} candles",
         )
         check("us_earnings_date", "US earnings-date/event calendar", earnings_checked, HARD, macro_event_context.get("source"))
-        check("us_sec_filings", "SEC filings / EDGAR event check", sec_checked, HARD, row.get("cik") or sentiment.get("source"))
+        check("us_sec_filings", "SEC filings / EDGAR event check", sec_checked, SOFT, row.get("cik") or sentiment.get("source"))
         check("us_analyst_revisions", "Analyst revisions / rating changes", analyst_checked, SOFT, sentiment.get("source"))
         check("us_options_flow", "Options flow / options activity", options_flow_checked, SOFT, options_data.get("source"))
         check("us_short_interest", "Short-interest context", short_interest_checked, SOFT, row.get("short_interest_source"))
@@ -165,7 +165,7 @@ def assess_phase2_data_readiness(
             "sentiment": sentiment.get("source"),
         },
         "policy": (
-            "Free or delayed US data is screening-only unless it satisfies the same real-time, minute-bar, earnings, and SEC checks required for trade decisions."
+            "Free or delayed US data is screening-only unless it satisfies the same real-time quote, minute-bar, and earnings checks required for trade decisions. SEC, analyst, options, and short-interest context remain explicit evidence gaps when unavailable."
             if market == "US"
             else "India fresh trades need live broker candles plus NSE/BSE event, delivery, breadth, and OI context where applicable, whether the execution is paper or live."
         ),

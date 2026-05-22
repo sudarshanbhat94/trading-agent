@@ -28,6 +28,7 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertIn("us_realtime_quote", readiness["missing_data"])
         self.assertIn("us_minute_bars", readiness["missing_data"])
         self.assertIn("us_sec_filings", readiness["missing_data"])
+        self.assertIn("us_sec_filings", [item["key"] for item in readiness["soft_gaps"]])
 
     def test_paper_execution_does_not_downgrade_us_trade_requirements(self) -> None:
         readiness = assess_phase2_data_readiness(
@@ -49,6 +50,7 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertEqual(readiness["mode"], "strict")
         self.assertIn("us_realtime_quote", readiness["missing_data"])
         self.assertIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
+        self.assertIn("us_sec_filings", [item["key"] for item in readiness["soft_gaps"]])
 
     def test_live_execution_uses_same_us_trade_requirements(self) -> None:
         readiness = assess_phase2_data_readiness(
@@ -69,6 +71,28 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertFalse(readiness["trade_decision_ready"])
         self.assertEqual(readiness["mode"], "strict")
         self.assertIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
+
+    def test_us_trade_grade_quote_and_bars_pass_even_when_sec_context_is_soft_missing(self) -> None:
+        readiness = assess_phase2_data_readiness(
+            row={"symbol": "MSFT", "exchange": "NASDAQ", "name": "Microsoft"},
+            quote=Quote(symbol="MSFT", price=430, source="alpaca-sip-live", asof="2026-05-20T14:30:00+00:00", volume=8_000_000),
+            timeframe_candles={
+                "daily": _candles("MSFT", "alpaca-sip-live:day", 80),
+                "intraday": _candles("MSFT", "alpaca-sip-live:1minute", 40),
+            },
+            sentiment={"status": "AVAILABLE", "score": 0.2, "source": "news", "headlines": ["Microsoft analyst upgrade"]},
+            delivery_data={},
+            options_data={"source": "alpaca_options", "flow_available": True},
+            sector_context={},
+            market_breadth={},
+            macro_event_context={"source": "earnings_calendar"},
+            institutional_context={},
+            full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.4}},
+        )
+
+        self.assertTrue(readiness["trade_decision_ready"])
+        self.assertIn("us_sec_filings", readiness["missing_data"])
+        self.assertIn("us_sec_filings", [item["key"] for item in readiness["soft_gaps"]])
 
     def test_us_alpaca_sip_polygon_style_data_passes_hard_trade_checks(self) -> None:
         readiness = assess_phase2_data_readiness(
