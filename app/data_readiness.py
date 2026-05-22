@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .market_regions import market_region_for_row
@@ -28,9 +29,9 @@ def assess_phase2_data_readiness(
 ) -> dict[str, Any]:
     """Market-specific Phase-2 data checklist for fresh trade decisions.
 
-    Free or delayed daily data is acceptable for broad screening only. Fresh
-    trade decisions, including paper trades, require the same market-specific
-    quote, candle, event, and flow confirmations as live analysis.
+    Fresh trade decisions require market-specific quote, candle, event, and
+    flow confirmations. For US swing signals, fresh Yahoo quotes can be used
+    as a reference-grade price source when SIP/Polygon is unavailable.
     """
 
     market = market_region_for_row(row)
@@ -80,8 +81,27 @@ def assess_phase2_data_readiness(
     check("sentiment_news", "News/sentiment source checked", sentiment_status != "DATA_MISSING", SOFT, sentiment.get("source"))
 
     if market == "US":
-        realtime_source_ok = _source_has(quote_source, ("alpaca-sip", "polygon"))
-        minute_source_ok = len(intraday) >= 20 and _source_has(intraday_source, ("alpaca-sip", "polygon"))
+        quote_age_minutes = _quote_age_minutes(quote.asof)
+        yahoo_quote_ok = (
+            _source_has(quote_source, ("yahoo",))
+            and quote_age_minutes is not None
+            and quote_age_minutes <= 20
+        )
+        yahoo_daily_confirmation_ok = yahoo_quote_ok and len(daily) >= 55 and _source_has(str(daily_source or ""), ("yahoo",))
+        consolidated_source_ok = _source_has(quote_source, ("alpaca-sip", "polygon"))
+        sip_minute_ok = len(intraday) >= 20 and _source_has(str(intraday_source or ""), ("alpaca-sip", "polygon"))
+        realtime_source_ok = consolidated_source_ok or yahoo_quote_ok
+        minute_source_ok = sip_minute_ok or yahoo_daily_confirmation_ok
+        quote_note = (
+            f"Yahoo reference quote age {quote_age_minutes:.1f}m"
+            if yahoo_quote_ok and quote_age_minutes is not None
+            else ""
+        )
+        minute_note = (
+            "Yahoo reference mode uses fresh quote plus daily bars for swing-signal confirmation"
+            if yahoo_daily_confirmation_ok and not sip_minute_ok
+            else f"{len(intraday)} candles"
+        )
         earnings_checked = not _has_gap(macro_event_context, "earnings_calendar_empty")
         analyst_checked = _contains_any(sentiment_headlines, ("analyst", "upgrade", "downgrade", "price target")) or _events_have(
             sentiment_events,
@@ -98,18 +118,19 @@ def assess_phase2_data_readiness(
 
         check(
             "us_realtime_quote",
-            "US consolidated real-time quote from Alpaca SIP/Polygon",
+            "US fresh quote from Alpaca SIP, Polygon, or Yahoo reference",
             realtime_source_ok,
             HARD,
             quote_source,
+            quote_note,
         )
         check(
             "us_minute_bars",
-            "US minute bars from Alpaca SIP/Polygon",
+            "US minute bars or Yahoo swing-confirmation bars",
             minute_source_ok,
             HARD,
-            intraday_source,
-            f"{len(intraday)} candles",
+            intraday_source or daily_source,
+            minute_note,
         )
         check("us_earnings_date", "US earnings-date/event calendar", earnings_checked, HARD, macro_event_context.get("source"))
         check("us_sec_filings", "SEC filings / EDGAR event check", sec_checked, SOFT, row.get("cik") or sentiment.get("source"))
@@ -165,7 +186,7 @@ def assess_phase2_data_readiness(
             "sentiment": sentiment.get("source"),
         },
         "policy": (
-            "Free or delayed US data is screening-only unless it satisfies the same real-time quote, minute-bar, and earnings checks required for trade decisions. SEC, analyst, options, and short-interest context remain explicit evidence gaps when unavailable."
+            "US BUY signals may use fresh Yahoo reference quotes plus daily bars for swing confirmation when SIP/Polygon is unavailable. SEC, analyst, options, and short-interest context remain explicit evidence gaps when unavailable."
             if market == "US"
             else "India fresh trades need live broker candles plus NSE/BSE event, delivery, breadth, and OI context where applicable, whether the execution is paper or live."
         ),
@@ -189,6 +210,18 @@ def _last_source(candles: list[Candle]) -> str | None:
 def _has_gap(payload: dict[str, Any], gap: str) -> bool:
     gaps = payload.get("data_gaps")
     return isinstance(gaps, list) and gap in gaps
+
+
+def _quote_age_minutes(asof: Any) -> float | None:
+    if not asof:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(asof).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 60.0, 0.0)
 
 
 def _contains_any(values: list[Any], needles: tuple[str, ...]) -> bool:

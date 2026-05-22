@@ -575,6 +575,15 @@ class StrategyEngine:
             threshold = max(threshold, 0.45)
         if market_breadth.get("breadth_regime") == "bull_confirmed":
             threshold = min(threshold, 0.30)
+        data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+        data_sources = data_ready.get("sources") if isinstance(data_ready.get("sources"), dict) else {}
+        us_yahoo_reference_signal = (
+            str(data_ready.get("market_region") or "").upper() == "US"
+            and data_ready.get("trade_decision_ready") is True
+            and "yahoo" in str(data_sources.get("quote") or "").lower()
+        )
+        if us_yahoo_reference_signal:
+            threshold = min(threshold, 0.25)
         failed_gates: list[dict[str, Any]] = []
 
         def fail(gate: str, value: Any, reason: str) -> None:
@@ -597,7 +606,6 @@ class StrategyEngine:
                 block.get("value"),
                 block.get("reason") or str(block.get("flag") or "hard_block"),
             )
-        data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
         has_data_readiness_block = any(str(block.get("flag") or "") == "DATA_READINESS_BLOCK" for block in rule_audit.get("hard_blocks") or [])
         if not has_position and not has_data_readiness_block and data_ready.get("trade_decision_ready") is not True:
             fail("phase2_data_readiness", data_ready or None, "phase2_data_not_trade_ready")

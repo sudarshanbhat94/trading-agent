@@ -872,6 +872,13 @@ def _positive_fund_flow(feed: Any) -> bool:
     return False
 
 
+def _us_reference_data_mode(delivery: dict[str, Any]) -> bool:
+    source = str(delivery.get("source") or "").lower()
+    gap = str(delivery.get("data_gap") or "").lower()
+    market = str(delivery.get("market_region") or "").upper()
+    return market == "US" or source.startswith("us_") or "not_applicable_us" in gap or "us_equities" in gap
+
+
 def _tested_level(values: list[float], mode: str) -> tuple[float | None, int]:
     if not values:
         return None, 0
@@ -2186,10 +2193,24 @@ def _institutional_scorecard(
     min_entry_score = 75
     strict_confluence = 16
     section_map = {section["key"]: section for section in sections}
+    us_reference_momentum_ready = (
+        _us_reference_data_mode(delivery)
+        and total >= 60
+        and int(confluence.get("total", 0) or 0) >= 20
+        and not hard_veto
+        and section_map["liquidity_execution"]["score"] >= 7
+        and section_map["trend_relative_strength"]["score"] >= 9
+        and section_map["risk_reward"]["score"] >= 5
+        and sentiment_score >= -0.2
+        and not strategy_logic.get("hard_blocks")
+    )
+    if us_reference_momentum_ready:
+        warnings.append("us_yahoo_reference_momentum_small_size_only")
     must_pass_failed = []
     if hard_veto:
         must_pass_failed.append("hard_veto_clear")
-    if total < min_entry_score:
+    effective_min_entry_score = 60 if us_reference_momentum_ready else min_entry_score
+    if total < effective_min_entry_score:
         must_pass_failed.append("accumulation_proxy_score_min_75")
     if int(confluence.get("total", 0) or 0) < strict_confluence:
         must_pass_failed.append("confluence_min_16")
@@ -2204,7 +2225,7 @@ def _institutional_scorecard(
     if sentiment_score < -0.2:
         must_pass_failed.append("sentiment_not_bearish")
     sponsorship = strategy_logic.get("institutional_sponsorship") or {}
-    if not sponsorship.get("supported"):
+    if not sponsorship.get("supported") and not us_reference_momentum_ready:
         must_pass_failed.append("flow_or_accumulation_support_required")
     if strategy_logic.get("hard_blocks"):
         must_pass_failed.append("phase3_strategy_logic_clear")
@@ -2216,16 +2237,18 @@ def _institutional_scorecard(
         "max_score": max_score,
         "normalized_score": _round(total / max_score if max_score else 0),
         "minimum_entry_score": min_entry_score,
+        "effective_minimum_entry_score": effective_min_entry_score,
         "strict_confluence_required": strict_confluence,
         "grade": _scorecard_grade(total),
         "buy_ready": buy_ready,
         "hard_veto": {"passed": not hard_veto, "failed": _unique(hard_veto)},
         "must_pass_failed": _unique(must_pass_failed),
         "warnings": _unique(warnings),
+        "us_reference_momentum_ready": us_reference_momentum_ready,
         "phase3_penalty": _round(phase3_penalty),
         "institutional_sponsorship": sponsorship,
         "sections": section_map,
-        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and verified flow or accumulation evidence supports the setup.",
+        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and verified flow or accumulation evidence supports the setup. US Yahoo reference-mode swing signals may use score >=60 with confluence >=20, but only as small-size momentum signals.",
         "exit_rule": "For open positions, exit on hard stop, target/invalidation, breakdown, severe negative news, high conflict, or global risk-off.",
         "accuracy_note": "No market system can guarantee 90% accuracy; this scorecard is designed to improve expectancy by rejecting low-quality trades.",
     }

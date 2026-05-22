@@ -174,7 +174,8 @@ def evaluate_rules_for_context(
         )
 
     sponsorship = phase3.get("institutional_sponsorship") if isinstance(phase3.get("institutional_sponsorship"), dict) else _institutional_sponsorship_from_full(full)
-    if not sponsorship.get("supported") and "INSTITUTIONAL_SPONSORSHIP_MISSING" not in active_flags:
+    us_reference_momentum_ready = _us_reference_momentum_ready(full)
+    if not sponsorship.get("supported") and not us_reference_momentum_ready and "INSTITUTIONAL_SPONSORSHIP_MISSING" not in active_flags:
         soft(
             "INSTITUTIONAL_SPONSORSHIP_MISSING",
             "flow/accumulation support is missing; do not describe the setup as institutional without proof",
@@ -396,6 +397,8 @@ def _strong_price_volume_evidence(full_spectrum: dict[str, Any]) -> bool:
         or breakout_volume.get("confirmed")
     )
     delivery_accumulation = delivery_bias in {"accumulation", "volume_accumulation_proxy"} or bool(delivery.get("institutional_fingerprint") or delivery.get("fingerprint"))
+    if _us_reference_momentum_ready(full_spectrum):
+        return True
     return confluence_total >= 18 and (volume_confirmed or delivery_accumulation or scorecard_total >= 75)
 
 
@@ -547,6 +550,21 @@ def _institutional_sponsorship_from_full(full: dict[str, Any]) -> dict[str, Any]
             "supportive options accumulation/OI",
         ] if not evidence else [],
     }
+
+
+def _us_reference_momentum_ready(full: dict[str, Any]) -> bool:
+    scorecard = full.get("institutional_scorecard") if isinstance(full.get("institutional_scorecard"), dict) else {}
+    if scorecard.get("us_reference_momentum_ready"):
+        return True
+    delivery = full.get("delivery_accumulation") if isinstance(full.get("delivery_accumulation"), dict) else {}
+    source = str(delivery.get("source") or "").lower()
+    gap = str(delivery.get("data_gap") or "").lower()
+    market = str(delivery.get("market_region") or "").upper()
+    if not (market == "US" or source.startswith("us_") or "not_applicable_us" in gap or "us_equities" in gap):
+        return False
+    confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
+    score = _float_or_none(scorecard.get("total_score") or scorecard.get("score")) or 0.0
+    return score >= 60 and (_float_or_none(confluence.get("total")) or 0.0) >= 20
 
 
 def _positive_fund_flow(feed: Any) -> bool:

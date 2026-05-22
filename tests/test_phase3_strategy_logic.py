@@ -196,6 +196,45 @@ class Phase3StrategyLogicTests(unittest.TestCase):
         self.assertNotIn("GRADE_VIOLATION", audit["active_flags"])
         self.assertNotIn("INSTITUTIONAL_SPONSORSHIP_MISSING", audit["active_flags"])
 
+    def test_us_yahoo_reference_momentum_can_pass_without_institutional_flow(self) -> None:
+        context = _base_context()
+        context["market_region"] = "US"
+        context["sentiment"] = {}
+        context["full_spectrum_analysis"]["confluence_score"] = {"total": 20, "tier": "HIGH_CONVICTION"}
+        context["full_spectrum_analysis"]["entry_quality"] = {"entry_grade": "B", "distance_from_pivot_pct": 2.0}
+        context["full_spectrum_analysis"]["delivery_accumulation"] = {
+            "market_region": "US",
+            "bias": "neutral",
+            "net_bias": "neutral",
+            "delivery_score": 0.0,
+            "source": "us_price_volume_proxy_no_delivery_data",
+            "data_gap": "delivery_not_applicable_us_equities",
+        }
+        context["full_spectrum_analysis"]["institutional_scorecard"] = {
+            "total_score": 64,
+            "buy_ready": True,
+            "us_reference_momentum_ready": True,
+        }
+        context["full_spectrum_analysis"]["strategy_logic_filters"] = {
+            "passed": True,
+            "hard_blocks": [],
+            "penalties": [],
+            "sizing": {"max_multiplier": 0.5},
+            "institutional_sponsorship": {"supported": False, "evidence": []},
+        }
+        context["full_spectrum_analysis"]["fundamental_quality"] = {
+            "quality_bucket": "reference_ratios_available",
+            "metrics": {"reference_data_available": True, "market_cap": 100_000_000_000},
+        }
+
+        audit = evaluate_rules_for_context(context, {}, 100_000)
+
+        self.assertFalse(audit["hard_blocked"])
+        self.assertEqual(audit["entry"]["effective_entry_grade"], "B")
+        self.assertNotIn("GRADE_VIOLATION", audit["active_flags"])
+        self.assertNotIn("INSTITUTIONAL_SPONSORSHIP_MISSING", audit["active_flags"])
+        self.assertGreaterEqual(audit["overall_score_pct"], 70)
+
 
 def _base_context() -> dict:
     return {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from app.data_readiness import assess_phase2_data_readiness
 from app.models import Candle, Quote
@@ -9,10 +10,10 @@ from app.trading_rules import evaluate_rules_for_context
 
 
 class Phase2DataReadinessTests(unittest.TestCase):
-    def test_us_yahoo_screening_data_is_not_trade_decision_ready(self) -> None:
+    def test_us_fresh_yahoo_reference_data_can_drive_buy_signal_readiness(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "AAPL", "exchange": "NASDAQ", "name": "Apple"},
-            quote=Quote(symbol="AAPL", price=190, source="yahoo-delayed", asof="2026-05-20T14:30:00+00:00", volume=10_000_000),
+            quote=Quote(symbol="AAPL", price=190, source="yahoo-delayed", asof=_now_iso(), volume=10_000_000),
             timeframe_candles={"daily": _candles("AAPL", "yahoo-delayed", 80), "intraday": []},
             sentiment={"status": "AVAILABLE", "score": 0.1, "source": "news", "headlines": ["Apple analyst raises target"]},
             delivery_data={},
@@ -24,13 +25,13 @@ class Phase2DataReadinessTests(unittest.TestCase):
             full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.2}},
         )
 
-        self.assertFalse(readiness["trade_decision_ready"])
-        self.assertIn("us_realtime_quote", readiness["missing_data"])
-        self.assertIn("us_minute_bars", readiness["missing_data"])
+        self.assertTrue(readiness["trade_decision_ready"])
+        self.assertNotIn("us_realtime_quote", readiness["missing_data"])
+        self.assertNotIn("us_minute_bars", readiness["missing_data"])
         self.assertIn("us_sec_filings", readiness["missing_data"])
         self.assertIn("us_sec_filings", [item["key"] for item in readiness["soft_gaps"]])
 
-    def test_paper_execution_does_not_downgrade_us_trade_requirements(self) -> None:
+    def test_stale_yahoo_reference_data_is_not_trade_decision_ready(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "AAPL", "exchange": "NASDAQ", "name": "Apple"},
             quote=Quote(symbol="AAPL", price=190, source="yahoo-delayed", asof="2026-05-20T14:30:00+00:00", volume=10_000_000),
@@ -52,10 +53,10 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
         self.assertIn("us_sec_filings", [item["key"] for item in readiness["soft_gaps"]])
 
-    def test_live_execution_uses_same_us_trade_requirements(self) -> None:
+    def test_live_execution_uses_fresh_yahoo_reference_mode_for_us_signals(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "AAPL", "exchange": "NASDAQ", "name": "Apple"},
-            quote=Quote(symbol="AAPL", price=190, source="yahoo-delayed", asof="2026-05-20T14:30:00+00:00", volume=10_000_000),
+            quote=Quote(symbol="AAPL", price=190, source="yahoo-delayed", asof=_now_iso(), volume=10_000_000),
             timeframe_candles={"daily": _candles("AAPL", "yahoo-delayed", 80), "intraday": []},
             sentiment={"status": "AVAILABLE", "score": 0.1, "source": "news", "headlines": ["Apple analyst raises target"]},
             delivery_data={},
@@ -68,9 +69,9 @@ class Phase2DataReadinessTests(unittest.TestCase):
             execution_mode="upstox_live",
         )
 
-        self.assertFalse(readiness["trade_decision_ready"])
+        self.assertTrue(readiness["trade_decision_ready"])
         self.assertEqual(readiness["mode"], "strict")
-        self.assertIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
+        self.assertNotIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
 
     def test_us_trade_grade_quote_and_bars_pass_even_when_sec_context_is_soft_missing(self) -> None:
         readiness = assess_phase2_data_readiness(
@@ -252,6 +253,10 @@ def _candles(symbol: str, source: str, count: int) -> list[Candle]:
         )
         for index in range(count)
     ]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 if __name__ == "__main__":
