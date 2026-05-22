@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from .data_readiness import assess_phase2_data_readiness, data_readiness_score
@@ -37,6 +38,14 @@ def build_symbol_tool_context(
     execution_mode: str = "paper",
 ) -> dict[str, Any]:
     timeframe_candles = timeframe_candles or {}
+    market_region = market_region_for_row(row)
+    timeframe_candles, candle_adjustment = _decision_timeframe_candles(
+        row=row,
+        quote=quote,
+        timeframe_candles=timeframe_candles,
+        fallback_candles=candles,
+        market_region=market_region,
+    )
     analysis_candles = timeframe_candles.get("analysis") or timeframe_candles.get("daily") or candles
     intraday_candles = timeframe_candles.get("intraday") or []
     daily_candles = timeframe_candles.get("daily") or analysis_candles
@@ -71,7 +80,6 @@ def build_symbol_tool_context(
     }
     strategy_signal_dicts = [signal.to_dict() for signal in strategy_signals]
     technical_dict = technical.to_dict()
-    market_region = market_region_for_row(row)
     currency = "USD" if market_region == "US" else "INR"
     selected_performance_feedback = _select_performance_feedback(
         performance_feedback or {},
@@ -174,11 +182,83 @@ def build_symbol_tool_context(
             "intraday_source": intraday_candles[-1].source if intraday_candles else None,
             "daily_source": daily_candles[-1].source if daily_candles else None,
             "weekly_source": weekly_candles[-1].source if weekly_candles else None,
+            "analysis_adjustment": candle_adjustment or None,
         },
         "full_spectrum_analysis": full_spectrum,
         "risk_limits": risk_limits,
         "recent_candles": [candle.to_dict() for candle in analysis_candles[-24:]],
     }
+
+
+def _decision_timeframe_candles(
+    *,
+    row: dict[str, Any],
+    quote: Quote,
+    timeframe_candles: dict[str, list[Candle]],
+    fallback_candles: list[Candle],
+    market_region: str,
+) -> tuple[dict[str, list[Candle]], dict[str, Any]]:
+    adjusted = {key: list(value or []) for key, value in (timeframe_candles or {}).items()}
+    daily = adjusted.get("daily") or []
+    if not daily and fallback_candles:
+        daily = list(fallback_candles)
+    if market_region != "US" or not _should_drop_partial_us_yahoo_daily_candle(daily):
+        return adjusted, {}
+
+    completed_daily = daily[:-1]
+    if len(completed_daily) < 30:
+        return adjusted, {}
+
+    raw_analysis = adjusted.get("analysis") or []
+    adjusted["daily"] = completed_daily
+    if not raw_analysis or _same_candle_tail(raw_analysis, daily):
+        adjusted["analysis"] = completed_daily
+
+    dropped = daily[-1]
+    return adjusted, {
+        "partial_daily_candle_dropped": True,
+        "reason": "Yahoo daily candle is still forming during US regular session; completed daily candles drive analysis while the fresh quote drives current price.",
+        "dropped_ts": dropped.ts,
+        "dropped_source": dropped.source,
+        "quote_asof": quote.asof,
+    }
+
+
+def _should_drop_partial_us_yahoo_daily_candle(candles: list[Candle], now: datetime | None = None) -> bool:
+    if not candles:
+        return False
+    last = candles[-1]
+    if "yahoo" not in str(last.source or "").lower():
+        return False
+    parsed = _parse_datetime(last.ts)
+    if parsed is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    if current.weekday() >= 5 or parsed.astimezone(timezone.utc).date() != current.date():
+        return False
+    minutes = current.hour * 60 + current.minute
+    return (13 * 60 + 30) <= minutes < (20 * 60 + 5)
+
+
+def _same_candle_tail(left: list[Candle], right: list[Candle]) -> bool:
+    if not left or not right:
+        return False
+    return left[-1].ts == right[-1].ts and left[-1].source == right[-1].source
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def deterministic_score(context: dict[str, Any]) -> float:

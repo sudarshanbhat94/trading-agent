@@ -57,6 +57,72 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertTrue(any(signal.direction == "BUY" for signal in signals))
 
+    def test_us_yahoo_reference_momentum_can_emit_buy_without_institutional_flow(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        context = {
+            "symbol": "DDOG",
+            "market_region": "US",
+            "sector": "Technology",
+            "industry": "Software",
+            "quote": {"price": 142.0, "source": "yahoo-delayed", "asof": "2026-05-22T14:15:00+00:00"},
+            "sentiment": {},
+            "position": {"qty": 0},
+            "data_readiness": {
+                "market_region": "US",
+                "trade_decision_ready": True,
+                "grade": "B",
+                "sources": {"quote": "yahoo-delayed", "daily": "yahoo-delayed"},
+            },
+            "risk_limits": {"portfolio_equity": 100_000},
+            "full_spectrum_analysis": {
+                "confluence_score": {"total": 18, "tier": "HIGH_CONVICTION"},
+                "risk_overrides": {"flags": [], "no_new_longs": False},
+                "institutional_scorecard": {
+                    "total_score": 56,
+                    "buy_ready": True,
+                    "us_reference_momentum_ready": True,
+                    "must_pass_failed": [],
+                    "hard_veto": {"failed": []},
+                },
+                "stage_analysis": {"stage": "Stage2_Markup", "buy_permitted": True},
+                "entry_quality": {"entry_grade": "B", "setup_type": "pullback_buy_zone", "distance_from_pivot_pct": -1.4},
+                "breakout_quality": {"breakout_quality": "not_breakout", "two_day_rule_failed": False},
+                "strategy_logic_filters": {
+                    "passed": True,
+                    "hard_blocks": [],
+                    "penalties": [{"flag": "US_REFERENCE_PRICE_VOLUME_ONLY", "score_penalty": 0.0, "size_multiplier": 0.5}],
+                    "sizing": {"max_multiplier": 0.5},
+                    "institutional_sponsorship": {"supported": False, "evidence": []},
+                    "breakout_volume": {"suspect_without_volume": False},
+                },
+                "price_volume_divergence": {"climax_volume_top": False},
+                "trend_context": {"timeframe_alignment": {"alignment_grade": "B"}},
+                "options_oi": {},
+                "sector_rotation": {},
+                "delivery_accumulation": {
+                    "market_region": "US",
+                    "source": "us_price_volume_proxy_no_delivery_data",
+                    "data_gap": "delivery_not_applicable_us_equities",
+                    "net_bias": "neutral",
+                    "bias": "neutral",
+                    "delivery_score": 0.0,
+                },
+                "fundamental_quality": {
+                    "quality_bucket": "reference_ratios_available",
+                    "metrics": {"reference_data_available": True, "market_cap": 55_000_000_000},
+                },
+                "liquidity_profile": {"liquidity_tier": "strong", "tradeable": True},
+                "indicator_suite": {"atr_pct": 2.4},
+                "trade_plan": {"entry_zone": [141.0, 143.0], "stop_loss": 136.0, "targets": [{"price": 152.0}]},
+            },
+        }
+
+        action = engine._action_from_context("DDOG", 0.31, {}, context, {})
+
+        self.assertEqual(action, "BUY")
+        self.assertGreaterEqual(context["system_gate_audit"]["overall_score_pct"], 70)
+        self.assertEqual(context["decision_gate_context"]["failed_gates"], [])
+
     def test_fresh_buy_requires_data_readiness(self) -> None:
         gate = fresh_buy_quality_gate(
             {

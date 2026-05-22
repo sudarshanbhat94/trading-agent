@@ -497,6 +497,42 @@ def _entry_grade(candles: list[Candle], quote_price: float, indicators: dict[str
     last = candles[-1]
     pivot = max(c.high for c in candles[-21:-1])
     distance = ((quote_price - pivot) / pivot) * 100 if pivot else None
+    ma = indicators.get("moving_averages") or {}
+    position = (last.close - last.low) / max(last.high - last.low, 0.01)
+    volumes = [c.volume for c in candles[-21:-1] if c.volume]
+    avg_volume = _mean(volumes) if volumes else 0.0
+    volume_ratio = _float_or_none(indicators.get("volume_ratio_20"))
+    volume_confirmation = bool(avg_volume and last.volume > avg_volume * 1.5)
+    if distance is not None and distance < 0:
+        pullback = _pullback_entry_quality(
+            quote_price=quote_price,
+            pivot=pivot,
+            distance_from_pivot=distance,
+            ma=ma,
+            rsi=_float_or_none(indicators.get("rsi_14")),
+            volume_ratio=volume_ratio,
+            obv_slope=_float_or_none(indicators.get("obv_slope")),
+            cmf_20=_float_or_none(indicators.get("cmf_20")),
+        )
+        if pullback:
+            grade = pullback["entry_grade"]
+            quality = {"A": 1.0, "B": 0.75, "C": 0.45}.get(grade, 0.0)
+            return {
+                "entry_grade": grade,
+                "setup_type": "pullback_buy_zone",
+                "pivot": _round(pivot),
+                "distance_from_pivot_pct": _round(distance),
+                "distance_to_sma20_pct": pullback.get("distance_to_sma20_pct"),
+                "distance_to_sma50_pct": pullback.get("distance_to_sma50_pct"),
+                "last_close_position_in_range": _round(position),
+                "volume_confirmation": bool(
+                    volume_confirmation
+                    or (volume_ratio is not None and volume_ratio >= 1.1)
+                    or (pullback.get("money_flow_support") is True)
+                ),
+                "quality_score": quality,
+                "entry_note": pullback["entry_note"],
+            }
     if distance is None or distance < 0:
         grade = "WATCH"
     elif distance <= 2:
@@ -507,19 +543,75 @@ def _entry_grade(candles: list[Candle], quote_price: float, indicators: dict[str
         grade = "C"
     else:
         grade = "D"
-    position = (last.close - last.low) / max(last.high - last.low, 0.01)
-    volumes = [c.volume for c in candles[-21:-1] if c.volume]
-    avg_volume = _mean(volumes) if volumes else 0.0
-    volume_confirmation = bool(avg_volume and last.volume > avg_volume * 1.5)
     quality = {"A": 1.0, "B": 0.7, "C": 0.4, "D": 0.0, "WATCH": 0.0}.get(grade, 0.0)
     return {
         "entry_grade": grade,
+        "setup_type": "pivot_breakout",
         "pivot": _round(pivot),
         "distance_from_pivot_pct": _round(distance),
         "last_close_position_in_range": _round(position),
         "volume_confirmation": volume_confirmation,
         "quality_score": quality,
         "entry_note": f"{grade} entry from pivot distance and volume confirmation.",
+    }
+
+
+def _pullback_entry_quality(
+    *,
+    quote_price: float,
+    pivot: float,
+    distance_from_pivot: float,
+    ma: dict[str, Any],
+    rsi: float | None,
+    volume_ratio: float | None,
+    obv_slope: float | None,
+    cmf_20: float | None,
+) -> dict[str, Any]:
+    sma20 = _float_or_none(ma.get("sma_20"))
+    sma50 = _float_or_none(ma.get("sma_50"))
+    sma200 = _float_or_none(ma.get("sma_200"))
+    if quote_price <= 0 or pivot <= 0 or not (sma20 or sma50):
+        return {}
+
+    distance_to_sma20 = ((quote_price - sma20) / sma20) * 100 if sma20 else None
+    distance_to_sma50 = ((quote_price - sma50) / sma50) * 100 if sma50 else None
+    near_sma20 = distance_to_sma20 is not None and -2.0 <= distance_to_sma20 <= 3.5
+    near_sma50 = distance_to_sma50 is not None and -1.5 <= distance_to_sma50 <= 4.0
+    above_sma20 = sma20 is not None and quote_price >= sma20 * 0.985
+    above_sma50 = sma50 is not None and quote_price >= sma50 * 0.985
+    trend_stack = bool(
+        sma20
+        and sma50
+        and sma20 >= sma50 * 0.995
+        and (sma200 is None or sma50 >= sma200 * 0.98)
+    )
+    constructive_rsi = rsi is None or 38 <= rsi <= 72
+    money_flow_support = bool(
+        (volume_ratio is not None and volume_ratio >= 1.1)
+        or (obv_slope is not None and obv_slope > 0)
+        or (cmf_20 is not None and cmf_20 > 0)
+    )
+    weak_participation = volume_ratio is not None and volume_ratio < 0.65
+    close_enough_to_high = distance_from_pivot >= -10.0
+    supported_pullback = (near_sma20 or near_sma50) and above_sma50
+    if not (trend_stack and constructive_rsi and close_enough_to_high and supported_pullback) or weak_participation:
+        return {}
+
+    if distance_from_pivot >= -3.0 and above_sma20 and (volume_ratio is None or volume_ratio >= 0.9 or money_flow_support):
+        grade = "A"
+    elif distance_from_pivot >= -6.5 and (above_sma20 or near_sma20 or near_sma50):
+        grade = "B"
+    else:
+        grade = "C"
+    return {
+        "entry_grade": grade,
+        "distance_to_sma20_pct": _round(distance_to_sma20),
+        "distance_to_sma50_pct": _round(distance_to_sma50),
+        "money_flow_support": money_flow_support,
+        "entry_note": (
+            f"{grade} pullback entry: price is below the breakout pivot but holding the rising 20/50 SMA zone "
+            "with constructive RSI and acceptable participation."
+        ),
     }
 
 
@@ -717,13 +809,22 @@ def _phase3_strategy_logic_filters(
 
     sponsorship = _institutional_sponsorship(delivery, institutional_flow, options_oi)
     if not sponsorship.get("supported"):
-        penalty(
-            "INSTITUTIONAL_SPONSORSHIP_MISSING",
-            "flow/accumulation support is missing; do not describe the setup as institutional without proof",
-            sponsorship,
-            score_penalty=10.0,
-            size_multiplier=0.75,
-        )
+        if _us_reference_data_mode(delivery):
+            penalty(
+                "US_REFERENCE_PRICE_VOLUME_ONLY",
+                "US Yahoo/reference setup has no true institutional-flow feed; use only as price-volume momentum evidence and reduce size",
+                sponsorship,
+                score_penalty=0.0,
+                size_multiplier=0.5,
+            )
+        else:
+            penalty(
+                "INSTITUTIONAL_SPONSORSHIP_MISSING",
+                "flow/accumulation support is missing; do not describe the setup as institutional without proof",
+                sponsorship,
+                score_penalty=10.0,
+                size_multiplier=0.75,
+            )
 
     size_cap = 1.0
     for item in penalties:
@@ -2193,14 +2294,15 @@ def _institutional_scorecard(
     min_entry_score = 75
     strict_confluence = 16
     section_map = {section["key"]: section for section in sections}
+    confluence_total = int(confluence.get("total", 0) or 0)
     us_reference_momentum_ready = (
         _us_reference_data_mode(delivery)
-        and total >= 60
-        and int(confluence.get("total", 0) or 0) >= 20
+        and total >= 55
+        and confluence_total >= 18
         and not hard_veto
         and section_map["liquidity_execution"]["score"] >= 7
         and section_map["trend_relative_strength"]["score"] >= 9
-        and section_map["risk_reward"]["score"] >= 5
+        and section_map["risk_reward"]["score"] >= 4
         and sentiment_score >= -0.2
         and not strategy_logic.get("hard_blocks")
     )
@@ -2209,10 +2311,10 @@ def _institutional_scorecard(
     must_pass_failed = []
     if hard_veto:
         must_pass_failed.append("hard_veto_clear")
-    effective_min_entry_score = 60 if us_reference_momentum_ready else min_entry_score
+    effective_min_entry_score = 55 if us_reference_momentum_ready else min_entry_score
     if total < effective_min_entry_score:
-        must_pass_failed.append("accumulation_proxy_score_min_75")
-    if int(confluence.get("total", 0) or 0) < strict_confluence:
+        must_pass_failed.append("us_reference_momentum_score_min_55" if _us_reference_data_mode(delivery) else "accumulation_proxy_score_min_75")
+    if confluence_total < strict_confluence:
         must_pass_failed.append("confluence_min_16")
     if data_quality.get("score", 0) < 55:
         must_pass_failed.append("data_quality_min_55")
@@ -2248,7 +2350,7 @@ def _institutional_scorecard(
         "phase3_penalty": _round(phase3_penalty),
         "institutional_sponsorship": sponsorship,
         "sections": section_map,
-        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and verified flow or accumulation evidence supports the setup. US Yahoo reference-mode swing signals may use score >=60 with confluence >=20, but only as small-size momentum signals.",
+        "entry_rule": "BUY only if hard veto clear, score >=75/100, confluence >=16/26, trend/liquidity/risk-reward must-pass gates clear, sentiment is not bearish, Phase 3 strategy logic is clean, and verified flow or accumulation evidence supports the setup. US Yahoo reference-mode swing signals may use score >=55 with confluence >=18, fresh quote data, and strict technical confirmation, but only as small-size price-volume momentum signals.",
         "exit_rule": "For open positions, exit on hard stop, target/invalidation, breakdown, severe negative news, high conflict, or global risk-off.",
         "accuracy_note": "No market system can guarantee 90% accuracy; this scorecard is designed to improve expectancy by rejecting low-quality trades.",
     }

@@ -564,7 +564,7 @@ def _us_reference_momentum_ready(full: dict[str, Any]) -> bool:
         return False
     confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
     score = _float_or_none(scorecard.get("total_score") or scorecard.get("score")) or 0.0
-    return score >= 60 and (_float_or_none(confluence.get("total")) or 0.0) >= 20
+    return score >= 55 and (_float_or_none(confluence.get("total")) or 0.0) >= 18
 
 
 def _positive_fund_flow(feed: Any) -> bool:
@@ -788,6 +788,7 @@ def rule_quality_score_pct(audit: dict[str, Any]) -> float:
         "WEAK_VOLUME_RATIO": 6.0,
         "REPEATED_FAILED_BREAKOUTS": 15.0,
         "INSTITUTIONAL_SPONSORSHIP_MISSING": 12.0,
+        "US_REFERENCE_PRICE_VOLUME_ONLY": 0.0,
         "SPECULATIVE_TINY_SIZE_ONLY": 10.0,
         "EARNINGS_EVENT_DRIVEN_TINY_SIZE": 8.0,
         "POSITION_COUNT_LIMIT": 25.0,

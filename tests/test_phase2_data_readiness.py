@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
+from app.analysis_tools import _should_drop_partial_us_yahoo_daily_candle
 from app.data_readiness import assess_phase2_data_readiness
 from app.models import Candle, Quote
 from app.strategy import _llm_buy_block_reason, should_call_llm
@@ -10,6 +11,32 @@ from app.trading_rules import evaluate_rules_for_context
 
 
 class Phase2DataReadinessTests(unittest.TestCase):
+    def test_us_yahoo_partial_daily_candle_is_not_used_as_completed_volume(self) -> None:
+        candles = _candles("AAPL", "yahoo-delayed", 80)
+        candles[-1] = Candle(
+            symbol="AAPL",
+            ts="2026-05-22T13:30:00+00:00",
+            open=190,
+            high=191,
+            low=189,
+            close=190.5,
+            volume=50_000,
+            source="yahoo-delayed",
+        )
+
+        self.assertTrue(
+            _should_drop_partial_us_yahoo_daily_candle(
+                candles,
+                now=datetime(2026, 5, 22, 14, 15, tzinfo=timezone.utc),
+            )
+        )
+        self.assertFalse(
+            _should_drop_partial_us_yahoo_daily_candle(
+                candles,
+                now=datetime(2026, 5, 22, 21, 15, tzinfo=timezone.utc),
+            )
+        )
+
     def test_us_fresh_yahoo_reference_data_can_drive_buy_signal_readiness(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "AAPL", "exchange": "NASDAQ", "name": "Apple"},
