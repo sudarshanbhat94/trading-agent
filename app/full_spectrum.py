@@ -719,7 +719,7 @@ def _phase3_strategy_logic_filters(
     if not sponsorship.get("supported"):
         penalty(
             "INSTITUTIONAL_SPONSORSHIP_MISSING",
-            "institutional label is not allowed without delivery, block-deal, fund-flow, or options-accumulation evidence",
+            "flow/accumulation support is missing; do not describe the setup as institutional without proof",
             sponsorship,
             score_penalty=10.0,
             size_multiplier=0.75,
@@ -826,6 +826,8 @@ def _institutional_sponsorship(
         evidence.append("delivery institutional fingerprint")
     if delivery_bias == "accumulation" and ((delivery_score is not None and delivery_score > 0) or (delivery_pct is not None and delivery_pct >= 50)):
         evidence.append("delivery accumulation")
+    if delivery_bias == "volume_accumulation_proxy" and delivery_score is not None and delivery_score > 0:
+        evidence.append("price-volume accumulation proxy")
     if institutional_flow.get("bulk_deals"):
         evidence.append("recent bulk/block deal evidence")
     if _positive_fund_flow(institutional_flow.get("fii_dii_flow")):
@@ -847,6 +849,7 @@ def _institutional_sponsorship(
         "evidence": _unique(evidence),
         "missing_if_false": [
             "delivery accumulation/fingerprint",
+            "price-volume accumulation proxy",
             "bulk or block deal evidence",
             "positive fund-flow/FII-DII feed",
             "supportive options accumulation/OI",
@@ -1339,7 +1342,7 @@ def _risk_overrides(
     if float(macro_event_context.get("event_risk_score") or 0.0) > 0.6:
         flags.append("high_macro_event_risk")
     delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
-    if delivery_bias == "distribution":
+    if delivery_bias in {"distribution", "volume_distribution_proxy"}:
         flags.append("delivery_distribution_no_new_longs")
     if options_oi.get("buy_suppressed"):
         flags.append("options_max_pain_8pct_below_no_new_longs")
@@ -1881,12 +1884,28 @@ def _corporate_event_risk(flow: dict[str, Any]) -> dict[str, Any]:
 
 def _delivery_accumulation(flow: dict[str, Any], candles: list[Candle], delivery_data: dict[str, Any] | None = None) -> dict[str, Any]:
     if delivery_data and delivery_data.get("source") == "not_applicable_to_us_market":
+        volume_ratio = _volume_ratio([candle.volume for candle in candles if candle.volume is not None], 20) if candles else None
+        price_change = ((candles[-1].close - candles[-5].close) / candles[-5].close) * 100 if len(candles) >= 5 and candles[-5].close else None
+        if volume_ratio and volume_ratio >= 1.5 and price_change and price_change > 0:
+            bias = "volume_accumulation_proxy"
+            proxy_score = 0.35
+        elif volume_ratio and volume_ratio >= 1.5 and price_change and price_change < 0:
+            bias = "volume_distribution_proxy"
+            proxy_score = -0.35
+        else:
+            bias = "neutral"
+            proxy_score = 0.0
         return {
             **delivery_data,
-            "bias": "neutral",
-            "delivery_score": 0.0,
+            "bias": bias,
+            "net_bias": bias,
+            "volume_ratio_20": _round(volume_ratio),
+            "price_change_5_candles_pct": _round(price_change),
+            "delivery_score": proxy_score,
             "institutional_fingerprint": False,
-            "source": "not_applicable_to_us_market",
+            "source": "us_price_volume_proxy_no_delivery_data",
+            "data_gap": "delivery_not_applicable_us_equities",
+            "note": "US equities do not have NSE delivery bhavcopy; this is price-volume accumulation only, not true institutional flow.",
         }
     if delivery_data and delivery_data.get("available"):
         score_payload = delivery_data.get("score_payload") or {}

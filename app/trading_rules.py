@@ -177,18 +177,19 @@ def evaluate_rules_for_context(
     if not sponsorship.get("supported") and "INSTITUTIONAL_SPONSORSHIP_MISSING" not in active_flags:
         soft(
             "INSTITUTIONAL_SPONSORSHIP_MISSING",
-            "institutional quality is not allowed without delivery, block-deal, fund-flow, or options-accumulation evidence",
+            "flow/accumulation support is missing; do not describe the setup as institutional without proof",
             sponsorship,
         )
     delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "neutral").lower()
-    if delivery_bias == "distribution":
+    delivery_distribution = delivery_bias in {"distribution", "volume_distribution_proxy"}
+    if delivery_distribution:
         active_flags.append("DELIVERY_CONFLICT")
         delivery["delivery_conflict"] = True
         distribution_sessions = _delivery_distribution_sessions(delivery)
         if not context.get("position", {}).get("qty"):
-            hard("DELIVERY_CONFLICT", "delivery bias is distribution; do not open or add to long exposure", delivery)
+            hard("DELIVERY_CONFLICT", "delivery or price-volume bias is distribution; do not open or add to long exposure", delivery)
         else:
-            soft("DELIVERY_CONFLICT", "long position conflicts with distribution delivery; review trailing stop", delivery)
+            soft("DELIVERY_CONFLICT", "long position conflicts with distribution evidence; review trailing stop", delivery)
     else:
         distribution_sessions = 0
 
@@ -257,7 +258,7 @@ def evaluate_rules_for_context(
         "sentiment": sentiment_audit,
         "earnings": earnings,
         "classification": classification,
-        "delivery": {"bias": delivery_bias or "neutral", "conflict": delivery_bias == "distribution", "distribution_sessions": distribution_sessions},
+        "delivery": {"bias": delivery_bias or "neutral", "conflict": delivery_distribution, "distribution_sessions": distribution_sessions},
         "breakout": {"suspect": suspect_breakout, "breakout_quality": breakout.get("breakout_quality")},
         "mtf": {"alignment_grade": mtf_grade or None},
         "capital": {
@@ -383,7 +384,7 @@ def _strong_price_volume_evidence(full_spectrum: dict[str, Any]) -> bool:
     delivery = full_spectrum.get("delivery_accumulation") if isinstance(full_spectrum.get("delivery_accumulation"), dict) else {}
     scorecard = full_spectrum.get("institutional_scorecard") if isinstance(full_spectrum.get("institutional_scorecard"), dict) else {}
     delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
-    if delivery_bias == "distribution":
+    if delivery_bias in {"distribution", "volume_distribution_proxy"}:
         return False
     confluence_total = _float_or_none(confluence.get("total")) or 0.0
     scorecard_total = _float_or_none(scorecard.get("total_score") or scorecard.get("score")) or 0.0
@@ -394,7 +395,7 @@ def _strong_price_volume_evidence(full_spectrum: dict[str, Any]) -> bool:
         or breakout_volume.get("volume_confirmed")
         or breakout_volume.get("confirmed")
     )
-    delivery_accumulation = delivery_bias == "accumulation" or bool(delivery.get("institutional_fingerprint") or delivery.get("fingerprint"))
+    delivery_accumulation = delivery_bias in {"accumulation", "volume_accumulation_proxy"} or bool(delivery.get("institutional_fingerprint") or delivery.get("fingerprint"))
     return confluence_total >= 18 and (volume_confirmed or delivery_accumulation or scorecard_total >= 75)
 
 
@@ -424,11 +425,11 @@ def _missing_fundamental_momentum_profile(full_spectrum: dict[str, Any]) -> dict
         evidence.append("tradeable liquidity")
     if stage_name == "Stage2_Markup" and rs_bias == "outperforming":
         evidence.append("Stage 2 leadership with relative strength")
-    if delivery_bias == "distribution":
+    if delivery_bias in {"distribution", "volume_distribution_proxy"}:
         evidence.append("delivery distribution conflict")
     if liquidity_block:
         evidence.append("liquidity/circuit risk")
-    supported = delivery_bias != "distribution" and not liquidity_block and bool(evidence)
+    supported = delivery_bias not in {"distribution", "volume_distribution_proxy"} and not liquidity_block and bool(evidence)
     return {
         "supported": supported,
         "evidence": evidence,
@@ -517,6 +518,8 @@ def _institutional_sponsorship_from_full(full: dict[str, Any]) -> dict[str, Any]
         evidence.append("delivery institutional fingerprint")
     if delivery_bias == "accumulation" and ((delivery_score is not None and delivery_score > 0) or (delivery_pct is not None and delivery_pct >= 50)):
         evidence.append("delivery accumulation")
+    if delivery_bias == "volume_accumulation_proxy" and delivery_score is not None and delivery_score > 0:
+        evidence.append("price-volume accumulation proxy")
     if flow.get("bulk_deals"):
         evidence.append("recent bulk/block deal evidence")
     if _positive_fund_flow(flow.get("fii_dii_flow")):
@@ -538,6 +541,7 @@ def _institutional_sponsorship_from_full(full: dict[str, Any]) -> dict[str, Any]
         "evidence": _unique(evidence),
         "missing_if_false": [
             "delivery accumulation/fingerprint",
+            "price-volume accumulation proxy",
             "bulk or block deal evidence",
             "positive fund-flow/FII-DII feed",
             "supportive options accumulation/OI",
@@ -807,9 +811,9 @@ def rule_quality_score_pct(audit: dict[str, Any]) -> float:
         score -= 6.0
 
     delivery = audit.get("delivery") or {}
-    if delivery.get("bias") == "accumulation":
+    if delivery.get("bias") in {"accumulation", "volume_accumulation_proxy"}:
         score += 4.0
-    elif delivery.get("bias") == "distribution":
+    elif delivery.get("bias") in {"distribution", "volume_distribution_proxy"}:
         score -= 12.0
 
     if audit.get("institutional_quality_allowed"):

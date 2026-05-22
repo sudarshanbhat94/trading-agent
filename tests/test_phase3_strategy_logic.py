@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.full_spectrum import _false_breakout_filter, _phase3_strategy_logic_filters
+from app.full_spectrum import _delivery_accumulation, _false_breakout_filter, _phase3_strategy_logic_filters
 from app.models import Candle
 from app.trading_rules import evaluate_rules_for_context
 
@@ -137,6 +137,65 @@ class Phase3StrategyLogicTests(unittest.TestCase):
         self.assertEqual(audit["entry"]["effective_entry_grade"], "B")
         self.assertNotIn("GRADE_VIOLATION", audit["active_flags"])
 
+    def test_us_price_volume_proxy_counts_as_accumulation_support(self) -> None:
+        delivery = _delivery_accumulation(
+            {},
+            _us_accumulation_candles(),
+            {
+                "available": False,
+                "market_region": "US",
+                "source": "not_applicable_to_us_market",
+                "delivery_score": 0.0,
+                "net_bias": "neutral",
+            },
+        )
+
+        audit = _phase3_strategy_logic_filters(
+            entry_quality={"entry_grade": "A", "distance_from_pivot_pct": 1.2, "pivot": 100, "volume_confirmation": True},
+            breakout_quality={"breakout_quality": "confirmed", "volume_expansion": True, "two_day_rule_failed": False},
+            indicators={"volume_ratio_20": 2.3},
+            delivery=delivery,
+            institutional_flow={"market_bias": {"score": 0.0}, "official_announcements": [], "bulk_deals": []},
+            options_oi={"bias": "balanced", "pcr_oi": 1.0},
+            macro_event_context={},
+            fundamental={"quality_bucket": "reference_ratios_available"},
+        )
+
+        penalty_flags = {item["flag"] for item in audit["penalties"]}
+        self.assertEqual(delivery["bias"], "volume_accumulation_proxy")
+        self.assertTrue(audit["institutional_sponsorship"]["supported"])
+        self.assertIn("price-volume accumulation proxy", audit["institutional_sponsorship"]["evidence"])
+        self.assertNotIn("INSTITUTIONAL_SPONSORSHIP_MISSING", penalty_flags)
+
+    def test_us_price_volume_proxy_prevents_missing_news_from_crushing_entry(self) -> None:
+        context = _base_context()
+        context["market_region"] = "US"
+        context["sentiment"] = {}
+        context["full_spectrum_analysis"]["entry_quality"] = {
+            "entry_grade": "B",
+            "distance_from_pivot_pct": 1.2,
+            "volume_confirmation": True,
+        }
+        context["full_spectrum_analysis"]["confluence_score"] = {"total": 19, "tier": "HIGH"}
+        context["full_spectrum_analysis"]["delivery_accumulation"] = {
+            "bias": "volume_accumulation_proxy",
+            "net_bias": "volume_accumulation_proxy",
+            "delivery_score": 0.35,
+            "source": "us_price_volume_proxy_no_delivery_data",
+        }
+        context["full_spectrum_analysis"]["strategy_logic_filters"]["institutional_sponsorship"] = {
+            "supported": True,
+            "evidence": ["price-volume accumulation proxy"],
+        }
+        context["full_spectrum_analysis"]["fundamental_quality"] = {"quality_bucket": "unknown", "metrics": {}}
+
+        audit = evaluate_rules_for_context(context, {}, 100_000)
+
+        self.assertEqual(audit["sentiment"]["status"], "DATA_MISSING")
+        self.assertEqual(audit["entry"]["effective_entry_grade"], "B")
+        self.assertNotIn("GRADE_VIOLATION", audit["active_flags"])
+        self.assertNotIn("INSTITUTIONAL_SPONSORSHIP_MISSING", audit["active_flags"])
+
 
 def _base_context() -> dict:
     return {
@@ -194,6 +253,29 @@ def _failed_breakout_candles() -> list[Candle]:
                 close=close,
                 volume=1_000_000,
                 source="unit-test",
+            )
+        )
+    return candles
+
+
+def _us_accumulation_candles() -> list[Candle]:
+    candles = []
+    for index in range(25):
+        close = 100.0 + max(index - 19, 0) * 0.8
+        volume = 1_000_000
+        if index == 24:
+            volume = 2_500_000
+            close = 105.0
+        candles.append(
+            Candle(
+                symbol="USACC",
+                ts=f"2026-04-{(index % 28) + 1:02d}T00:00:00+00:00",
+                open=max(close - 0.4, 1.0),
+                high=close + 0.8,
+                low=close - 1.0,
+                close=close,
+                volume=volume,
+                source="alpaca-sip-live:day",
             )
         )
     return candles

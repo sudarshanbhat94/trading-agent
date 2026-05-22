@@ -150,7 +150,7 @@ class StrategyEngine:
                 if market_region == "US"
                 else self._delivery_context(symbol, delivery_service)
             )
-            options_data = {} if market_region == "US" else ((options_context or {}).get("symbols") or {}).get(symbol, {})
+            options_data = ((options_context or {}).get("symbols") or {}).get(symbol, {})
             sector_context = ((symbol_sector_rotation or {}).get("symbols") or {}).get(symbol, {})
             pattern_state = self._pattern_state(symbol)
             pre_filter = self._pre_filter_context(
@@ -561,7 +561,7 @@ class StrategyEngine:
             or delivery.get("bias")
             or ""
         ).lower()
-        delivery_is_distribution = delivery_bias == "distribution"
+        delivery_is_distribution = delivery_bias in {"distribution", "volume_distribution_proxy"}
         exceptional_setup = (
             confluence_total >= 22
             and scorecard_total >= 85
@@ -684,7 +684,7 @@ class StrategyEngine:
                 or breakout.get("volume_expansion")
                 or breakout_volume.get("volume_confirmed")
                 or breakout_volume.get("confirmed")
-                or delivery_bias == "accumulation"
+                or delivery_bias in {"accumulation", "volume_accumulation_proxy"}
                 or scorecard_total >= 75
             )
         )
