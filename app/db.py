@@ -15,6 +15,7 @@ from .decision_contract import current_decision_rows, normalize_trade_targets, r
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
+from .opportunity_state import is_signal_candidate_state, opportunity_state_from_signal_details
 from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, fresh_buy_quality_gate, trade_readiness_gate
 
 
@@ -5376,6 +5377,9 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
 
 def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    opportunity = details.get("opportunity_state") if isinstance(details.get("opportunity_state"), dict) else {}
+    if not opportunity:
+        opportunity = opportunity_state_from_signal_details(details)
     state = _signal_state_payload(item, details)
     execution = _execution_state_payload(item)
     setup_bucket = _setup_bucket_payload(item, details, state)
@@ -5385,12 +5389,18 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["fresh_action_label"] = state["fresh_action_label"]
     item["trade_state"] = state["trade_state"]
     item["latest_system_action"] = state["latest_system_action"]
-    item["display_reason"] = state["display_reason"]
+    item["display_reason"] = opportunity.get("summary") or state["display_reason"]
     item["execution_state"] = execution["state"]
     item["execution_state_label"] = execution["label"]
     item["execution_state_note"] = execution["note"]
     item["why_changed"] = state["why_changed"]
     item["risk_review"] = state["risk_review"]
+    item["opportunity_state"] = opportunity.get("state")
+    item["opportunity_label"] = opportunity.get("label")
+    item["opportunity_summary"] = opportunity.get("summary")
+    item["opportunity_next_step"] = opportunity.get("next_step")
+    item["opportunity_reasons"] = opportunity.get("reasons") or []
+    item["opportunity_terms"] = opportunity.get("term_explanations") or []
     item["setup_bucket"] = setup_bucket["bucket"]
     item["setup_bucket_label"] = setup_bucket["label"]
     item["setup_bucket_reason"] = setup_bucket["reason"]
@@ -5400,6 +5410,7 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
 def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: dict[str, Any]) -> dict[str, str]:
     status = str(item.get("status") or "").upper()
     signal_type = str(item.get("signal_type") or "").upper()
+    opportunity = details.get("opportunity_state") if isinstance(details.get("opportunity_state"), dict) else {}
     risk_flags = details.get("risk_flags") if isinstance(details.get("risk_flags"), list) else []
     classification = str((details.get("classification") or {}).get("classification") or "").upper() if isinstance(details.get("classification"), dict) else ""
     cap = _optional_float(details.get("allocation_cap_multiplier"))
@@ -5416,6 +5427,12 @@ def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: 
         return {"bucket": "AVOID", "label": "Avoid", "reason": "Idea is closed, invalidated, or in exit mode."}
     if state.get("trade_state") == "RISK_REVIEW":
         return {"bucket": "RISK_REVIEW", "label": "Risk Review", "reason": "Adverse move is outside normal noise; do not add without review."}
+    if opportunity and state.get("fresh_action") in {"WATCH", "NO_TRADE"}:
+        return {
+            "bucket": str(opportunity.get("state") or "WATCH"),
+            "label": str(opportunity.get("label") or "Watch"),
+            "reason": str(opportunity.get("summary") or opportunity.get("next_step") or "Setup is not actionable yet."),
+        }
     if state.get("fresh_action") == "WATCH" or state.get("trade_state") == "WATCH":
         return {"bucket": "WATCH", "label": "Watch", "reason": "Setup is not actionable yet."}
     if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and readiness.get("passed") and not risk_flags and classification != "SPECULATIVE":
@@ -5521,6 +5538,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "stop_loss": trade_plan.get("stop_loss"),
         "targets": targets,
         "risk_flags": risk.get("flags", []),
+        "active_flags": system_audit.get("active_flags", []),
         "overall_score_pct": overall_score,
         "overall_grade": overall_grade,
         "confluence": confluence_total,
@@ -5549,6 +5567,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         }
     )
     details["quality_gate"] = quality_gate
+    details["opportunity_state"] = opportunity_state_from_signal_details(details)
     signal_type = "NO_TRADE"
     status = "MONITORING"
     if action == "BUY" and not hard_blocked and quality_gate.get("passed"):
@@ -5567,7 +5586,10 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
             "reason": quality_gate.get("reason"),
             "message": quality_gate.get("message"),
         }
-    elif confluence_total >= 16 and combined >= 0.20 and float(overall_score or 0.0) >= 55 and action != "SELL":
+    elif (
+        (confluence_total >= 16 and combined >= 0.20 and float(overall_score or 0.0) >= 55)
+        or is_signal_candidate_state(details["opportunity_state"])
+    ) and action != "SELL":
         signal_type = "WATCH"
         status = "WATCH"
     else:

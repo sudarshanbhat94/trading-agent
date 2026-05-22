@@ -730,6 +730,72 @@ function humanLabel(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+const OPPORTUNITY_STATE_COPY = {
+  BUY_NOW: {
+    label: "Ready to buy",
+    summary: "Fresh-entry checks are clear: score, grade, confirmation, data, and risk all passed.",
+    next_step: "Use the entry zone, stop, targets, and position sizing shown in the trade plan.",
+  },
+  PULLBACK_BUY_ZONE: {
+    label: "Wait for pullback",
+    summary: "Good setup, wrong price. The current price is stretched from the ideal entry area.",
+    next_step: "Wait for price to come back near the entry zone, then re-check volume and risk.",
+  },
+  BREAKOUT_CONFIRMATION_NEEDED: {
+    label: "Needs breakout confirmation",
+    summary: "Potential breakout setup, but it needs stronger volume and follow-through before a BUY.",
+    next_step: "Wait for a strong close above the breakout level with better volume participation.",
+  },
+  ACTIONABLE_WATCH: {
+    label: "Strong watchlist setup",
+    summary: "Worth watching closely, but one or more entry or risk checks still needs to clear.",
+    next_step: "Keep it on watch until the remaining confirmation appears.",
+  },
+  DATA_NEEDED: {
+    label: "Missing market evidence",
+    summary: "The engine found a possible setup, but required market evidence is missing for a trade-grade decision.",
+    next_step: "Refresh or connect the missing quote, candle, volume, delivery, options, or event data before trading.",
+  },
+  EXIT: {
+    label: "Exit review",
+    summary: "The latest decision is about reducing or closing risk, not opening a new trade.",
+    next_step: "Review stop, target, and exit rules for any existing position.",
+  },
+  MONITOR: {
+    label: "Monitor only",
+    summary: "There is not enough evidence for a fresh trade yet.",
+    next_step: "Do not enter now; wait for a cleaner scan.",
+  },
+  BLOCKED: {
+    label: "Avoid for now",
+    summary: "One or more risk or quality checks blocks a fresh BUY.",
+    next_step: "Do not enter now; wait for the blocking risk to clear.",
+  },
+};
+
+function opportunityStatePayload(row = {}) {
+  const details = row.details && typeof row.details === "object" ? row.details : {};
+  const nested = details.opportunity_state && typeof details.opportunity_state === "object" ? details.opportunity_state : {};
+  const state = String(row.opportunity_state || nested.state || "").toUpperCase();
+  const fallback = OPPORTUNITY_STATE_COPY[state] || {};
+  return {
+    state,
+    label: row.opportunity_label || nested.label || fallback.label || "",
+    summary: row.opportunity_summary || nested.summary || fallback.summary || "",
+    next_step: row.opportunity_next_step || nested.next_step || fallback.next_step || "",
+    reasons: Array.isArray(row.opportunity_reasons)
+      ? row.opportunity_reasons
+      : Array.isArray(nested.reasons)
+        ? nested.reasons
+        : [],
+    terms: Array.isArray(row.opportunity_terms)
+      ? row.opportunity_terms
+      : Array.isArray(nested.term_explanations)
+        ? nested.term_explanations
+        : [],
+  };
+}
+
 function cssToken(value, fallback = "neutral") {
   const token = String(value || fallback)
     .trim()
@@ -776,6 +842,11 @@ function reasonFromSnakeCase(value, fallback = "-") {
     fundamentals_unknown_needs_news_or_delivery_confirmation: "Fundamentals are still unknown, news/sentiment is missing, and delivery accumulation is not confirmed.",
     watch_entry_needs_exceptional_confirmation: "The setup is only WATCH grade, so it needs exceptional confirmation before a BUY.",
     delivery_distribution_no_new_longs: "Delivery data shows distribution, so OpenStocks is avoiding a fresh BUY.",
+    price_extended_from_pivot: "Price is stretched from the ideal entry area, so OpenStocks is waiting for a pullback.",
+    suspect_breakout_without_volume: "The breakout does not have enough volume support yet.",
+    repeated_failed_breakouts: "Recent breakout attempts have failed, so the next entry needs stronger confirmation.",
+    low_volume_ratio: "Volume participation is weak.",
+    weak_volume_ratio: "Volume participation is below the preferred level.",
   };
   if (mapped[text]) return mapped[text];
   return compactSentence(humanLabel(text).toLowerCase());
@@ -2802,7 +2873,7 @@ function renderProviderKeysPanel(settings) {
   if (byId("admin-groq-key")) byId("admin-groq-key").placeholder = groqSaved ? "Groq key saved" : "Groq API Key";
   if (byId("admin-default-user-provider")) byId("admin-default-user-provider").value = plainSetting("user_default_llm_provider", "groq");
   if (byId("admin-default-user-model")) byId("admin-default-user-model").value = plainSetting("user_default_llm_model", "qwen/qwen3-32b");
-  if (byId("admin-runtime-provider")) byId("admin-runtime-provider").value = plainSetting("llm_provider", "deepseek");
+  if (byId("admin-runtime-provider")) byId("admin-runtime-provider").value = plainSetting("llm_provider", "offline");
 }
 
 function settingsTabForCategory(category) {
@@ -3750,7 +3821,7 @@ function renderSuggestions(rows) {
   if (!rows.length) {
     body.innerHTML = emptyBlock(
       `No ${activeMarketLabel()} signal history yet`,
-      "The shared engine will publish only ideas that survive the data, entry, risk, sentiment, and OpenStocks View gates.",
+      "The shared engine will publish only ideas that survive the data, entry, risk, sentiment, and tradeability checks.",
       "View Engine Checks",
       "decisions",
     );
@@ -3771,16 +3842,20 @@ function renderSuggestions(rows) {
             .slice(0, 3)
             .map(([key]) => humanLabel(key))
         : [];
-      const readiness = row.fresh_action_label || humanLabel(row.decision_readiness || "monitor_only");
+      const opportunity = opportunityStatePayload(row);
+      const readiness = String(row.fresh_action || "").toUpperCase() === "BUY_NOW"
+        ? "Ready to buy"
+        : opportunity.label || row.fresh_action_label || humanLabel(row.decision_readiness || "monitor_only");
       const latestSystemAction = row.latest_system_action ? String(row.latest_system_action).toUpperCase() : "";
       const followed = row.user_follow || null;
       const followedActive = followed && ["ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"].includes(String(followed.status || "").toUpperCase()) && Number(followed.qty || 0) > 0;
       const executionLabel = row.execution_state_label || (followed ? `${followed.mode} active` : "Signal Only");
-      const setupBucket = row.setup_bucket_label || "-";
+      const setupBucket = opportunity.label || row.setup_bucket_label || "-";
       const canEnterTrade = String(row.fresh_action || "").toUpperCase() === "BUY_NOW";
       const entryDisabled = canEnterTrade ? "" : "disabled";
-      const entryBlockReason = escapeHtml(row.setup_bucket_reason || row.display_reason || "Only actionable fresh BUY ideas can be paper/live entered.");
-      const tradeBlockText = canEnterTrade ? "" : shortValue(row.setup_bucket_reason || row.display_reason || "Not trade-ready", 70);
+      const entryBlockReason = escapeHtml(opportunity.next_step || row.setup_bucket_reason || row.display_reason || "Only actionable fresh BUY ideas can be paper/live entered.");
+      const tradeBlockText = canEnterTrade ? "" : shortValue(opportunity.next_step || row.setup_bucket_reason || row.display_reason || "Not trade-ready", 70);
+      const opportunityReason = opportunity.summary || row.display_reason || readableDecisionReason(row);
       const confidence = Number(row.confidence || 0) * 100;
       const currentReturn = Number(row.current_return_pct || 0);
       const peakReturn = Number(row.peak_return_pct || 0);
@@ -3816,8 +3891,8 @@ function renderSuggestions(rows) {
           <small>best ${fmtPct(peakReturn)} · worst ${fmtPct(worstReturn)} · ${latestSystemAction ? `engine ${escapeHtml(latestSystemAction)}` : `${fmtNumber(confidence)}% confidence`}</small>
         </div>
         <div class="signal-list-reason">
-          <span>Reason</span>
-          <p>${escapeHtml(shortValue(row.display_reason || readableDecisionReason(row), 170))}</p>
+          <span>${escapeHtml(opportunity.label || "Reason")}</span>
+          <p>${escapeHtml(shortValue(opportunityReason, 170))}</p>
         </div>
         <div class="signal-list-meta">
           <span>${escapeHtml(row.latest_decision_id ? `Decision #${row.latest_decision_id}` : "Decision audit")}</span>
@@ -4115,7 +4190,8 @@ function decisionFeedCardHtml(row, index, compact = false) {
   const score = decisionScorePercent(row);
   const tech = Number(row.technical_score || 0);
   const sentiment = Number(row.sentiment_score || 0);
-  const reason = shortValue(readableDecisionReason(row), compact ? 150 : 240);
+  const opportunity = opportunityStatePayload(row);
+  const reason = shortValue(opportunity.summary || readableDecisionReason(row), compact ? 150 : 240);
   const initials = symbolInitials(row.symbol);
   const scoreLabel = row.rank_reason || row.rank_score_source || "Score";
   return `<article class="decision-feed-card action-${escapeHtml(action)}" role="button" tabindex="0" data-index="${index}">
@@ -4125,6 +4201,7 @@ function decisionFeedCardHtml(row, index, compact = false) {
         <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
         ${row.company_name ? `<small>${escapeHtml(row.company_name)}</small>` : ""}
         <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
+        ${opportunity.label ? `<span class="tag neutral">${escapeHtml(opportunity.label)}</span>` : ""}
         <span class="decision-time">${escapeHtml(fmtTime(row.ts))}</span>
       </div>
       <p>${escapeHtml(reason)}</p>
@@ -4149,6 +4226,7 @@ function renderDecisionDetailPanel(row = {}) {
   const full = decisionFullSpectrum(audit);
   const market = rowMarket(row);
   const action = String(row.action || audit.final_action || "HOLD").toLowerCase();
+  const opportunity = opportunityStatePayload(row);
   const confidence = Math.max(0, Math.min(100, Number(row.confidence || audit.confidence || 0) * 100));
   const score = audit.score_breakdown || {};
   const strategyLabel = humanLabel(row.strategy || context.best_strategy?.name || "Strategy pending");
@@ -4180,8 +4258,9 @@ function renderDecisionDetailPanel(row = {}) {
     <section class="decision-radar-section">
       ${scoreRadarSvg(metrics)}
       <div class="decision-reason-block">
-        <h4>Decision Summary</h4>
-        <p>${escapeHtml(readableDecisionReason(row))}</p>
+        <h4>${escapeHtml(opportunity.label || "Decision Summary")}</h4>
+        <p>${escapeHtml(opportunity.summary || readableDecisionReason(row))}</p>
+        ${opportunity.next_step ? `<p>${escapeHtml(opportunity.next_step)}</p>` : ""}
         ${auditList("Primary Checks", decisionReasonHighlights(row).slice(0, 5))}
       </div>
     </section>
@@ -4474,6 +4553,7 @@ function suggestionDetailHtml(row) {
   const context = audit.context || {};
   const market = rowMarket(row);
   const displaySignal = row.display_signal || row.suggestion;
+  const opportunity = opportunityStatePayload(row);
   const latestSystemAction = row.latest_system_action ? String(row.latest_system_action).toUpperCase() : "";
   const whyChanged = row.why_changed || row.signal_state?.why_changed || {};
   const whyRows = [
@@ -4490,19 +4570,21 @@ function suggestionDetailHtml(row) {
       meta: `${fmtMarketMoney(row.price, market)} · ${MARKET_LABELS[market] || market} · combined ${fmtNumber(row.combined_score)}`,
     })}
     <section class="audit-section">
-      <h4>Why Suggested</h4>
-      <p>${escapeHtml(row.display_reason || readableDecisionReason(row))}</p>
+      <h4>${escapeHtml(opportunity.label || "Why Suggested")}</h4>
+      <p>${escapeHtml(opportunity.summary || row.display_reason || readableDecisionReason(row))}</p>
+      ${opportunity.next_step ? `<p>${escapeHtml(opportunity.next_step)}</p>` : ""}
       ${auditList("Main Reasons", decisionReasonHighlights(row))}
       <div class="audit-chips">
         <span>Fresh action: ${escapeHtml(row.fresh_action_label || "-")}</span>
-        <span>Setup: ${escapeHtml(row.setup_bucket_label || "-")}</span>
+        <span>Setup: ${escapeHtml(opportunity.label || row.setup_bucket_label || "-")}</span>
         <span>Execution: ${escapeHtml(row.execution_state_label || "Signal Only")}</span>
         ${latestSystemAction ? `<span>Latest engine: ${escapeHtml(latestSystemAction)}</span>` : ""}
-        <span>Readiness: ${escapeHtml(row.decision_readiness || "-")}</span>
+        <span>Next check: ${escapeHtml(opportunity.next_step || row.decision_readiness || "-")}</span>
         <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
         <span>Institutional: ${escapeHtml(flowBiasText(row.institutional_bias))}</span>
       </div>
     </section>
+    ${opportunity.terms.length ? auditList("Term Guide", opportunity.terms.map((item) => `${item.term}: ${item.meaning}`)) : ""}
     ${whyRows.length ? auditList("Why Changed", whyRows) : ""}
     ${exitPlanHtml(row.exit_plan, market)}
     ${scoreBreakdownHtml(audit.score_breakdown)}

@@ -12,7 +12,7 @@ from app.db import Database, _compact_decision_details, _paper_exit_action
 from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
-from app.strategy import StrategyEngine
+from app.strategy import StrategyEngine, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
 
 
@@ -300,7 +300,11 @@ class StrategySafetyTests(unittest.TestCase):
 
     def test_llm_shortlist_prioritizes_opportunity_scan_rank(self) -> None:
         engine = StrategyEngine.__new__(StrategyEngine)
-        engine.settings = SimpleNamespace(llm_max_symbols_per_cycle=3, dynamic_scan_candidate_limit=5)
+        engine.settings = SimpleNamespace(
+            llm_max_symbols_per_cycle=3,
+            dynamic_scan_candidate_limit=5,
+            llm_event_triggered_cycles=False,
+        )
 
         def item(symbol: str, rank: int, combined: float) -> dict[str, object]:
             return {
@@ -335,6 +339,186 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual([row["symbol"] for row in ranked[:3]], ["SCAN1", "SCAN2", "SCAN3"])
         self.assertEqual(engine._llm_candidate_symbols(ranked), {"SCAN1", "SCAN2", "SCAN3"})
+
+    def test_event_triggered_llm_shortlist_selects_only_trade_grade_event(self) -> None:
+        engine = StrategyEngine.__new__(StrategyEngine)
+        engine.settings = SimpleNamespace(
+            llm_max_symbols_per_cycle=3,
+            llm_event_triggered_cycles=True,
+            llm_max_reviews_per_market_day=12,
+            llm_symbol_cooldown_minutes=240,
+            llm_open_position_review_interval_minutes=15,
+            llm_min_trigger_score_pct=70,
+            llm_min_trigger_confluence=16,
+            llm_material_score_delta=0.08,
+            dynamic_scan_candidate_limit=5,
+        )
+        engine.sentiment = SimpleNamespace(db=_FakeStateDb())
+
+        ranked = [
+            {
+                "symbol": "READY",
+                "action": "HOLD",
+                "combined": 0.38,
+                "sentiment_score": 0.0,
+                "technical": SimpleNamespace(score=0.38),
+                "context": {
+                    "best_strategy": {"name": "volume_price_accumulation", "score": 0.38},
+                    "position": {},
+                    "data_readiness": {"trade_decision_ready": True},
+                    "decision_gate_context": {"failed_gates": []},
+                    "full_spectrum_analysis": {
+                        "confluence_score": {"total": 19},
+                        "entry_quality": {"entry_grade": "A"},
+                        "breakout_quality": {"breakout_quality": "confirmed", "volume_confirmation": True},
+                        "strategy_logic_filters": {"breakout_volume": {"volume_confirmed": True}},
+                    },
+                    "system_gate_audit": {"overall_score_pct": 82, "overall_grade": "B", "hard_blocked": False},
+                },
+                "row": {
+                    "symbol": "READY",
+                    "exchange": "NSE",
+                    "sector": "Industrials",
+                    "_opportunity_rank": 1,
+                    "_opportunity_scan": {
+                        "rank": 1,
+                        "score": 0.95,
+                        "bucket": "Actionable",
+                        "setup": "breakout_continuation",
+                        "data_quality": {"actionable_data_ready": True},
+                    },
+                },
+            }
+        ]
+
+        self.assertEqual(engine._llm_candidate_symbols(ranked), {"READY"})
+        self.assertEqual(engine._last_llm_selection_details["READY"]["reason"], "event_triggered")
+
+    def test_event_triggered_llm_shortlist_skips_ordinary_hold_symbols(self) -> None:
+        engine = StrategyEngine.__new__(StrategyEngine)
+        engine.settings = SimpleNamespace(
+            llm_max_symbols_per_cycle=3,
+            llm_event_triggered_cycles=True,
+            llm_max_reviews_per_market_day=40,
+            llm_symbol_cooldown_minutes=60,
+            llm_open_position_review_interval_minutes=15,
+            llm_min_trigger_score_pct=70,
+            llm_min_trigger_confluence=16,
+            llm_material_score_delta=0.08,
+            dynamic_scan_candidate_limit=5,
+        )
+        engine.sentiment = SimpleNamespace(db=_FakeStateDb())
+
+        ranked = [
+            {
+                "symbol": "QUIET",
+                "action": "HOLD",
+                "combined": 0.18,
+                "sentiment_score": 0.0,
+                "technical": SimpleNamespace(score=0.18),
+                "context": {
+                    "best_strategy": {"name": "no_actionable_strategy", "score": 0.18},
+                    "position": {},
+                    "full_spectrum_analysis": {"confluence_score": {"total": 9}},
+                    "system_gate_audit": {"overall_score_pct": 48, "overall_grade": "C"},
+                },
+                "row": {"symbol": "QUIET", "exchange": "NSE", "sector": "Industrials"},
+            }
+        ]
+
+        self.assertEqual(engine._llm_candidate_symbols(ranked), set())
+        self.assertEqual(engine._last_llm_selection_details["QUIET"]["reason"], "no_material_llm_event")
+
+    def test_event_triggered_llm_shortlist_blocks_untradeable_trigger(self) -> None:
+        engine = StrategyEngine.__new__(StrategyEngine)
+        engine.settings = SimpleNamespace(
+            llm_max_symbols_per_cycle=3,
+            llm_event_triggered_cycles=True,
+            llm_max_reviews_per_market_day=12,
+            llm_symbol_cooldown_minutes=240,
+            llm_open_position_review_interval_minutes=15,
+            llm_min_trigger_score_pct=70,
+            llm_min_trigger_confluence=16,
+            llm_material_score_delta=0.08,
+            dynamic_scan_candidate_limit=5,
+        )
+        engine.sentiment = SimpleNamespace(db=_FakeStateDb())
+
+        ranked = [
+            {
+                "symbol": "BLOCKED",
+                "action": "BUY",
+                "combined": 0.45,
+                "sentiment_score": 0.0,
+                "technical": SimpleNamespace(score=0.45),
+                "context": {
+                    "best_strategy": {"name": "volume_price_accumulation", "score": 0.45},
+                    "position": {},
+                    "data_readiness": {"trade_decision_ready": False},
+                    "decision_gate_context": {"failed_gates": [{"gate": "phase2_data_readiness"}]},
+                    "full_spectrum_analysis": {
+                        "confluence_score": {"total": 20},
+                        "entry_quality": {"entry_grade": "A"},
+                        "breakout_quality": {"breakout_quality": "confirmed", "volume_confirmation": True},
+                    },
+                    "system_gate_audit": {"overall_score_pct": 84, "overall_grade": "A", "hard_blocked": True},
+                },
+                "row": {"symbol": "BLOCKED", "exchange": "NSE", "sector": "Industrials"},
+            }
+        ]
+
+        self.assertEqual(engine._llm_candidate_symbols(ranked), set())
+        self.assertEqual(engine._last_llm_selection_details["BLOCKED"]["reason"], "entry_not_trade_ready")
+
+    def test_event_triggered_llm_shortlist_respects_symbol_cooldown(self) -> None:
+        now = utc_now()
+        db = _FakeStateDb(
+            {
+                "llm_symbol_review_state": {
+                    "symbols": {
+                        "COOL": {
+                            "last_reviewed_at": now,
+                            "last_score": 0.42,
+                            "last_action": "BUY",
+                        }
+                    },
+                    "daily_budget": {"date": now[:10], "reviews": 1},
+                }
+            }
+        )
+        engine = StrategyEngine.__new__(StrategyEngine)
+        engine.settings = SimpleNamespace(
+            llm_max_symbols_per_cycle=3,
+            llm_event_triggered_cycles=True,
+            llm_max_reviews_per_market_day=40,
+            llm_symbol_cooldown_minutes=60,
+            llm_open_position_review_interval_minutes=15,
+            llm_min_trigger_score_pct=70,
+            llm_min_trigger_confluence=16,
+            llm_material_score_delta=0.08,
+            dynamic_scan_candidate_limit=5,
+        )
+        engine.sentiment = SimpleNamespace(db=db)
+
+        ranked = [
+            {
+                "symbol": "COOL",
+                "action": "BUY",
+                "combined": 0.42,
+                "sentiment_score": 0.0,
+                "technical": SimpleNamespace(score=0.42),
+                "context": {
+                    "best_strategy": {"name": "volume_price_accumulation", "score": 0.42},
+                    "position": {},
+                    "full_spectrum_analysis": {"confluence_score": {"total": 18}},
+                    "system_gate_audit": {"overall_score_pct": 76, "overall_grade": "B"},
+                },
+                "row": {"symbol": "COOL", "exchange": "NSE", "sector": "Industrials"},
+            }
+        ]
+
+        self.assertEqual(engine._llm_candidate_symbols(ranked), set())
+        self.assertEqual(engine._last_llm_selection_details["COOL"]["reason"], "symbol_llm_cooldown_active")
 
     def test_opportunity_scan_rejects_stale_quotes(self) -> None:
         scanner = OpportunityScanner(_scanner_settings())
@@ -460,7 +644,143 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(row["display_signal"], "Watch")
         self.assertEqual(row["fresh_action"], "WATCH")
         self.assertEqual(row["setup_bucket"], "WATCH")
-        self.assertIn("Phase-2 data readiness", row["display_reason"])
+        self.assertEqual(row["opportunity_label"], "Missing market evidence")
+        self.assertIn("required market evidence is missing", row["display_reason"])
+
+    def test_extended_high_confluence_setup_becomes_pullback_watch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            decision = Decision(
+                symbol="PULLBACK",
+                action="HOLD",
+                confidence=0.62,
+                price=112.0,
+                technical_score=0.42,
+                sentiment_score=0.0,
+                reason="extended setup should wait for pullback",
+                asof=utc_now(),
+                strategy="volume_price_accumulation",
+                details_json=json.dumps(
+                    {
+                        "score_breakdown": {"combined": 0.24, "score_percent": 68},
+                        "system_gate_audit": {
+                            "overall_score_pct": 68,
+                            "overall_grade": "B",
+                            "hard_blocked": True,
+                            "active_flags": ["PRICE_EXTENDED_FROM_PIVOT"],
+                            "hard_blocks": [{"flag": "PRICE_EXTENDED_FROM_PIVOT", "reason": "price_extended_from_pivot"}],
+                            "data_readiness": {"trade_decision_ready": True, "grade": "A"},
+                        },
+                        "context": {
+                            "data_readiness": {"trade_decision_ready": True, "grade": "A"},
+                            "decision_gate_context": {
+                                "failed_gates": [
+                                    {"gate": "entry_grade_gate", "reason": "extended_entry_no_new_longs"}
+                                ]
+                            },
+                            "full_spectrum_analysis": {
+                                "confluence_score": {"total": 19, "tier": "HIGH_CONVICTION"},
+                                "trade_plan": {"entry_zone": [104, 107], "stop_loss": 99, "targets": [{"price": 118}]},
+                                "entry_quality": {"entry_grade": "D", "distance_from_pivot_pct": 6.4},
+                                "breakout_quality": {"breakout_quality": "confirmed", "volume_confirmation": True},
+                                "strategy_logic_filters": {"passed": True},
+                                "risk_overrides": {"flags": []},
+                            },
+                        },
+                    }
+                ),
+            )
+
+            db.upsert_signal_ideas_from_decisions([decision])
+            [row] = db.latest_signal_ideas(5)
+
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["opportunity_state"], "PULLBACK_BUY_ZONE")
+        self.assertEqual(row["opportunity_label"], "Wait for pullback")
+        self.assertIn("wrong price", row["opportunity_summary"])
+        self.assertNotIn("PULLBACK_BUY_ZONE", row["setup_bucket_label"])
+
+    def test_suspect_breakout_setup_gets_confirmation_explanation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            decision = Decision(
+                symbol="CONFIRM",
+                action="HOLD",
+                confidence=0.58,
+                price=88.0,
+                technical_score=0.35,
+                sentiment_score=0.0,
+                reason="breakout needs volume",
+                asof=utc_now(),
+                strategy="breakout_continuation",
+                details_json=json.dumps(
+                    {
+                        "score_breakdown": {"combined": 0.22, "score_percent": 64},
+                        "system_gate_audit": {
+                            "overall_score_pct": 64,
+                            "overall_grade": "B",
+                            "hard_blocked": True,
+                            "active_flags": ["SUSPECT_BREAKOUT_WITHOUT_VOLUME"],
+                            "hard_blocks": [{"flag": "SUSPECT_BREAKOUT_WITHOUT_VOLUME"}],
+                            "data_readiness": {"trade_decision_ready": True, "grade": "A"},
+                        },
+                        "context": {
+                            "data_readiness": {"trade_decision_ready": True, "grade": "A"},
+                            "decision_gate_context": {
+                                "failed_gates": [
+                                    {"gate": "breakout_volume_gate", "reason": "suspect_breakout_without_volume"}
+                                ]
+                            },
+                            "full_spectrum_analysis": {
+                                "confluence_score": {"total": 18, "tier": "HIGH"},
+                                "trade_plan": {"entry_zone": [88, 90], "stop_loss": 84, "targets": [{"price": 96}]},
+                                "entry_quality": {"entry_grade": "B", "distance_from_pivot_pct": 1.8},
+                                "breakout_quality": {"breakout_quality": "suspect", "volume_confirmation": False},
+                                "strategy_logic_filters": {"breakout_volume": {"suspect_without_volume": True}},
+                                "risk_overrides": {"flags": []},
+                            },
+                        },
+                    }
+                ),
+            )
+
+            db.upsert_signal_ideas_from_decisions([decision])
+            [row] = db.latest_signal_ideas(5)
+
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["opportunity_state"], "BREAKOUT_CONFIRMATION_NEEDED")
+        self.assertEqual(row["opportunity_label"], "Needs breakout confirmation")
+        self.assertIn("volume", row["opportunity_next_step"].lower())
+
+    def test_performance_feedback_requires_strong_sample_before_hard_block(self) -> None:
+        self.assertIsNone(
+            _performance_feedback_block(
+                {
+                    "selected_strategy_market": {
+                        "key": "IN:volume_price_accumulation",
+                        "closed_trades": 9,
+                        "expectancy_pct": 0.34,
+                        "stop_hit_rate": 0.67,
+                        "win_rate": 0.44,
+                    }
+                }
+            )
+        )
+        self.assertIsNotNone(
+            _performance_feedback_block(
+                {
+                    "selected_strategy_market": {
+                        "key": "IN:volume_price_accumulation",
+                        "closed_trades": 22,
+                        "expectancy_pct": -0.4,
+                        "stop_hit_rate": 0.68,
+                        "win_rate": 0.32,
+                    }
+                }
+            )
+        )
 
     def test_mfe_profit_protection_blocks_winner_round_trip(self) -> None:
         action = _paper_exit_action(
@@ -490,6 +810,17 @@ def _scanner_settings() -> SimpleNamespace:
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,
     )
+
+
+class _FakeStateDb:
+    def __init__(self, state: dict | None = None) -> None:
+        self.state = state or {}
+
+    def get_state(self, key: str, default: object = None) -> object:
+        return self.state.get(key, default)
+
+    def set_state(self, key: str, value: object) -> None:
+        self.state[key] = value
 
 
 def _full_spectrum_summary() -> dict:

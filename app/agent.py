@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from types import SimpleNamespace
 from uuid import uuid4
 
 from .decision_contract import normalize_trade_targets
@@ -478,6 +480,21 @@ class TradingAgentService:
         self._cycle_phase = "strategy_and_llm"
         shared_usage_after_id = self.db.latest_llm_usage_id()
         shared_usage_scope = f"shared_agent_cycle:{uuid4().hex}"
+        funding_precheck = self._shared_llm_cycle_funding_status()
+        original_strategy_settings = getattr(self.strategy, "settings", None)
+        original_llm_settings = getattr(getattr(self.strategy, "llm", None), "settings", None)
+        if funding_precheck.get("skip_llm"):
+            disabled_settings = _settings_with_llm_api_disabled(original_strategy_settings)
+            self.strategy.settings = disabled_settings
+            if getattr(self.strategy, "llm", None) is not None:
+                self.strategy.llm.settings = disabled_settings
+            self._log(
+                "WARNING",
+                "credits",
+                "shared_llm_cycle_unfunded_skipped",
+                "Shared AI cycle skipped LLM review because no active user could fund the estimated token spend",
+                funding_precheck,
+            )
         shared_scope_token = current_llm_usage_scope.set(shared_usage_scope)
         shared_user_token = current_user_id.set(None)
         try:
@@ -503,6 +520,10 @@ class TradingAgentService:
         finally:
             current_user_id.reset(shared_user_token)
             current_llm_usage_scope.reset(shared_scope_token)
+            if funding_precheck.get("skip_llm"):
+                self.strategy.settings = original_strategy_settings
+                if getattr(self.strategy, "llm", None) is not None:
+                    self.strategy.llm.settings = original_llm_settings
         shared_llm_usage = self.db.llm_usage_cost_for_system_scope(shared_usage_scope, shared_usage_after_id)
         decisions = self.db.suppress_repeated_buy_decisions(decisions)
         action_counts: dict[str, int] = {}
@@ -540,6 +561,7 @@ class TradingAgentService:
             universe,
             shared_usage_scope,
         )
+        shared_auto_trade["credit_billing"]["funding_precheck"] = funding_precheck
         if unsafe_follow_exits:
             shared_auto_trade["safety_exited"] = [
                 {
@@ -1075,6 +1097,77 @@ class TradingAgentService:
             summary,
         )
         return summary
+
+    def _shared_llm_cycle_funding_status(self) -> dict[str, Any]:
+        settings = getattr(self.strategy, "settings", None)
+        if not bool(getattr(settings, "llm_require_funded_shared_cycle", True)):
+            return {"required": False, "funded": True, "skip_llm": False}
+        if str(getattr(settings, "llm_provider", "offline") or "offline").lower() == "offline":
+            return {"required": True, "funded": True, "skip_llm": False, "reason": "llm_provider_offline"}
+        if str(getattr(settings, "llm_decision_mode", "offline") or "offline").lower() == "offline":
+            return {"required": True, "funded": True, "skip_llm": False, "reason": "llm_decision_mode_offline"}
+
+        estimated_reviews = max(int(getattr(settings, "llm_max_symbols_per_cycle", 8) or 8), 1)
+        estimated_tokens_per_review = max(int(getattr(settings, "llm_event_review_estimated_tokens", 12000) or 12000), 1000)
+        estimated_usage = {
+            "calls": estimated_reviews,
+            "total_tokens": estimated_reviews * estimated_tokens_per_review,
+            "cost_usd": 0.0,
+        }
+        billing = credit_breakdown_for_usage(
+            estimated_usage,
+            tokens_per_credit=getattr(settings, "credit_tokens_per_credit", 10),
+            margin_pct=getattr(settings, "credit_platform_margin_pct", 0.20),
+        )
+        users = [
+            user
+            for user in self.db.list_users()
+            if user.get("role") != "admin" and user.get("active")
+        ]
+        if not users:
+            return {
+                "required": True,
+                "funded": False,
+                "skip_llm": True,
+                "reason": "no_active_users_to_fund_shared_llm_cycle",
+                "estimated_reviews": estimated_reviews,
+                "estimated_tokens": estimated_usage["total_tokens"],
+                "estimated_credits": billing.get("charged_credits", 0.0),
+            }
+
+        per_user_credits = float(billing.get("charged_credits") or 0.0) / max(len(users), 1)
+        funded_users = []
+        skipped_users = []
+        for user in users:
+            user_id = int(user["id"])
+            can_spend, credit_summary = self.db.user_has_credit_for(user_id, per_user_credits)
+            if can_spend:
+                funded_users.append(user_id)
+            else:
+                skipped_users.append(
+                    {
+                        "user_id": user_id,
+                        "username": user.get("username"),
+                        "reason": "insufficient_credits_or_daily_budget",
+                        "required_credits": round(per_user_credits, 6),
+                        "balance": credit_summary.get("credit_balance"),
+                        "daily_remaining": credit_summary.get("daily_credits_remaining"),
+                    }
+                )
+        funded = bool(funded_users)
+        return {
+            "required": True,
+            "funded": funded,
+            "skip_llm": not funded,
+            "reason": None if funded else "no_active_user_can_fund_estimated_shared_llm_cycle",
+            "participant_count": len(users),
+            "funded_user_count": len(funded_users),
+            "skipped_users": skipped_users[:12],
+            "estimated_reviews": estimated_reviews,
+            "estimated_tokens": estimated_usage["total_tokens"],
+            "estimated_credits": billing.get("charged_credits", 0.0),
+            "estimated_per_user_credits": round(per_user_credits, 6),
+        }
 
     def _auto_exit_followed_signal_ideas_for_user(
         self,
@@ -2253,6 +2346,22 @@ def _shared_llm_activity_from_decisions(decisions: list[Decision], usage: dict[s
         "billable": billable,
         "latest_failure": latest_reason,
     }
+
+
+def _settings_with_llm_api_disabled(settings: Any) -> Any:
+    overrides = {"deepseek_api_key": "", "groq_api_key": ""}
+    if settings is None:
+        return SimpleNamespace(**overrides)
+    if is_dataclass(settings) and not isinstance(settings, type):
+        valid_overrides = {key: value for key, value in overrides.items() if hasattr(settings, key)}
+        return replace(settings, **valid_overrides)
+    values = dict(getattr(settings, "__dict__", {}) or {})
+    values.update(overrides)
+    if "llm_provider" not in values:
+        values["llm_provider"] = getattr(settings, "llm_provider", "offline")
+    if "llm_decision_mode" not in values:
+        values["llm_decision_mode"] = getattr(settings, "llm_decision_mode", "offline")
+    return SimpleNamespace(**values)
 
 
 def _int_or_none(value: Any) -> int | None:

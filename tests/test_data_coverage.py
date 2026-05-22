@@ -140,6 +140,24 @@ class DataCoverageTests(unittest.TestCase):
             self.assertEqual(ledger[0]["description"], "Shared AI opportunity cycle")
             self.assertAlmostEqual(-ledger[0]["amount"], 50.0)
 
+    def test_shared_ai_cycle_precheck_skips_llm_when_no_user_can_fund_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "billing.db")
+            db.init()
+            db.create_user("empty", "hash", role="user", active=True)
+            agent = _billing_agent(db)
+            agent.strategy.settings.llm_require_funded_shared_cycle = True
+            agent.strategy.settings.llm_provider = "deepseek"
+            agent.strategy.settings.llm_decision_mode = "primary"
+            agent.strategy.settings.llm_max_symbols_per_cycle = 8
+            agent.strategy.settings.llm_event_review_estimated_tokens = 12000
+
+            status = agent._shared_llm_cycle_funding_status()
+
+        self.assertTrue(status["skip_llm"])
+        self.assertEqual(status["reason"], "no_active_user_can_fund_estimated_shared_llm_cycle")
+        self.assertEqual(status["estimated_tokens"], 96000)
+
     def test_opportunity_scan_summary_splits_enabled_counts_by_market(self) -> None:
         summary = {
             "enabled": True,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .analysis_tools import build_symbol_tool_context, deterministic_score, deterministic_score_breakdown
@@ -240,6 +240,7 @@ class StrategyEngine:
             }
 
         llm_candidate_symbols: set[str] = set()
+        llm_selection_details: dict[str, dict[str, Any]] = {}
         if llm_primary:
             llm_prefilter_skips = {
                 item["symbol"]: _llm_prefilter_reason(item)
@@ -250,6 +251,7 @@ class StrategyEngine:
             for reason in llm_prefilter_skips.values():
                 llm_skip_reasons[str(reason).split(":", 1)[0]] += 1
             llm_candidate_symbols = self._llm_candidate_symbols(ranked)
+            llm_selection_details = getattr(self, "_last_llm_selection_details", {}) or {}
             self._log_pre_filter(
                 "llm_candidates_selected",
                 {
@@ -260,6 +262,11 @@ class StrategyEngine:
                     "symbols_scanned": len(scan_items),
                     "prefilter_skipped": len(llm_prefilter_skips),
                     "prefilter_skip_reasons": dict(llm_skip_reasons),
+                    "event_triggered": bool(getattr(self.settings, "llm_event_triggered_cycles", True)),
+                    "selection_details": {
+                        symbol: llm_selection_details.get(symbol, {})
+                        for symbol in sorted(llm_candidate_symbols)
+                    },
                     "provider": self.settings.llm_provider,
                     "model": self.llm.model,
                 },
@@ -277,6 +284,7 @@ class StrategyEngine:
 
         for item in scan_items:
             context = item["context"]
+            selection_detail = llm_selection_details.get(item["symbol"], {})
             context["llm_primary_selection"] = {
                 "required": llm_primary_required,
                 "enabled": llm_primary,
@@ -284,10 +292,15 @@ class StrategyEngine:
                 "candidate_limit": self.settings.llm_max_symbols_per_cycle,
                 "prefilter_passed": should_call_llm(item),
                 "prefilter_reason": _llm_prefilter_reason(item),
+                "event_triggered": bool(getattr(self.settings, "llm_event_triggered_cycles", True)),
+                "event_review": selection_detail or None,
             }
             blocked_by_llm_primary = False
             llm_block_reason: str | None = None
             if llm_primary and item["symbol"] in llm_candidate_symbols:
+                context["llm_prompt_profile"] = str(
+                    getattr(self.settings, "llm_cycle_prompt_profile", "compact") or "compact"
+                ).strip().lower()
                 llm_prefilter_reason = _llm_prefilter_reason(item)
                 if llm_prefilter_reason is not None:
                     blocked_by_llm_primary = item["action"] != "HOLD"
@@ -1152,6 +1165,10 @@ class StrategyEngine:
         limit = max(int(self.settings.llm_max_symbols_per_cycle or 1), 1)
         selected: list[str] = []
         eligible = [item for item in ranked if should_call_llm(item)]
+        self._last_llm_selection_details = {}
+        if bool(getattr(self.settings, "llm_event_triggered_cycles", True)):
+            return self._event_triggered_llm_candidate_symbols(eligible, limit)
+
         sector_counts: dict[str, int] = defaultdict(int)
         strategy_counts: dict[str, int] = defaultdict(int)
         sector_cap = max(2, limit // 4)
@@ -1191,6 +1208,417 @@ class StrategyEngine:
         if len(selected) < limit:
             add(eligible, diversify=False)
         return set(selected)
+
+    def _event_triggered_llm_candidate_symbols(self, eligible: list[dict[str, Any]], limit: int) -> set[str]:
+        now = datetime.now(timezone.utc)
+        state = self._llm_review_state()
+        symbols_state = state.setdefault("symbols", {})
+        daily_budget = self._llm_daily_budget(state, now)
+        daily_limit = max(int(getattr(self.settings, "llm_max_reviews_per_market_day", 40) or 0), 0)
+        remaining = max(daily_limit - int(daily_budget.get("reviews") or 0), 0) if daily_limit else limit
+        if remaining <= 0:
+            self._last_llm_selection_details = {
+                item["symbol"]: {
+                    "triggered": False,
+                    "selected": False,
+                    "reason": "daily_llm_review_budget_exhausted",
+                    "daily_review_budget": {
+                        "date": daily_budget.get("date"),
+                        "used": int(daily_budget.get("reviews") or 0),
+                        "limit": daily_limit,
+                    },
+                }
+                for item in eligible[:limit]
+            }
+            return set()
+
+        selected: list[str] = []
+        details: dict[str, dict[str, Any]] = {}
+        sector_counts: dict[str, int] = defaultdict(int)
+        strategy_counts: dict[str, int] = defaultdict(int)
+        sector_cap = max(2, limit // 4)
+        strategy_cap = max(2, limit // 3)
+
+        evaluated: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for item in eligible:
+            symbol = str(item.get("symbol") or "").upper()
+            trigger = self._llm_event_trigger(item, symbols_state.get(symbol) or {}, now)
+            details[symbol] = trigger
+            if trigger.get("triggered"):
+                evaluated.append((item, trigger))
+
+        buckets = [
+            sorted(
+                [(item, trigger) for item, trigger in evaluated if self._has_open_position(item)],
+                key=lambda pair: self._exit_review_priority(pair[0]),
+                reverse=True,
+            ),
+            [(item, trigger) for item, trigger in evaluated if item.get("action") != "HOLD" and not self._has_open_position(item)],
+            [(item, trigger) for item, trigger in evaluated if item.get("action") == "HOLD" and not self._has_open_position(item)],
+        ]
+
+        def add(items: list[tuple[dict[str, Any], dict[str, Any]]], *, diversify: bool) -> None:
+            for item, trigger in items:
+                symbol = str(item.get("symbol") or "").upper()
+                if not symbol or symbol in selected:
+                    continue
+                sector = str((item.get("row") or {}).get("sector") or (item.get("context") or {}).get("sector") or "unknown")
+                strategy = str(((item.get("context") or {}).get("best_strategy") or {}).get("name") or item.get("strategy") or "unknown")
+                if diversify and (
+                    sector_counts[sector] >= sector_cap
+                    or strategy_counts[strategy] >= strategy_cap
+                ):
+                    continue
+                selected.append(symbol)
+                sector_counts[sector] += 1
+                strategy_counts[strategy] += 1
+                trigger["selected"] = True
+                trigger["daily_review_budget"] = {
+                    "date": daily_budget.get("date"),
+                    "used_before": int(daily_budget.get("reviews") or 0),
+                    "limit": daily_limit,
+                }
+                if len(selected) >= min(limit, remaining):
+                    return
+
+        for bucket in buckets:
+            if len(selected) >= min(limit, remaining):
+                break
+            add(bucket, diversify=True)
+            if len(selected) >= min(limit, remaining):
+                break
+            add(bucket, diversify=False)
+
+        if selected:
+            for symbol in selected:
+                item_detail = details.get(symbol) or {}
+                symbols_state[symbol] = {
+                    **(symbols_state.get(symbol) or {}),
+                    "last_reviewed_at": now.isoformat(),
+                    "last_score": item_detail.get("current_score"),
+                    "last_action": item_detail.get("current_action"),
+                    "last_strategy": item_detail.get("strategy"),
+                    "last_triggers": item_detail.get("triggers", []),
+                    "last_position_signature": item_detail.get("position_signature"),
+                    "market_region": item_detail.get("market_region"),
+                }
+            daily_budget["reviews"] = int(daily_budget.get("reviews") or 0) + len(selected)
+            state["daily_budget"] = daily_budget
+            self._save_llm_review_state(state)
+
+        self._last_llm_selection_details = details
+        return set(selected)
+
+    def _llm_event_trigger(
+        self,
+        item: dict[str, Any],
+        previous: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        context = item.get("context") if isinstance(item.get("context"), dict) else {}
+        row = item.get("row") if isinstance(item.get("row"), dict) else {}
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        rule_audit = context.get("system_gate_audit") if isinstance(context.get("system_gate_audit"), dict) else {}
+        confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
+        entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+        breakout = full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {}
+        strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
+        current_score = _float_or_none(item.get("combined")) or 0.0
+        previous_score = _float_or_none(previous.get("last_score"))
+        score_delta = abs(current_score - previous_score) if previous_score is not None else None
+        material_delta = score_delta is not None and score_delta >= float(getattr(self.settings, "llm_material_score_delta", 0.08) or 0.08)
+        action = str(item.get("action") or "HOLD").upper()
+        strategy = str((context.get("best_strategy") or {}).get("name") or item.get("strategy") or "unknown")
+        overall_score_pct = _float_or_none(rule_audit.get("overall_score_pct")) or 0.0
+        overall_grade = str(rule_audit.get("overall_grade") or "").upper()
+        confluence_total = _float_or_none(confluence.get("total")) or 0.0
+        triggers: list[str] = []
+        market_region = market_region_for_row(row) if row else str(context.get("market_region") or "").upper()
+        position_signature = self._llm_position_signature(item)
+
+        if self._has_open_position(item):
+            last_position_review = _parse_time(previous.get("last_reviewed_at"))
+            interval_minutes = max(int(getattr(self.settings, "llm_open_position_review_interval_minutes", 15) or 15), 1)
+            due = last_position_review is None or (now - last_position_review).total_seconds() >= interval_minutes * 60
+            changed = previous.get("last_position_signature") != position_signature
+            if due:
+                triggers.append("open_position_review_interval_due")
+            if changed:
+                triggers.append("open_position_state_changed")
+            return {
+                "triggered": bool(triggers),
+                "selected": False,
+                "reason": "open_position_needs_review" if triggers else "open_position_review_interval_not_due",
+                "triggers": triggers,
+                "current_score": round(current_score, 6),
+                "previous_score": previous_score,
+                "score_delta": round(score_delta, 6) if score_delta is not None else None,
+                "current_action": action,
+                "strategy": strategy,
+                "position_signature": position_signature,
+                "market_region": market_region,
+            }
+
+        if action != "HOLD":
+            triggers.append(f"deterministic_{action.lower()}")
+        if overall_score_pct >= float(getattr(self.settings, "llm_min_trigger_score_pct", 70.0) or 70.0) and confluence_total >= float(
+            getattr(self.settings, "llm_min_trigger_confluence", 16.0) or 16.0
+        ):
+            triggers.append("quality_score_confluence_threshold")
+        opportunity_trigger = self._llm_opportunity_trigger(row)
+        if opportunity_trigger:
+            triggers.append(opportunity_trigger)
+        news_trigger = self._llm_news_trigger(context, item)
+        if news_trigger:
+            triggers.append(news_trigger)
+        if material_delta:
+            triggers.append("material_score_change")
+        if previous.get("last_action") and str(previous.get("last_action")).upper() != action:
+            triggers.append("action_changed")
+
+        triggers = list(dict.fromkeys(triggers))
+        if not triggers:
+            return {
+                "triggered": False,
+                "selected": False,
+                "reason": "no_material_llm_event",
+                "triggers": [],
+                "current_score": round(current_score, 6),
+                "previous_score": previous_score,
+                "score_delta": round(score_delta, 6) if score_delta is not None else None,
+                "overall_score_pct": overall_score_pct,
+                "overall_grade": overall_grade,
+                "confluence": confluence_total,
+                "current_action": action,
+                "strategy": strategy,
+                "position_signature": position_signature,
+                "market_region": market_region,
+            }
+
+        cooldown_minutes = max(int(getattr(self.settings, "llm_symbol_cooldown_minutes", 240) or 240), 1)
+        last_review = _parse_time(previous.get("last_reviewed_at"))
+        cooldown_until = last_review + timedelta(minutes=cooldown_minutes) if last_review else None
+        cooldown_active = bool(cooldown_until and now < cooldown_until)
+        if cooldown_active and not material_delta and "action_changed" not in triggers:
+            return {
+                "triggered": False,
+                "selected": False,
+                "reason": "symbol_llm_cooldown_active",
+                "triggers": triggers,
+                "cooldown": {
+                    "active": True,
+                    "until": cooldown_until.isoformat() if cooldown_until else None,
+                    "minutes": cooldown_minutes,
+                },
+                "current_score": round(current_score, 6),
+                "previous_score": previous_score,
+                "score_delta": round(score_delta, 6) if score_delta is not None else None,
+                "current_action": action,
+                "strategy": strategy,
+                "position_signature": position_signature,
+                "market_region": market_region,
+            }
+
+        entry_block_reason = self._llm_entry_review_block_reason(
+            context=context,
+            item=item,
+            overall_score_pct=overall_score_pct,
+            overall_grade=overall_grade,
+            confluence_total=confluence_total,
+        )
+        if entry_block_reason:
+            return {
+                "triggered": False,
+                "selected": False,
+                "reason": entry_block_reason,
+                "triggers": triggers,
+                "current_score": round(current_score, 6),
+                "previous_score": previous_score,
+                "score_delta": round(score_delta, 6) if score_delta is not None else None,
+                "overall_score_pct": overall_score_pct,
+                "overall_grade": overall_grade,
+                "confluence": confluence_total,
+                "entry_grade": entry.get("entry_grade") or entry.get("grade"),
+                "breakout_quality": breakout.get("breakout_quality"),
+                "breakout_volume": strategy_logic.get("breakout_volume") if isinstance(strategy_logic.get("breakout_volume"), dict) else None,
+                "current_action": action,
+                "strategy": strategy,
+                "position_signature": position_signature,
+                "market_region": market_region,
+            }
+
+        return {
+            "triggered": bool(triggers),
+            "selected": False,
+            "reason": "event_triggered" if triggers else "no_material_llm_event",
+            "triggers": triggers,
+            "cooldown": {
+                "active": False,
+                "until": cooldown_until.isoformat() if cooldown_until else None,
+                "minutes": cooldown_minutes,
+            },
+            "current_score": round(current_score, 6),
+            "previous_score": previous_score,
+            "score_delta": round(score_delta, 6) if score_delta is not None else None,
+            "overall_score_pct": overall_score_pct,
+            "overall_grade": overall_grade,
+            "confluence": confluence_total,
+            "entry_grade": entry.get("entry_grade"),
+            "breakout_quality": breakout.get("breakout_quality"),
+            "breakout_volume": strategy_logic.get("breakout_volume") if isinstance(strategy_logic.get("breakout_volume"), dict) else None,
+            "current_action": action,
+            "strategy": strategy,
+            "position_signature": position_signature,
+            "market_region": market_region,
+        }
+
+    def _llm_opportunity_trigger(self, row: dict[str, Any]) -> str | None:
+        scan = row.get("_opportunity_scan") if isinstance(row, dict) else None
+        if not isinstance(scan, dict):
+            return None
+        bucket = str(scan.get("bucket") or "").strip().lower()
+        setup = str(scan.get("setup") or "").strip().lower()
+        data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        if bucket == "actionable" and setup in {"breakout_continuation", "near_breakout", "news_catalyst"}:
+            if data_quality and data_quality.get("actionable_data_ready") is False:
+                return None
+            return f"opportunity_scan_{setup}"
+        return None
+
+    def _llm_news_trigger(self, context: dict[str, Any], item: dict[str, Any]) -> str | None:
+        sentiment = context.get("sentiment") if isinstance(context.get("sentiment"), dict) else {}
+        if not sentiment:
+            sentiment = item.get("sentiment_detail") if isinstance(item.get("sentiment_detail"), dict) else {}
+        confidence = _float_or_none(sentiment.get("confidence")) or 0.0
+        score = _float_or_none(sentiment.get("score")) or _float_or_none(item.get("sentiment_score")) or 0.0
+        events = sentiment.get("events") if isinstance(sentiment.get("events"), list) else []
+        verified_positive_events = [
+            event
+            for event in events
+            if isinstance(event, dict)
+            and (_float_or_none(event.get("confidence")) or confidence) >= 0.45
+            and (_float_or_none(event.get("score")) or _float_or_none(event.get("weighted_score")) or score) >= 0.25
+        ]
+        if verified_positive_events:
+            return "verified_positive_news_event"
+        if score >= 0.30 and confidence >= 0.55 and int(sentiment.get("headline_count") or 0) > 0:
+            return "high_confidence_positive_news"
+        return None
+
+    def _llm_entry_review_block_reason(
+        self,
+        *,
+        context: dict[str, Any],
+        item: dict[str, Any],
+        overall_score_pct: float,
+        overall_grade: str,
+        confluence_total: float,
+    ) -> str | None:
+        data_readiness = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+        if not data_readiness:
+            return "entry_data_readiness_missing"
+        if data_readiness.get("trade_decision_ready") is not True:
+            return "entry_not_trade_ready"
+
+        rule_audit = context.get("system_gate_audit") if isinstance(context.get("system_gate_audit"), dict) else {}
+        if rule_audit.get("hard_blocked") is True:
+            return "entry_hard_blocked"
+
+        decision_gates = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
+        failed_gates = decision_gates.get("failed_gates") if isinstance(decision_gates.get("failed_gates"), list) else []
+        if failed_gates:
+            return "entry_failed_trade_gates"
+
+        min_score = float(getattr(self.settings, "llm_min_trigger_score_pct", 70.0) or 70.0)
+        min_confluence = float(getattr(self.settings, "llm_min_trigger_confluence", 16.0) or 16.0)
+        if overall_score_pct < min_score or confluence_total < min_confluence:
+            return "entry_below_actionable_quality_floor"
+        if str(overall_grade or "").upper() not in {"A", "B"}:
+            return "entry_overall_grade_not_a_or_b"
+
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+        rule_entry = rule_audit.get("entry") if isinstance(rule_audit.get("entry"), dict) else {}
+        entry_grade = str(
+            rule_entry.get("effective_entry_grade")
+            or entry.get("entry_grade")
+            or entry.get("grade")
+            or ""
+        ).upper()
+        if entry_grade and entry_grade not in {"A", "B"}:
+            return "entry_grade_not_a_or_b"
+
+        breakout = full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {}
+        strategy_logic = full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {}
+        breakout_volume = strategy_logic.get("breakout_volume") if isinstance(strategy_logic.get("breakout_volume"), dict) else {}
+        suspect_breakout = (
+            str(breakout.get("breakout_quality") or "").lower() == "suspect"
+            or bool(breakout_volume.get("suspect_without_volume"))
+        )
+        volume_confirmed = bool(
+            breakout.get("volume_confirmation")
+            or breakout.get("volume_expansion")
+            or breakout_volume.get("volume_confirmed")
+            or breakout_volume.get("confirmed")
+        )
+        if suspect_breakout and not volume_confirmed:
+            return "entry_suspect_breakout_without_volume_confirmation"
+
+        action = str(item.get("action") or "HOLD").upper()
+        scan = (item.get("row") or {}).get("_opportunity_scan")
+        actionable_scan = isinstance(scan, dict) and str(scan.get("bucket") or "").lower() == "actionable"
+        if action == "HOLD" and not actionable_scan and not self._llm_news_trigger(context, item):
+            return "entry_not_actionable"
+        return None
+
+    def _llm_position_signature(self, item: dict[str, Any]) -> str:
+        context = item.get("context") if isinstance(item.get("context"), dict) else {}
+        position = context.get("position") if isinstance(context.get("position"), dict) else {}
+        quote = item.get("quote")
+        avg_price = _float_or_none(position.get("avg_price")) or 0.0
+        current_price = _float_or_none(getattr(quote, "price", None)) or _float_or_none((context.get("quote") or {}).get("price")) or 0.0
+        pnl_pct = ((current_price - avg_price) / avg_price) if avg_price > 0 else 0.0
+        scorecard = ((context.get("full_spectrum_analysis") or {}).get("institutional_scorecard") or {})
+        failed_gates = [
+            str(gate.get("reason") or gate.get("gate") or "")
+            for gate in (context.get("decision_gate_context") or {}).get("failed_gates", [])
+            if isinstance(gate, dict)
+        ]
+        payload = {
+            "action": str(item.get("action") or "HOLD").upper(),
+            "pnl_bucket_pct": round(pnl_pct * 20) / 20,
+            "delivery_exit_pressure": bool(context.get("delivery_exit_pressure")),
+            "scorecard_hard_veto": bool((scorecard.get("hard_veto") or {}).get("failed")),
+            "failed_gates": sorted(failed_gates)[:6],
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def _llm_review_state(self) -> dict[str, Any]:
+        db = getattr(getattr(self, "sentiment", None), "db", None)
+        if db is None or not hasattr(db, "get_state"):
+            return {"symbols": {}, "daily_budget": {}}
+        try:
+            state = db.get_state("llm_symbol_review_state", {}) or {}
+        except Exception:
+            return {"symbols": {}, "daily_budget": {}}
+        return state if isinstance(state, dict) else {"symbols": {}, "daily_budget": {}}
+
+    def _save_llm_review_state(self, state: dict[str, Any]) -> None:
+        db = getattr(getattr(self, "sentiment", None), "db", None)
+        if db is None or not hasattr(db, "set_state"):
+            return
+        try:
+            db.set_state("llm_symbol_review_state", state)
+        except Exception:
+            pass
+
+    def _llm_daily_budget(self, state: dict[str, Any], now: datetime) -> dict[str, Any]:
+        today = now.date().isoformat()
+        daily_budget = state.get("daily_budget") if isinstance(state.get("daily_budget"), dict) else {}
+        if daily_budget.get("date") != today:
+            daily_budget = {"date": today, "reviews": 0}
+        state["daily_budget"] = daily_budget
+        return daily_budget
 
     def _has_open_position(self, item: dict[str, Any]) -> bool:
         return float((item.get("context", {}).get("position") or {}).get("qty") or 0) > 0
@@ -1609,12 +2037,15 @@ def _performance_feedback_block(feedback: dict[str, Any]) -> dict[str, Any] | No
         if not isinstance(item, dict) or not item:
             continue
         closed = int(item.get("closed_trades") or 0)
-        if closed < 5:
+        if closed < 8:
             continue
         expectancy = _float_or_none(item.get("expectancy_pct")) or 0.0
         stop_rate = _float_or_none(item.get("stop_hit_rate")) or 0.0
         win_rate = _float_or_none(item.get("win_rate")) or 0.0
-        if expectancy <= -0.5 or stop_rate >= 0.55 or (closed >= 8 and win_rate < 0.35 and expectancy < 0):
+        strong_negative_expectancy = closed >= 15 and expectancy <= -0.75
+        severe_stop_profile = closed >= 20 and stop_rate >= 0.65 and expectancy < 0
+        persistent_low_win_rate = closed >= 20 and win_rate < 0.30 and expectancy < -0.25
+        if strong_negative_expectancy or severe_stop_profile or persistent_low_win_rate:
             return {
                 "scope": scope,
                 "key": item.get("key"),
@@ -1622,7 +2053,7 @@ def _performance_feedback_block(feedback: dict[str, Any]) -> dict[str, Any] | No
                 "expectancy_pct": expectancy,
                 "stop_hit_rate": stop_rate,
                 "win_rate": win_rate,
-                "reason": "historical strategy feedback is negative; require manual review before fresh BUY",
+                "reason": "historical strategy feedback is strongly negative; require manual review before fresh BUY",
             }
     return None
 

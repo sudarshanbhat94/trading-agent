@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 
+from app.config import Settings
 from app.db import _compact_decision_details
-from app.llm_brain import _groq_budget_context, _llm_prompt_context
+from app.llm_brain import LLMBrain, _groq_budget_context, _llm_prompt_context
 
 
 class LLMAnalystPacketTests(unittest.TestCase):
@@ -79,6 +81,23 @@ class LLMAnalystPacketTests(unittest.TestCase):
             "Company wins export order",
             compacted["llm_prompt_audit"]["user_context"]["analyst_packet"]["news_and_events"]["headlines"],
         )
+
+    def test_compact_cycle_profile_skips_rolling_summary_calls(self) -> None:
+        settings = Settings(
+            llm_provider="deepseek",
+            llm_rolling_context_enabled=True,
+            llm_rolling_context_threshold_chars=10,
+        )
+        brain = LLMBrain(settings)
+        context = _analyst_context()
+        context["llm_prompt_profile"] = "compact"
+        context["large_nonessential_payload"] = ["x" * 1000 for _ in range(30)]
+
+        payload, meta = asyncio.run(brain._decision_prompt_context(context))
+
+        self.assertEqual(meta["_llm_analysis_mode"], "compact_cycle_context")
+        self.assertEqual(payload["tool_protocol"], "openstocks-compact-decision-context-v1")
+        self.assertNotIn("rolling_context_coverage", payload)
 
 
 def _analyst_context() -> dict:

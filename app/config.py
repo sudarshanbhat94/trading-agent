@@ -217,8 +217,8 @@ class Settings:
     taxes_bps: float = _float("TAXES_BPS", 1.0)
     stt_bps: float = _float("STT_BPS", 10.0)
 
-    llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
-    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "primary").strip().lower()
+    llm_provider: str = os.getenv("LLM_PROVIDER", "offline").strip().lower()
+    llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "offline").strip().lower()
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
     deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
@@ -240,6 +240,16 @@ class Settings:
     llm_rolling_context_threshold_chars: int = _int("LLM_ROLLING_CONTEXT_THRESHOLD_CHARS", 16000)
     llm_rolling_context_chunk_chars: int = _int("LLM_ROLLING_CONTEXT_CHUNK_CHARS", 7000)
     llm_rolling_context_max_chunks: int = _int("LLM_ROLLING_CONTEXT_MAX_CHUNKS", 0)
+    llm_event_triggered_cycles: bool = _bool("LLM_EVENT_TRIGGERED_CYCLES", True)
+    llm_symbol_cooldown_minutes: int = _int("LLM_SYMBOL_COOLDOWN_MINUTES", 240)
+    llm_open_position_review_interval_minutes: int = _int("LLM_OPEN_POSITION_REVIEW_INTERVAL_MINUTES", 15)
+    llm_min_trigger_score_pct: float = _float("LLM_MIN_TRIGGER_SCORE_PCT", 70.0)
+    llm_min_trigger_confluence: float = _float("LLM_MIN_TRIGGER_CONFLUENCE", 16.0)
+    llm_material_score_delta: float = _float("LLM_MATERIAL_SCORE_DELTA", 0.08)
+    llm_max_reviews_per_market_day: int = _int("LLM_MAX_REVIEWS_PER_MARKET_DAY", 12)
+    llm_cycle_prompt_profile: str = os.getenv("LLM_CYCLE_PROMPT_PROFILE", "compact").strip().lower()
+    llm_event_review_estimated_tokens: int = _int("LLM_EVENT_REVIEW_ESTIMATED_TOKENS", 12000)
+    llm_require_funded_shared_cycle: bool = _bool("LLM_REQUIRE_FUNDED_SHARED_CYCLE", True)
 
     enable_db_maintenance: bool = _bool("ENABLE_DB_MAINTENANCE", True)
     db_maintenance_interval_hours: int = _int("DB_MAINTENANCE_INTERVAL_HOURS", 168)
@@ -376,6 +386,16 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "llm_rolling_context_threshold_chars", "label": "Rolling Threshold Chars", "type": "number", "category": "LLM Brain", "min": 2000, "step": 1000},
     {"key": "llm_rolling_context_chunk_chars", "label": "Rolling Chunk Chars", "type": "number", "category": "LLM Brain", "min": 1000, "step": 500},
     {"key": "llm_rolling_context_max_chunks", "label": "Rolling Max Chunks (0=All)", "type": "number", "category": "LLM Brain", "min": 0, "step": 1},
+    {"key": "llm_event_triggered_cycles", "label": "Event Triggered LLM", "type": "boolean", "category": "LLM Brain"},
+    {"key": "llm_symbol_cooldown_minutes", "label": "LLM Symbol Cooldown Min", "type": "number", "category": "LLM Brain", "min": 5, "step": 5},
+    {"key": "llm_open_position_review_interval_minutes", "label": "Position Review Min", "type": "number", "category": "LLM Brain", "min": 5, "step": 5},
+    {"key": "llm_min_trigger_score_pct", "label": "LLM Trigger Score %", "type": "number", "category": "LLM Brain", "min": 0, "max": 100, "step": 1},
+    {"key": "llm_min_trigger_confluence", "label": "LLM Trigger Confluence", "type": "number", "category": "LLM Brain", "min": 0, "max": 26, "step": 1},
+    {"key": "llm_material_score_delta", "label": "LLM Material Score Delta", "type": "number", "category": "LLM Brain", "min": 0, "max": 1, "step": 0.01},
+    {"key": "llm_max_reviews_per_market_day", "label": "LLM Reviews/Day", "type": "number", "category": "LLM Brain", "min": 0, "step": 1},
+    {"key": "llm_cycle_prompt_profile", "label": "Cycle Prompt Profile", "type": "select", "category": "LLM Brain", "choices": ["compact", "rich"]},
+    {"key": "llm_event_review_estimated_tokens", "label": "Review Token Estimate", "type": "number", "category": "LLM Brain", "min": 1000, "step": 1000},
+    {"key": "llm_require_funded_shared_cycle", "label": "Require Funded LLM Cycle", "type": "boolean", "category": "LLM Brain"},
     {"key": "llm_temperature", "label": "LLM Temperature", "type": "number", "category": "LLM Brain", "min": 0, "max": 2, "step": 0.01},
     {"key": "llm_top_p", "label": "LLM Top P", "type": "number", "category": "LLM Brain", "min": 0, "max": 1, "step": 0.01},
     {"key": "llm_max_tokens", "label": "LLM Max Tokens", "type": "number", "category": "LLM Brain", "min": 24, "step": 128},
@@ -502,8 +522,19 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
     if key == "llm_reasoning_effort":
         effort = str(value).strip().lower()
         return effort if effort in {"none", "high", "max"} else "high"
+    if key == "llm_cycle_prompt_profile":
+        profile = str(value).strip().lower()
+        return profile if profile in {"compact", "rich"} else "compact"
     if key == "llm_max_symbols_per_cycle":
         return max(int(value), 8)
+    if key == "llm_symbol_cooldown_minutes":
+        return max(int(value), 5)
+    if key == "llm_open_position_review_interval_minutes":
+        return max(int(value), 5)
+    if key == "llm_max_reviews_per_market_day":
+        return max(int(value), 0)
+    if key == "llm_event_review_estimated_tokens":
+        return max(int(value), 1000)
     if key == "auto_follow_reentry_cooldown_hours":
         return max(int(value), 48)
     current = getattr(base, key)

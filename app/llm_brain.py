@@ -726,6 +726,14 @@ class LLMBrain:
             )
 
     async def _decision_prompt_context(self, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        requested_profile = str(
+            context.get("llm_prompt_profile")
+            or getattr(self.settings, "llm_cycle_prompt_profile", "compact")
+            or "compact"
+        ).strip().lower()
+        if requested_profile == "compact":
+            return _llm_prompt_context(context, profile="compact"), {"_llm_analysis_mode": "compact_cycle_context"}
+
         if self.settings.llm_provider == "groq":
             return _groq_budget_context(context), {"_llm_analysis_mode": "groq_budget_context"}
 

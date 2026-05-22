@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from typing import Any, Iterable
 
+from .opportunity_state import opportunity_state_from_decision_audit
+
 
 def json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -166,6 +168,13 @@ def decision_rank_fields(row: dict[str, Any]) -> dict[str, Any]:
 def annotate_decision_row(row: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(row)
     enriched.update(decision_rank_fields(enriched))
+    opportunity = opportunity_state_from_decision_audit(_audit_from_row(enriched), enriched)
+    enriched["opportunity_state"] = opportunity.get("state")
+    enriched["opportunity_label"] = opportunity.get("label")
+    enriched["opportunity_summary"] = opportunity.get("summary")
+    enriched["opportunity_next_step"] = opportunity.get("next_step")
+    enriched["opportunity_reasons"] = opportunity.get("reasons") or []
+    enriched["opportunity_terms"] = opportunity.get("term_explanations") or []
     return enriched
 
 
