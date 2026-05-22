@@ -85,6 +85,58 @@ class Phase3StrategyLogicTests(unittest.TestCase):
         self.assertIn("SPECULATIVE_TINY_SIZE_ONLY", audit["active_flags"])
         self.assertLessEqual(audit["allocation_cap_multiplier"], 0.15)
 
+    def test_missing_fundamentals_with_strong_price_volume_is_momentum_not_speculative(self) -> None:
+        context = _base_context()
+        context["full_spectrum_analysis"]["fundamental_quality"] = {"quality_bucket": "unknown", "metrics": {}}
+        context["full_spectrum_analysis"]["confluence_score"] = {"total": 18, "tier": "HIGH"}
+        context["full_spectrum_analysis"]["liquidity_profile"] = {
+            "tradeable": True,
+            "liquidity_tier": "strong",
+            "avg_traded_value_20": 75_000_000,
+        }
+
+        audit = evaluate_rules_for_context(context, {}, 100_000)
+
+        self.assertEqual(audit["classification"]["classification"], "MOMENTUM")
+        self.assertNotIn("SPECULATIVE_TINY_SIZE_ONLY", audit["active_flags"])
+        self.assertGreater(audit["allocation_cap_multiplier"], 0.15)
+
+    def test_missing_fundamentals_with_illiquid_profile_stays_speculative(self) -> None:
+        context = _base_context()
+        context["full_spectrum_analysis"]["fundamental_quality"] = {"quality_bucket": "unknown", "metrics": {}}
+        context["full_spectrum_analysis"]["confluence_score"] = {"total": 18, "tier": "HIGH"}
+        context["full_spectrum_analysis"]["liquidity_profile"] = {
+            "tradeable": False,
+            "liquidity_tier": "illiquid",
+            "avg_traded_value_20": 500_000,
+        }
+
+        audit = evaluate_rules_for_context(context, {}, 100_000)
+
+        self.assertEqual(audit["classification"]["classification"], "SPECULATIVE")
+        self.assertIn("SPECULATIVE_TINY_SIZE_ONLY", audit["active_flags"])
+
+    def test_missing_sentiment_does_not_downgrade_clean_price_volume_setup_to_watch(self) -> None:
+        context = _base_context()
+        context["sentiment"] = {}
+        context["full_spectrum_analysis"]["entry_quality"] = {
+            "entry_grade": "B",
+            "distance_from_pivot_pct": 1.2,
+            "volume_confirmation": True,
+        }
+        context["full_spectrum_analysis"]["confluence_score"] = {"total": 19, "tier": "HIGH"}
+        context["full_spectrum_analysis"]["breakout_quality"] = {
+            "breakout_quality": "confirmed",
+            "two_day_rule_failed": False,
+            "volume_confirmation": True,
+        }
+
+        audit = evaluate_rules_for_context(context, {}, 100_000)
+
+        self.assertEqual(audit["sentiment"]["status"], "DATA_MISSING")
+        self.assertEqual(audit["entry"]["effective_entry_grade"], "B")
+        self.assertNotIn("GRADE_VIOLATION", audit["active_flags"])
+
 
 def _base_context() -> dict:
     return {

@@ -5,6 +5,7 @@ from typing import Any
 
 ACTIONABLE_OPPORTUNITY_STATES = {
     "BUY_NOW",
+    "BUY_CANDIDATE",
     "PULLBACK_BUY_ZONE",
     "BREAKOUT_CONFIRMATION_NEEDED",
     "ACTIONABLE_WATCH",
@@ -137,6 +138,8 @@ def _build_opportunity_state(
         bool(data_readiness) and data_readiness.get("trade_decision_ready") is not True
     )
     performance_warning = any("performance" in item for item in failed_reasons)
+    hard_risk_block = _hard_risk_block(flags, failed_reasons)
+    grade_allows_candidate = overall_grade not in {"D", "F"} or not overall_grade
 
     if action in {"SELL", "EXIT"}:
         state = "EXIT"
@@ -148,8 +151,10 @@ def _build_opportunity_state(
         state = "PULLBACK_BUY_ZONE"
     elif (breakout_needs_confirmation or repeated_failed_breakouts) and confluence_value >= 14:
         state = "BREAKOUT_CONFIRMATION_NEEDED"
-    elif _hard_risk_block(flags, failed_reasons):
+    elif hard_risk_block:
         state = "BLOCKED"
+    elif confluence_value >= 18 and score_value >= 65 and grade_allows_candidate:
+        state = "BUY_CANDIDATE"
     elif confluence_value >= 16 and score_value >= 55:
         state = "ACTIONABLE_WATCH"
     elif confluence_value >= 12 or score_value >= 50:
@@ -193,6 +198,10 @@ def _state_copy(state: str) -> dict[str, str]:
             "label": "Ready to buy",
             "summary": "This passed the fresh-entry checks for score, grade, data, confirmation, and risk.",
         },
+        "BUY_CANDIDATE": {
+            "label": "Buy candidate",
+            "summary": "Close to actionable, but one remaining confirmation or score/risk check is still missing.",
+        },
         "PULLBACK_BUY_ZONE": {
             "label": "Wait for pullback",
             "summary": "The setup is interesting, but the current price is stretched from the ideal entry area.",
@@ -232,6 +241,8 @@ def _summary_for_state(state: str, reasons: list[str], fallback: str) -> str:
         return "Potential breakout setup, but it needs stronger volume and follow-through before it deserves a BUY."
     if state == "ACTIONABLE_WATCH":
         return "Worth watching closely, but still one confirmation short of a fresh BUY."
+    if state == "BUY_CANDIDATE":
+        return "Close to actionable, but one final confirmation or quality check still needs to clear."
     if state == "DATA_NEEDED":
         return "Analysis found a possible setup, but required market evidence is missing for a trade-grade decision."
     if state == "BUY_NOW":
@@ -251,6 +262,8 @@ def _next_step_for_state(state: str, trade_plan: dict[str, Any], missing_data: l
         return "Wait for a strong close above the breakout level with better volume participation."
     if state == "ACTIONABLE_WATCH":
         return "Keep it on watch; it needs the remaining entry or risk checks to clear before any paper/live entry."
+    if state == "BUY_CANDIDATE":
+        return "Wait for the final check to clear; no paper/live entry until marked Ready to buy."
     if state == "DATA_NEEDED":
         if missing_data:
             return f"Connect or refresh this data before trading: {', '.join(missing_data[:4])}."
@@ -327,6 +340,12 @@ def _term_explanations(state: str) -> list[dict[str, str]]:
             {
                 "term": "Watchlist setup",
                 "meaning": "A stock worth monitoring closely, but not a trade until all entry and risk checks pass.",
+            }
+        ],
+        "BUY_CANDIDATE": [
+            {
+                "term": "Buy candidate",
+                "meaning": "A strong setup that is near trade-ready, but still needs the final score, confirmation, or risk check to clear.",
             }
         ],
         "DATA_NEEDED": [

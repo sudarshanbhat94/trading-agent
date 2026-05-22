@@ -137,7 +137,8 @@ def evaluate_rules_for_context(
 
     sentiment_audit = sentiment_integrity(sentiment)
     effective_entry_grade = entry_grade or "WATCH"
-    if sentiment_audit["status"] == "DATA_MISSING":
+    strong_price_volume = _strong_price_volume_evidence(full)
+    if sentiment_audit["status"] == "DATA_MISSING" and not strong_price_volume:
         effective_entry_grade = ENTRY_DOWNGRADE.get(effective_entry_grade, "WATCH")
     if effective_entry_grade == "WATCH":
         hard("GRADE_VIOLATION", "WATCH-grade or sentiment-downgraded WATCH setup cannot be opened", {"entry_grade": entry_grade, "effective_entry_grade": effective_entry_grade})
@@ -325,6 +326,7 @@ def classify_stock(full_spectrum: dict[str, Any]) -> dict[str, Any]:
     quality_bucket = str(fundamental.get("quality_bucket") or "").lower()
     security_type = str(metrics.get("security_type") or fundamental.get("security_type") or "").upper()
     is_etf = security_type == "ETF" or quality_bucket.startswith("etf_")
+    momentum_profile = _missing_fundamental_momentum_profile(full_spectrum) if not data_available else None
     if data_available and revenue_growth >= 10 and pat_growth >= 10 and bool(ocf_positive):
         classification = "FUNDAMENTAL"
         cap = 1.0
@@ -342,9 +344,14 @@ def classify_stock(full_spectrum: dict[str, Any]) -> dict[str, Any]:
         cap = 0.6
         reason = "Yahoo/reference ratios are available but full growth and cash-flow data is incomplete"
     elif not data_available:
-        classification = "SPECULATIVE"
-        cap = 0.3
-        reason = "fundamental data is unavailable"
+        if momentum_profile and momentum_profile["supported"]:
+            classification = "MOMENTUM"
+            cap = 0.5
+            reason = "fundamental data is unavailable; price-volume and liquidity evidence support momentum-only review"
+        else:
+            classification = "SPECULATIVE"
+            cap = 0.3
+            reason = "fundamental data is unavailable and price-volume/liquidity proof is not strong enough"
     else:
         classification = "MOMENTUM"
         cap = 0.6
@@ -362,7 +369,74 @@ def classify_stock(full_spectrum: dict[str, Any]) -> dict[str, Any]:
             "fundamental_data_available": data_available,
             "reference_data_available": reference_available,
             "security_type": security_type or None,
+            "momentum_evidence": momentum_profile,
         },
+    }
+
+
+def _strong_price_volume_evidence(full_spectrum: dict[str, Any]) -> bool:
+    confluence = full_spectrum.get("confluence_score") if isinstance(full_spectrum.get("confluence_score"), dict) else {}
+    entry = full_spectrum.get("entry_quality") if isinstance(full_spectrum.get("entry_quality"), dict) else {}
+    breakout = full_spectrum.get("breakout_quality") if isinstance(full_spectrum.get("breakout_quality"), dict) else {}
+    strategy_logic = full_spectrum.get("strategy_logic_filters") if isinstance(full_spectrum.get("strategy_logic_filters"), dict) else {}
+    breakout_volume = strategy_logic.get("breakout_volume") if isinstance(strategy_logic.get("breakout_volume"), dict) else {}
+    delivery = full_spectrum.get("delivery_accumulation") if isinstance(full_spectrum.get("delivery_accumulation"), dict) else {}
+    scorecard = full_spectrum.get("institutional_scorecard") if isinstance(full_spectrum.get("institutional_scorecard"), dict) else {}
+    delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
+    if delivery_bias == "distribution":
+        return False
+    confluence_total = _float_or_none(confluence.get("total")) or 0.0
+    scorecard_total = _float_or_none(scorecard.get("total_score") or scorecard.get("score")) or 0.0
+    volume_confirmed = bool(
+        entry.get("volume_confirmation")
+        or breakout.get("volume_confirmation")
+        or breakout.get("volume_expansion")
+        or breakout_volume.get("volume_confirmed")
+        or breakout_volume.get("confirmed")
+    )
+    delivery_accumulation = delivery_bias == "accumulation" or bool(delivery.get("institutional_fingerprint") or delivery.get("fingerprint"))
+    return confluence_total >= 18 and (volume_confirmed or delivery_accumulation or scorecard_total >= 75)
+
+
+def _missing_fundamental_momentum_profile(full_spectrum: dict[str, Any]) -> dict[str, Any]:
+    confluence = full_spectrum.get("confluence_score") if isinstance(full_spectrum.get("confluence_score"), dict) else {}
+    scorecard = full_spectrum.get("institutional_scorecard") if isinstance(full_spectrum.get("institutional_scorecard"), dict) else {}
+    liquidity = full_spectrum.get("liquidity_profile") if isinstance(full_spectrum.get("liquidity_profile"), dict) else {}
+    stage = full_spectrum.get("stage_analysis") if isinstance(full_spectrum.get("stage_analysis"), dict) else {}
+    relative_strength = full_spectrum.get("relative_strength") if isinstance(full_spectrum.get("relative_strength"), dict) else {}
+    delivery = full_spectrum.get("delivery_accumulation") if isinstance(full_spectrum.get("delivery_accumulation"), dict) else {}
+
+    confluence_total = _float_or_none(confluence.get("total")) or 0.0
+    scorecard_total = _float_or_none(scorecard.get("total_score") or scorecard.get("score")) or 0.0
+    avg_traded_value = _float_or_none(liquidity.get("avg_traded_value_20")) or 0.0
+    liquidity_tier = str(liquidity.get("liquidity_tier") or "").lower()
+    delivery_bias = str(delivery.get("net_bias") or delivery.get("trend_direction") or delivery.get("bias") or "").lower()
+    rs_bias = str(relative_strength.get("bias") or "").lower()
+    stage_name = str(stage.get("stage") or "")
+    acceptable_liquidity = liquidity_tier in {"strong", "tradeable"} or avg_traded_value >= 10_000_000
+    liquidity_block = liquidity_tier == "illiquid" or liquidity.get("tradeable") is False or bool(liquidity.get("circuit_risk_proxy"))
+    evidence: list[str] = []
+    if confluence_total >= 16:
+        evidence.append("confluence >= 16")
+    if scorecard_total >= 70:
+        evidence.append("accumulation proxy score >= 70")
+    if acceptable_liquidity:
+        evidence.append("tradeable liquidity")
+    if stage_name == "Stage2_Markup" and rs_bias == "outperforming":
+        evidence.append("Stage 2 leadership with relative strength")
+    if delivery_bias == "distribution":
+        evidence.append("delivery distribution conflict")
+    if liquidity_block:
+        evidence.append("liquidity/circuit risk")
+    supported = delivery_bias != "distribution" and not liquidity_block and bool(evidence)
+    return {
+        "supported": supported,
+        "evidence": evidence,
+        "confluence": confluence_total,
+        "scorecard": scorecard_total,
+        "liquidity_tier": liquidity_tier or None,
+        "avg_traded_value_20": avg_traded_value or None,
+        "delivery_bias": delivery_bias or None,
     }
 
 

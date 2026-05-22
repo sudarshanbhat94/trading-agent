@@ -674,12 +674,27 @@ class StrategyEngine:
             fail("sector_rotation_gate", sector, "bottom_quartile_distribution")
         fundamental = full_spectrum.get("fundamental_quality") or {}
         sentiment = context.get("sentiment") or {}
+        price_volume_confirmed = (
+            confluence_total >= 18
+            and delivery_bias != "distribution"
+            and alignment_grade in {"A", "B"}
+            and (
+                entry.get("volume_confirmation")
+                or breakout.get("volume_confirmation")
+                or breakout.get("volume_expansion")
+                or breakout_volume.get("volume_confirmed")
+                or breakout_volume.get("confirmed")
+                or delivery_bias == "accumulation"
+                or scorecard_total >= 75
+            )
+        )
         if (
             fundamental.get("quality_bucket") == "unknown"
             and not delivery.get("institutional_fingerprint")
             and float(sentiment.get("confidence") or 0.0) <= 0.05
             and alignment_grade != "A"
             and not exceptional_setup
+            and not price_volume_confirmed
         ):
             fail(
                 "fundamental_confirmation_gate",
@@ -2031,20 +2046,19 @@ def _performance_feedback_block(feedback: dict[str, Any]) -> dict[str, Any] | No
     candidates = [
         ("strategy_market", feedback.get("selected_strategy_market")),
         ("strategy", feedback.get("selected_strategy")),
-        ("market", feedback.get("selected_market")),
     ]
     for scope, item in candidates:
         if not isinstance(item, dict) or not item:
             continue
         closed = int(item.get("closed_trades") or 0)
-        if closed < 8:
+        if closed < 20:
             continue
         expectancy = _float_or_none(item.get("expectancy_pct")) or 0.0
         stop_rate = _float_or_none(item.get("stop_hit_rate")) or 0.0
         win_rate = _float_or_none(item.get("win_rate")) or 0.0
-        strong_negative_expectancy = closed >= 15 and expectancy <= -0.75
-        severe_stop_profile = closed >= 20 and stop_rate >= 0.65 and expectancy < 0
-        persistent_low_win_rate = closed >= 20 and win_rate < 0.30 and expectancy < -0.25
+        strong_negative_expectancy = expectancy <= -0.75
+        severe_stop_profile = stop_rate >= 0.65 and expectancy < 0
+        persistent_low_win_rate = win_rate < 0.30 and expectancy < -0.25
         if strong_negative_expectancy or severe_stop_profile or persistent_low_win_rate:
             return {
                 "scope": scope,

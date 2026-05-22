@@ -11,6 +11,7 @@ from app.decision_contract import current_decision_rows
 from app.db import Database, _compact_decision_details, _paper_exit_action
 from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
+from app.opportunity_state import opportunity_state_from_signal_details
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 from app.strategy import StrategyEngine, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
@@ -754,6 +755,30 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(row["opportunity_label"], "Needs breakout confirmation")
         self.assertIn("volume", row["opportunity_next_step"].lower())
 
+    def test_near_ready_setup_becomes_buy_candidate_not_tradeable_buy(self) -> None:
+        state = opportunity_state_from_signal_details(
+            {
+                "action": "HOLD",
+                "quality_gate": {"passed": False},
+                "overall_score_pct": 66,
+                "overall_grade": "C",
+                "confluence": 19,
+                "data_readiness": {"trade_decision_ready": True, "grade": "A"},
+                "entry_quality": {"entry_grade": "B", "distance_from_pivot_pct": 1.6},
+                "breakout_quality": {"breakout_quality": "confirmed", "volume_confirmation": True},
+                "strategy_logic_filters": {"passed": True, "hard_blocks": [], "penalties": []},
+                "failed_gates": [{"gate": "overall_quality_gate", "reason": "overall_score_below_70_no_new_longs"}],
+                "hard_blocks": [],
+                "active_flags": [],
+                "risk_flags": [],
+            }
+        )
+
+        self.assertEqual(state["state"], "BUY_CANDIDATE")
+        self.assertEqual(state["label"], "Buy candidate")
+        self.assertTrue(state["publish_as_watch"])
+        self.assertIn("no paper/live entry", state["next_step"])
+
     def test_performance_feedback_requires_strong_sample_before_hard_block(self) -> None:
         self.assertIsNone(
             _performance_feedback_block(
@@ -764,6 +789,19 @@ class StrategySafetyTests(unittest.TestCase):
                         "expectancy_pct": 0.34,
                         "stop_hit_rate": 0.67,
                         "win_rate": 0.44,
+                    }
+                }
+            )
+        )
+        self.assertIsNone(
+            _performance_feedback_block(
+                {
+                    "selected_market": {
+                        "key": "IN",
+                        "closed_trades": 48,
+                        "expectancy_pct": -1.4,
+                        "stop_hit_rate": 0.78,
+                        "win_rate": 0.21,
                     }
                 }
             )

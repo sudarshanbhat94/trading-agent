@@ -736,6 +736,11 @@ const OPPORTUNITY_STATE_COPY = {
     summary: "Fresh-entry checks are clear: score, grade, confirmation, data, and risk all passed.",
     next_step: "Use the entry zone, stop, targets, and position sizing shown in the trade plan.",
   },
+  BUY_CANDIDATE: {
+    label: "Buy candidate",
+    summary: "Close to actionable, but one remaining confirmation or score/risk check is still missing.",
+    next_step: "Wait for the final check to clear; no paper/live entry until marked Ready to buy.",
+  },
   PULLBACK_BUY_ZONE: {
     label: "Wait for pullback",
     summary: "Good setup, wrong price. The current price is stretched from the ideal entry area.",
