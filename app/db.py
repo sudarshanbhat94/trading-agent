@@ -2177,6 +2177,38 @@ class Database:
             row = conn.execute(f"select * from universe where {' and '.join(clauses)}", params).fetchone()
         return dict(row) if row else None
 
+    def active_position_universe(self, market_region: str | None = None) -> list[dict[str, Any]]:
+        market_clause, market_params = _market_region_where("u", market_region)
+        market_sql = f"and {market_clause}" if market_clause else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select distinct u.*
+                from universe u
+                where u.enabled = 1
+                  and (
+                    exists (
+                        select 1
+                        from signal_ideas i
+                        join user_idea_follows f on f.idea_id = i.id
+                        where i.symbol = u.symbol
+                          and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
+                          and coalesce(f.qty, 0) > 0
+                    )
+                    or exists (
+                        select 1
+                        from positions p
+                        where p.symbol = u.symbol
+                          and coalesce(p.qty, 0) > 0
+                    )
+                  )
+                  {market_sql}
+                order by u.symbol
+                """,
+                market_params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_quotes(self, quotes: dict[str, Quote]) -> None:
         rows = [quote.to_dict() for quote in quotes.values()]
         if not rows:
@@ -2594,6 +2626,66 @@ class Database:
                 )
             self._refresh_user_follow_marks(conn)
 
+    def refresh_active_position_marks(self, symbols: Iterable[str] | None = None) -> int:
+        symbol_values = sorted({str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+        symbol_sql = ""
+        params: list[Any] = []
+        if symbol_values:
+            placeholders = ",".join("?" for _ in symbol_values)
+            symbol_sql = f"and upper(i.symbol) in ({placeholders})"
+            params.extend(symbol_values)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select distinct i.*, q.price as quote_price
+                from signal_ideas i
+                join user_idea_follows f on f.idea_id = i.id
+                left join latest_quotes q on q.symbol = i.symbol
+                where f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
+                  and coalesce(f.qty, 0) > 0
+                  and q.price is not null
+                  {symbol_sql}
+                """,
+                params,
+            ).fetchall()
+            now = utc_now()
+            for row in rows:
+                latest_price = _optional_float(row["quote_price"]) or float(row["latest_price"] or row["entry_price"] or 0)
+                entry_price = float(row["entry_price"] or latest_price or 0)
+                current_return = _return_pct(entry_price, latest_price)
+                peak_return = max(float(row["peak_return_pct"] or 0.0), current_return)
+                worst_return = min(float(row["worst_return_pct"] or 0.0), current_return)
+                details = self._decode_json(row["details_json"])
+                next_status, details = _refresh_idea_lifecycle(
+                    details,
+                    {},
+                    entry_price,
+                    latest_price,
+                    row["status"],
+                    now,
+                    row["plan_code"],
+                    row["first_seen_at"],
+                )
+                conn.execute(
+                    """
+                    update signal_ideas
+                    set latest_price = ?, current_return_pct = ?, peak_return_pct = ?, worst_return_pct = ?,
+                        status = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        latest_price,
+                        current_return,
+                        peak_return,
+                        worst_return,
+                        next_status,
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        row["id"],
+                    ),
+                )
+            self._refresh_user_follow_marks(conn, symbol_values if symbol_values else None)
+        return len(rows)
+
     def latest_signal_ideas(
         self,
         limit: int = 20,
@@ -2700,10 +2792,13 @@ class Database:
                     u.exchange as exchange,
                     u.name as company_name,
                     u.sector as sector,
-                    u.industry as industry
+                    u.industry as industry,
+                    q.ts as quote_updated_at,
+                    q.source as quote_source
                 from user_idea_follows f
                 join signal_ideas i on i.id = f.idea_id
                 left join universe u on u.symbol = i.symbol
+                left join latest_quotes q on q.symbol = i.symbol
                 where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
                 {market_sql}
                 order by f.updated_at desc, f.id desc
@@ -3582,18 +3677,34 @@ class Database:
                 actions.append(action_row)
         return {"checked": len(rows), "actions": actions, "action_count": len(actions)}
 
-    def _refresh_user_follow_marks(self, conn: sqlite3.Connection) -> None:
+    def _refresh_user_follow_marks(self, conn: sqlite3.Connection, symbols: Iterable[str] | None = None) -> None:
+        symbol_values = sorted({str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+        symbol_sql = ""
+        params: list[Any] = []
+        if symbol_values:
+            placeholders = ",".join("?" for _ in symbol_values)
+            symbol_sql = f"and upper(i.symbol) in ({placeholders})"
+            params.extend(symbol_values)
         rows = conn.execute(
-            """
-            select f.id, f.qty, f.entry_price, f.invested_amount, f.details_json, i.latest_price
+            f"""
+            select f.id, f.qty, f.entry_price, f.invested_amount, f.updated_at, f.details_json,
+                i.latest_price, q.price as quote_price, q.ts as quote_ts
             from user_idea_follows f
             join signal_ideas i on i.id = f.idea_id
+            left join latest_quotes q on q.symbol = i.symbol
             where f.status in ('ACTIVE','LIVE_REQUESTED')
-            """
+              {symbol_sql}
+            """,
+            params,
         ).fetchall()
         now = utc_now()
         for row in rows:
-            latest_price = float(row["latest_price"] or row["entry_price"] or 0.0)
+            if not symbol_values:
+                quote_dt = _parse_dt(row["quote_ts"])
+                updated_dt = _parse_dt(row["updated_at"])
+                if not quote_dt or (updated_dt and quote_dt <= updated_dt):
+                    continue
+            latest_price = float(row["quote_price"] or row["latest_price"] or row["entry_price"] or 0.0)
             entry_price = float(row["entry_price"] or latest_price or 0.0)
             qty = int(row["qty"] or 0)
             invested = float(row["invested_amount"] or (qty * entry_price))

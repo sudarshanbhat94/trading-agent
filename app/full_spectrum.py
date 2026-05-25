@@ -68,6 +68,7 @@ def full_spectrum_analysis(
         weekly_candles=weekly_candles,
         daily_candles=daily_candles,
     )
+    session_momentum = _session_momentum(quote)
     price_volume_divergence = _price_volume_divergence(candles, technical)
     entry_quality = _entry_grade(candles, quote.price, indicators)
     entry_quality = _strategy_confirmed_entry_quality(entry_quality, strategy_signals)
@@ -189,6 +190,7 @@ def full_spectrum_analysis(
         "signal_plan": signal_plan,
         "trend_context": trend_context,
         "stage_analysis": stage_analysis,
+        "session_momentum": session_momentum,
         "price_volume_divergence": price_volume_divergence,
         "entry_quality": entry_quality,
         "breakout_quality": breakout_quality,
@@ -242,6 +244,62 @@ def _data_quality(candles: list[Candle]) -> dict[str, Any]:
         "has_200_period_context": count >= 200,
         "coverage": "strong" if count >= 200 else "usable" if count >= 50 else "limited" if count >= 30 else "thin",
         "score": min(score, 100),
+    }
+
+
+def _session_momentum(quote: Quote) -> dict[str, Any]:
+    price = _float_or_none(quote.price)
+    open_price = _float_or_none(quote.open)
+    high = _float_or_none(quote.high)
+    low = _float_or_none(quote.low)
+    volume = _float_or_none(quote.volume)
+    day_gain_pct = ((price - open_price) / open_price) * 100 if price and open_price else None
+    day_range_pct = ((high - low) / open_price) * 100 if high and low and open_price else None
+    range_position = (price - low) / (high - low) if price and high and low and high > low else None
+    day_high_distance_pct = max(((high - price) / price) * 100, 0.0) if price and high else None
+    source = str(quote.source or "")
+    live_source = any(token in source.lower() for token in ("upstox", "kite", "nubra", "alpaca", "polygon", "live"))
+    fast_mover = (
+        day_gain_pct is not None
+        and day_gain_pct >= 4.0
+        and (range_position or 0.0) >= 0.70
+        and (day_high_distance_pct is None or day_high_distance_pct <= 2.0)
+    )
+    confirmed = fast_mover or (
+        day_gain_pct is not None
+        and day_gain_pct >= 1.5
+        and (range_position or 0.0) >= 0.55
+        and (day_high_distance_pct is None or day_high_distance_pct <= 3.0)
+    )
+    failed_drive = (
+        day_gain_pct is not None
+        and (
+            day_gain_pct < 1.0
+            or (
+                range_position is not None
+                and range_position < 0.45
+                and day_high_distance_pct is not None
+                and day_high_distance_pct > 2.5
+            )
+        )
+    )
+    return {
+        "available": bool(price and open_price and high and low),
+        "source": source,
+        "live_source": live_source,
+        "price": _round(price),
+        "open": _round(open_price),
+        "high": _round(high),
+        "low": _round(low),
+        "volume": _round(volume),
+        "day_gain_pct": _round(day_gain_pct),
+        "day_range_pct": _round(day_range_pct),
+        "day_range_position": _round(range_position),
+        "day_high_distance_pct": _round(day_high_distance_pct),
+        "confirmed": confirmed,
+        "fast_mover": fast_mover,
+        "failed_drive": failed_drive,
+        "policy": "Broad momentum entries need current-session confirmation; fast movers are reviewed from live quote/open/high/low evidence.",
     }
 
 

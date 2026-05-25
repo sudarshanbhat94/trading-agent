@@ -186,6 +186,75 @@ class DataCoverageTests(unittest.TestCase):
         self.assertEqual(by_market["IN"]["news_screened_symbols"], 1)
         self.assertEqual(by_market["US"]["news_screened_symbols"], 1)
 
+    def test_dynamic_scan_uses_full_quote_sweep_even_when_raw_limit_is_configured(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="upstox-live", backfill_limit=2)
+        universe = [{"symbol": f"SYM{index}", "exchange": "NSE"} for index in range(6)]
+
+        selected, policy = agent._raw_scan_universe_for_cycle(
+            universe,
+            {},
+            dynamic_scan_enabled=True,
+            raw_scan_limit=2,
+        )
+
+        self.assertEqual([row["symbol"] for row in selected], [row["symbol"] for row in universe])
+        self.assertTrue(policy["full_live_quote_sweep"])
+        self.assertFalse(policy["rotation_enabled"])
+        self.assertEqual(policy["reason"], "live_rally_radar_requires_all_open_symbols")
+
+    def test_market_action_symbols_are_forced_into_raw_scan_universe(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="upstox-live", backfill_limit=2)
+        raw = [{"symbol": "AAA", "exchange": "NSE"}]
+        universe = [
+            {"symbol": "AAA", "exchange": "NSE"},
+            {"symbol": "HFCL", "exchange": "NSE", "sector": "Telecom"},
+        ]
+        summary = {
+            "enabled": True,
+            "source": "unit-test",
+            "events_by_symbol": {
+                "HFCL": {
+                    "symbol": "HFCL",
+                    "event_types": ["TOP_GAINER", "VOLUME_SHOCKER", "52_WEEK_HIGH"],
+                    "market_action_score": 92,
+                    "strategy": "52_week_high_volume_breakout",
+                }
+            },
+        }
+
+        selected, policy = agent._merge_market_action_universe(raw, universe, summary)
+
+        self.assertEqual([row["symbol"] for row in selected], ["AAA", "HFCL"])
+        self.assertEqual(policy["added_symbols"], ["HFCL"])
+        self.assertEqual(selected[1]["_market_action"]["strategy"], "52_week_high_volume_breakout")
+
+    def test_market_action_news_rows_are_prioritized_before_rotating_probe(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="upstox-live", backfill_limit=2)
+        raw = [
+            {"symbol": "AAA", "exchange": "NSE"},
+            {"symbol": "HFCL", "exchange": "NSE"},
+            {"symbol": "EMMVEE", "exchange": "NSE"},
+        ]
+        summary = {
+            "enabled": True,
+            "events_by_symbol": {
+                "HFCL": {"symbol": "HFCL", "strategy": "52_week_high_volume_breakout"},
+                "EMMVEE": {"symbol": "EMMVEE", "strategy": "circuit_demand_lock"},
+            },
+        }
+
+        rows = agent._prepend_market_action_news_rows(
+            [{"symbol": "AAA", "exchange": "NSE"}, {"symbol": "HFCL", "exchange": "NSE"}],
+            raw,
+            {"AAA": object(), "HFCL": object(), "EMMVEE": object()},
+            summary,
+        )
+
+        self.assertEqual([row["symbol"] for row in rows], ["HFCL", "EMMVEE", "AAA"])
+
 
 class _FakeCoverageDb:
     def __init__(self, coverage: dict[str, dict]) -> None:
@@ -209,9 +278,13 @@ def _agent(db: _FakeCoverageDb, provider: str, backfill_limit: int) -> TradingAg
         dynamic_scan_require_active_setup=True,
         dynamic_scan_min_price=10.0,
         dynamic_scan_min_turnover_inr=50_000_000.0,
+        dynamic_scan_min_turnover_usd=2_000_000.0,
         dynamic_scan_breakout_distance_pct=3.0,
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,
+        market_action_radar_enabled=True,
+        market_action_radar_limit=40,
+        market_action_priority_news_limit=40,
         candle_backfill_enabled=True,
         candle_backfill_symbols_per_cycle=backfill_limit,
         candle_backfill_min_daily_candles=55,
@@ -243,6 +316,7 @@ def _billing_agent(db: Database) -> TradingAgentService:
         dynamic_scan_require_active_setup=True,
         dynamic_scan_min_price=10.0,
         dynamic_scan_min_turnover_inr=50_000_000.0,
+        dynamic_scan_min_turnover_usd=2_000_000.0,
         dynamic_scan_breakout_distance_pct=3.0,
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,

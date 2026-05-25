@@ -15,6 +15,26 @@ class MacroCalendarService:
         self.db = db
         self.earnings_calendar = {str(k).upper(): v for k, v in (earnings_calendar or {}).items()}
 
+    def _persistent_earnings_calendar(self) -> dict[str, str]:
+        stored = self.db.get_state("earnings_calendar", {})
+        if not isinstance(stored, dict):
+            fallback = self.db.get_state("pre_catalyst_calendar_enrichment", {})
+            stored = fallback.get("earnings_by_symbol", {}) if isinstance(fallback, dict) else {}
+        if not isinstance(stored, dict):
+            return dict(self.earnings_calendar)
+        merged = dict(self.earnings_calendar)
+        for symbol, value in stored.items():
+            normalized = str(symbol or "").upper()
+            if not normalized:
+                continue
+            if isinstance(value, dict):
+                date_value = value.get("catalyst_date") or value.get("date") or value.get("earnings_date")
+            else:
+                date_value = value
+            if date_value:
+                merged[normalized] = str(date_value)
+        return merged
+
     async def event_context_for_cycle(self) -> dict[str, Any]:
         if not self.settings.enable_macro_calendar:
             return {"enabled": False, "updated_at": utc_now(), "events": [], "data_gap": "macro_calendar_disabled"}
@@ -49,7 +69,8 @@ class MacroCalendarService:
         budget_dates = [item["date"] for item in _static_events(day.year) + _static_events(day.year + 1) if item["type"] == "union_budget_placeholder"]
         is_rbi_week = any(abs((_coerce_date(value) - day).days) <= 3 for value in rbi_dates if _coerce_date(value))
         is_budget_week = any(abs((_coerce_date(value) - day).days) <= 5 for value in budget_dates if _coerce_date(value))
-        earnings_date = _coerce_date(self.earnings_calendar.get(str(symbol or "").upper()))
+        earnings_calendar = self._persistent_earnings_calendar()
+        earnings_date = _coerce_date(earnings_calendar.get(str(symbol or "").upper()))
         earnings_days_away = (earnings_date - day).days if earnings_date else None
         earnings_trading_days_away = _trading_days_between(day, earnings_date) if earnings_date else None
         event_score = 0.0
@@ -69,7 +90,7 @@ class MacroCalendarService:
             event_score = max(event_score, 0.9)
         recommended = "hold_for_clarity" if event_score > 0.5 else "reduce_size" if 0.3 <= event_score <= 0.5 else "normal"
         data_gaps = []
-        if not self.earnings_calendar:
+        if not earnings_calendar:
             data_gaps.append("earnings_calendar_empty")
         return {
             "enabled": True,
@@ -105,7 +126,7 @@ class MacroCalendarService:
             if cursor.weekday() == 3 and cursor != _last_thursday(cursor.year, cursor.month):
                 events.append({"date": cursor.isoformat(), "type": "weekly_expiry", "scope": "market_wide"})
             cursor += timedelta(days=1)
-        for symbol, value in self.earnings_calendar.items():
+        for symbol, value in self._persistent_earnings_calendar().items():
             earnings_date = _coerce_date(value)
             if earnings_date:
                 events.append({"date": earnings_date.isoformat(), "type": "earnings", "scope": symbol, "symbols": [symbol]})

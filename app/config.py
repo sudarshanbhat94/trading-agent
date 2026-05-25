@@ -71,10 +71,26 @@ class Settings:
     dynamic_scan_require_active_setup: bool = _bool("DYNAMIC_SCAN_REQUIRE_ACTIVE_SETUP", True)
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
     dynamic_scan_min_turnover_inr: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_INR", 50_000_000.0)
+    dynamic_scan_min_turnover_usd: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_USD", 2_000_000.0)
     dynamic_scan_breakout_distance_pct: float = _float("DYNAMIC_SCAN_BREAKOUT_DISTANCE_PCT", 3.0)
     dynamic_scan_sentiment_enabled: bool = _bool("DYNAMIC_SCAN_SENTIMENT_ENABLED", True)
     dynamic_scan_news_probe_limit: int = _int("DYNAMIC_SCAN_NEWS_PROBE_LIMIT", 16)
     dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
+    market_action_radar_enabled: bool = _bool("MARKET_ACTION_RADAR_ENABLED", True)
+    market_action_radar_limit: int = _int("MARKET_ACTION_RADAR_LIMIT", 40)
+    market_action_radar_timeout_seconds: float = _float("MARKET_ACTION_RADAR_TIMEOUT_SECONDS", 6.0)
+    market_action_priority_news_limit: int = _int("MARKET_ACTION_PRIORITY_NEWS_LIMIT", 40)
+    market_action_moneycontrol_categories: str = os.getenv(
+        "MARKET_ACTION_MONEYCONTROL_CATEGORIES",
+        "top-gainers,volume-shockers,52-week-high,only-buyers,price-shockers",
+    ).strip()
+    market_action_yahoo_screeners: str = os.getenv("MARKET_ACTION_YAHOO_SCREENERS", "day_gainers,most_actives").strip()
+    market_action_us_min_gain_pct: float = _float("MARKET_ACTION_US_MIN_GAIN_PCT", 3.0)
+    market_action_us_volume_multiplier: float = _float("MARKET_ACTION_US_VOLUME_MULTIPLIER", 1.8)
+    market_action_us_near_52w_pct: float = _float("MARKET_ACTION_US_NEAR_52W_PCT", 2.0)
+    pre_catalyst_engine_enabled: bool = _bool("PRE_CATALYST_ENGINE_ENABLED", True)
+    pre_catalyst_candidate_limit: int = _int("PRE_CATALYST_CANDIDATE_LIMIT", 40)
+    pre_catalyst_min_score: float = _float("PRE_CATALYST_MIN_SCORE", 0.56)
     candle_backfill_enabled: bool = _bool("CANDLE_BACKFILL_ENABLED", True)
     candle_backfill_symbols_per_cycle: int = _int("CANDLE_BACKFILL_SYMBOLS_PER_CYCLE", 40)
     candle_backfill_min_daily_candles: int = _int("CANDLE_BACKFILL_MIN_DAILY_CANDLES", 55)
@@ -89,6 +105,8 @@ class Settings:
     ).strip()
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
+    position_quote_refresh_enabled: bool = _bool("POSITION_QUOTE_REFRESH_ENABLED", True)
+    position_quote_refresh_seconds: float = _float("POSITION_QUOTE_REFRESH_SECONDS", 1.0)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
     skip_market_data_when_closed: bool = _bool("SKIP_MARKET_DATA_WHEN_CLOSED", True)
     post_market_prep_enabled: bool = _bool("POST_MARKET_PREP_ENABLED", True)
@@ -293,6 +311,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "initial_cash_inr", "label": "Paper Capital", "type": "number", "category": "Runtime", "min": 1000, "step": 1000},
     {"key": "auto_start_agent", "label": "Auto Start", "type": "boolean", "category": "Agent Cycle"},
     {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Agent Cycle", "min": 5, "step": 1},
+    {"key": "position_quote_refresh_enabled", "label": "Fast Position Quotes", "type": "boolean", "category": "Agent Cycle"},
+    {"key": "position_quote_refresh_seconds", "label": "Position Quote Seconds", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
     {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
     {"key": "skip_market_data_when_closed", "label": "Skip Closed Markets", "type": "boolean", "category": "Agent Cycle"},
     {"key": "post_market_prep_enabled", "label": "Post-Market Prep", "type": "boolean", "category": "Agent Cycle"},
@@ -339,10 +359,22 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_scan_require_active_setup", "label": "Require Active Setup", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_min_turnover_inr", "label": "Dynamic Min Turnover INR", "type": "number", "category": "Market Data", "min": 0, "step": 1000000},
+    {"key": "dynamic_scan_min_turnover_usd", "label": "Dynamic Min Turnover USD", "type": "number", "category": "Market Data", "min": 0, "step": 100000},
     {"key": "dynamic_scan_breakout_distance_pct", "label": "Dynamic Breakout Distance %", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
     {"key": "dynamic_scan_sentiment_enabled", "label": "Dynamic Sentiment Scan", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_news_probe_limit", "label": "Dynamic News Probe/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_sentiment_weight", "label": "Dynamic Sentiment Weight", "type": "number", "category": "Market Data", "min": 0, "max": 0.3, "step": 0.01},
+    {"key": "market_action_radar_enabled", "label": "Market Action Radar", "type": "boolean", "category": "Market Data"},
+    {"key": "market_action_radar_limit", "label": "Market Action Symbols", "type": "number", "category": "Market Data", "min": 0, "step": 5},
+    {"key": "market_action_priority_news_limit", "label": "Market Action News Symbols", "type": "number", "category": "Market Data", "min": 0, "step": 5},
+    {"key": "market_action_moneycontrol_categories", "label": "Market Action Categories", "type": "text", "category": "Market Data"},
+    {"key": "market_action_yahoo_screeners", "label": "US Market Action Screeners", "type": "text", "category": "Market Data"},
+    {"key": "market_action_us_min_gain_pct", "label": "US Market Action Min Gain %", "type": "number", "category": "Market Data", "min": 0, "step": 0.25},
+    {"key": "market_action_us_volume_multiplier", "label": "US Volume Shock Multiplier", "type": "number", "category": "Market Data", "min": 1, "step": 0.1},
+    {"key": "market_action_us_near_52w_pct", "label": "US Near 52W High %", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
+    {"key": "pre_catalyst_engine_enabled", "label": "Pre-Catalyst Engine", "type": "boolean", "category": "Market Data"},
+    {"key": "pre_catalyst_candidate_limit", "label": "Pre-Catalyst Candidates", "type": "number", "category": "Market Data", "min": 1, "step": 5},
+    {"key": "pre_catalyst_min_score", "label": "Pre-Catalyst Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
     {"key": "candle_backfill_enabled", "label": "Candle Backfill", "type": "boolean", "category": "Market Data"},
     {"key": "candle_backfill_symbols_per_cycle", "label": "Backfill Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 10},
     {"key": "candle_backfill_min_daily_candles", "label": "Backfill Min Daily Candles", "type": "number", "category": "Market Data", "min": 20, "step": 5},
@@ -537,6 +569,8 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return max(int(value), 1000)
     if key == "auto_follow_reentry_cooldown_hours":
         return max(int(value), 48)
+    if key == "position_quote_refresh_seconds":
+        return max(float(value), 1.0)
     current = getattr(base, key)
     if isinstance(current, bool):
         if isinstance(value, bool):

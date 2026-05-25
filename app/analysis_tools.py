@@ -171,6 +171,7 @@ def build_symbol_tool_context(
         "sector_rotation": sector_context or {},
         "market_breadth_context": market_breadth or {},
         "macro_event_context": macro_event_context or {},
+        "opportunity_scan": row.get("_opportunity_scan") or {},
         "data_readiness": data_readiness,
         "performance_feedback": selected_performance_feedback,
         "timeframe_data": {

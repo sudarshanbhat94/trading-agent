@@ -14,11 +14,13 @@ from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
+from .market_action_radar import MarketActionRadar
 from .market_data import MarketDataError, MarketDataProvider
 from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context
-from .models import Decision, utc_now
+from .models import Decision, Quote, utc_now
 from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
+from .pre_catalyst_engine import build_pre_catalyst_watchlist
 from .request_context import current_llm_usage_scope, current_user_id
 from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_skip_payload
 from .strategy import StrategyEngine
@@ -81,6 +83,7 @@ class TradingAgentService:
         self._candle_backfill_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
         self.opportunity_scanner = OpportunityScanner(strategy.settings)
+        self.market_action_radar = MarketActionRadar(strategy.settings)
 
     @property
     def running(self) -> bool:
@@ -126,7 +129,32 @@ class TradingAgentService:
             if dynamic_scan_enabled
             else None
         )
-        raw_universe = self._cycle_universe(scan_universe, pre_positions, limit_override=raw_scan_limit)
+        sentiment_by_symbol: dict[str, dict[str, Any]] = {}
+        raw_universe, raw_scan_policy = self._raw_scan_universe_for_cycle(
+            scan_universe,
+            pre_positions,
+            dynamic_scan_enabled=dynamic_scan_enabled,
+            raw_scan_limit=raw_scan_limit,
+        )
+        market_action_summary: dict[str, Any] = {"enabled": False, "reason": "dynamic_scan_disabled", "events": [], "events_by_symbol": {}}
+        if dynamic_scan_enabled:
+            self._cycle_phase = "market_action_radar"
+            try:
+                market_action_summary = await self.market_action_radar.scan(scan_universe)
+            except Exception as exc:
+                market_action_summary = {
+                    "enabled": True,
+                    "source": "market_action_radar",
+                    "events": [],
+                    "events_by_symbol": {},
+                    "errors": [f"{exc.__class__.__name__}: {str(exc)[:220]}"],
+                }
+            raw_universe, market_action_policy = self._merge_market_action_universe(
+                raw_universe,
+                scan_universe,
+                market_action_summary,
+            )
+            raw_scan_policy = {**raw_scan_policy, "market_action": market_action_policy}
         universe = raw_universe
         self._log(
             "INFO",
@@ -144,6 +172,8 @@ class TradingAgentService:
                 "symbols_per_cycle": self.universe_symbols_per_cycle,
                 "dynamic_opportunity_scan_enabled": dynamic_scan_enabled,
                 "dynamic_scan_raw_limit": raw_scan_limit,
+                "raw_scan_policy": raw_scan_policy,
+                "market_action_symbols": market_action_summary.get("symbols", []),
             },
         )
         quotes = await self.market_data.get_quotes(raw_universe)
@@ -169,12 +199,17 @@ class TradingAgentService:
         if dynamic_scan_enabled:
             self._cycle_phase = "opportunity_scan"
             raw_cached_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
-            sentiment_by_symbol: dict[str, dict[str, Any]] = {}
             news_probe_summary: dict[str, Any] = {"enabled": False, "reason": "sentiment_scan_disabled"}
             if bool(getattr(self.strategy.settings, "enable_news_sentiment", True)) and bool(
                 getattr(self.strategy.settings, "dynamic_scan_sentiment_enabled", True)
             ):
                 news_probe_rows = self._news_probe_universe(raw_universe, quotes, pre_positions)
+                news_probe_rows = self._prepend_market_action_news_rows(
+                    news_probe_rows,
+                    raw_universe,
+                    quotes,
+                    market_action_summary,
+                )
                 if news_probe_rows:
                     news_probe_summary = await self.strategy.sentiment.refresh_watchlist_news(
                         news_probe_rows,
@@ -230,15 +265,15 @@ class TradingAgentService:
                 }
             universe = scan_result.selected_universe
             scan_summary = scan_result.summary
+            scan_summary["market_action_radar"] = market_action_summary
             scan_summary["news_probe"] = news_probe_summary
             scan_summary["history_prefetch"] = history_prefetch_summary
             scan_summary["enabled_universe_symbols"] = len(full_universe)
             scan_summary["open_universe_symbols"] = len(scan_universe)
             scan_summary["scanned_symbols_this_cycle"] = len(raw_universe)
             scan_summary["raw_scan_limit"] = raw_scan_limit
-            scan_summary["scan_rotation_enabled"] = bool(
-                raw_scan_limit and raw_scan_limit > 0 and raw_scan_limit < len(scan_universe)
-            )
+            scan_summary["scan_rotation_enabled"] = bool(raw_scan_policy.get("rotation_enabled"))
+            scan_summary["raw_scan_policy"] = raw_scan_policy
             scan_summary["news_screened_symbols"] = int(news_probe_summary.get("symbols_requested") or 0)
             scan_summary["news_events_found"] = int(news_probe_summary.get("events_found") or 0)
             scan_summary["news_headlines_found"] = int(news_probe_summary.get("headlines_found") or 0)
@@ -455,6 +490,24 @@ class TradingAgentService:
             else {}
         )
         self.db.set_state("macro_calendar_context", macro_calendar_context)
+        self._cycle_phase = "pre_catalyst_discovery"
+        discovery_candle_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
+        if not sentiment_by_symbol:
+            sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
+                [row["symbol"] for row in raw_universe],
+                max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
+            )
+        pre_catalyst_summary = self._build_pre_catalyst_discovery(
+            raw_universe,
+            quotes,
+            discovery_candle_sets,
+            sentiment_by_symbol,
+            macro_calendar_context,
+            sector_rotation_context,
+            macro_context,
+            market_action_summary,
+        )
+        self._store_pre_catalyst_discovery(pre_catalyst_summary)
         self._cycle_phase = "self_audit"
         quote_rows = [quote.to_dict() for quote in quotes.values()]
         market_health = self._market_health(quote_rows)
@@ -676,6 +729,22 @@ class TradingAgentService:
             delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else delivery_status
             self.db.set_state("delivery_data_status", delivery_status)
 
+        self._cycle_phase = "pre_catalyst_discovery"
+        opportunity_state = self.db.get_state("opportunity_scan", {})
+        cached_market_action = (
+            opportunity_state.get("market_action_radar", {})
+            if isinstance(opportunity_state, dict)
+            else {}
+        )
+        pre_catalyst_summary = self._build_cached_pre_catalyst_discovery(
+            full_universe,
+            macro_context if isinstance(macro_context, dict) else {},
+            macro_calendar_context if isinstance(macro_calendar_context, dict) else {},
+            self.db.get_state("sector_rotation_context", {}),
+            cached_market_action,
+        )
+        self._store_pre_catalyst_discovery(pre_catalyst_summary)
+
         quote_rows = self.db.latest_quotes()
         portfolio = self.broker.snapshot()
         market_health = self._market_health(quote_rows)
@@ -695,6 +764,12 @@ class TradingAgentService:
             },
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
             "delivery_data_status": delivery_status,
+            "pre_catalyst_discovery": {
+                "enabled": pre_catalyst_summary.get("enabled"),
+                "candidates": len(pre_catalyst_summary.get("candidates") or []),
+                "live_confirmations": len(pre_catalyst_summary.get("live_confirmations") or []),
+                "label_counts": pre_catalyst_summary.get("label_counts"),
+            },
             "skipped_phases": [
                 "market_quotes",
                 "candles",
@@ -793,6 +868,96 @@ class TradingAgentService:
         if self.on_update:
             await self.on_update(snapshot)
         return snapshot
+
+    def _build_cached_pre_catalyst_discovery(
+        self,
+        full_universe: list[dict[str, Any]],
+        macro_context: dict[str, Any],
+        macro_calendar_context: dict[str, Any],
+        sector_rotation_context: dict[str, Any],
+        market_action_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        quotes = _quote_models_from_rows(self.db.latest_quotes())
+        if not quotes:
+            return {
+                "enabled": bool(getattr(self.strategy.settings, "pre_catalyst_engine_enabled", True)),
+                "source": "pre_catalyst_engine",
+                "mode": "cached_closed_market_prep",
+                "reason": "no_cached_quotes_available",
+                "candidates": [],
+                "live_confirmations": [],
+            }
+        symbols = [row["symbol"] for row in full_universe if row.get("symbol") in quotes]
+        candle_sets = self.db.recent_candle_sets_by_symbol(symbols)
+        sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
+            symbols,
+            max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
+        )
+        return self._build_pre_catalyst_discovery(
+            [row for row in full_universe if row.get("symbol") in quotes],
+            quotes,
+            candle_sets,
+            sentiment_by_symbol,
+            macro_calendar_context,
+            sector_rotation_context,
+            macro_context,
+            market_action_summary,
+        )
+
+    def _build_pre_catalyst_discovery(
+        self,
+        universe: list[dict[str, Any]],
+        quotes: dict[str, Any],
+        candle_sets: dict[str, dict[str, list[Any]]],
+        sentiment_by_symbol: dict[str, dict[str, Any]],
+        macro_calendar_context: dict[str, Any],
+        sector_rotation_context: dict[str, Any],
+        macro_context: dict[str, Any],
+        market_action_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        previous_state = self.db.get_state("pre_catalyst_discovery", {})
+        try:
+            return build_pre_catalyst_watchlist(
+                universe,
+                quotes,
+                candle_sets,
+                sentiment_by_symbol=sentiment_by_symbol,
+                macro_calendar_context=macro_calendar_context,
+                sector_rotation_context=sector_rotation_context,
+                macro_context=macro_context,
+                market_action_summary=market_action_summary,
+                previous_state=previous_state if isinstance(previous_state, dict) else {},
+                settings=self.strategy.settings,
+            )
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "source": "pre_catalyst_engine",
+                "generated_at": utc_now(),
+                "error": f"{exc.__class__.__name__}: {str(exc)[:220]}",
+                "candidates": [],
+                "live_confirmations": [],
+            }
+
+    def _store_pre_catalyst_discovery(self, summary: dict[str, Any]) -> None:
+        self.db.set_state("pre_catalyst_discovery", summary)
+        if isinstance(summary.get("calendar_enrichment"), dict):
+            self.db.set_state("pre_catalyst_calendar_enrichment", summary["calendar_enrichment"])
+        self._log(
+            "INFO",
+            "pre_catalyst",
+            "pre_catalyst_discovery_completed",
+            f"Pre-catalyst discovery found {len(summary.get('candidates') or [])} candidates and {len(summary.get('live_confirmations') or [])} live confirmations",
+            {
+                "enabled": summary.get("enabled"),
+                "label_counts": summary.get("label_counts"),
+                "data_gaps": summary.get("data_gaps"),
+                "calendar_status": (summary.get("calendar_enrichment") or {}).get("status")
+                if isinstance(summary.get("calendar_enrichment"), dict)
+                else None,
+                "events": (summary.get("log_events") or [])[-20:],
+            },
+        )
 
     def _post_market_news_rows(
         self,
@@ -1460,6 +1625,42 @@ class TradingAgentService:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return now - parsed.astimezone(timezone.utc) > stale_after
 
+    def _raw_scan_universe_for_cycle(
+        self,
+        scan_universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+        *,
+        dynamic_scan_enabled: bool,
+        raw_scan_limit: int | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        configured_limit = max(0, int(raw_scan_limit or 0)) if raw_scan_limit is not None else None
+        if (
+            dynamic_scan_enabled
+            and configured_limit
+            and scan_universe
+            and configured_limit < len(scan_universe)
+        ):
+            return list(scan_universe), {
+                "configured_raw_limit": configured_limit,
+                "full_live_quote_sweep": True,
+                "rotation_enabled": False,
+                "quote_sweep_symbols": len(scan_universe),
+                "reason": "live_rally_radar_requires_all_open_symbols",
+            }
+
+        selected = self._cycle_universe(scan_universe, positions, limit_override=configured_limit)
+        return selected, {
+            "configured_raw_limit": configured_limit,
+            "full_live_quote_sweep": bool(dynamic_scan_enabled and (not configured_limit or configured_limit >= len(scan_universe))),
+            "rotation_enabled": bool(
+                configured_limit
+                and selected
+                and configured_limit < len(scan_universe)
+            ),
+            "quote_sweep_symbols": len(selected),
+            "reason": "configured_all_symbols" if dynamic_scan_enabled else "static_cycle_universe",
+        }
+
     def _cycle_universe(
         self,
         full_universe: list[dict[str, Any]],
@@ -1481,6 +1682,48 @@ class TradingAgentService:
                     selected.append(row)
                     selected_symbols.add(row["symbol"])
         return selected
+
+    def _merge_market_action_universe(
+        self,
+        raw_universe: list[dict[str, Any]],
+        scan_universe: list[dict[str, Any]],
+        market_action_summary: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        events_by_symbol = market_action_summary.get("events_by_symbol") if isinstance(market_action_summary, dict) else {}
+        if not isinstance(events_by_symbol, dict) or not events_by_symbol:
+            return raw_universe, {"enabled": bool(market_action_summary.get("enabled")), "forced_symbols": [], "added_symbols": []}
+
+        events_by_symbol = {str(symbol).upper(): event for symbol, event in events_by_symbol.items() if isinstance(event, dict)}
+        rows_by_symbol = {str(row.get("symbol") or "").upper(): row for row in scan_universe}
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        added_symbols: list[str] = []
+
+        for row in raw_universe:
+            symbol = str(row.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            selected_symbols.add(symbol)
+            event = events_by_symbol.get(symbol)
+            selected.append({**row, "_market_action": event} if event else row)
+
+        for symbol, event in events_by_symbol.items():
+            if symbol in selected_symbols:
+                continue
+            row = rows_by_symbol.get(symbol)
+            if not row:
+                continue
+            selected.append({**row, "_market_action": event})
+            selected_symbols.add(symbol)
+            added_symbols.append(symbol)
+
+        return selected, {
+            "enabled": True,
+            "forced_symbols": [symbol for symbol in events_by_symbol if symbol in selected_symbols],
+            "added_symbols": added_symbols,
+            "events_found": len(events_by_symbol),
+            "source": market_action_summary.get("source"),
+        }
 
     def _fallback_quoted_universe(
         self,
@@ -1556,6 +1799,38 @@ class TradingAgentService:
                 self._news_probe_cursor = (start + index + 1) % len(full_universe)
                 return selected
         self._news_probe_cursor = (start + len(full_universe)) % len(full_universe)
+        return selected
+
+    def _prepend_market_action_news_rows(
+        self,
+        news_probe_rows: list[dict[str, Any]],
+        raw_universe: list[dict[str, Any]],
+        quotes: dict[str, Any],
+        market_action_summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        events_by_symbol = market_action_summary.get("events_by_symbol") if isinstance(market_action_summary, dict) else {}
+        if not isinstance(events_by_symbol, dict) or not events_by_symbol:
+            return news_probe_rows
+        limit = max(0, int(getattr(self.strategy.settings, "market_action_priority_news_limit", 40) or 0))
+        if limit <= 0:
+            return news_probe_rows
+        rows_by_symbol = {str(row.get("symbol") or "").upper(): row for row in raw_universe}
+        priority_rows: list[dict[str, Any]] = []
+        for symbol in list(events_by_symbol)[:limit]:
+            normalized = str(symbol or "").upper()
+            row = rows_by_symbol.get(normalized)
+            if not row or normalized not in quotes:
+                continue
+            event = events_by_symbol.get(symbol)
+            priority_rows.append({**row, "_market_action": event} if isinstance(event, dict) else row)
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        for row in [*priority_rows, *news_probe_rows]:
+            symbol = str(row.get("symbol") or "").upper()
+            if not symbol or symbol in selected_symbols:
+                continue
+            selected.append(row)
+            selected_symbols.add(symbol)
         return selected
 
     def _news_probe_priority(self, row: dict[str, Any], quote: Any) -> float:
@@ -1699,6 +1974,7 @@ class TradingAgentService:
             "sector_rotation_context": _sector_rotation_summary(self.db.get_state("sector_rotation_context", {})),
             "options_intelligence": _options_intelligence_summary(options_context),
             "opportunity_scan": opportunity_scan,
+            "pre_catalyst_discovery": self.db.get_state("pre_catalyst_discovery", {}),
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
             "self_audit": self_audit,
             "shared_auto_trade": self._last_shared_auto_trade,
@@ -2362,6 +2638,27 @@ def _settings_with_llm_api_disabled(settings: Any) -> Any:
     if "llm_decision_mode" not in values:
         values["llm_decision_mode"] = getattr(settings, "llm_decision_mode", "offline")
     return SimpleNamespace(**values)
+
+
+def _quote_models_from_rows(rows: list[dict[str, Any]]) -> dict[str, Quote]:
+    quotes: dict[str, Quote] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        price = _float_or_none(row.get("price"))
+        if not symbol or price is None:
+            continue
+        quotes[symbol] = Quote(
+            symbol=symbol,
+            price=price,
+            source=str(row.get("source") or "cached"),
+            asof=str(row.get("ts") or row.get("asof") or utc_now()),
+            open=_float_or_none(row.get("open")),
+            high=_float_or_none(row.get("high")),
+            low=_float_or_none(row.get("low")),
+            close=_float_or_none(row.get("close")),
+            volume=_float_or_none(row.get("volume")),
+        )
+    return quotes
 
 
 def _int_or_none(value: Any) -> int | None:

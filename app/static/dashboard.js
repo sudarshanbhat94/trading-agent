@@ -10,6 +10,11 @@ const state = {
   socket: null,
   socketReconnectTimer: null,
   statusRefreshInFlight: false,
+  positionMarksInFlight: false,
+  positionMarksPending: false,
+  positionMarksTimer: null,
+  positionMarksLastFetchAt: 0,
+  positionMarksLastAppliedAt: null,
   quoteFilter: "",
   activeMarket: "IN",
   activeSettingsTab: "broker",
@@ -336,6 +341,20 @@ function fmtAge(seconds) {
   if (value < 60) return `${Math.round(value)}s old`;
   if (value < 3600) return `${Math.round(value / 60)}m old`;
   return `${Math.round(value / 3600)}h old`;
+}
+
+function secondsSince(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, (Date.now() - date.getTime()) / 1000);
+}
+
+function fmtFreshness(value, fallback = "waiting") {
+  const age = secondsSince(value);
+  if (age === null) return fallback;
+  if (age < 2) return "now";
+  return fmtAge(age);
 }
 
 function getUSSession(now = new Date()) {
@@ -1285,6 +1304,150 @@ function render(payload) {
   renderShell(payload);
 }
 
+function updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas) {
+  const unrealizedPct = Number(scopedPortfolio.invested) > 0
+    ? (Number(scopedPortfolio.unrealized_pnl || 0) / Number(scopedPortfolio.invested)) * 100
+    : 0;
+  byId("kpi-equity").textContent = fmtMarketMoney(scopedPortfolio.equity, activeMarket);
+  byId("kpi-cash").textContent = fmtMarketMoney(scopedPortfolio.cash, activeMarket);
+  byId("kpi-unrealized").textContent = fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket);
+  byId("kpi-unrealized").className = pnlClass(scopedPortfolio.unrealized_pnl);
+  const equityDelta = byId("kpi-equity-delta");
+  if (equityDelta) equityDelta.textContent = `${fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket)} today`;
+  const unrealizedPctEl = byId("kpi-unrealized-pct");
+  if (unrealizedPctEl) {
+    unrealizedPctEl.textContent = fmtPct(unrealizedPct);
+    unrealizedPctEl.className = pnlClass(unrealizedPct);
+  }
+  byId("kpi-positions").textContent = String(positions.length);
+  byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
+  byId("nav-positions-badge").textContent = String(positions.length);
+  const trackedCount = byId("tracked-count");
+  if (trackedCount) {
+    trackedCount.textContent = visibleTrackedIdeas.length
+      ? `${filteredCountLabel(visibleTrackedIdeas.length, trackedIdeas.length, "active idea", "active ideas")}`
+      : "0 active";
+  }
+}
+
+function renderPositionMarkPanels(payload) {
+  if (!payload) return;
+  const activeMarket = normalizeUiMarket(state.activeMarket);
+  const allPositions = payload.positions || [];
+  const positions = filterRowsByMarket(allPositions, activeMarket);
+  const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
+  const trackedIdeas = payloadRowsForMarket(payload, "tracked_ideas", activeMarket);
+  const visibleTrackedIdeas = applySuggestionFilter(trackedIdeas);
+  const decisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
+  const scopedPortfolio = marketPortfolioFromPayload(payload, activeMarket);
+  updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas);
+  renderPositions(positions);
+  renderOverviewPositions(positions);
+  renderTrackedIdeas(visibleTrackedIdeas);
+  renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
+  renderProductTrackingPanel(trackedIdeas, positions, suggestions);
+}
+
+function accountEditorIsFocused() {
+  const active = document.activeElement;
+  return Boolean(active?.closest?.("#account-body form"));
+}
+
+function applyAccountPositionMarks(payload = {}) {
+  if (state.auth?.admin || !state.account) return;
+  const paperPayload = payload.paper || {};
+  const paper = {
+    ...(state.account.paper || {}),
+    ...paperPayload,
+    positions: payload.positions || paperPayload.positions || state.account.paper?.positions || [],
+    follow_history: payload.follow_history || paperPayload.follow_history || state.account.paper?.follow_history || [],
+    closed_positions: paperPayload.closed_positions || state.account.paper?.closed_positions || [],
+    portfolio: payload.portfolio || paperPayload.portfolio || state.account.paper?.portfolio || {},
+    portfolio_by_market: payload.portfolio_by_market || paperPayload.portfolio_by_market || state.account.paper?.portfolio_by_market || {},
+    cash_pool_by_market: paperPayload.cash_pool_by_market || state.account.paper?.cash_pool_by_market || {},
+    realized_pnl_by_market: paperPayload.realized_pnl_by_market || state.account.paper?.realized_pnl_by_market || {},
+    cash_by_market: paperPayload.cash_by_market || state.account.paper?.cash_by_market || {},
+  };
+  state.account = {
+    ...state.account,
+    tracked_ideas: payload.tracked_ideas || state.account.tracked_ideas || [],
+    follow_history: payload.follow_history || state.account.follow_history || [],
+    follow_history_by_market: payload.follow_history_by_market || state.account.follow_history_by_market || {},
+    paper,
+  };
+  if (currentViewName() === "account" && !accountEditorIsFocused()) {
+    renderAccount(state.account);
+  }
+}
+
+function applyPositionMarks(payload = {}) {
+  if (!payload || !state.latest) return;
+  state.positionMarksLastAppliedAt = payload.updated_at || new Date().toISOString();
+  state.latest = {
+    ...state.latest,
+    tracked_ideas: payload.tracked_ideas || state.latest.tracked_ideas || [],
+    tracked_ideas_by_market: payload.tracked_ideas_by_market || state.latest.tracked_ideas_by_market || {},
+    follow_history: payload.follow_history || state.latest.follow_history || [],
+    follow_history_by_market: payload.follow_history_by_market || state.latest.follow_history_by_market || {},
+    positions: payload.positions || state.latest.positions || [],
+    portfolio: payload.portfolio || state.latest.portfolio || {},
+    portfolio_by_market: payload.portfolio_by_market || state.latest.portfolio_by_market || {},
+    paper_cash_pool_by_market: payload.paper_cash_pool_by_market || state.latest.paper_cash_pool_by_market || {},
+    paper_realized_pnl_by_market: payload.paper_realized_pnl_by_market || state.latest.paper_realized_pnl_by_market || {},
+    paper_exit_manager: payload.paper_exit_manager || state.latest.paper_exit_manager || {},
+    equity_curve_by_market: payload.equity_curve_by_market || state.latest.equity_curve_by_market || {},
+    equity_curve: payload.equity_curve || state.latest.equity_curve || [],
+  };
+  renderPositionMarkPanels(state.latest);
+  applyAccountPositionMarks(payload);
+}
+
+async function refreshPositionMarks() {
+  if (!state.auth?.authenticated || state.auth?.admin) return;
+  const now = Date.now();
+  if (now - Number(state.positionMarksLastFetchAt || 0) < 850) return;
+  if (state.positionMarksInFlight) {
+    state.positionMarksPending = true;
+    return;
+  }
+  state.positionMarksLastFetchAt = now;
+  state.positionMarksInFlight = true;
+  try {
+    const response = await fetch("/api/position-marks", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (response.status === 401) {
+      handleUnauthorized(payload.detail || "Session expired. Sign in again.");
+      return;
+    }
+    if (response.ok) {
+      applyPositionMarks(payload);
+    }
+  } catch {
+    /* Websocket/status refreshes will keep retrying; avoid noisy UI errors every second. */
+  } finally {
+    state.positionMarksInFlight = false;
+    if (state.positionMarksPending && state.auth?.authenticated && !state.auth?.admin) {
+      state.positionMarksPending = false;
+      window.setTimeout(refreshPositionMarks, 0);
+    }
+  }
+}
+
+function startPositionMarkPolling() {
+  if (!state.auth?.authenticated || state.auth?.admin || state.positionMarksTimer) return;
+  state.positionMarksTimer = window.setInterval(refreshPositionMarks, 1000);
+  refreshPositionMarks();
+}
+
+function stopPositionMarkPolling() {
+  if (state.positionMarksTimer) {
+    window.clearInterval(state.positionMarksTimer);
+    state.positionMarksTimer = null;
+  }
+  state.positionMarksPending = false;
+  state.positionMarksInFlight = false;
+}
+
 function renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, portfolio) {
   const panel = byId("product-action-panel");
   if (!panel) return;
@@ -1829,6 +1992,7 @@ function renderAuth(auth) {
   byId("start-btn").textContent = auth.admin ? "Start" : "Refresh Signals";
   byId("stop-btn").textContent = auth.admin ? "Stop" : "Managed";
   byId("logout-btn").hidden = !authenticated;
+  if (!authenticated || auth.admin) stopPositionMarkPolling();
   renderUserBrokerStatus();
   for (const item of document.querySelectorAll(".admin-only")) {
     item.hidden = !auth.admin;
@@ -1850,6 +2014,7 @@ function handleUnauthorized(message = "Session expired. Sign in again.") {
   state.socketReconnectTimer = null;
   if (state.socket) state.socket.close();
   state.socket = null;
+  stopPositionMarkPolling();
   renderAuth({
     authenticated: false,
     admin: false,
@@ -3264,6 +3429,7 @@ async function login(event) {
     renderAuth(payload);
     await loadAuthenticatedData();
     openSocket();
+    startPositionMarkPolling();
   } catch (error) {
     status.textContent = "login failed: backend unreachable";
     status.className = "settings-inline-status negative";
@@ -3277,6 +3443,7 @@ async function logout() {
     state.socketReconnectTimer = null;
     if (state.socket) state.socket.close();
     state.socket = null;
+    stopPositionMarkPolling();
     renderAuth({ authenticated: false, admin: false, admin_configured: state.auth.admin_configured, user: null });
     byId("login-status").textContent = "Signed out.";
     byId("login-status").className = "settings-inline-status";
@@ -3613,9 +3780,14 @@ function positionFlagsHtml(flags = []) {
 }
 
 function positionPriceHtml(row = {}, market = "IN") {
+  const markedAt = row.marked_at || row.updated_at || row.position_summary?.mark_timestamp || row.position_summary?.price_timestamp;
+  const quoteAt = row.quote_updated_at || row.position_summary?.quote_timestamp;
+  const source = humanLabel(row.quote_source || row.position_summary?.price_source || "live quote");
+  const markText = `Mark ${fmtFreshness(markedAt)}`;
+  const quoteText = quoteAt ? `tick ${fmtFreshness(quoteAt)}` : "tick waiting";
   return `<div class="position-price-pair">
     <span><small>Entry</small><strong>${fmtTradeMoney(row.avg_price, market)}</strong></span>
-    <span><small>${escapeHtml(row.position_summary?.price_label || "LTP")}</small><strong>${fmtTradeMoney(row.market_price, market)}</strong></span>
+    <span class="live-price-tile"><small>${escapeHtml(row.position_summary?.price_label || "LTP")}</small><strong>${fmtTradeMoney(row.market_price, market)}</strong><em>${escapeHtml(markText)} · ${escapeHtml(quoteText)}</em><em>${escapeHtml(source)}</em></span>
   </div>`;
 }
 
@@ -4295,15 +4467,23 @@ function normalizedScore(value) {
 }
 
 function scoreRadarSvg(metrics = []) {
+  const center = 90;
+  const metricBaseRadius = 20;
+  const metricRangeRadius = 50;
+  const labelRadius = 74;
   const points = metrics.map((metric, index) => {
     const angle = (-90 + index * (360 / metrics.length)) * (Math.PI / 180);
-    const radius = 22 + (Math.max(0, Math.min(100, metric.value)) / 100) * 54;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const radius = metricBaseRadius + (Math.max(0, Math.min(100, metric.value)) / 100) * metricRangeRadius;
     return {
       ...metric,
-      x: 90 + Math.cos(angle) * radius,
-      y: 90 + Math.sin(angle) * radius,
-      lx: 90 + Math.cos(angle) * 72,
-      ly: 90 + Math.sin(angle) * 72,
+      x: center + cos * radius,
+      y: center + sin * radius,
+      lx: center + cos * labelRadius,
+      ly: center + sin * labelRadius,
+      anchor: cos < -0.4 ? "start" : cos > 0.4 ? "end" : "middle",
+      dy: sin < -0.4 ? "0.85em" : sin > 0.4 ? "-0.35em" : "0.35em",
     };
   });
   const polygon = points.map((point) => `${point.x},${point.y}`).join(" ");
@@ -4314,7 +4494,7 @@ function scoreRadarSvg(metrics = []) {
       <line x1="90" y1="20" x2="90" y2="160"></line>
       <line x1="20" y1="90" x2="160" y2="90"></line>
       <polygon points="${polygon}"></polygon>
-      ${points.map((point) => `<text x="${point.lx}" y="${point.ly}">${escapeHtml(point.label)}</text>`).join("")}
+      ${points.map((point) => `<text x="${point.lx}" y="${point.ly}" text-anchor="${point.anchor}" dy="${point.dy}">${escapeHtml(point.label)}</text>`).join("")}
     </svg>
     <div class="radar-legend">
       ${metrics.map((metric) => `<span><b>${escapeHtml(metric.label)}</b>${fmtNumber(metric.value)}%</span>`).join("")}
@@ -5914,6 +6094,7 @@ async function loadInitial() {
     }
     await loadAuthenticatedData();
     openSocket();
+    startPositionMarkPolling();
   } catch (error) {
     byId("login-status").textContent = "Backend unavailable. Start OpenStocks and refresh.";
     byId("login-status").className = "settings-inline-status negative";
@@ -5979,8 +6160,13 @@ function openSocket() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
   socket.addEventListener("message", (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload?.event === "position_marks_refreshed") {
+      if (!state.positionMarksTimer) refreshPositionMarks();
+      return;
+    }
     if (state.auth?.admin) {
-      render(JSON.parse(event.data));
+      render(payload);
       return;
     }
     refreshStatusOnly();

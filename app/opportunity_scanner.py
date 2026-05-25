@@ -18,11 +18,18 @@ class OpportunityScanResult:
 
 
 _ACTIVE_OPPORTUNITY_SETUPS = {
+    "52_week_high_volume_breakout",
+    "broker_re_rating_breakout",
+    "circuit_demand_lock",
+    "earnings_beat_gap_and_go",
+    "market_action_momentum",
     "news_catalyst",
     "breakout_continuation",
     "extended_momentum_watch",
     "opening_ignition",
+    "price_shocker_reversal_breakout",
     "pre_rally_fuel",
+    "top_gainer_momentum",
     "intraday_momentum",
     "intraday_momentum_probe",
     "near_breakout",
@@ -35,6 +42,16 @@ _LIVE_RALLY_SETUPS = {
     "opening_ignition",
     "intraday_momentum",
     "extended_momentum_watch",
+}
+
+_MARKET_ACTION_SETUPS = {
+    "52_week_high_volume_breakout",
+    "broker_re_rating_breakout",
+    "circuit_demand_lock",
+    "earnings_beat_gap_and_go",
+    "market_action_momentum",
+    "price_shocker_reversal_breakout",
+    "top_gainer_momentum",
 }
 
 
@@ -180,6 +197,11 @@ class OpportunityScanner:
                 for item in candidates
                 if item.get("rally_phase") and item.get("rally_phase") != "none"
             ][:25],
+            "top_market_action": [
+                item
+                for item in candidates
+                if (item.get("market_action") or {}).get("available")
+            ][:25],
             "setup_counts": self._counts(item.get("setup") for item in selected_items),
             "bucket_counts": self._counts(item.get("bucket") for item in selected_items),
             "news_covered_candidates": news_covered_candidates,
@@ -221,6 +243,7 @@ class OpportunityScanner:
         metrics = self._metrics(price, quote, candles, market_region)
         sentiment = self._sentiment_metrics(sentiment_detail or {})
         liquidity_profile = self._liquidity_profile(metrics, min_turnover)
+        market_action = row.get("_market_action") if isinstance(row.get("_market_action"), dict) else {}
         reasons: list[str] = []
         reject_reason = ""
 
@@ -241,6 +264,7 @@ class OpportunityScanner:
         volume = self._volume_score(metrics)
         risk = self._risk_score(metrics)
         rally = self._rally_radar(metrics, trend, breakout, momentum, live_momentum, volume, sentiment, min_turnover)
+        market_action_review = self._market_action_review(market_action, metrics, sentiment, min_turnover)
         data_quality = self._data_quality(row, quote, metrics, sentiment)
         if data_quality["reject_reason"] and not in_position and not reject_reason:
             if self._allow_live_rally_probe(data_quality, rally, metrics, min_turnover):
@@ -270,6 +294,7 @@ class OpportunityScanner:
             + sentiment["boost"]
             + catalyst_boost
             + rally["score_boost"]
+            + market_action_review["score_boost"]
             + self._live_momentum_boost(metrics, live_momentum, min_turnover),
             0.0,
             1.0,
@@ -277,8 +302,12 @@ class OpportunityScanner:
         rally_floor = self._live_rally_score_floor(rally, liquidity_profile, metrics)
         if rally_floor > score:
             score = rally_floor
+        market_action_floor = self._market_action_score_floor(market_action_review, liquidity_profile, metrics)
+        if market_action_floor > score:
+            score = market_action_floor
 
         reasons.extend(rally.get("reasons", []))
+        reasons.extend(market_action_review.get("reasons", []))
         if metrics["distance_to_55d_high_pct"] is not None and metrics["distance_to_55d_high_pct"] <= self.breakout_distance_pct:
             reasons.append(f"near 55D high ({metrics['distance_to_55d_high_pct']:.1f}% away)")
         elif metrics["day_high_distance_pct"] is not None and metrics["day_high_distance_pct"] <= 1.0:
@@ -308,7 +337,7 @@ class OpportunityScanner:
         if risk < 0.35:
             reasons.append("risk/reward needs caution")
 
-        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment, rally, min_turnover)
+        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment, rally, min_turnover, market_action_review)
         bucket = self._bucket(score, risk, reject_reason, metrics)
         return {
             "symbol": symbol,
@@ -327,6 +356,7 @@ class OpportunityScanner:
             "metrics": metrics,
             "sentiment": sentiment,
             "rally_radar": rally,
+            "market_action": market_action_review,
             "data_quality": data_quality,
             "liquidity_profile": liquidity_profile,
             "components": {
@@ -591,6 +621,132 @@ class OpportunityScanner:
         if high_distance is not None and high_distance > 2.0 and day_gain < 5.0:
             return 0.0
         return _clamp(max(self.min_score + 0.02, rally_score * 0.86), 0.0, 0.78)
+
+    def _market_action_review(
+        self,
+        market_action: dict[str, Any],
+        metrics: dict[str, Any],
+        sentiment: dict[str, Any],
+        min_turnover: float,
+    ) -> dict[str, Any]:
+        if not market_action:
+            return {
+                "available": False,
+                "setup": "",
+                "score": 0.0,
+                "score_boost": 0.0,
+                "trade_window": "",
+                "reasons": [],
+                "event_types": [],
+            }
+        event_types = [str(item).upper() for item in market_action.get("event_types", []) if str(item or "").strip()]
+        strategy = str(market_action.get("strategy") or "").strip().lower()
+        day_gain = _float_or_none(metrics.get("day_gain_pct"))
+        if day_gain is None:
+            day_gain = _float_or_none(market_action.get("pct_change")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        dist55 = _float_or_none(metrics.get("distance_to_55d_high_pct"))
+        dist252 = _float_or_none(metrics.get("distance_to_252d_high_pct"))
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or _float_or_none(market_action.get("volume_multiplier")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        turnover = _float_or_none(metrics.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(metrics.get("projected_turnover")) or turnover
+        dist_sma20 = _float_or_none(metrics.get("distance_to_sma20_pct"))
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        near_high = high_distance is None or high_distance <= 2.0
+        near_breakout = (
+            dist55 is not None and dist55 <= 3.0
+        ) or (
+            dist252 is not None and dist252 <= 3.0
+        ) or "52_WEEK_HIGH" in event_types or "ALL_TIME_HIGH" in event_types
+        volume_confirmed = participation >= 1.25 or projected_turnover >= min_turnover * 1.5 or "VOLUME_SHOCKER" in event_types
+        extended = day_gain >= 7.0 or (dist_sma20 is not None and dist_sma20 > 12.0)
+        setup = strategy if strategy in _MARKET_ACTION_SETUPS else "market_action_momentum"
+        trade_window = str(market_action.get("trade_window") or "confirm_before_entry")
+        news_event_types = {
+            str(event.get("event_type") or "").lower()
+            for event in sentiment.get("events", [])
+            if isinstance(event, dict)
+        }
+        if "ONLY_BUYERS" in event_types or setup == "circuit_demand_lock":
+            setup = "circuit_demand_lock"
+            trade_window = "watch_for_pullback"
+        elif sentiment.get("positive_catalyst") and "earnings" in news_event_types and volume_confirmed:
+            setup = "earnings_beat_gap_and_go"
+            trade_window = "actionable_if_vwap_holds"
+        elif sentiment.get("positive_catalyst") and news_event_types & {"analyst_upgrade", "order_win", "guidance"} and volume_confirmed:
+            setup = "broker_re_rating_breakout"
+            trade_window = "actionable_if_vwap_holds"
+        elif near_breakout and volume_confirmed:
+            setup = "52_week_high_volume_breakout"
+            trade_window = "actionable_if_vwap_holds" if not extended else "wait_for_pullback"
+        elif extended:
+            setup = "extended_momentum_watch"
+            trade_window = "wait_for_pullback"
+        score = _clamp(float(market_action.get("market_action_score") or 0.0) / 100.0, 0.0, 1.0)
+        if near_high:
+            score += 0.04
+        if volume_confirmed:
+            score += 0.06
+        if sentiment.get("positive_catalyst"):
+            score += 0.04
+        score = _clamp(score, 0.0, 1.0)
+        score_boost = _clamp(0.04 + score * 0.08, 0.0, 0.12)
+        if setup == "circuit_demand_lock":
+            score_boost = min(score_boost, 0.07)
+        reasons = [
+            f"market action radar: {market_action.get('reason') or ', '.join(event_types[:3])}",
+        ]
+        if setup == "circuit_demand_lock":
+            reasons.append("demand locked; wait for tradable pullback")
+        elif volume_confirmed and near_breakout:
+            reasons.append("external breakout/volume event confirmed by price action")
+        return {
+            "available": True,
+            "setup": setup,
+            "score": round(score, 4),
+            "score_boost": score_boost,
+            "trade_window": trade_window,
+            "reasons": reasons,
+            "event_types": event_types,
+            "raw": market_action,
+            "evidence": {
+                "near_breakout": near_breakout,
+                "volume_confirmed": volume_confirmed,
+                "extended": extended,
+                "day_gain_pct": _round(day_gain),
+                "volume_ratio": _round(volume_ratio),
+                "projected_volume_ratio": _round(projected_volume_ratio),
+                "turnover": round(turnover, 2),
+                "projected_turnover": round(projected_turnover, 2),
+                "range_position": _round(range_position),
+                "day_high_distance_pct": _round(high_distance),
+                "distance_to_55d_high_pct": _round(dist55),
+                "distance_to_252d_high_pct": _round(dist252),
+            },
+        }
+
+    def _market_action_score_floor(
+        self,
+        market_action_review: dict[str, Any],
+        liquidity_profile: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> float:
+        if not market_action_review.get("available") or not liquidity_profile.get("screening_pass"):
+            return 0.0
+        setup = str(market_action_review.get("setup") or "")
+        score = _float_or_none(market_action_review.get("score")) or 0.0
+        if score < 0.55:
+            return 0.0
+        if setup == "circuit_demand_lock":
+            return max(self.min_score + 0.01, min(0.66, score * 0.76))
+        if setup in {"52_week_high_volume_breakout", "earnings_beat_gap_and_go", "broker_re_rating_breakout", "market_action_momentum", "top_gainer_momentum"}:
+            day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+            high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+            if day_gain >= 1.0 and (high_distance is None or high_distance <= 3.0):
+                return max(self.min_score + 0.03, min(0.78, score * 0.84))
+        return 0.0
 
     def _rally_radar(
         self,
@@ -859,6 +1015,7 @@ class OpportunityScanner:
             "positive_catalyst": score >= 0.22 and evidence >= 0.35 and high_quality_event_count > 0,
             "negative_catalyst": score <= -0.30 and evidence >= 0.30 and high_quality_event_count > 0,
             "headlines": [str(item)[:180] for item in headlines[:3]],
+            "events": [event for event in events[:5] if isinstance(event, dict)],
             "asof": detail.get("ts") or detail.get("asof"),
         }
 
@@ -872,11 +1029,18 @@ class OpportunityScanner:
         sentiment: dict[str, Any],
         rally: dict[str, Any] | None = None,
         min_turnover: float | None = None,
+        market_action_review: dict[str, Any] | None = None,
     ) -> str:
         rally = rally or {}
+        market_action_review = market_action_review or {}
         min_turnover = self.min_turnover if min_turnover is None else min_turnover
+        market_action_setup = str(market_action_review.get("setup") or "")
+        if market_action_setup in {"circuit_demand_lock", "52_week_high_volume_breakout", "earnings_beat_gap_and_go", "broker_re_rating_breakout"}:
+            return market_action_setup
         if rally.get("setup"):
             return str(rally["setup"])
+        if market_action_setup in _MARKET_ACTION_SETUPS:
+            return market_action_setup
         history_candles = int(metrics.get("history_candles") or 0)
         has_structural_history = history_candles >= 20
         has_breakout_history = (
@@ -958,6 +1122,8 @@ class OpportunityScanner:
         data_quality = item.get("data_quality") or {}
         liquidity_profile = item.get("liquidity_profile") if isinstance(item.get("liquidity_profile"), dict) else {}
         rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
+        market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
+        trade_window = market_action.get("trade_window") or rally.get("trade_window")
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -967,8 +1133,9 @@ class OpportunityScanner:
             "setup": item.get("setup"),
             "rally_phase": rally.get("phase"),
             "rally_score": rally.get("score"),
-            "trade_window": rally.get("trade_window"),
+            "trade_window": trade_window,
             "rally_evidence": rally.get("evidence", {}),
+            "market_action": market_action,
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),
@@ -1053,9 +1220,10 @@ class OpportunityScanner:
             item
             for item in scored
             if str(item.get("setup") or "")
-            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel"}
+            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel", *_MARKET_ACTION_SETUPS}
             or float(((item.get("components") or {}).get("live_momentum")) or 0.0) >= 0.70
             or float(((item.get("components") or {}).get("rally_radar")) or 0.0) >= 0.60
+            or bool((item.get("market_action") or {}).get("available"))
         ]
         rally_items.sort(
             key=lambda item: (
@@ -1098,10 +1266,16 @@ class OpportunityScanner:
         components = item.get("components") if isinstance(item.get("components"), dict) else {}
         setup = str(item.get("setup") or "")
         phase_boost = {
+            "52_week_high_volume_breakout": 0.13,
+            "earnings_beat_gap_and_go": 0.12,
+            "broker_re_rating_breakout": 0.10,
+            "circuit_demand_lock": 0.04,
             "opening_ignition": 0.12,
             "intraday_momentum": 0.10,
+            "market_action_momentum": 0.08,
             "pre_rally_fuel": 0.06,
             "extended_momentum_watch": 0.02,
+            "top_gainer_momentum": 0.05,
         }.get(setup, 0.0)
         live = float(components.get("live_momentum") or 0.0)
         rally = float(components.get("rally_radar") or 0.0)
@@ -1109,7 +1283,19 @@ class OpportunityScanner:
         volume = _clamp((float(metrics.get("volume_ratio") or 0.0) - 1.0) / 4.0, 0.0, 1.0)
         min_turnover = self._min_turnover_for_market(str(item.get("market_region") or "IN"))
         turnover = _clamp(float(metrics.get("turnover") or 0.0) / max(min_turnover * 10.0, 1.0), 0.0, 1.0)
-        return _clamp(phase_boost + rally * 0.35 + live * 0.25 + gain * 0.20 + volume * 0.12 + turnover * 0.08, 0.0, 1.0)
+        market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
+        market_action_score = float(market_action.get("score") or 0.0)
+        return _clamp(
+            phase_boost
+            + rally * 0.30
+            + live * 0.22
+            + gain * 0.18
+            + volume * 0.10
+            + turnover * 0.07
+            + market_action_score * 0.13,
+            0.0,
+            1.0,
+        )
 
     def _forced_item(self, row: dict[str, Any], reason: str) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").upper()

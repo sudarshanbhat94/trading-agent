@@ -1238,7 +1238,24 @@ class StrategyEngine:
         momentum_setup = setup == "intraday_momentum"
         extended_setup = setup == "extended_momentum_watch"
         pre_rally_setup = setup == "pre_rally_fuel"
-        fast_mover = ignition_setup or momentum_setup or extended_setup or bool(session.get("fast_mover")) or live_score >= 0.70
+        market_action_breakout_setup = setup in {
+            "52_week_high_volume_breakout",
+            "broker_re_rating_breakout",
+            "earnings_beat_gap_and_go",
+            "market_action_momentum",
+            "top_gainer_momentum",
+            "price_shocker_reversal_breakout",
+        }
+        circuit_setup = setup == "circuit_demand_lock"
+        fast_mover = (
+            ignition_setup
+            or momentum_setup
+            or extended_setup
+            or market_action_breakout_setup
+            or circuit_setup
+            or bool(session.get("fast_mover"))
+            or live_score >= 0.70
+        )
         participation = max(volume_ratio, projected_volume_ratio * 0.75)
         volume_confirmed = participation >= 1.15 or turnover >= turnover_floor or projected_turnover >= turnover_floor * 1.2
         near_high = high_distance is None or high_distance <= (1.5 if ignition_setup else 2.0)
@@ -1259,14 +1276,30 @@ class StrategyEngine:
             and near_high
             and volume_confirmed
         )
-        confirmed = bool(session.get("confirmed", True)) and (early_ignition_ready or live_momentum_ready)
+        market_action_breakout_ready = (
+            market_action_breakout_setup
+            and day_gain >= 2.0
+            and day_gain < 7.0
+            and range_position >= 0.65
+            and near_high
+            and volume_confirmed
+        )
+        confirmed = bool(session.get("confirmed", True)) and (
+            early_ignition_ready or live_momentum_ready or market_action_breakout_ready
+        )
         if pre_rally_setup:
+            confirmed = False
+        if circuit_setup:
             confirmed = False
         reason = (
             "opening ignition confirmed"
             if early_ignition_ready
             else "live fast mover confirmed"
             if live_momentum_ready
+            else "market-action breakout confirmed"
+            if market_action_breakout_ready
+            else "demand locked; wait for circuit unlock or VWAP pullback"
+            if circuit_setup
             else "late chase blocked; wait for pullback"
             if late_chase
             else "pre-rally fuel; wait for opening ignition"
@@ -1279,6 +1312,8 @@ class StrategyEngine:
             "strategy_ready": confirmed,
             "early_ignition_ready": early_ignition_ready,
             "live_momentum_ready": live_momentum_ready,
+            "market_action_breakout_ready": market_action_breakout_ready,
+            "circuit_demand_lock": circuit_setup,
             "late_chase": late_chase,
             "live_momentum_score": round(live_score, 4),
             "day_gain_pct": round(day_gain, 3),
@@ -1300,7 +1335,7 @@ class StrategyEngine:
 
         score = max(0.76, min(0.93, 0.72 + live_score * 0.18 + min(max(day_gain - 4.0, 0.0), 4.0) * 0.01))
         strategy = {
-            "name": "live_intraday_momentum",
+            "name": setup if market_action_breakout_setup else "live_intraday_momentum",
             "score": round(score, 3),
             "direction": "BUY",
             "confidence": round(min(0.88, 0.62 + live_score * 0.22), 3),

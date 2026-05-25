@@ -587,6 +587,136 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result.candidates, [])
         self.assertEqual(result.rejected_counts["below_adaptive_liquidity"], 1)
 
+    def test_market_action_radar_promotes_52_week_volume_breakout(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [
+                {
+                    "symbol": "HFCL",
+                    "exchange": "NSE",
+                    "sector": "Telecom",
+                    "_market_action": {
+                        "symbol": "HFCL",
+                        "event_types": ["TOP_GAINER", "VOLUME_SHOCKER", "52_WEEK_HIGH"],
+                        "market_action_score": 92,
+                        "strategy": "52_week_high_volume_breakout",
+                        "trade_window": "actionable_if_vwap_holds",
+                        "reason": "52 week high, volume shocker, 5.2% move",
+                        "pct_change": 5.2,
+                        "volume_multiplier": 4.2,
+                    },
+                }
+            ],
+            {
+                "HFCL": Quote(
+                    symbol="HFCL",
+                    price=104.8,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=105.0,
+                    low=99.5,
+                    volume=2_200_000,
+                )
+            },
+            {"HFCL": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "HFCL")
+        self.assertEqual(result.candidates[0]["setup"], "52_week_high_volume_breakout")
+        self.assertEqual(result.candidates[0]["trade_window"], "actionable_if_vwap_holds")
+        self.assertTrue(result.candidates[0]["market_action"]["available"])
+        self.assertEqual(result.summary["top_market_action"][0]["symbol"], "HFCL")
+
+    def test_circuit_demand_lock_is_visible_but_waits_for_pullback(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [
+                {
+                    "symbol": "EMMVEE",
+                    "exchange": "NSE",
+                    "sector": "Renewables",
+                    "_market_action": {
+                        "symbol": "EMMVEE",
+                        "event_types": ["TOP_GAINER", "ONLY_BUYERS", "VOLUME_SHOCKER"],
+                        "market_action_score": 88,
+                        "strategy": "circuit_demand_lock",
+                        "trade_window": "watch_for_pullback",
+                        "reason": "upper circuit with volume shocker",
+                        "pct_change": 10.0,
+                        "volume_multiplier": 2.5,
+                    },
+                }
+            ],
+            {
+                "EMMVEE": Quote(
+                    symbol="EMMVEE",
+                    price=110.0,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=110.0,
+                    low=99.8,
+                    volume=1_600_000,
+                )
+            },
+            {"EMMVEE": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["setup"], "circuit_demand_lock")
+        self.assertEqual(result.candidates[0]["trade_window"], "watch_for_pullback")
+        self.assertIn("demand locked", " ".join(result.candidates[0]["reasons"]))
+
+    def test_market_action_with_results_news_becomes_earnings_gap_and_go(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [
+                {
+                    "symbol": "BLUEJET",
+                    "exchange": "NSE",
+                    "sector": "Healthcare",
+                    "_market_action": {
+                        "symbol": "BLUEJET",
+                        "event_types": ["TOP_GAINER", "VOLUME_SHOCKER"],
+                        "market_action_score": 82,
+                        "strategy": "market_action_momentum",
+                        "trade_window": "actionable_if_not_extended",
+                        "reason": "top gainer with volume shocker",
+                        "pct_change": 6.2,
+                        "volume_multiplier": 2.6,
+                    },
+                }
+            ],
+            {
+                "BLUEJET": Quote(
+                    symbol="BLUEJET",
+                    price=106.2,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=106.5,
+                    low=99.8,
+                    volume=1_700_000,
+                )
+            },
+            {"BLUEJET": {"daily": candles, "analysis": candles}},
+            sentiment_by_symbol={
+                "BLUEJET": {
+                    "score": 0.42,
+                    "confidence": 0.65,
+                    "headline_count": 1,
+                    "headlines": ["Blue Jet profit rises sharply in quarterly results"],
+                    "events": [{"event_type": "earnings", "confidence": 0.7, "source_weight": 0.8}],
+                }
+            },
+        )
+
+        self.assertEqual(result.candidates[0]["setup"], "earnings_beat_gap_and_go")
+        self.assertEqual(result.candidates[0]["trade_window"], "actionable_if_vwap_holds")
+
     def test_live_rally_probe_is_not_dropped_before_history_prefetch(self) -> None:
         scanner = OpportunityScanner(_scanner_settings())
         result = scanner.rank(
@@ -714,6 +844,7 @@ class StrategySafetyTests(unittest.TestCase):
                 "fast_mover": True,
             }
         )
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
         context["opportunity_scan"] = {
             "setup": "extended_momentum_watch",
             "day_gain_pct": 8.4,
@@ -729,6 +860,73 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual(action, "HOLD")
         self.assertEqual(context["full_spectrum_analysis"]["live_momentum_review"]["reason"], "late chase blocked; wait for pullback")
+
+    def test_market_action_breakout_can_become_rule_based_buy_strategy(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 4.8,
+                "day_range_position": 0.84,
+                "day_high_distance_pct": 0.4,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
+        context["opportunity_scan"] = {
+            "setup": "52_week_high_volume_breakout",
+            "day_gain_pct": 4.8,
+            "day_range_position": 0.84,
+            "day_high_distance_pct": 0.4,
+            "volume_ratio": 2.6,
+            "turnover": 240_000_000,
+            "components": {"live_momentum": 0.82},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+
+        review = context["full_spectrum_analysis"]["live_momentum_review"]
+        self.assertTrue(review["market_action_breakout_ready"])
+        self.assertEqual(context["best_strategy"]["name"], "52_week_high_volume_breakout")
+
+    def test_circuit_demand_lock_does_not_become_rule_based_buy(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 10.0,
+                "day_range_position": 1.0,
+                "day_high_distance_pct": 0.0,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
+        context["opportunity_scan"] = {
+            "setup": "circuit_demand_lock",
+            "day_gain_pct": 10.0,
+            "day_range_position": 1.0,
+            "day_high_distance_pct": 0.0,
+            "volume_ratio": 3.0,
+            "turnover": 300_000_000,
+            "components": {"live_momentum": 0.92},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+
+        review = context["full_spectrum_analysis"]["live_momentum_review"]
+        self.assertFalse(review["strategy_ready"])
+        self.assertIn("wait for circuit unlock", review["reason"])
+        self.assertEqual(context["best_strategy"]["name"], "volume_price_accumulation")
 
     def test_llm_shortlist_prioritizes_opportunity_scan_rank(self) -> None:
         engine = StrategyEngine.__new__(StrategyEngine)

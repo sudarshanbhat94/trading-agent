@@ -504,6 +504,7 @@ strategy = stack["strategy"]
 agent = stack["agent"]
 user_signal_sessions = UserSignalSessionManager()
 maintenance_task: asyncio.Task | None = None
+position_mark_task: asyncio.Task | None = None
 
 app = FastAPI(title="OpenStocks")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -536,6 +537,110 @@ def _db_maintenance_policy(current_settings: Settings) -> dict[str, Any]:
     }
 
 
+def _quote_source_counts(quotes: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for quote in quotes.values():
+        source = str(getattr(quote, "source", "") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+async def _position_quote_refresh_loop() -> None:
+    last_error = ""
+    last_idle_signature = ""
+    while True:
+        sleep_seconds = max(1.0, float(getattr(settings, "position_quote_refresh_seconds", 1.0) or 1.0))
+        try:
+            if not getattr(settings, "position_quote_refresh_enabled", True):
+                await asyncio.sleep(sleep_seconds)
+                continue
+
+            active_rows = db.active_position_universe(market_region="IN")
+            if not active_rows:
+                idle_signature = "idle:no_active_india_positions"
+                if idle_signature != last_idle_signature:
+                    last_idle_signature = idle_signature
+                    db.set_state(
+                        "position_quote_refresh",
+                        {"enabled": True, "status": "idle", "reason": "no_active_india_positions", "updated_at": utc_now()},
+                    )
+                await asyncio.sleep(sleep_seconds)
+                continue
+
+            session_context = market_session_context("IN", active_rows)
+            open_rows = filter_universe_for_open_markets(active_rows, session_context) if settings.skip_market_data_when_closed else active_rows
+            if not open_rows:
+                active_symbols = [row.get("symbol") for row in active_rows]
+                idle_signature = f"paused:india_market_closed:{','.join(str(symbol) for symbol in active_symbols)}"
+                if idle_signature != last_idle_signature:
+                    last_idle_signature = idle_signature
+                    db.set_state(
+                        "position_quote_refresh",
+                        {
+                            "enabled": True,
+                            "status": "paused",
+                            "reason": "india_market_closed",
+                            "active_symbols": active_symbols,
+                            "updated_at": utc_now(),
+                        },
+                    )
+                await asyncio.sleep(sleep_seconds)
+                continue
+
+            provider = (
+                market_data
+                if normalize_market_region(settings.market_region, default="BOTH") in {"IN", "BOTH"}
+                else build_market_data_provider(replace(settings, market_region="IN"))
+            )
+            quotes = await provider.get_quotes(open_rows)
+            if quotes:
+                db.upsert_quotes(quotes)
+                broker.sync_marks(quotes)
+                marked = db.refresh_active_position_marks(quotes.keys())
+                db.set_state(
+                    "position_quote_refresh",
+                    {
+                        "enabled": True,
+                        "status": "running",
+                        "market_region": "IN",
+                        "interval_seconds": sleep_seconds,
+                        "active_symbols": [row.get("symbol") for row in active_rows],
+                        "quote_count": len(quotes),
+                        "marked_positions": marked,
+                        "source_counts": _quote_source_counts(quotes),
+                        "updated_at": utc_now(),
+                    },
+                )
+                await hub.broadcast(
+                    {
+                        "event": "position_marks_refreshed",
+                        "market_region": "IN",
+                        "symbols": sorted(quotes.keys()),
+                        "updated_at": utc_now(),
+                    }
+                )
+                last_error = ""
+                last_idle_signature = ""
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = _exception_message(exc)
+            db.set_state(
+                "position_quote_refresh",
+                {"enabled": True, "status": "error", "error": message, "updated_at": utc_now()},
+            )
+            if message != last_error:
+                last_error = message
+                db.insert_agent_log(
+                    "WARN",
+                    "position_marks",
+                    "fast_quote_refresh_failed",
+                    f"Fast position quote refresh failed: {message}",
+                    {"error_type": exc.__class__.__name__, "error": str(exc)[:500]},
+                )
+        await asyncio.sleep(sleep_seconds)
+
+
 async def _maintenance_loop() -> None:
     while True:
         try:
@@ -557,10 +662,11 @@ async def _maintenance_loop() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global maintenance_task
+    global maintenance_task, position_mark_task
     await universe_service.refresh_if_enabled()
     delivery_service.start_background_task()
     maintenance_task = asyncio.create_task(_maintenance_loop())
+    position_mark_task = asyncio.create_task(_position_quote_refresh_loop())
     if settings.auto_start_agent:
         agent.start()
 
@@ -571,6 +677,12 @@ async def shutdown() -> None:
         maintenance_task.cancel()
         try:
             await maintenance_task
+        except asyncio.CancelledError:
+            pass
+    if position_mark_task:
+        position_mark_task.cancel()
+        try:
+            await position_mark_task
         except asyncio.CancelledError:
             pass
     await agent.stop()
@@ -596,6 +708,139 @@ async def dashboard(request: Request) -> HTMLResponse:
 async def status(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     return _status_payload(user)
+
+
+def _compact_tracked_idea(row: dict[str, Any]) -> dict[str, Any]:
+    user_follow = row.get("user_follow") if isinstance(row.get("user_follow"), dict) else {}
+    follow_details = row.get("follow_details") if isinstance(row.get("follow_details"), dict) else {}
+    mark_state = follow_details.get("mark_state") if isinstance(follow_details.get("mark_state"), dict) else {}
+    keys = (
+        "id",
+        "idea_id",
+        "follow_id",
+        "symbol",
+        "company_name",
+        "market_region",
+        "exchange",
+        "sector",
+        "industry",
+        "mode",
+        "qty",
+        "follow_entry_price",
+        "follow_latest_price",
+        "latest_price",
+        "invested_amount",
+        "unrealized_pnl",
+        "return_pct",
+        "followed_at",
+        "follow_updated_at",
+        "strategy",
+        "signal_type",
+        "status",
+        "suggestion",
+        "targets",
+        "target_status",
+        "highest_target_hit",
+        "lifecycle_status",
+        "stop_status",
+        "stop_loss",
+        "entry_zone",
+        "risk_flags",
+        "expires_at",
+        "days_to_expiry",
+        "timeline",
+        "quote_updated_at",
+        "quote_source",
+    )
+    compact = {key: row.get(key) for key in keys if key in row}
+    compact["marked_at"] = mark_state.get("last_mark_at") or row.get("follow_updated_at")
+    compact["user_follow"] = {
+        key: user_follow.get(key)
+        for key in (
+            "id",
+            "user_id",
+            "idea_id",
+            "mode",
+            "status",
+            "qty",
+            "entry_price",
+            "latest_price",
+            "invested_amount",
+            "unrealized_pnl",
+            "return_pct",
+            "created_at",
+            "updated_at",
+        )
+        if key in user_follow
+    }
+    return compact
+
+
+def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
+    if user.get("role") == "admin":
+        return {
+            "ok": True,
+            "updated_at": utc_now(),
+            "tracked_ideas": [],
+            "tracked_ideas_by_market": {"IN": [], "US": []},
+            "follow_history": [],
+            "follow_history_by_market": {"IN": [], "US": []},
+            "positions": [],
+            "portfolio": {},
+            "portfolio_by_market": {},
+            "paper": {"positions": [], "follow_history": [], "closed_positions": []},
+        }
+
+    user_id = int(user["id"])
+    paper_cash_by_market = _user_paper_cash_by_market(user)
+    tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
+    realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
+    user_portfolio = _user_follow_portfolio(
+        tracked_ideas,
+        db.latest_portfolio() or {},
+        paper_cash_by_market=paper_cash_by_market,
+        realized_pnl_by_market=realized_pnl_by_market,
+    )
+    positions = _user_follow_positions(tracked_ideas)
+    compact_tracked_ideas = [_compact_tracked_idea(row) for row in tracked_ideas]
+    compact_by_market = _rows_by_market(compact_tracked_ideas)
+    equity_curve_by_market = _user_equity_curve_by_market(
+        tracked_ideas,
+        user_portfolio,
+        paper_cash_by_market,
+    )
+    paper = {
+        "positions": positions,
+        "portfolio": user_portfolio,
+        "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+        "cash_pool_by_market": paper_cash_by_market,
+        "realized_pnl_by_market": realized_pnl_by_market,
+        "cash_by_market": {
+            market: row.get("cash", 0.0)
+            for market, row in (user_portfolio.get("portfolio_by_market") or {}).items()
+        },
+    }
+    return {
+        "ok": True,
+        "updated_at": utc_now(),
+        "tracked_ideas": compact_tracked_ideas,
+        "tracked_ideas_by_market": compact_by_market,
+        "positions": positions,
+        "portfolio": user_portfolio,
+        "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
+        "paper_cash_pool_by_market": paper_cash_by_market,
+        "paper_realized_pnl_by_market": realized_pnl_by_market,
+        "equity_curve_by_market": equity_curve_by_market,
+        "equity_curve": _combined_equity_curve(equity_curve_by_market, user_portfolio),
+        "paper": paper,
+    }
+
+
+@app.get("/api/position-marks")
+async def position_marks(request: Request, response: Response) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return _position_marks_payload(user)
 
 
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -737,6 +982,7 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
         entry_price = float(item.get("follow_entry_price") or item.get("entry_price") or 0.0)
         latest_price = float(item.get("follow_latest_price") or item.get("latest_price") or entry_price)
         exit_management = item.get("follow_details", {}).get("exit_management", {}) if isinstance(item.get("follow_details"), dict) else {}
+        mark_state = item.get("follow_details", {}).get("mark_state", {}) if isinstance(item.get("follow_details"), dict) else {}
         managed_action = str(exit_management.get("last_action_label") or "").strip()
         managed_reason = str(exit_management.get("last_reason") or "").strip()
         exit_plan = _follow_position_exit_plan(item)
@@ -754,8 +1000,10 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
             "recommended_action": managed_action or "TRACK",
             "reason": managed_reason or "User paper-tracked idea; live engine will keep marking P&L against latest price.",
             "price_label": "LTP",
-            "price_source": "signal_idea_follow",
+            "price_source": item.get("quote_source") or "signal_idea_follow",
+            "quote_timestamp": item.get("quote_updated_at"),
             "price_timestamp": item.get("follow_updated_at"),
+            "mark_timestamp": mark_state.get("last_mark_at") or item.get("follow_updated_at"),
         }
         positions.append(
             {
@@ -783,6 +1031,9 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
                 "realized_pnl": 0.0,
                 "opened_at": item.get("followed_at"),
                 "updated_at": item.get("follow_updated_at"),
+                "marked_at": mark_state.get("last_mark_at") or item.get("follow_updated_at"),
+                "quote_updated_at": item.get("quote_updated_at"),
+                "quote_source": item.get("quote_source"),
                 "strategy": item.get("strategy"),
                 "exit_plan": exit_plan,
                 "details_json": json.dumps(
