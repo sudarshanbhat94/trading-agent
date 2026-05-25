@@ -186,6 +186,7 @@ class StrategyEngine:
             )
             self._persist_pattern_state_updates(symbol, context)
             context["pre_filter"] = pre_filter
+            self._apply_live_momentum_strategy(context)
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
             action = self._action_from_context(symbol, combined, positions, context, candles_by_symbol)
@@ -575,6 +576,11 @@ class StrategyEngine:
             threshold = max(threshold, 0.45)
         if market_breadth.get("breadth_regime") == "bull_confirmed":
             threshold = min(threshold, 0.30)
+        best_strategy_name = str((context.get("best_strategy") or {}).get("name") or "")
+        session_momentum = full_spectrum.get("session_momentum") if isinstance(full_spectrum.get("session_momentum"), dict) else {}
+        live_momentum_review = (
+            full_spectrum.get("live_momentum_review") if isinstance(full_spectrum.get("live_momentum_review"), dict) else {}
+        )
         data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
         data_sources = data_ready.get("sources") if isinstance(data_ready.get("sources"), dict) else {}
         us_yahoo_reference_signal = (
@@ -636,6 +642,33 @@ class StrategyEngine:
         breakout_volume = strategy_logic.get("breakout_volume") if isinstance(strategy_logic.get("breakout_volume"), dict) else {}
         if breakout_volume.get("suspect_without_volume"):
             fail("breakout_volume_gate", breakout_volume, "suspect_breakout_without_volume")
+        broad_momentum_strategy = best_strategy_name in {
+            "time_series_momentum_trend",
+            "normalized_momentum_factor",
+            "aggressive_relative_strength_breakout",
+            "fifty_two_week_high_momentum",
+            "minervini_trend_template",
+        }
+        live_momentum_strategy = best_strategy_name == "live_intraday_momentum"
+        if (
+            not has_position
+            and broad_momentum_strategy
+            and not live_momentum_strategy
+            and not bool(session_momentum.get("confirmed"))
+        ):
+            fail(
+                "session_momentum_gate",
+                session_momentum,
+                "broad_momentum_entry_needs_current_session_confirmation",
+            )
+        if not has_position and bool(live_momentum_review.get("late_chase")):
+            fail(
+                "session_momentum_gate",
+                live_momentum_review,
+                "late_intraday_momentum_wait_for_pullback",
+            )
+        if not has_position and live_momentum_strategy and not bool(live_momentum_review.get("strategy_ready")):
+            fail("session_momentum_gate", live_momentum_review or session_momentum, "live_momentum_not_trade_ready")
         if stage and not stage.get("buy_permitted", True):
             fail("stage_buy_permitted", stage.get("stage"), "stage_analysis_not_stage2_markup")
         if divergence.get("climax_volume_top"):
@@ -752,6 +785,16 @@ class StrategyEngine:
             {"gate": "phase3_strategy_logic", "passed": bool(strategy_logic.get("passed", True)), "value": strategy_logic},
             {"gate": "entry_grade_gate", "passed": effective_entry_grade in {"A", "B", "C"}, "value": {"entry_grade": entry_grade, "effective_entry_grade": effective_entry_grade}},
             {"gate": "breakout_gate", "passed": not breakout.get("two_day_rule_failed") and not breakout_volume.get("suspect_without_volume"), "value": breakout},
+            {
+                "gate": "session_momentum_gate",
+                "passed": (
+                    has_position
+                    or not (broad_momentum_strategy or live_momentum_strategy)
+                    or bool(session_momentum.get("confirmed"))
+                    or bool(live_momentum_review.get("strategy_ready"))
+                ),
+                "value": live_momentum_review or session_momentum,
+            },
             {"gate": "divergence_gate", "passed": not divergence.get("climax_volume_top"), "value": divergence},
             {"gate": "alignment_gate", "passed": alignment_grade != "D", "value": alignment_grade},
             {"gate": "overall_quality_gate", "passed": has_position or overall_score_pct >= FRESH_BUY_MIN_SCORE, "value": {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")}},
@@ -977,6 +1020,7 @@ class StrategyEngine:
             )
             self._persist_pattern_state_updates(item["symbol"], context)
             context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
+            self._apply_live_momentum_strategy(context)
             combined = deterministic_score(context)
             item["sentiment_score"] = sentiment_score
             item["sentiment_detail"] = result
@@ -1162,6 +1206,126 @@ class StrategyEngine:
                 output[market] = {"symbol": symbol, "return_pct": ret}
                 break
         return output
+
+    def _apply_live_momentum_strategy(self, context: dict[str, Any]) -> None:
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+        session = full.get("session_momentum") if isinstance(full.get("session_momentum"), dict) else {}
+        components = scan.get("components") if isinstance(scan.get("components"), dict) else {}
+        setup = str(scan.get("setup") or "")
+        live_score = _float_or_none(components.get("live_momentum")) or 0.0
+        day_gain = _float_or_none(scan.get("day_gain_pct") or session.get("day_gain_pct")) or 0.0
+        range_position = _float_or_none(scan.get("day_range_position") or session.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(scan.get("day_high_distance_pct") or session.get("day_high_distance_pct"))
+        volume_ratio = _float_or_none(scan.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(scan.get("projected_volume_ratio")) or volume_ratio
+        turnover = _float_or_none(scan.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(scan.get("projected_turnover")) or turnover
+        market_region = str(context.get("market_region") or scan.get("market_region") or "").upper()
+        min_turnover = max(
+            float(
+                getattr(
+                    self.settings,
+                    "dynamic_scan_min_turnover_usd" if market_region == "US" else "dynamic_scan_min_turnover_inr",
+                    2_000_000 if market_region == "US" else 50_000_000,
+                )
+                or (2_000_000 if market_region == "US" else 50_000_000)
+            ),
+            1.0,
+        )
+        turnover_floor = max(min_turnover * 5.0, 10_000_000.0) if market_region == "US" else max(min_turnover * 3.0, 150_000_000.0)
+        ignition_setup = setup == "opening_ignition"
+        momentum_setup = setup == "intraday_momentum"
+        extended_setup = setup == "extended_momentum_watch"
+        pre_rally_setup = setup == "pre_rally_fuel"
+        fast_mover = ignition_setup or momentum_setup or extended_setup or bool(session.get("fast_mover")) or live_score >= 0.70
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        volume_confirmed = participation >= 1.15 or turnover >= turnover_floor or projected_turnover >= turnover_floor * 1.2
+        near_high = high_distance is None or high_distance <= (1.5 if ignition_setup else 2.0)
+        late_chase = extended_setup or day_gain >= 7.0
+        early_ignition_ready = (
+            ignition_setup
+            and day_gain >= 1.5
+            and day_gain < 4.0
+            and range_position >= 0.68
+            and near_high
+            and volume_confirmed
+        )
+        live_momentum_ready = (
+            momentum_setup
+            and day_gain >= 4.0
+            and day_gain < 7.0
+            and range_position >= 0.70
+            and near_high
+            and volume_confirmed
+        )
+        confirmed = bool(session.get("confirmed", True)) and (early_ignition_ready or live_momentum_ready)
+        if pre_rally_setup:
+            confirmed = False
+        reason = (
+            "opening ignition confirmed"
+            if early_ignition_ready
+            else "live fast mover confirmed"
+            if live_momentum_ready
+            else "late chase blocked; wait for pullback"
+            if late_chase
+            else "pre-rally fuel; wait for opening ignition"
+            if pre_rally_setup
+            else "live fast mover needs more confirmation"
+        )
+        review = {
+            "setup": setup,
+            "fast_mover": fast_mover,
+            "strategy_ready": confirmed,
+            "early_ignition_ready": early_ignition_ready,
+            "live_momentum_ready": live_momentum_ready,
+            "late_chase": late_chase,
+            "live_momentum_score": round(live_score, 4),
+            "day_gain_pct": round(day_gain, 3),
+            "day_range_position": round(range_position, 3),
+            "day_high_distance_pct": round(high_distance, 3) if high_distance is not None else None,
+            "volume_ratio": round(volume_ratio, 3),
+            "projected_volume_ratio": round(projected_volume_ratio, 3),
+            "turnover": round(turnover, 2),
+            "projected_turnover": round(projected_turnover, 2),
+            "turnover_floor": round(turnover_floor, 2),
+            "participation_ratio": round(participation, 3),
+            "volume_confirmed": volume_confirmed,
+            "near_day_high": near_high,
+            "reason": reason,
+        }
+        full["live_momentum_review"] = review
+        if not confirmed:
+            return
+
+        score = max(0.76, min(0.93, 0.72 + live_score * 0.18 + min(max(day_gain - 4.0, 0.0), 4.0) * 0.01))
+        strategy = {
+            "name": "live_intraday_momentum",
+            "score": round(score, 3),
+            "direction": "BUY",
+            "confidence": round(min(0.88, 0.62 + live_score * 0.22), 3),
+            "notes": [
+                f"live gain {day_gain:+.1f}% from open",
+                "holding upper part of day range",
+                "volume/turnover confirms participation",
+            ],
+            "metadata": review,
+        }
+        current = context.get("best_strategy") if isinstance(context.get("best_strategy"), dict) else {}
+        if float(current.get("score") or 0.0) < strategy["score"]:
+            context["best_strategy"] = strategy
+            signals = context.get("strategy_signals")
+            if isinstance(signals, list):
+                signals.append(strategy)
+        entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+        if entry:
+            current_grade = str(entry.get("entry_grade") or "WATCH").upper()
+            if current_grade in {"", "WATCH", "C"}:
+                entry["entry_grade"] = "B" if day_gain < 7.0 else "A"
+                entry["setup_type"] = "live_intraday_momentum"
+                entry["quality_score"] = max(float(entry.get("quality_score") or 0.0), 72.0 if day_gain < 7.0 else 86.0)
+            entry["volume_confirmation"] = True
+            entry["session_confirmation"] = review
 
     def _confidence_for_action(
         self,
@@ -1502,6 +1666,10 @@ class StrategyEngine:
         bucket = str(scan.get("bucket") or "").strip().lower()
         setup = str(scan.get("setup") or "").strip().lower()
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        if setup in {"opening_ignition", "intraday_momentum", "extended_momentum_watch", "pre_rally_fuel"}:
+            if data_quality and data_quality.get("actionable_data_ready") is False and not data_quality.get("probe_only"):
+                return None
+            return f"opportunity_scan_{setup}"
         if bucket == "actionable" and setup in {"breakout_continuation", "near_breakout", "news_catalyst"}:
             if data_quality and data_quality.get("actionable_data_ready") is False:
                 return None

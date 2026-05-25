@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .market_regions import market_region_for_row
 from .models import Candle, Quote, utc_now
@@ -19,11 +20,21 @@ class OpportunityScanResult:
 _ACTIVE_OPPORTUNITY_SETUPS = {
     "news_catalyst",
     "breakout_continuation",
+    "extended_momentum_watch",
+    "opening_ignition",
+    "pre_rally_fuel",
+    "intraday_momentum",
     "intraday_momentum_probe",
     "near_breakout",
     "trend_momentum",
     "pullback_buy",
     "smallcap_momentum",
+}
+
+_LIVE_RALLY_SETUPS = {
+    "opening_ignition",
+    "intraday_momentum",
+    "extended_momentum_watch",
 }
 
 
@@ -40,7 +51,9 @@ class OpportunityScanner:
         )
         self.require_active_setup = bool(getattr(settings, "dynamic_scan_require_active_setup", True))
         self.min_price = max(0.0, float(getattr(settings, "dynamic_scan_min_price", 10.0) or 0.0))
-        self.min_turnover = max(0.0, float(getattr(settings, "dynamic_scan_min_turnover_inr", 50_000_000.0) or 0.0))
+        self.min_turnover_inr = max(0.0, float(getattr(settings, "dynamic_scan_min_turnover_inr", 50_000_000.0) or 0.0))
+        self.min_turnover_usd = max(0.0, float(getattr(settings, "dynamic_scan_min_turnover_usd", 2_000_000.0) or 0.0))
+        self.min_turnover = self.min_turnover_inr
         self.breakout_distance_pct = max(
             0.1,
             float(getattr(settings, "dynamic_scan_breakout_distance_pct", 3.0) or 3.0),
@@ -101,7 +114,7 @@ class OpportunityScanner:
             scored.append(item)
 
         scored.sort(key=lambda item: item["score"], reverse=True)
-        selected_items = self._select_diverse(scored, self.candidate_limit)
+        selected_items = self._select_rally_radar_then_diverse(scored, self.candidate_limit)
         selected_symbols = {item["symbol"] for item in selected_items}
         for item in scored[self.candidate_limit :]:
             if item.get("forced_inclusion") and item["symbol"] not in selected_symbols:
@@ -154,6 +167,19 @@ class OpportunityScanner:
             "forced_position_symbols": [item["symbol"] for item in selected_items if item.get("forced_inclusion")],
             "rejected_counts": rejected_counts,
             "top_candidates": candidates,
+            "top_fast_movers": [
+                item
+                for item in candidates
+                if item.get("setup") == "intraday_momentum"
+                or item.get("setup") == "opening_ignition"
+                or item.get("setup") == "extended_momentum_watch"
+                or float(((item.get("components") or {}).get("live_momentum")) or 0.0) >= 0.70
+            ][:12],
+            "top_rally_radar": [
+                item
+                for item in candidates
+                if item.get("rally_phase") and item.get("rally_phase") != "none"
+            ][:25],
             "setup_counts": self._counts(item.get("setup") for item in selected_items),
             "bucket_counts": self._counts(item.get("bucket") for item in selected_items),
             "news_covered_candidates": news_covered_candidates,
@@ -162,7 +188,8 @@ class OpportunityScanner:
             "negative_news_filtered": rejected_counts.get("negative_news_catalyst", 0),
             "filters": {
                 "min_price": self.min_price,
-                "min_turnover_inr": self.min_turnover,
+                "min_turnover_inr": self.min_turnover_inr,
+                "min_turnover_usd": self.min_turnover_usd,
                 "min_score": self.min_score,
                 "require_active_setup": self.require_active_setup,
                 "active_setups": sorted(_ACTIVE_OPPORTUNITY_SETUPS),
@@ -187,10 +214,13 @@ class OpportunityScanner:
         sentiment_detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").upper()
+        market_region = market_region_for_row(row)
+        min_turnover = self._min_turnover_for_market(market_region)
         price = max(float(quote.price or 0.0), 0.0)
         candles = candle_set.get("analysis") or candle_set.get("daily") or candle_set.get("intraday") or []
-        metrics = self._metrics(price, quote, candles)
+        metrics = self._metrics(price, quote, candles, market_region)
         sentiment = self._sentiment_metrics(sentiment_detail or {})
+        liquidity_profile = self._liquidity_profile(metrics, min_turnover)
         reasons: list[str] = []
         reject_reason = ""
 
@@ -198,35 +228,65 @@ class OpportunityScanner:
             reject_reason = "invalid_price"
         elif price < self.min_price:
             reject_reason = "below_min_price"
-        elif metrics["turnover"] < self.min_turnover and not in_position:
-            reject_reason = "below_min_turnover"
+        elif not liquidity_profile["screening_pass"] and not in_position:
+            reject_reason = liquidity_profile["reject_reason"]
         elif sentiment["negative_catalyst"] and not in_position:
             reject_reason = "negative_news_catalyst"
 
-        liquidity = self._liquidity_score(metrics["turnover"])
+        liquidity = float(liquidity_profile["score"])
         trend = self._trend_score(price, metrics)
         breakout = self._breakout_score(price, quote, metrics)
         momentum = self._momentum_score(metrics)
+        live_momentum = self._live_momentum_score(metrics, min_turnover)
         volume = self._volume_score(metrics)
         risk = self._risk_score(metrics)
+        rally = self._rally_radar(metrics, trend, breakout, momentum, live_momentum, volume, sentiment, min_turnover)
         data_quality = self._data_quality(row, quote, metrics, sentiment)
         if data_quality["reject_reason"] and not in_position and not reject_reason:
-            reject_reason = data_quality["reject_reason"]
+            if self._allow_live_rally_probe(data_quality, rally, metrics, min_turnover):
+                data_quality = {
+                    **data_quality,
+                    "reject_reason": "",
+                    "tradeable_screening": False,
+                    "actionable_data_ready": False,
+                    "probe_only": True,
+                }
+                reasons.append("live rally radar selected for history prefetch")
+            else:
+                reject_reason = data_quality["reject_reason"]
         base_score = (
-            liquidity * 0.17
-            + trend * 0.20
-            + breakout * 0.22
-            + momentum * 0.15
-            + volume * 0.09
-            + risk * 0.07
-            + data_quality["score"] * 0.10
+            liquidity * 0.14
+            + trend * 0.16
+            + breakout * 0.18
+            + momentum * 0.11
+            + live_momentum * 0.17
+            + volume * 0.10
+            + risk * 0.06
+            + data_quality["score"] * 0.08
         )
-        score = _clamp(base_score + sentiment["boost"], 0.0, 1.0)
+        catalyst_boost = 0.06 if sentiment["positive_catalyst"] else 0.0
+        score = _clamp(
+            base_score
+            + sentiment["boost"]
+            + catalyst_boost
+            + rally["score_boost"]
+            + self._live_momentum_boost(metrics, live_momentum, min_turnover),
+            0.0,
+            1.0,
+        )
+        rally_floor = self._live_rally_score_floor(rally, liquidity_profile, metrics)
+        if rally_floor > score:
+            score = rally_floor
 
+        reasons.extend(rally.get("reasons", []))
         if metrics["distance_to_55d_high_pct"] is not None and metrics["distance_to_55d_high_pct"] <= self.breakout_distance_pct:
             reasons.append(f"near 55D high ({metrics['distance_to_55d_high_pct']:.1f}% away)")
         elif metrics["day_high_distance_pct"] is not None and metrics["day_high_distance_pct"] <= 1.0:
             reasons.append(f"near day high ({metrics['day_high_distance_pct']:.1f}% away)")
+        if live_momentum >= 0.70:
+            reasons.append(f"live fast mover ({float(metrics.get('day_gain_pct') or 0.0):+.1f}% from open)")
+        if liquidity_profile.get("reason"):
+            reasons.append(str(liquidity_profile["reason"]))
         if trend >= 0.65:
             reasons.append("trend filter positive")
         if volume >= 0.65:
@@ -248,12 +308,12 @@ class OpportunityScanner:
         if risk < 0.35:
             reasons.append("risk/reward needs caution")
 
-        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment)
+        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment, rally, min_turnover)
         bucket = self._bucket(score, risk, reject_reason, metrics)
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
-            "market_region": market_region_for_row(row),
+            "market_region": market_region,
             "sector": row.get("sector") or "",
             "industry": row.get("industry") or "",
             "exchange": row.get("exchange") or "",
@@ -266,12 +326,16 @@ class OpportunityScanner:
             "reasons": reasons or ["quote/liquidity pass"],
             "metrics": metrics,
             "sentiment": sentiment,
+            "rally_radar": rally,
             "data_quality": data_quality,
+            "liquidity_profile": liquidity_profile,
             "components": {
                 "liquidity": round(liquidity, 4),
                 "trend": round(trend, 4),
                 "breakout": round(breakout, 4),
                 "momentum": round(momentum, 4),
+                "live_momentum": round(live_momentum, 4),
+                "rally_radar": round(rally["score"], 4),
                 "volume": round(volume, 4),
                 "risk": round(risk, 4),
                 "data_quality": round(data_quality["score"], 4),
@@ -279,16 +343,28 @@ class OpportunityScanner:
             },
         }
 
-    def _metrics(self, price: float, quote: Quote, candles: list[Candle]) -> dict[str, Any]:
+    def _min_turnover_for_market(self, market_region: str) -> float:
+        return self.min_turnover_usd if str(market_region or "").upper() == "US" else self.min_turnover_inr
+
+    def _metrics(self, price: float, quote: Quote, candles: list[Candle], market_region: str) -> dict[str, Any]:
         closes = [float(item.close) for item in candles if item.close is not None and float(item.close) > 0]
         highs = [float(item.high) for item in candles if item.high is not None and float(item.high) > 0]
         lows = [float(item.low) for item in candles if item.low is not None and float(item.low) > 0]
         volumes = [float(item.volume or 0.0) for item in candles]
         last_volume = float(quote.volume or 0.0) or (volumes[-1] if volumes else 0.0)
         avg20_volume = _mean([value for value in volumes[-20:] if value > 0])
+        avg20_turnover = _mean(
+            [
+                float(item.close) * float(item.volume or 0.0)
+                for item in candles[-20:]
+                if item.close is not None and float(item.close) > 0 and float(item.volume or 0.0) > 0
+            ]
+        )
         turnover = price * (last_volume or avg20_volume or 0.0)
         if turnover <= 0 and avg20_volume > 0:
             turnover = price * avg20_volume
+        session_progress = _session_progress_pct(quote, market_region)
+        projection_divisor = max(session_progress or 1.0, 0.08)
 
         high_20 = max(highs[-20:]) if len(highs) >= 20 else None
         high_55 = max(highs[-55:]) if len(highs) >= 55 else high_20
@@ -307,13 +383,25 @@ class OpportunityScanner:
         if day_high and day_low and day_high > day_low:
             day_range_pos = (price - day_low) / (day_high - day_low)
         volume_ratio = (last_volume / avg20_volume) if last_volume and avg20_volume else None
+        projected_volume_ratio = (volume_ratio / projection_divisor) if volume_ratio is not None and session_progress is not None else volume_ratio
+        projected_turnover = (turnover / projection_divisor) if session_progress is not None else turnover
+        open_price = _float_or_none(quote.open)
+        day_gain_pct = _signed_distance_pct(price, open_price)
+        day_range_pct = ((day_high - day_low) / open_price) * 100 if day_high and day_low and open_price else None
         return {
             "price": round(price, 4),
+            "open": _round(open_price),
+            "day_gain_pct": _round(day_gain_pct),
+            "day_range_pct": _round(day_range_pct),
             "history_candles": len(candles),
             "turnover": round(turnover, 2),
+            "avg20_turnover": round(avg20_turnover, 2),
+            "projected_turnover": round(projected_turnover, 2),
             "last_volume": round(last_volume, 2),
             "avg20_volume": round(avg20_volume, 2),
             "volume_ratio": _round(volume_ratio),
+            "projected_volume_ratio": _round(projected_volume_ratio),
+            "session_progress_pct": _round(session_progress),
             "sma_20": _round(sma_20),
             "sma_50": _round(sma_50),
             "sma_200": _round(sma_200),
@@ -332,10 +420,68 @@ class OpportunityScanner:
             "quote_age_seconds": _quote_age_seconds(quote),
         }
 
-    def _liquidity_score(self, turnover: float) -> float:
-        if self.min_turnover <= 0:
+    def _liquidity_score(self, turnover: float, min_turnover: float) -> float:
+        if min_turnover <= 0:
             return 0.75
-        return _clamp(turnover / (self.min_turnover * 2.0), 0.0, 1.0)
+        return _clamp(turnover / (min_turnover * 2.0), 0.0, 1.0)
+
+    def _liquidity_profile(self, metrics: dict[str, Any], min_turnover: float) -> dict[str, Any]:
+        turnover = _float_or_none(metrics.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(metrics.get("projected_turnover")) or turnover
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        participation_ratio = max(volume_ratio, projected_volume_ratio * 0.75)
+        absolute_ratio = turnover / min_turnover if min_turnover > 0 else 1.0
+        projected_ratio = projected_turnover / min_turnover if min_turnover > 0 else 1.0
+        near_high = high_distance is None or high_distance <= 2.0
+
+        absolute_pass = absolute_ratio >= 1.0
+        adaptive_pass = (
+            projected_ratio >= 0.85
+            and participation_ratio >= 0.90
+        ) or (
+            projected_ratio >= 0.45
+            and participation_ratio >= 1.35
+            and day_gain >= 1.5
+            and range_position >= 0.60
+        ) or (
+            absolute_ratio >= 0.30
+            and participation_ratio >= 1.75
+            and day_gain >= 2.0
+            and range_position >= 0.68
+            and near_high
+        )
+        screening_pass = absolute_pass or adaptive_pass
+        score = _clamp(
+            max(
+                self._liquidity_score(turnover, min_turnover),
+                projected_ratio / 2.5,
+            )
+            * 0.65
+            + _clamp(participation_ratio / 3.0, 0.0, 1.0) * 0.35,
+            0.0,
+            1.0,
+        )
+        reason = ""
+        if absolute_pass:
+            reason = "liquidity ok by traded value"
+        elif adaptive_pass:
+            reason = "adaptive liquidity ok: relative participation is building"
+        return {
+            "screening_pass": screening_pass,
+            "reject_reason": "" if screening_pass else "below_adaptive_liquidity",
+            "score": round(score, 4),
+            "absolute_turnover_ratio": round(absolute_ratio, 4),
+            "projected_turnover_ratio": round(projected_ratio, 4),
+            "participation_ratio": round(participation_ratio, 4),
+            "absolute_pass": absolute_pass,
+            "adaptive_pass": adaptive_pass,
+            "min_turnover": min_turnover,
+            "reason": reason,
+        }
 
     def _trend_score(self, price: float, metrics: dict[str, Any]) -> float:
         checks = 0.0
@@ -382,6 +528,184 @@ class OpportunityScanner:
         ]
         positive = sum(_clamp(value, -0.5, 1.0) for value in values) / len(values)
         return _clamp(0.45 + positive * 0.55, 0.0, 1.0)
+
+    def _live_momentum_score(self, metrics: dict[str, Any], min_turnover: float) -> float:
+        day_gain = _float_or_none(metrics.get("day_gain_pct"))
+        if day_gain is None:
+            return 0.0
+        range_position = _clamp(float(metrics.get("day_range_position") or 0.0), 0.0, 1.0)
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        volume_ratio = _float_or_none(metrics.get("volume_ratio"))
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio"))
+        turnover = float(metrics.get("turnover") or 0.0)
+        projected_turnover = float(metrics.get("projected_turnover") or turnover)
+        gain_score = _clamp((day_gain - 2.0) / 6.0, 0.0, 1.0)
+        range_score = _clamp((range_position - 0.55) / 0.35, 0.0, 1.0)
+        high_score = 1.0 - _clamp(float(high_distance if high_distance is not None else 10.0) / 2.0, 0.0, 1.0)
+        participation = max(volume_ratio or 0.0, (projected_volume_ratio or 0.0) * 0.75)
+        volume_score = _clamp((participation - 1.0) / 2.5, 0.0, 1.0)
+        turnover_score = max(
+            _clamp(turnover / max(min_turnover * 6.0, 1.0), 0.0, 1.0),
+            _clamp(projected_turnover / max(min_turnover * 10.0, 1.0), 0.0, 1.0),
+        )
+        return _clamp(
+            gain_score * 0.35
+            + range_score * 0.25
+            + high_score * 0.15
+            + max(volume_score, turnover_score * 0.75) * 0.25,
+            0.0,
+            1.0,
+        )
+
+    def _live_momentum_boost(self, metrics: dict[str, Any], live_momentum: float, min_turnover: float) -> float:
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        projected_turnover = _float_or_none(metrics.get("projected_turnover")) or _float_or_none(metrics.get("turnover")) or 0.0
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        if live_momentum >= 0.82 and day_gain >= 5.0 and range_position >= 0.70:
+            return 0.10
+        if live_momentum >= 0.70 and day_gain >= 4.0 and (participation >= 1.2 or projected_turnover >= min_turnover * 4.0):
+            return 0.06
+        return 0.0
+
+    def _live_rally_score_floor(
+        self,
+        rally: dict[str, Any],
+        liquidity_profile: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> float:
+        if rally.get("phase") not in _LIVE_RALLY_SETUPS:
+            return 0.0
+        if not liquidity_profile.get("screening_pass"):
+            return 0.0
+        rally_score = _float_or_none(rally.get("score")) or 0.0
+        if rally_score < 0.68:
+            return 0.0
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        if day_gain < 1.5 or range_position < 0.68:
+            return 0.0
+        if high_distance is not None and high_distance > 2.0 and day_gain < 5.0:
+            return 0.0
+        return _clamp(max(self.min_score + 0.02, rally_score * 0.86), 0.0, 0.78)
+
+    def _rally_radar(
+        self,
+        metrics: dict[str, Any],
+        trend: float,
+        breakout: float,
+        momentum: float,
+        live_momentum: float,
+        volume: float,
+        sentiment: dict[str, Any],
+        min_turnover: float,
+    ) -> dict[str, Any]:
+        day_gain = _float_or_none(metrics.get("day_gain_pct"))
+        range_position = _float_or_none(metrics.get("day_range_position"))
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        turnover = float(metrics.get("turnover") or 0.0)
+        projected_turnover = float(metrics.get("projected_turnover") or turnover)
+        dist20 = _float_or_none(metrics.get("distance_to_20d_high_pct"))
+        dist55 = _float_or_none(metrics.get("distance_to_55d_high_pct"))
+        dist_high = min([value for value in (dist20, dist55) if value is not None], default=None)
+        dist_sma20 = _float_or_none(metrics.get("distance_to_sma20_pct"))
+        return_5d = _float_or_none(metrics.get("return_5d_pct")) or 0.0
+        return_20d = _float_or_none(metrics.get("return_20d_pct")) or 0.0
+        reasons: list[str] = []
+        phase = "none"
+        trade_window = "not_ready"
+        score = 0.0
+        score_boost = 0.0
+
+        near_high = high_distance is not None and high_distance <= 1.5
+        near_pivot = dist_high is not None and dist_high <= 7.0
+        constructive_trend = trend >= 0.65 or momentum >= 0.62
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        volume_support = participation >= 1.15 or volume >= 0.65 or turnover >= min_turnover * 3.0 or projected_turnover >= min_turnover * 3.0
+        not_too_extended = dist_sma20 is None or dist_sma20 <= 10.0
+
+        if day_gain is not None:
+            if (
+                day_gain >= 1.5
+                and day_gain < 4.0
+                and (range_position or 0.0) >= 0.68
+                and near_high
+                and volume_support
+                and (turnover >= min_turnover * 0.75 or projected_turnover >= min_turnover * 1.5)
+            ):
+                phase = "opening_ignition"
+                trade_window = "early_actionable"
+                score = _clamp(0.68 + live_momentum * 0.22 + min(max(day_gain - 1.5, 0.0), 2.5) * 0.03, 0.0, 1.0)
+                score_boost = 0.12
+                reasons.append(f"opening ignition ({day_gain:+.1f}% with volume)")
+            elif (
+                day_gain >= 4.0
+                and (range_position or 0.0) >= (0.60 if day_gain >= 5.0 and volume_ratio >= 2.0 else 0.70)
+                and high_distance is not None
+                and high_distance <= (4.0 if day_gain >= 5.0 and volume_ratio >= 2.0 else 2.0)
+                and (turnover >= min_turnover * 0.75 or projected_turnover >= min_turnover * 1.5)
+                and volume_support
+            ):
+                late_chase = day_gain >= 7.0 or (dist_sma20 is not None and dist_sma20 > 12.0)
+                phase = "extended_momentum_watch" if late_chase else "intraday_momentum"
+                trade_window = "wait_for_pullback" if late_chase else "actionable_momentum"
+                score = _clamp(0.70 + live_momentum * 0.20 + min(max(day_gain - 4.0, 0.0), 5.0) * 0.015, 0.0, 1.0)
+                score_boost = 0.07 if late_chase else 0.10
+                label = "extended live rally" if late_chase else "live rally ignition"
+                reasons.append(f"{label} ({day_gain:+.1f}% from open)")
+
+        if phase == "none" and (
+            constructive_trend
+            and near_pivot
+            and not_too_extended
+            and (turnover >= min_turnover * 0.50 or projected_turnover >= min_turnover)
+            and (
+                volume_ratio >= 1.10
+                or return_5d >= 2.0
+                or return_20d >= 5.0
+                or sentiment.get("positive_catalyst")
+            )
+        ):
+            phase = "pre_rally_fuel"
+            trade_window = "watch_for_ignition"
+            score = _clamp(
+                0.58
+                + (0.12 if trend >= 0.75 else 0.0)
+                + (0.10 if volume_ratio >= 1.3 else 0.0)
+                + (0.08 if dist_high is not None and dist_high <= 3.0 else 0.0)
+                + (0.08 if sentiment.get("positive_catalyst") else 0.0),
+                0.0,
+                1.0,
+            )
+            score_boost = 0.05
+            reasons.append("pre-rally fuel near breakout zone")
+
+        return {
+            "phase": phase,
+            "setup": "" if phase == "none" else phase,
+            "score": round(score, 4),
+            "score_boost": score_boost,
+            "trade_window": trade_window,
+            "reasons": reasons,
+            "evidence": {
+                "day_gain_pct": _round(day_gain),
+                "day_range_position": _round(range_position),
+                "day_high_distance_pct": _round(high_distance),
+                "volume_ratio": _round(volume_ratio),
+                "projected_volume_ratio": _round(projected_volume_ratio),
+                "turnover": round(turnover, 2),
+                "projected_turnover": round(projected_turnover, 2),
+                "distance_to_near_high_pct": _round(dist_high),
+                "distance_to_sma20_pct": _round(dist_sma20),
+                "near_pivot": near_pivot,
+                "volume_support": volume_support,
+            },
+        }
 
     def _volume_score(self, metrics: dict[str, Any]) -> float:
         ratio = metrics.get("volume_ratio")
@@ -462,7 +786,42 @@ class OpportunityScanner:
             "quote_age_seconds": quote_age,
             "tradeable_screening": not reject_reason and history >= 55 and "stale_quote" not in missing,
             "actionable_data_ready": not reject_reason and "us_realtime_intraday_for_actionable_trade" not in missing,
+            "probe_only": False,
         }
+
+    def _allow_live_rally_probe(
+        self,
+        data_quality: dict[str, Any],
+        rally: dict[str, Any],
+        metrics: dict[str, Any],
+        min_turnover: float,
+    ) -> bool:
+        """Let obvious live rally evidence reach candle prefetch before final trade gates."""
+
+        if data_quality.get("reject_reason") != "insufficient_screening_data":
+            return False
+        if rally.get("phase") not in _LIVE_RALLY_SETUPS:
+            return False
+        if "stale_quote" in (data_quality.get("missing") or []):
+            return False
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        turnover = _float_or_none(metrics.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(metrics.get("projected_turnover")) or turnover
+        participation = max(
+            _float_or_none(metrics.get("volume_ratio")) or 0.0,
+            (_float_or_none(metrics.get("projected_volume_ratio")) or 0.0) * 0.75,
+        )
+        return (
+            day_gain >= 1.5
+            and range_position >= 0.68
+            and (high_distance is None or high_distance <= 2.0 or day_gain >= 5.0)
+            and (
+                turnover >= min_turnover * 2.0
+                or ((turnover >= min_turnover * 0.5 or projected_turnover >= min_turnover) and participation >= 1.0)
+            )
+        )
 
     def _sentiment_metrics(self, detail: dict[str, Any]) -> dict[str, Any]:
         if not self.sentiment_enabled or not detail:
@@ -511,7 +870,13 @@ class OpportunityScanner:
         momentum: float,
         volume: float,
         sentiment: dict[str, Any],
+        rally: dict[str, Any] | None = None,
+        min_turnover: float | None = None,
     ) -> str:
+        rally = rally or {}
+        min_turnover = self.min_turnover if min_turnover is None else min_turnover
+        if rally.get("setup"):
+            return str(rally["setup"])
         history_candles = int(metrics.get("history_candles") or 0)
         has_structural_history = history_candles >= 20
         has_breakout_history = (
@@ -520,11 +885,30 @@ class OpportunityScanner:
         )
         day_range_position = float(metrics.get("day_range_position") or 0.0)
         turnover = float(metrics.get("turnover") or 0.0)
+        projected_turnover = float(metrics.get("projected_turnover") or turnover)
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        day_high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        near_day_high = (
+            day_high_distance is not None
+            and day_high_distance <= (4.0 if day_gain >= 5.0 and volume_ratio >= 2.0 else 2.0)
+        )
+        if (
+            has_structural_history
+            and day_gain >= 4.0
+            and day_range_position >= (0.60 if day_gain >= 5.0 and volume_ratio >= 2.0 else 0.70)
+            and near_day_high
+            and (turnover >= min_turnover * 0.75 or projected_turnover >= min_turnover * 1.5)
+            and (participation >= 1.15 or projected_turnover >= min_turnover * 3.0)
+        ):
+            return "intraday_momentum"
         if sentiment.get("positive_catalyst") and (
             volume >= 0.50
             or breakout >= 0.55
             or momentum >= 0.55
-            or (turnover >= self.min_turnover * 2.0 and day_range_position >= 0.70)
+            or ((turnover >= min_turnover * 0.75 or projected_turnover >= min_turnover * 1.5) and day_range_position >= 0.70)
         ):
             return "news_catalyst"
         if has_breakout_history and breakout >= 0.70 and volume >= 0.60:
@@ -538,7 +922,7 @@ class OpportunityScanner:
             return "pullback_buy"
         if has_structural_history and momentum >= 0.65 and volume >= 0.65:
             return "smallcap_momentum"
-        if not has_structural_history and turnover >= self.min_turnover * 2.0 and day_range_position >= 0.70:
+        if not has_structural_history and (turnover >= min_turnover * 0.75 or projected_turnover >= min_turnover * 1.5) and day_range_position >= 0.70:
             return "intraday_momentum_probe"
         return "watchlist_candidate"
 
@@ -572,6 +956,8 @@ class OpportunityScanner:
         metrics = item.get("metrics") or {}
         sentiment = item.get("sentiment") or {}
         data_quality = item.get("data_quality") or {}
+        liquidity_profile = item.get("liquidity_profile") if isinstance(item.get("liquidity_profile"), dict) else {}
+        rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -579,6 +965,10 @@ class OpportunityScanner:
             "score": item.get("score"),
             "bucket": item.get("bucket"),
             "setup": item.get("setup"),
+            "rally_phase": rally.get("phase"),
+            "rally_score": rally.get("score"),
+            "trade_window": rally.get("trade_window"),
+            "rally_evidence": rally.get("evidence", {}),
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),
@@ -589,7 +979,9 @@ class OpportunityScanner:
                 "quote_age_seconds": data_quality.get("quote_age_seconds"),
                 "tradeable_screening": data_quality.get("tradeable_screening"),
                 "actionable_data_ready": data_quality.get("actionable_data_ready"),
+                "probe_only": data_quality.get("probe_only"),
             },
+            "liquidity_profile": liquidity_profile,
             "sentiment": {
                 "score": sentiment.get("score"),
                 "confidence": sentiment.get("confidence"),
@@ -601,7 +993,14 @@ class OpportunityScanner:
                 "asof": sentiment.get("asof"),
             },
             "price": metrics.get("price"),
+            "open": metrics.get("open"),
+            "day_gain_pct": metrics.get("day_gain_pct"),
+            "day_range_pct": metrics.get("day_range_pct"),
+            "day_range_position": metrics.get("day_range_position"),
             "turnover": metrics.get("turnover"),
+            "projected_turnover": metrics.get("projected_turnover"),
+            "projected_volume_ratio": metrics.get("projected_volume_ratio"),
+            "session_progress_pct": metrics.get("session_progress_pct"),
             "distance_to_55d_high_pct": metrics.get("distance_to_55d_high_pct"),
             "day_high_distance_pct": metrics.get("day_high_distance_pct"),
             "volume_ratio": metrics.get("volume_ratio"),
@@ -643,6 +1042,74 @@ class OpportunityScanner:
             for item in scored:
                 try_add(item, enforce_caps=False)
         return selected
+
+    def _select_rally_radar_then_diverse(self, scored: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        reserve = min(limit, max(45, int(limit * 0.80)))
+        rally_items = [
+            item
+            for item in scored
+            if str(item.get("setup") or "")
+            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel"}
+            or float(((item.get("components") or {}).get("live_momentum")) or 0.0) >= 0.70
+            or float(((item.get("components") or {}).get("rally_radar")) or 0.0) >= 0.60
+        ]
+        rally_items.sort(
+            key=lambda item: (
+                self._rally_discovery_score(item),
+                float((item.get("metrics") or {}).get("day_gain_pct") or 0.0),
+                float((item.get("metrics") or {}).get("turnover") or 0.0),
+            ),
+            reverse=True,
+        )
+        for item in rally_items[:reserve]:
+            symbol = str(item.get("symbol") or "")
+            if symbol and symbol not in selected_symbols:
+                selected.append(item)
+                selected_symbols.add(symbol)
+
+        pre_fuel_min = min(12, max(4, limit // 5))
+        pre_fuel = [
+            item
+            for item in rally_items
+            if item.get("setup") == "pre_rally_fuel" and str(item.get("symbol") or "") not in selected_symbols
+        ]
+        pre_fuel.sort(key=self._rally_discovery_score, reverse=True)
+        for item in pre_fuel[:pre_fuel_min]:
+            if len(selected) >= limit:
+                break
+            symbol = str(item.get("symbol") or "")
+            if symbol and symbol not in selected_symbols:
+                selected.append(item)
+                selected_symbols.add(symbol)
+
+        if len(selected) >= limit:
+            return selected[:limit]
+
+        remainder = [item for item in scored if str(item.get("symbol") or "") not in selected_symbols]
+        selected.extend(self._select_diverse(remainder, limit - len(selected)))
+        return selected[:limit]
+
+    def _rally_discovery_score(self, item: dict[str, Any]) -> float:
+        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+        components = item.get("components") if isinstance(item.get("components"), dict) else {}
+        setup = str(item.get("setup") or "")
+        phase_boost = {
+            "opening_ignition": 0.12,
+            "intraday_momentum": 0.10,
+            "pre_rally_fuel": 0.06,
+            "extended_momentum_watch": 0.02,
+        }.get(setup, 0.0)
+        live = float(components.get("live_momentum") or 0.0)
+        rally = float(components.get("rally_radar") or 0.0)
+        gain = _clamp((float(metrics.get("day_gain_pct") or 0.0) - 3.0) / 7.0, 0.0, 1.0)
+        volume = _clamp((float(metrics.get("volume_ratio") or 0.0) - 1.0) / 4.0, 0.0, 1.0)
+        min_turnover = self._min_turnover_for_market(str(item.get("market_region") or "IN"))
+        turnover = _clamp(float(metrics.get("turnover") or 0.0) / max(min_turnover * 10.0, 1.0), 0.0, 1.0)
+        return _clamp(phase_boost + rally * 0.35 + live * 0.25 + gain * 0.20 + volume * 0.12 + turnover * 0.08, 0.0, 1.0)
 
     def _forced_item(self, row: dict[str, Any], reason: str) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").upper()
@@ -742,14 +1209,46 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _session_progress_pct(quote: Quote, market_region: str) -> float | None:
+    raw = getattr(quote, "asof", None)
+    parsed = _parse_datetime(raw) or datetime.now(timezone.utc)
+    market = str(market_region or "").upper()
+    if market == "US":
+        local = parsed.astimezone(ZoneInfo("America/New_York"))
+        start = time(9, 30)
+        end = time(16, 0)
+    else:
+        local = parsed.astimezone(ZoneInfo("Asia/Kolkata"))
+        start = time(9, 15)
+        end = time(15, 30)
+    if local.weekday() >= 5:
+        return None
+    day_start = local.replace(hour=start.hour, minute=start.minute, second=0, microsecond=0)
+    day_end = local.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+    if local < day_start:
+        return None
+    if local >= day_end:
+        return 1.0
+    total = (day_end - day_start).total_seconds()
+    elapsed = (local - day_start).total_seconds()
+    return _clamp(elapsed / total, 0.02, 1.0) if total > 0 else None
+
+
 def _quote_age_seconds(quote: Quote) -> float | None:
     raw = getattr(quote, "asof", None)
     if not raw:
         return None
+    parsed = _parse_datetime(raw)
+    if parsed is None:
+        return None
+    return round((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds(), 3)
+
+
+def _parse_datetime(raw: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return round((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds(), 3)
+    return parsed.astimezone(timezone.utc)

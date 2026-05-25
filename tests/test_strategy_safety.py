@@ -388,6 +388,348 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result.summary["verified_catalyst_candidates"], 1)
         self.assertEqual(result.summary["positive_news_candidates"], 1)
 
+    def test_opportunity_scan_promotes_live_intraday_fast_movers(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "FASTMOVE", "exchange": "NSE", "sector": "Industrials"}],
+            {
+                "FASTMOVE": Quote(
+                    symbol="FASTMOVE",
+                    price=105.8,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=106.2,
+                    low=99.0,
+                    volume=2_000_000,
+                )
+            },
+            {"FASTMOVE": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "FASTMOVE")
+        self.assertEqual(result.candidates[0]["setup"], "intraday_momentum")
+        self.assertGreaterEqual(result.candidates[0]["components"]["live_momentum"], 0.70)
+        self.assertEqual(result.summary["top_fast_movers"][0]["symbol"], "FASTMOVE")
+
+    def test_opportunity_scan_detects_pre_rally_fuel_before_the_move(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _pre_rally_fuel_candles()
+        result = scanner.rank(
+            [{"symbol": "FUEL", "exchange": "NSE", "sector": "Industrials"}],
+            {
+                "FUEL": Quote(
+                    symbol="FUEL",
+                    price=103.0,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=102.5,
+                    high=103.2,
+                    low=101.6,
+                    volume=1_400_000,
+                )
+            },
+            {"FUEL": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "FUEL")
+        self.assertEqual(result.candidates[0]["setup"], "pre_rally_fuel")
+        self.assertEqual(result.candidates[0]["trade_window"], "watch_for_ignition")
+
+    def test_opportunity_scan_detects_opening_ignition_before_big_move(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "IGNITE", "exchange": "NSE", "sector": "Industrials"}],
+            {
+                "IGNITE": Quote(
+                    symbol="IGNITE",
+                    price=102.6,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=102.9,
+                    low=99.8,
+                    volume=2_000_000,
+                )
+            },
+            {"IGNITE": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "IGNITE")
+        self.assertEqual(result.candidates[0]["setup"], "opening_ignition")
+        self.assertEqual(result.candidates[0]["trade_window"], "early_actionable")
+
+    def test_india_rally_scan_keeps_early_relative_volume_under_absolute_floor(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "INEARLY", "exchange": "NSE", "sector": "Industrials"}],
+            {
+                "INEARLY": Quote(
+                    symbol="INEARLY",
+                    price=102.6,
+                    source="upstox-live",
+                    asof="2026-05-25T04:15:00+00:00",
+                    open=100.0,
+                    high=102.9,
+                    low=99.8,
+                    volume=100_000,
+                )
+            },
+            {"INEARLY": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "INEARLY")
+        self.assertLess(result.candidates[0]["turnover"], 50_000_000)
+        self.assertGreater(result.candidates[0]["projected_turnover"], 50_000_000)
+        self.assertTrue(result.candidates[0]["liquidity_profile"]["adaptive_pass"])
+        self.assertEqual(result.candidates[0]["setup"], "opening_ignition")
+
+    def test_india_rally_scan_rejects_weak_adaptive_liquidity(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "INILLQ", "exchange": "NSE", "sector": "Industrials"}],
+            {
+                "INILLQ": Quote(
+                    symbol="INILLQ",
+                    price=102.6,
+                    source="upstox-live",
+                    asof="2026-05-25T04:15:00+00:00",
+                    open=100.0,
+                    high=102.9,
+                    low=99.8,
+                    volume=5_000,
+                )
+            },
+            {"INILLQ": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates, [])
+        self.assertEqual(result.rejected_counts["below_adaptive_liquidity"], 1)
+
+    def test_us_rally_scan_uses_usd_turnover_floor(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "USIGNITE", "exchange": "NASDAQ", "sector": "Technology"}],
+            {
+                "USIGNITE": Quote(
+                    symbol="USIGNITE",
+                    price=102.6,
+                    source="yahoo-delayed",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=102.9,
+                    low=99.8,
+                    volume=100_000,
+                )
+            },
+            {"USIGNITE": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "USIGNITE")
+        self.assertEqual(result.candidates[0]["market_region"], "US")
+        self.assertEqual(result.candidates[0]["setup"], "opening_ignition")
+        self.assertEqual(result.candidates[0]["trade_window"], "early_actionable")
+        self.assertGreater(result.candidates[0]["turnover"], 2_000_000)
+        self.assertLess(result.candidates[0]["turnover"], 50_000_000)
+        self.assertEqual(result.summary["filters"]["min_turnover_usd"], 2_000_000)
+
+    def test_us_rally_scan_keeps_early_relative_volume_under_absolute_floor(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "USEARLY", "exchange": "NASDAQ", "sector": "Technology"}],
+            {
+                "USEARLY": Quote(
+                    symbol="USEARLY",
+                    price=20.4,
+                    source="yahoo-delayed",
+                    asof="2026-05-25T14:00:00+00:00",
+                    open=20.0,
+                    high=20.5,
+                    low=19.8,
+                    volume=50_000,
+                )
+            },
+            {"USEARLY": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "USEARLY")
+        self.assertLess(result.candidates[0]["turnover"], 2_000_000)
+        self.assertGreater(result.candidates[0]["projected_turnover"], 2_000_000)
+        self.assertTrue(result.candidates[0]["liquidity_profile"]["adaptive_pass"])
+        self.assertEqual(result.candidates[0]["setup"], "opening_ignition")
+
+    def test_us_rally_scan_rejects_weak_adaptive_liquidity(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [{"symbol": "USILLQ", "exchange": "NASDAQ", "sector": "Technology"}],
+            {
+                "USILLQ": Quote(
+                    symbol="USILLQ",
+                    price=20.4,
+                    source="yahoo-delayed",
+                    asof="2026-05-25T14:00:00+00:00",
+                    open=20.0,
+                    high=20.5,
+                    low=19.8,
+                    volume=5_000,
+                )
+            },
+            {"USILLQ": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates, [])
+        self.assertEqual(result.rejected_counts["below_adaptive_liquidity"], 1)
+
+    def test_live_rally_probe_is_not_dropped_before_history_prefetch(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        result = scanner.rank(
+            [{"symbol": "NOHISTORY", "exchange": "NSE", "sector": "Industrials"}],
+            {
+                "NOHISTORY": Quote(
+                    symbol="NOHISTORY",
+                    price=105.6,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=100.0,
+                    high=106.0,
+                    low=99.8,
+                    volume=2_500_000,
+                )
+            },
+            {"NOHISTORY": {"daily": [], "analysis": []}},
+        )
+
+        self.assertEqual(result.candidates[0]["symbol"], "NOHISTORY")
+        self.assertEqual(result.candidates[0]["setup"], "intraday_momentum")
+        self.assertTrue(result.candidates[0]["data_quality"]["probe_only"])
+        self.assertIn("daily_history", result.candidates[0]["data_quality"]["missing"])
+        self.assertEqual(result.candidates[0]["trade_window"], "actionable_momentum")
+
+    def test_llm_event_trigger_includes_rally_radar_setups(self) -> None:
+        engine = StrategyEngine.__new__(StrategyEngine)
+        row = {
+            "symbol": "IGNITE",
+            "exchange": "NSE",
+            "_opportunity_scan": {
+                "setup": "opening_ignition",
+                "bucket": "Actionable",
+                "data_quality": {"actionable_data_ready": True},
+            },
+        }
+
+        self.assertEqual(engine._llm_opportunity_trigger(row), "opportunity_scan_opening_ignition")
+
+    def test_us_live_intraday_strategy_uses_usd_turnover_confirmation(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(
+                max_position_pct=0.1,
+                dynamic_scan_min_turnover_inr=50_000_000,
+                dynamic_scan_min_turnover_usd=2_000_000,
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 5.2,
+                "day_range_position": 0.82,
+                "day_high_distance_pct": 0.6,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["market_region"] = "US"
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
+        context["opportunity_scan"] = {
+            "market_region": "US",
+            "setup": "intraday_momentum",
+            "day_gain_pct": 5.2,
+            "day_range_position": 0.82,
+            "day_high_distance_pct": 0.6,
+            "volume_ratio": 0.0,
+            "turnover": 12_000_000,
+            "components": {"live_momentum": 0.86},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+
+        review = context["full_spectrum_analysis"]["live_momentum_review"]
+        self.assertTrue(review["strategy_ready"])
+        self.assertEqual(review["turnover_floor"], 10_000_000)
+        self.assertEqual(context["best_strategy"]["name"], "live_intraday_momentum")
+
+    def test_broad_momentum_buy_requires_current_session_confirmation(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 0.5,
+                "day_range_position": 0.42,
+                "day_high_distance_pct": 3.2,
+                "confirmed": False,
+                "failed_drive": True,
+            }
+        )
+
+        action = engine._action_from_context("ENTERO", 0.52, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        failed = {item["gate"] for item in context["decision_gate_context"]["failed_gates"]}
+        self.assertIn("session_momentum_gate", failed)
+
+    def test_confirmed_session_momentum_can_pass_broad_momentum_gate(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 5.4,
+                "day_range_position": 0.86,
+                "day_high_distance_pct": 0.5,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+
+        action = engine._action_from_context("FASTMOVE", 0.52, {}, context, {})
+
+        self.assertEqual(action, "BUY")
+
+    def test_late_intraday_momentum_is_detected_but_not_auto_buy(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 8.4,
+                "day_range_position": 0.90,
+                "day_high_distance_pct": 0.6,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["opportunity_scan"] = {
+            "setup": "extended_momentum_watch",
+            "day_gain_pct": 8.4,
+            "day_range_position": 0.90,
+            "day_high_distance_pct": 0.6,
+            "volume_ratio": 4.2,
+            "turnover": 900_000_000,
+            "components": {"live_momentum": 0.95},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("CHASE", 0.55, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertEqual(context["full_spectrum_analysis"]["live_momentum_review"]["reason"], "late chase blocked; wait for pullback")
+
     def test_llm_shortlist_prioritizes_opportunity_scan_rank(self) -> None:
         engine = StrategyEngine.__new__(StrategyEngine)
         engine.settings = SimpleNamespace(
@@ -1016,6 +1358,7 @@ def _scanner_settings() -> SimpleNamespace:
         dynamic_scan_require_active_setup=True,
         dynamic_scan_min_price=10,
         dynamic_scan_min_turnover_inr=50_000_000,
+        dynamic_scan_min_turnover_usd=2_000_000,
         dynamic_scan_breakout_distance_pct=3.0,
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,
@@ -1071,6 +1414,104 @@ def _trend_candles(volume_spike: bool) -> list[Candle]:
             )
         )
     return candles
+
+
+def _flat_candles_with_old_high() -> list[Candle]:
+    candles: list[Candle] = []
+    for index in range(90):
+        close = 98.0 + (index % 5) * 0.3
+        high = 130.0 if index == 20 else close * 1.01
+        candles.append(
+            Candle(
+                symbol="FASTMOVE",
+                ts=f"2026-02-{(index % 28) + 1:02d}T00:00:00+00:00",
+                open=close * 0.995,
+                high=high,
+                low=close * 0.99,
+                close=close,
+                volume=100_000,
+                source="unit-test",
+            )
+        )
+    return candles
+
+
+def _pre_rally_fuel_candles() -> list[Candle]:
+    candles: list[Candle] = []
+    close = 80.0
+    for index in range(90):
+        close *= 1.002
+        if index > 75:
+            close *= 1.003
+        volume = 700_000
+        if index >= 84:
+            volume = 1_200_000
+        candles.append(
+            Candle(
+                symbol="FUEL",
+                ts=f"2026-03-{(index % 28) + 1:02d}T00:00:00+00:00",
+                open=close * 0.992,
+                high=close * (1.005 if index != 40 else 1.01),
+                low=close * 0.988,
+                close=close,
+                volume=volume,
+                source="unit-test",
+            )
+        )
+    return candles
+
+
+def _momentum_gate_context(session_momentum: dict) -> dict:
+    return {
+        "symbol": "FASTMOVE",
+        "quote": {
+            "price": 108.0,
+            "source": "upstox-live",
+            "asof": utc_now(),
+            "open": 100.0,
+            "high": 109.0,
+            "low": 99.0,
+            "volume": 2_000_000,
+        },
+        "sentiment": {"score": 0.1, "confidence": 0.2, "status": "AVAILABLE"},
+        "position": {"qty": 0},
+        "best_strategy": {"name": "time_series_momentum_trend", "score": 0.92},
+        "data_readiness": {
+            "market_region": "IN",
+            "trade_decision_ready": True,
+            "grade": "A",
+            "hard_gaps": [],
+            "sources": {"quote": "upstox-live", "daily": "upstox-live:day"},
+        },
+        "risk_limits": {"portfolio_equity": 100_000, "max_position_pct": 0.1},
+        "market_breadth_context": {"breadth_regime": "bull_confirmed"},
+        "full_spectrum_analysis": {
+            "confluence_score": {"total": 22, "tier": "MAXIMUM_CONVICTION"},
+            "risk_overrides": {"flags": [], "no_new_longs": False},
+            "institutional_scorecard": {"total_score": 78, "score": 78, "buy_ready": True, "hard_veto": {"failed": []}},
+            "stage_analysis": {"stage": "Stage2_Markup", "buy_permitted": True},
+            "entry_quality": {"entry_grade": "B", "distance_from_pivot_pct": 3.0, "volume_confirmation": True},
+            "breakout_quality": {"breakout_quality": "not_breakout", "two_day_rule_failed": False, "volume_confirmation": True},
+            "strategy_logic_filters": {
+                "passed": True,
+                "hard_blocks": [],
+                "penalties": [],
+                "sizing": {"max_multiplier": 0.85},
+                "institutional_sponsorship": {"supported": True, "evidence": ["delivery accumulation"]},
+                "breakout_volume": {"volume_confirmed": True, "suspect_without_volume": False},
+            },
+            "price_volume_divergence": {"climax_volume_top": False},
+            "trend_context": {"timeframe_alignment": {"alignment_grade": "B"}},
+            "options_oi": {},
+            "sector_rotation": {},
+            "delivery_accumulation": {"bias": "accumulation", "net_bias": "accumulation", "delivery_score": 0.8},
+            "fundamental_quality": {"quality_bucket": "reference_ratios_available", "metrics": {"reference_data_available": True}},
+            "liquidity_profile": {"liquidity_tier": "strong", "tradeable": True, "avg_traded_value_20": 150_000_000},
+            "indicator_suite": {"atr_pct": 3.2},
+            "trade_plan": {"entry_zone": [107.0, 109.0], "stop_loss": 103.0, "targets": [{"price": 116.0}]},
+            "session_momentum": session_momentum,
+        },
+    }
 
 
 if __name__ == "__main__":
