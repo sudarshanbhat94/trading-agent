@@ -151,6 +151,31 @@ function scopedOpportunityScan(scan = {}, market = state.activeMarket) {
     : scan;
 }
 
+function scopedPreCatalystDiscovery(discovery = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const candidates = (discovery.candidates || []).filter((item) => rowMarket(item) === region);
+  const liveConfirmations = (discovery.live_confirmations || []).filter((item) => rowMarket(item) === region);
+  return {
+    ...discovery,
+    candidates,
+    live_confirmations: liveConfirmations,
+    candidate_count: candidates.length,
+    live_confirmation_count: liveConfirmations.length,
+    original_candidate_count: (discovery.candidates || []).length,
+  };
+}
+
+function opportunityHealthPayload(payload = state.latest || {}, market = state.activeMarket) {
+  const opportunity = scopedOpportunityScan(payload.opportunity_scan || {}, market);
+  const premarket = scopedPreCatalystDiscovery(payload.pre_catalyst_discovery || {}, market);
+  return {
+    __detail_type: "opportunity_health",
+    market_region: normalizeUiMarket(market),
+    opportunity_scan: opportunity,
+    premarket_watchlist: premarket,
+  };
+}
+
 function fmtMarketMoney(value, market = "IN") {
   const parsed = numericValue(value);
   if (parsed === null) return "-";
@@ -1729,6 +1754,7 @@ function renderShell(payload = state.latest || {}) {
   const userSession = payload.user_signal_session || {};
   const activeMarket = normalizeUiMarket(state.activeMarket);
   const opportunity = scopedOpportunityScan(payload.opportunity_scan || {}, activeMarket);
+  const premarket = scopedPreCatalystDiscovery(payload.pre_catalyst_discovery || {}, activeMarket);
   const activeQuotes = filterRowsByMarket(payload.quotes || [], activeMarket);
   const rankedDecisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
@@ -1800,6 +1826,8 @@ function renderShell(payload = state.latest || {}) {
   const newsCoveredCandidates = Number(opportunity.news_covered_candidates || 0);
   const verifiedCatalysts = Number(opportunity.verified_catalyst_candidates || opportunity.positive_news_candidates || 0);
   const newsScreenedSymbols = Number(opportunity.news_screened_symbols || opportunity.news_probe?.symbols_requested || 0);
+  const premarketCount = Number(premarket.candidate_count || 0);
+  const premarketTopSymbols = (premarket.candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
   const scanScopeText = universeSymbols > rawSymbols
     ? `${fmtNumber(rawSymbols)}/cycle from ${fmtNumber(universeSymbols)} open`
     : `${fmtNumber(rawSymbols)} scanned`;
@@ -1808,11 +1836,17 @@ function renderShell(payload = state.latest || {}) {
     : `${fmtNumber(newsScreenedSymbols)} news checked · ${fmtNumber(verifiedCatalysts)} verified catalysts`;
   const pausedScanText = `${fmtNumber(enabledUniverseSymbols || universeSymbols)} enabled · ${fmtNumber(newsScreenedSymbols)} news prep · resumes at open`;
   const lastOpenText = lastOpenScanned ? `last open scan ${fmtNumber(lastOpenScanned)} symbols` : "open scan pending";
-  byId("ops-opportunity").textContent = scanPaused ? "Market closed" : (opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static");
+  byId("ops-opportunity").textContent = premarketCount
+    ? `${fmtNumber(premarketCount)} premarket`
+    : scanPaused
+      ? "Market closed"
+      : (opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static");
   byId("ops-opportunity-meta").textContent = opportunity.enabled
-    ? (scanPaused
-      ? pausedScanText
-      : `${scanScopeText} · ${fmtNumber(tradeableSymbols)} tradeable · ${newsScopeText} · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`)
+    ? (premarketCount
+      ? `${activeMarketLabel()} watchlist · ${premarketTopSymbols || "building"} · ${fmtNumber(premarket.live_confirmation_count || 0)} confirmed`
+      : scanPaused
+        ? pausedScanText
+        : `${scanScopeText} · ${fmtNumber(tradeableSymbols)} tradeable · ${newsScopeText} · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`)
     : "dynamic scan off";
   byId("ops-macro").textContent = macro.regime || marketStanceText(breadth);
   const macroRiskText = Number.isFinite(Number(macro.risk_score)) ? `${fmtNumber(macro.risk_score)} risk` : "risk pending";
@@ -1840,11 +1874,17 @@ function renderShell(payload = state.latest || {}) {
   if (cockpitReviewNote) cockpitReviewNote.textContent = !state.auth?.admin ? userCreditMeta : `${llmMode} · ${llmUsageText}`;
   if (cockpitFeed) cockpitFeed.textContent = feedConnected ? feed.title : "Feed pending";
   if (cockpitFeedNote) cockpitFeedNote.textContent = feedPending ? "quotes paused until broker/data token is ready" : feed.meta;
-  if (cockpitScan) cockpitScan.textContent = scanPaused ? "Market closed" : (opportunity.enabled ? `${fmtNumber(selectedSymbols)}/${fmtNumber(tradeableSymbols || rawSymbols)} candidates` : "Static scan");
+  if (cockpitScan) cockpitScan.textContent = premarketCount
+    ? `${fmtNumber(premarketCount)} premarket`
+    : scanPaused
+      ? "Market closed"
+      : (opportunity.enabled ? `${fmtNumber(selectedSymbols)}/${fmtNumber(tradeableSymbols || rawSymbols)} candidates` : "Static scan");
   if (cockpitScanNote) cockpitScanNote.textContent = opportunity.enabled
-    ? (scanPaused
-      ? `${pausedScanText} · ${lastOpenText}`
-      : `${scanScopeText} · ${fmtNumber(verifiedCatalysts)} verified catalysts · ${(opportunity.top_candidates || []).slice(0, 2).map((item) => item.symbol).filter(Boolean).join(", ") || "ranking"}`)
+    ? (premarketCount
+      ? `${premarketTopSymbols || "watchlist building"} · ${fmtNumber(premarket.live_confirmation_count || 0)} live confirmations`
+      : scanPaused
+        ? `${pausedScanText} · ${lastOpenText}`
+        : `${scanScopeText} · ${fmtNumber(verifiedCatalysts)} verified catalysts · ${(opportunity.top_candidates || []).slice(0, 2).map((item) => item.symbol).filter(Boolean).join(", ") || "ranking"}`)
     : `${fmtNumber(rankedDecisions.length)} ranked decisions in ${activeMarketLabel()}`;
   if (cockpitControl) cockpitControl.textContent = liveMode ? "Live guarded" : "Paper guarded";
   if (cockpitControlNote) cockpitControlNote.textContent = `${plainSetting("max_positions", "-")} slots · ${fmtPct(Number(plainSetting("max_order_value_pct", 0)) * 100)} max order`;
@@ -4705,6 +4745,9 @@ function detailHtml(value) {
     </section>
     <details class="raw-audit"><summary>Technical raw data</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
   }
+  if (value.__detail_type === "opportunity_health") {
+    return opportunityHealthDetailHtml(value);
+  }
   if (value.suggestion) {
     return suggestionDetailHtml(value);
   }
@@ -4731,6 +4774,50 @@ function detailHtml(value) {
   </section>
   ${jsonBlocks}
   <details class="raw-audit"><summary>Full technical data</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
+}
+
+function opportunityHealthDetailHtml(value = {}) {
+  const scan = value.opportunity_scan || {};
+  const premarket = value.premarket_watchlist || {};
+  const candidates = premarket.candidates || [];
+  const rows = candidates.slice(0, 20).map((item, index) => {
+    const reasons = (item.key_reasons || []).slice(0, 3).join(" · ");
+    const entry = item.entry_zone || {};
+    const entryText = entry.low || entry.high ? `${fmtNumber(entry.low)}-${fmtNumber(entry.high)}` : "-";
+    return `<tr>
+      <td>${fmtNumber(index + 1)}</td>
+      <td><strong>${escapeHtml(item.symbol || "-")}</strong><small>${escapeHtml(humanLabel(item.label || "watch"))}</small></td>
+      <td>${fmtNumber(Number(item.score || 0) * 100)}</td>
+      <td>${escapeHtml(humanLabel(item.catalyst_type || "unknown"))}</td>
+      <td>${fmtNumber(item.pivot)}</td>
+      <td>${escapeHtml(entryText)}</td>
+      <td>${escapeHtml(shortValue(reasons || item.setup_summary || "-", 130))}</td>
+    </tr>`;
+  }).join("");
+  const summaryRows = [
+    ["Premarket candidates", fmtNumber(premarket.candidate_count || candidates.length || 0)],
+    ["Live confirmations", fmtNumber(premarket.live_confirmation_count || 0)],
+    ["Generated", fmtTime(premarket.generated_at || scan.scanned_at)],
+    ["Symbols with history", fmtNumber(premarket.symbols_with_history || 0)],
+    ["Missing history", fmtNumber(premarket.missing_history_symbols || 0)],
+    ["Open scan symbols", fmtNumber(scan.scanned_symbols_this_cycle || scan.raw_symbols || 0)],
+  ].map(([label, detail]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(detail)}</strong></div>`).join("");
+  return `<section class="audit-section">
+    <h4>Premarket Watchlist</h4>
+    <p>${escapeHtml(candidates.length ? "Candidates are watches, not automatic BUYs. They need live confirmation at open." : "No premarket candidates are available for this market yet.")}</p>
+    <div class="detail-list">${summaryRows}</div>
+  </section>
+  <section class="audit-section">
+    <h4>Top Candidates</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Symbol</th><th>Score</th><th>Catalyst</th><th>Pivot</th><th>Entry Zone</th><th>Why</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7">No candidates for ${escapeHtml(value.market_region || activeMarketLabel())}</td></tr>`}</tbody>
+      </table>
+    </div>
+  </section>
+  <details class="raw-audit"><summary>Opportunity scan data</summary><pre>${escapeHtml(JSON.stringify(scan, null, 2))}</pre></details>
+  <details class="raw-audit"><summary>Premarket technical data</summary><pre>${escapeHtml(JSON.stringify(premarket, null, 2))}</pre></details>`;
 }
 
 function suggestionDetailHtml(row) {
@@ -5942,7 +6029,7 @@ function bindControls() {
           return;
         }
         if (target === "opportunity-health") {
-          setView("decisions");
+          showDetails(`${activeMarketLabel()} Opportunity Scan`, opportunityHealthPayload(state.latest || {}, state.activeMarket));
           return;
         }
         if (target === "cycle-health") {
@@ -5967,7 +6054,7 @@ function bindControls() {
         return;
       }
       if (target === "opportunity-health") {
-        showDetails(`${activeMarketLabel()} Opportunity Scan`, scopedOpportunityScan(state.latest?.opportunity_scan || {}, state.activeMarket));
+        showDetails(`${activeMarketLabel()} Opportunity Scan`, opportunityHealthPayload(state.latest || {}, state.activeMarket));
         return;
       }
       if (target === "cycle-health") {
