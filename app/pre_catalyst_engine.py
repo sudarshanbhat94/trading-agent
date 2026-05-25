@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .full_spectrum import _stage_analysis
 from .market_regions import market_region_for_row
@@ -103,20 +104,26 @@ def build_pre_catalyst_watchlist(
     log_events: list[dict[str, Any]] = []
     missing_history = 0
     missing_quote = 0
+    symbols_with_history = 0
     data_gaps: dict[str, int] = {}
 
     for row in universe:
         symbol = str(row.get("symbol") or "").upper()
         if not symbol:
             continue
-        quote = quotes.get(symbol)
-        if not quote:
-            missing_quote += 1
-            continue
         candles = _analysis_candles(candle_sets.get(symbol) or {})
         if len(candles) < 30:
             missing_history += 1
             _count(data_gaps, "insufficient_history")
+            continue
+        symbols_with_history += 1
+        quote = quotes.get(symbol)
+        if not quote:
+            quote = _daily_close_quote(symbol, candles)
+            missing_quote += 1
+            _count(data_gaps, "quote_missing_used_daily_close")
+        if not quote:
+            _count(data_gaps, "missing_quote_and_no_daily_close")
             continue
 
         sentiment = sentiment_by_symbol.get(symbol) or {}
@@ -204,7 +211,8 @@ def build_pre_catalyst_watchlist(
         "mode": "two_layer_pre_catalyst_and_live_confirmation",
         "raw_symbols": len(universe),
         "quoted_symbols": len(quotes),
-        "symbols_with_history": len(universe) - missing_history,
+        "symbols_with_history": symbols_with_history,
+        "analysis_quote_fallback_symbols": data_gaps.get("quote_missing_used_daily_close", 0),
         "missing_quote_symbols": missing_quote,
         "missing_history_symbols": missing_history,
         "candidate_limit": candidate_limit,
@@ -464,6 +472,8 @@ def confirm_live_breakout(
     sentiment = sentiment or {}
     daily = candle_set.get("daily") or candle_set.get("analysis") or []
     intraday = candle_set.get("intraday") or []
+    intraday_fresh = _intraday_candles_match_quote_session(intraday, quote)
+    usable_intraday = intraday if intraday_fresh else []
     pivot = _float_or_none(candidate.get("pivot"))
     if pivot is None:
         pivot = _setup_features(daily, quote).get("pivot")
@@ -472,9 +482,9 @@ def confirm_live_breakout(
     gap_pct = _gap_pct(quote, daily)
     extension = ((quote.price - pivot) / pivot) * 100.0 if pivot and pivot > 0 else 0.0
     volume_ratio = _live_volume_ratio(quote, daily)
-    vwap = _vwap(intraday)
+    vwap = _vwap(usable_intraday)
     vwap_hold = bool(vwap and quote.price >= vwap) if vwap else _range_position(quote) >= 0.60
-    range_hold = _first_range_hold(intraday, quote.price)
+    range_hold = _first_range_hold(usable_intraday, quote.price) if usable_intraday else False
     market_action_events = [str(item).upper() for item in market_action.get("event_types", []) if str(item or "").strip()]
     breakout = bool((pivot and quote.price >= pivot) or "52_WEEK_HIGH" in market_action_events or "VOLUME_SHOCKER" in market_action_events)
     volume_confirmed = bool(volume_ratio >= 1.35 or "VOLUME_SHOCKER" in market_action_events)
@@ -485,7 +495,7 @@ def confirm_live_breakout(
         label = LATE_CHASE_AVOID
     elif candidate.get("label") == LOW_QUALITY_SHORT_COVERING:
         label = LOW_QUALITY_SHORT_COVERING
-    elif breakout and vwap_hold and range_hold and volume_confirmed and catalyst_confirmed:
+    elif breakout and intraday_fresh and vwap_hold and range_hold and volume_confirmed and catalyst_confirmed:
         if candidate.get("catalyst_type") == "earnings":
             label = EARNINGS_VCP_BREAKOUT
         elif candidate.get("label") == OVERHANG_REMOVAL_RERATE:
@@ -503,6 +513,7 @@ def confirm_live_breakout(
         + (0.14 if range_hold else 0.0)
         + (0.20 if volume_confirmed else 0.0)
         + (0.16 if catalyst_confirmed else 0.0)
+        + (0.10 if intraday_fresh else -0.10)
         + (0.10 if not too_extended else -0.16),
         0.0,
         1.0,
@@ -516,6 +527,8 @@ def confirm_live_breakout(
         reasons.append("first range hold active")
     if volume_confirmed:
         reasons.append("volume confirmation active")
+    if not intraday_fresh:
+        reasons.append("waiting for fresh intraday candle confirmation")
     if too_extended:
         reasons.append("late chase risk; too extended from pivot")
     return {
@@ -529,6 +542,7 @@ def confirm_live_breakout(
         "extension_from_pivot_pct": _round(extension),
         "volume_ratio": _round(volume_ratio),
         "vwap": _round(vwap),
+        "intraday_fresh": intraday_fresh,
         "breakout": breakout,
         "vwap_hold": vwap_hold,
         "first_range_hold": range_hold,
@@ -662,6 +676,7 @@ def _pre_catalyst_score(
     )
     catalyst_score = _catalyst_proximity_score(catalyst)
     setup_score = float(setup.get("score") or 0.0)
+    pre_rally_score = float(setup.get("pre_rally_score") or 0.0)
     dryup_score = 1.0 if setup.get("volume_dryup") else 0.0
     rs_score = _clamp(float(rs.get("percentile_63") or 0.0) / 100.0, 0.0, 1.0)
     sector_score = _clamp(float(sector_leader.get("score") or 0.0), 0.0, 1.0)
@@ -675,9 +690,10 @@ def _pre_catalyst_score(
         news_quality = min(news_quality, 0.25)
     stage_score = 1.0 if stage.get("buy_permitted") else 0.45 if stage.get("stage") == "Stage1_Base" else 0.15
     score = (
-        catalyst_score * 0.18
+        catalyst_score * 0.12
         + setup_score * 0.20
-        + dryup_score * 0.11
+        + pre_rally_score * 0.14
+        + dryup_score * 0.10
         + rs_score * 0.14
         + sector_score * 0.11
         + liquidity * 0.10
@@ -691,13 +707,21 @@ def _pre_catalyst_score(
         score = max(score, 0.58 + sector_score * 0.18)
     if short_covering.get("detected"):
         score = max(score, float(short_covering.get("score") or 0.0))
+    if setup.get("pre_rally_compression") and rs_score >= 0.58 and liquidity >= 0.22 and extension_score >= 0.55:
+        score = max(score, 0.54 + min(pre_rally_score, 1.0) * 0.12 + min(rs_score, 1.0) * 0.07)
     reasons = []
+    if setup.get("pre_rally_compression"):
+        reasons.append("pre-rally compression near breakout zone")
     if setup.get("progressive_contraction"):
         reasons.append("base contraction")
+    if setup.get("quiet_range_contraction"):
+        reasons.append("quiet range contraction")
     if setup.get("volume_dryup"):
         reasons.append("volume dry-up")
     if setup.get("near_pivot"):
         reasons.append("near pivot without extension")
+    elif setup.get("near_prior_high"):
+        reasons.append("near prior high without extension")
     if rs_score >= 0.7:
         reasons.append("rising relative strength")
     if sector_score >= 0.55:
@@ -714,6 +738,7 @@ def _pre_catalyst_score(
         "components": {
             "catalyst_proximity": round(catalyst_score, 4),
             "setup_quality": round(setup_score, 4),
+            "pre_rally_compression": round(pre_rally_score, 4),
             "volume_dryup": round(dryup_score, 4),
             "relative_strength": round(rs_score, 4),
             "sector_strength": round(sector_score, 4),
@@ -741,6 +766,8 @@ def _setup_profile(candles: list[Candle], quote: Quote) -> dict[str, Any]:
         + (0.20 if features.get("volume_dryup") else 0.0)
         + (0.18 if features.get("tight_base") else 0.0)
         + (0.18 if features.get("near_pivot") else 0.0)
+        + (0.16 if features.get("pre_rally_compression") else 0.0)
+        + (0.10 if features.get("near_prior_high") else 0.0)
         + (0.12 if not features.get("extended_from_pivot") else -0.10),
     )
     return {
@@ -749,7 +776,7 @@ def _setup_profile(candles: list[Candle], quote: Quote) -> dict[str, Any]:
         "strategy_scores": {signal.name: signal.score for signal in strategy_signals},
         "strategy_notes": {signal.name: signal.notes[:4] for signal in strategy_signals if signal.name in {"vcp_breakout", "minervini_trend_template", "darvas_box_breakout", "aggressive_relative_strength_breakout"}},
         "pre_catalyst_ready": bool(
-            features.get("near_pivot")
+            (features.get("near_pivot") or features.get("pre_rally_compression"))
             and not features.get("extended_from_pivot")
             and (features.get("progressive_contraction") or features.get("volume_dryup") or signal_score >= 0.55)
         ),
@@ -771,31 +798,77 @@ def _setup_features(candles: list[Candle], quote: Quote) -> dict[str, Any]:
     )
     highs = [candle.high for candle in setup if candle.high]
     lows = [candle.low for candle in setup if candle.low]
+    closes = [candle.close for candle in setup if candle.close]
     if not highs or not lows:
         return {"available": False, "score": 0.0}
     pivot = max(highs)
     base_low = min(lows)
     base_width = ((pivot - base_low) / base_low) * 100.0 if base_low else 100.0
+    high_20 = max(highs[-20:]) if len(highs) >= 20 else pivot
+    high_55 = max(highs[-55:]) if len(highs) >= 55 else pivot
+    low_10 = min(lows[-10:]) if len(lows) >= 10 else min(lows)
+    high_10 = max(highs[-10:]) if len(highs) >= 10 else max(highs)
+    last_close = closes[-1] if closes else quote.price
+    ten_day_range_pct = ((high_10 - low_10) / low_10) * 100.0 if low_10 else 100.0
     early_volume = _mean(candle.volume for candle in setup[: max(10, len(setup) // 3)])
     late_volume = _mean(candle.volume for candle in setup[-10:])
     volume_dryup = bool(early_volume) and late_volume <= early_volume * 0.78
     distance_to_pivot = ((pivot - quote.price) / pivot) * 100.0 if pivot else 100.0
+    distance_to_20d_high = ((high_20 - quote.price) / high_20) * 100.0 if high_20 else 100.0
+    distance_to_55d_high = ((high_55 - quote.price) / high_55) * 100.0 if high_55 else 100.0
     extension = ((quote.price - pivot) / pivot) * 100.0 if pivot else 0.0
     near_pivot = -2.0 <= distance_to_pivot <= 6.0
+    near_prior_high = (
+        -1.5 <= distance_to_20d_high <= 8.0
+        or -1.5 <= distance_to_55d_high <= 8.0
+    )
+    quiet_range_contraction = ten_day_range_pct <= min(10.0, max(4.0, base_width * 0.42))
+    closes_near_top = bool(pivot and last_close >= pivot * 0.88)
+    pre_rally_score = _clamp(
+        (0.24 if near_pivot else 0.0)
+        + (0.18 if near_prior_high else 0.0)
+        + (0.18 if quiet_range_contraction else 0.0)
+        + (0.16 if volume_dryup else 0.0)
+        + (0.14 if progressive else 0.0)
+        + (0.10 if closes_near_top else 0.0)
+        + (0.08 if base_width <= 32.0 else 0.0),
+        0.0,
+        1.0,
+    )
+    pre_rally_compression = bool(
+        near_prior_high
+        and not extension > 5.0
+        and closes_near_top
+        and (
+            quiet_range_contraction
+            or volume_dryup
+            or progressive
+            or (base_width <= 24.0 and ten_day_range_pct <= 12.0)
+        )
+    )
     invalidation = max(base_low, pivot * 0.92) if pivot else base_low
     return {
         "available": True,
         "pivot": round(pivot, 4),
         "base_low": round(base_low, 4),
+        "prior_20d_high": round(high_20, 4),
+        "prior_55d_high": round(high_55, 4),
         "base_width_pct": round(base_width, 4),
+        "last_10d_range_pct": round(ten_day_range_pct, 4),
         "contraction_ranges_pct": [_round(value) for value in contraction_ranges],
         "progressive_contraction": progressive,
         "volume_dryup": volume_dryup,
+        "quiet_range_contraction": quiet_range_contraction,
         "tight_base": base_width <= 28.0,
         "near_pivot": near_pivot,
+        "near_prior_high": near_prior_high,
         "distance_to_pivot_pct": round(distance_to_pivot, 4),
+        "distance_to_20d_high_pct": round(distance_to_20d_high, 4),
+        "distance_to_55d_high_pct": round(distance_to_55d_high, 4),
         "extension_from_pivot_pct": round(max(extension, 0.0), 4),
         "extended_from_pivot": extension > 5.0,
+        "pre_rally_compression": pre_rally_compression,
+        "pre_rally_score": round(pre_rally_score, 4),
         "invalidation_level": round(invalidation, 4),
     }
 
@@ -1028,6 +1101,25 @@ def _analysis_candles(candle_set: dict[str, list[Candle]]) -> list[Candle]:
     return candle_set.get("analysis") or candle_set.get("daily") or candle_set.get("intraday") or []
 
 
+def _daily_close_quote(symbol: str, candles: list[Candle]) -> Quote | None:
+    if not candles:
+        return None
+    candle = candles[-1]
+    if not candle.close or candle.close <= 0:
+        return None
+    return Quote(
+        symbol=symbol,
+        price=float(candle.close),
+        source=f"{candle.source}:analysis-close",
+        asof=str(candle.ts),
+        open=float(candle.open),
+        high=float(candle.high),
+        low=float(candle.low),
+        close=float(candle.close),
+        volume=float(candle.volume or 0.0),
+    )
+
+
 def _sector(row: dict[str, Any]) -> str:
     return str(row.get("sector") or row.get("industry") or "Unclassified").strip() or "Unclassified"
 
@@ -1077,6 +1169,17 @@ def _first_range_hold(intraday: list[Candle], price: float) -> bool:
     if not lows or not highs:
         return True
     return price >= max(lows) and (price >= min(highs) or price >= intraday[-1].close)
+
+
+def _intraday_candles_match_quote_session(intraday: list[Candle], quote: Quote) -> bool:
+    if not intraday:
+        return False
+    quote_dt = _parse_datetime(getattr(quote, "asof", None))
+    candle_dt = _parse_datetime(getattr(intraday[-1], "ts", None))
+    if quote_dt is None or candle_dt is None:
+        return False
+    market_tz = ZoneInfo("America/New_York") if str(quote.source or "").lower().startswith(("alpaca", "polygon", "yahoo")) else ZoneInfo("Asia/Kolkata")
+    return quote_dt.astimezone(market_tz).date() == candle_dt.astimezone(market_tz).date()
 
 
 def _vwap(candles: list[Candle]) -> float | None:
@@ -1142,6 +1245,16 @@ def _parse_date(value: Any) -> date | None:
         return datetime.fromisoformat(str(value)[:10]).date()
     except ValueError:
         return None
+
+
+def _parse_datetime(raw: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _mean(values: Any) -> float:

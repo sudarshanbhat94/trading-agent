@@ -689,7 +689,7 @@ class TradingAgentService:
             "INFO",
             "cycle",
             "market_closed_skip_market_data",
-            "All selected markets are closed; skipped quote, candle, breadth, sector, strategy and LLM scans.",
+            "All selected markets are closed; skipped live quote, breadth, sector, strategy and LLM scans.",
             {
                 "market_region": self.market_region,
                 "open_regions": session_context.get("open_regions"),
@@ -706,6 +706,12 @@ class TradingAgentService:
             "reason": "post_market_prep_disabled",
             "symbols_requested": 0,
             "symbols_refreshed": 0,
+        }
+        prep_candle_summary: dict[str, Any] = {
+            "enabled": False,
+            "reason": "post_market_prep_disabled",
+            "requested_symbols": 0,
+            "symbols_with_candles": 0,
         }
         if getattr(self.strategy.settings, "post_market_prep_enabled", True):
             self._cycle_phase = "post_market_news"
@@ -728,6 +734,28 @@ class TradingAgentService:
             self._cycle_phase = "delivery_data"
             delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else delivery_status
             self.db.set_state("delivery_data_status", delivery_status)
+            self._cycle_phase = "post_market_candle_backfill"
+            backfill_rows, backfill_plan = self._candle_backfill_universe(full_universe, set())
+            backfill_candles: dict[str, list[Any]] = {}
+            backfill_error = None
+            if backfill_rows:
+                try:
+                    backfill_candles = await self.market_data.get_candles(backfill_rows)
+                except Exception as exc:
+                    backfill_error = f"{exc.__class__.__name__}: {str(exc)[:220]}"
+                if backfill_candles:
+                    self.db.upsert_candles(backfill_candles)
+            prep_candle_summary = {
+                "enabled": True,
+                "mode": "closed_market_historical_backfill",
+                "requested_symbols": len(backfill_rows),
+                "symbols_with_candles": len(backfill_candles),
+                "total_candles": sum(len(items) for items in backfill_candles.values()),
+                "plan": backfill_plan,
+                "sample_symbols": [row.get("symbol") for row in backfill_rows[:20]],
+                "error": backfill_error,
+            }
+            self.db.set_state("post_market_candle_backfill", prep_candle_summary)
 
         self._cycle_phase = "pre_catalyst_discovery"
         opportunity_state = self.db.get_state("opportunity_scan", {})
@@ -757,6 +785,7 @@ class TradingAgentService:
             "prepared_at": utc_now(),
             "market_session": session_context,
             "news": news_summary,
+            "candle_backfill": prep_candle_summary,
             "macro": {
                 "regime": macro_context.get("regime") if isinstance(macro_context, dict) else None,
                 "risk_score": macro_context.get("risk_score") if isinstance(macro_context, dict) else None,
@@ -829,6 +858,7 @@ class TradingAgentService:
             "news_screened_symbols": int(news_summary.get("symbols_requested") or 0),
             "news_events_found": int(news_summary.get("events_found") or 0),
             "news_headlines_found": int(news_summary.get("headlines_found") or 0),
+            "post_market_candle_backfill": prep_candle_summary,
             "news_covered_candidates": 0,
             "verified_catalyst_candidates": 0,
             "positive_news_candidates": 0,
@@ -878,23 +908,33 @@ class TradingAgentService:
         market_action_summary: dict[str, Any],
     ) -> dict[str, Any]:
         quotes = _quote_models_from_rows(self.db.latest_quotes())
-        if not quotes:
+        symbols = [row["symbol"] for row in full_universe if row.get("symbol")]
+        candle_sets = self.db.recent_candle_sets_by_symbol(symbols)
+        eligible_rows = [
+            row
+            for row in full_universe
+            if row.get("symbol")
+            and (
+                str(row.get("symbol") or "").upper() in quotes
+                or _analysis_history_count(candle_sets.get(str(row.get("symbol") or "").upper()) or {}) >= 30
+            )
+        ]
+        if not eligible_rows:
             return {
                 "enabled": bool(getattr(self.strategy.settings, "pre_catalyst_engine_enabled", True)),
                 "source": "pre_catalyst_engine",
                 "mode": "cached_closed_market_prep",
-                "reason": "no_cached_quotes_available",
+                "reason": "no_cached_quotes_or_daily_history_available",
                 "candidates": [],
                 "live_confirmations": [],
             }
-        symbols = [row["symbol"] for row in full_universe if row.get("symbol") in quotes]
-        candle_sets = self.db.recent_candle_sets_by_symbol(symbols)
+        symbols = [row["symbol"] for row in eligible_rows]
         sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
             symbols,
             max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
         )
         return self._build_pre_catalyst_discovery(
-            [row for row in full_universe if row.get("symbol") in quotes],
+            eligible_rows,
             quotes,
             candle_sets,
             sentiment_by_symbol,

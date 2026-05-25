@@ -18,6 +18,25 @@ from app.pre_catalyst_engine import (
 
 
 class PreCatalystEngineTests(unittest.TestCase):
+    def test_pre_rally_compression_uses_daily_close_when_quote_is_missing(self) -> None:
+        candles = _vcp_candles("COIL", start=78, end=98)
+        universe = [{"symbol": "COIL", "name": "Compression Leader", "exchange": "NSE", "sector": "Industrials"}]
+
+        result = build_pre_catalyst_watchlist(
+            universe,
+            {},
+            {"COIL": {"daily": candles, "analysis": candles}},
+            settings=_settings(),
+            now=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["analysis_quote_fallback_symbols"], 1)
+        self.assertEqual(result["candidates"][0]["symbol"], "COIL")
+        self.assertEqual(result["candidates"][0]["label"], PRE_CATALYST_WATCH)
+        self.assertEqual(result["candidates"][0]["catalyst_type"], "unknown")
+        self.assertTrue(result["candidates"][0]["supporting_signals"]["setup"]["pre_rally_compression"])
+        self.assertIn("pre-rally compression", " ".join(result["candidates"][0]["key_reasons"]))
+
     def test_earnings_vcp_candidate_is_pre_catalyst_watch(self) -> None:
         candles = _vcp_candles("AREM", start=78, end=98)
         universe = [{"symbol": "AREM", "name": "Amara Raja", "exchange": "NSE", "sector": "Auto Components"}]
@@ -147,6 +166,28 @@ class PreCatalystEngineTests(unittest.TestCase):
         self.assertEqual(live["label"], LATE_CHASE_AVOID)
         self.assertIn("late chase risk", " ".join(live["key_reasons"]))
 
+    def test_live_breakout_waits_when_intraday_candles_are_stale(self) -> None:
+        candles = _vcp_candles("FRESH", start=80, end=98)
+        candidate = {
+            "symbol": "FRESH",
+            "label": PRE_CATALYST_WATCH,
+            "confidence": 0.75,
+            "pivot": 100.0,
+            "catalyst_type": "earnings",
+        }
+
+        live = confirm_live_breakout(
+            candidate,
+            Quote("FRESH", 101.5, "upstox-live", "2026-05-26T10:00:00+05:30", open=100.5, high=102.0, low=100.1, volume=2_800_000),
+            {"daily": candles, "analysis": candles, "intraday": _intraday_hold("FRESH", 100.0, 101.5, day="2026-05-23")},
+            {"event_types": ["TOP_GAINER", "VOLUME_SHOCKER"], "strategy": "market_action_momentum"},
+            {"score": 0.45, "confidence": 0.7, "events": [{"event_type": "earnings", "confidence": 0.8, "source_weight": 0.8}]},
+        )
+
+        self.assertEqual(live["label"], PRE_CATALYST_WATCH)
+        self.assertFalse(live["intraday_fresh"])
+        self.assertIn("waiting for fresh intraday", " ".join(live["key_reasons"]))
+
 
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
@@ -204,7 +245,7 @@ def _trend_candles(symbol: str, start: float, end: float, volume: float) -> list
     return candles
 
 
-def _intraday_hold(symbol: str, start: float, end: float) -> list[Candle]:
+def _intraday_hold(symbol: str, start: float, end: float, day: str = "2026-05-26") -> list[Candle]:
     candles: list[Candle] = []
     for index in range(30):
         progress = index / 29
@@ -212,7 +253,7 @@ def _intraday_hold(symbol: str, start: float, end: float) -> list[Candle]:
         candles.append(
             Candle(
                 symbol=symbol,
-                ts=f"2026-05-26T09:{index:02d}:00+05:30",
+                ts=f"{day}T09:{index:02d}:00+05:30",
                 open=close - 0.15,
                 high=close + 0.35,
                 low=close - 0.35,

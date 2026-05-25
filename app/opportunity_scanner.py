@@ -241,6 +241,7 @@ class OpportunityScanner:
         price = max(float(quote.price or 0.0), 0.0)
         candles = candle_set.get("analysis") or candle_set.get("daily") or candle_set.get("intraday") or []
         metrics = self._metrics(price, quote, candles, market_region)
+        metrics["candle_freshness"] = self._candle_freshness(candle_set, quote, market_region)
         sentiment = self._sentiment_metrics(sentiment_detail or {})
         liquidity_profile = self._liquidity_profile(metrics, min_turnover)
         market_action = row.get("_market_action") if isinstance(row.get("_market_action"), dict) else {}
@@ -903,6 +904,22 @@ class OpportunityScanner:
             missing.append("daily_history")
         if metrics.get("volume_ratio") is None:
             missing.append("volume_baseline")
+        freshness = metrics.get("candle_freshness") if isinstance(metrics.get("candle_freshness"), dict) else {}
+        live_session = metrics.get("session_progress_pct") is not None
+        intraday_count = int(freshness.get("intraday_count") or 0)
+        fresh_intraday_required = bool(
+            live_session
+            and history >= 20
+            and (
+                ("upstox" in source or "kite" in source or "nubra" in source or "indstocks" in source)
+                if region != "US"
+                else ("alpaca" in source or "polygon" in source or "yahoo" in source)
+            )
+        )
+        if fresh_intraday_required and intraday_count <= 0:
+            missing.append("fresh_intraday_candles")
+        elif fresh_intraday_required and not freshness.get("intraday_matches_quote_session"):
+            missing.append("stale_intraday_candles")
         if region == "US":
             if "yahoo" not in source and not any(token in source for token in ("alpaca", "polygon")):
                 missing.append("us_screening_quote_source")
@@ -926,6 +943,8 @@ class OpportunityScanner:
             score -= 0.10
         if "us_realtime_intraday_for_actionable_trade" in missing:
             score -= 0.12
+        if "fresh_intraday_candles" in missing or "stale_intraday_candles" in missing:
+            score -= 0.10
         if self.sentiment_enabled and "news_sentiment" in missing:
             score -= 0.08
         reject_reason = ""
@@ -940,9 +959,46 @@ class OpportunityScanner:
             "history_candles": history,
             "quote_source": quote.source,
             "quote_age_seconds": quote_age,
+            "candle_freshness": freshness,
+            "fresh_intraday_required": fresh_intraday_required,
             "tradeable_screening": not reject_reason and history >= 55 and "stale_quote" not in missing,
-            "actionable_data_ready": not reject_reason and "us_realtime_intraday_for_actionable_trade" not in missing,
+            "actionable_data_ready": not reject_reason
+            and "us_realtime_intraday_for_actionable_trade" not in missing
+            and "fresh_intraday_candles" not in missing
+            and "stale_intraday_candles" not in missing,
             "probe_only": False,
+        }
+
+    def _candle_freshness(
+        self,
+        candle_set: dict[str, list[Candle]],
+        quote: Quote,
+        market_region: str,
+    ) -> dict[str, Any]:
+        intraday = candle_set.get("intraday") or []
+        daily = candle_set.get("daily") or []
+        analysis = candle_set.get("analysis") or []
+        quote_dt = _parse_datetime(getattr(quote, "asof", None))
+        market_tz = ZoneInfo("America/New_York") if str(market_region or "").upper() == "US" else ZoneInfo("Asia/Kolkata")
+        quote_market_date = quote_dt.astimezone(market_tz).date().isoformat() if quote_dt else None
+        intraday_dt = _latest_candle_datetime(intraday)
+        daily_dt = _latest_candle_datetime(daily)
+        analysis_dt = _latest_candle_datetime(analysis)
+        intraday_market_date = intraday_dt.astimezone(market_tz).date().isoformat() if intraday_dt else None
+        daily_market_date = daily_dt.astimezone(market_tz).date().isoformat() if daily_dt else None
+        analysis_market_date = analysis_dt.astimezone(market_tz).date().isoformat() if analysis_dt else None
+        return {
+            "quote_market_date": quote_market_date,
+            "latest_intraday_ts": intraday_dt.isoformat() if intraday_dt else None,
+            "latest_daily_ts": daily_dt.isoformat() if daily_dt else None,
+            "latest_analysis_ts": analysis_dt.isoformat() if analysis_dt else None,
+            "latest_intraday_market_date": intraday_market_date,
+            "latest_daily_market_date": daily_market_date,
+            "latest_analysis_market_date": analysis_market_date,
+            "intraday_count": len(intraday),
+            "daily_count": len(daily),
+            "analysis_count": len(analysis),
+            "intraday_matches_quote_session": bool(quote_market_date and intraday_market_date == quote_market_date),
         }
 
     def _allow_live_rally_probe(
@@ -1144,6 +1200,8 @@ class OpportunityScanner:
                 "missing": data_quality.get("missing", []),
                 "quote_source": data_quality.get("quote_source"),
                 "quote_age_seconds": data_quality.get("quote_age_seconds"),
+                "candle_freshness": data_quality.get("candle_freshness", {}),
+                "fresh_intraday_required": data_quality.get("fresh_intraday_required"),
                 "tradeable_screening": data_quality.get("tradeable_screening"),
                 "actionable_data_ready": data_quality.get("actionable_data_ready"),
                 "probe_only": data_quality.get("probe_only"),
@@ -1438,3 +1496,9 @@ def _parse_datetime(raw: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _latest_candle_datetime(candles: list[Candle]) -> datetime | None:
+    if not candles:
+        return None
+    return _parse_datetime(getattr(candles[-1], "ts", None))
