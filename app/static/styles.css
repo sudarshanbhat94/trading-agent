@@ -15248,6 +15248,18 @@ body[data-theme="dark"] .account-history-card {
   .mobile-bottom-nav-item.active span {
     background: transparent;
   }
+
+  .mobile-bottom-nav-item {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-bottom-nav-item:focus {
+    outline: none;
+  }
+
+  .mobile-bottom-nav-item:focus-visible span {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand-primary) 38%, transparent);
+  }
 }
 
 body[data-theme="dark"] .mobile-bottom-nav {
@@ -15726,7 +15738,333 @@ body[data-theme="dark"] .mobile-bottom-nav {
     background: #222c3b;
   }
 
-  body[data-theme="dark"] .mobile-empty-illustration span:nth-child(2) {
+body[data-theme="dark"] .mobile-empty-illustration span:nth-child(2) {
     background: #30394a;
   }
+}
+
+.mobile-native-topbar {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --mobile-native-topbar-height: 116px;
+    --mobile-bottom-nav-height: 72px;
+  }
+
+  html,
+  body {
+    min-height: 100dvh;
+    overflow-x: hidden;
+    background: var(--surface-1) !important;
+  }
+
+  #app-shell {
+    min-height: 100dvh;
+    background: var(--surface-1) !important;
+  }
+
+  .terminal-topbar,
+  .market-tape,
+  .market-rail,
+  .workspace-head,
+  .ai-cockpit-strip {
+    display: none !important;
+  }
+
+  .mobile-native-topbar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 1550;
+    display: grid;
+    gap: 8px;
+    min-height: calc(var(--mobile-native-topbar-height) + env(safe-area-inset-top));
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+    background: color-mix(in srgb, var(--surface-1) 98%, transparent);
+    box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-native-indices {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 42px;
+    gap: 8px;
+    align-items: stretch;
+    min-height: 52px;
+  }
+
+  .mobile-native-indices button {
+    min-width: 0;
+    border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--surface-2) 66%, var(--surface-1)) !important;
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .mobile-native-indices button:not(.mobile-native-chevron) {
+    display: grid;
+    gap: 2px;
+    align-content: center;
+    padding: 7px 9px;
+    text-align: left;
+  }
+
+  .mobile-native-indices span {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 760;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .mobile-native-indices strong {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 760;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-native-indices small {
+    font-size: 11px;
+    font-weight: 720;
+    line-height: 1.1;
+  }
+
+  .mobile-native-chevron {
+    display: grid;
+    place-items: center;
+    padding: 0;
+  }
+
+  .mobile-native-chevron svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .mobile-market-switch {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px;
+    min-height: 36px;
+    padding: 2px;
+    border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--surface-2) 72%, var(--surface-1));
+  }
+
+  .mobile-native-topbar .market-workspace-tab {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, auto);
+    justify-content: center;
+    gap: 6px;
+    min-height: 30px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent !important;
+    color: var(--text-secondary);
+    padding: 0 8px;
+  }
+
+  .mobile-native-topbar .market-workspace-tab.active {
+    background: var(--surface-1) !important;
+    color: var(--color-brand-primary);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  }
+
+  .mobile-native-topbar .market-workspace-tab span,
+  .mobile-native-topbar .market-workspace-tab strong {
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 780;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-native-topbar .market-workspace-tab strong {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 650;
+  }
+
+  .terminal-body {
+    display: block !important;
+    min-height: 100dvh !important;
+    margin: 0 !important;
+    padding: calc(var(--mobile-native-topbar-height) + env(safe-area-inset-top)) 0 calc(var(--mobile-bottom-nav-height) + 14px + env(safe-area-inset-bottom)) !important;
+    background: var(--surface-1) !important;
+  }
+
+  .workspace {
+    width: 100% !important;
+    max-width: none !important;
+    min-height: calc(100dvh - var(--mobile-native-topbar-height) - var(--mobile-bottom-nav-height)) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: var(--surface-1) !important;
+  }
+
+  .view {
+    padding: 10px 12px 22px !important;
+  }
+
+  #suggestions-view.view.active,
+  #positions-view.view.active {
+    padding: 0 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-app {
+    min-height: calc(100dvh - var(--mobile-native-topbar-height) - var(--mobile-bottom-nav-height));
+    margin: 0 !important;
+    padding: 0 0 18px !important;
+    background: var(--surface-1);
+  }
+
+  .mobile-watchlist-tabs {
+    gap: 22px !important;
+    min-height: 46px;
+    padding: 0 16px !important;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+    background: var(--surface-1);
+  }
+
+  .mobile-watchlist-tabs button {
+    min-height: 46px !important;
+    font-size: 14px !important;
+  }
+
+  .mobile-watchlist-search {
+    min-height: 56px !important;
+    margin: 10px 12px !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+  }
+
+  .mobile-watchlist-new-group {
+    min-height: 26px !important;
+    padding-right: 16px !important;
+  }
+
+  .mobile-watchlist-list {
+    margin: 0 !important;
+    background: var(--surface-1) !important;
+  }
+
+  .mobile-watchlist-row {
+    min-height: 74px !important;
+    padding: 11px 16px !important;
+  }
+
+  .mobile-watchlist-symbol strong,
+  .mobile-portfolio-row strong {
+    font-size: 15px !important;
+  }
+
+  .mobile-watchlist-price strong,
+  .mobile-portfolio-price strong {
+    font-size: 15px !important;
+  }
+
+  #positions-view .panel.full {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: var(--surface-1) !important;
+    box-shadow: none !important;
+  }
+
+  .mobile-portfolio-app {
+    min-height: calc(100dvh - var(--mobile-native-topbar-height) - var(--mobile-bottom-nav-height)) !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    border-radius: 0 !important;
+    background: var(--surface-1) !important;
+    box-shadow: none !important;
+  }
+
+  .mobile-portfolio-tabs {
+    min-height: 50px;
+    padding: 0 16px !important;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+    background: var(--surface-1) !important;
+  }
+
+  .mobile-portfolio-tabs button {
+    min-height: 50px !important;
+    font-size: 15px !important;
+  }
+
+  .mobile-portfolio-tools {
+    min-height: 56px !important;
+    padding: 0 12px !important;
+    background: color-mix(in srgb, var(--surface-2) 48%, var(--surface-1));
+  }
+
+  .mobile-portfolio-list {
+    min-height: 0 !important;
+    background: var(--surface-1) !important;
+  }
+
+  .mobile-portfolio-row {
+    min-height: 74px !important;
+    padding: 11px 16px !important;
+  }
+
+  .mobile-portfolio-empty {
+    min-height: calc(100dvh - var(--mobile-native-topbar-height) - var(--mobile-bottom-nav-height) - 106px) !important;
+    padding-bottom: 96px !important;
+  }
+
+  .mobile-floating-chart {
+    right: 18px !important;
+    bottom: calc(88px + env(safe-area-inset-bottom)) !important;
+    left: auto !important;
+    width: 56px !important;
+    min-height: 56px !important;
+  }
+}
+
+@media (max-width: 390px) {
+  :root {
+    --mobile-native-topbar-height: 110px;
+  }
+
+  .mobile-native-indices {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 38px;
+    gap: 6px;
+  }
+
+  .mobile-native-indices strong {
+    font-size: 13px;
+  }
+
+  .mobile-native-topbar .market-workspace-tab strong {
+    display: none;
+  }
+}
+
+body[data-theme="dark"] .mobile-native-topbar {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: color-mix(in srgb, var(--surface-1) 94%, #020617);
+}
+
+body[data-theme="dark"] .mobile-native-indices button,
+body[data-theme="dark"] .mobile-market-switch {
+  border-color: rgba(148, 163, 184, 0.16);
+  background: color-mix(in srgb, var(--surface-2) 72%, #020617) !important;
 }

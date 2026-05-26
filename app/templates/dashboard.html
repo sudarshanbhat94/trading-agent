@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=mobile-watchlist-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=mobile-native-1" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -159,6 +159,34 @@
           <strong>Account</strong>
         </button>
       </nav>
+
+      <section class="mobile-native-topbar" aria-label="Mobile market summary">
+        <div class="mobile-native-indices">
+          <button type="button" aria-label="Primary market index">
+            <span id="mobile-index-primary-label">NIFTY 50</span>
+            <strong id="mobile-index-primary-value">-</strong>
+            <small id="mobile-index-primary-change">-</small>
+          </button>
+          <button type="button" aria-label="Secondary market index">
+            <span id="mobile-index-secondary-label">NIFTY BANK</span>
+            <strong id="mobile-index-secondary-value">-</strong>
+            <small id="mobile-index-secondary-change">-</small>
+          </button>
+          <button class="mobile-native-chevron" type="button" data-view-jump="overview" aria-label="Home">
+            <svg aria-hidden="true"><use href="#icon-dashboard"></use></svg>
+          </button>
+        </div>
+        <div class="mobile-market-switch" role="tablist" aria-label="Market workspace selector">
+          <button class="market-workspace-tab active" type="button" data-market-workspace="IN" aria-selected="true">
+            <span>India</span>
+            <strong>NSE/BSE</strong>
+          </button>
+          <button class="market-workspace-tab" type="button" data-market-workspace="US" aria-selected="false">
+            <span>US</span>
+            <strong>NYSE/Nasdaq</strong>
+          </button>
+        </div>
+      </section>
 
       <section class="market-tape" aria-label="Market ticker">
         <div class="market-tape-label">
@@ -823,6 +851,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=mobile-watchlist-1"></script>
+    <script src="/static/dashboard.js?v=mobile-native-1"></script>
   </body>
 </html>

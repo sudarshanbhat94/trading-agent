@@ -1333,7 +1333,8 @@ function render(payload) {
   renderStrategies(strategies);
   updatePageFilterButtons();
   renderStrategyPlans(visibleStrategyPlans);
-  renderIdeasWatchlist(suggestions, trackedIdeas);
+  renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans);
+  renderMobileNativeHeader(payload, quotes, activeMarket);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderSentiment(visibleSentiment);
   renderQuotes(quotes);
@@ -1394,7 +1395,8 @@ function renderPositionMarkPanels(payload) {
   updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas);
   renderPositions(positions);
   renderOverviewPositions(positions);
-  renderIdeasWatchlist(suggestions, trackedIdeas);
+  renderIdeasWatchlist(suggestions, trackedIdeas, state.latest?.strategy_plans || []);
+  renderMobileNativeHeader(payload, filterRowsByMarket(payload.quotes || [], activeMarket), activeMarket);
   renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
@@ -3697,6 +3699,53 @@ async function followPlan(planCode, action, amount = 0) {
   }
 }
 
+function findIndexQuote(rows = [], aliases = []) {
+  const normalizedAliases = aliases.map((item) => String(item).toUpperCase().replace(/[^A-Z0-9]/g, ""));
+  return (rows || []).find((row) => {
+    const symbol = String(row.symbol || row.trading_symbol || row.name || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const label = String(row.company_name || row.display_name || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return normalizedAliases.some((alias) => symbol === alias || label === alias || symbol.includes(alias));
+  });
+}
+
+function mobileIndexPayload(rows = [], market = "IN") {
+  const region = normalizeUiMarket(market);
+  if (region === "US") {
+    return [
+      { label: "S&P 500", quote: findIndexQuote(rows, ["SPY", "SPX", "GSPC", "S&P 500"]) },
+      { label: "NASDAQ", quote: findIndexQuote(rows, ["QQQ", "IXIC", "NASDAQ"]) },
+    ];
+  }
+  return [
+    { label: "NIFTY 50", quote: findIndexQuote(rows, ["NIFTY", "NIFTY50", "NIFTY 50"]) },
+    { label: "NIFTY BANK", quote: findIndexQuote(rows, ["BANKNIFTY", "NIFTYBANK", "NIFTY BANK"]) },
+  ];
+}
+
+function renderMobileNativeHeader(payload = state.latest || {}, rows = [], market = state.activeMarket) {
+  const primaryLabel = byId("mobile-index-primary-label");
+  const primaryValue = byId("mobile-index-primary-value");
+  const primaryChange = byId("mobile-index-primary-change");
+  const secondaryLabel = byId("mobile-index-secondary-label");
+  const secondaryValue = byId("mobile-index-secondary-value");
+  const secondaryChange = byId("mobile-index-secondary-change");
+  if (!primaryLabel || !primaryValue || !primaryChange || !secondaryLabel || !secondaryValue || !secondaryChange) return;
+  const [primary, secondary] = mobileIndexPayload(rows, market);
+  const paint = (slot, labelEl, valueEl, changeEl) => {
+    const quote = slot.quote || {};
+    const price = firstFinite(quote.price, quote.last_price, quote.close);
+    const pct = quote.symbol ? quoteDayPct(quote) : null;
+    const hasPct = Number.isFinite(pct);
+    labelEl.textContent = slot.label;
+    valueEl.textContent = price !== null ? fmtNumber(price) : marketDataLabel(payload, market).title;
+    changeEl.textContent = hasPct ? fmtPct(pct) : (quote.symbol ? "0.00%" : marketDataLabel(payload, market).meta);
+    changeEl.className = hasPct ? pnlClass(pct) : "";
+    valueEl.className = hasPct ? pnlClass(pct) : "";
+  };
+  paint(primary, primaryLabel, primaryValue, primaryChange);
+  paint(secondary, secondaryLabel, secondaryValue, secondaryChange);
+}
+
 function ideaIsFollowed(row = {}) {
   const followed = row.user_follow && typeof row.user_follow === "object" ? row.user_follow : {};
   const status = String(followed.status || row.follow_status || row.status || "").toUpperCase();
@@ -3754,18 +3803,64 @@ function ideaSearchMatches(row = {}, search = "") {
   return text.includes(search);
 }
 
-function ideaWatchlistGroups(suggestions = [], trackedIdeas = []) {
+function enrichPlanIdeaRows(rows = [], ideaIndex = new Map()) {
+  return (rows || []).map((row) => {
+    const idKey = row.id || row.idea_id ? `id:${row.id || row.idea_id}` : "";
+    const symbolKey = row.symbol ? `symbol:${String(row.symbol).toUpperCase()}` : "";
+    const base = ideaIndex.get(idKey) || ideaIndex.get(symbolKey) || {};
+    return { ...base, ...row, user_follow: row.user_follow || base.user_follow };
+  });
+}
+
+function ideaIndexByIdAndSymbol(rows = []) {
+  const output = new Map();
+  for (const row of rows || []) {
+    if (row.id || row.idea_id) output.set(`id:${row.id || row.idea_id}`, row);
+    if (row.symbol) output.set(`symbol:${String(row.symbol).toUpperCase()}`, row);
+  }
+  return output;
+}
+
+function planRowsForMarket(plan = {}, market = state.activeMarket, ideas = []) {
+  const region = normalizeUiMarket(market);
+  const byMarket = plan.constituents_by_market || {};
+  if (Array.isArray(byMarket[region]) && byMarket[region].length) return byMarket[region];
+  const constituents = Array.isArray(plan.constituents) ? plan.constituents.filter((row) => rowMarket(row) === region) : [];
+  if (constituents.length) return constituents;
+  const code = String(plan.code || "").toUpperCase();
+  if (!code) return [];
+  return (ideas || []).filter((row) => String(row.plan_code || "").toUpperCase() === code && rowMarket(row) === region);
+}
+
+function ideaWatchlistGroups(suggestions = [], trackedIdeas = [], strategyPlans = []) {
   const ideas = sortSuggestionRows(suggestions || []);
-  const big = ideas.filter((row) => ideaIsTradeReady(row) || ideaIsHighQuality(row));
-  const bigKeys = new Set(big.map((row) => String(row.id || row.symbol || "")));
-  const interest = ideas.filter((row) => !bigKeys.has(String(row.id || row.symbol || "")));
-  const events = ideas.filter(ideaHasEvent);
+  const market = normalizeUiMarket(state.activeMarket);
+  const ideaIndex = ideaIndexByIdAndSymbol([...(suggestions || []), ...(trackedIdeas || [])]);
+  const planGroups = (strategyPlans || [])
+    .map((plan) => {
+      const planRows = planRowsForMarket(plan, market, ideas);
+      const rows = sortSuggestionRows(enrichPlanIdeaRows(planRows, ideaIndex));
+      return {
+        key: `plan:${plan.code || plan.name}`,
+        label: shortValue(plan.name || plan.code || "Plan", 18),
+        rows,
+        plan,
+      };
+    })
+    .filter((group) => group.rows.length);
   const tracked = sortSuggestionRows((trackedIdeas || []).slice());
+  if (planGroups.length) {
+    return [
+      ...planGroups,
+      { key: "tracked", label: `Tracked ${tracked.length}`, rows: tracked },
+    ];
+  }
+  const big = ideas.filter((row) => ideaIsTradeReady(row) || ideaIsHighQuality(row));
+  const events = ideas.filter(ideaHasEvent);
   return [
     { key: "big", label: "Big stocks", rows: big.length ? big : ideas.slice(0, 12) },
-    { key: "interest", label: "Stocks interest", rows: interest.length ? interest : ideas.slice(0, 12) },
-    { key: "tracked", label: `Watchlist ${tracked.length}`, rows: tracked },
     { key: "events", label: "Events", rows: events },
+    { key: "tracked", label: `Tracked ${tracked.length}`, rows: tracked },
   ];
 }
 
@@ -3810,11 +3905,11 @@ function ideaWatchlistRowHtml(row = {}, index = 0) {
   </article>`;
 }
 
-function renderIdeasWatchlist(suggestions = [], trackedIdeas = []) {
+function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans = state.latest?.strategy_plans || []) {
   const tabs = byId("ideas-watchlist-tabs");
   const body = byId("ideas-watchlist-body");
   if (!tabs || !body) return;
-  const groups = ideaWatchlistGroups(suggestions, trackedIdeas);
+  const groups = ideaWatchlistGroups(suggestions, trackedIdeas, strategyPlans);
   if (!groups.some((group) => group.key === state.activeIdeaGroup)) state.activeIdeaGroup = groups[0]?.key || "big";
   const activeGroup = groups.find((group) => group.key === state.activeIdeaGroup) || groups[0] || { rows: [] };
   const search = String(state.ideaWatchlistSearch || "").trim().toUpperCase();
@@ -3824,7 +3919,7 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = []) {
     .map((group) => `<button type="button" class="${group.key === activeGroup.key ? "active" : ""}" data-idea-group="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>`)
     .join("");
   const count = byId("ideas-watchlist-count");
-  if (count) count.textContent = `${rows.length}/${Math.max(suggestions.length, rows.length)}`;
+  if (count) count.textContent = `${rows.length}/${(activeGroup.rows || []).length}`;
   body.innerHTML = rows.length
     ? rows.slice(0, 60).map((row, index) => ideaWatchlistRowHtml(row, index)).join("")
     : emptyBlock(
@@ -3836,7 +3931,7 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = []) {
   tabs.querySelectorAll("[data-idea-group]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeIdeaGroup = button.dataset.ideaGroup || "big";
-      renderIdeasWatchlist(suggestions, trackedIdeas);
+      renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans);
     });
   });
   body.querySelectorAll(".mobile-watchlist-row").forEach((card) => {
@@ -3919,11 +4014,37 @@ function mobilePortfolioEmpty(tab = "positions") {
   </div>`;
 }
 
+function positionDetails(row = {}) {
+  return row.details && typeof row.details === "object" ? row.details : parseJsonObject(row.details_json);
+}
+
+function positionOpenDate(row = {}) {
+  const details = positionDetails(row);
+  const raw = row.opened_at
+    || row.created_at
+    || row.followed_at
+    || details.opened_at
+    || details.created_at
+    || details.entry_at
+    || details.opened_from_decision?.asof
+    || details.opened_from_decision?.created_at;
+  const date = raw ? new Date(raw) : null;
+  return date && Number.isFinite(date.getTime()) ? date : null;
+}
+
+function positionOpenedToday(row = {}) {
+  const date = positionOpenDate(row);
+  if (!date) return false;
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+}
+
 function renderMobilePortfolio(positions = [], trackedIdeas = [], scopedPortfolio = {}) {
   const body = byId("mobile-positions-body");
   if (!body) return;
-  const positionRows = (positions || []).filter((row) => Number(row.qty || 0) > 0);
-  const holdingRows = trackedIdeas || [];
+  const openRows = (positions || []).filter((row) => Number(row.qty || 0) > 0);
+  const positionRows = openRows.filter(positionOpenedToday);
+  const holdingRows = openRows.filter((row) => !positionOpenedToday(row));
   const search = String(state.portfolioSearch || "").trim().toUpperCase();
   const activeTab = state.activePortfolioTab || "positions";
   byId("mobile-holdings-count").textContent = fmtNumber(holdingRows.length);
@@ -3952,11 +4073,12 @@ function renderMobilePortfolio(positions = [], trackedIdeas = [], scopedPortfoli
     analytics.dataset.bound = "1";
     analytics.addEventListener("click", () => {
       const market = normalizeUiMarket(state.activeMarket);
+      const openRows = filterRowsByMarket(state.latest?.positions || [], market).filter((row) => Number(row.qty || 0) > 0);
       showDetails("Portfolio Analytics", {
         market,
         portfolio: marketPortfolioFromPayload(state.latest || {}, market),
-        holdings: payloadRowsForMarket(state.latest || {}, "tracked_ideas", market).length,
-        positions: filterRowsByMarket(state.latest?.positions || [], market).length,
+        holdings: openRows.filter((row) => !positionOpenedToday(row)).length,
+        positions: openRows.filter(positionOpenedToday).length,
       });
     });
   }
@@ -3967,6 +4089,7 @@ function rerenderIdeasWatchlistFromState() {
   renderIdeasWatchlist(
     payloadRowsForMarket(state.latest || {}, "suggestions", market),
     payloadRowsForMarket(state.latest || {}, "tracked_ideas", market),
+    state.latest?.strategy_plans || [],
   );
 }
 
@@ -6403,8 +6526,9 @@ function bindControls() {
       groups: ideaWatchlistGroups(
         payloadRowsForMarket(state.latest || {}, "suggestions", state.activeMarket),
         payloadRowsForMarket(state.latest || {}, "tracked_ideas", state.activeMarket),
+        state.latest?.strategy_plans || [],
       ).map((group) => ({ key: group.key, label: group.label, count: group.rows.length })),
-      note: "Groups are generated from setup quality, interest, tracked ideas, and events.",
+      note: "Groups come from Strategy Plans, plus your tracked watchlist.",
     }));
   }
   const portfolioSearch = byId("mobile-portfolio-search");
