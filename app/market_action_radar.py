@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,7 +14,7 @@ from .models import utc_now
 
 
 _MONEYCONTROL_CATEGORY_URLS = {
-    "top-gainers": "https://www.moneycontrol.com/stocks/market-stats/top-gainers-nse/",
+    "top-gainers": "https://www.moneycontrol.com/stocks/market-stats/top-gainers-nse/?indexName=All%20NSE&id=-2",
     "volume-shockers": "https://www.moneycontrol.com/stocks/market-stats/volume-shockers-nse/",
     "52-week-high": "https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/",
     "only-buyers": "https://www.moneycontrol.com/stocks/market-stats/only-buyers-nse/",
@@ -55,10 +55,14 @@ class MarketActionEvent:
     avg_volume: float | None = None
     volume_multiplier: float | None = None
     value_crore: float | None = None
+    market_cap_cr: float | None = None
+    month_return_pct: float | None = None
+    three_month_return_pct: float | None = None
     vwap: float | None = None
     market_region: str = "IN"
     sector: str = ""
     share_url: str = ""
+    stock_labels: list[str] = field(default_factory=list)
     asof: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -288,10 +292,12 @@ def build_market_action_event(raw: dict[str, Any], category: str) -> MarketActio
         return None
     labels = raw.get("stockLabel") if isinstance(raw.get("stockLabel"), list) else []
     event_types = [_CATEGORY_EVENT_TYPES.get(category, "MARKET_ACTION")]
+    stock_labels: list[str] = []
     for label in labels:
         if not isinstance(label, dict):
             continue
         text = f"{label.get('shortname') or ''} {label.get('name') or ''} {label.get('statement') or ''}".lower()
+        stock_labels.append(" ".join(str(label.get(key) or "").strip() for key in ("shortname", "name", "statement") if str(label.get(key) or "").strip()))
         if "vol" in text and "shocker" in text:
             event_types.append("VOLUME_SHOCKER")
         if "52" in text and "high" in text:
@@ -335,9 +341,13 @@ def build_market_action_event(raw: dict[str, Any], category: str) -> MarketActio
         avg_volume=_number(raw.get("avgVol")),
         volume_multiplier=volume_multiplier,
         value_crore=_number(raw.get("value")),
+        market_cap_cr=_number(raw.get("mcap")),
+        month_return_pct=_number(raw.get("monthReturn")),
+        three_month_return_pct=_number(raw.get("month3Return")),
         vwap=_number(raw.get("vwap")),
         sector=str(raw.get("slug") or "").split("/")[0].replace("-", " ").strip(),
         share_url=str(raw.get("shareUrl") or ""),
+        stock_labels=stock_labels,
         asof=str(raw.get("dttime") or ""),
     )
 

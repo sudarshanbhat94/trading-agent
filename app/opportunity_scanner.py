@@ -5,6 +5,7 @@ from datetime import datetime, time, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .india_top_gainers import build_playbook_dashboard, evaluate_indian_top_gainer_playbook
 from .market_regions import market_region_for_row
 from .models import Candle, Quote, utc_now
 
@@ -96,6 +97,8 @@ class OpportunityScanner:
         rejected_counts: dict[str, int] = {}
         scored: list[dict[str, Any]] = []
         forced: list[dict[str, Any]] = []
+        top_gainers_playbook_records: list[dict[str, Any]] = []
+        rs_context_by_symbol = self._relative_strength_context(candle_sets)
 
         for row in universe:
             symbol = str(row.get("symbol") or "").upper()
@@ -116,7 +119,11 @@ class OpportunityScanner:
                 candle_sets.get(symbol) or {},
                 in_position,
                 sentiment_by_symbol.get(symbol) or {},
+                rs_context_by_symbol.get(symbol) or {},
             )
+            playbook = item.get("top_gainers_playbook") if isinstance(item.get("top_gainers_playbook"), dict) else {}
+            if playbook.get("available"):
+                top_gainers_playbook_records.append(playbook)
             if item["rejected"] and not in_position:
                 self._count(rejected_counts, item["reject_reason"])
                 continue
@@ -219,6 +226,7 @@ class OpportunityScanner:
                 "sentiment_enabled": self.sentiment_enabled,
                 "sentiment_weight": self.sentiment_weight,
             },
+            "top_gainers_playbook": build_playbook_dashboard(top_gainers_playbook_records),
         }
         return OpportunityScanResult(
             selected_universe=selected_universe,
@@ -234,6 +242,7 @@ class OpportunityScanner:
         candle_set: dict[str, list[Candle]],
         in_position: bool,
         sentiment_detail: dict[str, Any] | None = None,
+        rs_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").upper()
         market_region = market_region_for_row(row)
@@ -266,6 +275,14 @@ class OpportunityScanner:
         risk = self._risk_score(metrics)
         rally = self._rally_radar(metrics, trend, breakout, momentum, live_momentum, volume, sentiment, min_turnover)
         market_action_review = self._market_action_review(market_action, metrics, sentiment, min_turnover)
+        top_gainers_playbook = evaluate_indian_top_gainer_playbook(
+            row=row,
+            quote=quote,
+            candles=candles,
+            market_action=market_action,
+            sentiment=sentiment,
+            rs_context=rs_context or {},
+        )
         data_quality = self._data_quality(row, quote, metrics, sentiment)
         if data_quality["reject_reason"] and not in_position and not reject_reason:
             if self._allow_live_rally_probe(data_quality, rally, metrics, min_turnover):
@@ -309,6 +326,19 @@ class OpportunityScanner:
 
         reasons.extend(rally.get("reasons", []))
         reasons.extend(market_action_review.get("reasons", []))
+        if top_gainers_playbook.get("available"):
+            reasons.append(
+                f"top gainers playbook: {top_gainers_playbook.get('final_signal')} "
+                f"with quant {top_gainers_playbook.get('quant_score')}/100"
+            )
+            signal = str(top_gainers_playbook.get("final_signal") or "")
+            quant_score = float(top_gainers_playbook.get("quant_score") or 0.0) / 100.0
+            if signal == "STRONG BUY":
+                score = max(score, min(0.82, max(quant_score, 0.72)))
+            elif signal == "MODERATE BUY":
+                score = max(score, min(0.74, max(quant_score, 0.64)))
+            elif signal == "WATCH":
+                score = max(score, min(0.62, max(quant_score, 0.52)))
         if metrics["distance_to_55d_high_pct"] is not None and metrics["distance_to_55d_high_pct"] <= self.breakout_distance_pct:
             reasons.append(f"near 55D high ({metrics['distance_to_55d_high_pct']:.1f}% away)")
         elif metrics["day_high_distance_pct"] is not None and metrics["day_high_distance_pct"] <= 1.0:
@@ -339,7 +369,17 @@ class OpportunityScanner:
             reasons.append("risk/reward needs caution")
 
         setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment, rally, min_turnover, market_action_review)
+        playbook_strategy = top_gainers_playbook.get("strategy_match") if isinstance(top_gainers_playbook.get("strategy_match"), dict) else {}
+        playbook_signal = str(top_gainers_playbook.get("final_signal") or "")
+        if playbook_signal in {"STRONG BUY", "MODERATE BUY"} and playbook_strategy.get("code"):
+            setup = str(playbook_strategy["code"])
         bucket = self._bucket(score, risk, reject_reason, metrics)
+        if not reject_reason and playbook_signal == "STRONG BUY":
+            bucket = "Actionable"
+        elif not reject_reason and playbook_signal == "MODERATE BUY":
+            bucket = "Small Size Only"
+        elif not reject_reason and playbook_signal == "WATCH" and bucket == "Avoid":
+            bucket = "Watch"
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -358,6 +398,7 @@ class OpportunityScanner:
             "sentiment": sentiment,
             "rally_radar": rally,
             "market_action": market_action_review,
+            "top_gainers_playbook": top_gainers_playbook,
             "data_quality": data_quality,
             "liquidity_profile": liquidity_profile,
             "components": {
@@ -1179,6 +1220,7 @@ class OpportunityScanner:
         liquidity_profile = item.get("liquidity_profile") if isinstance(item.get("liquidity_profile"), dict) else {}
         rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
+        top_gainers_playbook = item.get("top_gainers_playbook") if isinstance(item.get("top_gainers_playbook"), dict) else {}
         trade_window = market_action.get("trade_window") or rally.get("trade_window")
         return {
             "symbol": item.get("symbol"),
@@ -1192,6 +1234,7 @@ class OpportunityScanner:
             "trade_window": trade_window,
             "rally_evidence": rally.get("evidence", {}),
             "market_action": market_action,
+            "top_gainers_playbook": top_gainers_playbook,
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),
@@ -1232,6 +1275,49 @@ class OpportunityScanner:
             "atr_pct": metrics.get("atr_pct"),
             "history_candles": metrics.get("history_candles"),
         }
+
+    def _relative_strength_context(self, candle_sets: dict[str, dict[str, list[Candle]]]) -> dict[str, dict[str, Any]]:
+        returns_252: dict[str, float] = {}
+        returns_126: dict[str, float] = {}
+        returns_84: dict[str, float] = {}
+        returns_63: dict[str, float] = {}
+        for symbol, sets in candle_sets.items():
+            candles = sets.get("analysis") or sets.get("daily") or []
+            closes = [float(item.close) for item in candles if item.close is not None and float(item.close) > 0]
+            ret_252 = _return_pct(closes, 252)
+            ret_126 = _return_pct(closes, 126)
+            ret_84 = _return_pct(closes, 84)
+            ret_63 = _return_pct(closes, 63)
+            if ret_252 is not None:
+                returns_252[str(symbol).upper()] = ret_252
+            if ret_126 is not None:
+                returns_126[str(symbol).upper()] = ret_126
+            if ret_84 is not None:
+                returns_84[str(symbol).upper()] = ret_84
+            if ret_63 is not None:
+                returns_63[str(symbol).upper()] = ret_63
+        pct_252 = _percentile_ranks(returns_252)
+        pct_126 = _percentile_ranks(returns_126)
+        pct_63 = _percentile_ranks(returns_63)
+        output: dict[str, dict[str, Any]] = {}
+        for symbol in set(returns_252) | set(returns_126) | set(returns_63):
+            rs_rank = pct_252.get(symbol, pct_126.get(symbol, pct_63.get(symbol)))
+            output[symbol] = {
+                "rs_rank": rs_rank,
+                "percentile_252": pct_252.get(symbol),
+                "percentile_126": pct_126.get(symbol),
+                "percentile_63": pct_63.get(symbol),
+                "return_252d_pct": returns_252.get(symbol),
+                "return_126d_pct": returns_126.get(symbol),
+                "return_63d_pct": returns_63.get(symbol),
+                "improving": bool(
+                    returns_63.get(symbol) is not None
+                    and returns_84.get(symbol) is not None
+                    and returns_63[symbol] >= returns_84[symbol] * 0.75
+                ),
+                "source": "scan_universe_return_percentile",
+            }
+        return output
 
     def _select_diverse(self, scored: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
@@ -1393,6 +1479,19 @@ def _return_pct(closes: list[float], lookback: int) -> float | None:
     previous = closes[-(lookback + 1)]
     current = closes[-1]
     return ((current - previous) / previous) * 100 if previous else None
+
+
+def _percentile_ranks(values: dict[str, float]) -> dict[str, float]:
+    if not values:
+        return {}
+    ordered = sorted(values.items(), key=lambda item: item[1])
+    if len(ordered) == 1:
+        return {ordered[0][0]: 100.0}
+    denominator = len(ordered) - 1
+    return {
+        symbol: round((rank / denominator) * 100.0, 2)
+        for rank, (symbol, _value) in enumerate(ordered)
+    }
 
 
 def _atr_pct(highs: list[float], lows: list[float], closes: list[float], window: int = 14) -> float | None:

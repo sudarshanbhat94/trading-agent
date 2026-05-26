@@ -56,6 +56,31 @@ class MarketActionRadarTests(unittest.TestCase):
         self.assertIn("52_WEEK_HIGH", event.event_types)
         self.assertGreaterEqual(event.market_action_score, 80)
 
+    def test_moneycontrol_event_preserves_market_cap_and_labels_for_playbook(self) -> None:
+        event = build_market_action_event(
+            {
+                "stockName": "Suprajit Eng",
+                "symbol": "SUPRAJIT",
+                "currPerChange": "7.24",
+                "currentPrice": "477.15",
+                "volume": "3,559,290",
+                "avgVol": "115,452",
+                "volMultiplier": "30.83",
+                "value": "170",
+                "mcap": "6,545",
+                "monthReturn": "14.36",
+                "month3Return": "8.58",
+                "stockLabel": [{"shortname": "Vol Shocker", "name": "Volume Shocker", "statement": "Above average volume in stock today"}],
+            },
+            "top-gainers",
+        )
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.market_cap_cr, 6545.0)
+        self.assertEqual(event.month_return_pct, 14.36)
+        self.assertTrue(any("Volume Shocker" in label for label in event.stock_labels))
+
     def test_only_buyers_classifies_as_circuit_demand_lock(self) -> None:
         event = build_market_action_event(
             {

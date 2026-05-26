@@ -1333,12 +1333,17 @@ class StrategyEngine:
         bucket = str(scan.get("bucket") or "").lower()
         setup = str(scan.get("setup") or "").lower()
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        playbook = scan.get("top_gainers_playbook") if isinstance(scan.get("top_gainers_playbook"), dict) else {}
         if bucket == "actionable":
             score += 0.06
         if setup in {"news_catalyst", "breakout_continuation", "near_breakout"}:
             score += 0.03
         if data_quality.get("actionable_data_ready"):
             score += 0.03
+        if playbook.get("final_signal") == "STRONG BUY":
+            score += 0.08
+        elif playbook.get("final_signal") == "MODERATE BUY":
+            score += 0.05
         return max(min(score, 1.0), 0.0)
 
     def _pattern_state(self, symbol: str) -> dict[str, Any]:

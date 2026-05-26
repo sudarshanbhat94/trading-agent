@@ -1850,6 +1850,11 @@ function renderShell(payload = state.latest || {}) {
   const premarketTopSymbols = (premarket.candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
   const marketActionCount = Number(marketAction.event_count || 0);
   const marketActionTopSymbols = (marketAction.events || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
+  const gainersPlaybook = opportunity.top_gainers_playbook || {};
+  const gainersSummary = gainersPlaybook.signal_summary || {};
+  const gainersBuyCount = Number(gainersSummary.strong_buy || 0) + Number(gainersSummary.moderate_buy || 0);
+  const gainersEvaluated = Number(gainersPlaybook.total_gainers_evaluated || 0);
+  const gainersTopSymbols = (gainersPlaybook.buy_signals || gainersPlaybook.records || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
   const scanScopeText = universeSymbols > rawSymbols
     ? `${fmtNumber(rawSymbols)}/cycle from ${fmtNumber(universeSymbols)} open`
     : `${fmtNumber(rawSymbols)} scanned`;
@@ -1860,6 +1865,10 @@ function renderShell(payload = state.latest || {}) {
   const lastOpenText = lastOpenScanned ? `last open scan ${fmtNumber(lastOpenScanned)} symbols` : "open scan pending";
   byId("ops-opportunity").textContent = premarketCount
     ? `${fmtNumber(premarketCount)} premarket`
+    : gainersBuyCount
+      ? `${fmtNumber(gainersBuyCount)} gainer buys`
+    : gainersEvaluated
+      ? `${fmtNumber(gainersEvaluated)} gainers`
     : marketActionCount
       ? `${fmtNumber(marketActionCount)} movers`
     : scanPaused
@@ -1868,6 +1877,10 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-opportunity-meta").textContent = opportunity.enabled
     ? (premarketCount
       ? `${activeMarketLabel()} watchlist · ${premarketTopSymbols || "building"} · ${fmtNumber(premarket.live_confirmation_count || 0)} confirmed`
+      : gainersBuyCount
+        ? `Top-gainers playbook · ${gainersTopSymbols || "building"} · ${fmtNumber(gainersEvaluated)} evaluated`
+      : gainersEvaluated
+        ? `Top-gainers playbook · 0 buy · ${fmtNumber((gainersPlaybook.signal_summary || {}).watch || 0)} watch`
       : marketActionCount
         ? `Live radar · ${marketActionTopSymbols || "building"} · ${fmtNumber(tradeableSymbols)} tradeable`
       : scanPaused
@@ -4813,9 +4826,45 @@ function detailHtml(value) {
 function opportunityHealthDetailHtml(value = {}) {
   const scan = value.opportunity_scan || {};
   const marketAction = value.market_action_radar || scan.market_action_radar || {};
+  const gainersPlaybook = scan.top_gainers_playbook || {};
+  const playbookRecords = Array.isArray(gainersPlaybook.records) ? gainersPlaybook.records : [];
   const marketEvents = marketAction.events || [];
   const premarket = value.premarket_watchlist || {};
   const candidates = premarket.candidates || [];
+  const playbookRows = playbookRecords.slice(0, 30).map((item, index) => {
+    const signal = String(item.final_signal || "WATCH").toLowerCase().replace(/\s+/g, "-");
+    const levels = item.levels || {};
+    const catalyst = item.catalyst_review || {};
+    const anti = (item.anti_patterns || []).slice(0, 2).map((flag) => flag.label || flag.code).filter(Boolean).join(" · ");
+    return `<tr>
+      <td>${fmtNumber(index + 1)}</td>
+      <td><strong>${escapeHtml(item.symbol || "-")}</strong><small>${escapeHtml(shortValue(item.name || item.sector || "-", 34))}</small></td>
+      <td>${fmtNumber(item.gain_pct)}%</td>
+      <td><span class="tag ${signal}">${escapeHtml(item.final_signal || "-")}</span><small>${escapeHtml(item.tier || "-")}</small></td>
+      <td>${fmtNumber(item.quant_score || 0)}/100</td>
+      <td>${escapeHtml((item.weinstein || {}).stage || "-")}</td>
+      <td>${fmtNumber((item.vcp || {}).score || 0)}/10</td>
+      <td>${fmtNumber((item.relative_strength || {}).rs_rank)}</td>
+      <td>${fmtNumber(item.volume_ratio)}x</td>
+      <td>${escapeHtml(catalyst.catalyst_type || "-")}<small>${escapeHtml(catalyst.catalyst_strength || "-")}</small></td>
+      <td>${levels.pivot ? `${fmtNumber(levels.pivot)} / ${fmtNumber(levels.stop)}` : "-"}</td>
+      <td>${escapeHtml(shortValue(anti || (item.tier_reasons || []).join(" · ") || "-", 120))}</td>
+    </tr>`;
+  }).join("");
+  const watchRows = (gainersPlaybook.tomorrow_watchlist || []).slice(0, 12).map((item) => {
+    const levels = item.levels || {};
+    return `<tr>
+      <td><strong>${escapeHtml(item.symbol || "-")}</strong></td>
+      <td>${escapeHtml(item.final_signal || "WATCH")}</td>
+      <td>${levels.pivot ? fmtNumber(levels.pivot) : "-"}</td>
+      <td>${fmtNumber(item.volume_ratio)}x now</td>
+      <td>${escapeHtml(shortValue(((item.audit_trail || {}).watch || (item.tier_reasons || []).join(" · ") || "-"), 130))}</td>
+    </tr>`;
+  }).join("");
+  const avoidRows = (gainersPlaybook.do_not_chase || []).slice(0, 12).map((item) => `<tr>
+    <td><strong>${escapeHtml(item.symbol || "-")}</strong></td>
+    <td>${escapeHtml(shortValue(item.reason || "-", 180))}</td>
+  </tr>`).join("");
   const marketRows = marketEvents.slice(0, 25).map((item, index) => {
     const eventTypes = (item.event_types || []).slice(0, 3).map(humanLabel).join(" · ");
     const move = numericValue(item.pct_change);
@@ -4847,6 +4896,9 @@ function opportunityHealthDetailHtml(value = {}) {
   const summaryRows = [
     ["Live market-action movers", fmtNumber(marketAction.event_count || marketEvents.length || 0)],
     ["Premarket candidates", fmtNumber(premarket.candidate_count || candidates.length || 0)],
+    ["Top gainers evaluated", fmtNumber(gainersPlaybook.total_gainers_evaluated || playbookRecords.length || 0)],
+    ["Playbook BUY signals", fmtNumber((gainersPlaybook.signal_summary || {}).strong_buy + (gainersPlaybook.signal_summary || {}).moderate_buy || 0)],
+    ["Playbook excluded", fmtNumber((gainersPlaybook.tier_summary || {}).excluded || 0)],
     ["Live confirmations", fmtNumber(premarket.live_confirmation_count || 0)],
     ["Generated", fmtTime(marketAction.scanned_at || premarket.generated_at || scan.scanned_at)],
     ["Symbols with history", fmtNumber(premarket.symbols_with_history || 0)],
@@ -4856,9 +4908,38 @@ function opportunityHealthDetailHtml(value = {}) {
   return `<section class="audit-section">
     <h4>Live Market Action</h4>
     <p>${escapeHtml(marketEvents.length ? "Moneycontrol/Yahoo market-action movers are shown immediately; the slower strategy engine still confirms quality before normal conviction." : "No live market-action movers are available for this market yet.")}</p>
+    <h4>NSE Top-Gainers Playbook</h4>
+    <p>${escapeHtml(playbookRecords.length ? "Top gainers are tiered first, then scored with deterministic Weinstein, VCP, RS, volume, 52-week positioning, delivery, Darvas, and anti-pattern rules. Catalyst text is tagged separately." : "No top-gainers playbook records are available yet.")}</p>
     <h4>Premarket Watchlist</h4>
     <p>${escapeHtml(candidates.length ? "Candidates are watches, not automatic BUYs. They need live confirmation at open." : "No premarket candidates are available for this market yet.")}</p>
     <div class="detail-list">${summaryRows}</div>
+  </section>
+  <section class="audit-section">
+    <h4>Top-Gainers Rulebook</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Symbol</th><th>Move</th><th>Signal</th><th>Score</th><th>Stage</th><th>VCP</th><th>RS</th><th>Vol</th><th>Catalyst</th><th>Pivot / Stop</th><th>Risk</th></tr></thead>
+        <tbody>${playbookRows || `<tr><td colspan="12">No NSE top-gainers playbook rows yet</td></tr>`}</tbody>
+      </table>
+    </div>
+  </section>
+  <section class="audit-section">
+    <h4>Tomorrow Watchlist</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Symbol</th><th>State</th><th>Trigger</th><th>Volume</th><th>What to watch</th></tr></thead>
+        <tbody>${watchRows || `<tr><td colspan="5">No watchlist rows from today’s top gainers.</td></tr>`}</tbody>
+      </table>
+    </div>
+  </section>
+  <section class="audit-section">
+    <h4>Do Not Chase</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Symbol</th><th>Reason</th></tr></thead>
+        <tbody>${avoidRows || `<tr><td colspan="2">No explicit avoid rows from today’s top gainers.</td></tr>`}</tbody>
+      </table>
+    </div>
   </section>
   <section class="audit-section">
     <h4>Top Live Movers</h4>
@@ -4879,6 +4960,7 @@ function opportunityHealthDetailHtml(value = {}) {
     </div>
   </section>
   <details class="raw-audit"><summary>Opportunity scan data</summary><pre>${escapeHtml(JSON.stringify(scan, null, 2))}</pre></details>
+  <details class="raw-audit"><summary>NSE top-gainers playbook data</summary><pre>${escapeHtml(JSON.stringify(gainersPlaybook, null, 2))}</pre></details>
   <details class="raw-audit"><summary>Market-action radar data</summary><pre>${escapeHtml(JSON.stringify(marketAction, null, 2))}</pre></details>
   <details class="raw-audit"><summary>Premarket technical data</summary><pre>${escapeHtml(JSON.stringify(premarket, null, 2))}</pre></details>`;
 }
