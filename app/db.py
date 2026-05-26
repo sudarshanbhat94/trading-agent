@@ -164,6 +164,7 @@ REENTRY_BLOCK_EXIT_KEYS = {
     "RISK_EXIT_BEFORE_T1",
     "EXIT_SIGNAL",
     "EXPIRED",
+    "SAFETY_EXIT",
     "auto_exit_signal_sell",
 }
 
@@ -3529,12 +3530,21 @@ class Database:
             events = [event for event in management.get("events", []) if isinstance(event, dict)]
             latest_event = events[-1] if events else {}
             manual_exit = details.get("manual_exit") if isinstance(details.get("manual_exit"), dict) else {}
-            key = str(latest_event.get("key") or manual_exit.get("reason") or management.get("last_action") or "").strip()
+            safety_exit = details.get("safety_exit") if isinstance(details.get("safety_exit"), dict) else {}
+            key = str(
+                latest_event.get("key")
+                or manual_exit.get("reason")
+                or safety_exit.get("key")
+                or ("SAFETY_EXIT" if safety_exit else "")
+                or management.get("last_action")
+                or ""
+            ).strip()
             if key not in REENTRY_BLOCK_EXIT_KEYS:
                 continue
             exited_at = (
                 _parse_dt(latest_event.get("at"))
                 or _parse_dt(manual_exit.get("exited_at"))
+                or _parse_dt(safety_exit.get("exited_at"))
                 or _parse_dt(management.get("last_action_at"))
                 or _parse_dt(item.get("updated_at"))
             )
@@ -3546,7 +3556,14 @@ class Database:
                 "follow_id": item.get("id"),
                 "idea_id": item.get("idea_id"),
                 "exit_key": key,
-                "exit_reason": latest_event.get("reason") or manual_exit.get("reason") or management.get("last_reason") or key,
+                "exit_reason": (
+                    latest_event.get("reason")
+                    or manual_exit.get("reason")
+                    or safety_exit.get("quality_reason")
+                    or safety_exit.get("reason")
+                    or management.get("last_reason")
+                    or key
+                ),
                 "exited_at": exited_at.isoformat(),
                 "cooldown_hours": int(cooldown_hours),
                 "cooldown_minutes_left": minutes_left,
@@ -3555,6 +3572,8 @@ class Database:
                     latest_event.get("realized_pnl")
                     if latest_event
                     else manual_exit.get("realized_pnl")
+                    if manual_exit
+                    else safety_exit.get("realized_pnl")
                 ),
             }
         return None

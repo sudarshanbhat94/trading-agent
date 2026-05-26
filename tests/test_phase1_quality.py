@@ -428,6 +428,39 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual([item["symbol"] for item in active], ["BUYD"])
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
 
+    def test_safety_exit_blocks_auto_reentry_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=82,
+                grade="A",
+                details_extra={"hard_blocked": True, "hard_blocks": [{"flag": "FAILED_BREAKOUT_TWO_DAY_RULE"}]},
+            )
+            now = utc_now()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 100, 1000, 0, 0, ?, ?, '{}')
+                    """,
+                    (idea_id, now, now),
+                )
+
+            exited = db.exit_unsafe_active_follows()
+            reentry_block = db.recent_user_symbol_exit(1, "BUYA", cooldown_hours=48)
+
+        self.assertEqual(len(exited), 1)
+        self.assertIsNotNone(reentry_block)
+        self.assertEqual(reentry_block["exit_key"], "SAFETY_EXIT")
+        self.assertEqual(reentry_block["exit_reason"], "active_follow_hard_blocked")
+
     def test_manual_paper_follow_allows_strong_buy_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
