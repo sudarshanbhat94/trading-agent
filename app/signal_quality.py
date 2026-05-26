@@ -430,13 +430,19 @@ def _live_quote_probe_data_ok(item: dict[str, Any], details: dict[str, Any], sca
         return False
     quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote")
     quote = quote if isinstance(quote, dict) else {}
-    source = str(quote.get("source") or data_quality.get("quote_source") or "").lower()
+    data_readiness = item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness")
+    data_readiness = data_readiness if isinstance(data_readiness, dict) else {}
+    sources = data_readiness.get("sources") if isinstance(data_readiness.get("sources"), dict) else {}
+    source = str(quote.get("source") or data_quality.get("quote_source") or sources.get("quote") or "").lower()
     if not any(token in source for token in ("upstox", "kite", "nubra")):
         return False
     has_live_ohlcv = all((_number(quote.get(key)) or 0.0) > 0 for key in ("price", "open", "high", "low", "volume"))
     turnover = _number(scan.get("turnover")) or 0.0
     projected_turnover = _number(scan.get("projected_turnover")) or 0.0
-    return has_live_ohlcv and (turnover >= 50_000_000 or projected_turnover >= 150_000_000)
+    liquidity_ok = turnover >= 50_000_000 or projected_turnover >= 150_000_000
+    if has_live_ohlcv:
+        return liquidity_ok
+    return data_readiness.get("trade_decision_ready") is True and liquidity_ok
 
 
 def _opportunity_probe_data_readiness_override(item: dict[str, Any], details: dict[str, Any], data_readiness: dict[str, Any]) -> bool:

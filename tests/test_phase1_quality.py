@@ -242,6 +242,41 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["size_multiplier"], 0.35)
         self.assertIn("stale_intraday_candles", gate["missing_data"])
 
+    def test_stored_signal_idea_probe_can_use_phase2_upstox_readiness_without_quote_payload(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 70,
+                "overall_grade": "B",
+                "confluence": 19,
+                "details": {
+                    "risk_flags": [
+                        "institutional_scorecard_below_entry_threshold",
+                        "false_breakout_risk_no_new_longs",
+                        "phase3_weak_volume_ratio_reduce_size",
+                    ],
+                    "data_readiness": {
+                        "trade_decision_ready": True,
+                        "hard_gaps": [],
+                        "soft_gaps": [],
+                        "sources": {"quote": "upstox-live", "daily": "upstox-live:day"},
+                    },
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "52_week_high_volume_breakout",
+                        "score": 0.91,
+                        "turnover": 120_000_000,
+                        "data_quality": {"actionable_data_ready": False, "missing": ["stale_intraday_candles"]},
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["opportunity_probe"])
+        self.assertEqual(gate["size_multiplier"], 0.35)
+
     def test_fresh_buy_gate_rejects_probe_when_quote_is_stale(self) -> None:
         gate = fresh_buy_quality_gate(
             {
