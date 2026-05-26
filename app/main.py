@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
@@ -56,6 +57,7 @@ from .request_context import current_llm_usage_scope, current_user_id
 from .sector_rotation import SectorRotationService
 from .signal_quality import (
     AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
+    FRESH_BUY_WINDOW_MINUTES,
     auto_follow_quality_gate,
     fresh_buy_quality_gate,
     quality_size_multiplier,
@@ -3658,20 +3660,36 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if signal_type != "BUY" or status not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
         return False
     details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
-    score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
-    grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
-    if score < 70 or grade not in {"A", "B"}:
-        return False
     if symbol in fresh_buy_symbols:
         return True
-    if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
-        return True
+    if not _idea_seen_recently(idea):
+        return False
     if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:
         return False
     current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
     if current_return < -1.5:
         return False
+    if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
+        return True
+    score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
+    grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
+    if score < 70 or grade not in {"A", "B"}:
+        return False
     return _price_inside_entry_zone(idea, cushion_pct=0.003)
+
+
+def _idea_seen_recently(idea: dict[str, Any], *, minutes: int = FRESH_BUY_WINDOW_MINUTES) -> bool:
+    raw = idea.get("last_seen_at") or idea.get("updated_at") or idea.get("first_seen_at")
+    if not raw:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    return age <= timedelta(minutes=max(int(minutes or FRESH_BUY_WINDOW_MINUTES), 1))
 
 
 def _price_inside_entry_zone(idea: dict[str, Any], cushion_pct: float = 0.0) -> bool:

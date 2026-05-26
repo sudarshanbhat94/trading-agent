@@ -16,7 +16,15 @@ from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
 from .opportunity_state import is_signal_candidate_state, opportunity_state_from_signal_details
-from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, active_follow_safety_gate, fresh_buy_quality_gate, trade_readiness_gate
+from .signal_quality import (
+    AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
+    DUPLICATE_BUY_COOLDOWN_HOURS,
+    FRESH_BUY_WINDOW_MINUTES,
+    active_follow_safety_gate,
+    auto_follow_quality_gate,
+    fresh_buy_quality_gate,
+    trade_readiness_gate,
+)
 from .trading_rules import _score_grade
 
 
@@ -197,6 +205,14 @@ def _parse_dt(value: Any) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def _recent_dt(value: Any, *, minutes: int = FRESH_BUY_WINDOW_MINUTES) -> bool:
+    parsed = _parse_dt(value)
+    if not parsed:
+        return False
+    age = datetime.now(timezone.utc) - parsed
+    return age <= timedelta(minutes=max(int(minutes or FRESH_BUY_WINDOW_MINUTES), 1))
 
 
 def _sector_from_industry(industry: Any) -> str:
@@ -3111,7 +3127,17 @@ class Database:
             idea_details = self._decode_json(idea["details_json"])
             quality_gate: dict[str, Any] | None = None
             if mode in {"PAPER", "LIVE"}:
-                quality_gate = fresh_buy_quality_gate(
+                reentry_block = self.recent_user_symbol_exit(
+                    user_id,
+                    str(idea["symbol"] or ""),
+                    cooldown_hours=AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
+                )
+                if reentry_block:
+                    raise ValueError(
+                        "recent_risk_exit_cooldown:"
+                        f"{reentry_block.get('exit_reason') or reentry_block.get('exit_key') or 'risk_exit'}"
+                    )
+                quality_gate = auto_follow_quality_gate(
                     {
                         "action": idea_details.get("action") or idea["signal_type"],
                         "signal_type": idea["signal_type"],
@@ -3146,7 +3172,11 @@ class Database:
                 "symbol": idea["symbol"],
                 "strategy": idea["strategy"],
                 "signal_type": idea["signal_type"],
-                "note": "Live orders require live routing to be enabled; otherwise this is tracked as a live request.",
+                "note": {
+                    "TRACK": "Tracking only. No paper cash or live broker order is used.",
+                    "PAPER": "Paper position entered. P&L is simulated and managed by OpenStocks.",
+                    "LIVE": "Live order requested. Broker guard and user broker session must approve routing.",
+                }.get(mode, "Tracking only."),
                 "quality_gate": quality_gate,
             }
             now = utc_now()
@@ -5370,6 +5400,7 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
     follow = item.get("user_follow") if isinstance(item.get("user_follow"), dict) else {}
     follow_status = str(follow.get("status") or item.get("follow_status") or "").upper()
     followed_active = follow_status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} and _optional_int(follow.get("qty") if follow else item.get("qty")) not in {None, 0}
+    fresh_buy_recent = _recent_dt(item.get("last_seen_at"))
 
     if status == "STOP_HIT" or lifecycle == "stopped":
         display_signal = "Stopped"
@@ -5417,10 +5448,14 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
             display_signal = "Watch"
             fresh_action = "WATCH"
             reason = readiness.get("message") or "BUY thesis needs stronger quality/data before it is actionable."
-        elif latest_action == "BUY" and not continuity and readiness.get("passed"):
+        elif latest_action == "BUY" and not continuity and readiness.get("passed") and fresh_buy_recent:
             display_signal = "Actionable"
             fresh_action = "BUY_NOW"
             reason = "Fresh BUY passed the current entry and risk gates."
+        elif latest_action == "BUY" and not continuity and readiness.get("passed"):
+            display_signal = "No Fresh Add"
+            fresh_action = "NO_FRESH_ADD"
+            reason = "BUY is older than the fresh-entry window; keep monitoring unless a new BUY confirmation appears."
         elif drawdown_review["risk_review"]:
             display_signal = "Risk Review"
             fresh_action = "NO_FRESH_ADD"
@@ -5432,6 +5467,7 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
         trade_state = {
             "Paper Entered": "PAPER_ENTERED",
             "Actionable": "ACTIONABLE",
+            "No Fresh Add": "POSITION_MONITOR",
             "Already Active": "POSITION_MONITOR",
             "Position Monitor": "POSITION_MONITOR",
             "Watch": "WATCH",

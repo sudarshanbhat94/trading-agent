@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import CONFIG_SCHEMA, Settings, settings_from_overrides
@@ -546,6 +547,30 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["display_signal"], "Already Active")
         self.assertEqual(latest["trade_state"], "POSITION_MONITOR")
         self.assertEqual(latest["fresh_action_label"], "No Fresh Add")
+
+    def test_stale_active_buy_is_not_labeled_actionable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+                details_extra={
+                    "action": "BUY",
+                    "quality_gate": {"passed": True},
+                    "data_readiness": {"trade_decision_ready": True},
+                },
+            )
+            stale = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set last_seen_at = ? where id = ?", (stale, idea_id))
+            latest = db.latest_signal_ideas(5)[0]
+
+        self.assertEqual(latest["display_signal"], "No Fresh Add")
+        self.assertEqual(latest["fresh_action"], "NO_FRESH_ADD")
 
     @staticmethod
     def _insert_signal_idea(

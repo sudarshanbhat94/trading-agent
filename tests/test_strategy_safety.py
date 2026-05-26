@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -177,6 +177,31 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertEqual(gate["reason"], "not_actionable_fresh_state")
 
+    def test_auto_follow_blocks_entries_safety_manager_would_exit(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 64,
+                "overall_grade": "C",
+                "confluence": 17,
+                "details": {
+                    "risk_flags": ["false_breakout_risk_no_new_longs"],
+                    "data_readiness": {"trade_decision_ready": True},
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "52_week_high_volume_breakout",
+                        "score": 0.82,
+                        "turnover": 120_000_000,
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "auto_follow_severe_risk_flags")
+
     def test_auto_follow_freshness_allows_current_cycle_probe_buy_symbol(self) -> None:
         fresh = _auto_follow_idea_fresh_enough(
             {
@@ -205,11 +230,30 @@ class StrategySafetyTests(unittest.TestCase):
                 "overall_score_pct": 50,
                 "overall_grade": "D",
                 "current_return_pct": 0.4,
+                "last_seen_at": datetime.now(timezone.utc).isoformat(),
             },
             set(),
         )
 
         self.assertTrue(fresh)
+
+    def test_auto_follow_freshness_blocks_stale_buy_now_probe(self) -> None:
+        fresh = _auto_follow_idea_fresh_enough(
+            {
+                "symbol": "ATGL",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "setup_bucket": "SMALL_SIZE_ONLY",
+                "overall_score_pct": 80,
+                "overall_grade": "A",
+                "current_return_pct": 0.4,
+                "last_seen_at": (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat(),
+            },
+            set(),
+        )
+
+        self.assertFalse(fresh)
 
     def test_auto_follow_freshness_blocks_risk_review_buy_now_probe(self) -> None:
         fresh = _auto_follow_idea_fresh_enough(

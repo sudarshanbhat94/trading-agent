@@ -22,7 +22,13 @@ from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
 from .pre_catalyst_engine import build_pre_catalyst_watchlist
 from .request_context import current_llm_usage_scope, current_user_id
-from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_size_multiplier, quality_skip_payload
+from .signal_quality import (
+    AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
+    FRESH_BUY_WINDOW_MINUTES,
+    auto_follow_quality_gate,
+    quality_size_multiplier,
+    quality_skip_payload,
+)
 from .strategy import StrategyEngine
 from .trading_rules import build_position_summary, build_self_audit
 
@@ -2464,6 +2470,8 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
     if symbol in fresh_buy_symbols:
         return True
+    if not _idea_seen_recently(idea):
+        return False
     if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:
         return False
     current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
@@ -2476,6 +2484,16 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if score < 70 or grade not in {"A", "B"}:
         return False
     return _price_inside_entry_zone(idea, cushion_pct=0.003)
+
+
+def _idea_seen_recently(idea: dict[str, Any], *, minutes: int = FRESH_BUY_WINDOW_MINUTES) -> bool:
+    parsed = _parse_iso_datetime(idea.get("last_seen_at") or idea.get("updated_at") or idea.get("first_seen_at"))
+    if not parsed:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    return age <= timedelta(minutes=max(int(minutes or FRESH_BUY_WINDOW_MINUTES), 1))
 
 
 def _analysis_history_count(candle_sets: dict[str, list[Any]]) -> int:

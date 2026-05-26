@@ -11,6 +11,7 @@ OPPORTUNITY_PROBE_MIN_CONFLUENCE = 16.0
 OPPORTUNITY_PROBE_SIZE_MULTIPLIER = 0.35
 DUPLICATE_BUY_COOLDOWN_HOURS = 48
 AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS = 48
+FRESH_BUY_WINDOW_MINUTES = 20
 ACTIONABLE_MIN_CONFLUENCE = 18.0
 CAUTION_STOP_RISK_PCT = 5.5
 HARD_STOP_RISK_PCT = 9.0
@@ -200,6 +201,18 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     gate = fresh_buy_quality_gate(item)
     if not gate.get("passed"):
         return gate
+    risk_flags = gate.get("risk_flags")
+    if not isinstance(risk_flags, list):
+        details = _details(item)
+        risk_flags = _risk_flags(item, details)
+    severe_flags = _severe_risk_flags(risk_flags)
+    if severe_flags:
+        return _blocked(
+            "auto_follow_severe_risk_flags",
+            "Auto-paper will not enter ideas that the safety manager would immediately exit.",
+            risk_flags=risk_flags,
+            severe_risk_flags=severe_flags,
+        )
     fresh_action = _upper(item.get("fresh_action"))
     if fresh_action and fresh_action != "BUY_NOW":
         return _blocked(
