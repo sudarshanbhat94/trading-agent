@@ -15008,3 +15008,142 @@ body[data-theme="dark"] .account-history-card {
     min-height: 0;
   }
 }
+
+/* Mobile positions repair: desktop column widths must not survive the card layout. */
+@media (max-width: 767px) {
+  #positions-view .panel.full,
+  #positions-view .page-table {
+    overflow: visible !important;
+  }
+
+  #positions-view .page-table table,
+  #positions-view .page-table tbody {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  #positions-view .page-table thead {
+    display: none !important;
+  }
+
+  #positions-view .page-table tbody {
+    padding: 0 !important;
+  }
+
+  #positions-view tr.position-row {
+    display: grid !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    gap: 14px !important;
+    padding: 14px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 14px !important;
+    background: var(--surface-1) !important;
+  }
+
+  #positions-view tr.position-row td,
+  #positions-view .page-table td:nth-child(n) {
+    display: grid !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    grid-template-columns: minmax(78px, 88px) minmax(0, 1fr) !important;
+    gap: 10px !important;
+    align-items: start !important;
+    padding: 0 !important;
+    border: 0 !important;
+  }
+
+  #positions-view tr.position-row td::before {
+    content: attr(data-label);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 850;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+
+  #positions-view tr.position-row td[data-label="Symbol"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  #positions-view tr.position-row td[data-label="Symbol"]::before {
+    display: none !important;
+  }
+
+  #positions-view .symbol-cell {
+    width: 100%;
+    min-width: 0 !important;
+  }
+
+  #positions-view .position-price-pair,
+  #positions-view .position-risk-stack,
+  #positions-view .position-risk-stack.compact,
+  #positions-view .position-pnl-cell,
+  #positions-view .position-action-callout {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+
+  #positions-view .position-price-pair {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  #positions-view .position-risk-stack,
+  #positions-view .position-risk-stack.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  #positions-view .position-price-pair span,
+  #positions-view .position-risk-stack span {
+    min-width: 0 !important;
+    min-height: 58px !important;
+    padding: 9px !important;
+    overflow: hidden !important;
+  }
+
+  #positions-view .position-price-pair small,
+  #positions-view .position-risk-stack small {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+
+  #positions-view .position-price-pair strong,
+  #positions-view .position-risk-stack strong {
+    font-size: 14px !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+  }
+
+  #positions-view .position-price-pair em {
+    display: none !important;
+  }
+
+  #positions-view .position-row-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  #positions-view tr.position-row td,
+  #positions-view .page-table td:nth-child(n) {
+    grid-template-columns: minmax(68px, 78px) minmax(0, 1fr) !important;
+  }
+
+  #positions-view .position-price-pair,
+  #positions-view .position-risk-stack,
+  #positions-view .position-risk-stack.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  #positions-view .position-price-pair strong,
+  #positions-view .position-risk-stack strong {
+    font-size: 13px !important;
+  }
+}
