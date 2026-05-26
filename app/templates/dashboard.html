@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=positions-mobile-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=mobile-bottom-nav-1" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -92,6 +92,25 @@
           <button class="nav-item admin-only" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true" data-icon="ST"></span><span>Settings</span><strong>admin</strong></button>
         </nav>
       </aside>
+
+      <nav class="mobile-bottom-nav" aria-label="Quick mobile navigation">
+        <button class="mobile-bottom-nav-item" type="button" data-mobile-view="suggestions" aria-label="Ideas">
+          <span aria-hidden="true">✦</span>
+          <strong>Ideas</strong>
+        </button>
+        <button class="mobile-bottom-nav-item" type="button" data-mobile-view="positions" aria-label="Positions">
+          <span aria-hidden="true">▥</span>
+          <strong>Positions</strong>
+        </button>
+        <button class="mobile-bottom-nav-item" type="button" data-mobile-view="orders" aria-label="Orders">
+          <span aria-hidden="true">≡</span>
+          <strong>Orders</strong>
+        </button>
+        <button class="mobile-bottom-nav-item" type="button" data-mobile-view="account" aria-label="Account">
+          <span aria-hidden="true">◎</span>
+          <strong>Account</strong>
+        </button>
+      </nav>
 
       <section class="market-tape" aria-label="Market ticker">
         <div class="market-tape-label">
@@ -724,6 +743,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=market-action-live-2"></script>
+    <script src="/static/dashboard.js?v=mobile-bottom-nav-1"></script>
   </body>
 </html>

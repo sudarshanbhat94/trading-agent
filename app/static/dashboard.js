@@ -6016,6 +6016,12 @@ function bindControls() {
       setView(button.dataset.view);
     });
   }
+  for (const button of document.querySelectorAll(".mobile-bottom-nav-item")) {
+    button.addEventListener("click", () => {
+      setSidebarOpen(false);
+      setView(button.dataset.mobileView);
+    });
+  }
   for (const button of document.querySelectorAll("[data-view-jump]")) {
     button.addEventListener("click", () => setView(button.dataset.viewJump));
   }
@@ -6214,6 +6220,11 @@ function setView(view) {
   document.body.dataset.view = view;
   for (const item of document.querySelectorAll(".nav-item")) {
     item.classList.toggle("active", item.dataset.view === view);
+  }
+  for (const item of document.querySelectorAll(".mobile-bottom-nav-item")) {
+    const active = item.dataset.mobileView === view;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-current", active ? "page" : "false");
   }
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("active", section.id === `${view}-view`);
