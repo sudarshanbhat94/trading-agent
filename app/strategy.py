@@ -2369,6 +2369,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "institutional_context": context.get("institutional_context"),
         "market_breadth_context": context.get("market_breadth_context"),
         "macro_event_context": context.get("macro_event_context"),
+        "opportunity_scan": context.get("opportunity_scan"),
         "timeframe_data": context.get("timeframe_data"),
         "sector_rotation": context.get("sector_rotation"),
         "delivery_data": context.get("delivery_data"),

@@ -5684,6 +5684,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "soft_flags": system_audit.get("soft_flags", []),
         "failed_gates": decision_gate.get("failed_gates", []),
         "data_readiness": data_readiness,
+        "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
         "entry_quality": entry_quality,
         "breakout_quality": breakout,
         "opportunity_scan": context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {},
