@@ -827,6 +827,13 @@ class StrategyEngine:
         }
         blocking_failed_gates = failed_gates
         if opportunity_probe.get("ready") and failed_gates:
+            opportunity_probe["data_readiness_block_absorbable"] = any(
+                (
+                    str(gate.get("gate") or "") in {"system_rule_DATA_READINESS_BLOCK", "phase2_data_readiness"}
+                    and self._opportunity_probe_can_absorb_data_readiness_block(gate.get("value"), opportunity_probe)
+                )
+                for gate in failed_gates
+            )
             blocking_failed_gates = [
                 gate
                 for gate in failed_gates
@@ -939,10 +946,20 @@ class StrategyEngine:
             return False
         gate_name = str(gate.get("gate") or "").strip()
         reason = str(gate.get("reason") or "").strip()
+        value = gate.get("value")
+        if gate_name == "overall_quality_gate":
+            score = self._gate_overall_score(value)
+            minimum = _float_or_none(profile.get("min_quality_score")) or OPPORTUNITY_PROBE_MIN_SCORE
+            if score is not None and score >= minimum:
+                return True
+            scan_score = _float_or_none(profile.get("scan_score")) or 0.0
+            return bool(profile.get("data_readiness_block_absorbable")) and score is not None and score >= 30.0 and scan_score >= 0.80
+        if gate_name == "session_momentum_gate":
+            if reason == "late_intraday_momentum_wait_for_pullback" or self._gate_value_flag(value, "late_chase"):
+                return False
+            return True
         absorbable = {
-            "overall_quality_gate",
             "fundamental_confirmation_gate",
-            "session_momentum_gate",
         }
         if gate_name in absorbable:
             return True
@@ -961,6 +978,30 @@ class StrategyEngine:
             "stage_analysis_not_stage2_markup",
         }:
             return True
+        return False
+
+    def _gate_overall_score(self, value: Any) -> float | None:
+        if isinstance(value, dict):
+            return _float_or_none(value.get("overall_score_pct"))
+        if isinstance(value, str):
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                return _float_or_none(parsed.get("overall_score_pct"))
+        return None
+
+    def _gate_value_flag(self, value: Any, key: str) -> bool:
+        if isinstance(value, dict):
+            return bool(value.get(key))
+        if isinstance(value, str):
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                return bool(parsed.get(key))
         return False
 
     def _live_quote_probe_data_ok(self, context: dict[str, Any], scan: dict[str, Any], setup: str) -> bool:

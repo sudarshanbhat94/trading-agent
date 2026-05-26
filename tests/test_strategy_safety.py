@@ -279,7 +279,7 @@ class StrategySafetyTests(unittest.TestCase):
         audit = json.loads(suppressed.details_json)
         self.assertTrue(audit["duplicate_buy_suppression"]["suppressed"])
 
-    def test_recent_buy_decision_suppresses_repeat_even_without_active_idea(self) -> None:
+    def test_recent_buy_decision_without_active_idea_does_not_suppress_fresh_buy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -311,8 +311,43 @@ class StrategySafetyTests(unittest.TestCase):
 
             [suppressed] = db.suppress_repeated_buy_decisions([second])
 
-        self.assertEqual(suppressed.action, "HOLD")
-        self.assertIn("Already active", suppressed.reason)
+        self.assertEqual(suppressed.action, "BUY")
+        self.assertEqual(suppressed.reason, "repeat buy")
+
+    def test_opportunity_probe_does_not_absorb_low_quality_or_late_chase(self) -> None:
+        engine = StrategyEngine.__new__(StrategyEngine)
+        profile = {"ready": True, "min_quality_score": 62.0}
+
+        self.assertFalse(
+            engine._opportunity_probe_can_absorb_gate(
+                {
+                    "gate": "overall_quality_gate",
+                    "value": {"overall_score_pct": 50.0, "overall_grade": "D"},
+                    "reason": "overall_score_below_70_no_new_longs",
+                },
+                profile,
+            )
+        )
+        self.assertTrue(
+            engine._opportunity_probe_can_absorb_gate(
+                {
+                    "gate": "overall_quality_gate",
+                    "value": {"overall_score_pct": 70.0, "overall_grade": "B"},
+                    "reason": "overall_score_below_70_no_new_longs",
+                },
+                profile,
+            )
+        )
+        self.assertFalse(
+            engine._opportunity_probe_can_absorb_gate(
+                {
+                    "gate": "session_momentum_gate",
+                    "value": {"late_chase": True, "day_gain_pct": 8.0},
+                    "reason": "late_intraday_momentum_wait_for_pullback",
+                },
+                profile,
+            )
+        )
 
     def test_cleanup_downgrades_non_tradeable_active_buy_to_watch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

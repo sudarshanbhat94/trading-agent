@@ -2290,15 +2290,6 @@ class Database:
                 order by last_seen_at desc, id desc
                 """
             ).fetchall()
-            recent_buy_rows = conn.execute(
-                """
-                select symbol, strategy, action as status, ts as last_seen_at, reason
-                from decisions
-                where action = 'BUY'
-                order by id desc
-                limit 1000
-                """
-            ).fetchall()
         active_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         active_by_symbol: dict[str, dict[str, Any]] = {}
         for row in active_rows:
@@ -2307,19 +2298,6 @@ class Database:
             strategy = str(item.get("strategy") or "")
             if not symbol:
                 continue
-            active_by_symbol.setdefault(symbol, item)
-            active_by_key.setdefault((symbol, strategy), item)
-        for row in recent_buy_rows:
-            item = _row_dict(row)
-            last_seen = _parse_dt(item.get("last_seen_at"))
-            if not last_seen or (now_dt - last_seen) > timedelta(hours=cooldown):
-                continue
-            symbol = str(item.get("symbol") or "").upper()
-            strategy = str(item.get("strategy") or "")
-            if not symbol:
-                continue
-            item["status"] = "RECENT_BUY_DECISION"
-            item["first_seen_at"] = item.get("last_seen_at")
             active_by_symbol.setdefault(symbol, item)
             active_by_key.setdefault((symbol, strategy), item)
 
