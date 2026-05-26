@@ -194,6 +194,40 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertTrue(fresh)
 
+    def test_auto_follow_freshness_allows_active_buy_now_probe(self) -> None:
+        fresh = _auto_follow_idea_fresh_enough(
+            {
+                "symbol": "ATGL",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "setup_bucket": "SMALL_SIZE_ONLY",
+                "overall_score_pct": 50,
+                "overall_grade": "D",
+                "current_return_pct": 0.4,
+            },
+            set(),
+        )
+
+        self.assertTrue(fresh)
+
+    def test_auto_follow_freshness_blocks_risk_review_buy_now_probe(self) -> None:
+        fresh = _auto_follow_idea_fresh_enough(
+            {
+                "symbol": "RISKY",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "setup_bucket": "RISK_REVIEW",
+                "overall_score_pct": 80,
+                "overall_grade": "A",
+                "current_return_pct": 0.1,
+            },
+            set(),
+        )
+
+        self.assertFalse(fresh)
+
     def test_repeated_active_buy_decision_is_suppressed_to_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
