@@ -2462,12 +2462,12 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if signal_type != "BUY" or status not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
         return False
     details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+    if symbol in fresh_buy_symbols:
+        return True
     score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
     grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
     if score < 70 or grade not in {"A", "B"}:
         return False
-    if symbol in fresh_buy_symbols:
-        return True
     if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
         return True
     if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:

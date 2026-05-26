@@ -13,6 +13,7 @@ from app.full_spectrum import _strategy_confirmed_entry_quality
 from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
 from app.opportunity_state import opportunity_state_from_signal_details
+from app.agent import _auto_follow_idea_fresh_enough
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 from app.strategy import StrategyEngine, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
@@ -175,6 +176,23 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertFalse(gate["passed"])
         self.assertEqual(gate["reason"], "not_actionable_fresh_state")
+
+    def test_auto_follow_freshness_allows_current_cycle_probe_buy_symbol(self) -> None:
+        fresh = _auto_follow_idea_fresh_enough(
+            {
+                "symbol": "WOCKPHARMA",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "setup_bucket": "SMALL_SIZE_ONLY",
+                "overall_score_pct": 30,
+                "overall_grade": "F",
+                "current_return_pct": 0.1,
+            },
+            {"WOCKPHARMA"},
+        )
+
+        self.assertTrue(fresh)
 
     def test_repeated_active_buy_decision_is_suppressed_to_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
