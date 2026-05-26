@@ -17,10 +17,10 @@ const state = {
   positionMarksLastAppliedAt: null,
   quoteFilter: "",
   ideaWatchlistSearch: "",
-  activeIdeaGroup: "big",
+  activeIdeaGroup: "buys",
   currentIdeaWatchlistRows: [],
   portfolioSearch: "",
-  activePortfolioTab: "positions",
+  activePortfolioTab: "holdings",
   activeMarket: "IN",
   activeSettingsTab: "broker",
   pageFilters: {
@@ -42,7 +42,7 @@ const SETTINGS_TAB_CATEGORIES = {
   broker: new Set(["Live Protection"]),
   markets: new Set(["Market Data"]),
   runtime: new Set(["Runtime", "Agent Cycle"]),
-  ai: new Set(["OpenStocks View", "Sentiment"]),
+  ai: new Set(["Signals", "Sentiment"]),
   risk: new Set(["Risk"]),
   users: new Set(["Access Control", "User Credits"]),
   calendar: new Set(["Macro Calendar"]),
@@ -145,6 +145,14 @@ function scopedMarketContext(context = {}, market = state.activeMarket) {
   const region = normalizeUiMarket(market);
   const byMarket = context.by_market || context.byMarket;
   return byMarket?.[region] || context;
+}
+
+function scopedTomorrowPlan(plan = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const byMarket = plan.by_market || plan.byMarket;
+  if (byMarket?.[region]) return byMarket[region];
+  if (normalizeUiMarket(plan.market_region || plan.market) === region) return plan;
+  return { enabled: false, market_region: region, items: [], sections: {}, summary: {} };
 }
 
 function scopedOpportunityScan(scan = {}, market = state.activeMarket) {
@@ -830,9 +838,9 @@ const OPPORTUNITY_STATE_COPY = {
     next_step: "Refresh or connect the missing quote, candle, volume, delivery, options, or event data before trading.",
   },
   EXIT: {
-    label: "Exit review",
+    label: "Exit check",
     summary: "The latest decision is about reducing or closing risk, not opening a new trade.",
-    next_step: "Review stop, target, and exit rules for any existing position.",
+    next_step: "Check stop, target, and exit rules for any existing position.",
   },
   MONITOR: {
     label: "Monitor only",
@@ -903,12 +911,12 @@ function reasonFromSnakeCase(value, fallback = "-") {
     risk_override_no_new_longs: "Risk overrides are active, so OpenStocks is not opening a new long.",
     portfolio_concentration_correlation_too_high: "The portfolio already has too much correlated exposure, so this BUY is blocked.",
     bottom_quartile_distribution: "The sector is weak and in distribution, so the stock needs exceptional confirmation before buying.",
-    llm_primary_failed_safe_hold: "OpenStocks View did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
-    llm_buy_blocked_by_system_rules: "OpenStocks View wanted to buy, but hard system rules blocked the trade.",
-    llm_primary_unavailable_no_trade: "OpenStocks View approval is required, but it is unavailable, so OpenStocks forced HOLD.",
-    llm_primary_required_no_unreviewed_trade: "The symbol was not reviewed by OpenStocks View in this cycle, so OpenStocks forced HOLD.",
-    llm_failed_or_timed_out_deterministic_trade_preserved: "OpenStocks View did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
-    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current OpenStocks View limit; new trades now require that review, so this should be HOLD.",
+    llm_primary_failed_safe_hold: "Signal check did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
+    llm_buy_blocked_by_system_rules: "Signal check wanted to buy, but hard system rules blocked the trade.",
+    llm_primary_unavailable_no_trade: "Signal check approval is required, but it is unavailable, so OpenStocks forced HOLD.",
+    llm_primary_required_no_unreviewed_trade: "The symbol did not receive a signal check in this cycle, so OpenStocks forced HOLD.",
+    llm_failed_or_timed_out_deterministic_trade_preserved: "Signal check did not return a clean answer in time, so OpenStocks forced HOLD and did not trade.",
+    llm_not_selected_due_candidate_limit_deterministic_action_allowed: "The symbol was outside the current signal-check limit; new trades now require that check, so this should be HOLD.",
     time_stop_no_progress_15_sessions: "The position has not moved enough after 15 sessions, so OpenStocks is exiting dead capital.",
     overall_score_below_55_no_new_longs: "The production-readiness score is below 70%, so OpenStocks is not opening a fresh long.",
     overall_score_below_70_no_new_longs: "The production-readiness score is below 70%, so OpenStocks is not opening a fresh long.",
@@ -928,13 +936,13 @@ function reasonFromSnakeCase(value, fallback = "-") {
 function plainDecisionPath(value) {
   const text = String(value || "").trim();
   const mapped = {
-    llm_review: "Review completed",
-    llm_review_failed: "Safe review",
-    llm_primary: "Review completed",
+    llm_review: "Signal completed",
+    llm_review_failed: "Safe signal check",
+    llm_primary: "Signal completed",
     manual_exit: "Manual exit",
-    deterministic_audit: "Rules review",
+    deterministic_audit: "Rules check",
   };
-  if (!text || text === "-") return "Rules review";
+  if (!text || text === "-") return "Rules check";
   return mapped[text] || humanLabel(text);
 }
 
@@ -1131,10 +1139,10 @@ function humanizeReasonText(text, action = "HOLD") {
     });
   }
   return value
-    .replace(/llm_primary_required_no_unreviewed_trade/g, "OpenStocks View approval was required before trading, so OpenStocks held")
-    .replace(/llm_primary_failed_safe_hold/g, "OpenStocks View failed, so OpenStocks held safely")
-    .replace(/llm_primary_unavailable_no_trade/g, "OpenStocks View was unavailable, so OpenStocks held safely")
-    .replace(/llm_failed_deterministic_action_preserved/g, "OpenStocks View failed, so OpenStocks held safely")
+    .replace(/llm_primary_required_no_unreviewed_trade/g, "Signal check was required before trading, so OpenStocks held")
+    .replace(/llm_primary_failed_safe_hold/g, "Signal check failed, so OpenStocks held safely")
+    .replace(/llm_primary_unavailable_no_trade/g, "Signal check was unavailable, so OpenStocks held safely")
+    .replace(/llm_failed_deterministic_action_preserved/g, "Signal check failed, so OpenStocks held safely")
     .replace(/failed_gates=\[([^\]]*)\]/gi, (_, gates) => {
       const readable = gates
         .split(",")
@@ -1176,7 +1184,7 @@ function readableDecisionReason(row = {}) {
     return reasonFromSnakeCase(pre.elimination_reason);
   }
   if (audit.llm_error) {
-    return `The review could not complete cleanly, so OpenStocks kept the safer ${action} decision.`;
+    return `The signal check could not complete cleanly, so OpenStocks kept the safer ${action} decision.`;
   }
   if (action === "BUY") {
     return `BUY setup is actionable: price action, confirmation, and risk checks are aligned for a fresh entry.`;
@@ -1285,7 +1293,7 @@ function render(payload) {
       : (userSession.last_cycle_at ? `Your signal cycle ${fmtTime(userSession.last_cycle_at)}` : "signals waiting");
 
   const pill = byId("status-pill");
-  pill.textContent = controlRunning ? "Agent running" : "Agent idle";
+  pill.textContent = controlRunning ? "Scanner running" : "Scanner idle";
   pill.className = `pill ${controlRunning ? "running" : "stopped"}`;
 
   const error = byId("error-box");
@@ -1295,7 +1303,7 @@ function render(payload) {
     const feedPending = isFeedPending(payload);
     error.className = `error-box ${feedPending ? "warning" : ""}`;
     error.textContent = feedPending
-      ? "Market data connection pending. Connect/refresh the selected market feed when ready; the terminal remains available for account, settings, and audit review."
+      ? "Market data connection pending. Connect or refresh the selected feed when ready; the terminal remains available for account, settings, and analysis."
       : displayError;
   } else {
     error.hidden = true;
@@ -1309,7 +1317,7 @@ function render(payload) {
   byId("decision-count").textContent = `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "decision")}`;
   byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
   byId("suggestion-count").textContent = visibleSuggestions.length
-    ? `${filteredCountLabel(visibleSuggestions.length, suggestions.length, "full-audit idea", "full-audit ideas")}`
+    ? `${filteredCountLabel(visibleSuggestions.length, suggestions.length, "idea", "ideas")}`
     : suggestions.length
       ? `0/${suggestions.length} ideas`
       : "0 ideas";
@@ -1334,6 +1342,7 @@ function render(payload) {
   updatePageFilterButtons();
   renderStrategyPlans(visibleStrategyPlans);
   renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans);
+  renderTomorrowPlan(payload.tomorrow_plan || {});
   renderMobileNativeHeader(payload, quotes, activeMarket);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderSentiment(visibleSentiment);
@@ -1521,19 +1530,19 @@ function renderProductActionPanel(payload, suggestions, trackedIdeas, positions,
   let cta = { label: "Analyze Symbol", view: "analyze" };
   let tone = "neutral";
   if (reviewPositions.length) {
-    headline = `${reviewPositions.length} position${reviewPositions.length === 1 ? " needs" : "s need"} review`;
+    headline = `${reviewPositions.length} position${reviewPositions.length === 1 ? " needs" : "s need"} action`;
     note = "Risk, stop, or target rules are asking for attention before adding fresh exposure.";
     cta = { label: "Open Positions", view: "positions" };
     tone = "warning";
   } else if (readyIdeas.length) {
-    headline = `${readyIdeas.length} trade idea${readyIdeas.length === 1 ? "" : "s"} ready to review`;
+    headline = `${readyIdeas.length} trade idea${readyIdeas.length === 1 ? "" : "s"} ready`;
     note = "These ideas cleared the main gates. Check entry, stop, targets, and expiry before following.";
-    cta = { label: "Review Ideas", view: "suggestions" };
+    cta = { label: "Open Watchlist", view: "suggestions" };
     tone = "positive";
   } else if (trackedIdeas.length) {
     headline = `${trackedIdeas.length} idea${trackedIdeas.length === 1 ? "" : "s"} being tracked`;
     note = "No fresh buy has cleared all gates yet. Continue tracking active ideas against targets and stops.";
-    cta = { label: "Track Ideas", view: "suggestions" };
+    cta = { label: "Open Watchlist", view: "suggestions" };
     tone = "open";
   } else if (decisions.length) {
     headline = "No fresh buys yet";
@@ -1597,7 +1606,7 @@ function renderProductTrackingPanel(trackedIdeas = [], positions = [], suggestio
     panel.innerHTML = emptyBlock(
       "No active ideas yet",
       "When a signal clears every gate, it will appear here with entry, stop, targets, expiry, and return from recommendation.",
-      "Open Ideas",
+      "Open Watchlist",
       "suggestions",
     );
     return;
@@ -1651,7 +1660,7 @@ function renderSelfAudit(audit = {}) {
   const ok = audit.capital_pool_within_position_count_rule !== false && !Number(audit.price_mismatch_count || 0);
   byId("self-audit-status").textContent = audit.updated_at ? `${fmtPct(audit.overall_score_pct ?? 0)} · ${audit.overall_grade || (ok ? "clear" : "flags")}` : "pending";
   const items = [
-    { label: "Trade Safety", value: `${fmtPct(audit.overall_score_pct ?? 0)}`, note: ok ? "rules clear" : "needs review" },
+    { label: "Trade Safety", value: `${fmtPct(audit.overall_score_pct ?? 0)}`, note: ok ? "rules clear" : "needs action" },
     { label: "Grade Violations", value: audit.grade_violation_count ?? 0, note: "WATCH/undefined entries" },
     { label: "Delivery Conflicts", value: audit.delivery_conflict_count ?? 0, note: "distribution vs long" },
     { label: "Price Mismatch", value: audit.price_mismatch_count ?? 0, note: ">1% source gap" },
@@ -1798,9 +1807,9 @@ function renderShell(payload = state.latest || {}) {
     : llmProvider === "groq"
       ? plainSetting("groq_model", "qwen/qwen3-32b")
       : llmProvider === "assigned"
-        ? "OpenStocks View"
+        ? "Signal Check"
       : "offline";
-  const llmDisplay = llmProvider === "assigned" ? "OpenStocks View" : llmProvider;
+  const llmDisplay = llmProvider === "assigned" ? "Signal Check" : llmProvider;
   const llmUsage = payload.llm_usage?.today_utc || {};
   const llmActivity = userSession.last_llm_activity || {};
   const llmUsageText = llmUsage.calls
@@ -1810,7 +1819,7 @@ function renderShell(payload = state.latest || {}) {
   const liveMode = executionMode === "live" || executionMode === "live_trading";
 
   byId("top-provider").textContent = state.auth?.admin ? provider : feed.title;
-  byId("top-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "off" : llmModel) : "OpenStocks View";
+  byId("top-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "off" : llmModel) : "Signal Check";
   byId("top-execution").textContent = state.auth?.admin ? plainSetting("execution_mode", runtime.execution_mode || "-") : marketCurrencyLabel(activeMarket);
 
   const feedPending = isFeedPending(payload);
@@ -1836,9 +1845,9 @@ function renderShell(payload = state.latest || {}) {
   byId("ops-feed-meta").textContent = feedPending
     ? "quotes paused until token/feed is ready"
     : feed.meta;
-  byId("ops-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks View";
+  byId("ops-llm").textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "Signal Check";
   const userCreditMeta = state.credits
-    ? `${fmtCredits(state.credits.credits_used_today || 0)} AI credits today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
+    ? `${fmtCredits(state.credits.credits_used_today || 0)} credits today · ${fmtCredits(state.credits.daily_credits_remaining || 0)} available`
     : `${fmtCredits(llmActivity.credits_charged || 0)} credits last cycle`;
   byId("ops-llm-meta").textContent = !state.auth?.admin
     ? userCreditMeta
@@ -1920,7 +1929,7 @@ function renderShell(payload = state.latest || {}) {
   const cockpitActionNote = byId("ai-cockpit-action-note");
   const topDecision = rankedDecisions[0] || {};
   const topDecisionScore = topDecision.symbol ? Math.round(decisionScorePercent(topDecision)) : 0;
-  if (cockpitReview) cockpitReview.textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "OpenStocks View";
+  if (cockpitReview) cockpitReview.textContent = state.auth?.admin ? (llmProvider === "offline" ? "Offline" : llmDisplay) : "Signal Check";
   if (cockpitReviewNote) cockpitReviewNote.textContent = !state.auth?.admin ? userCreditMeta : `${llmMode} · ${llmUsageText}`;
   if (cockpitFeed) cockpitFeed.textContent = feedConnected ? feed.title : "Feed pending";
   if (cockpitFeedNote) cockpitFeedNote.textContent = feedPending ? "quotes paused until broker/data token is ready" : feed.meta;
@@ -1989,7 +1998,7 @@ function updateMarketWorkspaceLabels(payload = state.latest || {}) {
   if (subtitle) {
     const adminSubtitles = {
       account: "Profile, broker connections, cash ledger, and personal signal controls",
-      logs: "Agent events, market feed messages, and runtime trace",
+      logs: "Scanner events, market feed messages, and runtime trace",
       users: "Admin users, roles, credits, and account access",
       settings: "Risk limits, broker setup, scan scope, and execution mode",
     };
@@ -2081,6 +2090,8 @@ function renderAuth(auth) {
   pill.hidden = true;
   const currentUser = auth.user?.username || "signed in";
   byId("current-user-label").textContent = currentUser;
+  const mobileAccountLabel = byId("mobile-account-label");
+  if (mobileAccountLabel) mobileAccountLabel.textContent = shortValue(currentUser, 7);
   byId("credit-pill").hidden = Boolean(auth.admin);
   byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "";
   byId("start-btn").textContent = auth.admin ? "Start" : "Refresh Signals";
@@ -2245,9 +2256,9 @@ function renderCreditSummary(credits, policy = {}) {
     </form>
     <div class="account-note">
       <strong>Credit transparency</strong>
-      <span>OpenStocks View reviews debit credits from the daily budget and account balance, including shared AI cycles.</span>
-      <span>Pure quote refresh, candle refresh, market screening, and non-LLM news prep do not debit credits.</span>
-      <span>Full market screening ranks eligible symbols first; credits apply when the shortlisted ideas are reviewed.</span>
+      <span>Signal checks debit credits from the daily budget and account balance.</span>
+      <span>Pure quote refresh, candle refresh, market screening, and news prep do not debit credits.</span>
+      <span>Full market screening ranks eligible symbols first; credits apply when the shortlisted ideas receive signal checks.</span>
       <span>Estimated signal cost: ${fmtCredits(policy.estimated_signal_credit || 0)} credits.</span>
       ${llmActivity.message ? `<span>Last cycle: ${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</span>` : ""}
       ${autoTrade.mode ? `<span>Auto action: ${escapeHtml(signalModeLabel(autoTrade.mode))} · followed ${fmtNumber(autoTrade.followed || 0)} BUY ideas${(autoTrade.skipped || []).length ? ` · skipped ${(autoTrade.skipped || []).length}` : ""}</span>` : ""}
@@ -2297,10 +2308,10 @@ function renderCreditPopoverBody(credits, policy = {}) {
       ${(ledger || []).slice(0, 5).map((row) => `<button type="button">
         <span>${escapeHtml(humanLabel(row.entry_type || "usage"))}</span>
         <strong class="${pnlClass(row.amount)}">${fmtCredits(row.amount)}</strong>
-        <small>${escapeHtml(row.description || "OpenStocks View")} · ${fmtTime(row.ts)}</small>
-      </button>`).join("") || `<div class="empty-state product-empty"><strong>No review calls yet</strong><span>Last five credit events will appear here.</span></div>`}
+        <small>${escapeHtml(row.description || "Signal check")} · ${fmtTime(row.ts)}</small>
+      </button>`).join("") || `<div class="empty-state product-empty"><strong>No signal checks yet</strong><span>Last five credit events will appear here.</span></div>`}
     </div>
-    <small class="credit-policy-note">${fmtCredits(policy.estimated_signal_credit || 0)} estimated credits per review. Shared AI cycles are split across active users.</small>
+    <small class="credit-policy-note">${fmtCredits(policy.estimated_signal_credit || 0)} estimated credits per signal check. Shared signal checks are split across active users.</small>
   `;
 }
 
@@ -2397,13 +2408,13 @@ function renderLogs(rows) {
   if (!state.auth?.admin) {
     byId("logs-count").textContent = "admin login required";
     byId("nav-logs-badge").textContent = "admin";
-    body.innerHTML = emptyTableRow(6, "Admin logs are protected", "Sign in as admin to inspect backend cycle, feed, LLM, and execution logs.");
+    body.innerHTML = emptyTableRow(6, "Admin logs are protected", "Sign in as admin to inspect backend cycle, feed, signal, and execution logs.");
     return;
   }
   byId("logs-count").textContent = `${state.logs.length} logs`;
   byId("nav-logs-badge").textContent = String(state.logs.length);
   if (!state.logs.length) {
-    body.innerHTML = emptyTableRow(6, "No logs yet", "Cycle, feed, LLM, and order events will appear here once the backend starts.");
+    body.innerHTML = emptyTableRow(6, "No logs yet", "Cycle, feed, signal, and order events will appear here once the backend starts.");
     return;
   }
   body.innerHTML = state.logs
@@ -2419,7 +2430,7 @@ function renderLogs(rows) {
       </tr>`;
     })
     .join("");
-  bindRowDetails(body, state.logs, "Agent Log");
+  bindRowDetails(body, state.logs, "System Log");
 }
 
 async function fetchUsers() {
@@ -2530,7 +2541,7 @@ function signalModeClass(mode) {
 function openModelAssign(user) {
   const current = user.assigned_llm || {};
   const raw = window.prompt(
-    `Assign LLM for ${user.username}\nUse provider:model`,
+    `Assign signal engine for ${user.username}\nUse provider:model`,
     `${current.provider || "groq"}:${current.model || "qwen/qwen3-32b"}`,
   );
   if (raw === null) return;
@@ -3100,7 +3111,7 @@ function renderSettings(config) {
     target.insertAdjacentHTML(
       "beforeend",
       `<section class="settings-group">
-        <h3>${category}</h3>
+        <h3>${escapeHtml(settingsCategoryLabel(category))}</h3>
         ${fields}
       </section>`,
     );
@@ -3119,6 +3130,14 @@ function renderSettings(config) {
   setSettingsTab(state.activeSettingsTab || "broker");
   applyAccessMode();
   renderShell();
+}
+
+function settingsCategoryLabel(category) {
+  const mapped = {
+    "Agent Cycle": "Scan Cycle",
+    "Full Audit": "Analysis Archive",
+  };
+  return mapped[category] || category;
 }
 
 function renderProviderKeysPanel(settings) {
@@ -3261,7 +3280,7 @@ function mergeProviderKeyPanelSettings(values) {
 
 function networkErrorMessage(error, action = "request") {
   const reason = error && error.message ? error.message : "network unavailable";
-  return `Backend ${action} failed: ${reason}. Check that trading-agent is running and port 8000 is reachable.`;
+  return `Backend ${action} failed: ${reason}. Check that OpenStocks backend is running and port 8000 is reachable.`;
 }
 
 function showBackendError(message, detail = {}) {
@@ -3325,9 +3344,9 @@ async function testLlm() {
   const started = Date.now();
   const progress = window.setInterval(() => {
     const elapsed = Math.floor((Date.now() - started) / 1000);
-    status.textContent = `testing LLM, ${elapsed}s / ${healthTimeout}s`;
+    status.textContent = `testing signal engine, ${elapsed}s / ${healthTimeout}s`;
   }, 1000);
-  status.textContent = `testing LLM, 0s / ${healthTimeout}s`;
+  status.textContent = `testing signal engine, 0s / ${healthTimeout}s`;
   status.className = "settings-inline-status";
   button.disabled = true;
   try {
@@ -3335,19 +3354,19 @@ async function testLlm() {
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
       const reason = payload.reason || payload.detail || `HTTP ${payload.status_code || response.status}`;
-      status.textContent = `LLM failed: ${reason}`;
+      status.textContent = `Signal test failed: ${reason}`;
       status.className = "settings-inline-status negative";
-      showDetails("LLM Test", payload);
+      showDetails("Signal Test", payload);
       return;
     }
-    status.textContent = `LLM ready: ${payload.model} · ${payload.latency_ms} ms`;
+    status.textContent = `Signal engine ready: ${payload.model} · ${payload.latency_ms} ms`;
     status.className = "settings-inline-status positive";
-    showDetails("LLM Test", payload);
+    showDetails("Signal Test", payload);
   } catch (error) {
     const reason = error.name === "AbortError" ? `browser timed out after ${healthTimeout + 5}s` : error.message;
-    status.textContent = `LLM failed: ${reason}`;
+    status.textContent = `Signal test failed: ${reason}`;
     status.className = "settings-inline-status negative";
-    showDetails("LLM Test", { ok: false, reason });
+    showDetails("Signal Test", { ok: false, reason });
   } finally {
     window.clearTimeout(timer);
     window.clearInterval(progress);
@@ -3553,7 +3572,7 @@ function renderStrategies(rows) {
       6,
       "No realized strategy P&L yet",
       "Strategy performance starts filling after paper or live orders are opened and tracked through exits.",
-      "Review Ideas",
+      "Open Watchlist",
       "suggestions",
     );
     return;
@@ -3737,8 +3756,8 @@ function renderMobileNativeHeader(payload = state.latest || {}, rows = [], marke
     const pct = quote.symbol ? quoteDayPct(quote) : null;
     const hasPct = Number.isFinite(pct);
     labelEl.textContent = slot.label;
-    valueEl.textContent = price !== null ? fmtNumber(price) : marketDataLabel(payload, market).title;
-    changeEl.textContent = hasPct ? fmtPct(pct) : (quote.symbol ? "0.00%" : marketDataLabel(payload, market).meta);
+    valueEl.textContent = price !== null ? fmtNumber(price) : "-";
+    changeEl.textContent = hasPct ? fmtPct(pct) : (quote.symbol ? "0.00%" : "feed pending");
     changeEl.className = hasPct ? pnlClass(pct) : "";
     valueEl.className = hasPct ? pnlClass(pct) : "";
   };
@@ -3823,45 +3842,54 @@ function ideaIndexByIdAndSymbol(rows = []) {
 
 function planRowsForMarket(plan = {}, market = state.activeMarket, ideas = []) {
   const region = normalizeUiMarket(market);
-  const byMarket = plan.constituents_by_market || {};
-  if (Array.isArray(byMarket[region]) && byMarket[region].length) return byMarket[region];
-  const constituents = Array.isArray(plan.constituents) ? plan.constituents.filter((row) => rowMarket(row) === region) : [];
-  if (constituents.length) return constituents;
   const code = String(plan.code || "").toUpperCase();
-  if (!code) return [];
-  return (ideas || []).filter((row) => String(row.plan_code || "").toUpperCase() === code && rowMarket(row) === region);
+  const byMarket = plan.constituents_by_market || {};
+  const matchingIdeas = code
+    ? (ideas || []).filter((row) => String(row.plan_code || "").toUpperCase() === code && rowMarket(row) === region)
+    : [];
+  const marketConstituents = Array.isArray(byMarket[region]) ? byMarket[region] : [];
+  const constituents = Array.isArray(plan.constituents) ? plan.constituents.filter((row) => rowMarket(row) === region) : [];
+  const seen = new Set();
+  return [...matchingIdeas, ...marketConstituents, ...constituents].filter((row) => {
+    const key = row.id || row.idea_id
+      ? `id:${row.id || row.idea_id}`
+      : `symbol:${String(row.symbol || "").toUpperCase()}:${String(row.plan_code || code)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function watchlistQualityGroups(ideas = []) {
+  return [
+    { key: "buys", label: "Buys", rows: sortSuggestionRows((ideas || []).filter(ideaIsTradeReady)) },
+    { key: "high", label: "High Confidence", rows: sortSuggestionRows((ideas || []).filter(ideaIsHighQuality)) },
+  ];
 }
 
 function ideaWatchlistGroups(suggestions = [], trackedIdeas = [], strategyPlans = []) {
   const ideas = sortSuggestionRows(suggestions || []);
   const market = normalizeUiMarket(state.activeMarket);
   const ideaIndex = ideaIndexByIdAndSymbol([...(suggestions || []), ...(trackedIdeas || [])]);
-  const planGroups = (strategyPlans || [])
+  const qualityGroups = watchlistQualityGroups(ideas);
+  const planSources = (strategyPlans || []).filter((plan) => plan.enabled !== false && plan.enabled !== 0);
+  const derivedPlanSources = planSources.length
+    ? []
+    : Array.from(new Set(ideas.map((row) => String(row.plan_code || "").trim()).filter(Boolean)))
+        .map((code) => ({ code, name: humanLabel(code) }));
+  const planGroups = [...planSources, ...derivedPlanSources]
     .map((plan) => {
       const planRows = planRowsForMarket(plan, market, ideas);
       const rows = sortSuggestionRows(enrichPlanIdeaRows(planRows, ideaIndex));
       return {
         key: `plan:${plan.code || plan.name}`,
-        label: shortValue(plan.name || plan.code || "Plan", 18),
+        label: plan.name || plan.code || "Plan",
         rows,
         plan,
       };
-    })
-    .filter((group) => group.rows.length);
+    });
   const tracked = sortSuggestionRows((trackedIdeas || []).slice());
-  if (planGroups.length) {
-    return [
-      ...planGroups,
-      { key: "tracked", label: `Tracked ${tracked.length}`, rows: tracked },
-    ];
-  }
-  const big = ideas.filter((row) => ideaIsTradeReady(row) || ideaIsHighQuality(row));
-  const events = ideas.filter(ideaHasEvent);
-  return [
-    { key: "big", label: "Big stocks", rows: big.length ? big : ideas.slice(0, 12) },
-    { key: "events", label: "Events", rows: events },
-    { key: "tracked", label: `Tracked ${tracked.length}`, rows: tracked },
-  ];
+  return [...qualityGroups, ...planGroups, { key: "tracked", label: `Watchlist ${tracked.length}`, rows: tracked }];
 }
 
 function ideaWatchlistReturn(row = {}) {
@@ -3870,6 +3898,28 @@ function ideaWatchlistReturn(row = {}) {
 
 function ideaWatchlistPrice(row = {}) {
   return firstFinite(row.follow_latest_price, row.user_follow?.latest_price, row.latest_price, row.price, row.entry_price, row.follow_entry_price);
+}
+
+function quoteForIdea(row = {}) {
+  const symbol = String(row.symbol || "").toUpperCase();
+  if (!symbol) return null;
+  const market = rowMarket(row);
+  return (state.latest?.quotes || []).find((quote) => String(quote.symbol || "").toUpperCase() === symbol && rowMarket(quote) === market) || null;
+}
+
+function ideaWatchlistMove(row = {}) {
+  const quote = quoteForIdea(row);
+  if (!quote) return { pct: ideaWatchlistReturn(row), text: `${fmtPct(ideaWatchlistReturn(row))} since signal` };
+  const price = firstFinite(quote.price, quote.last_price, quote.close);
+  const close = firstFinite(quote.close, quote.prev_close, quote.previous_close);
+  const change = price !== null && close !== null ? price - close : null;
+  const pct = quoteDayPct(quote);
+  const sign = change !== null && change > 0 ? "+" : "";
+  return {
+    pct,
+    price,
+    text: change !== null ? `${sign}${fmtNumber(change)} (${fmtPct(pct)})` : fmtPct(pct),
+  };
 }
 
 function ideaWatchlistMeta(row = {}) {
@@ -3883,9 +3933,8 @@ function ideaWatchlistMeta(row = {}) {
 }
 
 function ideaWatchlistRowHtml(row = {}, index = 0) {
-  const market = rowMarket(row);
-  const currentReturn = ideaWatchlistReturn(row);
-  const price = ideaWatchlistPrice(row);
+  const move = ideaWatchlistMove(row);
+  const price = firstFinite(move.price, ideaWatchlistPrice(row));
   const followed = ideaIsFollowed(row);
   const mode = String(row.mode || row.user_follow?.mode || "TRACK").toUpperCase();
   const rowId = row.id || row.idea_id || "";
@@ -3897,9 +3946,9 @@ function ideaWatchlistRowHtml(row = {}, index = 0) {
       <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
       <small>${ideaWatchlistMeta(row)}</small>
     </div>
-    <div class="mobile-watchlist-price ${pnlClass(currentReturn)}">
-      <strong>${fmtTradeMoney(price, market)}</strong>
-      <small>${fmtPct(currentReturn)} since signal</small>
+    <div class="mobile-watchlist-price ${pnlClass(move.pct)}">
+      <strong>${fmtNumber(price)}</strong>
+      <small>${escapeHtml(move.text)}</small>
       ${rowId ? trackButton : ""}
     </div>
   </article>`;
@@ -3910,7 +3959,9 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   const body = byId("ideas-watchlist-body");
   if (!tabs || !body) return;
   const groups = ideaWatchlistGroups(suggestions, trackedIdeas, strategyPlans);
-  if (!groups.some((group) => group.key === state.activeIdeaGroup)) state.activeIdeaGroup = groups[0]?.key || "big";
+  if (state.activeIdeaGroup === "big" || !groups.some((group) => group.key === state.activeIdeaGroup)) {
+    state.activeIdeaGroup = groups[0]?.key || "buys";
+  }
   const activeGroup = groups.find((group) => group.key === state.activeIdeaGroup) || groups[0] || { rows: [] };
   const search = String(state.ideaWatchlistSearch || "").trim().toUpperCase();
   const rows = (activeGroup.rows || []).filter((row) => ideaSearchMatches(row, search));
@@ -3923,14 +3974,14 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   body.innerHTML = rows.length
     ? rows.slice(0, 60).map((row, index) => ideaWatchlistRowHtml(row, index)).join("")
     : emptyBlock(
-        `No ${activeMarketLabel()} ideas in this group`,
-        "Run the scanner or switch groups. Trackable ideas appear here as a clean watchlist.",
+        `No ${activeMarketLabel()} rows in ${activeGroup.label || "this group"}`,
+        "Run the scanner or switch tabs. Trackable symbols appear here as clean watchlist rows.",
         "Run Stock Check",
         "analyze",
       );
   tabs.querySelectorAll("[data-idea-group]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.activeIdeaGroup = button.dataset.ideaGroup || "big";
+      state.activeIdeaGroup = button.dataset.ideaGroup || "buys";
       renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans);
     });
   });
@@ -3947,6 +3998,110 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
       const row = rows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
       followIdea(row || Number(button.dataset.ideaId), "track", button);
     });
+  });
+}
+
+const TOMORROW_PLAN_SECTIONS = [
+  { key: "ready_at_open", label: "Ready At Open", empty: "No ready-at-open trades. That is fine; tomorrow starts with validation." },
+  { key: "near_breakout", label: "Near Breakout", empty: "No near-breakout watch names prepared yet." },
+  { key: "news_watch", label: "News Watch", empty: "No catalyst watch names prepared yet." },
+  { key: "position_actions", label: "Position Actions", empty: "No open position action required." },
+  { key: "avoid", label: "Avoid", empty: "No avoid names logged for tomorrow." },
+];
+
+function tomorrowPlanSectionRows(plan = {}, sectionKey = "") {
+  const sections = plan.sections && typeof plan.sections === "object" ? plan.sections : {};
+  if (Array.isArray(sections[sectionKey])) return sections[sectionKey];
+  return (plan.items || []).filter((item) => String(item.section || "") === sectionKey);
+}
+
+function tomorrowPlanLevelsHtml(item = {}) {
+  const market = rowMarket(item);
+  const parts = [
+    ["Trigger", item.trigger_price],
+    ["Max", item.max_entry],
+    ["Stop", item.stop_loss],
+    ["T1", item.target1],
+  ].filter(([, value]) => numericValue(value) !== null);
+  if (!parts.length) return `<span><small>Validation</small><strong>${escapeHtml(item.validation ? "Required" : "Check")}</strong></span>`;
+  return parts
+    .map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong class="${label === "Stop" ? "negative" : label === "T1" ? "positive" : ""}">${fmtTradeMoney(value, market)}</strong></span>`)
+    .join("");
+}
+
+function tomorrowPlanRowHtml(item = {}, index = 0) {
+  const action = String(item.action || "WATCH").toUpperCase();
+  const section = String(item.section || "").toLowerCase();
+  const score = Number(item.score || 0);
+  const confidence = Number(item.confidence || 0);
+  return `<article class="tomorrow-plan-row plan-${escapeHtml(cssToken(section || action))}" role="button" tabindex="0" data-tomorrow-index="${index}">
+    <div class="tomorrow-plan-symbol">
+      <span class="tomorrow-action ${escapeHtml(cssToken(action))}">${escapeHtml(action)}</span>
+      <div>
+        <strong>${escapeHtml(displayValue(item.symbol, "Symbol"))}</strong>
+        <small>${escapeHtml(item.name || item.strategy || "Prepared candidate")}</small>
+      </div>
+    </div>
+    <div class="tomorrow-plan-levels">${tomorrowPlanLevelsHtml(item)}</div>
+    <div class="tomorrow-plan-reason">
+      <strong>${escapeHtml(item.strategy || "validation plan")}</strong>
+      <p>${escapeHtml(shortValue(item.rationale || item.validation || "Validate pre-open and first live candle before action.", 150))}</p>
+    </div>
+    <div class="tomorrow-plan-score">
+      <strong>${fmtNumber(score)}</strong>
+      <small>${confidence ? `${fmtNumber(confidence)}% confidence` : "prepared"}</small>
+    </div>
+  </article>`;
+}
+
+function renderTomorrowPlan(rawPlan = {}) {
+  const body = byId("tomorrow-plan-body");
+  const count = byId("tomorrow-plan-count");
+  const rules = byId("tomorrow-plan-rules");
+  const title = byId("tomorrow-plan-title");
+  if (!body) return;
+  const market = normalizeUiMarket(state.activeMarket);
+  const plan = scopedTomorrowPlan(rawPlan, market);
+  if (title) title.textContent = `${activeMarketLabel()} Tomorrow Plan`;
+  const items = plan.items || [];
+  if (count) {
+    const ready = Number(plan.summary?.ready_at_open || tomorrowPlanSectionRows(plan, "ready_at_open").length || 0);
+    count.textContent = items.length ? `${items.length} items · ${ready} ready` : "not prepared";
+  }
+  const preopenRules = Array.isArray(plan.preopen_rules) ? plan.preopen_rules : [];
+  if (rules) {
+    rules.innerHTML = preopenRules.length
+      ? preopenRules.slice(0, 5).map((rule) => `<span><strong>${escapeHtml(rule.time || "")}</strong>${escapeHtml(rule.action || "")}</span>`).join("")
+      : `<span><strong>Post-market</strong>Run closed-market prep to build tomorrow's battle sheet.</span>`;
+  }
+  if (!items.length) {
+    body.innerHTML = emptyBlock(
+      `No ${activeMarketLabel()} tomorrow plan yet`,
+      "After market close, OpenStocks will prepare ready names, near breakouts, news watch, position actions, and avoid names for the next session.",
+      "Run Stock Check",
+      "analyze",
+    );
+    state.currentTomorrowPlanRows = [];
+    return;
+  }
+  const renderedRows = [];
+  body.innerHTML = TOMORROW_PLAN_SECTIONS.map((section) => {
+    const rows = tomorrowPlanSectionRows(plan, section.key);
+    renderedRows.push(...rows);
+    return `<section class="tomorrow-plan-section">
+      <div class="tomorrow-plan-section-head">
+        <strong>${escapeHtml(section.label)}</strong>
+        <span>${fmtNumber(rows.length)}</span>
+      </div>
+      <div class="tomorrow-plan-list">
+        ${rows.length ? rows.slice(0, 12).map((item) => tomorrowPlanRowHtml(item, renderedRows.indexOf(item))).join("") : `<div class="tomorrow-plan-empty">${escapeHtml(section.empty)}</div>`}
+      </div>
+    </section>`;
+  }).join("");
+  state.currentTomorrowPlanRows = renderedRows;
+  body.querySelectorAll("[data-tomorrow-index]").forEach((rowEl) => {
+    const item = renderedRows[Number(rowEl.dataset.tomorrowIndex)];
+    if (item) rowEl.addEventListener("click", () => showDetails("Tomorrow Plan", item));
   });
 }
 
@@ -4125,8 +4280,8 @@ function renderPositions(rows) {
     body.innerHTML = emptyTableRow(
       7,
       `No open ${activeMarketLabel()} positions`,
-      "The agent will open positions when it finds qualifying opportunities.",
-      "Run agent cycle",
+      "Open positions appear here when qualifying opportunities are found.",
+      "View Bids",
       "decisions",
     );
     return;
@@ -4150,8 +4305,8 @@ function renderOverviewPositions(rows) {
     body.innerHTML = emptyTableRow(
       7,
       `No open ${activeMarketLabel()} positions`,
-      "The agent will open positions when qualifying opportunities are found.",
-      "View decisions",
+      "Open positions appear here when qualifying opportunities are found.",
+      "View Bids",
       "decisions",
     );
     return;
@@ -4255,7 +4410,7 @@ function positionActionState(row = {}) {
     return { label: "Trail stop", tone: "warning", reason, needsAction: true };
   }
   if (raw.includes("REVIEW") || importantFlags.length) {
-    return { label: "Risk review", tone: "warning", reason, needsAction: true };
+    return { label: "Risk check", tone: "warning", reason, needsAction: true };
   }
   return { label: "Monitor", tone: "open", reason, needsAction: false };
 }
@@ -4438,7 +4593,7 @@ function renderTrackedIdeas(rows) {
     body.innerHTML = emptyBlock(
       `No ${activeMarketLabel()} ideas being tracked`,
       "Track or paper-trade a signal to monitor target hits, stop status, and live return from the original recommendation.",
-      "Review Signals",
+      "Open Watchlist",
       "suggestions",
     );
     return;
@@ -4746,9 +4901,10 @@ function renderMarketTape(rows, market = state.activeMarket) {
   const region = normalizeUiMarket(market);
   if (label) label.textContent = MARKET_LABELS[region] || region;
   const ranked = [...(rows || [])]
-    .filter((row) => Number.isFinite(Number(row.price)))
+    .filter((row) => firstFinite(row.price, row.last_price, row.latest_price) !== null)
     .sort((a, b) => Math.abs(Number(quoteDayPct(b)) || 0) - Math.abs(Number(quoteDayPct(a)) || 0))
     .slice(0, 28);
+  track.closest(".market-tape")?.classList.toggle("is-empty", !ranked.length);
   if (!ranked.length) {
     track.innerHTML = `<span class="market-tape-empty">${escapeHtml(MARKET_LABELS[region] || region)} quotes awaiting feed</span>`;
     return;
@@ -4769,9 +4925,10 @@ function marketTapeItem(row) {
   const market = rowMarket(row);
   const dayPct = quoteDayPct(row);
   const cls = pnlClass(dayPct);
+  const price = firstFinite(row.price, row.last_price, row.latest_price);
   return `<button class="market-tape-item ${cls}" type="button" data-quote-symbol="${escapeHtml(row.symbol)}">
     <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-    <span>${fmtMarketMoney(row.price, market)}</span>
+    <span>${fmtMarketMoney(price, market)}</span>
     <em>${fmtPct(dayPct)}</em>
   </button>`;
 }
@@ -4791,9 +4948,18 @@ function quoteRow(row) {
 }
 
 function quoteDayPct(row) {
-  const price = Number(row.price);
-  const close = Number(row.close);
-  const open = Number(row.open);
+  const direct = firstFinite(
+    row.day_change_pct,
+    row.change_pct,
+    row.change_percent,
+    row.percent_change,
+    row.pct_change,
+    row.day_pct,
+  );
+  if (direct !== null) return direct;
+  const price = firstFinite(row.price, row.last_price, row.latest_price);
+  const close = firstFinite(row.prev_close, row.previous_close, row.close);
+  const open = firstFinite(row.open);
   const reference = Number.isFinite(close) && close > 0 && Math.abs(close - price) > 0.000001
     ? close
     : (Number.isFinite(open) && open > 0 ? open : close);
@@ -4812,7 +4978,7 @@ function decisionFeedEmptyHtml(controlRunning, marketLabel = activeMarketLabel()
   return emptyBlock(
     `No ${marketLabel} decisions yet`,
     controlRunning
-      ? "The agent is running. This market feed will fill after the next completed strategy scan."
+      ? "The scanner is running. This market feed will fill after the next completed strategy scan."
       : "Use Run Now in Dashboard to scan the selected market.",
   );
 }
@@ -4827,7 +4993,7 @@ function renderDecisions(rows, options = {}) {
     if (detail) {
       detail.innerHTML = emptyBlock(
         "No decision selected",
-        "When decisions arrive, select one to inspect signal quality, review notes, risk checks, and timeline.",
+        "When bids arrive, select one to inspect signal quality, risk checks, and timeline.",
         "Analyze Symbol",
         "analyze",
       );
@@ -4920,7 +5086,7 @@ function renderDecisionDetailPanel(row = {}) {
     ["Quote", `${fmtMarketMoney(row.price || context.quote?.price, market)} from ${context.quote?.source || row.source || "market feed"}`],
     ["Quality", `${fmtPct(Number(score.combined ?? row.combined_score ?? 0) * 100)} signal quality · ${full.confluence_score?.total ?? row.confluence ?? "-"} confirmations`],
     ["Checks", failedGatesFromAudit(audit, context).length ? `${failedGatesFromAudit(audit, context).length} item(s) need improvement` : "trade checks clear"],
-    ["Review", audit.llm_error ? "completed safely with rules" : humanLabel(plainDecisionPath(audit.decision_path || "deterministic_audit"))],
+    ["Signal", audit.llm_error ? "completed safely with rules" : humanLabel(plainDecisionPath(audit.decision_path || "deterministic_audit"))],
     ["Decision", `${row.action || "HOLD"} · ${fmtNumber(confidence)}% conviction`],
   ];
   panel.innerHTML = `
@@ -4945,7 +5111,7 @@ function renderDecisionDetailPanel(row = {}) {
     </section>
     <section class="decision-review-grid">
       <div>
-        <h4>Review Notes</h4>
+        <h4>Signal Notes</h4>
         ${formattedLlmReasonHtml(llm, audit, row)}
       </div>
       <div>
@@ -5043,12 +5209,12 @@ function formattedLlmReasonHtml(llm = {}, audit = {}, decision = {}) {
   const sections = [
     ["Bottom line", reason || fallbackReason],
     ["What is working", sentenceFromList(evidence, checklist.length ? sentenceFromList(checklist) : "")],
-    ["What is missing", sentenceFromList(dataLimits, audit.llm_error ? "The review could not complete, so the safer decision was used." : "")],
+    ["What is missing", sentenceFromList(dataLimits, audit.llm_error ? "The signal check could not complete, so the safer decision was used." : "")],
     ["Risk to watch", sentenceFromList(risks)],
     ["What would change the view", sentenceFromList(monitoring)],
   ].filter(([, text]) => text);
   if (!sections.length) {
-    return `<div class="empty-state product-empty"><strong>No review notes captured</strong><span>This decision still used price, volume, risk checks, and strategy rules.</span></div>`;
+    return `<div class="empty-state product-empty"><strong>No signal notes captured</strong><span>This decision still used price, volume, risk checks, and strategy rules.</span></div>`;
   }
   return `<div class="openstocks-formatted-view">
     ${sections.map(([title, text]) => `<article><h5>${escapeHtml(title)}</h5><p>${escapeHtml(shortValue(text, 620))}</p></article>`).join("")}
@@ -5198,14 +5364,13 @@ async function showDetails(title, value) {
 
 function detailHtml(value) {
   if (!value || typeof value !== "object") {
-    return `<pre>${escapeHtml(value)}</pre>`;
+    return `<section class="audit-section"><p>${escapeHtml(value)}</p></section>`;
   }
   if (Array.isArray(value)) {
     return `<section class="audit-section">
       <h4>Summary</h4>
       <p>${escapeHtml(value.length ? `${value.length} records are available. Open the matching tab to work with the list.` : "No records available.")}</p>
-    </section>
-    <details class="raw-audit"><summary>Technical raw data</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
+    </section>`;
   }
   if (value.__detail_type === "opportunity_health") {
     return opportunityHealthDetailHtml(value);
@@ -5224,18 +5389,12 @@ function detailHtml(value) {
   }
   const rows = Object.entries(value)
     .filter(([key]) => !key.endsWith("_json"))
-    .map(([key, item]) => `<div><span>${escapeHtml(key)}</span><strong>${escapeHtml(formatDetailValue(item))}</strong></div>`)
-    .join("");
-  const jsonBlocks = Object.entries(value)
-    .filter(([key]) => key.endsWith("_json"))
-    .map(([key, item]) => `<details class="raw-audit"><summary>${escapeHtml(humanLabel(key))}</summary><pre>${escapeHtml(prettyJson(item))}</pre></details>`)
+    .map(([key, item]) => `<div><span>${escapeHtml(humanLabel(key))}</span><strong>${escapeHtml(formatDetailValue(item))}</strong></div>`)
     .join("");
   return `<section class="audit-section">
-    <h4>Readable Summary</h4>
+    <h4>Summary</h4>
     <div class="detail-list">${rows || `<div><span>Status</span><strong>No summary fields available</strong></div>`}</div>
-  </section>
-  ${jsonBlocks}
-  <details class="raw-audit"><summary>Full technical data</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
+  </section>`;
 }
 
 function opportunityHealthDetailHtml(value = {}) {
@@ -5373,11 +5532,7 @@ function opportunityHealthDetailHtml(value = {}) {
         <tbody>${rows || `<tr><td colspan="7">No candidates for ${escapeHtml(value.market_region || activeMarketLabel())}</td></tr>`}</tbody>
       </table>
     </div>
-  </section>
-  <details class="raw-audit"><summary>Opportunity scan data</summary><pre>${escapeHtml(JSON.stringify(scan, null, 2))}</pre></details>
-  <details class="raw-audit"><summary>NSE top-gainers playbook data</summary><pre>${escapeHtml(JSON.stringify(gainersPlaybook, null, 2))}</pre></details>
-  <details class="raw-audit"><summary>Market-action radar data</summary><pre>${escapeHtml(JSON.stringify(marketAction, null, 2))}</pre></details>
-  <details class="raw-audit"><summary>Premarket technical data</summary><pre>${escapeHtml(JSON.stringify(premarket, null, 2))}</pre></details>`;
+  </section>`;
 }
 
 function suggestionDetailHtml(row) {
@@ -5446,10 +5601,6 @@ function positionDetailHtml(row) {
       unrealized_pnl: fmtMarketMoney(pnl, market),
     })}
     ${exitPlanHtml(row.exit_plan, market)}
-    <section class="audit-section">
-      <h4>Full Position JSON</h4>
-      <pre>${escapeHtml(JSON.stringify(row, null, 2))}</pre>
-    </section>
   `;
 }
 
@@ -5504,10 +5655,6 @@ function decisionDetailHtml(row) {
     ${marketContextHtml(context, market)}
     ${fullSpectrumHtml(context.full_spectrum_analysis, market)}
     ${strategySignalsHtml(context.strategy_signals || [])}
-    <section class="audit-section">
-      <h4>Full Audit JSON</h4>
-      <pre>${escapeHtml(JSON.stringify(audit, null, 2))}</pre>
-    </section>
   `;
 }
 
@@ -5539,10 +5686,6 @@ function orderDetailHtml(row) {
     ${exitPlanHtml(exit, market)}
     ${objectCardsHtml("Broker / Route", route)}
     ${audit.decision ? nestedDecisionHtml(audit.decision) : ""}
-    <section class="audit-section">
-      <h4>Full Audit JSON</h4>
-      <pre>${escapeHtml(JSON.stringify(audit, null, 2))}</pre>
-    </section>
   `;
 }
 
@@ -5604,7 +5747,7 @@ function exitPlanHtml(exit, market = "IN") {
   return `<section class="audit-section exit-plan">
     <h4>Exit Plan</h4>
     <div class="audit-cards">
-      <div class="audit-card"><span>When</span><strong>${escapeHtml(exit.horizon || "swing_3_to_7_days")}</strong><small>review every cycle</small></div>
+      <div class="audit-card"><span>When</span><strong>${escapeHtml(exit.horizon || "swing_3_to_7_days")}</strong><small>check every cycle</small></div>
       <div class="audit-card"><span>Entry Zone</span><strong>${escapeHtml(formatZone(exit.entry_zone, market))}</strong><small>avoid chasing outside plan</small></div>
       <div class="audit-card"><span>Hard Stop</span><strong class="negative">${fmtTradeMoney(exit.stop_loss, market)}</strong><small>exit if invalidated</small></div>
       <div class="audit-card"><span>Target 1</span><strong class="positive">${fmtTradeMoney(exit.target_1?.price, market)}</strong><small>R:R ${escapeHtml(exit.target_1?.rr ?? "-")}</small></div>
@@ -5679,7 +5822,7 @@ function preFilterHtml(audit, context, market = "IN") {
 function llmOutputHtml(llm, audit) {
   const admin = Boolean(state.auth?.admin);
   return `<section class="audit-section">
-    <h4>OpenStocks View Evidence</h4>
+    <h4>Signal Evidence</h4>
     <div class="audit-cards two">
       <div class="audit-card">
         <span>Requested Action</span>
@@ -5688,7 +5831,7 @@ function llmOutputHtml(llm, audit) {
       </div>
       <div class="audit-card">
         <span>Analysed By</span>
-        <strong>${admin ? escapeHtml(audit.model || llm.model || "-") : "OpenStocks View"}</strong>
+        <strong>${admin ? escapeHtml(audit.model || llm.model || "-") : "Signal Check"}</strong>
         <small>${admin ? `${escapeHtml(audit.provider || llm.provider || "-")} · ` : ""}${escapeHtml(audit.analysis_mode || llm.analysis_mode || "single_context")}</small>
       </div>
       <div class="audit-card">
@@ -5697,7 +5840,7 @@ function llmOutputHtml(llm, audit) {
         <small>minimum ${fmtNumber(Number(audit.confidence_gate?.minimum_required || 0) * 100)}%</small>
       </div>
     </div>
-    ${admin ? objectCardsHtml("Review Routing", {
+    ${admin ? objectCardsHtml("Signal Routing", {
       configured_provider: audit.configured_provider,
       configured_model: audit.configured_model,
       selected_provider: audit.provider,
@@ -5717,39 +5860,8 @@ function llmOutputHtml(llm, audit) {
 	  </section>`;
 }
 
-function llmPayloadHtml(audit, context = {}) {
-  if (!state.auth?.admin) return "";
-  const payload = audit.llm_prompt_audit || audit.llm_payload_audit || null;
-  const selection = context.llm_primary_selection || {};
-  if (!payload) {
-    return `<section class="audit-section">
-      <h4>Review Payload</h4>
-      <div class="audit-cards">
-        <div class="audit-card"><span>Status</span><strong>${selection.selected ? "not captured" : "not sent"}</strong><small>${selection.selected ? "This older decision predates payload capture." : "This symbol was not selected for OpenStocks View in this cycle."}</small></div>
-        <div class="audit-card"><span>Candidate Limit</span><strong>${escapeHtml(selection.candidate_limit ?? "-")}</strong><small>${selection.required ? "OpenStocks View required" : "OpenStocks View not required"}</small></div>
-      </div>
-    </section>`;
-  }
-  const sections = Array.isArray(payload.included_sections) ? payload.included_sections.join(", ") : "-";
-  const compacted = Boolean(payload.storage_compacted);
-  return `<section class="audit-section">
-    <h4>Review Payload</h4>
-    <div class="audit-cards">
-      <div class="audit-card"><span>Market</span><strong>${escapeHtml(payload.market_region || "-")}</strong><small>${escapeHtml(payload.currency || "-")} context</small></div>
-      <div class="audit-card"><span>Input Estimate</span><strong>${fmtNumber(payload.estimated_input_tokens)}</strong><small>approx tokens from prompt chars</small></div>
-      <div class="audit-card"><span>Context Size</span><strong>${fmtNumber(payload.context_chars)}</strong><small>${fmtNumber(payload.system_prompt_chars)} system chars</small></div>
-      <div class="audit-card"><span>Hash</span><strong>${escapeHtml(shortValue(payload.context_sha256, 14))}</strong><small>exact user context checksum</small></div>
-    </div>
-    <p class="audit-formula">Sections sent: ${escapeHtml(sections)}</p>
-    <details class="raw-audit">
-      <summary>${compacted ? "Stored LLM system prompt" : "Exact LLM system prompt"}</summary>
-      <pre>${escapeHtml(payload.system_prompt || "")}</pre>
-    </details>
-    <details class="raw-audit">
-      <summary>${compacted ? "Stored LLM user context JSON" : "Exact LLM user context JSON"}</summary>
-      <pre>${escapeHtml(JSON.stringify(payload.user_context || {}, null, 2))}</pre>
-    </details>
-  </section>`;
+function llmPayloadHtml() {
+  return "";
 }
 
 function riskGateHtml(audit, market = "IN") {
@@ -5775,10 +5887,9 @@ function riskGateHtml(audit, market = "IN") {
       <div class="audit-card"><span>BUY Threshold</span><strong>${fmtNumber(buyThreshold)}</strong><small>combined score required before a fresh long</small></div>
       <div class="audit-card"><span>Open Position</span><strong>${(gates.has_existing_position ?? Number(context.position?.qty || 0) > 0) ? "yes" : "no"}</strong><small>${fmtNumber(currentOpenPositions)} / ${fmtNumber(maxPositions)} positions used</small></div>
       <div class="audit-card"><span>Institutional Gate</span><strong class="${scorecardClass}">${scorecardStatus}</strong><small>${escapeHtml(failedScorecardItems.map(reasonFromSnakeCase).join(" ") || "must-pass checks clear")}</small></div>
-      <div class="audit-card"><span>OpenStocks View</span><strong>${llmSelected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(llmLimit ?? "-")}</small></div>
+      <div class="audit-card"><span>Signal Check</span><strong>${llmSelected ? "selected" : "not selected"}</strong><small>candidate limit ${escapeHtml(llmLimit ?? "-")}</small></div>
     </div>
 	    ${auditList("Failed Gates", failed.length ? failed.map((gate) => humanizeGateFailure(gate, market)) : ["No hard gate failed."])}
-    <details class="raw-audit"><summary>Technical risk-gate data</summary><pre>${escapeHtml(JSON.stringify(gates, null, 2))}</pre></details>
   </section>`;
 }
 
@@ -5795,17 +5906,6 @@ function marketContextHtml(context, market = "IN") {
       <div class="audit-card"><span>Free Institutional</span><strong class="${pnlClass(context.institutional_context?.market_bias?.score)}">${fmtNumber(context.institutional_context?.market_bias?.score)}</strong><small>${escapeHtml(context.institutional_context?.source_quality || "-")}</small></div>
       <div class="audit-card"><span>Universe Rank</span><strong>${escapeHtml(context.universe_scan?.rank || "-")}</strong><small>${escapeHtml(shortValue(context.universe_scan?.selection_basis || "-", 110))}</small></div>
     </div>
-    <pre>${escapeHtml(JSON.stringify({
-      position: context.position,
-      technical_math: context.technical_math,
-      candlestick_analysis: context.candlestick_analysis,
-      best_strategy: context.best_strategy,
-      global_market_context: context.global_market_context,
-      institutional_context: context.institutional_context,
-      universe_scan: context.universe_scan,
-      recent_candle_count: context.recent_candle_count,
-      recent_candles_tail: context.recent_candles_tail,
-    }, null, 2))}</pre>
   </section>`;
 }
 
@@ -5871,23 +5971,6 @@ function fullSpectrumHtml(analysis, market = "IN") {
     ${objectCardsHtml("Accumulation Structure", analysis.institutional_structure)}
     ${auditList("Monitoring Checklist", analysis.monitoring_checklist)}
     ${auditList("Data Gaps", analysis.data_gaps)}
-    <pre>${escapeHtml(JSON.stringify({
-      primary_filters: analysis.primary_filters,
-      fibonacci: analysis.fibonacci,
-      indicator_suite: analysis.indicator_suite,
-      candlestick_v2: analysis.candlestick_v2,
-      chart_patterns: analysis.chart_patterns,
-      liquidity_profile: analysis.liquidity_profile,
-      relative_strength: analysis.relative_strength,
-      fundamental_quality: analysis.fundamental_quality,
-      corporate_event_risk: analysis.corporate_event_risk,
-      delivery_accumulation: analysis.delivery_accumulation,
-      options_oi: analysis.options_oi,
-      backtest_snapshot: analysis.backtest_snapshot,
-      signal_conflicts: analysis.signal_conflicts,
-      institutional_scorecard: analysis.institutional_scorecard,
-      trade_plan: analysis.trade_plan,
-    }, null, 2))}</pre>
   </section>`;
 }
 
@@ -5946,7 +6029,6 @@ function nestedDecisionHtml(decision) {
     <h4>Linked Decision</h4>
     <p>${escapeHtml(readableDecisionReason(decision))}</p>
     ${auditList("Main Reasons", decisionReasonHighlights(decision))}
-    <details class="raw-audit"><summary>Linked decision raw data</summary><pre>${escapeHtml(JSON.stringify(decision, null, 2))}</pre></details>
   </section>`;
 }
 
@@ -5991,8 +6073,15 @@ function labelize(value) {
 
 function shortValue(value, max = 90) {
   if (value === null || value === undefined) return "-";
-  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  const text = typeof value === "object" ? objectSummary(value) : String(value);
   return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function objectSummary(value) {
+  if (Array.isArray(value)) return `${fmtNumber(value.length)} items`;
+  const keys = Object.keys(value || {}).filter((key) => !key.endsWith("_json"));
+  if (!keys.length) return "-";
+  return keys.slice(0, 3).map((key) => `${humanLabel(key)}: ${formatDetailValue(value[key])}`).join(" · ");
 }
 
 function emptyTableRow(colspan, title, message, actionLabel = "", actionView = "") {
@@ -6035,12 +6124,12 @@ function prettyAgentDetails(details = {}) {
     if (!(key in details)) continue;
     const value = details[key];
     if (value === null || value === undefined || value === "") continue;
-    const rendered = typeof value === "object" ? JSON.stringify(value) : String(value);
+    const rendered = typeof value === "object" ? objectSummary(value) : String(value);
     parts.push(`${humanLabel(key)}: ${rendered}`);
   }
   if (!parts.length) {
     for (const [key, value] of Object.entries(details).slice(0, 3)) {
-      const rendered = typeof value === "object" ? JSON.stringify(value) : String(value);
+      const rendered = typeof value === "object" ? objectSummary(value) : String(value);
       parts.push(`${humanLabel(key)}: ${rendered}`);
     }
   }
@@ -6049,16 +6138,8 @@ function prettyAgentDetails(details = {}) {
 
 function formatDetailValue(value) {
   if (value === null || value === undefined) return "-";
-  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "object") return objectSummary(value);
   return value;
-}
-
-function prettyJson(value) {
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
 }
 
 function drawEquity(rows, market = state.activeMarket) {
@@ -6208,7 +6289,7 @@ async function analyzeSymbol(event) {
   }, 1000);
   button.disabled = true;
   byId("analyze-status").textContent = `analyzing ${market}:${symbol}...`;
-  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk checks, and review notes if enabled...</div>`;
+  byId("analyze-result").innerHTML = `<div class="empty-state">Running ${market} quote, candles, strategy, sentiment, risk checks, and signal notes if enabled...</div>`;
   try {
     const response = await fetch("/api/analyze-symbol", {
       method: "POST",
@@ -6308,7 +6389,6 @@ function renderManualAnalysis(payload) {
         <button type="button" data-analysis-tab="strategy">Strategy</button>
         <button type="button" data-analysis-tab="sentiment">Sentiment</button>
         <button type="button" data-analysis-tab="risk">Risk</button>
-        <button type="button" data-analysis-tab="llm">OpenStocks View</button>
       </div>
       <div class="analysis-tab-panels">
         <section class="analysis-tab-panel active" data-analysis-panel="overview">
@@ -6333,16 +6413,9 @@ function renderManualAnalysis(payload) {
           ${preFilterHtml(details, context, market)}
           ${riskGateHtml(details, market)}
         </section>
-        <section class="analysis-tab-panel" data-analysis-panel="llm">
-          <button id="manual-detail-btn" type="button">Open Full Analysis</button>
-          ${llmActivity.message ? `<p class="muted">${escapeHtml(llmActivity.message)}${llmActivity.latest_failure ? ` ${escapeHtml(llmActivity.latest_failure)}` : ""}</p>` : ""}
-          ${details.llm_output ? formattedLlmReasonHtml(details.llm_output, details, decision) : `<p class="muted">OpenStocks View was not captured for this result. Re-run Analyze after checking credits and the user's review provider/API key.</p>`}
-          ${payload.provider_error ? `<p class="negative">${escapeHtml(payload.provider_error)}</p>` : ""}
-        </section>
       </div>
     </section>
   `;
-  byId("manual-detail-btn").addEventListener("click", () => showDetails("Manual Analysis", decision));
   bindAnalysisTabs();
   if (creditUsage.after) renderCreditSummary(creditUsage.after);
 }
