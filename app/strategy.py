@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -864,8 +865,6 @@ class StrategyEngine:
         review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
         setup = str(scan.get("setup") or review.get("setup") or "").strip().lower()
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
-        if data_quality.get("actionable_data_ready") is False and not data_quality.get("probe_only"):
-            return {"ready": False, "reason": "opportunity_scan_data_not_actionable", "setup": setup}
         if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
             return {"ready": False, "reason": "opportunity_scan_wait_state", "setup": setup}
 
@@ -890,19 +889,44 @@ class StrategyEngine:
             "top_gainer_momentum",
             "price_shocker_reversal_breakout",
         }
+        live_quote_probe_ok = self._live_quote_probe_data_ok(context, scan, setup)
+        data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+        live_review_probe_ok = review_ready and data_ready.get("trade_decision_ready") is True
+        if (
+            data_quality.get("actionable_data_ready") is False
+            and not data_quality.get("probe_only")
+            and not live_quote_probe_ok
+            and not live_review_probe_ok
+        ):
+            return {"ready": False, "reason": "opportunity_scan_data_not_actionable", "setup": setup}
         scan_ready = allowed_scan_setup and bucket == "actionable" and (
-            scan_score >= 0.60 or bool(data_quality.get("actionable_data_ready"))
+            scan_score >= 0.60 or bool(data_quality.get("actionable_data_ready")) or live_quote_probe_ok
         )
         ready = review_ready or scan_ready
         return {
             "ready": ready,
             "reason": "opportunity_price_volume_probe_ready" if ready else "no_opportunity_probe",
             "setup": setup,
-            "source": "live_momentum_review" if review_ready else "opportunity_scan" if scan_ready else None,
+            "source": (
+                "live_momentum_review"
+                if review_ready
+                else "live_quote_opportunity_scan"
+                if live_quote_probe_ok
+                else "opportunity_scan"
+                if scan_ready
+                else None
+            ),
             "scan_score": round(scan_score, 4),
             "combined_floor": 0.20,
             "min_quality_score": OPPORTUNITY_PROBE_MIN_SCORE,
             "size_policy": "probe_size_only",
+            "data_quality_override": (
+                "live_momentum_review_with_trade_ready_data"
+                if live_review_probe_ok and data_quality.get("actionable_data_ready") is False
+                else "live_quote_ohlcv_used_for_probe"
+                if live_quote_probe_ok
+                else None
+            ),
         }
 
     def _opportunity_probe_can_absorb_gate(self, gate: dict[str, Any], profile: dict[str, Any]) -> bool:
@@ -918,7 +942,9 @@ class StrategyEngine:
         if gate_name in absorbable:
             return True
         if gate_name == "stage_buy_permitted":
-            return profile.get("source") in {"live_momentum_review", "opportunity_scan"}
+            return profile.get("source") in {"live_momentum_review", "opportunity_scan", "live_quote_opportunity_scan"}
+        if gate_name == "risk_overrides":
+            return self._opportunity_probe_can_absorb_risk_flags(gate.get("value"), profile)
         if reason in {
             "overall_score_below_70_no_new_longs",
             "fundamentals_unknown_needs_news_or_delivery_confirmation",
@@ -927,6 +953,58 @@ class StrategyEngine:
         }:
             return True
         return False
+
+    def _live_quote_probe_data_ok(self, context: dict[str, Any], scan: dict[str, Any], setup: str) -> bool:
+        data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        missing = {str(item or "").strip().lower() for item in data_quality.get("missing") or [] if str(item or "").strip()}
+        if missing and missing - {"stale_intraday_candles"}:
+            return False
+        if setup not in {
+            "opening_ignition",
+            "intraday_momentum",
+            "breakout_continuation",
+            "near_breakout",
+            "news_catalyst",
+            "52_week_high_volume_breakout",
+            "broker_re_rating_breakout",
+            "earnings_beat_gap_and_go",
+            "market_action_momentum",
+            "top_gainer_momentum",
+            "price_shocker_reversal_breakout",
+        }:
+            return False
+        quote = context.get("quote") if isinstance(context.get("quote"), dict) else {}
+        source = str(quote.get("source") or data_quality.get("quote_source") or "").lower()
+        if not any(token in source for token in ("upstox", "kite", "nubra")):
+            return False
+        has_live_ohlcv = all((_float_or_none(quote.get(key)) or 0.0) > 0 for key in ("price", "open", "high", "low", "volume"))
+        turnover = _float_or_none(scan.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(scan.get("projected_turnover")) or 0.0
+        return has_live_ohlcv and (turnover >= 50_000_000 or projected_turnover >= 150_000_000)
+
+    def _opportunity_probe_can_absorb_risk_flags(self, value: Any, profile: dict[str, Any]) -> bool:
+        flags = _risk_flag_list(value)
+        if not flags:
+            return False
+        hard_tokens = (
+            "asm_surveillance",
+            "delivery_conflict",
+            "distribution",
+            "mtf",
+            "timeframe_conflict",
+            "stop_hit",
+            "climax",
+            "earnings_lockout",
+            "corporate_event_risk",
+            "circuit",
+            "price_extended_from_pivot",
+            "hard_block",
+        )
+        for flag in flags:
+            normalized = str(flag or "").strip().lower()
+            if any(token in normalized for token in hard_tokens):
+                return False
+        return True
 
     def _delivery_context(self, symbol: str, delivery_service: Any | None) -> dict[str, Any]:
         if delivery_service is None:
@@ -2286,6 +2364,20 @@ def _csv_symbols(value: Any) -> list[str]:
         seen.add(symbol)
         symbols.append(symbol)
     return symbols
+
+
+def _risk_flag_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+    if isinstance(value, str):
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item or "").strip() for item in parsed if str(item or "").strip()]
+        return [part.strip() for part in value.replace("[", "").replace("]", "").replace("'", "").split(",") if part.strip()]
+    return []
 
 
 def _execution_cost_bps(settings: Settings) -> float:

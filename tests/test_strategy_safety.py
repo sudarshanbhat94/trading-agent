@@ -932,6 +932,83 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertTrue(context["decision_gate_context"]["opportunity_probe"]["ready"])
         self.assertFalse(context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"])
 
+    def test_live_confirmed_probe_can_use_trade_ready_data_when_scan_quality_lags(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.5,
+                "day_range_position": 0.92,
+                "day_high_distance_pct": 0.3,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 54
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 54
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
+        context["opportunity_scan"] = {
+            "setup": "opening_ignition",
+            "bucket": "Actionable",
+            "score": 0.84,
+            "day_gain_pct": 3.5,
+            "day_range_position": 0.92,
+            "day_high_distance_pct": 0.3,
+            "volume_ratio": 0.45,
+            "projected_volume_ratio": 2.5,
+            "components": {"live_momentum": 0.66},
+            "data_quality": {"actionable_data_ready": False, "missing": ["stale_intraday_candles"]},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("LIVEPROBE", 0.24, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(probe["source"], "live_momentum_review")
+        self.assertEqual(probe["data_quality_override"], "live_momentum_review_with_trade_ready_data")
+
+    def test_live_confirmed_probe_still_respects_phase2_data_readiness(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.5,
+                "day_range_position": 0.92,
+                "day_high_distance_pct": 0.3,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["data_readiness"]["trade_decision_ready"] = False
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
+        context["opportunity_scan"] = {
+            "setup": "opening_ignition",
+            "bucket": "Actionable",
+            "score": 0.84,
+            "day_gain_pct": 3.5,
+            "day_range_position": 0.92,
+            "day_high_distance_pct": 0.3,
+            "components": {"live_momentum": 0.66},
+            "data_quality": {"actionable_data_ready": False, "missing": ["stale_quote"]},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("LIVEPROBE", 0.24, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(context["decision_gate_context"]["opportunity_probe"]["ready"])
+
     def test_circuit_demand_lock_does_not_become_rule_based_buy(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),

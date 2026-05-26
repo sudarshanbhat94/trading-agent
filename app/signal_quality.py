@@ -141,7 +141,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
         cautions.append("opportunity scan setup; use probe size until confirmation matures")
 
-    severe_flags = _severe_risk_flags(risk_flags)
+    severe_flags = _severe_risk_flags(risk_flags, opportunity_probe=opportunity_probe)
     if severe_flags:
         return _blocked(
             "severe_risk_flags",
@@ -312,8 +312,8 @@ def _risk_flags(item: dict[str, Any], details: dict[str, Any]) -> list[str]:
     return [str(flag or "").strip().lower() for flag in flags if str(flag or "").strip()]
 
 
-def _severe_risk_flags(risk_flags: list[str]) -> list[str]:
-    severe_tokens = (
+def _severe_risk_flags(risk_flags: list[str], *, opportunity_probe: bool = False) -> list[str]:
+    severe_tokens = _opportunity_probe_hard_risk_tokens() if opportunity_probe else (
         "hard_block",
         "no_new_longs",
         "false_breakout_risk",
@@ -334,6 +334,23 @@ def _severe_risk_flags(risk_flags: list[str]) -> list[str]:
         if any(token in normalized for token in severe_tokens):
             severe.append(normalized)
     return severe
+
+
+def _opportunity_probe_hard_risk_tokens() -> tuple[str, ...]:
+    return (
+        "hard_block",
+        "asm_surveillance",
+        "delivery_conflict",
+        "distribution",
+        "mtf",
+        "timeframe_conflict",
+        "stop_hit",
+        "climax",
+        "earnings_lockout",
+        "corporate_event_risk",
+        "circuit",
+        "price_extended_from_pivot",
+    )
 
 
 def _breakout_payload(details: dict[str, Any]) -> dict[str, Any]:
@@ -363,7 +380,8 @@ def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> b
     if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
         return False
     data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
-    if data_quality.get("actionable_data_ready") is False and not data_quality.get("probe_only"):
+    live_quote_probe_ok = _live_quote_probe_data_ok(item, details, scan, setup)
+    if data_quality.get("actionable_data_ready") is False and not data_quality.get("probe_only") and not live_quote_probe_ok:
         return False
     bucket = str(scan.get("bucket") or "").strip().lower()
     score = _number(scan.get("score")) or 0.0
@@ -380,8 +398,38 @@ def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> b
         "top_gainer_momentum",
         "price_shocker_reversal_breakout",
     }:
-        return score >= 0.60 or bool(data_quality.get("actionable_data_ready"))
+        return score >= 0.60 or bool(data_quality.get("actionable_data_ready")) or live_quote_probe_ok
     return False
+
+
+def _live_quote_probe_data_ok(item: dict[str, Any], details: dict[str, Any], scan: dict[str, Any], setup: str) -> bool:
+    data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+    missing = {str(value or "").strip().lower() for value in data_quality.get("missing") or [] if str(value or "").strip()}
+    if missing and missing - {"stale_intraday_candles"}:
+        return False
+    if setup not in {
+        "opening_ignition",
+        "intraday_momentum",
+        "breakout_continuation",
+        "near_breakout",
+        "news_catalyst",
+        "52_week_high_volume_breakout",
+        "broker_re_rating_breakout",
+        "earnings_beat_gap_and_go",
+        "market_action_momentum",
+        "top_gainer_momentum",
+        "price_shocker_reversal_breakout",
+    }:
+        return False
+    quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote")
+    quote = quote if isinstance(quote, dict) else {}
+    source = str(quote.get("source") or data_quality.get("quote_source") or "").lower()
+    if not any(token in source for token in ("upstox", "kite", "nubra")):
+        return False
+    has_live_ohlcv = all((_number(quote.get(key)) or 0.0) > 0 for key in ("price", "open", "high", "low", "volume"))
+    turnover = _number(scan.get("turnover")) or 0.0
+    projected_turnover = _number(scan.get("projected_turnover")) or 0.0
+    return has_live_ohlcv and (turnover >= 50_000_000 or projected_turnover >= 150_000_000)
 
 
 def _missing_sentiment_news(data_readiness: dict[str, Any]) -> bool:
