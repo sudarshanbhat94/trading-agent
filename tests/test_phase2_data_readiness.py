@@ -167,7 +167,7 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
         self.assertIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
 
-    def test_india_missing_delivery_and_event_feeds_blocks_trade_readiness(self) -> None:
+    def test_india_missing_delivery_and_event_feeds_are_soft_sizing_gaps(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "RELIANCE", "exchange": "NSE", "name": "Reliance"},
             quote=Quote(symbol="RELIANCE", price=2800, source="upstox-live", asof="2026-05-20T04:30:00+00:00", volume=2_000_000),
@@ -185,11 +185,13 @@ class Phase2DataReadinessTests(unittest.TestCase):
             full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.3}},
         )
 
-        self.assertFalse(readiness["trade_decision_ready"])
+        self.assertTrue(readiness["trade_decision_ready"])
         self.assertIn("in_delivery_pct", readiness["missing_data"])
         self.assertIn("in_corporate_announcements", readiness["missing_data"])
+        self.assertIn("in_delivery_pct", [item["key"] for item in readiness["soft_gaps"]])
+        self.assertNotIn("in_delivery_pct", [item["key"] for item in readiness["hard_gaps"]])
 
-    def test_paper_execution_does_not_downgrade_india_event_context(self) -> None:
+    def test_paper_execution_keeps_india_supporting_context_as_soft_gaps(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "RELIANCE", "exchange": "NSE", "name": "Reliance"},
             quote=Quote(symbol="RELIANCE", price=2800, source="upstox-live", asof="2026-05-20T04:30:00+00:00", volume=2_000_000),
@@ -208,10 +210,11 @@ class Phase2DataReadinessTests(unittest.TestCase):
             execution_mode="paper",
         )
 
-        self.assertFalse(readiness["trade_decision_ready"])
+        self.assertTrue(readiness["trade_decision_ready"])
         self.assertIn("in_delivery_pct", readiness["missing_data"])
         self.assertIn("in_sector_breadth", readiness["missing_data"])
-        self.assertIn("in_corporate_announcements", [item["key"] for item in readiness["hard_gaps"]])
+        self.assertIn("in_corporate_announcements", [item["key"] for item in readiness["soft_gaps"]])
+        self.assertEqual(readiness["hard_gaps"], [])
 
     def test_phase2_hard_gaps_block_new_buy_rule_audit(self) -> None:
         context = {

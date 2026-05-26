@@ -13,7 +13,7 @@ from .llm_brain import LLMBrain
 from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
 from .sentiment import SentimentService
-from .signal_quality import FRESH_BUY_MIN_SCORE
+from .signal_quality import FRESH_BUY_MIN_SCORE, OPPORTUNITY_PROBE_MIN_SCORE
 from .trading_rules import evaluate_rules_for_context
 
 
@@ -45,7 +45,13 @@ def _llm_buy_block_reason(context: dict[str, Any]) -> str | None:
         return "data_readiness_not_trade_ready_llm_buy"
 
     decision_gates = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
-    failed_gates = decision_gates.get("failed_gates") if isinstance(decision_gates.get("failed_gates"), list) else []
+    failed_gates = (
+        decision_gates.get("blocking_failed_gates")
+        if isinstance(decision_gates.get("blocking_failed_gates"), list)
+        else decision_gates.get("failed_gates")
+        if isinstance(decision_gates.get("failed_gates"), list)
+        else []
+    )
     if failed_gates:
         return "deterministic_buy_gates_failed_llm_buy"
 
@@ -544,6 +550,7 @@ class StrategyEngine:
         sector = full_spectrum.get("sector_rotation") or {}
         market_breadth = context.get("market_breadth_context") or {}
         pre_filter = context.get("pre_filter") or {}
+        opportunity_probe = self._opportunity_probe_profile(context)
         rule_audit = evaluate_rules_for_context(
             context,
             positions,
@@ -678,7 +685,11 @@ class StrategyEngine:
         if alignment_grade == "C":
             context["mtf_c_speculative_size_only"] = True
         overall_score_pct = float(rule_audit.get("overall_score_pct") or 0.0)
-        if not has_position and overall_score_pct < FRESH_BUY_MIN_SCORE:
+        if (
+            not has_position
+            and overall_score_pct < FRESH_BUY_MIN_SCORE
+            and not (opportunity_probe.get("ready") and overall_score_pct >= OPPORTUNITY_PROBE_MIN_SCORE)
+        ):
             fail(
                 "overall_quality_gate",
                 {"overall_score_pct": overall_score_pct, "overall_grade": rule_audit.get("overall_grade")},
@@ -810,10 +821,31 @@ class StrategyEngine:
             "breadth_regime": market_breadth.get("breadth_regime"),
             "breadth_thrust": market_breadth.get("breadth_thrust"),
             "system_gate_audit": rule_audit,
+            "opportunity_probe": opportunity_probe,
+            "blocking_failed_gates": failed_gates,
         }
+        blocking_failed_gates = failed_gates
+        if opportunity_probe.get("ready") and failed_gates:
+            blocking_failed_gates = [
+                gate
+                for gate in failed_gates
+                if not self._opportunity_probe_can_absorb_gate(gate, opportunity_probe)
+            ]
+            context["decision_gate_context"]["opportunity_probe"]["absorbed_gates"] = [
+                gate
+                for gate in failed_gates
+                if self._opportunity_probe_can_absorb_gate(gate, opportunity_probe)
+            ]
+            context["decision_gate_context"]["opportunity_probe"]["blocking_gates"] = blocking_failed_gates
+            context["decision_gate_context"]["blocking_failed_gates"] = blocking_failed_gates
         if failed_gates and not has_position:
-            return "HOLD"
-        if combined >= threshold and confluence_total >= 16 and scorecard.get("buy_ready") and not has_position:
+            if blocking_failed_gates:
+                return "HOLD"
+        buy_ready = bool(scorecard.get("buy_ready")) or bool(opportunity_probe.get("ready"))
+        buy_threshold_met = combined >= threshold or (
+            bool(opportunity_probe.get("ready")) and combined >= float(opportunity_probe.get("combined_floor") or 0.20)
+        )
+        if buy_threshold_met and confluence_total >= 16 and buy_ready and not has_position:
             return "BUY"
         if has_position and combined <= -0.38:
             context["score_weakness_exit_review"] = {
@@ -825,6 +857,76 @@ class StrategyEngine:
         if exit_pressure and has_position:
             return "SELL"
         return "HOLD"
+
+    def _opportunity_probe_profile(self, context: dict[str, Any]) -> dict[str, Any]:
+        scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
+        setup = str(scan.get("setup") or review.get("setup") or "").strip().lower()
+        data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        if data_quality.get("actionable_data_ready") is False and not data_quality.get("probe_only"):
+            return {"ready": False, "reason": "opportunity_scan_data_not_actionable", "setup": setup}
+        if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
+            return {"ready": False, "reason": "opportunity_scan_wait_state", "setup": setup}
+
+        review_ready = bool(
+            review.get("strategy_ready")
+            or review.get("early_ignition_ready")
+            or review.get("live_momentum_ready")
+            or review.get("market_action_breakout_ready")
+        )
+        bucket = str(scan.get("bucket") or "").strip().lower()
+        scan_score = _float_or_none(scan.get("score")) or 0.0
+        allowed_scan_setup = setup in {
+            "opening_ignition",
+            "intraday_momentum",
+            "breakout_continuation",
+            "near_breakout",
+            "news_catalyst",
+            "52_week_high_volume_breakout",
+            "broker_re_rating_breakout",
+            "earnings_beat_gap_and_go",
+            "market_action_momentum",
+            "top_gainer_momentum",
+            "price_shocker_reversal_breakout",
+        }
+        scan_ready = allowed_scan_setup and bucket == "actionable" and (
+            scan_score >= 0.60 or bool(data_quality.get("actionable_data_ready"))
+        )
+        ready = review_ready or scan_ready
+        return {
+            "ready": ready,
+            "reason": "opportunity_price_volume_probe_ready" if ready else "no_opportunity_probe",
+            "setup": setup,
+            "source": "live_momentum_review" if review_ready else "opportunity_scan" if scan_ready else None,
+            "scan_score": round(scan_score, 4),
+            "combined_floor": 0.20,
+            "min_quality_score": OPPORTUNITY_PROBE_MIN_SCORE,
+            "size_policy": "probe_size_only",
+        }
+
+    def _opportunity_probe_can_absorb_gate(self, gate: dict[str, Any], profile: dict[str, Any]) -> bool:
+        if not profile.get("ready"):
+            return False
+        gate_name = str(gate.get("gate") or "").strip()
+        reason = str(gate.get("reason") or "").strip()
+        absorbable = {
+            "overall_quality_gate",
+            "fundamental_confirmation_gate",
+            "session_momentum_gate",
+        }
+        if gate_name in absorbable:
+            return True
+        if gate_name == "stage_buy_permitted":
+            return profile.get("source") in {"live_momentum_review", "opportunity_scan"}
+        if reason in {
+            "overall_score_below_70_no_new_longs",
+            "fundamentals_unknown_needs_news_or_delivery_confirmation",
+            "broad_momentum_entry_needs_current_session_confirmation",
+            "stage_analysis_not_stage2_markup",
+        }:
+            return True
+        return False
 
     def _delivery_context(self, symbol: str, delivery_service: Any | None) -> dict[str, Any]:
         if delivery_service is None:
@@ -1751,7 +1853,13 @@ class StrategyEngine:
             return "entry_hard_blocked"
 
         decision_gates = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
-        failed_gates = decision_gates.get("failed_gates") if isinstance(decision_gates.get("failed_gates"), list) else []
+        failed_gates = (
+            decision_gates.get("blocking_failed_gates")
+            if isinstance(decision_gates.get("blocking_failed_gates"), list)
+            else decision_gates.get("failed_gates")
+            if isinstance(decision_gates.get("failed_gates"), list)
+            else []
+        )
         if failed_gates:
             return "entry_failed_trade_gates"
 

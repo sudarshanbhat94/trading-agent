@@ -16,7 +16,7 @@ from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, normalize_market_region
 from .opportunity_state import is_signal_candidate_state, opportunity_state_from_signal_details
-from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, fresh_buy_quality_gate, trade_readiness_gate
+from .signal_quality import DUPLICATE_BUY_COOLDOWN_HOURS, active_follow_safety_gate, fresh_buy_quality_gate, trade_readiness_gate
 from .trading_rules import _score_grade
 
 
@@ -3123,6 +3123,7 @@ class Database:
                 raise ValueError("idea not found")
             latest_price = float(idea["latest_price"] or idea["entry_price"] or 0.0)
             idea_details = self._decode_json(idea["details_json"])
+            quality_gate: dict[str, Any] | None = None
             if mode in {"PAPER", "LIVE"}:
                 quality_gate = fresh_buy_quality_gate(
                     {
@@ -3160,6 +3161,7 @@ class Database:
                 "strategy": idea["strategy"],
                 "signal_type": idea["signal_type"],
                 "note": "Live orders require live routing to be enabled; otherwise this is tracked as a live request.",
+                "quality_gate": quality_gate,
             }
             now = utc_now()
             if existing_follow:
@@ -3269,7 +3271,7 @@ class Database:
             for row in rows:
                 item = _row_dict(row)
                 idea_details = self._decode_json(item.get("idea_details_json"))
-                quality_gate = fresh_buy_quality_gate(
+                quality_gate = active_follow_safety_gate(
                     {
                         "action": idea_details.get("action") or item.get("signal_type"),
                         "signal_type": item.get("signal_type"),
@@ -5547,7 +5549,10 @@ def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: 
         }
     if state.get("fresh_action") == "WATCH" or state.get("trade_state") == "WATCH":
         return {"bucket": "WATCH", "label": "Watch", "reason": "Setup is not actionable yet."}
-    if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and readiness.get("passed") and not risk_flags and classification != "SPECULATIVE":
+    readiness_size = _optional_float(readiness.get("size_multiplier")) or 1.0
+    readiness_warnings = readiness.get("risk_warnings") if isinstance(readiness.get("risk_warnings"), list) else []
+    full_size_ready = readiness_size >= 0.75 and not readiness_warnings
+    if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and readiness.get("passed") and full_size_ready and not risk_flags and classification != "SPECULATIVE":
         return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "Fresh BUY with strong score, confluence, and no active risk flags."}
     if signal_type == "BUY":
         if not readiness.get("passed"):
@@ -5556,7 +5561,7 @@ def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: 
                 "label": "Watch",
                 "reason": readiness.get("message") or "BUY thesis is present, but it is not trade-ready.",
             }
-        if readiness.get("passed") and classification != "SPECULATIVE" and not risk_flags and not (cap is not None and cap <= 0.3):
+        if readiness.get("passed") and full_size_ready and classification != "SPECULATIVE" and not risk_flags and not (cap is not None and cap <= 0.3):
             return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "BUY thesis is active and risk checks are acceptable."}
         return {
             "bucket": "SMALL_SIZE_ONLY",
@@ -5673,6 +5678,8 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "data_readiness": data_readiness,
         "entry_quality": entry_quality,
         "breakout_quality": breakout,
+        "opportunity_scan": context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {},
+        "live_momentum_review": full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {},
         "strategy_logic_filters": strategy_logic,
         "reason": audit.get("action_reason") or row.get("reason"),
         "classification": system_audit.get("classification"),

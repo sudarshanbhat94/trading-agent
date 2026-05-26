@@ -54,7 +54,13 @@ from .openclaw_bridge import (
 from .paper_broker import PaperBroker
 from .request_context import current_llm_usage_scope, current_user_id
 from .sector_rotation import SectorRotationService
-from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_skip_payload
+from .signal_quality import (
+    AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
+    auto_follow_quality_gate,
+    fresh_buy_quality_gate,
+    quality_size_multiplier,
+    quality_skip_payload,
+)
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
 from .universe import UniverseService
@@ -885,6 +891,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         }
         snapshot["follow_history"] = follow_history
         snapshot["follow_history_by_market"] = _rows_by_market(follow_history)
+        snapshot["orders"] = _follow_history_order_events(follow_history)
         user_portfolio = _user_follow_portfolio(
             tracked_ideas,
             snapshot.get("portfolio", {}),
@@ -935,6 +942,56 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["user_signal_sessions"] = user_signal_sessions.admin_summary()
     return snapshot
+
+
+def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for row in follow_history:
+        symbol = row.get("symbol")
+        market = row.get("market_region")
+        mode = str(row.get("mode_label") or row.get("mode") or "Paper").strip()
+        status = str(row.get("status") or row.get("state") or "").upper()
+        entry_qty = int(row.get("entry_qty") or row.get("qty") or 0)
+        entry_price = float(row.get("entry_price") or 0.0)
+        if symbol and entry_qty > 0 and entry_price > 0:
+            events.append(
+                {
+                    "id": f"follow-{row.get('follow_id')}-entry",
+                    "ts": row.get("opened_at") or row.get("updated_at"),
+                    "symbol": symbol,
+                    "side": "BUY",
+                    "strategy": row.get("strategy") or "paper_follow",
+                    "qty": entry_qty,
+                    "price": entry_price,
+                    "notional": round(entry_qty * entry_price, 2),
+                    "status": "OPEN" if row.get("state") == "OPEN" else "FILLED",
+                    "reason": f"{mode} follow opened from signal idea",
+                    "market_region": market,
+                    "exchange": row.get("exchange"),
+                    "details": row,
+                }
+            )
+        closed_qty = int(row.get("closed_qty") or 0)
+        exit_price = float(row.get("exit_price") or 0.0)
+        if symbol and closed_qty > 0 and exit_price > 0:
+            events.append(
+                {
+                    "id": f"follow-{row.get('follow_id')}-exit",
+                    "ts": row.get("closed_at") or row.get("updated_at"),
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "strategy": row.get("strategy") or "paper_follow",
+                    "qty": closed_qty,
+                    "price": exit_price,
+                    "notional": round(closed_qty * exit_price, 2),
+                    "status": "EXITED" if row.get("state") == "CLOSED" else status or "EXIT_PENDING",
+                    "reason": row.get("exit_reason") or f"{mode} follow exit",
+                    "market_region": market,
+                    "exchange": row.get("exchange"),
+                    "details": row,
+                }
+            )
+    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:120]
 
 
 def _position_target_at(targets: list[Any], index: int) -> dict[str, Any]:
@@ -3156,6 +3213,21 @@ def _signal_idea_for_live_guard(idea_id: int, user_id: int) -> dict[str, Any]:
 
 def _default_paper_follow_amount(user: dict[str, Any], idea: dict[str, Any]) -> float:
     market = normalize_market_region(idea.get("market_region") or "IN", default="IN")
+    details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+    quality_gate = fresh_buy_quality_gate(
+        {
+            "action": details.get("action") or idea.get("signal_type"),
+            "signal_type": idea.get("signal_type"),
+            "status": idea.get("status"),
+            "overall_score_pct": idea.get("overall_score_pct"),
+            "overall_grade": idea.get("overall_grade"),
+            "confluence": idea.get("confluence"),
+            "data_readiness": details.get("data_readiness"),
+            "hard_blocked": details.get("hard_blocked"),
+            "details": details,
+        }
+    )
+    size_multiplier = quality_size_multiplier(quality_gate) if quality_gate.get("passed") else 1.0
     tracked = db.user_followed_signal_ideas(int(user["id"]), 200)
     portfolio = _user_follow_portfolio(
         tracked,
@@ -3166,7 +3238,7 @@ def _default_paper_follow_amount(user: dict[str, Any], idea: dict[str, Any]) -> 
     market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
     cash = float(market_portfolio.get("cash") or 0.0)
     price = float(idea.get("latest_price") or idea.get("price") or idea.get("entry_price") or 0.0)
-    amount = _auto_follow_amount(cash, price)
+    amount = _auto_follow_amount(cash, price, size_multiplier=size_multiplier)
     if amount <= 0 and price > 0 and (cash <= 0 or price <= cash):
         return price
     return amount
@@ -3532,7 +3604,8 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
         cash = float(market_portfolio.get("cash") or 0.0)
         price = float(idea.get("latest_price") or idea.get("entry_price") or 0.0)
-        amount = _auto_follow_amount(cash, price)
+        size_multiplier = quality_size_multiplier(quality_gate)
+        amount = _auto_follow_amount(cash, price, size_multiplier=size_multiplier)
         if amount <= 0:
             summary["skipped"].append(
                 {
@@ -3552,6 +3625,8 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
                     "idea_id": int(idea["id"]),
                     "mode": idea_mode,
                     "amount": round(amount, 4),
+                    "size_multiplier": size_multiplier,
+                    "risk_warnings": quality_gate.get("risk_warnings", []),
                     "qty": follow.get("qty"),
                     "entry_price": follow.get("entry_price"),
                     "market_region": market,
@@ -3562,12 +3637,13 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
     return summary
 
 
-def _auto_follow_amount(cash: float, price: float) -> float:
+def _auto_follow_amount(cash: float, price: float, *, size_multiplier: float = 1.0) -> float:
     if cash <= 0 or price <= 0:
         return 0.0
+    size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
     max_pct = max(min(float(settings.max_position_pct or 0.25), 0.50), 0.01)
-    target = cash * max_pct
-    cap = cash * min(max_pct * 1.5, 0.60)
+    target = cash * max_pct * size_multiplier
+    cap = cash * min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
     if target >= price:
         return min(target, cash)
     if price <= cap:

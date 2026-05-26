@@ -4365,8 +4365,12 @@ function quoteRow(row) {
 function quoteDayPct(row) {
   const price = Number(row.price);
   const close = Number(row.close);
-  if (!Number.isFinite(price) || !Number.isFinite(close) || close === 0) return NaN;
-  return ((price - close) / close) * 100;
+  const open = Number(row.open);
+  const reference = Number.isFinite(close) && close > 0 && Math.abs(close - price) > 0.000001
+    ? close
+    : (Number.isFinite(open) && open > 0 ? open : close);
+  if (!Number.isFinite(price) || !Number.isFinite(reference) || reference === 0) return NaN;
+  return ((price - reference) / reference) * 100;
 }
 
 function sourceClass(source) {

@@ -22,7 +22,7 @@ from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
 from .pre_catalyst_engine import build_pre_catalyst_watchlist
 from .request_context import current_llm_usage_scope, current_user_id
-from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_skip_payload
+from .signal_quality import AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS, auto_follow_quality_gate, quality_size_multiplier, quality_skip_payload
 from .strategy import StrategyEngine
 from .trading_rules import build_position_summary, build_self_audit
 
@@ -1160,7 +1160,8 @@ class TradingAgentService:
                 market = str(idea.get("market_region") or "IN").upper()
                 cash = self._auto_follow_cash_for_user(int(user["id"]), user, market)
                 price = _float_or_none(idea.get("latest_price") or idea.get("entry_price")) or 0.0
-                amount = self._auto_follow_amount(cash, price)
+                size_multiplier = quality_size_multiplier(quality_gate)
+                amount = self._auto_follow_amount(cash, price, size_multiplier=size_multiplier)
                 if amount <= 0:
                     summary["skipped"].append(
                         {
@@ -1186,6 +1187,8 @@ class TradingAgentService:
                             "symbol": symbol,
                             "idea_id": idea.get("id"),
                             "amount": round(amount, 4),
+                            "size_multiplier": size_multiplier,
+                            "risk_warnings": quality_gate.get("risk_warnings", []),
                             "qty": created.get("qty"),
                             "entry_price": created.get("entry_price"),
                         },
@@ -1432,12 +1435,13 @@ class TradingAgentService:
         )
         return max(float(base_cash or 0.0) - invested, 0.0)
 
-    def _auto_follow_amount(self, cash: float, price: float) -> float:
+    def _auto_follow_amount(self, cash: float, price: float, *, size_multiplier: float = 1.0) -> float:
         if cash <= 0 or price <= 0:
             return 0.0
+        size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
         max_pct = max(min(float(self.strategy.settings.max_position_pct or 0.25), 0.50), 0.01)
-        target = cash * max_pct
-        cap = cash * min(max_pct * 1.5, 0.60)
+        target = cash * max_pct * size_multiplier
+        cap = cash * min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
         if target >= price:
             return min(target, cash)
         if price <= cap:

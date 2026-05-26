@@ -5,9 +5,18 @@ from typing import Any
 
 FRESH_BUY_MIN_SCORE = 70.0
 FRESH_BUY_ALLOWED_GRADES = {"A", "B"}
+OPPORTUNITY_PROBE_MIN_SCORE = 62.0
+OPPORTUNITY_PROBE_ALLOWED_GRADES = {"A", "B", "C"}
+OPPORTUNITY_PROBE_MIN_CONFLUENCE = 16.0
+OPPORTUNITY_PROBE_SIZE_MULTIPLIER = 0.35
 DUPLICATE_BUY_COOLDOWN_HOURS = 48
 AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS = 48
 ACTIONABLE_MIN_CONFLUENCE = 18.0
+CAUTION_STOP_RISK_PCT = 5.5
+HARD_STOP_RISK_PCT = 9.0
+CAUTION_T1_DISTANCE_PCT = 10.0
+HARD_T1_DISTANCE_PCT = 18.0
+MIN_SIZE_MULTIPLIER = 0.25
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -39,24 +48,48 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     if hard_blocked or hard_blocks or phase3_blocks:
         return _blocked("hard_blocked", "System hard blocks are present.")
 
-    score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
-    if score is None or score < FRESH_BUY_MIN_SCORE:
+    opportunity_probe = _opportunity_probe_ready(item, details)
+    min_score = OPPORTUNITY_PROBE_MIN_SCORE if opportunity_probe else FRESH_BUY_MIN_SCORE
+    min_confluence = OPPORTUNITY_PROBE_MIN_CONFLUENCE if opportunity_probe else ACTIONABLE_MIN_CONFLUENCE
+    allowed_grades = OPPORTUNITY_PROBE_ALLOWED_GRADES if opportunity_probe else FRESH_BUY_ALLOWED_GRADES
+
+    tradeability_score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
+    setup_score = _number(details.get("setup_score_pct"))
+    score = tradeability_score
+    if opportunity_probe and setup_score is not None:
+        score = max(score or 0.0, setup_score)
+    if score is None or score < min_score:
         return _blocked(
-            "overall_score_below_70",
-            f"Overall score must be at least {FRESH_BUY_MIN_SCORE:.0f}.",
+            "overall_score_below_opportunity_probe_minimum" if opportunity_probe else "overall_score_below_70",
+            f"Overall score must be at least {min_score:.0f}.",
             overall_score_pct=score,
+            min_score=min_score,
+            min_confluence=min_confluence,
+            allowed_grades=sorted(allowed_grades),
         )
 
     grade = _upper(item.get("overall_grade") or details.get("overall_grade"))
-    if grade not in FRESH_BUY_ALLOWED_GRADES:
-        return _blocked("grade_not_a_or_b", "Fresh BUY requires grade A or B.", overall_grade=grade or None)
+    if opportunity_probe:
+        grade = _upper(details.get("setup_grade") or grade)
+    if grade not in allowed_grades:
+        return _blocked(
+            "grade_not_a_b_or_c_for_opportunity_probe" if opportunity_probe else "grade_not_a_or_b",
+            "Fresh BUY requires grade A or B." if not opportunity_probe else "Opportunity probe requires grade A, B, or C.",
+            overall_grade=grade or None,
+            min_score=min_score,
+            min_confluence=min_confluence,
+            allowed_grades=sorted(allowed_grades),
+        )
 
     confluence = _number(item.get("confluence"), details.get("confluence"))
-    if confluence is not None and confluence < ACTIONABLE_MIN_CONFLUENCE:
+    if confluence is not None and confluence < min_confluence:
         return _blocked(
             "confluence_below_actionable_minimum",
-            f"Fresh BUY requires confluence of at least {ACTIONABLE_MIN_CONFLUENCE:.0f}.",
+            f"Fresh BUY requires confluence of at least {min_confluence:.0f}.",
             confluence=confluence,
+            min_score=min_score,
+            min_confluence=min_confluence,
+            allowed_grades=sorted(allowed_grades),
         )
 
     risk_flags = _risk_flags(item, details)
@@ -92,16 +125,66 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
             missing_data=missing,
         )
 
+    size_multiplier = 1.0
+    cautions: list[str] = []
+    missing_data: list[str] = []
+    if _missing_sentiment_news(data_readiness):
+        size_multiplier = min(size_multiplier, 0.50)
+        cautions.append("news/sentiment not refreshed; use reduced paper size")
+        missing_data.append("sentiment_news")
+    soft_missing = _soft_missing_data_labels(data_readiness)
+    if soft_missing:
+        size_multiplier = min(size_multiplier, 0.50 if len(soft_missing) >= 3 else 0.75)
+        cautions.append("supporting market data has gaps; use reduced paper size")
+        missing_data.extend(soft_missing)
+    if opportunity_probe:
+        size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
+        cautions.append("opportunity scan setup; use probe size until confirmation matures")
+
+    severe_flags = _severe_risk_flags(risk_flags)
+    if severe_flags:
+        return _blocked(
+            "severe_risk_flags",
+            "Fresh BUY has severe risk flags; track only until those risks clear.",
+            risk_flags=risk_flags,
+            severe_risk_flags=severe_flags,
+        )
+    if risk_flags:
+        size_multiplier = min(size_multiplier, 0.35)
+        cautions.append("risk flags active; use probe size")
+
+    t1_gate, t1_multiplier, t1_caution = _target_one_gate(item, details)
+    if t1_gate:
+        return t1_gate
+    if t1_multiplier is not None:
+        size_multiplier = min(size_multiplier, t1_multiplier)
+    if t1_caution:
+        cautions.append(t1_caution)
+
+    stop_gate, stop_multiplier, stop_caution = _stop_risk_gate(item, details)
+    if stop_gate:
+        return stop_gate
+    if stop_multiplier is not None:
+        size_multiplier = min(size_multiplier, stop_multiplier)
+    if stop_caution:
+        cautions.append(stop_caution)
+
     return {
         "passed": True,
         "fresh_buy_allowed": True,
         "reason": "fresh_buy_quality_passed",
         "overall_score_pct": score,
+        "tradeability_score_pct": tradeability_score,
+        "setup_score_pct": setup_score,
         "overall_grade": grade,
-        "min_score": FRESH_BUY_MIN_SCORE,
-        "min_confluence": ACTIONABLE_MIN_CONFLUENCE,
-        "allowed_grades": sorted(FRESH_BUY_ALLOWED_GRADES),
+        "min_score": min_score,
+        "min_confluence": min_confluence,
+        "allowed_grades": sorted(allowed_grades),
         "risk_flags": risk_flags,
+        "risk_warnings": cautions,
+        "missing_data": list(dict.fromkeys(missing_data)),
+        "opportunity_probe": opportunity_probe,
+        "size_multiplier": round(max(size_multiplier, MIN_SIZE_MULTIPLIER), 4),
         "data_readiness": data_readiness,
     }
 
@@ -126,6 +209,48 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     return gate
 
 
+def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
+    """Safety gate for already-followed paper/live positions.
+
+    Fresh-entry quality gates decide whether to open or add. Once a position is
+    followed, the system should exit only on explicit invalidation, hard risk,
+    or a proper stop/exit signal.
+    """
+
+    details = _details(item)
+    signal_type = _upper(item.get("signal_type") or item.get("suggestion"))
+    status = _upper(item.get("status"))
+    action = _upper(item.get("action") or details.get("action") or signal_type)
+    if action in {"SELL", "EXIT"} or signal_type in {"EXIT", "NO_TRADE"}:
+        return _blocked("active_follow_exit_signal", "Latest engine action is an exit/no-trade signal.")
+    if status in {"WATCH", "STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT"} or signal_type == "WATCH":
+        return _blocked("active_follow_not_tradeable_state", "Followed position moved into watch/closed state.")
+
+    hard_blocked = bool(item.get("hard_blocked") or details.get("hard_blocked"))
+    hard_blocks = details.get("hard_blocks") if isinstance(details.get("hard_blocks"), list) else []
+    phase3 = details.get("strategy_logic_filters") if isinstance(details.get("strategy_logic_filters"), dict) else {}
+    phase3_blocks = phase3.get("hard_blocks") if isinstance(phase3.get("hard_blocks"), list) else []
+    if hard_blocked or hard_blocks or phase3_blocks:
+        return _blocked("active_follow_hard_blocked", "Followed position has explicit hard invalidation.")
+
+    risk_flags = _risk_flags(item, details)
+    severe_flags = _severe_risk_flags(risk_flags)
+    if severe_flags:
+        return _blocked(
+            "active_follow_severe_risk_flags",
+            "Followed position has severe risk flags.",
+            risk_flags=risk_flags,
+            severe_risk_flags=severe_flags,
+        )
+    return {
+        "passed": True,
+        "fresh_buy_allowed": False,
+        "reason": "active_follow_safety_passed",
+        "risk_flags": risk_flags,
+        "risk_warnings": ["fresh-entry score changes do not force exit; manage by stop, target, and invalidation"],
+    }
+
+
 def is_duplicate_active_buy_refresh(item: dict[str, Any]) -> bool:
     details = _details(item)
     continuity = details.get("signal_continuity")
@@ -145,9 +270,19 @@ def quality_skip_payload(gate: dict[str, Any]) -> dict[str, Any]:
         "min_confluence": gate.get("min_confluence", ACTIONABLE_MIN_CONFLUENCE),
         "allowed_grades": gate.get("allowed_grades", sorted(FRESH_BUY_ALLOWED_GRADES)),
         "risk_flags": gate.get("risk_flags", []),
+        "risk_warnings": gate.get("risk_warnings", []),
         "missing_data": gate.get("missing_data", []),
+        "size_multiplier": gate.get("size_multiplier"),
+        "opportunity_probe": gate.get("opportunity_probe"),
         "fresh_action": gate.get("fresh_action"),
     }
+
+
+def quality_size_multiplier(gate: dict[str, Any], *, default: float = 1.0) -> float:
+    value = _number(gate.get("size_multiplier") if isinstance(gate, dict) else None)
+    if value is None:
+        value = default
+    return max(min(float(value), 1.0), 0.10)
 
 
 def _blocked(reason: str, message: str, **extra: Any) -> dict[str, Any]:
@@ -177,12 +312,160 @@ def _risk_flags(item: dict[str, Any], details: dict[str, Any]) -> list[str]:
     return [str(flag or "").strip().lower() for flag in flags if str(flag or "").strip()]
 
 
+def _severe_risk_flags(risk_flags: list[str]) -> list[str]:
+    severe_tokens = (
+        "hard_block",
+        "no_new_longs",
+        "false_breakout_risk",
+        "climax",
+        "distribution",
+        "stop_hit",
+        "earnings_lockout",
+        "delivery_conflict",
+    )
+    reduce_size_exceptions = ("reduce_size", "small_size", "probe")
+    severe: list[str] = []
+    for flag in risk_flags:
+        normalized = str(flag or "").strip().lower()
+        if not normalized:
+            continue
+        if any(exception in normalized for exception in reduce_size_exceptions):
+            continue
+        if any(token in normalized for token in severe_tokens):
+            severe.append(normalized)
+    return severe
+
+
 def _breakout_payload(details: dict[str, Any]) -> dict[str, Any]:
     for key in ("breakout_quality", "breakout"):
         payload = details.get(key)
         if isinstance(payload, dict):
             return payload
     return {}
+
+
+def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> bool:
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    if not isinstance(scan, dict):
+        scan = {}
+    review = details.get("live_momentum_review")
+    if not isinstance(review, dict):
+        review = scan.get("live_momentum_review") if isinstance(scan.get("live_momentum_review"), dict) else {}
+    if bool(
+        review.get("strategy_ready")
+        or review.get("early_ignition_ready")
+        or review.get("live_momentum_ready")
+        or review.get("market_action_breakout_ready")
+    ):
+        return True
+
+    setup = str(scan.get("setup") or "").strip().lower()
+    if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
+        return False
+    data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+    if data_quality.get("actionable_data_ready") is False and not data_quality.get("probe_only"):
+        return False
+    bucket = str(scan.get("bucket") or "").strip().lower()
+    score = _number(scan.get("score")) or 0.0
+    if bucket == "actionable" and setup in {
+        "opening_ignition",
+        "intraday_momentum",
+        "breakout_continuation",
+        "near_breakout",
+        "news_catalyst",
+        "52_week_high_volume_breakout",
+        "broker_re_rating_breakout",
+        "earnings_beat_gap_and_go",
+        "market_action_momentum",
+        "top_gainer_momentum",
+        "price_shocker_reversal_breakout",
+    }:
+        return score >= 0.60 or bool(data_quality.get("actionable_data_ready"))
+    return False
+
+
+def _missing_sentiment_news(data_readiness: dict[str, Any]) -> bool:
+    for collection_key in ("soft_gaps", "hard_gaps", "missing_data"):
+        for item in data_readiness.get(collection_key) or []:
+            if isinstance(item, dict):
+                key = str(item.get("key") or item.get("label") or "").strip().lower()
+            else:
+                key = str(item or "").strip().lower()
+            if key == "sentiment_news" or ("sentiment" in key and "news" in key):
+                return True
+    return False
+
+
+def _soft_missing_data_labels(data_readiness: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for item in data_readiness.get("soft_gaps") or []:
+        if isinstance(item, dict):
+            key = str(item.get("key") or item.get("label") or "").strip()
+        else:
+            key = str(item or "").strip()
+        normalized = key.lower()
+        if not key or normalized == "sentiment_news" or ("sentiment" in normalized and "news" in normalized):
+            continue
+        labels.append(key)
+    return list(dict.fromkeys(labels))
+
+
+def _target_one_gate(item: dict[str, Any], details: dict[str, Any]) -> tuple[dict[str, Any] | None, float | None, str]:
+    t1 = _target_one(item.get("target_status"), details.get("target_status"), details.get("targets"))
+    if not t1:
+        return None, None, ""
+    probability = str(t1.get("probability_label") or t1.get("probability") or "").strip().lower()
+    distance = _number(t1.get("distance_pct"))
+    if distance is not None and distance > HARD_T1_DISTANCE_PCT:
+        return _blocked(
+            "target_1_too_far_for_fresh_entry",
+            f"T1 is {distance:.1f}% away; wait for a better entry before paper/live follow.",
+            target_1=t1,
+            hard_t1_distance_pct=HARD_T1_DISTANCE_PCT,
+        ), None, ""
+    if probability in {"low", "low_probability", "low probability"}:
+        return _blocked(
+            "target_1_low_probability",
+            "T1 is marked as stretch/low probability, so this is Watch only until price gives a better entry.",
+            target_1=t1,
+        ), None, ""
+    if probability == "stretch" or (distance is not None and distance > CAUTION_T1_DISTANCE_PCT):
+        return None, 0.50, "T1 is stretched; use reduced paper size"
+    return None, None, ""
+
+
+def _target_one(*collections: Any) -> dict[str, Any] | None:
+    for collection in collections:
+        if not isinstance(collection, list):
+            continue
+        for index, target in enumerate(collection):
+            if not isinstance(target, dict):
+                continue
+            label = str(target.get("label") or f"T{index + 1}").strip().upper()
+            if label == "T1" or index == 0:
+                return target
+    return None
+
+
+def _stop_risk_gate(item: dict[str, Any], details: dict[str, Any]) -> tuple[dict[str, Any] | None, float | None, str]:
+    stop_status = details.get("stop_status") if isinstance(details.get("stop_status"), dict) else {}
+    price = _number(item.get("latest_price"), item.get("price"), item.get("entry_price"), details.get("latest_price"))
+    stop = _number(item.get("stop_loss"), details.get("stop_loss"), stop_status.get("price"))
+    if price is None or stop is None or price <= 0 or stop <= 0 or stop >= price:
+        return None, None, ""
+    risk_pct = ((price - stop) / price) * 100.0
+    if risk_pct > HARD_STOP_RISK_PCT:
+        return _blocked(
+            "stop_risk_too_wide",
+            f"Stop risk is {risk_pct:.1f}%; wait for a tighter entry before paper/live follow.",
+            stop_loss=stop,
+            price=price,
+            stop_risk_pct=round(risk_pct, 4),
+            hard_stop_risk_pct=HARD_STOP_RISK_PCT,
+        ), None, ""
+    if risk_pct > CAUTION_STOP_RISK_PCT:
+        return None, 0.50, f"stop risk is {risk_pct:.1f}%; use reduced paper size"
+    return None, None, ""
 
 
 def _number(*values: Any) -> float | None:

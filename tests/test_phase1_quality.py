@@ -61,6 +61,147 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
 
+    def test_fresh_buy_gate_reduces_size_when_sentiment_is_missing(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "details": {
+                    "data_readiness": {
+                        "trade_decision_ready": True,
+                        "soft_gaps": [{"key": "sentiment_news", "label": "News/sentiment source checked"}],
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
+        self.assertEqual(gate["size_multiplier"], 0.5)
+        self.assertIn("sentiment_news", gate["missing_data"])
+
+    def test_fresh_buy_gate_uses_probe_size_for_reduce_size_risk_flags(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "details": {
+                    "risk_flags": ["phase3_entry_not_fresh_from_pivot_reduce_size"],
+                    "data_readiness": {"trade_decision_ready": True},
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
+        self.assertEqual(gate["size_multiplier"], 0.35)
+        self.assertIn("risk flags active; use probe size", gate["risk_warnings"])
+
+    def test_fresh_buy_gate_reduces_size_for_stretch_t1_and_moderately_wide_stop(self) -> None:
+        stretch_gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100,
+                "details": {
+                    "data_readiness": {"trade_decision_ready": True},
+                    "target_status": [{"label": "T1", "price": 113, "distance_pct": 13, "probability_label": "stretch"}],
+                },
+            }
+        )
+        wide_stop_gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100,
+                "details": {
+                    "data_readiness": {"trade_decision_ready": True},
+                    "stop_loss": 93,
+                    "target_status": [{"label": "T1", "price": 105, "distance_pct": 5, "probability_label": "higher"}],
+                },
+            }
+        )
+
+        self.assertTrue(stretch_gate["passed"])
+        self.assertEqual(stretch_gate["size_multiplier"], 0.5)
+        self.assertTrue(any("T1 is stretched" in item for item in stretch_gate["risk_warnings"]))
+        self.assertTrue(wide_stop_gate["passed"])
+        self.assertEqual(wide_stop_gate["size_multiplier"], 0.5)
+        self.assertTrue(any("stop risk is 7.0%" in item for item in wide_stop_gate["risk_warnings"]))
+
+    def test_fresh_buy_gate_blocks_only_hard_t1_and_stop_risk(self) -> None:
+        far_target_gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100,
+                "details": {
+                    "data_readiness": {"trade_decision_ready": True},
+                    "target_status": [{"label": "T1", "price": 121, "distance_pct": 21, "probability_label": "stretch"}],
+                },
+            }
+        )
+        hard_stop_gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100,
+                "details": {
+                    "data_readiness": {"trade_decision_ready": True},
+                    "stop_loss": 90,
+                    "target_status": [{"label": "T1", "price": 105, "distance_pct": 5, "probability_label": "higher"}],
+                },
+            }
+        )
+
+        self.assertFalse(far_target_gate["passed"])
+        self.assertEqual(far_target_gate["reason"], "target_1_too_far_for_fresh_entry")
+        self.assertFalse(hard_stop_gate["passed"])
+        self.assertEqual(hard_stop_gate["reason"], "stop_risk_too_wide")
+
+    def test_fresh_buy_gate_allows_opportunity_probe_with_c_grade(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 64,
+                "overall_grade": "C",
+                "confluence": 17,
+                "details": {
+                    "data_readiness": {"trade_decision_ready": True},
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "top_gainer_momentum",
+                        "score": 0.84,
+                        "data_quality": {"actionable_data_ready": True},
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["opportunity_probe"])
+        self.assertEqual(gate["size_multiplier"], 0.35)
+        self.assertEqual(gate["min_score"], 62.0)
+
     def test_runtime_overrides_are_clamped_to_phase1_minimums(self) -> None:
         settings = settings_from_overrides(
             Settings(),
@@ -160,7 +301,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["trade_state"], "WATCH")
         self.assertEqual(latest["execution_state"], "WATCH")
 
-    def test_safety_cleanup_exits_existing_watch_or_weak_paper_follows(self) -> None:
+    def test_safety_cleanup_exits_watch_or_hard_invalidated_paper_follows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -171,7 +312,15 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 score=84,
                 grade="A",
             )
-            weak_id = self._insert_signal_idea(
+            hard_invalid_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=82,
+                grade="A",
+                details_extra={"hard_blocked": True, "hard_blocks": [{"flag": "FAILED_BREAKOUT_TWO_DAY_RULE"}]},
+            )
+            weak_but_active_id = self._insert_signal_idea(
                 db,
                 signal_type="BUY",
                 status="ACTIVE",
@@ -180,7 +329,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             )
             now = utc_now()
             with db.connect() as conn:
-                for idea_id in (watch_id, weak_id):
+                for idea_id in (watch_id, hard_invalid_id, weak_but_active_id):
                     conn.execute(
                         """
                         insert into user_idea_follows (
@@ -200,7 +349,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             ]
 
         self.assertEqual(len(exited), 2)
-        self.assertEqual(active, [])
+        self.assertEqual([item["symbol"] for item in active], ["BUYD"])
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
 
     def test_manual_paper_follow_allows_strong_buy_ideas(self) -> None:

@@ -154,13 +154,13 @@ def assess_phase2_data_readiness(
 
         check("in_live_quote", "India live quote from Upstox/Kite/Nubra", live_quote_ok, HARD, quote_source)
         check("in_intraday_candles", "India intraday candles", intraday_ok, HARD, intraday_source, f"{len(intraday)} candles")
-        check("in_delivery_pct", "Delivery percentage / delivery trend", delivery_ok, HARD, delivery_data.get("source"))
-        check("in_corporate_announcements", "NSE/BSE corporate announcements", announcements_ok, HARD, "nse_bse_corporate_announcements")
+        check("in_delivery_pct", "Delivery percentage / delivery trend", delivery_ok, SOFT, delivery_data.get("source"))
+        check("in_corporate_announcements", "NSE/BSE corporate announcements", announcements_ok, SOFT, "nse_bse_corporate_announcements")
         check("in_bulk_block_deals", "Bulk/block deal feed", bulk_block_ok, SOFT, "nse_bse_bulk_block_deals")
         check("in_fii_dii", "FII/DII flow", fii_dii_ok, SOFT, "nse_fii_dii")
         check("in_india_vix", "India VIX", india_vix_ok, SOFT, "nse_indices")
-        check("in_sector_breadth", "Sector / market breadth", breadth_ok, HARD, market_breadth.get("source"))
-        check("in_options_oi", "Option chain / OI for F&O names", option_ok, SOFT if fno_not_applicable else HARD, options_data.get("source"))
+        check("in_sector_breadth", "Sector / market breadth", breadth_ok, SOFT, market_breadth.get("source"))
+        check("in_options_oi", "Option chain / OI for F&O names", option_ok, SOFT, options_data.get("source"))
 
     hard_gaps = [item for item in checks if not item["available"] and item["severity"] == HARD]
     soft_gaps = [item for item in checks if not item["available"] and item["severity"] == SOFT]
@@ -188,7 +188,7 @@ def assess_phase2_data_readiness(
         "policy": (
             "US BUY signals may use fresh Yahoo reference quotes plus daily bars for swing confirmation when SIP/Polygon is unavailable. SEC, analyst, options, and short-interest context remain explicit evidence gaps when unavailable."
             if market == "US"
-            else "India fresh trades need live broker candles plus NSE/BSE event, delivery, breadth, and OI context where applicable, whether the execution is paper or live."
+            else "India fresh trades require valid live broker quote/candles and volume baseline. Delivery, announcements, breadth, and OI gaps stay visible and reduce sizing, but do not block a price-volume paper opportunity by themselves."
         ),
     }
 

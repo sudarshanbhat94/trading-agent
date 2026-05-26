@@ -894,6 +894,44 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertTrue(review["market_action_breakout_ready"])
         self.assertEqual(context["best_strategy"]["name"], "52_week_high_volume_breakout")
 
+    def test_opportunity_probe_can_buy_without_institutional_scorecard_master_gate(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 4.8,
+                "day_range_position": 0.84,
+                "day_high_distance_pct": 0.4,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.42}
+        context["opportunity_scan"] = {
+            "setup": "top_gainer_momentum",
+            "bucket": "Actionable",
+            "score": 0.88,
+            "day_gain_pct": 4.8,
+            "day_range_position": 0.84,
+            "day_high_distance_pct": 0.4,
+            "volume_ratio": 2.6,
+            "turnover": 240_000_000,
+            "components": {"live_momentum": 0.82},
+            "data_quality": {"actionable_data_ready": True},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("OPPROBE", 0.24, {}, context, {})
+
+        self.assertEqual(action, "BUY")
+        self.assertTrue(context["decision_gate_context"]["opportunity_probe"]["ready"])
+        self.assertFalse(context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"])
+
     def test_circuit_demand_lock_does_not_become_rule_based_buy(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
