@@ -13846,6 +13846,29 @@ body {
   font-weight: 800 !important;
 }
 
+.icon-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.nav-icon svg,
+.mobile-bottom-nav-item svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-sidebar .nav-item .nav-icon::before {
+  content: none !important;
+  display: none !important;
+}
+
 .app-sidebar .nav-item.active .nav-icon {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--color-brand-primary) 18%, var(--surface-1)), color-mix(in srgb, var(--color-brand-primary) 10%, var(--surface-2))) !important;
@@ -15199,6 +15222,12 @@ body[data-theme="dark"] .account-history-card {
     color: inherit;
     font-size: 16px;
     line-height: 1;
+  }
+
+  .mobile-bottom-nav-item svg {
+    width: 21px;
+    height: 21px;
+    stroke-width: 2;
   }
 
   .mobile-bottom-nav-item strong {
