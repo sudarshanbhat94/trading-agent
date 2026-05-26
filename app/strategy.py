@@ -911,7 +911,7 @@ class StrategyEngine:
                 "live_momentum_review"
                 if review_ready
                 else "live_quote_opportunity_scan"
-                if live_quote_probe_ok
+                if scan_ready and live_quote_probe_ok
                 else "opportunity_scan"
                 if scan_ready
                 else None
@@ -924,9 +924,14 @@ class StrategyEngine:
                 "live_momentum_review_with_trade_ready_data"
                 if live_review_probe_ok and data_quality.get("actionable_data_ready") is False
                 else "live_quote_ohlcv_used_for_probe"
-                if live_quote_probe_ok
+                if scan_ready and live_quote_probe_ok
                 else None
             ),
+            "data_quality_missing": [
+                str(item or "").strip().lower()
+                for item in data_quality.get("missing") or []
+                if str(item or "").strip()
+            ],
         }
 
     def _opportunity_probe_can_absorb_gate(self, gate: dict[str, Any], profile: dict[str, Any]) -> bool:
@@ -941,6 +946,10 @@ class StrategyEngine:
         }
         if gate_name in absorbable:
             return True
+        if gate_name == "system_rule_DATA_READINESS_BLOCK":
+            return self._opportunity_probe_can_absorb_data_readiness_block(gate.get("value"), profile)
+        if gate_name == "phase2_data_readiness":
+            return self._opportunity_probe_can_absorb_data_readiness_block(gate.get("value"), profile)
         if gate_name == "stage_buy_permitted":
             return profile.get("source") in {"live_momentum_review", "opportunity_scan", "live_quote_opportunity_scan"}
         if gate_name == "risk_overrides":
@@ -1005,6 +1014,29 @@ class StrategyEngine:
             if any(token in normalized for token in hard_tokens):
                 return False
         return True
+
+    def _opportunity_probe_can_absorb_data_readiness_block(self, value: Any, profile: dict[str, Any]) -> bool:
+        if profile.get("data_quality_override") != "live_quote_ohlcv_used_for_probe":
+            return False
+        missing = {
+            str(item or "").strip().lower()
+            for item in profile.get("data_quality_missing") or []
+            if str(item or "").strip()
+        }
+        if missing and missing - {"stale_intraday_candles"}:
+            return False
+        if isinstance(value, dict) and "hard_gaps" in value:
+            hard_gaps = value.get("hard_gaps") or []
+            keys = {
+                str(gap.get("key") or "").strip().lower()
+                for gap in hard_gaps
+                if isinstance(gap, dict) and str(gap.get("key") or "").strip()
+            }
+            return bool(keys) and keys <= {"in_intraday_candles"}
+        if isinstance(value, dict):
+            key = str(value.get("key") or "").strip().lower()
+            return key == "in_intraday_candles"
+        return False
 
     def _delivery_context(self, symbol: str, delivery_service: Any | None) -> dict[str, Any]:
         if delivery_service is None:

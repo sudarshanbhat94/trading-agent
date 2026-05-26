@@ -974,6 +974,97 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(probe["source"], "live_momentum_review")
         self.assertEqual(probe["data_quality_override"], "live_momentum_review_with_trade_ready_data")
 
+    def test_scan_probe_can_use_live_quote_when_only_intraday_candles_are_stale(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.2,
+                "day_range_position": 0.82,
+                "day_high_distance_pct": 0.7,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["data_readiness"]["trade_decision_ready"] = False
+        context["data_readiness"]["hard_gaps"] = [
+            {"key": "in_intraday_candles", "label": "India intraday candles", "source": "upstox-live"}
+        ]
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["risk_overrides"] = {
+            "flags": [
+                "institutional_scorecard_below_entry_threshold",
+                "phase3_weak_volume_ratio_reduce_size",
+                "false_breakout_risk_no_new_longs",
+            ],
+            "no_new_longs": True,
+        }
+        context["opportunity_scan"] = {
+            "setup": "top_gainer_momentum",
+            "bucket": "Actionable",
+            "score": 0.84,
+            "day_gain_pct": 3.2,
+            "day_range_position": 0.82,
+            "day_high_distance_pct": 0.7,
+            "volume_ratio": 1.4,
+            "turnover": 240_000_000,
+            "components": {"live_momentum": 0.74},
+            "data_quality": {"actionable_data_ready": False, "missing": ["stale_intraday_candles"]},
+        }
+
+        action = engine._action_from_context("LIVEQUOTE", 0.24, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(probe["source"], "live_quote_opportunity_scan")
+        self.assertEqual(probe["data_quality_override"], "live_quote_ohlcv_used_for_probe")
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+
+    def test_scan_probe_still_blocks_hard_risk_flags(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.2,
+                "day_range_position": 0.82,
+                "day_high_distance_pct": 0.7,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["risk_overrides"] = {
+            "flags": ["scorecard_asm_surveillance_no_new_longs"],
+            "no_new_longs": True,
+        }
+        context["opportunity_scan"] = {
+            "setup": "top_gainer_momentum",
+            "bucket": "Actionable",
+            "score": 0.84,
+            "day_gain_pct": 3.2,
+            "day_range_position": 0.82,
+            "day_high_distance_pct": 0.7,
+            "volume_ratio": 1.4,
+            "turnover": 240_000_000,
+            "components": {"live_momentum": 0.74},
+            "data_quality": {"actionable_data_ready": True},
+        }
+
+        action = engine._action_from_context("HARDSTOP", 0.24, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        blocking = context["decision_gate_context"]["blocking_failed_gates"]
+        self.assertEqual([gate["gate"] for gate in blocking], ["risk_overrides"])
+
     def test_live_confirmed_probe_still_respects_phase2_data_readiness(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),

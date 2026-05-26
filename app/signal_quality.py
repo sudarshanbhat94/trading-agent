@@ -113,7 +113,10 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     data_readiness = item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness")
     if not isinstance(data_readiness, dict):
         return _blocked("data_readiness_missing", "Fresh BUY requires Phase-2 data readiness evidence from a fresh scan.")
-    if data_readiness.get("trade_decision_ready") is not True:
+    data_readiness_override = bool(
+        opportunity_probe and _opportunity_probe_data_readiness_override(item, details, data_readiness)
+    )
+    if data_readiness.get("trade_decision_ready") is not True and not data_readiness_override:
         missing = _missing_data_labels(data_readiness)
         message = "Phase-2 data readiness is not complete for a fresh trade decision."
         if missing:
@@ -140,6 +143,10 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     if opportunity_probe:
         size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
         cautions.append("opportunity scan setup; use probe size until confirmation matures")
+    if data_readiness_override:
+        size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
+        cautions.append("live quote is available but intraday candles are stale; use probe size only")
+        missing_data.append("stale_intraday_candles")
 
     severe_flags = _severe_risk_flags(risk_flags, opportunity_probe=opportunity_probe)
     if severe_flags:
@@ -430,6 +437,22 @@ def _live_quote_probe_data_ok(item: dict[str, Any], details: dict[str, Any], sca
     turnover = _number(scan.get("turnover")) or 0.0
     projected_turnover = _number(scan.get("projected_turnover")) or 0.0
     return has_live_ohlcv and (turnover >= 50_000_000 or projected_turnover >= 150_000_000)
+
+
+def _opportunity_probe_data_readiness_override(item: dict[str, Any], details: dict[str, Any], data_readiness: dict[str, Any]) -> bool:
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    if not isinstance(scan, dict):
+        return False
+    setup = str(scan.get("setup") or "").strip().lower()
+    if not _live_quote_probe_data_ok(item, details, scan, setup):
+        return False
+    hard_gaps = data_readiness.get("hard_gaps") or []
+    keys = {
+        str(gap.get("key") or "").strip().lower()
+        for gap in hard_gaps
+        if isinstance(gap, dict) and str(gap.get("key") or "").strip()
+    }
+    return bool(keys) and keys <= {"in_intraday_candles"}
 
 
 def _missing_sentiment_news(data_readiness: dict[str, Any]) -> bool:

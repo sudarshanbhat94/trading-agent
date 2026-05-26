@@ -202,6 +202,82 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["size_multiplier"], 0.35)
         self.assertEqual(gate["min_score"], 62.0)
 
+    def test_fresh_buy_gate_allows_live_quote_probe_when_intraday_candles_lag(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 64,
+                "overall_grade": "C",
+                "confluence": 17,
+                "quote": {
+                    "price": 108.0,
+                    "open": 100.0,
+                    "high": 109.0,
+                    "low": 99.0,
+                    "volume": 2_000_000,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "trade_decision_ready": False,
+                    "hard_gaps": [
+                        {"key": "in_intraday_candles", "label": "India intraday candles", "source": "upstox-live"}
+                    ],
+                    "soft_gaps": [],
+                },
+                "details": {
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "top_gainer_momentum",
+                        "score": 0.84,
+                        "turnover": 240_000_000,
+                        "data_quality": {"actionable_data_ready": False, "missing": ["stale_intraday_candles"]},
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["opportunity_probe"])
+        self.assertEqual(gate["size_multiplier"], 0.35)
+        self.assertIn("stale_intraday_candles", gate["missing_data"])
+
+    def test_fresh_buy_gate_rejects_probe_when_quote_is_stale(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 64,
+                "overall_grade": "C",
+                "confluence": 17,
+                "quote": {
+                    "price": 108.0,
+                    "open": 100.0,
+                    "high": 109.0,
+                    "low": 99.0,
+                    "volume": 2_000_000,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "trade_decision_ready": False,
+                    "hard_gaps": [{"key": "in_live_quote", "label": "India live quote"}],
+                    "soft_gaps": [],
+                },
+                "details": {
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "top_gainer_momentum",
+                        "score": 0.84,
+                        "turnover": 240_000_000,
+                        "data_quality": {"actionable_data_ready": False, "missing": ["stale_quote"]},
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "overall_score_below_70")
+
     def test_runtime_overrides_are_clamped_to_phase1_minimums(self) -> None:
         settings = settings_from_overrides(
             Settings(),
