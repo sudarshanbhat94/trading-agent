@@ -1360,6 +1360,25 @@ class OpportunityScanner:
         selected: list[dict[str, Any]] = []
         selected_symbols: set[str] = set()
         reserve = min(limit, max(45, int(limit * 0.80)))
+        playbook_buys = [
+            item
+            for item in scored
+            if self._top_gainers_playbook_buy_priority(item) > 0
+        ]
+        playbook_buys.sort(
+            key=lambda item: (
+                self._top_gainers_playbook_buy_priority(item),
+                self._rally_discovery_score(item),
+                float((item.get("metrics") or {}).get("turnover") or 0.0),
+            ),
+            reverse=True,
+        )
+        for item in playbook_buys[: min(limit, 12)]:
+            symbol = str(item.get("symbol") or "")
+            if symbol and symbol not in selected_symbols:
+                selected.append(item)
+                selected_symbols.add(symbol)
+
         rally_items = [
             item
             for item in scored
@@ -1405,10 +1424,30 @@ class OpportunityScanner:
         selected.extend(self._select_diverse(remainder, limit - len(selected)))
         return selected[:limit]
 
+    def _top_gainers_playbook_buy_priority(self, item: dict[str, Any]) -> float:
+        playbook = item.get("top_gainers_playbook") if isinstance(item.get("top_gainers_playbook"), dict) else {}
+        signal = str(playbook.get("final_signal") or "").upper()
+        if signal not in {"STRONG BUY", "MODERATE BUY"}:
+            return 0.0
+        if playbook.get("hard_excluded") or playbook.get("hard_excludes"):
+            return 0.0
+        anti_codes = {
+            str(flag.get("code") or "").upper()
+            for flag in playbook.get("anti_patterns") or []
+            if isinstance(flag, dict)
+        }
+        if anti_codes & {"CHASING", "OPERATOR_RISK", "SHORT_COVER", "STAGE_TRAP", "ILLIQUID_BREAKOUT"}:
+            return 0.0
+        quant = _clamp(float(playbook.get("quant_score") or 0.0) / 100.0, 0.0, 1.0)
+        gain = _clamp((float(playbook.get("gain_pct") or 0.0) - 3.0) / 7.0, 0.0, 1.0)
+        signal_boost = 0.30 if signal == "STRONG BUY" else 0.18
+        return _clamp(signal_boost + quant * 0.55 + gain * 0.15, 0.0, 1.0)
+
     def _rally_discovery_score(self, item: dict[str, Any]) -> float:
         metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         components = item.get("components") if isinstance(item.get("components"), dict) else {}
         setup = str(item.get("setup") or "")
+        playbook_boost = self._top_gainers_playbook_buy_priority(item) * 0.25
         phase_boost = {
             "52_week_high_volume_breakout": 0.13,
             "earnings_beat_gap_and_go": 0.12,
@@ -1430,7 +1469,8 @@ class OpportunityScanner:
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
         market_action_score = float(market_action.get("score") or 0.0)
         return _clamp(
-            phase_boost
+            playbook_boost
+            + phase_boost
             + rally * 0.30
             + live * 0.22
             + gain * 0.18

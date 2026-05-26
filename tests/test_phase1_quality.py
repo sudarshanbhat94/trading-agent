@@ -203,6 +203,61 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["size_multiplier"], 0.35)
         self.assertEqual(gate["min_score"], 62.0)
 
+    def test_fresh_buy_gate_allows_top_gainers_playbook_probe(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "latest_price": 108.0,
+                "overall_score_pct": 30,
+                "overall_grade": "D",
+                "confluence": 10,
+                "details": {
+                    "latest_price": 108.0,
+                    "risk_flags": ["price_extended_from_pivot"],
+                    "hard_blocks": [{"flag": "PRICE_EXTENDED_FROM_PIVOT"}],
+                    "data_readiness": {"trade_decision_ready": True},
+                    "stop_loss": 100.44,
+                    "targets": [
+                        {
+                            "label": "T1",
+                            "price": 129.6,
+                            "distance_pct": 20.0,
+                            "probability_label": "likely",
+                        }
+                    ],
+                    "opportunity_scan": {
+                        "bucket": "Small Size Only",
+                        "setup": "earnings_beat_gap_and_go",
+                        "score": 1.0,
+                        "data_quality": {"actionable_data_ready": True},
+                        "top_gainers_playbook": {
+                            "available": True,
+                            "final_signal": "MODERATE BUY",
+                            "quant_score": 62,
+                            "hard_excluded": False,
+                            "hard_excludes": [],
+                            "anti_patterns": [],
+                            "cmp": 108.0,
+                            "levels": {
+                                "pivot": 105.0,
+                                "entry": 108.0,
+                                "max_entry": 110.25,
+                                "stop": 100.44,
+                                "target1": 129.6,
+                            },
+                        },
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["opportunity_probe"])
+        self.assertEqual(gate["min_score"], 55.0)
+        self.assertEqual(gate["min_confluence"], 0.0)
+        self.assertLessEqual(gate["size_multiplier"], 0.35)
+
     def test_fresh_buy_gate_allows_live_quote_probe_when_intraday_candles_lag(self) -> None:
         gate = fresh_buy_quality_gate(
             {

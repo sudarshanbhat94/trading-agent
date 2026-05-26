@@ -557,6 +557,8 @@ class StrategyEngine:
             positions,
             context.get("risk_limits", {}).get("portfolio_equity", 0.0),
         )
+        if opportunity_probe.get("source") == "top_gainers_playbook":
+            rule_audit = self._rule_audit_with_playbook_overrides(rule_audit, opportunity_probe)
         context["system_gate_audit"] = rule_audit
         confluence_total = float(confluence.get("total", 0) or 0.0)
         scorecard_total = float(scorecard.get("total_score") or scorecard.get("score") or 0.0)
@@ -853,7 +855,9 @@ class StrategyEngine:
         buy_threshold_met = combined >= threshold or (
             bool(opportunity_probe.get("ready")) and combined >= float(opportunity_probe.get("combined_floor") or 0.20)
         )
-        if buy_threshold_met and confluence_total >= 16 and buy_ready and not has_position:
+        probe_min_confluence = _float_or_none(opportunity_probe.get("min_confluence"))
+        buy_confluence_floor = probe_min_confluence if opportunity_probe.get("ready") and probe_min_confluence is not None else 16.0
+        if buy_threshold_met and confluence_total >= buy_confluence_floor and buy_ready and not has_position:
             return "BUY"
         if has_position and combined <= -0.38:
             context["score_weakness_exit_review"] = {
@@ -874,6 +878,9 @@ class StrategyEngine:
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
         if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
             return {"ready": False, "reason": "opportunity_scan_wait_state", "setup": setup}
+        playbook_profile = self._top_gainers_playbook_profile(context, scan)
+        if playbook_profile.get("ready"):
+            return playbook_profile
 
         review_ready = bool(
             review.get("strategy_ready")
@@ -941,15 +948,129 @@ class StrategyEngine:
             ],
         }
 
+    def _top_gainers_playbook_profile(self, context: dict[str, Any], scan: dict[str, Any]) -> dict[str, Any]:
+        playbook = scan.get("top_gainers_playbook") if isinstance(scan.get("top_gainers_playbook"), dict) else {}
+        signal = str(playbook.get("final_signal") or "").upper()
+        if signal not in {"STRONG BUY", "MODERATE BUY"}:
+            return {"ready": False, "reason": "no_top_gainers_playbook_buy"}
+        if playbook.get("hard_excluded") or playbook.get("hard_excludes") or str(playbook.get("tier") or "").upper() == "HARD EXCLUDE":
+            return {"ready": False, "reason": "top_gainers_playbook_hard_excluded"}
+        anti_codes = {
+            str(flag.get("code") or "").upper()
+            for flag in playbook.get("anti_patterns") or []
+            if isinstance(flag, dict)
+        }
+        hard_anti = {"CHASING", "OPERATOR_RISK", "SHORT_COVER", "STAGE_TRAP", "ILLIQUID_BREAKOUT", "FAILED_BREAKOUT_RISK"}
+        if anti_codes & hard_anti:
+            return {"ready": False, "reason": "top_gainers_playbook_antipattern_block", "anti_patterns": sorted(anti_codes)}
+        catalyst = playbook.get("catalyst_review") if isinstance(playbook.get("catalyst_review"), dict) else {}
+        if catalyst.get("catalyst_confirmed") is not True:
+            return {"ready": False, "reason": "top_gainers_playbook_catalyst_unconfirmed"}
+        levels = playbook.get("levels") if isinstance(playbook.get("levels"), dict) else {}
+        entry = _float_or_none(levels.get("entry"))
+        max_entry = _float_or_none(levels.get("max_entry"))
+        stop = _float_or_none(levels.get("stop"))
+        price = _float_or_none((context.get("quote") or {}).get("price")) or _float_or_none(playbook.get("cmp")) or entry
+        if entry is None or max_entry is None or stop is None or price is None:
+            return {"ready": False, "reason": "top_gainers_playbook_missing_trade_levels"}
+        if price > max_entry * 1.0005:
+            return {
+                "ready": False,
+                "reason": "top_gainers_playbook_price_above_max_entry",
+                "price": round(price, 4),
+                "max_entry": round(max_entry, 4),
+            }
+        stop_risk_pct = ((price - stop) / price) * 100.0 if stop < price else 100.0
+        if stop >= price or stop_risk_pct > 9.0:
+            return {
+                "ready": False,
+                "reason": "top_gainers_playbook_stop_risk_too_wide",
+                "price": round(price, 4),
+                "stop": round(stop, 4),
+                "stop_risk_pct": round(stop_risk_pct, 4),
+            }
+        quant_score = _float_or_none(playbook.get("quant_score")) or 0.0
+        minimum = 70.0 if signal == "STRONG BUY" else 55.0
+        if quant_score < minimum:
+            return {"ready": False, "reason": "top_gainers_playbook_quant_below_signal_floor", "quant_score": quant_score}
+        quote = context.get("quote") if isinstance(context.get("quote"), dict) else {}
+        data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+        sources = data_ready.get("sources") if isinstance(data_ready.get("sources"), dict) else {}
+        quote_source = str(quote.get("source") or sources.get("quote") or "").lower()
+        if data_ready.get("trade_decision_ready") is not True and not any(token in quote_source for token in ("upstox", "kite", "nubra")):
+            return {"ready": False, "reason": "top_gainers_playbook_needs_live_quote_or_trade_ready_data"}
+        return {
+            "ready": True,
+            "reason": "top_gainers_playbook_buy_ready",
+            "setup": str(scan.get("setup") or "").strip().lower(),
+            "source": "top_gainers_playbook",
+            "final_signal": signal,
+            "scan_score": round(quant_score / 100.0, 4),
+            "playbook_quant_score": round(quant_score, 4),
+            "combined_floor": -1.0,
+            "min_quality_score": minimum,
+            "min_confluence": 0.0,
+            "size_policy": "probe_size_only" if signal == "MODERATE BUY" else "reduced_size_until_follow_through",
+            "playbook_entry_zone_valid": True,
+            "entry": round(entry, 4),
+            "max_entry": round(max_entry, 4),
+            "stop": round(stop, 4),
+            "stop_risk_pct": round(stop_risk_pct, 4),
+            "data_quality_missing": [
+                str(item or "").strip().lower()
+                for item in (playbook.get("data_gaps") or [])
+                if str(item or "").strip()
+            ],
+        }
+
+    def _rule_audit_with_playbook_overrides(self, rule_audit: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+        if not profile.get("playbook_entry_zone_valid"):
+            return rule_audit
+        output = dict(rule_audit or {})
+        hard_blocks = [
+            block
+            for block in output.get("hard_blocks") or []
+            if not (isinstance(block, dict) and str(block.get("flag") or "").upper() == "PRICE_EXTENDED_FROM_PIVOT")
+        ]
+        active_flags = [
+            flag
+            for flag in output.get("active_flags") or []
+            if str(flag or "").upper() != "PRICE_EXTENDED_FROM_PIVOT"
+        ]
+        output["hard_blocks"] = hard_blocks
+        output["active_flags"] = active_flags
+        output["hard_blocked"] = bool(hard_blocks)
+        playbook_score = _float_or_none(profile.get("playbook_quant_score"))
+        current_score = _float_or_none(output.get("overall_score_pct"))
+        if playbook_score is not None and playbook_score > float(current_score or 0.0):
+            output["overall_score_pct"] = playbook_score
+            output["overall_grade"] = _score_grade(playbook_score)
+        output["playbook_override"] = {
+            "source": "top_gainers_playbook",
+            "final_signal": profile.get("final_signal"),
+            "entry_zone_valid": True,
+            "reason": "Moneycontrol top-gainers playbook validated price within max entry and 7% stop risk.",
+        }
+        return output
+
     def _opportunity_probe_can_absorb_gate(self, gate: dict[str, Any], profile: dict[str, Any]) -> bool:
         if not profile.get("ready"):
             return False
         gate_name = str(gate.get("gate") or "").strip()
         reason = str(gate.get("reason") or "").strip()
         value = gate.get("value")
+        if (
+            profile.get("source") == "top_gainers_playbook"
+            and profile.get("playbook_entry_zone_valid")
+            and "PRICE_EXTENDED_FROM_PIVOT" in gate_name.upper()
+        ):
+            return True
         if gate_name == "overall_quality_gate":
             score = self._gate_overall_score(value)
             minimum = _float_or_none(profile.get("min_quality_score")) or OPPORTUNITY_PROBE_MIN_SCORE
+            playbook_score = _float_or_none(profile.get("playbook_quant_score"))
+            if playbook_score is not None and playbook_score >= minimum:
+                return True
             if score is not None and score >= minimum:
                 return True
             scan_score = _float_or_none(profile.get("scan_score")) or 0.0
@@ -968,7 +1089,12 @@ class StrategyEngine:
         if gate_name == "phase2_data_readiness":
             return self._opportunity_probe_can_absorb_data_readiness_block(gate.get("value"), profile)
         if gate_name == "stage_buy_permitted":
-            return profile.get("source") in {"live_momentum_review", "opportunity_scan", "live_quote_opportunity_scan"}
+            return profile.get("source") in {
+                "live_momentum_review",
+                "opportunity_scan",
+                "live_quote_opportunity_scan",
+                "top_gainers_playbook",
+            }
         if gate_name == "risk_overrides":
             return self._opportunity_probe_can_absorb_risk_flags(gate.get("value"), profile)
         if reason in {
@@ -1052,6 +1178,12 @@ class StrategyEngine:
         )
         for flag in flags:
             normalized = str(flag or "").strip().lower()
+            if (
+                profile.get("source") == "top_gainers_playbook"
+                and profile.get("playbook_entry_zone_valid")
+                and "price_extended_from_pivot" in normalized
+            ):
+                continue
             if any(token in normalized for token in hard_tokens):
                 return False
         return True
@@ -2567,6 +2699,19 @@ def _float_or_none(value: Any) -> float | None:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def _score_grade(score: float | None) -> str:
+    value = _float_or_none(score)
+    if value is None:
+        return ""
+    if value >= 80:
+        return "A"
+    if value >= 70:
+        return "B"
+    if value >= 55:
+        return "C"
+    return "D"
 
 
 def _parse_time(value: Any) -> datetime | None:

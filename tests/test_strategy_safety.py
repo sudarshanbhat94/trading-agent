@@ -496,6 +496,42 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertTrue(sentiment["positive_catalyst"])
         self.assertGreater(sentiment["boost"], 0.02)
 
+    def test_opportunity_scan_reserves_final_universe_for_playbook_buys(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        scored = [
+            {
+                "symbol": f"FAST{i}",
+                "setup": "intraday_momentum",
+                "market_region": "IN",
+                "metrics": {"day_gain_pct": 9.0, "turnover": 500_000_000, "volume_ratio": 5.0},
+                "components": {"live_momentum": 1.0, "rally_radar": 1.0},
+                "market_action": {"available": True, "score": 1.0},
+            }
+            for i in range(5)
+        ]
+        scored.append(
+            {
+                "symbol": "PLAYBOOK",
+                "setup": "earnings_beat_gap_and_go",
+                "market_region": "IN",
+                "metrics": {"day_gain_pct": 6.0, "turnover": 120_000_000, "volume_ratio": 2.2},
+                "components": {"live_momentum": 0.1, "rally_radar": 0.1},
+                "market_action": {"available": True, "score": 0.4},
+                "top_gainers_playbook": {
+                    "final_signal": "STRONG BUY",
+                    "quant_score": 72,
+                    "gain_pct": 6.0,
+                    "hard_excluded": False,
+                    "hard_excludes": [],
+                    "anti_patterns": [],
+                },
+            }
+        )
+
+        selected = scanner._select_rally_radar_then_diverse(scored, 3)
+
+        self.assertIn("PLAYBOOK", {item["symbol"] for item in selected})
+
     def test_opportunity_scan_reports_news_coverage_and_verified_catalysts(self) -> None:
         scanner = OpportunityScanner(_scanner_settings())
         candles = _trend_candles(volume_spike=True)
@@ -1078,6 +1114,105 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(action, "BUY")
         self.assertTrue(context["decision_gate_context"]["opportunity_probe"]["ready"])
         self.assertFalse(context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"])
+
+    def test_top_gainers_playbook_buy_becomes_deterministic_buy(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 8.2,
+                "confirmed": False,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 40
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 40
+        context["full_spectrum_analysis"]["confluence_score"]["total"] = 12
+        context["full_spectrum_analysis"]["stage_analysis"] = {"stage": "Stage 1", "buy_permitted": False}
+        context["full_spectrum_analysis"]["risk_overrides"] = {
+            "flags": ["price_extended_from_pivot"],
+            "no_new_longs": True,
+        }
+        context["opportunity_scan"] = {
+            "setup": "earnings_beat_gap_and_go",
+            "bucket": "Small Size Only",
+            "score": 1.0,
+            "data_quality": {"actionable_data_ready": True},
+            "top_gainers_playbook": {
+                "available": True,
+                "final_signal": "MODERATE BUY",
+                "quant_score": 62,
+                "hard_excluded": False,
+                "hard_excludes": [],
+                "anti_patterns": [],
+                "cmp": 108.0,
+                "levels": {
+                    "pivot": 105.0,
+                    "entry": 108.0,
+                    "max_entry": 110.25,
+                    "stop": 100.44,
+                    "target1": 129.6,
+                },
+                "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "MODERATE"},
+            },
+        }
+
+        action = engine._action_from_context("PLAYBUY", 0.02, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(probe["source"], "top_gainers_playbook")
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+
+    def test_top_gainers_playbook_chasing_stays_hold(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 9.0,
+                "confirmed": False,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["opportunity_scan"] = {
+            "setup": "earnings_beat_gap_and_go",
+            "bucket": "Small Size Only",
+            "score": 1.0,
+            "data_quality": {"actionable_data_ready": True},
+            "top_gainers_playbook": {
+                "available": True,
+                "final_signal": "MODERATE BUY",
+                "quant_score": 62,
+                "hard_excluded": False,
+                "hard_excludes": [],
+                "anti_patterns": [{"code": "CHASING"}],
+                "cmp": 118.0,
+                "levels": {
+                    "pivot": 105.0,
+                    "entry": 105.0,
+                    "max_entry": 110.25,
+                    "stop": 97.65,
+                    "target1": 126.0,
+                },
+                "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "MODERATE"},
+            },
+        }
+
+        action = engine._action_from_context("PLAYCHASE", 0.50, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(context["decision_gate_context"]["opportunity_probe"]["ready"])
 
     def test_live_confirmed_probe_can_use_trade_ready_data_when_scan_quality_lags(self) -> None:
         engine = StrategyEngine(

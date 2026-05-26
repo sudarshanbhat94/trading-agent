@@ -485,8 +485,6 @@ def _levels(
         return GainerLevels(None, None, None, None, None, None, None)
     entry = max(pivot, price) if price <= pivot * 1.05 else pivot
     stop = entry * 0.93
-    if box_bottom and box_bottom < entry:
-        stop = min(stop, box_bottom * 0.995)
     target2 = high_52w if high_52w and high_52w > entry else entry * 1.30
     target3 = entry * 1.30 if stage2 and (volume_ratio or 0.0) > 2 else None
     return GainerLevels(

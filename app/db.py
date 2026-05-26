@@ -5719,6 +5719,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     targets = trade_plan.get("targets")
     if not isinstance(targets, list):
         targets = []
+    opportunity_scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
     details = {
         "action": action,
         "tier": confluence.get("tier"),
@@ -5726,6 +5727,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "entry_zone": trade_plan.get("entry_zone"),
         "stop_loss": trade_plan.get("stop_loss"),
         "targets": targets,
+        "latest_price": price,
         "risk_flags": risk.get("flags", []),
         "active_flags": system_audit.get("active_flags", []),
         "overall_score_pct": display_score,
@@ -5743,13 +5745,17 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
         "entry_quality": entry_quality,
         "breakout_quality": breakout,
-        "opportunity_scan": context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {},
+        "opportunity_scan": opportunity_scan,
         "live_momentum_review": full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {},
         "strategy_logic_filters": strategy_logic,
         "reason": audit.get("action_reason") or row.get("reason"),
         "classification": system_audit.get("classification"),
         "allocation_cap_multiplier": system_audit.get("allocation_cap_multiplier"),
     }
+    if action == "BUY":
+        _apply_top_gainers_playbook_signal_details(details, price)
+        display_score = details.get("overall_score_pct", display_score)
+        display_grade = details.get("overall_grade", display_grade)
     quality_gate = fresh_buy_quality_gate(
         {
             "action": action,
@@ -5807,6 +5813,65 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "overall_grade": str(display_grade or ""),
         "reason": str(audit.get("action_reason") or row.get("reason") or "")[:1000],
         "details": details,
+    }
+
+
+def _apply_top_gainers_playbook_signal_details(details: dict[str, Any], price: float) -> None:
+    scan = details.get("opportunity_scan") if isinstance(details.get("opportunity_scan"), dict) else {}
+    playbook = scan.get("top_gainers_playbook") if isinstance(scan.get("top_gainers_playbook"), dict) else {}
+    signal = str(playbook.get("final_signal") or "").upper()
+    if signal not in {"STRONG BUY", "MODERATE BUY"}:
+        return
+    levels = playbook.get("levels") if isinstance(playbook.get("levels"), dict) else {}
+    entry = _optional_float(levels.get("entry"))
+    max_entry = _optional_float(levels.get("max_entry"))
+    stop = _optional_float(levels.get("stop"))
+    if entry and max_entry:
+        details["entry_zone"] = [round(entry, 2), round(max_entry, 2)]
+    if stop:
+        details["stop_loss"] = round(stop, 2)
+        details["stop_status"] = {
+            "price": round(stop, 2),
+            "source": "top_gainers_playbook",
+            "rule": "7pct_below_entry",
+        }
+    targets: list[dict[str, Any]] = []
+    for label, key, probability in (
+        ("T1", "target1", "likely"),
+        ("T2", "target2", "stretch"),
+        ("T3", "target3", "low_probability"),
+    ):
+        target = _optional_float(levels.get(key))
+        if not target:
+            continue
+        distance = ((target - price) / price) * 100.0 if price else None
+        targets.append(
+            {
+                "label": label,
+                "price": round(target, 2),
+                "distance_pct": round(distance, 2) if distance is not None else None,
+                "probability_label": probability,
+                "source": "top_gainers_playbook",
+            }
+        )
+    if targets:
+        details["targets"] = targets
+        details["target_status"] = targets
+    quant_score = _optional_float(playbook.get("quant_score"))
+    if quant_score is not None:
+        existing_setup = _optional_float(details.get("setup_score_pct")) or 0.0
+        existing_tradeability = _optional_float(details.get("overall_score_pct")) or 0.0
+        details["setup_score_pct"] = max(existing_setup, quant_score)
+        if quant_score > existing_tradeability:
+            details["overall_score_pct"] = quant_score
+            details["overall_grade"] = _score_grade(quant_score)
+    details["playbook_signal"] = {
+        "source": "top_gainers_playbook",
+        "final_signal": signal,
+        "quant_score": quant_score,
+        "setup_confidence": playbook.get("setup_confidence"),
+        "catalyst_review": playbook.get("catalyst_review"),
+        "levels": levels,
     }
 
 

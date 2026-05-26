@@ -46,12 +46,29 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     hard_blocks = details.get("hard_blocks") if isinstance(details.get("hard_blocks"), list) else []
     phase3 = details.get("strategy_logic_filters") if isinstance(details.get("strategy_logic_filters"), dict) else {}
     phase3_blocks = phase3.get("hard_blocks") if isinstance(phase3.get("hard_blocks"), list) else []
+    playbook_probe = _top_gainers_playbook_probe(item, details)
+    if playbook_probe:
+        hard_blocks = _filter_playbook_absorbable_blocks(hard_blocks)
+        phase3_blocks = _filter_playbook_absorbable_blocks(phase3_blocks)
+        hard_blocked = bool(hard_blocks or phase3_blocks)
     if hard_blocked or hard_blocks or phase3_blocks:
         return _blocked("hard_blocked", "System hard blocks are present.")
 
-    opportunity_probe = _opportunity_probe_ready(item, details)
-    min_score = OPPORTUNITY_PROBE_MIN_SCORE if opportunity_probe else FRESH_BUY_MIN_SCORE
-    min_confluence = OPPORTUNITY_PROBE_MIN_CONFLUENCE if opportunity_probe else ACTIONABLE_MIN_CONFLUENCE
+    opportunity_probe = bool(playbook_probe) or _opportunity_probe_ready(item, details)
+    min_score = (
+        float(playbook_probe.get("min_score") or OPPORTUNITY_PROBE_MIN_SCORE)
+        if playbook_probe
+        else OPPORTUNITY_PROBE_MIN_SCORE
+        if opportunity_probe
+        else FRESH_BUY_MIN_SCORE
+    )
+    min_confluence = (
+        0.0
+        if playbook_probe
+        else OPPORTUNITY_PROBE_MIN_CONFLUENCE
+        if opportunity_probe
+        else ACTIONABLE_MIN_CONFLUENCE
+    )
     allowed_grades = OPPORTUNITY_PROBE_ALLOWED_GRADES if opportunity_probe else FRESH_BUY_ALLOWED_GRADES
 
     tradeability_score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
@@ -59,6 +76,8 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     score = tradeability_score
     if opportunity_probe and setup_score is not None:
         score = max(score or 0.0, setup_score)
+    if playbook_probe and _number(playbook_probe.get("quant_score")) is not None:
+        score = max(score or 0.0, float(playbook_probe["quant_score"]))
     if score is None or score < min_score:
         return _blocked(
             "overall_score_below_opportunity_probe_minimum" if opportunity_probe else "overall_score_below_70",
@@ -72,6 +91,8 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     grade = _upper(item.get("overall_grade") or details.get("overall_grade"))
     if opportunity_probe:
         grade = _upper(details.get("setup_grade") or grade)
+    if playbook_probe:
+        grade = _score_grade(score)
     if grade not in allowed_grades:
         return _blocked(
             "grade_not_a_b_or_c_for_opportunity_probe" if opportunity_probe else "grade_not_a_or_b",
@@ -149,7 +170,11 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         cautions.append("live quote is available but intraday candles are stale; use probe size only")
         missing_data.append("stale_intraday_candles")
 
-    severe_flags = _severe_risk_flags(risk_flags, opportunity_probe=opportunity_probe)
+    severe_flags = _severe_risk_flags(
+        risk_flags,
+        opportunity_probe=opportunity_probe,
+        playbook_entry_ok=bool(playbook_probe),
+    )
     if severe_flags:
         return _blocked(
             "severe_risk_flags",
@@ -161,7 +186,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         size_multiplier = min(size_multiplier, 0.35)
         cautions.append("risk flags active; use probe size")
 
-    t1_gate, t1_multiplier, t1_caution = _target_one_gate(item, details)
+    t1_gate, t1_multiplier, t1_caution = _target_one_gate(item, details, playbook_probe=bool(playbook_probe))
     if t1_gate:
         return t1_gate
     if t1_multiplier is not None:
@@ -332,7 +357,12 @@ def _risk_flags(item: dict[str, Any], details: dict[str, Any]) -> list[str]:
     return [str(flag or "").strip().lower() for flag in flags if str(flag or "").strip()]
 
 
-def _severe_risk_flags(risk_flags: list[str], *, opportunity_probe: bool = False) -> list[str]:
+def _severe_risk_flags(
+    risk_flags: list[str],
+    *,
+    opportunity_probe: bool = False,
+    playbook_entry_ok: bool = False,
+) -> list[str]:
     severe_tokens = _opportunity_probe_hard_risk_tokens() if opportunity_probe else (
         "hard_block",
         "no_new_longs",
@@ -348,6 +378,8 @@ def _severe_risk_flags(risk_flags: list[str], *, opportunity_probe: bool = False
     for flag in risk_flags:
         normalized = str(flag or "").strip().lower()
         if not normalized:
+            continue
+        if playbook_entry_ok and "price_extended_from_pivot" in normalized:
             continue
         if any(exception in normalized for exception in reduce_size_exceptions):
             continue
@@ -385,6 +417,8 @@ def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> b
     scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
     if not isinstance(scan, dict):
         scan = {}
+    if _top_gainers_playbook_probe(item, details):
+        return True
     review = details.get("live_momentum_review")
     if not isinstance(review, dict):
         review = scan.get("live_momentum_review") if isinstance(scan.get("live_momentum_review"), dict) else {}
@@ -420,6 +454,66 @@ def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> b
     }:
         return score >= 0.60 or bool(data_quality.get("actionable_data_ready")) or live_quote_probe_ok
     return False
+
+
+def _top_gainers_playbook_probe(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    if not isinstance(scan, dict):
+        return {}
+    playbook = scan.get("top_gainers_playbook") if isinstance(scan.get("top_gainers_playbook"), dict) else {}
+    signal = _upper(playbook.get("final_signal"))
+    if signal not in {"STRONG BUY", "MODERATE BUY"}:
+        return {}
+    if playbook.get("hard_excluded") or playbook.get("hard_excludes"):
+        return {}
+    anti_codes = {
+        _upper(flag.get("code"))
+        for flag in playbook.get("anti_patterns") or []
+        if isinstance(flag, dict)
+    }
+    if anti_codes & {"CHASING", "OPERATOR_RISK", "SHORT_COVER", "STAGE_TRAP", "ILLIQUID_BREAKOUT", "FAILED_BREAKOUT_RISK"}:
+        return {}
+    levels = playbook.get("levels") if isinstance(playbook.get("levels"), dict) else {}
+    price = _number(item.get("latest_price"), item.get("price"), details.get("latest_price"), playbook.get("cmp"))
+    entry = _number(levels.get("entry"))
+    max_entry = _number(levels.get("max_entry"))
+    stop = _number(levels.get("stop"))
+    if price is None or entry is None or max_entry is None or stop is None:
+        return {}
+    if price > max_entry * 1.0005 or stop >= price:
+        return {}
+    stop_risk_pct = ((price - stop) / price) * 100.0
+    if stop_risk_pct > 9.0:
+        return {}
+    quant_score = _number(playbook.get("quant_score"))
+    if quant_score is None:
+        return {}
+    min_score = 70.0 if signal == "STRONG BUY" else 55.0
+    if quant_score < min_score:
+        return {}
+    return {
+        "signal": signal,
+        "quant_score": quant_score,
+        "min_score": min_score,
+        "entry": entry,
+        "max_entry": max_entry,
+        "stop": stop,
+        "stop_risk_pct": stop_risk_pct,
+    }
+
+
+def _filter_playbook_absorbable_blocks(blocks: list[Any]) -> list[Any]:
+    output: list[Any] = []
+    for block in blocks:
+        flag = ""
+        if isinstance(block, dict):
+            flag = _upper(block.get("flag") or block.get("gate") or block.get("reason"))
+        else:
+            flag = _upper(block)
+        if "PRICE_EXTENDED_FROM_PIVOT" in flag:
+            continue
+        output.append(block)
+    return output
 
 
 def _live_quote_probe_data_ok(item: dict[str, Any], details: dict[str, Any], scan: dict[str, Any], setup: str) -> bool:
@@ -500,18 +594,24 @@ def _soft_missing_data_labels(data_readiness: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(labels))
 
 
-def _target_one_gate(item: dict[str, Any], details: dict[str, Any]) -> tuple[dict[str, Any] | None, float | None, str]:
+def _target_one_gate(
+    item: dict[str, Any],
+    details: dict[str, Any],
+    *,
+    playbook_probe: bool = False,
+) -> tuple[dict[str, Any] | None, float | None, str]:
     t1 = _target_one(item.get("target_status"), details.get("target_status"), details.get("targets"))
     if not t1:
         return None, None, ""
     probability = str(t1.get("probability_label") or t1.get("probability") or "").strip().lower()
     distance = _number(t1.get("distance_pct"))
-    if distance is not None and distance > HARD_T1_DISTANCE_PCT:
+    hard_distance = 22.0 if playbook_probe else HARD_T1_DISTANCE_PCT
+    if distance is not None and distance > hard_distance:
         return _blocked(
             "target_1_too_far_for_fresh_entry",
             f"T1 is {distance:.1f}% away; wait for a better entry before paper/live follow.",
             target_1=t1,
-            hard_t1_distance_pct=HARD_T1_DISTANCE_PCT,
+            hard_t1_distance_pct=hard_distance,
         ), None, ""
     if probability in {"low", "low_probability", "low probability"}:
         return _blocked(
@@ -567,6 +667,19 @@ def _number(*values: Any) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _score_grade(score: float | None) -> str:
+    value = _number(score)
+    if value is None:
+        return ""
+    if value >= 80:
+        return "A"
+    if value >= 70:
+        return "B"
+    if value >= 55:
+        return "C"
+    return "D"
 
 
 def _upper(value: Any) -> str:
