@@ -1077,6 +1077,8 @@ class StrategyEngine:
             return bool(profile.get("data_readiness_block_absorbable")) and score is not None and score >= 30.0 and scan_score >= 0.80
         if gate_name == "session_momentum_gate":
             if reason == "late_intraday_momentum_wait_for_pullback" or self._gate_value_flag(value, "late_chase"):
+                if profile.get("source") == "top_gainers_playbook" and profile.get("playbook_entry_zone_valid"):
+                    return True
                 return False
             return True
         absorbable = {

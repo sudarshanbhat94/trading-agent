@@ -1138,6 +1138,14 @@ class StrategySafetyTests(unittest.TestCase):
             "flags": ["price_extended_from_pivot"],
             "no_new_longs": True,
         }
+        context["full_spectrum_analysis"]["live_momentum_review"] = {
+            "setup": "market_action_momentum",
+            "late_chase": True,
+            "strategy_ready": False,
+            "day_gain_pct": 8.2,
+            "volume_ratio": 3.2,
+            "reason": "late chase blocked; wait for pullback",
+        }
         context["opportunity_scan"] = {
             "setup": "earnings_beat_gap_and_go",
             "bucket": "Small Size Only",
