@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=mobile-tabs-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=mobile-watchlist-1" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -62,6 +62,15 @@
         </symbol>
         <symbol id="icon-settings" viewBox="0 0 24 24">
           <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9.3l-.5.3-3.2-1.8-.1-.6a1.7 1.7 0 0 0-1.5-1.2h-.8L7.8 14l.4-.5a1.7 1.7 0 0 0 0-2l-.4-.5 1.8-3.2h.8A1.7 1.7 0 0 0 11.9 6l.1-.6 3.2-1.8.5.3a1.7 1.7 0 0 0 1.9.3l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9l.2.5V14Z"></path>
+        </symbol>
+        <symbol id="icon-search" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M16 16l5 5"></path>
+        </symbol>
+        <symbol id="icon-filter" viewBox="0 0 24 24">
+          <path d="M4 7h5"></path><path d="M15 7h5"></path><circle cx="12" cy="7" r="2"></circle><path d="M4 17h9"></path><path d="M19 17h1"></path><circle cx="16" cy="17" r="2"></circle>
+        </symbol>
+        <symbol id="icon-chart-up" viewBox="0 0 24 24">
+          <path d="M4 18l5-5 4 4 7-9"></path><path d="M15 8h5v5"></path>
         </symbol>
       </svg>
       <header class="terminal-topbar">
@@ -365,6 +374,19 @@
               <button type="button" data-filter-value="high">High confidence</button>
               <button type="button" data-filter-value="today">Today</button>
             </div>
+            <section class="mobile-watchlist-app" aria-label="Ideas watchlist">
+              <div class="mobile-watchlist-tabs" id="ideas-watchlist-tabs" role="tablist" aria-label="Watchlist groups"></div>
+              <div class="mobile-watchlist-search">
+                <span aria-hidden="true"><svg><use href="#icon-search"></use></svg></span>
+                <input id="ideas-watchlist-search" type="search" placeholder="Search & add" autocomplete="off" />
+                <strong id="ideas-watchlist-count">0/0</strong>
+                <button type="button" id="ideas-watchlist-track-group" aria-label="Watchlist filters">
+                  <svg aria-hidden="true"><use href="#icon-filter"></use></svg>
+                </button>
+              </div>
+              <button class="mobile-watchlist-new-group" type="button" id="ideas-watchlist-new-group">+ New group</button>
+              <div class="mobile-watchlist-list" id="ideas-watchlist-body"></div>
+            </section>
             <div class="panel full">
               <div class="panel-head">
                 <div class="panel-title-stack">
@@ -452,6 +474,25 @@
                   <tbody id="positions-body"></tbody>
                 </table>
               </div>
+              <section class="mobile-portfolio-app" aria-label="Portfolio positions">
+                <div class="mobile-portfolio-tabs" role="tablist" aria-label="Portfolio tabs">
+                  <button type="button" data-mobile-portfolio-tab="holdings">Holdings <span id="mobile-holdings-count">0</span></button>
+                  <button type="button" data-mobile-portfolio-tab="positions">Positions <span id="mobile-positions-tab-count">0</span></button>
+                </div>
+                <div class="mobile-portfolio-tools">
+                  <label>
+                    <svg aria-hidden="true"><use href="#icon-search"></use></svg>
+                    <input id="mobile-portfolio-search" type="search" placeholder="Search" autocomplete="off" />
+                  </label>
+                  <button type="button" aria-label="Filter positions" data-mobile-portfolio-tool="filters"><svg aria-hidden="true"><use href="#icon-filter"></use></svg></button>
+                  <button type="button" aria-label="Group positions" data-mobile-portfolio-tool="group"><span aria-hidden="true">Group</span></button>
+                  <button type="button" id="mobile-portfolio-analytics">Analytics</button>
+                </div>
+                <div class="mobile-portfolio-list" id="mobile-positions-body"></div>
+                <button class="mobile-floating-chart" type="button" data-view-jump="suggestions" aria-label="Open ideas watchlist">
+                  <svg aria-hidden="true"><use href="#icon-chart-up"></use></svg>
+                </button>
+              </section>
             </div>
           </section>
 
@@ -782,6 +823,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=mobile-tabs-1"></script>
+    <script src="/static/dashboard.js?v=mobile-watchlist-1"></script>
   </body>
 </html>

@@ -16,6 +16,11 @@ const state = {
   positionMarksLastFetchAt: 0,
   positionMarksLastAppliedAt: null,
   quoteFilter: "",
+  ideaWatchlistSearch: "",
+  activeIdeaGroup: "big",
+  currentIdeaWatchlistRows: [],
+  portfolioSearch: "",
+  activePortfolioTab: "positions",
   activeMarket: "IN",
   activeSettingsTab: "broker",
   pageFilters: {
@@ -1328,6 +1333,7 @@ function render(payload) {
   renderStrategies(strategies);
   updatePageFilterButtons();
   renderStrategyPlans(visibleStrategyPlans);
+  renderIdeasWatchlist(suggestions, trackedIdeas);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderSentiment(visibleSentiment);
   renderQuotes(quotes);
@@ -1338,6 +1344,7 @@ function render(payload) {
   renderDecisions(visibleDecisions, { controlRunning });
   renderOverviewDecisions(decisions, { controlRunning });
   renderOverviewPositions(positions);
+  renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
   renderOrders(visibleOrders);
   renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
   renderSectorRotation(scopedMarketContext(payload.sector_rotation_context || {}, activeMarket));
@@ -1387,6 +1394,8 @@ function renderPositionMarkPanels(payload) {
   updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas);
   renderPositions(positions);
   renderOverviewPositions(positions);
+  renderIdeasWatchlist(suggestions, trackedIdeas);
+  renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
   renderProductTrackingPanel(trackedIdeas, positions, suggestions);
@@ -3688,6 +3697,288 @@ async function followPlan(planCode, action, amount = 0) {
   }
 }
 
+function ideaIsFollowed(row = {}) {
+  const followed = row.user_follow && typeof row.user_follow === "object" ? row.user_follow : {};
+  const status = String(followed.status || row.follow_status || row.status || "").toUpperCase();
+  if (["EXITED", "CLOSED", "CANCELLED", "REJECTED"].includes(status)) return false;
+  return Boolean(row.follow_id || row.user_follow || row.mode || followed.id);
+}
+
+function ideaIsTradeReady(row = {}) {
+  const action = rowActionText(row);
+  const fresh = String(row.fresh_action || row.latest_system_action || "").toUpperCase();
+  const readiness = String(row.decision_readiness || row.setup_bucket_label || "").toLowerCase();
+  return action === "BUY" || fresh === "BUY_NOW" || readiness.includes("buy") || readiness.includes("trade");
+}
+
+function ideaIsHighQuality(row = {}) {
+  return confidencePercent(row) >= 65 || Number(row.overall_score_pct || 0) >= 70 || Number(row.confluence || 0) >= 18;
+}
+
+function ideaDetails(row = {}) {
+  const details = row.details && typeof row.details === "object" ? row.details : parseJsonObject(row.details_json);
+  return details && typeof details === "object" ? details : {};
+}
+
+function ideaHasEvent(row = {}) {
+  const details = ideaDetails(row);
+  const full = details.full_spectrum || {};
+  const eventRisk = full.corporate_event_risk || details.corporate_event_risk || {};
+  const sentiment = full.news_sentiment || details.news_sentiment || {};
+  return Boolean(
+    row.catalyst_type ||
+      row.catalyst_date ||
+      row.earnings_date ||
+      row.headline_count ||
+      row.news_quality ||
+      eventRisk.event_type ||
+      eventRisk.earnings_date ||
+      eventRisk.has_event ||
+      sentiment.headline_count ||
+      sentiment.score,
+  );
+}
+
+function ideaSearchMatches(row = {}, search = "") {
+  if (!search) return true;
+  const text = [
+    row.symbol,
+    row.company_name,
+    row.strategy,
+    row.sector,
+    row.industry,
+    row.exchange,
+    row.signal_type,
+    row.suggestion,
+  ].join(" ").toUpperCase();
+  return text.includes(search);
+}
+
+function ideaWatchlistGroups(suggestions = [], trackedIdeas = []) {
+  const ideas = sortSuggestionRows(suggestions || []);
+  const big = ideas.filter((row) => ideaIsTradeReady(row) || ideaIsHighQuality(row));
+  const bigKeys = new Set(big.map((row) => String(row.id || row.symbol || "")));
+  const interest = ideas.filter((row) => !bigKeys.has(String(row.id || row.symbol || "")));
+  const events = ideas.filter(ideaHasEvent);
+  const tracked = sortSuggestionRows((trackedIdeas || []).slice());
+  return [
+    { key: "big", label: "Big stocks", rows: big.length ? big : ideas.slice(0, 12) },
+    { key: "interest", label: "Stocks interest", rows: interest.length ? interest : ideas.slice(0, 12) },
+    { key: "tracked", label: `Watchlist ${tracked.length}`, rows: tracked },
+    { key: "events", label: "Events", rows: events },
+  ];
+}
+
+function ideaWatchlistReturn(row = {}) {
+  return Number(row.return_pct ?? row.current_return_pct ?? row.user_follow?.return_pct ?? 0);
+}
+
+function ideaWatchlistPrice(row = {}) {
+  return firstFinite(row.follow_latest_price, row.user_follow?.latest_price, row.latest_price, row.price, row.entry_price, row.follow_entry_price);
+}
+
+function ideaWatchlistMeta(row = {}) {
+  const market = rowMarket(row);
+  const exchange = row.exchange || (market === "IN" ? "NSE" : "US");
+  const parts = [`<span>${escapeHtml(exchange)}</span>`];
+  if (ideaHasEvent(row)) parts.push(`<strong>EVENT</strong>`);
+  const mode = String(row.mode || row.user_follow?.mode || "").toUpperCase();
+  if (mode && mode !== "TRACK") parts.push(`<strong>${escapeHtml(mode)}</strong>`);
+  return parts.join("");
+}
+
+function ideaWatchlistRowHtml(row = {}, index = 0) {
+  const market = rowMarket(row);
+  const currentReturn = ideaWatchlistReturn(row);
+  const price = ideaWatchlistPrice(row);
+  const followed = ideaIsFollowed(row);
+  const mode = String(row.mode || row.user_follow?.mode || "TRACK").toUpperCase();
+  const rowId = row.id || row.idea_id || "";
+  const trackButton = followed
+    ? `<span class="mobile-watchlist-status">${escapeHtml(mode === "TRACK" ? "TRACKING" : mode)}</span>`
+    : `<button type="button" data-watchlist-track data-idea-id="${escapeHtml(rowId)}">Track</button>`;
+  return `<article class="mobile-watchlist-row" role="button" tabindex="0" data-index="${index}">
+    <div class="mobile-watchlist-symbol">
+      <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+      <small>${ideaWatchlistMeta(row)}</small>
+    </div>
+    <div class="mobile-watchlist-price ${pnlClass(currentReturn)}">
+      <strong>${fmtTradeMoney(price, market)}</strong>
+      <small>${fmtPct(currentReturn)} since signal</small>
+      ${rowId ? trackButton : ""}
+    </div>
+  </article>`;
+}
+
+function renderIdeasWatchlist(suggestions = [], trackedIdeas = []) {
+  const tabs = byId("ideas-watchlist-tabs");
+  const body = byId("ideas-watchlist-body");
+  if (!tabs || !body) return;
+  const groups = ideaWatchlistGroups(suggestions, trackedIdeas);
+  if (!groups.some((group) => group.key === state.activeIdeaGroup)) state.activeIdeaGroup = groups[0]?.key || "big";
+  const activeGroup = groups.find((group) => group.key === state.activeIdeaGroup) || groups[0] || { rows: [] };
+  const search = String(state.ideaWatchlistSearch || "").trim().toUpperCase();
+  const rows = (activeGroup.rows || []).filter((row) => ideaSearchMatches(row, search));
+  state.currentIdeaWatchlistRows = rows;
+  tabs.innerHTML = groups
+    .map((group) => `<button type="button" class="${group.key === activeGroup.key ? "active" : ""}" data-idea-group="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>`)
+    .join("");
+  const count = byId("ideas-watchlist-count");
+  if (count) count.textContent = `${rows.length}/${Math.max(suggestions.length, rows.length)}`;
+  body.innerHTML = rows.length
+    ? rows.slice(0, 60).map((row, index) => ideaWatchlistRowHtml(row, index)).join("")
+    : emptyBlock(
+        `No ${activeMarketLabel()} ideas in this group`,
+        "Run the scanner or switch groups. Trackable ideas appear here as a clean watchlist.",
+        "Run Stock Check",
+        "analyze",
+      );
+  tabs.querySelectorAll("[data-idea-group]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeIdeaGroup = button.dataset.ideaGroup || "big";
+      renderIdeasWatchlist(suggestions, trackedIdeas);
+    });
+  });
+  body.querySelectorAll(".mobile-watchlist-row").forEach((card) => {
+    const row = rows[Number(card.dataset.index)];
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("[data-watchlist-track]")) return;
+      if (row) showDetails("Watchlist Idea", row);
+    });
+  });
+  body.querySelectorAll("[data-watchlist-track]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const row = rows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
+      followIdea(row || Number(button.dataset.ideaId), "track", button);
+    });
+  });
+}
+
+function portfolioSearchMatches(row = {}, search = "") {
+  if (!search) return true;
+  const text = [
+    row.symbol,
+    row.company_name,
+    row.strategy,
+    row.sector,
+    row.industry,
+    row.exchange,
+    row.mode,
+  ].join(" ").toUpperCase();
+  return text.includes(search);
+}
+
+function mobileHoldingRowHtml(row = {}, index = 0) {
+  const market = rowMarket(row);
+  const latest = firstFinite(row.follow_latest_price, row.user_follow?.latest_price, row.latest_price, row.price, row.entry_price);
+  const entry = firstFinite(row.follow_entry_price, row.user_follow?.entry_price, row.entry_price);
+  const returnPct = Number(row.return_pct ?? row.user_follow?.return_pct ?? row.current_return_pct ?? 0);
+  const mode = String(row.mode || row.user_follow?.mode || "TRACK").toUpperCase();
+  const exchange = row.exchange || (market === "IN" ? "NSE" : "US");
+  return `<article class="mobile-portfolio-row" role="button" tabindex="0" data-holding-index="${index}">
+    <div>
+      <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+      <small><span>${escapeHtml(exchange)}</span><span>${escapeHtml(mode === "TRACK" ? "WATCH" : mode)}</span></small>
+    </div>
+    <div class="mobile-portfolio-price ${pnlClass(returnPct)}">
+      <strong>${fmtTradeMoney(latest, market)}</strong>
+      <small>${fmtPct(returnPct)} · entry ${fmtTradeMoney(entry, market)}</small>
+    </div>
+  </article>`;
+}
+
+function mobilePositionRowHtml(row = {}, index = 0) {
+  const market = rowMarket(row);
+  const qty = Number(row.qty || 0);
+  const entry = Number(row.avg_price || 0);
+  const latest = Number(row.market_price || entry || 0);
+  const pnl = (latest - entry) * qty;
+  const pnlPct = entry > 0 ? ((latest - entry) / entry) * 100 : 0;
+  const mode = positionModeState(row);
+  return `<article class="mobile-portfolio-row position" role="button" tabindex="0" data-position-index="${index}">
+    <div>
+      <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+      <small><span>${escapeHtml(mode.label)}</span><span>${fmtNumber(qty)} qty</span></small>
+    </div>
+    <div class="mobile-portfolio-price ${pnlClass(pnl)}">
+      <strong>${fmtTradeMoney(pnl, market)}</strong>
+      <small>${fmtPct(pnlPct)} · LTP ${fmtTradeMoney(latest, market)}</small>
+    </div>
+  </article>`;
+}
+
+function mobilePortfolioEmpty(tab = "positions") {
+  const isPositions = tab === "positions";
+  return `<div class="mobile-portfolio-empty">
+    <div class="mobile-empty-illustration" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <strong>${isPositions ? "No positions" : "No holdings"}</strong>
+    <small>${isPositions ? "Place an order from your watchlist" : "Track ideas from your watchlist to build holdings"}</small>
+  </div>`;
+}
+
+function renderMobilePortfolio(positions = [], trackedIdeas = [], scopedPortfolio = {}) {
+  const body = byId("mobile-positions-body");
+  if (!body) return;
+  const positionRows = (positions || []).filter((row) => Number(row.qty || 0) > 0);
+  const holdingRows = trackedIdeas || [];
+  const search = String(state.portfolioSearch || "").trim().toUpperCase();
+  const activeTab = state.activePortfolioTab || "positions";
+  byId("mobile-holdings-count").textContent = fmtNumber(holdingRows.length);
+  byId("mobile-positions-tab-count").textContent = fmtNumber(positionRows.length);
+  document.querySelectorAll("[data-mobile-portfolio-tab]").forEach((button) => {
+    const active = button.dataset.mobilePortfolioTab === activeTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const rows = (activeTab === "holdings" ? holdingRows : positionRows).filter((row) => portfolioSearchMatches(row, search));
+  body.innerHTML = rows.length
+    ? rows.slice(0, 80).map((row, index) => (
+        activeTab === "holdings" ? mobileHoldingRowHtml(row, index) : mobilePositionRowHtml(row, index)
+      )).join("")
+    : mobilePortfolioEmpty(activeTab);
+  body.querySelectorAll("[data-position-index]").forEach((card) => {
+    const row = rows[Number(card.dataset.positionIndex)];
+    if (row) card.addEventListener("click", () => showDetails("Position", row));
+  });
+  body.querySelectorAll("[data-holding-index]").forEach((card) => {
+    const row = rows[Number(card.dataset.holdingIndex)];
+    if (row) card.addEventListener("click", () => showDetails("Tracked Holding", row));
+  });
+  const analytics = byId("mobile-portfolio-analytics");
+  if (analytics && !analytics.dataset.bound) {
+    analytics.dataset.bound = "1";
+    analytics.addEventListener("click", () => {
+      const market = normalizeUiMarket(state.activeMarket);
+      showDetails("Portfolio Analytics", {
+        market,
+        portfolio: marketPortfolioFromPayload(state.latest || {}, market),
+        holdings: payloadRowsForMarket(state.latest || {}, "tracked_ideas", market).length,
+        positions: filterRowsByMarket(state.latest?.positions || [], market).length,
+      });
+    });
+  }
+}
+
+function rerenderIdeasWatchlistFromState() {
+  const market = normalizeUiMarket(state.activeMarket);
+  renderIdeasWatchlist(
+    payloadRowsForMarket(state.latest || {}, "suggestions", market),
+    payloadRowsForMarket(state.latest || {}, "tracked_ideas", market),
+  );
+}
+
+function rerenderMobilePortfolioFromState() {
+  const market = normalizeUiMarket(state.activeMarket);
+  renderMobilePortfolio(
+    filterRowsByMarket(state.latest?.positions || [], market),
+    payloadRowsForMarket(state.latest || {}, "tracked_ideas", market),
+    marketPortfolioFromPayload(state.latest || {}, market),
+  );
+}
+
 function renderPositions(rows) {
   const body = byId("positions-body");
   const summary = byId("positions-summary-strip");
@@ -4214,6 +4505,26 @@ function defaultPaperAmountForIdea(row = {}) {
   return price <= cash ? price : 0;
 }
 
+function applyIdeaFollowPayload(payload = {}) {
+  if (!Array.isArray(payload.ideas)) return false;
+  state.latest = {
+    ...(state.latest || {}),
+    suggestions: payload.ideas,
+    signal_ideas: payload.ideas,
+    suggestions_by_market: payload.ideas_by_market || state.latest?.suggestions_by_market || {},
+    tracked_ideas: payload.tracked_ideas || state.latest?.tracked_ideas || [],
+    tracked_ideas_by_market: payload.tracked_ideas_by_market || state.latest?.tracked_ideas_by_market || {},
+    follow_history: payload.follow_history || state.latest?.follow_history || [],
+    follow_history_by_market: payload.follow_history_by_market || state.latest?.follow_history_by_market || {},
+    positions: payload.positions || state.latest?.positions || [],
+    portfolio: payload.portfolio || state.latest?.portfolio || {},
+    portfolio_by_market: payload.portfolio_by_market || state.latest?.portfolio_by_market || {},
+    paper: payload.paper || state.latest?.paper || {},
+  };
+  render(state.latest);
+  return true;
+}
+
 async function followIdea(rowOrId, action, button = null) {
   const row = typeof rowOrId === "object" && rowOrId ? rowOrId : {};
   const ideaId = Number(row.id || rowOrId || 0);
@@ -4253,28 +4564,9 @@ async function followIdea(rowOrId, action, button = null) {
       });
       return;
     }
-    if (Array.isArray(payload.ideas)) {
-      state.latest = {
-        ...(state.latest || {}),
-        suggestions: payload.ideas,
-        signal_ideas: payload.ideas,
-        tracked_ideas: payload.tracked_ideas || state.latest?.tracked_ideas || [],
-        tracked_ideas_by_market: payload.tracked_ideas_by_market || state.latest?.tracked_ideas_by_market || {},
-        positions: payload.positions || state.latest?.positions || [],
-      };
-      const marketIdeas = filterRowsByMarket(payload.ideas || [], state.activeMarket);
-      const marketTracked = payloadRowsForMarket(state.latest, "tracked_ideas", state.activeMarket);
-      const marketPositions = filterRowsByMarket(state.latest.positions || [], state.activeMarket);
-      renderSuggestions(marketIdeas);
-      renderTrackedIdeas(marketTracked);
-      renderPositions(marketPositions);
-      byId("kpi-positions").textContent = String(marketPositions.length);
-      byId("nav-positions-badge").textContent = String(marketPositions.length);
-      byId("position-count").textContent = `${marketPositions.length} open`;
-      const trackedCount = byId("tracked-count");
-      if (trackedCount) trackedCount.textContent = `${marketTracked.length} active`;
+    if (applyIdeaFollowPayload(payload)) {
       await refreshStatusOnly();
-      showDetails("Paper Follow", {
+      showDetails(mode === "TRACK" ? "Idea Tracking" : "Paper Follow", {
         symbol: row.symbol,
         mode,
         amount,
@@ -6089,6 +6381,52 @@ function bindControls() {
       renderQuotes(filterRowsByMarket(state.latest?.quotes || [], state.activeMarket));
     });
   }
+  const ideasSearch = byId("ideas-watchlist-search");
+  if (ideasSearch) {
+    ideasSearch.addEventListener("input", () => {
+      state.ideaWatchlistSearch = ideasSearch.value || "";
+      rerenderIdeasWatchlistFromState();
+    });
+  }
+  const trackGroupButton = byId("ideas-watchlist-track-group");
+  if (trackGroupButton) {
+    trackGroupButton.addEventListener("click", () => showDetails("Watchlist Filters", {
+      active_group: state.activeIdeaGroup,
+      search: state.ideaWatchlistSearch || "",
+      visible_symbols: (state.currentIdeaWatchlistRows || []).map((row) => row.symbol).filter(Boolean),
+      tracking: "Use the Track button on a row to add it to your watchlist without opening a paper position.",
+    }));
+  }
+  const newGroupButton = byId("ideas-watchlist-new-group");
+  if (newGroupButton) {
+    newGroupButton.addEventListener("click", () => showDetails("Watchlist Groups", {
+      groups: ideaWatchlistGroups(
+        payloadRowsForMarket(state.latest || {}, "suggestions", state.activeMarket),
+        payloadRowsForMarket(state.latest || {}, "tracked_ideas", state.activeMarket),
+      ).map((group) => ({ key: group.key, label: group.label, count: group.rows.length })),
+      note: "Groups are generated from setup quality, interest, tracked ideas, and events.",
+    }));
+  }
+  const portfolioSearch = byId("mobile-portfolio-search");
+  if (portfolioSearch) {
+    portfolioSearch.addEventListener("input", () => {
+      state.portfolioSearch = portfolioSearch.value || "";
+      rerenderMobilePortfolioFromState();
+    });
+  }
+  document.querySelectorAll("[data-mobile-portfolio-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activePortfolioTab = button.dataset.mobilePortfolioTab || "positions";
+      rerenderMobilePortfolioFromState();
+    });
+  });
+  document.querySelectorAll("[data-mobile-portfolio-tool]").forEach((button) => {
+    button.addEventListener("click", () => showDetails("Portfolio Tools", {
+      active_tab: state.activePortfolioTab,
+      search: state.portfolioSearch || "",
+      filters: "Use Holdings for tracked ideas and Positions for paper/live open quantities.",
+    }));
+  });
   byId("drawer-close").addEventListener("click", () => byId("detail-drawer").classList.remove("open"));
   for (const button of document.querySelectorAll(".nav-item")) {
     const navLabel = button.querySelector("span:not(.nav-icon)")?.textContent?.trim();
