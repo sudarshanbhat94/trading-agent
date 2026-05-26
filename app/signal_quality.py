@@ -227,10 +227,13 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     if not gate.get("passed"):
         return gate
     risk_flags = gate.get("risk_flags")
+    details = _details(item)
     if not isinstance(risk_flags, list):
-        details = _details(item)
         risk_flags = _risk_flags(item, details)
-    severe_flags = _severe_risk_flags(risk_flags)
+    severe_flags = _severe_risk_flags(
+        risk_flags,
+        playbook_entry_ok=bool(_top_gainers_playbook_probe(item, details)),
+    )
     if severe_flags:
         return _blocked(
             "auto_follow_severe_risk_flags",
