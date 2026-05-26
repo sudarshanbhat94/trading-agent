@@ -571,6 +571,32 @@ class Phase1FollowSafetyTests(unittest.TestCase):
 
         self.assertEqual(latest["display_signal"], "No Fresh Add")
         self.assertEqual(latest["fresh_action"], "NO_FRESH_ADD")
+        self.assertIn("older than the fresh-entry window", latest["display_reason"])
+
+    def test_latest_signal_ideas_keeps_one_row_per_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            first = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="WATCH",
+                score=80,
+                grade="A",
+            )
+            second = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="WATCH",
+                score=78,
+                grade="A",
+            )
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set symbol = 'DUPSYM', confidence = 0.7 where id = ?", (first,))
+                conn.execute("update signal_ideas set symbol = 'DUPSYM', confidence = 0.6 where id = ?", (second,))
+            latest = db.latest_signal_ideas(5)
+
+        self.assertEqual([row["symbol"] for row in latest].count("DUPSYM"), 1)
 
     @staticmethod
     def _insert_signal_idea(

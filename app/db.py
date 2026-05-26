@@ -2692,6 +2692,8 @@ class Database:
         if market_clause:
             where_parts.append(market_clause)
         where_sql = "where " + " and ".join(where_parts)
+        requested_limit = max(1, min(int(limit), 500))
+        query_limit = max(requested_limit, min(requested_limit * 4, 500))
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -2714,7 +2716,7 @@ class Database:
                     last_seen_at desc
                 limit ?
                 """,
-                (*market_params, limit),
+                (*market_params, query_limit),
             ).fetchall()
             follow_rows: list[sqlite3.Row] = []
             if user_id is not None:
@@ -2731,6 +2733,7 @@ class Database:
         for follow in follow_rows:
             follows_by_idea.setdefault(int(follow["idea_id"]), _row_dict(follow))
         output: list[dict[str, Any]] = []
+        seen_symbols: set[str] = set()
         for row in rows:
             item = _row_dict(row)
             item["details"] = self._decode_json(item.pop("details_json", "{}"))
@@ -2753,7 +2756,14 @@ class Database:
             if item.get("latest_decision_id"):
                 item["detail_url"] = f"/api/decisions/{item['latest_decision_id']}"
             item["user_follow"] = follows_by_idea.get(int(item["id"]))
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol and symbol in seen_symbols:
+                continue
+            if symbol:
+                seen_symbols.add(symbol)
             output.append(_decorate_signal_idea_item(item))
+            if len(output) >= requested_limit:
+                break
         return output
 
     def user_followed_signal_ideas(
@@ -5547,7 +5557,12 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["fresh_action_label"] = state["fresh_action_label"]
     item["trade_state"] = state["trade_state"]
     item["latest_system_action"] = state["latest_system_action"]
-    item["display_reason"] = opportunity.get("summary") or state["display_reason"]
+    state_first = state.get("fresh_action") in {"NO_FRESH_ADD", "EXIT", "EXITED", "EXPIRED"} or state.get("trade_state") in {
+        "PAPER_ENTERED",
+        "POSITION_MONITOR",
+        "RISK_REVIEW",
+    }
+    item["display_reason"] = state["display_reason"] if state_first else opportunity.get("summary") or state["display_reason"]
     item["execution_state"] = execution["state"]
     item["execution_state_label"] = execution["label"]
     item["execution_state_note"] = execution["note"]
