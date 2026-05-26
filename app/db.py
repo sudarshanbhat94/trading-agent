@@ -5410,6 +5410,7 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
     follow = item.get("user_follow") if isinstance(item.get("user_follow"), dict) else {}
     follow_status = str(follow.get("status") or item.get("follow_status") or "").upper()
     followed_active = follow_status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} and _optional_int(follow.get("qty") if follow else item.get("qty")) not in {None, 0}
+    follow_exited = follow_status in {"EXITED", "REJECTED", "CANCELLED", "CANCELED"}
     fresh_buy_recent = _recent_dt(item.get("last_seen_at"))
 
     if status == "STOP_HIT" or lifecycle == "stopped":
@@ -5450,6 +5451,10 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
             display_signal = "Position Monitor"
             fresh_action = "NO_FRESH_ADD"
             reason = "Position is already active; this idea is now being monitored."
+        elif follow_exited:
+            display_signal = "No Fresh Add"
+            fresh_action = "NO_FRESH_ADD"
+            reason = "Your previous follow is closed; wait for a new fresh BUY before entering again."
         elif duplicate_active:
             display_signal = "Already Active"
             fresh_action = "NO_FRESH_ADD"

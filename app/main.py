@@ -3609,10 +3609,11 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         size_multiplier = quality_size_multiplier(quality_gate)
         amount = _auto_follow_amount(cash, price, size_multiplier=size_multiplier)
         if amount <= 0:
+            skip_reason = "position_size_cap_below_one_share" if price > 0 and cash >= price else "insufficient_paper_cash_for_position_size"
             summary["skipped"].append(
                 {
                     "symbol": symbol,
-                    "reason": "insufficient_paper_cash_for_position_size",
+                    "reason": skip_reason,
                     "cash": round(cash, 4),
                     "price": round(price, 4),
                 }
