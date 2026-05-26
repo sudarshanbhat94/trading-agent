@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=mobile-compact-5" />
+    <link rel="stylesheet" href="/static/styles.css?v=mobile-theme-toggle-6" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -73,6 +73,12 @@
         </symbol>
         <symbol id="icon-chart-up" viewBox="0 0 24 24">
           <path d="M4 18l5-5 4 4 7-9"></path><path d="M15 8h5v5"></path>
+        </symbol>
+        <symbol id="icon-moon" viewBox="0 0 24 24">
+          <path d="M20.2 15.2A8.2 8.2 0 0 1 8.8 3.8 8.8 8.8 0 1 0 20.2 15.2Z"></path>
+        </symbol>
+        <symbol id="icon-sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M4.9 4.9l1.4 1.4"></path><path d="M17.7 17.7l1.4 1.4"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.9 19.1l1.4-1.4"></path><path d="M17.7 6.3l1.4-1.4"></path>
         </symbol>
       </svg>
       <header class="terminal-topbar">
@@ -176,6 +182,9 @@
           </button>
           <button class="mobile-native-chevron" type="button" data-view-jump="overview" aria-label="Home">
             <svg aria-hidden="true"><use href="#icon-dashboard"></use></svg>
+          </button>
+          <button id="mobile-theme-toggle-btn" class="mobile-native-theme" type="button" aria-label="Switch to dark theme">
+            <svg aria-hidden="true"><use href="#icon-moon"></use></svg>
           </button>
         </div>
       </section>
@@ -827,6 +836,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=mobile-compact-5"></script>
+    <script src="/static/dashboard.js?v=mobile-theme-toggle-6"></script>
   </body>
 </html>

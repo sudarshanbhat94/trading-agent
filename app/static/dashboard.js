@@ -375,6 +375,13 @@ function applyTheme(theme) {
     button.textContent = next === "dark" ? "☀" : "☾";
     button.setAttribute("aria-label", `Switch to ${next === "dark" ? "light" : "dark"} theme`);
   }
+  const mobileButton = byId("mobile-theme-toggle-btn");
+  if (mobileButton) {
+    const icon = mobileButton.querySelector("use");
+    if (icon) icon.setAttribute("href", next === "dark" ? "#icon-sun" : "#icon-moon");
+    mobileButton.setAttribute("aria-label", `Switch to ${next === "dark" ? "light" : "dark"} theme`);
+    mobileButton.setAttribute("title", next === "dark" ? "Light theme" : "Dark theme");
+  }
   const themeMeta = byId("theme-color-meta") || document.querySelector('meta[name="theme-color"]');
   if (themeMeta) themeMeta.setAttribute("content", next === "dark" ? "#0b0e13" : "#f0f1f4");
 }
@@ -6526,6 +6533,10 @@ function bindControls() {
   const themeButton = byId("theme-toggle-btn");
   if (themeButton) {
     themeButton.addEventListener("click", () => applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark"));
+  }
+  const mobileThemeButton = byId("mobile-theme-toggle-btn");
+  if (mobileThemeButton) {
+    mobileThemeButton.addEventListener("click", () => applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark"));
   }
   const creditPill = byId("credit-pill");
   const creditPopover = byId("credit-popover");

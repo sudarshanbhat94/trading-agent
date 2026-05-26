@@ -17041,6 +17041,7 @@ body[data-theme="dark"] .mobile-market-switch {
   body[data-theme="dark"] :is(
     .mobile-native-indices button,
     .mobile-native-chevron,
+    .mobile-native-theme,
     .mobile-watchlist-tabs button,
     .mobile-watchlist-new-group,
     .mobile-watchlist-search button,
@@ -17173,11 +17174,12 @@ body[data-theme="dark"] .mobile-market-switch {
   }
 
   .mobile-native-indices {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px 34px !important;
     min-height: 42px !important;
-    gap: 10px !important;
+    gap: 8px !important;
   }
 
-  .mobile-native-indices button:not(.mobile-native-chevron) {
+  .mobile-native-indices button:not(.mobile-native-chevron):not(.mobile-native-theme) {
     gap: 2px !important;
   }
 
@@ -17196,9 +17198,23 @@ body[data-theme="dark"] .mobile-market-switch {
     line-height: 1.1 !important;
   }
 
-  .mobile-native-chevron svg {
+  .mobile-native-chevron,
+  .mobile-native-theme {
+    display: grid !important;
+    place-items: center !important;
+    padding: 0 !important;
+    color: var(--mobile-icon-color) !important;
+  }
+
+  .mobile-native-chevron svg,
+  .mobile-native-theme svg {
     width: 20px !important;
     height: 20px !important;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+    stroke-linecap: round !important;
+    stroke-linejoin: round !important;
   }
 
   .market-tape-track {
