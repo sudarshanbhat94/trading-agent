@@ -17151,6 +17151,22 @@ body[data-theme="dark"] .mobile-market-switch {
     font-size: 13px !important;
   }
 
+  .mobile-watchlist-app,
+  .mobile-portfolio-app {
+    align-content: start !important;
+    grid-auto-rows: max-content !important;
+  }
+
+  .mobile-watchlist-tabs,
+  .mobile-watchlist-search,
+  .mobile-watchlist-new-group,
+  .mobile-watchlist-list,
+  .mobile-portfolio-tabs,
+  .mobile-portfolio-tools,
+  .mobile-portfolio-list {
+    align-self: start !important;
+  }
+
   .mobile-native-topbar {
     min-height: calc(var(--mobile-native-topbar-height) + env(safe-area-inset-top)) !important;
     padding: calc(16px + env(safe-area-inset-top)) 22px 8px !important;
