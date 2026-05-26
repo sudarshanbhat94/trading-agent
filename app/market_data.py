@@ -1359,8 +1359,16 @@ class UpstoxMarketDataProvider(MarketDataProvider):
                 if not item:
                     diagnostics["failed_requests"] += 1
                     continue
-                symbol, candles = item
+                symbol, candles, meta = item
                 diagnostics["completed_requests"] += 1
+                if meta:
+                    diagnostics.setdefault("historical_candle_count", 0)
+                    diagnostics.setdefault("intraday_candle_count", 0)
+                    diagnostics["historical_candle_count"] += int(meta.get("historical_count") or 0)
+                    diagnostics["intraday_candle_count"] += int(meta.get("intraday_count") or 0)
+                    for key in ("historical_error", "intraday_error"):
+                        if meta.get(key) and len(diagnostics["sample_errors"]) < 5:
+                            diagnostics["sample_errors"].append(f"{meta.get('symbol')}:{meta.get('interval')}:{meta[key]}")
                 if candles:
                     output.setdefault(symbol, []).extend(candles)
         diagnostics["symbols_with_candles"] = len(output)
@@ -1401,22 +1409,60 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         semaphore: asyncio.Semaphore,
         row: dict[str, Any],
         spec: dict[str, Any],
-    ) -> tuple[str, list[Candle]] | None:
+    ) -> tuple[str, list[Candle], dict[str, Any]] | None:
         async with semaphore:
-            to_date = date.today()
+            to_date = _nse_market_date()
             from_date = to_date - timedelta(days=int(spec["lookback_days"]))
             instrument = quote(self._instrument_key(row), safe="")
-            url = f"{self.base_url}/historical-candle/{instrument}/{spec['interval']}/{to_date.isoformat()}/{from_date.isoformat()}"
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-                raw_candles = response.json().get("data", {}).get("candles", [])
-            except Exception:
-                raw_candles = []
-            return row["symbol"], [
-                self._parse_candle(row["symbol"], candle, str(spec["source"]))
-                for candle in reversed(raw_candles)
-            ]
+            interval = str(spec["interval"])
+            source = str(spec["source"])
+            raw_historical, historical_error = await self._fetch_upstox_raw_candles(
+                client,
+                f"{self.base_url}/historical-candle/{instrument}/{interval}/{to_date.isoformat()}/{from_date.isoformat()}",
+            )
+            raw_intraday: list[Any] = []
+            intraday_error: str | None = None
+            if _upstox_interval_is_intraday(interval):
+                raw_intraday, intraday_error = await self._fetch_upstox_raw_candles(
+                    client,
+                    f"{self.base_url}/historical-candle/intraday/{instrument}/{interval}",
+                )
+
+            candles = self._dedupe_candles_by_timestamp(
+                [
+                    self._parse_candle(row["symbol"], candle, source)
+                    for candle in [*raw_historical, *raw_intraday]
+                ]
+            )
+            return row["symbol"], candles, {
+                "symbol": row["symbol"],
+                "interval": interval,
+                "historical_count": len(raw_historical),
+                "intraday_count": len(raw_intraday),
+                "historical_error": historical_error,
+                "intraday_error": intraday_error,
+            }
+
+    async def _fetch_upstox_raw_candles(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+    ) -> tuple[list[Any], str | None]:
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+            raw_candles = response.json().get("data", {}).get("candles", [])
+            if not isinstance(raw_candles, list):
+                return [], "unexpected_candle_payload"
+            return raw_candles, None
+        except Exception as exc:
+            return [], _market_data_error_summary(exc)
+
+    def _dedupe_candles_by_timestamp(self, candles: list[Candle]) -> list[Candle]:
+        deduped: dict[str, Candle] = {}
+        for candle in candles:
+            deduped[candle.ts] = candle
+        return [deduped[key] for key in sorted(deduped)]
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -1572,6 +1618,14 @@ def _upstox_quote_asof(item: dict[str, Any]) -> str:
         if parsed:
             return parsed.isoformat()
     return utc_now()
+
+
+def _nse_market_date() -> date:
+    return datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+
+
+def _upstox_interval_is_intraday(interval: str) -> bool:
+    return str(interval or "").strip().lower().endswith("minute")
 
 
 def _parse_market_timestamp(value: Any) -> datetime | None:

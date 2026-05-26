@@ -1314,6 +1314,56 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(probe["source"], "live_quote_opportunity_scan")
         self.assertEqual(probe["data_quality_override"], "live_quote_ohlcv_used_for_probe")
         self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+        self.assertFalse(context["system_gate_audit"]["hard_blocked"])
+        self.assertEqual(context["system_gate_audit"]["hard_blocks"], [])
+
+    def test_high_score_scan_probe_absorbs_watch_grade_without_hiding_hard_risks(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 4.1,
+                "day_range_position": 0.86,
+                "day_high_distance_pct": 0.4,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["sentiment"] = {"score": 0.0, "confidence": 0.0, "status": "DATA_MISSING"}
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 42
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 42
+        context["full_spectrum_analysis"]["entry_quality"] = {
+            "entry_grade": "WATCH",
+            "distance_from_pivot_pct": 1.8,
+            "volume_confirmation": True,
+        }
+        context["opportunity_scan"] = {
+            "setup": "52_week_high_volume_breakout",
+            "bucket": "Actionable",
+            "score": 0.86,
+            "day_gain_pct": 4.1,
+            "day_range_position": 0.86,
+            "day_high_distance_pct": 0.4,
+            "volume_ratio": 2.4,
+            "turnover": 260_000_000,
+            "components": {"live_momentum": 0.78},
+            "data_quality": {"actionable_data_ready": True},
+        }
+
+        action = engine._action_from_context("GRADEPROBE", 0.24, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+        self.assertFalse(context["system_gate_audit"]["hard_blocked"])
+        self.assertNotIn("GRADE_VIOLATION", context["system_gate_audit"]["active_flags"])
+        self.assertGreaterEqual(context["system_gate_audit"]["overall_score_pct"], 86.0)
 
     def test_scan_probe_still_blocks_hard_risk_flags(self) -> None:
         engine = StrategyEngine(

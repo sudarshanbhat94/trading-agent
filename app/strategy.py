@@ -848,6 +848,12 @@ class StrategyEngine:
             ]
             context["decision_gate_context"]["opportunity_probe"]["blocking_gates"] = blocking_failed_gates
             context["decision_gate_context"]["blocking_failed_gates"] = blocking_failed_gates
+            if not blocking_failed_gates:
+                context["system_gate_audit"] = self._opportunity_probe_publishable_rule_audit(
+                    rule_audit,
+                    opportunity_probe,
+                    context["decision_gate_context"]["opportunity_probe"]["absorbed_gates"],
+                )
         if failed_gates and not has_position:
             if blocking_failed_gates:
                 return "HOLD"
@@ -1053,6 +1059,74 @@ class StrategyEngine:
         }
         return output
 
+    def _opportunity_probe_publishable_rule_audit(
+        self,
+        rule_audit: dict[str, Any],
+        profile: dict[str, Any],
+        absorbed_gates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        output = dict(rule_audit or {})
+        absorbed_flags = self._absorbed_system_rule_flags(absorbed_gates)
+        if absorbed_flags:
+            absorbed_blocks: list[dict[str, Any]] = []
+            hard_blocks: list[dict[str, Any]] = []
+            for block in output.get("hard_blocks") or []:
+                flag = str(block.get("flag") or "").strip().upper() if isinstance(block, dict) else ""
+                if flag in absorbed_flags:
+                    absorbed_blocks.append(block)
+                else:
+                    hard_blocks.append(block)
+            output["hard_blocks"] = hard_blocks
+            output["hard_blocked"] = bool(hard_blocks)
+            output["active_flags"] = [
+                flag
+                for flag in output.get("active_flags") or []
+                if str(flag or "").strip().upper() not in absorbed_flags
+            ]
+            output["opportunity_probe_absorbed_hard_blocks"] = absorbed_blocks
+
+        scan_score_pct = self._opportunity_probe_score_pct(profile)
+        minimum = _float_or_none(profile.get("min_quality_score")) or OPPORTUNITY_PROBE_MIN_SCORE
+        if scan_score_pct is not None and scan_score_pct >= minimum:
+            current_score = _float_or_none(output.get("overall_score_pct")) or 0.0
+            if scan_score_pct > current_score:
+                output["overall_score_pct"] = round(scan_score_pct, 4)
+                output["overall_grade"] = _score_grade(scan_score_pct)
+            entry = dict(output.get("entry") or {})
+            if str(entry.get("effective_entry_grade") or "").upper() == "WATCH":
+                entry["effective_entry_grade"] = "C"
+                output["entry"] = entry
+            allocation_cap = _float_or_none(output.get("allocation_cap_multiplier"))
+            if allocation_cap is None or allocation_cap <= 0.0:
+                output["allocation_cap_multiplier"] = 0.35
+
+        output["opportunity_probe_override"] = {
+            "source": profile.get("source"),
+            "setup": profile.get("setup"),
+            "scan_score": profile.get("scan_score"),
+            "absorbed_gates": [gate.get("gate") for gate in absorbed_gates],
+            "policy": "Scanner-qualified opportunity; absorbed legacy institutional gates only after live quote/data and hard-risk checks passed.",
+        }
+        return output
+
+    def _absorbed_system_rule_flags(self, absorbed_gates: list[dict[str, Any]]) -> set[str]:
+        flags: set[str] = set()
+        prefix = "system_rule_"
+        for gate in absorbed_gates:
+            name = str(gate.get("gate") or "").strip()
+            if name.startswith(prefix):
+                flags.add(name[len(prefix) :].upper())
+        return flags
+
+    def _opportunity_probe_score_pct(self, profile: dict[str, Any]) -> float | None:
+        score = _float_or_none(profile.get("playbook_quant_score"))
+        if score is not None:
+            return score
+        score = _float_or_none(profile.get("scan_score"))
+        if score is None:
+            return None
+        return score * 100.0 if score <= 1.0 else score
+
     def _opportunity_probe_can_absorb_gate(self, gate: dict[str, Any], profile: dict[str, Any]) -> bool:
         if not profile.get("ready"):
             return False
@@ -1071,10 +1145,17 @@ class StrategyEngine:
             playbook_score = _float_or_none(profile.get("playbook_quant_score"))
             if playbook_score is not None and playbook_score >= minimum:
                 return True
+            scan_score_pct = self._opportunity_probe_score_pct(profile)
+            if scan_score_pct is not None and scan_score_pct >= max(minimum, 80.0):
+                return True
             if score is not None and score >= minimum:
                 return True
             scan_score = _float_or_none(profile.get("scan_score")) or 0.0
             return bool(profile.get("data_readiness_block_absorbable")) and score is not None and score >= 30.0 and scan_score >= 0.80
+        if gate_name == "entry_grade_gate":
+            return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
+        if gate_name == "system_rule_GRADE_VIOLATION":
+            return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
         if gate_name == "session_momentum_gate":
             if reason == "late_intraday_momentum_wait_for_pullback" or self._gate_value_flag(value, "late_chase"):
                 if profile.get("source") == "top_gainers_playbook" and profile.get("playbook_entry_zone_valid"):
@@ -1107,6 +1188,21 @@ class StrategyEngine:
         }:
             return True
         return False
+
+    def _opportunity_probe_can_absorb_entry_grade(self, value: Any, reason: str, profile: dict[str, Any]) -> bool:
+        if reason == "extended_entry_no_new_longs":
+            return False
+        if self._gate_value_flag(value, "late_chase"):
+            return False
+        if isinstance(value, str) and value.strip().upper() == "D":
+            return False
+        if isinstance(value, dict):
+            entry_grade = str(value.get("entry_grade") or "").strip().upper()
+            effective = str(value.get("effective_entry_grade") or "").strip().upper()
+            if "D" in {entry_grade, effective}:
+                return False
+        scan_score_pct = self._opportunity_probe_score_pct(profile)
+        return bool(scan_score_pct is not None and scan_score_pct >= 80.0)
 
     def _gate_overall_score(self, value: Any) -> float | None:
         if isinstance(value, dict):
