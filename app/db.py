@@ -2909,29 +2909,34 @@ class Database:
             events = [event for event in management.get("events", []) if isinstance(event, dict)]
             latest_event = events[-1] if events else {}
             manual_exit = follow_details.get("manual_exit") if isinstance(follow_details.get("manual_exit"), dict) else {}
+            safety_exit = follow_details.get("safety_exit") if isinstance(follow_details.get("safety_exit"), dict) else {}
             mode = str(item.get("mode") or "TRACK").upper()
             status = str(item.get("follow_status") or "").upper()
             current_qty = int(item.get("qty") or 0)
             closed_qty = int(_optional_float(management.get("closed_qty_total")) or 0)
             manual_qty = int(_optional_float(manual_exit.get("qty")) or 0)
-            entry_qty = max(current_qty + closed_qty, manual_qty, current_qty)
+            safety_qty = int(_optional_float(safety_exit.get("qty")) or 0)
+            entry_qty = max(current_qty + closed_qty, manual_qty, safety_qty, current_qty)
             remaining_qty = current_qty if status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} else 0
             entry_price = float(item.get("entry_price") or 0.0)
             latest_price = float(item.get("idea_latest_price") or item.get("follow_latest_price") or entry_price or 0.0)
             exit_price = (
                 _optional_float(manual_exit.get("exit_price"))
                 or _optional_float(latest_event.get("exit_price"))
+                or _optional_float(safety_exit.get("exit_price"))
                 or latest_price
             )
             closed_at = (
                 manual_exit.get("exited_at")
                 or management.get("last_action_at")
+                or safety_exit.get("exited_at")
                 or (item.get("updated_at") if status in {"EXITED", "LIVE_EXIT_REQUESTED"} else None)
             )
             realized_pnl = _follow_realized_pnl(follow_details)
             return_pct = (
                 _optional_float(manual_exit.get("return_pct"))
                 or _optional_float(latest_event.get("return_pct"))
+                or _optional_float(safety_exit.get("return_pct"))
                 or _optional_float(item.get("return_pct"))
                 or _return_pct(entry_price, exit_price)
             )
@@ -2939,6 +2944,8 @@ class Database:
                 manual_exit.get("reason")
                 or management.get("last_reason")
                 or latest_event.get("reason")
+                or safety_exit.get("quality_reason")
+                or safety_exit.get("reason")
                 or management.get("last_action_label")
                 or status
             )
@@ -2958,7 +2965,7 @@ class Database:
                     "state": "OPEN" if status in {"ACTIVE", "LIVE_REQUESTED"} else "EXIT_PENDING" if status == "LIVE_EXIT_REQUESTED" else "CLOSED",
                     "qty": remaining_qty,
                     "entry_qty": entry_qty,
-                    "closed_qty": (closed_qty or manual_qty) if status == "EXITED" else closed_qty,
+                    "closed_qty": (closed_qty or manual_qty or safety_qty) if status == "EXITED" else closed_qty,
                     "entry_price": entry_price,
                     "latest_price": latest_price,
                     "exit_price": exit_price if status in {"EXITED", "LIVE_EXIT_REQUESTED"} or realized_pnl else None,
@@ -4948,6 +4955,10 @@ def _follow_realized_pnl(details: Any) -> float:
     manual_realized = _optional_float(manual_exit.get("realized_pnl"))
     if manual_realized is not None:
         realized += manual_realized
+    safety_exit = details.get("safety_exit") if isinstance(details.get("safety_exit"), dict) else {}
+    safety_realized = _optional_float(safety_exit.get("realized_pnl"))
+    if safety_realized is not None:
+        realized += safety_realized
     return round(realized, 2)
 
 

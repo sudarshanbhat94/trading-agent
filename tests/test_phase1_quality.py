@@ -442,6 +442,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             )
             now = utc_now()
             with db.connect() as conn:
+                conn.execute("update signal_ideas set latest_price = 96 where id = ?", (idea_id,))
                 conn.execute(
                     """
                     insert into user_idea_follows (
@@ -455,11 +456,17 @@ class Phase1FollowSafetyTests(unittest.TestCase):
 
             exited = db.exit_unsafe_active_follows()
             reentry_block = db.recent_user_symbol_exit(1, "BUYA", cooldown_hours=48)
+            [history] = db.user_follow_history(1, 10)
 
         self.assertEqual(len(exited), 1)
         self.assertIsNotNone(reentry_block)
         self.assertEqual(reentry_block["exit_key"], "SAFETY_EXIT")
         self.assertEqual(reentry_block["exit_reason"], "active_follow_hard_blocked")
+        self.assertEqual(reentry_block["realized_pnl"], -40.0)
+        self.assertEqual(history["closed_qty"], 10)
+        self.assertEqual(history["exit_price"], 96.0)
+        self.assertEqual(history["realized_pnl"], -40.0)
+        self.assertEqual(history["exit_reason"], "active_follow_hard_blocked")
 
     def test_manual_paper_follow_allows_strong_buy_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
