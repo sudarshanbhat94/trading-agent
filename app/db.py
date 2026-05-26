@@ -828,6 +828,29 @@ class Database:
                     updated_at text not null
                 );
 
+                create table if not exists tomorrow_plan_items (
+                    id integer primary key autoincrement,
+                    plan_date text not null,
+                    market_region text not null,
+                    prepared_at text not null,
+                    section text not null,
+                    section_rank integer not null default 0,
+                    sort_order integer not null default 0,
+                    symbol text not null,
+                    action text not null,
+                    trigger_price real,
+                    max_entry real,
+                    stop_loss real,
+                    target1 real,
+                    score real not null default 0,
+                    confidence real not null default 0,
+                    strategy text not null default '',
+                    rationale text not null default '',
+                    validation text not null default '',
+                    details_json text not null default '{}',
+                    unique(plan_date, market_region, section, symbol)
+                );
+
                 create table if not exists agent_state (
                     key text primary key,
                     value text not null
@@ -971,6 +994,8 @@ class Database:
                     on signal_ideas(symbol, status);
                 create index if not exists idx_user_idea_follows_user
                     on user_idea_follows(user_id, status);
+                create index if not exists idx_tomorrow_plan_market_date
+                    on tomorrow_plan_items(market_region, plan_date, sort_order);
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
@@ -992,6 +1017,8 @@ class Database:
             self._ensure_column(conn, "signal_ideas", "worst_return_pct", "real not null default 0")
             self._ensure_column(conn, "signal_ideas", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "user_idea_follows", "details_json", "text not null default '{}'")
+            self._ensure_column(conn, "tomorrow_plan_items", "validation", "text not null default ''")
+            self._ensure_column(conn, "tomorrow_plan_items", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
             self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
             self._ensure_column(conn, "delivery_data", "close", "real")
@@ -3812,6 +3839,155 @@ class Database:
                 """,
                 (key, encoded),
             )
+
+    def upsert_tomorrow_plan(self, plan: dict[str, Any]) -> None:
+        market_region = str(plan.get("market_region") or "IN").upper()
+        plan_date = str(plan.get("plan_date") or "")[:32]
+        prepared_at = str(plan.get("prepared_at") or utc_now())
+        if not plan_date:
+            return
+        rows = []
+        for item in plan.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            section = str(item.get("section") or "").strip().lower()
+            if not symbol or not section:
+                continue
+            details_payload = item.get("details") if isinstance(item.get("details"), dict) else {}
+            if item.get("name") and not details_payload.get("name"):
+                details_payload = {**details_payload, "name": item.get("name")}
+            if item.get("idea_id") and not details_payload.get("idea_id"):
+                details_payload = {**details_payload, "idea_id": item.get("idea_id")}
+            rows.append(
+                {
+                    "plan_date": plan_date,
+                    "market_region": market_region,
+                    "prepared_at": prepared_at,
+                    "section": section,
+                    "section_rank": int(_optional_int(item.get("section_rank")) or 0),
+                    "sort_order": int(_optional_int(item.get("sort_order")) or 0),
+                    "symbol": symbol,
+                    "action": str(item.get("action") or ""),
+                    "trigger_price": _optional_float(item.get("trigger_price")),
+                    "max_entry": _optional_float(item.get("max_entry")),
+                    "stop_loss": _optional_float(item.get("stop_loss")),
+                    "target1": _optional_float(item.get("target1")),
+                    "score": _optional_float(item.get("score")) or 0.0,
+                    "confidence": _optional_float(item.get("confidence")) or 0.0,
+                    "strategy": str(item.get("strategy") or ""),
+                    "rationale": str(item.get("rationale") or "")[:1000],
+                    "validation": str(item.get("validation") or "")[:1000],
+                    "details_json": json.dumps(details_payload, default=str, separators=(",", ":")),
+                }
+            )
+        with self.connect() as conn:
+            conn.execute(
+                "delete from tomorrow_plan_items where plan_date = ? and market_region = ?",
+                (plan_date, market_region),
+            )
+            if rows:
+                conn.executemany(
+                    """
+                    insert into tomorrow_plan_items (
+                        plan_date, market_region, prepared_at, section, section_rank, sort_order,
+                        symbol, action, trigger_price, max_entry, stop_loss, target1,
+                        score, confidence, strategy, rationale, validation, details_json
+                    )
+                    values (
+                        :plan_date, :market_region, :prepared_at, :section, :section_rank, :sort_order,
+                        :symbol, :action, :trigger_price, :max_entry, :stop_loss, :target1,
+                        :score, :confidence, :strategy, :rationale, :validation, :details_json
+                    )
+                    on conflict(plan_date, market_region, section, symbol) do update set
+                        prepared_at = excluded.prepared_at,
+                        section_rank = excluded.section_rank,
+                        sort_order = excluded.sort_order,
+                        action = excluded.action,
+                        trigger_price = excluded.trigger_price,
+                        max_entry = excluded.max_entry,
+                        stop_loss = excluded.stop_loss,
+                        target1 = excluded.target1,
+                        score = excluded.score,
+                        confidence = excluded.confidence,
+                        strategy = excluded.strategy,
+                        rationale = excluded.rationale,
+                        validation = excluded.validation,
+                        details_json = excluded.details_json
+                    """,
+                    rows,
+                )
+        state = self.get_state("tomorrow_plan_context", {}) or {}
+        by_market = state.get("by_market") if isinstance(state, dict) and isinstance(state.get("by_market"), dict) else {}
+        by_market[market_region] = plan
+        merged = {
+            "enabled": True,
+            "updated_at": utc_now(),
+            "latest_market_region": market_region,
+            "by_market": by_market,
+        }
+        merged.update(plan)
+        merged["by_market"] = by_market
+        self.set_state("tomorrow_plan_context", merged)
+
+    def latest_tomorrow_plan(self, market_region: str | None = None) -> dict[str, Any]:
+        region = normalize_market_region(market_region or "BOTH", default="BOTH")
+        state = self.get_state("tomorrow_plan_context", {}) or {}
+        by_market = state.get("by_market") if isinstance(state, dict) and isinstance(state.get("by_market"), dict) else {}
+        if region in {"IN", "US"}:
+            if by_market.get(region):
+                return by_market[region]
+            return self._tomorrow_plan_from_rows(region)
+        if by_market:
+            return state
+        in_plan = self._tomorrow_plan_from_rows("IN")
+        us_plan = self._tomorrow_plan_from_rows("US")
+        return {
+            "enabled": bool(in_plan.get("items") or us_plan.get("items")),
+            "market_region": "BOTH",
+            "by_market": {"IN": in_plan, "US": us_plan},
+            "updated_at": max(str(in_plan.get("prepared_at") or ""), str(us_plan.get("prepared_at") or "")) or None,
+        }
+
+    def _tomorrow_plan_from_rows(self, market_region: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            latest = conn.execute(
+                "select max(plan_date) as plan_date from tomorrow_plan_items where market_region = ?",
+                (market_region,),
+            ).fetchone()
+            plan_date = latest["plan_date"] if latest else None
+            if not plan_date:
+                return {"enabled": False, "market_region": market_region, "items": [], "sections": {}, "summary": {}}
+            rows = conn.execute(
+                """
+                select *
+                from tomorrow_plan_items
+                where market_region = ? and plan_date = ?
+                order by sort_order asc, score desc
+                """,
+                (market_region, plan_date),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        sections: dict[str, list[dict[str, Any]]] = {}
+        prepared_at = None
+        for row in rows:
+            item = _row_dict(row)
+            prepared_at = prepared_at or item.get("prepared_at")
+            item["details"] = self._decode_json(item.pop("details_json", "{}"))
+            if isinstance(item["details"], dict):
+                item["name"] = item["details"].get("name") or item.get("symbol")
+                item["idea_id"] = item["details"].get("idea_id")
+            items.append(item)
+            sections.setdefault(str(item.get("section") or ""), []).append(item)
+        return {
+            "enabled": True,
+            "market_region": market_region,
+            "plan_date": plan_date,
+            "prepared_at": prepared_at,
+            "items": items,
+            "sections": sections,
+            "summary": {section: len(values) for section, values in sections.items()},
+        }
 
     def get_pattern_state(self, symbol: str, pattern: str, default: Any = None) -> Any:
         with self.connect() as conn:

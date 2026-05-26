@@ -363,6 +363,8 @@ function timeUntilNextNseOpen(now = new Date()) {
 function applyTheme(theme) {
   const next = theme === "dark" ? "dark" : "light";
   document.body.dataset.theme = next;
+  document.documentElement.dataset.theme = next;
+  document.documentElement.style.colorScheme = next;
   try {
     window.localStorage.setItem("openstocks-theme", next);
   } catch {
@@ -373,6 +375,8 @@ function applyTheme(theme) {
     button.textContent = next === "dark" ? "☀" : "☾";
     button.setAttribute("aria-label", `Switch to ${next === "dark" ? "light" : "dark"} theme`);
   }
+  const themeMeta = byId("theme-color-meta") || document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.setAttribute("content", next === "dark" ? "#0b0e13" : "#f0f1f4");
 }
 
 function initTheme() {
@@ -1314,8 +1318,8 @@ function render(payload) {
   byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
   byId("quote-count").textContent = `${quotes.length}/${allQuotes.length} quotes`;
   byId("account-quote-count").textContent = `${quotes.length} ${activeMarketLabel()} quotes`;
-  byId("decision-count").textContent = `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "decision")}`;
-  byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} decisions`;
+  byId("decision-count").textContent = `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "signal")}`;
+  byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} signals`;
   byId("suggestion-count").textContent = visibleSuggestions.length
     ? `${filteredCountLabel(visibleSuggestions.length, suggestions.length, "idea", "ideas")}`
     : suggestions.length
@@ -2090,8 +2094,6 @@ function renderAuth(auth) {
   pill.hidden = true;
   const currentUser = auth.user?.username || "signed in";
   byId("current-user-label").textContent = currentUser;
-  const mobileAccountLabel = byId("mobile-account-label");
-  if (mobileAccountLabel) mobileAccountLabel.textContent = shortValue(currentUser, 7);
   byId("credit-pill").hidden = Boolean(auth.admin);
   byId("credit-pill").textContent = auth.user && !auth.admin ? `${fmtCredits(auth.user.credit_balance || 0)} credits` : "";
   byId("start-btn").textContent = auth.admin ? "Start" : "Refresh Signals";
@@ -4281,8 +4283,8 @@ function renderPositions(rows) {
       7,
       `No open ${activeMarketLabel()} positions`,
       "Open positions appear here when qualifying opportunities are found.",
-      "View Bids",
-      "decisions",
+      "Open Watchlist",
+      "suggestions",
     );
     return;
   }
@@ -4306,8 +4308,8 @@ function renderOverviewPositions(rows) {
       7,
       `No open ${activeMarketLabel()} positions`,
       "Open positions appear here when qualifying opportunities are found.",
-      "View Bids",
-      "decisions",
+      "Open Watchlist",
+      "suggestions",
     );
     return;
   }
@@ -4976,7 +4978,7 @@ function sourceClass(source) {
 
 function decisionFeedEmptyHtml(controlRunning, marketLabel = activeMarketLabel()) {
   return emptyBlock(
-    `No ${marketLabel} decisions yet`,
+    `No ${marketLabel} signals yet`,
     controlRunning
       ? "The scanner is running. This market feed will fill after the next completed strategy scan."
       : "Use Run Now in Dashboard to scan the selected market.",
@@ -4992,8 +4994,8 @@ function renderDecisions(rows, options = {}) {
     body.innerHTML = decisionFeedEmptyHtml(Boolean(options.controlRunning));
     if (detail) {
       detail.innerHTML = emptyBlock(
-        "No decision selected",
-        "When bids arrive, select one to inspect signal quality, risk checks, and timeline.",
+        "No signal selected",
+        "When signals arrive, select one to inspect quality, risk checks, and timeline.",
         "Analyze Symbol",
         "analyze",
       );
@@ -6393,7 +6395,7 @@ function renderManualAnalysis(payload) {
       <div class="analysis-tab-panels">
         <section class="analysis-tab-panel active" data-analysis-panel="overview">
           <div class="manual-analysis-card">
-            <div><span>Decision</span><strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong><small>${escapeHtml(pathLabel)}</small></div>
+            <div><span>Signal</span><strong><span class="tag ${action}">${escapeHtml(decision.action || "-")}</span></strong><small>${escapeHtml(pathLabel)}</small></div>
             <div><span>Confidence</span><strong>${fmtNumber(Number(decision.confidence || 0) * 100)}%</strong><small>policy gates still apply</small></div>
             <div><span>News Sentiment</span><strong class="${headlines.length ? pnlClass(news.score) : "muted"}">${headlines.length ? fmtNumber(news.score) : "Awaiting news"}</strong><small>${headlines.length ? `${headlines.length} items` : escapeHtml(news.note || "No verified news")}</small></div>
             <div><span>Credits Used</span><strong>${fmtCredits(creditCharge)}</strong><small>${fmtCredits(creditUsage.after?.daily_credits_remaining || 0)} left today</small></div>

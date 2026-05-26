@@ -853,6 +853,7 @@ async def position_marks(request: Request, response: Response) -> dict[str, Any]
 
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot = agent.snapshot()
+    snapshot["tomorrow_plan"] = db.latest_tomorrow_plan("BOTH")
     is_admin = bool(user and user.get("role") == "admin")
     snapshot["runtime"] = {
         "market_region": settings.market_region,
@@ -2903,6 +2904,15 @@ async def reset_demo(request: Request) -> dict[str, Any]:
     snapshot = _status_payload()
     await hub.broadcast(snapshot)
     return snapshot
+
+
+@app.get("/api/tomorrow-plan")
+async def tomorrow_plan(request: Request, response: Response) -> dict[str, Any]:
+    require_user(request, settings, db)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
+    plan = db.latest_tomorrow_plan(market_region)
+    return {"ok": True, "market": market_region, "tomorrow_plan": plan}
 
 
 @app.get("/api/ideas")

@@ -30,6 +30,7 @@ from .signal_quality import (
     quality_skip_payload,
 )
 from .strategy import StrategyEngine
+from .tomorrow_plan import build_tomorrow_plan
 from .trading_rules import build_position_summary, build_self_audit
 
 
@@ -162,6 +163,8 @@ class TradingAgentService:
                 market_action_summary,
             )
             raw_scan_policy = {**raw_scan_policy, "market_action": market_action_policy}
+        raw_universe, tomorrow_plan_quote_policy = self._merge_tomorrow_plan_universe(raw_universe, scan_universe)
+        raw_scan_policy = {**raw_scan_policy, "tomorrow_plan_quote_force": tomorrow_plan_quote_policy}
         universe = raw_universe
         self._log(
             "INFO",
@@ -236,9 +239,13 @@ class TradingAgentService:
                 pre_positions,
                 sentiment_by_symbol,
             )
+            universe, tomorrow_plan_selected_policy = self._merge_tomorrow_plan_universe(
+                scan_result.selected_universe,
+                scan_universe,
+            )
             prefetch_rows = [
                 row
-                for row in scan_result.selected_universe
+                for row in universe
                 if _analysis_history_count(raw_cached_sets.get(str(row.get("symbol") or "").upper()) or {}) < 20
             ]
             history_prefetch_summary: dict[str, Any] = {
@@ -265,6 +272,10 @@ class TradingAgentService:
                         pre_positions,
                         sentiment_by_symbol,
                     )
+                    universe, tomorrow_plan_selected_policy = self._merge_tomorrow_plan_universe(
+                        scan_result.selected_universe,
+                        scan_universe,
+                    )
                 history_prefetch_summary = {
                     "requested_symbols": len(prefetch_rows),
                     "symbols_with_candles": len(prefetch_candles),
@@ -272,9 +283,9 @@ class TradingAgentService:
                     "sample_symbols": [row.get("symbol") for row in prefetch_rows[:12]],
                     "error": prefetch_error,
                 }
-            universe = scan_result.selected_universe
             scan_summary = scan_result.summary
             scan_summary["market_action_radar"] = market_action_summary
+            scan_summary["tomorrow_plan"] = tomorrow_plan_selected_policy
             scan_summary["news_probe"] = news_probe_summary
             scan_summary["history_prefetch"] = history_prefetch_summary
             scan_summary["enabled_universe_symbols"] = len(full_universe)
@@ -788,6 +799,52 @@ class TradingAgentService:
         market_health["portfolio_equity"] = portfolio.get("equity")
         self_audit = build_self_audit(list(positions.values()), quote_rows, portfolio, market_health, macro_calendar_context)
         self.db.set_state("self_audit", self_audit)
+        tomorrow_plan_summary: dict[str, Any] = {"enabled": False, "reason": "not_built"}
+        try:
+            configured_region = str(self.market_region or "IN").upper()
+            if configured_region in {"IN", "US"}:
+                plan_regions = [configured_region]
+            else:
+                available_regions = {market_region_for_row(row) for row in full_universe if row.get("symbol")}
+                plan_regions = [region for region in ("IN", "US") if region in available_regions] or ["IN"]
+            signal_ideas = self.db.latest_signal_ideas(300)
+            position_rows = list(positions.values())
+            built_plans = []
+            prepared_at = utc_now()
+            for region in plan_regions:
+                plan = build_tomorrow_plan(
+                    market_region=region,
+                    signal_ideas=signal_ideas,
+                    positions=position_rows,
+                    pre_catalyst=pre_catalyst_summary,
+                    opportunity_scan=opportunity_state if isinstance(opportunity_state, dict) else {},
+                    macro_context=macro_context if isinstance(macro_context, dict) else {},
+                    market_session=session_context,
+                    prepared_at=prepared_at,
+                )
+                self.db.upsert_tomorrow_plan(plan)
+                built_plans.append(plan)
+            tomorrow_plan_summary = {
+                "enabled": True,
+                "markets": {plan["market_region"]: plan.get("summary", {}) for plan in built_plans},
+                "total_items": sum(len(plan.get("items") or []) for plan in built_plans),
+                "ready_at_open": sum(int((plan.get("summary") or {}).get("ready_at_open") or 0) for plan in built_plans),
+                "near_breakout": sum(int((plan.get("summary") or {}).get("near_breakout") or 0) for plan in built_plans),
+                "news_watch": sum(int((plan.get("summary") or {}).get("news_watch") or 0) for plan in built_plans),
+                "position_actions": sum(int((plan.get("summary") or {}).get("position_actions") or 0) for plan in built_plans),
+            }
+        except Exception as exc:
+            tomorrow_plan_summary = {
+                "enabled": False,
+                "error": f"{exc.__class__.__name__}: {str(exc)[:220]}",
+            }
+            self._log(
+                "WARN",
+                "cycle",
+                "tomorrow_plan_failed",
+                "Tomorrow plan could not be built during closed-market prep.",
+                tomorrow_plan_summary,
+            )
         prep_context = {
             "enabled": getattr(self.strategy.settings, "post_market_prep_enabled", True),
             "mode": "market_closed_tomorrow_prep",
@@ -808,6 +865,7 @@ class TradingAgentService:
                 "live_confirmations": len(pre_catalyst_summary.get("live_confirmations") or []),
                 "label_counts": pre_catalyst_summary.get("label_counts"),
             },
+            "tomorrow_plan": tomorrow_plan_summary,
             "skipped_phases": [
                 "market_quotes",
                 "candles",
@@ -901,6 +959,7 @@ class TradingAgentService:
                 "headlines_found": news_summary.get("headlines_found"),
                 "open_regions": session_context.get("open_regions"),
                 "closed_regions": session_context.get("closed_regions"),
+                "tomorrow_plan": tomorrow_plan_summary,
             },
         )
         snapshot = self.snapshot()
@@ -1807,6 +1866,70 @@ class TradingAgentService:
             "source": market_action_summary.get("source"),
         }
 
+    def _merge_tomorrow_plan_universe(
+        self,
+        selected_universe: list[dict[str, Any]],
+        scan_universe: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        plan = self.db.latest_tomorrow_plan(self.market_region)
+        items: list[dict[str, Any]] = []
+        if isinstance(plan, dict) and isinstance(plan.get("by_market"), dict):
+            for market_plan in plan.get("by_market", {}).values():
+                if isinstance(market_plan, dict) and isinstance(market_plan.get("items"), list):
+                    items.extend([item for item in market_plan.get("items") if isinstance(item, dict)])
+        elif isinstance(plan, dict) and isinstance(plan.get("items"), list):
+            items = [item for item in plan.get("items") if isinstance(item, dict)]
+        if not isinstance(items, list) or not items:
+            return selected_universe, {"enabled": False, "forced_symbols": [], "added_symbols": []}
+        allowed_sections = {"ready_at_open", "near_breakout", "news_watch", "position_actions"}
+        planned_symbols: list[str] = []
+        seen_plan_symbols: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            section = str(item.get("section") or "").lower()
+            action = str(item.get("action") or "").upper()
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol and symbol not in seen_plan_symbols and section in allowed_sections and action != "AVOID":
+                planned_symbols.append(symbol)
+                seen_plan_symbols.add(symbol)
+        if not planned_symbols:
+            return selected_universe, {"enabled": True, "forced_symbols": [], "added_symbols": [], "reason": "no_tradeable_plan_symbols"}
+
+        rows_by_symbol = {str(row.get("symbol") or "").upper(): row for row in scan_universe}
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        for row in selected_universe:
+            symbol = str(row.get("symbol") or "").upper()
+            if not symbol or symbol in selected_symbols:
+                continue
+            selected_symbols.add(symbol)
+            if symbol in planned_symbols:
+                selected.append({**row, "_tomorrow_plan": True})
+            else:
+                selected.append(row)
+
+        added_symbols: list[str] = []
+        missing_symbols: list[str] = []
+        for symbol in planned_symbols[:60]:
+            if symbol in selected_symbols:
+                continue
+            row = rows_by_symbol.get(symbol)
+            if not row:
+                missing_symbols.append(symbol)
+                continue
+            selected.append({**row, "_tomorrow_plan": True})
+            selected_symbols.add(symbol)
+            added_symbols.append(symbol)
+        return selected, {
+            "enabled": True,
+            "plan_date": plan.get("plan_date"),
+            "forced_symbols": [symbol for symbol in planned_symbols if symbol in selected_symbols],
+            "added_symbols": added_symbols,
+            "missing_symbols": missing_symbols[:20],
+            "source": "tomorrow_plan",
+        }
+
     def _fallback_quoted_universe(
         self,
         full_universe: list[dict[str, Any]],
@@ -2049,6 +2172,7 @@ class TradingAgentService:
             "market_session": self.db.get_state("market_session_context", {}),
             "candle_backfill": self.db.get_state("candle_backfill_plan", {}),
             "tomorrow_prep": self.db.get_state("tomorrow_prep_context", {}),
+            "tomorrow_plan": self.db.latest_tomorrow_plan(self.market_region),
             "market_data_health": _market_data_diagnostics(self.market_data),
             "macro_context": self.db.get_state("macro_context", {}),
             "institutional_context": self.db.get_state("institutional_context", {}),
