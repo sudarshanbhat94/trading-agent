@@ -165,13 +165,32 @@ function scopedPreCatalystDiscovery(discovery = {}, market = state.activeMarket)
   };
 }
 
+function scopedMarketActionRadar(payload = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const source = payload.market_action_radar || payload.opportunity_scan?.market_action_radar || {};
+  const events = (source.events || []).filter((item) => rowMarket(item) === region);
+  const eventsBySymbol = {};
+  for (const event of events) {
+    if (event?.symbol) eventsBySymbol[String(event.symbol).toUpperCase()] = event;
+  }
+  return {
+    ...source,
+    events,
+    events_by_symbol: eventsBySymbol,
+    event_count: events.length,
+    original_event_count: (source.events || []).length,
+  };
+}
+
 function opportunityHealthPayload(payload = state.latest || {}, market = state.activeMarket) {
   const opportunity = scopedOpportunityScan(payload.opportunity_scan || {}, market);
   const premarket = scopedPreCatalystDiscovery(payload.pre_catalyst_discovery || {}, market);
+  const marketAction = scopedMarketActionRadar(payload, market);
   return {
     __detail_type: "opportunity_health",
     market_region: normalizeUiMarket(market),
     opportunity_scan: opportunity,
+    market_action_radar: marketAction,
     premarket_watchlist: premarket,
   };
 }
@@ -1755,6 +1774,7 @@ function renderShell(payload = state.latest || {}) {
   const activeMarket = normalizeUiMarket(state.activeMarket);
   const opportunity = scopedOpportunityScan(payload.opportunity_scan || {}, activeMarket);
   const premarket = scopedPreCatalystDiscovery(payload.pre_catalyst_discovery || {}, activeMarket);
+  const marketAction = scopedMarketActionRadar(payload, activeMarket);
   const activeQuotes = filterRowsByMarket(payload.quotes || [], activeMarket);
   const rankedDecisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
@@ -1828,6 +1848,8 @@ function renderShell(payload = state.latest || {}) {
   const newsScreenedSymbols = Number(opportunity.news_screened_symbols || opportunity.news_probe?.symbols_requested || 0);
   const premarketCount = Number(premarket.candidate_count || 0);
   const premarketTopSymbols = (premarket.candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
+  const marketActionCount = Number(marketAction.event_count || 0);
+  const marketActionTopSymbols = (marketAction.events || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
   const scanScopeText = universeSymbols > rawSymbols
     ? `${fmtNumber(rawSymbols)}/cycle from ${fmtNumber(universeSymbols)} open`
     : `${fmtNumber(rawSymbols)} scanned`;
@@ -1838,12 +1860,16 @@ function renderShell(payload = state.latest || {}) {
   const lastOpenText = lastOpenScanned ? `last open scan ${fmtNumber(lastOpenScanned)} symbols` : "open scan pending";
   byId("ops-opportunity").textContent = premarketCount
     ? `${fmtNumber(premarketCount)} premarket`
+    : marketActionCount
+      ? `${fmtNumber(marketActionCount)} movers`
     : scanPaused
       ? "Market closed"
       : (opportunity.enabled ? `${fmtNumber(selectedSymbols)} picked` : "Static");
   byId("ops-opportunity-meta").textContent = opportunity.enabled
     ? (premarketCount
       ? `${activeMarketLabel()} watchlist · ${premarketTopSymbols || "building"} · ${fmtNumber(premarket.live_confirmation_count || 0)} confirmed`
+      : marketActionCount
+        ? `Live radar · ${marketActionTopSymbols || "building"} · ${fmtNumber(tradeableSymbols)} tradeable`
       : scanPaused
         ? pausedScanText
         : `${scanScopeText} · ${fmtNumber(tradeableSymbols)} tradeable · ${newsScopeText} · ${(opportunity.top_candidates || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ") || "building"}`)
@@ -1876,12 +1902,16 @@ function renderShell(payload = state.latest || {}) {
   if (cockpitFeedNote) cockpitFeedNote.textContent = feedPending ? "quotes paused until broker/data token is ready" : feed.meta;
   if (cockpitScan) cockpitScan.textContent = premarketCount
     ? `${fmtNumber(premarketCount)} premarket`
+    : marketActionCount
+      ? `${fmtNumber(marketActionCount)} movers`
     : scanPaused
       ? "Market closed"
       : (opportunity.enabled ? `${fmtNumber(selectedSymbols)}/${fmtNumber(tradeableSymbols || rawSymbols)} candidates` : "Static scan");
   if (cockpitScanNote) cockpitScanNote.textContent = opportunity.enabled
     ? (premarketCount
       ? `${premarketTopSymbols || "watchlist building"} · ${fmtNumber(premarket.live_confirmation_count || 0)} live confirmations`
+      : marketActionCount
+        ? `${marketActionTopSymbols || "market action"} · ${fmtNumber(tradeableSymbols || selectedSymbols)} ranked`
       : scanPaused
         ? `${pausedScanText} · ${lastOpenText}`
         : `${scanScopeText} · ${fmtNumber(verifiedCatalysts)} verified catalysts · ${(opportunity.top_candidates || []).slice(0, 2).map((item) => item.symbol).filter(Boolean).join(", ") || "ranking"}`)
@@ -4778,8 +4808,24 @@ function detailHtml(value) {
 
 function opportunityHealthDetailHtml(value = {}) {
   const scan = value.opportunity_scan || {};
+  const marketAction = value.market_action_radar || scan.market_action_radar || {};
+  const marketEvents = marketAction.events || [];
   const premarket = value.premarket_watchlist || {};
   const candidates = premarket.candidates || [];
+  const marketRows = marketEvents.slice(0, 25).map((item, index) => {
+    const eventTypes = (item.event_types || []).slice(0, 3).map(humanLabel).join(" · ");
+    const move = numericValue(item.pct_change);
+    const volume = numericValue(item.volume_multiplier);
+    return `<tr>
+      <td>${fmtNumber(index + 1)}</td>
+      <td><strong>${escapeHtml(item.symbol || "-")}</strong><small>${escapeHtml(shortValue(item.name || item.source || "-", 32))}</small></td>
+      <td>${move !== null ? `${fmtNumber(move)}%` : "-"}</td>
+      <td>${fmtNumber(item.market_action_score || item.score || 0)}</td>
+      <td>${escapeHtml(humanLabel(item.strategy || "market action"))}</td>
+      <td>${volume !== null ? `${fmtNumber(volume)}x` : "-"}</td>
+      <td>${escapeHtml(shortValue(item.reason || eventTypes || "-", 130))}</td>
+    </tr>`;
+  }).join("");
   const rows = candidates.slice(0, 20).map((item, index) => {
     const reasons = (item.key_reasons || []).slice(0, 3).join(" · ");
     const entry = item.entry_zone || {};
@@ -4795,17 +4841,29 @@ function opportunityHealthDetailHtml(value = {}) {
     </tr>`;
   }).join("");
   const summaryRows = [
+    ["Live market-action movers", fmtNumber(marketAction.event_count || marketEvents.length || 0)],
     ["Premarket candidates", fmtNumber(premarket.candidate_count || candidates.length || 0)],
     ["Live confirmations", fmtNumber(premarket.live_confirmation_count || 0)],
-    ["Generated", fmtTime(premarket.generated_at || scan.scanned_at)],
+    ["Generated", fmtTime(marketAction.scanned_at || premarket.generated_at || scan.scanned_at)],
     ["Symbols with history", fmtNumber(premarket.symbols_with_history || 0)],
     ["Missing history", fmtNumber(premarket.missing_history_symbols || 0)],
     ["Open scan symbols", fmtNumber(scan.scanned_symbols_this_cycle || scan.raw_symbols || 0)],
   ].map(([label, detail]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(detail)}</strong></div>`).join("");
   return `<section class="audit-section">
+    <h4>Live Market Action</h4>
+    <p>${escapeHtml(marketEvents.length ? "Moneycontrol/Yahoo market-action movers are shown immediately; the slower strategy engine still confirms quality before normal conviction." : "No live market-action movers are available for this market yet.")}</p>
     <h4>Premarket Watchlist</h4>
     <p>${escapeHtml(candidates.length ? "Candidates are watches, not automatic BUYs. They need live confirmation at open." : "No premarket candidates are available for this market yet.")}</p>
     <div class="detail-list">${summaryRows}</div>
+  </section>
+  <section class="audit-section">
+    <h4>Top Live Movers</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Symbol</th><th>Move</th><th>Radar</th><th>Setup</th><th>Vol</th><th>Why</th></tr></thead>
+        <tbody>${marketRows || `<tr><td colspan="7">No market-action movers for ${escapeHtml(value.market_region || activeMarketLabel())}</td></tr>`}</tbody>
+      </table>
+    </div>
   </section>
   <section class="audit-section">
     <h4>Top Candidates</h4>
@@ -4817,6 +4875,7 @@ function opportunityHealthDetailHtml(value = {}) {
     </div>
   </section>
   <details class="raw-audit"><summary>Opportunity scan data</summary><pre>${escapeHtml(JSON.stringify(scan, null, 2))}</pre></details>
+  <details class="raw-audit"><summary>Market-action radar data</summary><pre>${escapeHtml(JSON.stringify(marketAction, null, 2))}</pre></details>
   <details class="raw-audit"><summary>Premarket technical data</summary><pre>${escapeHtml(JSON.stringify(premarket, null, 2))}</pre></details>`;
 }
 

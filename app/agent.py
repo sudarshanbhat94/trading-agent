@@ -149,6 +149,7 @@ class TradingAgentService:
                     "events_by_symbol": {},
                     "errors": [f"{exc.__class__.__name__}: {str(exc)[:220]}"],
                 }
+            self.db.set_state("market_action_radar", market_action_summary)
             raw_universe, market_action_policy = self._merge_market_action_universe(
                 raw_universe,
                 scan_universe,
@@ -763,7 +764,7 @@ class TradingAgentService:
             opportunity_state.get("market_action_radar", {})
             if isinstance(opportunity_state, dict)
             else {}
-        )
+        ) or self.db.get_state("market_action_radar", {})
         pre_catalyst_summary = self._build_cached_pre_catalyst_discovery(
             full_universe,
             macro_context if isinstance(macro_context, dict) else {},
@@ -2013,6 +2014,7 @@ class TradingAgentService:
             "market_breadth": self.db.get_state("market_breadth_context", {}),
             "sector_rotation_context": _sector_rotation_summary(self.db.get_state("sector_rotation_context", {})),
             "options_intelligence": _options_intelligence_summary(options_context),
+            "market_action_radar": self.db.get_state("market_action_radar", {}),
             "opportunity_scan": opportunity_scan,
             "pre_catalyst_discovery": self.db.get_state("pre_catalyst_discovery", {}),
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
