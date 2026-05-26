@@ -136,7 +136,10 @@ def evaluate_indian_top_gainer_playbook(
         hard_excludes.append("price_below_10")
     if avg_turnover_cr is not None and avg_turnover_cr < 0.5:
         hard_excludes.append("avg_turnover_below_50_lakh")
-    if "ASM" in event_types or "GSM" in event_types:
+    surveillance = str(row.get("surveillance_stage") or row.get("_surveillance_stage") or "").upper()
+    row_asm = bool(row.get("asm") or row.get("_asm_surveillance") or surveillance == "ASM")
+    row_gsm = bool(row.get("gsm") or row.get("_gsm_surveillance") or surveillance == "GSM")
+    if "ASM" in event_types or "GSM" in event_types or row_asm or row_gsm:
         hard_excludes.append("asm_or_gsm_surveillance")
 
     above_200dma = bool(price and stage.get("ma_200") and price > float(stage["ma_200"]))

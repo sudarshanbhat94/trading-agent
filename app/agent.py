@@ -228,8 +228,9 @@ class TradingAgentService:
                     [row["symbol"] for row in raw_universe],
                     max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
                 )
+            scan_ready_universe = self._annotate_universe_with_cached_surveillance(raw_universe)
             scan_result = self.opportunity_scanner.rank(
-                raw_universe,
+                scan_ready_universe,
                 quotes,
                 raw_cached_sets,
                 pre_positions,
@@ -256,8 +257,9 @@ class TradingAgentService:
                 if prefetch_candles:
                     self.db.upsert_candles(prefetch_candles)
                     raw_cached_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
+                    scan_ready_universe = self._annotate_universe_with_cached_surveillance(raw_universe)
                     scan_result = self.opportunity_scanner.rank(
-                        raw_universe,
+                        scan_ready_universe,
                         quotes,
                         raw_cached_sets,
                         pre_positions,
@@ -1037,6 +1039,34 @@ class TradingAgentService:
             seen.add(symbol)
             selected.append(row)
         return selected
+
+    def _annotate_universe_with_cached_surveillance(self, universe: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        institutional = self.db.get_state("institutional_context", {}) or {}
+        feeds = institutional.get("feeds") if isinstance(institutional, dict) else {}
+        symbol_flags = institutional.get("symbol_flags") if isinstance(institutional, dict) else {}
+        asm_symbols: set[str] = set()
+        gsm_symbols: set[str] = set()
+        if isinstance(feeds, dict):
+            asm_symbols = {str(item or "").upper() for item in ((feeds.get("asm") or {}).get("symbols") or [])}
+            gsm_symbols = {str(item or "").upper() for item in ((feeds.get("gsm") or {}).get("symbols") or [])}
+        output: list[dict[str, Any]] = []
+        for row in universe:
+            symbol = str(row.get("symbol") or "").upper()
+            flags = symbol_flags.get(symbol) if isinstance(symbol_flags, dict) else {}
+            asm = bool(symbol in asm_symbols or (isinstance(flags, dict) and flags.get("asm")))
+            gsm = bool(symbol in gsm_symbols or (isinstance(flags, dict) and flags.get("gsm")))
+            if not asm and not gsm:
+                output.append(row)
+                continue
+            output.append(
+                {
+                    **row,
+                    "_asm_surveillance": asm,
+                    "_gsm_surveillance": gsm,
+                    "_surveillance_stage": "GSM" if gsm else "ASM",
+                }
+            )
+        return output
 
     def _auto_follow_buy_ideas_for_signal_users(self, decisions: list[Decision]) -> dict[str, Any]:
         buy_symbols = {

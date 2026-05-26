@@ -73,6 +73,32 @@ class IndiaTopGainersPlaybookTests(unittest.TestCase):
         self.assertEqual(result["final_signal"], "AVOID")
         self.assertIn("market_cap_below_200cr", result["hard_excludes"])
 
+    def test_cached_asm_flag_hard_excludes_before_dashboard_buy(self) -> None:
+        candles = _stage2_candles("CEMPRO", count=260)
+        price = round(candles[-1].close, 2)
+        result = evaluate_indian_top_gainer_playbook(
+            row={"symbol": "CEMPRO", "name": "Cemindia Projects", "exchange": "NSE", "_asm_surveillance": True},
+            quote=Quote("CEMPRO", price, "upstox-live", "2026-05-26T11:58:00+05:30", volume=2_000_000),
+            candles=candles,
+            market_action={
+                "symbol": "CEMPRO",
+                "event_types": ["TOP_GAINER", "VOLUME_SHOCKER", "52_WEEK_HIGH"],
+                "pct_change": 7.34,
+                "price": price,
+                "volume": 2_000_000,
+                "avg_volume": 300_000,
+                "volume_multiplier": 6.67,
+                "market_cap_cr": 16_226,
+                "stock_labels": ["Vol Shocker Volume Shocker"],
+            },
+            sentiment={"headlines": ["Cemindia Projects posts profit growth"]},
+            rs_context={"rs_rank": 90, "improving": True},
+        )
+
+        self.assertTrue(result["hard_excluded"])
+        self.assertEqual(result["final_signal"], "AVOID")
+        self.assertIn("asm_or_gsm_surveillance", result["hard_excludes"])
+
     def test_dashboard_orders_buy_signals_first(self) -> None:
         dashboard = build_playbook_dashboard(
             [
