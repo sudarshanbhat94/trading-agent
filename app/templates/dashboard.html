@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=product-actions-orders-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=product-top-kpis-1" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -265,6 +265,15 @@
           <div id="error-box" class="error-box" hidden></div>
 
           <section id="overview-view" class="view active dashboard-page">
+            <section class="kpis portfolio-strip" aria-label="Portfolio summary">
+              <button class="kpi" type="button" data-detail-type="portfolio"><span>Portfolio equity</span><strong id="kpi-equity">-</strong><small id="kpi-equity-delta">today -</small></button>
+              <button class="kpi" type="button" data-detail-type="pnl"><span>Holdings P&amp;L</span><strong id="kpi-unrealized">-</strong><small id="kpi-unrealized-pct">-</small></button>
+              <button class="kpi" type="button" data-detail-type="total-pnl"><span>Net P&amp;L</span><strong id="kpi-total-pnl">-</strong><small id="kpi-total-pnl-note">realized + holdings</small></button>
+              <button class="kpi" type="button" data-detail-type="positions-summary"><span>Open positions</span><strong id="kpi-positions">-</strong><small>active holdings</small></button>
+              <button class="kpi" type="button" data-detail-type="orders-summary"><span>Orders today</span><strong id="kpi-orders">-</strong><small>paper/live actions</small></button>
+              <button class="kpi" type="button" data-detail-type="cash"><span>Cash available</span><strong id="kpi-cash">-</strong><small id="kpi-currency">INR</small></button>
+            </section>
+
             <div id="paper-mode-banner" class="paper-mode-banner">
               <strong>Paper trading mode</strong>
               <span>No real orders will be placed. Switch to Live in Settings when you are ready.</span>
@@ -345,15 +354,6 @@
                 <div id="product-tracking-panel" class="product-track-list"></div>
               </div>
             </div>
-
-            <section class="kpis portfolio-strip" aria-label="Portfolio summary">
-              <button class="kpi" type="button" data-detail-type="portfolio"><span>Portfolio equity</span><strong id="kpi-equity">-</strong><small id="kpi-equity-delta">today -</small></button>
-              <button class="kpi" type="button" data-detail-type="pnl"><span>Holdings P&amp;L</span><strong id="kpi-unrealized">-</strong><small id="kpi-unrealized-pct">-</small></button>
-              <button class="kpi" type="button" data-detail-type="total-pnl"><span>Net P&amp;L</span><strong id="kpi-total-pnl">-</strong><small id="kpi-total-pnl-note">realized + holdings</small></button>
-              <button class="kpi" type="button" data-detail-type="positions-summary"><span>Open positions</span><strong id="kpi-positions">-</strong><small>active holdings</small></button>
-              <button class="kpi" type="button" data-detail-type="orders-summary"><span>Orders today</span><strong id="kpi-orders">-</strong><small>paper/live actions</small></button>
-              <button class="kpi" type="button" data-detail-type="cash"><span>Cash available</span><strong id="kpi-cash">-</strong><small id="kpi-currency">INR</small></button>
-            </section>
 
             <section class="dashboard-admin-row admin-diagnostics-panel">
               <div class="panel">
@@ -850,6 +850,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=product-actions-orders-1"></script>
+    <script src="/static/dashboard.js?v=product-top-kpis-1"></script>
   </body>
 </html>
