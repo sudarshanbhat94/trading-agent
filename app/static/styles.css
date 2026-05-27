@@ -25,6 +25,276 @@
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.25);
 }
 
+/* Desktop watchlist polish: keep the mobile app rows, but make desktop read like a trading table. */
+@media (min-width: 768px) {
+  #suggestions-view .mobile-watchlist-app {
+    overflow: hidden !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent) !important;
+    border-radius: 8px !important;
+    background: var(--surface-1, #ffffff) !important;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 16px 36px rgba(16, 24, 40, 0.07) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-tabs {
+    display: flex !important;
+    gap: 8px !important;
+    align-items: center !important;
+    min-height: 54px !important;
+    overflow-x: auto !important;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent) !important;
+    background: color-mix(in srgb, var(--surface-1) 88%, var(--surface-2)) !important;
+    padding: 10px 14px !important;
+    scrollbar-width: thin !important;
+  }
+
+  #suggestions-view .mobile-watchlist-tabs button {
+    flex: 0 0 auto !important;
+    min-height: 34px !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent) !important;
+    border-radius: 999px !important;
+    background: var(--surface-1, #ffffff) !important;
+    color: var(--text-secondary) !important;
+    padding: 0 14px !important;
+    font-size: 12px !important;
+    font-weight: 760 !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-tabs button.active {
+    border-color: color-mix(in srgb, var(--color-brand-primary) 44%, var(--border-color)) !important;
+    background: color-mix(in srgb, var(--color-brand-primary) 9%, var(--surface-1)) !important;
+    color: var(--color-brand-primary) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-tabs button.active::after {
+    display: none !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search {
+    display: grid !important;
+    grid-template-columns: 24px minmax(280px, 1fr) auto 36px !important;
+    gap: 10px !important;
+    align-items: center !important;
+    min-height: 52px !important;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent) !important;
+    background: color-mix(in srgb, var(--surface-2) 44%, var(--surface-1)) !important;
+    padding: 0 16px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search span {
+    display: grid !important;
+    color: var(--text-muted) !important;
+    place-items: center !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search svg {
+    width: 17px !important;
+    height: 17px !important;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+    stroke-linecap: round !important;
+    stroke-linejoin: round !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search input {
+    width: 100% !important;
+    min-width: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: var(--text-primary) !important;
+    font-size: 13px !important;
+    font-weight: 580 !important;
+    outline: none !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search strong {
+    min-width: 54px !important;
+    color: var(--text-secondary) !important;
+    font-size: 12px !important;
+    font-weight: 760 !important;
+    text-align: right !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search button {
+    display: grid !important;
+    width: 34px !important;
+    min-height: 34px !important;
+    place-items: center !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent) !important;
+    border-radius: 8px !important;
+    background: var(--surface-1, #ffffff) !important;
+    color: var(--text-secondary) !important;
+    padding: 0 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-list {
+    display: grid !important;
+    min-height: 160px !important;
+    background: var(--surface-1, #ffffff) !important;
+  }
+
+  #suggestions-view .watchlist-desktop-header {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 132px 154px minmax(112px, auto);
+    gap: 18px;
+    align-items: center;
+    min-height: 38px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+    background: color-mix(in srgb, var(--surface-2) 54%, var(--surface-1));
+    color: var(--text-muted);
+    padding: 0 22px;
+    font-size: 10.5px;
+    font-weight: 850;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  #suggestions-view .mobile-watchlist-row {
+    display: grid !important;
+    grid-template-columns: minmax(220px, 1fr) 132px 154px minmax(112px, auto) !important;
+    gap: 18px !important;
+    align-items: center !important;
+    min-height: 64px !important;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent) !important;
+    background: var(--surface-1, #ffffff) !important;
+    padding: 10px 22px !important;
+    cursor: pointer !important;
+  }
+
+  #suggestions-view .mobile-watchlist-row:hover {
+    background: color-mix(in srgb, var(--color-brand-primary) 3.5%, var(--surface-1)) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-row:last-child {
+    border-bottom: 0 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-symbol {
+    display: grid !important;
+    min-width: 0 !important;
+    gap: 4px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-symbol strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-size: 14px !important;
+    font-weight: 780 !important;
+    line-height: 1.15 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .mobile-watchlist-symbol small {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 7px !important;
+    align-items: center !important;
+    min-width: 0 !important;
+    color: var(--text-secondary) !important;
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-symbol small strong,
+  #suggestions-view .mobile-watchlist-status {
+    display: inline-flex !important;
+    align-items: center !important;
+    min-height: 19px !important;
+    border-radius: 999px !important;
+    background: color-mix(in srgb, var(--color-brand-primary) 10%, transparent) !important;
+    color: var(--color-brand-primary) !important;
+    padding: 0 7px !important;
+    font-size: 10px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price {
+    display: contents !important;
+    color: var(--text-primary) !important;
+    text-align: right !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price > strong {
+    grid-column: 2 !important;
+    justify-self: end !important;
+    color: currentColor !important;
+    font-size: 14px !important;
+    font-weight: 820 !important;
+    line-height: 1.15 !important;
+    font-variant-numeric: tabular-nums !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price > small {
+    grid-column: 3 !important;
+    justify-self: end !important;
+    color: var(--text-secondary) !important;
+    font-size: 12px !important;
+    font-weight: 650 !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+    font-variant-numeric: tabular-nums !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price.positive > strong,
+  #suggestions-view .mobile-watchlist-price.positive > small {
+    color: var(--color-buy) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price.negative > strong,
+  #suggestions-view .mobile-watchlist-price.negative > small {
+    color: var(--color-sell) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-actions,
+  #suggestions-view .mobile-watchlist-status {
+    grid-column: 4 !important;
+    justify-self: end !important;
+  }
+
+  #suggestions-view .mobile-watchlist-actions {
+    display: inline-flex !important;
+    gap: 8px !important;
+    align-items: center !important;
+  }
+
+  #suggestions-view .mobile-watchlist-actions button {
+    min-height: 30px !important;
+    border-radius: 7px !important;
+    padding: 0 12px !important;
+    font-size: 12px !important;
+    font-weight: 760 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-actions button:first-child {
+    border-color: color-mix(in srgb, var(--color-brand-primary) 28%, var(--border-color)) !important;
+    background: color-mix(in srgb, var(--color-brand-primary) 8%, var(--surface-1)) !important;
+    color: var(--color-brand-primary) !important;
+  }
+
+  body[data-theme="dark"] #suggestions-view .mobile-watchlist-app,
+  body[data-theme="dark"] #suggestions-view .mobile-watchlist-row,
+  body[data-theme="dark"] #suggestions-view .mobile-watchlist-list {
+    background: var(--surface-1) !important;
+  }
+
+  body[data-theme="dark"] #suggestions-view .mobile-watchlist-search,
+  body[data-theme="dark"] #suggestions-view .watchlist-desktop-header,
+  body[data-theme="dark"] #suggestions-view .mobile-watchlist-tabs {
+    background: color-mix(in srgb, var(--surface-2) 72%, var(--surface-1)) !important;
+  }
+}
+
+@media (max-width: 767px) {
+  #suggestions-view .watchlist-desktop-header {
+    display: none !important;
+  }
+}
+
 /* Product interaction polish: real watchlist actions, compact trade rows, and closed-day position state. */
 .trade-sheet-caution {
   display: grid;
