@@ -917,7 +917,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
-        follow_history = db.user_follow_history(user_id, 120)
+        follow_history = db.user_follow_history(user_id, 500)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
         snapshot["suggestions"] = db.latest_signal_ideas(50, user_id=user_id)
@@ -1047,7 +1047,7 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "details": row,
                 }
             )
-    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:120]
+    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:500]
 
 
 def _position_target_at(targets: list[Any], index: int) -> dict[str, Any]:
@@ -2065,7 +2065,7 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
 
     paper_cash_by_market = _user_paper_cash_by_market(updated_user)
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-    follow_history = db.user_follow_history(int(user["id"]), 120)
+    follow_history = db.user_follow_history(int(user["id"]), 500)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     account_payload = await account.snapshot()
     user_portfolio = _user_follow_portfolio(
@@ -2314,7 +2314,7 @@ async def account_details(request: Request) -> dict[str, Any]:
     if user.get("role") != "admin":
         paper_cash_by_market = _user_paper_cash_by_market(user)
         tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-        follow_history = db.user_follow_history(int(user["id"]), 120)
+        follow_history = db.user_follow_history(int(user["id"]), 500)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
         user_portfolio = _user_follow_portfolio(
             tracked_ideas,
@@ -3053,6 +3053,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     normalized_mode = mode.strip().upper()
     amount = _positive_float(payload.get("amount", 0), field="amount")
     qty = int(_positive_float(payload.get("qty", 0), field="qty"))
+    manual_override = bool(payload.get("manual_override") or payload.get("manual_confirmed"))
     if normalized_mode == "PAPER" and amount <= 0 and qty <= 0:
         idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
         amount = _default_paper_follow_amount(user, idea)
@@ -3060,7 +3061,15 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
         _require_user_live_broker(user, normalize_market_region(idea.get("market_region") or "IN", default="IN"))
     try:
-        follow = db.follow_signal_idea(int(user["id"]), idea_id, mode=mode, amount=amount, qty=qty, cost_settings=settings)
+        follow = db.follow_signal_idea(
+            int(user["id"]),
+            idea_id,
+            mode=mode,
+            amount=amount,
+            qty=qty,
+            cost_settings=settings,
+            manual_override=manual_override,
+        )
     except ValueError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -3073,7 +3082,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         {"user_id": user.get("id"), "idea_id": idea_id, "mode": mode, "amount": amount, "qty": qty},
     )
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-    follow_history = db.user_follow_history(int(user["id"]), 120)
+    follow_history = db.user_follow_history(int(user["id"]), 500)
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     user_portfolio = _user_follow_portfolio(
@@ -3090,6 +3099,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         "tracked_ideas": tracked_ideas,
         "follow_history": follow_history,
         "follow_history_by_market": _rows_by_market(follow_history),
+        "orders": _follow_history_order_events(follow_history),
         "tracked_ideas_by_market": {
             "IN": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="IN"),
             "US": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="US"),
@@ -3163,7 +3173,7 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
         },
     )
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-    follow_history = db.user_follow_history(int(user["id"]), 120)
+    follow_history = db.user_follow_history(int(user["id"]), 500)
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     user_portfolio = _user_follow_portfolio(

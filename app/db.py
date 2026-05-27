@@ -3220,6 +3220,7 @@ class Database:
         amount: float = 0.0,
         qty: int = 0,
         cost_settings: Any = None,
+        manual_override: bool = False,
     ) -> dict[str, Any]:
         mode = str(mode or "TRACK").strip().upper()
         if mode not in {"TRACK", "PAPER", "LIVE"}:
@@ -3264,7 +3265,7 @@ class Database:
                         "details": idea_details,
                     }
                 )
-                if not quality_gate.get("passed"):
+                if not quality_gate.get("passed") and not (manual_override and mode == "PAPER"):
                     raise ValueError(f"phase1_quality_gate:{quality_gate.get('reason')}")
             if qty <= 0 and amount > 0 and latest_price > 0:
                 qty = int(float(amount) // latest_price)
@@ -3300,6 +3301,12 @@ class Database:
                     "LIVE": "Live order requested. Broker guard and user broker session must approve routing.",
                 }.get(mode, "Tracking only."),
                 "quality_gate": quality_gate,
+                "manual_override": bool(manual_override and mode == "PAPER"),
+                "manual_override_note": (
+                    "User manually confirmed this paper entry from the product UI. Quality warnings are recorded; this is not a live broker order."
+                    if manual_override and mode == "PAPER"
+                    else ""
+                ),
             }
             now = utc_now()
             if existing_follow:

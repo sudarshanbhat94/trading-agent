@@ -22,6 +22,7 @@ const state = {
   ideaWatchlistSearch: "",
   activeIdeaGroup: "buys",
   currentIdeaWatchlistRows: [],
+  currentDrawerValue: null,
   signalSearchQuery: "",
   signalSearchRows: [],
   signalSearchInFlight: false,
@@ -147,6 +148,48 @@ function payloadRowsForMarket(payload = {}, key, market = state.activeMarket) {
   const byMarket = payload[`${key}_by_market`] || payload[`${key}ByMarket`];
   if (byMarket && Array.isArray(byMarket[region])) return byMarket[region];
   return filterRowsByMarket(payload[key] || [], region);
+}
+
+function dayClosedPositionRowsFromPayload(payload = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const paper = payload.paper || {};
+  const candidates = [
+    ...payloadRowsForMarket(payload, "follow_history", region),
+    ...filterRowsByMarket(paper.follow_history || [], region),
+    ...filterRowsByMarket(paper.closed_positions || [], region),
+  ];
+  const byKey = new Map();
+  candidates.forEach((row) => {
+    if (!row || !positionClosedToday(row)) return;
+    const key = `${row.follow_id || row.idea_id || row.symbol || ""}:${row.closed_at || row.updated_at || ""}`;
+    byKey.set(key, {
+      ...row,
+      __closed_day_position: true,
+      qty: 0,
+      avg_price: firstFinite(row.avg_price, row.entry_price),
+      market_price: firstFinite(row.market_price, row.latest_price, row.follow_latest_price, row.exit_price),
+      mode_label: row.mode_label || (String(row.mode || "").toUpperCase() === "LIVE" ? "Live request" : "Paper"),
+      execution_state_label: row.execution_state_label || "Closed today",
+      lifecycle_status: row.lifecycle_status || "closed_today",
+    });
+  });
+  return [...byKey.values()].sort((a, b) => (rowTimestamp(b)?.getTime() || 0) - (rowTimestamp(a)?.getTime() || 0));
+}
+
+function positionRowsForMarket(payload = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const openRows = filterRowsByMarket(payload.positions || [], region);
+  const openKeys = new Set(openRows.map((row) => String(row.follow_id || row.user_follow?.id || row.symbol || "").toUpperCase()));
+  const closedRows = dayClosedPositionRowsFromPayload(payload, region).filter((row) => {
+    const key = String(row.follow_id || row.user_follow?.id || row.symbol || "").toUpperCase();
+    return !key || !openKeys.has(key);
+  });
+  return [...openRows, ...closedRows].sort((a, b) => {
+    const aOpen = positionQuantity(a) > 0 ? 1 : 0;
+    const bOpen = positionQuantity(b) > 0 ? 1 : 0;
+    if (aOpen !== bOpen) return bOpen - aOpen;
+    return (rowTimestamp(b)?.getTime() || 0) - (rowTimestamp(a)?.getTime() || 0);
+  });
 }
 
 function scopedMarketContext(context = {}, market = state.activeMarket) {
@@ -293,6 +336,9 @@ function quoteForSymbol(symbol, market = state.activeMarket) {
 }
 
 function positionDayPnl(row = {}, market = state.activeMarket) {
+  if (positionClosedToday(row)) {
+    return positionRealizedPnl(row);
+  }
   if (positionOpenedToday(row)) {
     return positionUnrealizedPnl(row);
   }
@@ -337,6 +383,10 @@ function positionStockDayPct(row = {}, market = state.activeMarket) {
 }
 
 function positionDayPct(row = {}, market = state.activeMarket) {
+  if (positionClosedToday(row)) {
+    const pct = firstFinite(row.return_pct, row.current_return_pct, row.manual_exit?.return_pct);
+    if (pct !== null) return pct;
+  }
   if (positionOpenedToday(row)) {
     const explicitTodayPct = firstFinite(row.today_pnl_pct, row.position_day_change_pct);
     if (explicitTodayPct !== null) return explicitTodayPct;
@@ -352,13 +402,15 @@ function positionDayPct(row = {}, market = state.activeMarket) {
 function positionDayPnlSource(row = {}, market = state.activeMarket) {
   const dayPnl = positionDayPnl(row, market);
   if (dayPnl === null || !Number.isFinite(Number(dayPnl))) return "unavailable";
+  if (positionClosedToday(row)) return "closed_today";
   return positionOpenedToday(row) ? "entry_today" : "previous_close";
 }
 
 function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.activeMarket) {
   const unrealized = Number(portfolio.unrealized_pnl || 0);
   const realized = Number(portfolio.realized_pnl || 0);
-  const openPositions = (positions || []).filter((row) => Number(row.qty || row.user_follow?.qty || 0) > 0);
+  const openPositions = (positions || []).filter((row) => positionQuantity(row) > 0);
+  const dayClosedPositions = (positions || []).filter(positionClosedToday);
   const calculatedMarketValue = openPositions.reduce(
     (sum, row) => sum + Number(firstFinite(row.market_price, row.latest_price, row.follow_latest_price) || 0) * Number(row.qty || row.user_follow?.qty || 0),
     0,
@@ -367,10 +419,10 @@ function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.acti
     (sum, row) => sum + Number(firstFinite(row.avg_price, row.entry_price, row.follow_entry_price) || 0) * Number(row.qty || row.user_follow?.qty || 0),
     0,
   );
-  const dayValues = openPositions
+  const dayValues = [...openPositions, ...dayClosedPositions]
     .map((row) => positionDayPnl(row, market))
     .filter((value) => value !== null && Number.isFinite(Number(value)));
-  const daySources = openPositions
+  const daySources = [...openPositions, ...dayClosedPositions]
     .map((row) => positionDayPnlSource(row, market))
     .filter((source) => source !== "unavailable");
   const explicitToday = firstFinite(
@@ -387,7 +439,11 @@ function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.acti
   let todaySource = "unavailable";
   if (calculatedToday === null && explicitToday !== null) {
     todaySource = "reported";
+  } else if (daySources.includes("closed_today") && daySources.length === 1) {
+    todaySource = "closed_today";
   } else if (daySources.includes("entry_today") && daySources.includes("previous_close")) {
+    todaySource = "mixed";
+  } else if (daySources.includes("closed_today") && daySources.length > 1) {
     todaySource = "mixed";
   } else if (daySources.includes("entry_today")) {
     todaySource = "entry_today";
@@ -412,6 +468,7 @@ function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.acti
 function portfolioTodayLabel(metrics = {}) {
   if (metrics.today_source === "reported") return "reported today";
   if (metrics.today_source === "entry_today") return "from entry today";
+  if (metrics.today_source === "closed_today") return "realized today";
   if (metrics.today_source === "mixed") return "holdings + today entries";
   if (metrics.today_source === "previous_close") {
     return Number(metrics.today_missing_count || 0) > 0 ? "partial previous close" : "from previous close";
@@ -457,8 +514,52 @@ function positionUnrealizedPnl(row = {}) {
   return (latest - entry) * qty;
 }
 
+function positionRealizedPnl(row = {}) {
+  const details = parseJsonObject(row.details_json);
+  const manual = details.manual_exit && typeof details.manual_exit === "object" ? details.manual_exit : {};
+  return firstFinite(
+    row.realized_pnl,
+    row.cash_effect,
+    row.manual_exit?.realized_pnl,
+    manual.realized_pnl,
+    row.exit_pnl,
+  );
+}
+
+function positionIsClosed(row = {}) {
+  const status = String(row.status || row.follow_status || row.lifecycle_status || "").toUpperCase();
+  const state = String(row.state || "").toUpperCase();
+  return Boolean(
+    row.__closed_day_position
+    || state === "CLOSED"
+    || ["EXITED", "CLOSED"].includes(status)
+    || (positionQuantity(row) <= 0 && positionRealizedPnl(row) !== null)
+  );
+}
+
+function positionClosedAt(row = {}) {
+  const details = parseJsonObject(row.details_json);
+  const manual = details.manual_exit && typeof details.manual_exit === "object" ? details.manual_exit : {};
+  const raw = row.closed_at
+    || row.exited_at
+    || row.exit_at
+    || manual.exited_at
+    || row.updated_at;
+  const date = raw ? new Date(raw) : null;
+  return date && Number.isFinite(date.getTime()) ? date : null;
+}
+
+function positionClosedToday(row = {}) {
+  if (!positionIsClosed(row)) return false;
+  const date = positionClosedAt(row);
+  if (!date) return false;
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+}
+
 function portfolioRowsPnlMetrics(rows = [], market = state.activeMarket) {
   const openPositions = (rows || []).filter((row) => positionQuantity(row) > 0);
+  const dayClosedPositions = (rows || []).filter(positionClosedToday);
   const marketValue = openPositions.reduce((sum, row) => {
     const latest = positionLatestPrice(row);
     return sum + (latest === null ? 0 : latest * positionQuantity(row));
@@ -470,10 +571,10 @@ function portfolioRowsPnlMetrics(rows = [], market = state.activeMarket) {
   const unrealizedValues = openPositions
     .map(positionUnrealizedPnl)
     .filter((value) => value !== null && Number.isFinite(Number(value)));
-  const dayValues = openPositions
+  const dayValues = [...openPositions, ...dayClosedPositions]
     .map((row) => positionDayPnl(row, market))
     .filter((value) => value !== null && Number.isFinite(Number(value)));
-  const daySources = openPositions
+  const daySources = [...openPositions, ...dayClosedPositions]
     .map((row) => positionDayPnlSource(row, market))
     .filter((source) => source !== "unavailable");
   const unrealized = unrealizedValues.reduce((sum, value) => sum + Number(value || 0), 0);
@@ -481,7 +582,11 @@ function portfolioRowsPnlMetrics(rows = [], market = state.activeMarket) {
     ? dayValues.reduce((sum, value) => sum + Number(value || 0), 0)
     : null;
   let todaySource = "unavailable";
-  if (daySources.includes("entry_today") && daySources.includes("previous_close")) {
+  if (daySources.includes("closed_today") && daySources.length === 1) {
+    todaySource = "closed_today";
+  } else if (daySources.includes("entry_today") && daySources.includes("previous_close")) {
+    todaySource = "mixed";
+  } else if (daySources.includes("closed_today") && daySources.length > 1) {
     todaySource = "mixed";
   } else if (daySources.includes("entry_today")) {
     todaySource = "entry_today";
@@ -943,6 +1048,8 @@ function rowTimestamp(row = {}) {
     row.last_seen_at ||
     row.first_seen_at ||
     row.created_at ||
+    row.closed_at ||
+    row.opened_at ||
     row.updated_at ||
     row.asof ||
     row.recommended_at;
@@ -1659,21 +1766,23 @@ function render(payload) {
   const allDecisions = payload.decisions || [];
   const allOrders = payload.orders || [];
   const allSentiment = payload.sentiment || [];
-  const positions = filterRowsByMarket(allPositions, activeMarket);
+  const openPositions = filterRowsByMarket(allPositions, activeMarket);
+  const positions = positionRowsForMarket(payload, activeMarket);
   const quotes = filterRowsByMarket(allQuotes, activeMarket);
   const latestDecisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const decisions = signalRowsForRender(payload, activeMarket);
   const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
   const trackedIdeas = payloadRowsForMarket(payload, "tracked_ideas", activeMarket);
   const orders = filterRowsByMarket(allOrders, activeMarket);
+  const dayOrders = orders.filter(isTodayRow);
   const strategies = payload.strategy_metrics || [];
   const strategyPlans = payload.strategy_plans || [];
   const sentiment = filterRowsByMarket(allSentiment, activeMarket);
   const visibleDecisions = applyDecisionFilter(decisions);
   const visibleSuggestions = applySuggestionFilter(suggestions);
   const visibleTrackedIdeas = applySuggestionFilter(trackedIdeas);
-  const visibleOrders = applyOrderFilter(orders);
-  updateOrderFilterCounts(orders);
+  const visibleOrders = applyOrderFilter(dayOrders);
+  updateOrderFilterCounts(dayOrders);
   const visibleSentiment = applySentimentFilter(sentiment);
   const visibleStrategyPlans = applyStrategyPlanFilter(strategyPlans);
 
@@ -1706,9 +1815,9 @@ function render(payload) {
     unrealizedPctEl.textContent = fmtPct(unrealizedPct);
     unrealizedPctEl.className = pnlClass(unrealizedPct);
   }
-  byId("kpi-positions").textContent = String(positions.length);
+  byId("kpi-positions").textContent = String(openPositions.length);
   const kpiOrders = byId("kpi-orders");
-  if (kpiOrders) kpiOrders.textContent = String(orders.length);
+  if (kpiOrders) kpiOrders.textContent = String(dayOrders.length);
   const currency = byId("kpi-currency");
   if (currency) currency.textContent = marketCurrencyLabel(activeMarket);
   byId("last-cycle").textContent = state.auth?.admin
@@ -1736,7 +1845,7 @@ function render(payload) {
     error.className = "error-box";
   }
 
-  byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
+  byId("position-count").textContent = `${openPositions.length} open · ${Math.max(positions.length - openPositions.length, 0)} closed today`;
   byId("quote-count").textContent = `${quotes.length}/${allQuotes.length} quotes`;
   byId("account-quote-count").textContent = `${quotes.length} ${activeMarketLabel()} quotes`;
   byId("decision-count").textContent = signalSearchActive()
@@ -1749,17 +1858,17 @@ function render(payload) {
     : suggestions.length
       ? `0/${suggestions.length} ideas`
       : "0 ideas";
-  byId("order-count").textContent = `${filteredCountLabel(visibleOrders.length, orders.length, "order")}`;
+  byId("order-count").textContent = `${filteredCountLabel(visibleOrders.length, dayOrders.length, "order")} today`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
   const planCount = byId("strategy-plan-count");
   if (planCount) planCount.textContent = `${filteredCountLabel(visibleStrategyPlans.length, strategyPlans.length, "plan")}`;
   const trackedCount = byId("tracked-count");
   if (trackedCount) trackedCount.textContent = visibleTrackedIdeas.length ? `${filteredCountLabel(visibleTrackedIdeas.length, trackedIdeas.length, "active idea", "active ideas")}` : "0 active";
   byId("sentiment-count").textContent = `${filteredCountLabel(visibleSentiment.length, sentiment.length, "event")}`;
-  byId("nav-positions-badge").textContent = String(positions.length);
+  byId("nav-positions-badge").textContent = String(openPositions.length);
   byId("nav-suggestions-badge").textContent = String(suggestions.length);
   byId("nav-decisions-badge").textContent = String(latestDecisions.length);
-  byId("nav-orders-badge").textContent = String(orders.length);
+  byId("nav-orders-badge").textContent = String(dayOrders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
   byId("nav-logs-badge").textContent = state.auth?.admin ? String(state.logs.length) : "admin";
   byId("nav-overview-badge").textContent = controlRunning ? "on" : "off";
@@ -4499,7 +4608,10 @@ function ideaWatchlistRowHtml(row = {}, index = 0) {
   const rowId = row.id || row.idea_id || "";
   const trackButton = followed
     ? `<span class="mobile-watchlist-status">${escapeHtml(mode === "TRACK" ? "TRACKING" : mode)}</span>`
-    : `<button type="button" data-watchlist-track data-idea-id="${escapeHtml(rowId)}">Track</button>`;
+    : `<span class="mobile-watchlist-actions">
+        <button type="button" data-watchlist-buy-row data-idea-id="${escapeHtml(rowId)}">${preferredManualTradeMode() === "LIVE" ? "Buy" : "Paper"}</button>
+        <button type="button" data-watchlist-track data-idea-id="${escapeHtml(rowId)}">Track</button>
+      </span>`;
   return `<article class="mobile-watchlist-row" role="button" tabindex="0" data-index="${index}">
     <div class="mobile-watchlist-symbol">
       <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
@@ -4548,8 +4660,15 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   body.querySelectorAll(".mobile-watchlist-row").forEach((card) => {
     const row = rows[Number(card.dataset.index)];
     card.addEventListener("click", (event) => {
-      if (event.target.closest("[data-watchlist-track]")) return;
+      if (event.target.closest("[data-watchlist-track], [data-watchlist-buy-row]")) return;
       if (row) showDetails("Watchlist Idea", { __detail_type: "watchlist_stock", ...row });
+    });
+  });
+  body.querySelectorAll("[data-watchlist-buy-row]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const row = rows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
+      buyWatchlistIdea(row || {}, button);
     });
   });
   body.querySelectorAll("[data-watchlist-track]").forEach((button) => {
@@ -4711,26 +4830,31 @@ function mobileHoldingRowHtml(row = {}, index = 0) {
 
 function mobilePositionRowHtml(row = {}, index = 0) {
   const market = rowMarket(row);
+  const closed = positionIsClosed(row);
   const qty = positionQuantity(row);
   const entry = positionEntryPrice(row);
   const latest = positionLatestPrice(row);
   const invested = entry !== null ? entry * qty : null;
-  const pnl = positionUnrealizedPnl(row);
-  const pnlPct = latest !== null && entry !== null && entry > 0 ? ((latest - entry) / entry) * 100 : null;
+  const pnl = closed ? positionRealizedPnl(row) : positionUnrealizedPnl(row);
+  const pnlPct = closed
+    ? firstFinite(row.return_pct, row.current_return_pct)
+    : latest !== null && entry !== null && entry > 0 ? ((latest - entry) / entry) * 100 : null;
   const dayPnl = positionDayPnl(row, market);
-  const dayPct = positionStockDayPct(row, market);
+  const dayPct = closed ? positionDayPct(row, market) : positionStockDayPct(row, market);
   const mode = positionModeState(row);
+  const exitPrice = firstFinite(row.exit_price, row.latest_price, row.market_price);
+  const displayQty = closed ? Number(row.closed_qty || row.entry_qty || 0) : qty;
   return `<article class="mobile-portfolio-row broker-row position" role="button" tabindex="0" data-position-index="${index}">
     <div class="mobile-portfolio-main">
-      <small>Qty. ${fmtNumber(qty)} <b>•</b> Avg. ${fmtTradeMoney(entry, market)}</small>
+      <small>${closed ? "Sold" : "Qty."} ${fmtNumber(displayQty)} <b>•</b> Avg. ${fmtTradeMoney(entry, market)}</small>
       <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-      <em>Invested ${fmtTradeMoney(invested, market)} <span>${escapeHtml(mode.label)}</span></em>
+      <em>${closed ? `Exit ${fmtTradeMoney(exitPrice, market)}` : `Invested ${fmtTradeMoney(invested, market)}`} <span>${escapeHtml(mode.label)}</span></em>
     </div>
     <div class="mobile-portfolio-price ${pnlClass(pnl)}">
       <small class="${pnlClass(pnlPct)}">${fmtSignedPct(pnlPct)}</small>
       <strong>${fmtSignedTradeMoney(pnl, market)}</strong>
-      <em>LTP ${fmtTradeMoney(latest, market)} <span class="${pnlClass(dayPct)}">(${fmtSignedPct(dayPct)})</span></em>
-      <em class="${pnlClass(dayPnl)}">Today ${dayPnl === null ? "-" : fmtSignedTradeMoney(dayPnl, market)}</em>
+      <em>${closed ? "After sell" : "LTP"} ${fmtTradeMoney(latest, market)} <span class="${pnlClass(dayPct)}">(${fmtSignedPct(dayPct)})</span></em>
+      <em class="${pnlClass(dayPnl)}">${closed ? "Realized" : "Today"} ${dayPnl === null ? "-" : fmtSignedTradeMoney(dayPnl, market)}</em>
     </div>
   </article>`;
 }
@@ -4774,8 +4898,10 @@ function positionOpenedToday(row = {}) {
 function renderMobilePortfolio(positions = [], trackedIdeas = [], scopedPortfolio = {}) {
   const body = byId("mobile-positions-body");
   if (!body) return;
-  const openRows = (positions || []).filter((row) => Number(row.qty || 0) > 0);
+  const openRows = (positions || []).filter((row) => positionQuantity(row) > 0);
+  const closedDayRows = (positions || []).filter(positionClosedToday);
   const positionRows = openRows.filter(positionOpenedToday);
+  positionRows.push(...closedDayRows);
   const holdingRows = openRows.filter((row) => !positionOpenedToday(row));
   const search = String(state.portfolioSearch || "").trim().toUpperCase();
   const activeTab = state.activePortfolioTab || "positions";
@@ -4843,13 +4969,15 @@ function renderPositions(rows) {
   const summary = byId("positions-summary-strip");
   if (summary) {
     const market = normalizeUiMarket(state.activeMarket);
+    const openRows = rows.filter((row) => positionQuantity(row) > 0);
+    const closedTodayRows = rows.filter(positionClosedToday);
     const scopedPortfolio = marketPortfolioFromPayload(state.latest || {}, market);
     const pnlMetrics = portfolioPnlMetrics(scopedPortfolio, rows, market);
-    const winners = rows.filter((row) => (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty) > 0).length;
-    const losers = rows.filter((row) => (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty) < 0).length;
+    const winners = openRows.filter((row) => (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty) > 0).length;
+    const losers = openRows.filter((row) => (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty) < 0).length;
     const needsReview = rows.filter(positionNeedsAction).length;
-    const deployed = rows.reduce((sum, row) => sum + Number(row.avg_price || 0) * Number(row.qty || 0), 0);
-    const pnl = rows.reduce((sum, row) => sum + (Number(row.market_price || 0) - Number(row.avg_price || 0)) * Number(row.qty || 0), 0);
+    const deployed = openRows.reduce((sum, row) => sum + Number(row.avg_price || 0) * Number(row.qty || 0), 0);
+    const pnl = openRows.reduce((sum, row) => sum + (Number(row.market_price || 0) - Number(row.avg_price || 0)) * Number(row.qty || 0), 0);
     const pnlPct = deployed > 0 ? (pnl / deployed) * 100 : 0;
     summary.innerHTML = `
       <button type="button"><span>Deployed</span><strong>${fmtTradeMoney(deployed, market)}</strong></button>
@@ -4857,6 +4985,7 @@ function renderPositions(rows) {
       <button type="button"><span>Holdings P&L</span><strong class="${pnlClass(pnl)}">${fmtTradeMoney(pnl, market)}</strong><small class="${pnlClass(pnlPct)}">${fmtPct(pnlPct)} on holdings</small></button>
       <button type="button"><span>Net P&L</span><strong class="${pnlClass(pnlMetrics.total)}">${fmtTradeMoney(pnlMetrics.total, market)}</strong><small class="${pnlClass(pnlMetrics.realized)}">realized ${fmtTradeMoney(pnlMetrics.realized, market)}</small></button>
       <button type="button"><span>Winners / Losers</span><strong><span class="positive">${fmtNumber(winners)}</span> / <span class="negative">${fmtNumber(losers)}</span></strong></button>
+      <button type="button"><span>Closed Today</span><strong>${fmtNumber(closedTodayRows.length)}</strong><small>kept until day close</small></button>
       <button type="button"><span>Need Action</span><strong class="${needsReview ? "warning" : "positive"}">${fmtNumber(needsReview)}</strong></button>
     `;
   }
@@ -4902,6 +5031,13 @@ function renderOverviewPositions(rows) {
 function positionModeState(row = {}) {
   const summary = row.position_summary || {};
   const details = parseJsonObject(row.details_json);
+  if (positionIsClosed(row)) {
+    return {
+      label: row.mode_label || (String(row.mode || "").toUpperCase() === "LIVE" ? "Live request" : "Paper"),
+      note: "Closed today",
+      className: "closed",
+    };
+  }
   const raw = String(row.mode || details.mode || row.execution_state || summary.classification || "").toUpperCase();
   if (raw.includes("LIVE")) {
     return {
@@ -4975,6 +5111,9 @@ function importantPositionFlags(flags = []) {
 }
 
 function positionActionState(row = {}) {
+  if (positionIsClosed(row)) {
+    return { label: "Closed today", tone: "closed", reason: followReasonText(row), needsAction: false };
+  }
   const summary = row.position_summary || {};
   const flags = Array.isArray(summary.active_flags) ? summary.active_flags : [];
   const importantFlags = importantPositionFlags(flags);
@@ -5016,6 +5155,16 @@ function positionFlagsHtml(flags = []) {
 }
 
 function positionPriceHtml(row = {}, market = "IN") {
+  if (positionIsClosed(row)) {
+    const entry = positionEntryPrice(row);
+    const exit = firstFinite(row.exit_price, row.closed_price, row.latest_price, row.market_price);
+    const latest = positionLatestPrice(row);
+    const afterExitPct = exit && latest !== null && exit > 0 ? ((latest - exit) / exit) * 100 : null;
+    return `<div class="position-price-pair closed">
+      <span><small>Entry</small><strong>${fmtTradeMoney(entry, market)}</strong></span>
+      <span class="live-price-tile"><small>Exit</small><strong>${fmtTradeMoney(exit, market)}</strong><em>${escapeHtml(fmtDateTime(positionClosedAt(row)))}</em><em class="${pnlClass(afterExitPct)}">after exit ${fmtSignedPct(afterExitPct)}</em></span>
+    </div>`;
+  }
   const markedAt = row.marked_at || row.updated_at || row.position_summary?.mark_timestamp || row.position_summary?.price_timestamp;
   const quoteAt = row.quote_updated_at || row.position_summary?.quote_timestamp;
   const source = humanLabel(row.quote_source || row.position_summary?.price_source || "live quote");
@@ -5028,6 +5177,20 @@ function positionPriceHtml(row = {}, market = "IN") {
 }
 
 function positionPnlHtml(row = {}, market = "IN") {
+  if (positionIsClosed(row)) {
+    const realized = positionRealizedPnl(row);
+    const returnPct = firstFinite(row.return_pct, row.current_return_pct);
+    const exit = firstFinite(row.exit_price, row.latest_price, row.market_price);
+    const latest = positionLatestPrice(row);
+    const afterExitPct = exit && latest !== null && exit > 0 ? ((latest - exit) / exit) * 100 : null;
+    const tone = pnlClass(realized ?? returnPct);
+    return `<div class="position-pnl-cell ${tone}">
+      <strong class="${tone}">${fmtSignedTradeMoney(realized, market)}</strong>
+      <small class="${tone}">${fmtSignedPct(returnPct)} realized</small>
+      <small class="${pnlClass(afterExitPct)}">after sell ${fmtSignedPct(afterExitPct)}</small>
+      <small>closed qty ${fmtNumber(row.closed_qty || row.entry_qty || 0)}</small>
+    </div>`;
+  }
   const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
   const pnlPct = Number(row.avg_price) > 0 ? ((Number(row.market_price) - Number(row.avg_price)) / Number(row.avg_price)) * 100 : 0;
   const dayPnl = positionDayPnl(row, market);
@@ -5051,6 +5214,17 @@ function positionTargetTile(label, target = {}, market = "IN") {
 }
 
 function positionRiskHtml(row = {}, market = "IN", compact = false) {
+  if (positionIsClosed(row)) {
+    const afterExitPct = (() => {
+      const exit = firstFinite(row.exit_price, row.latest_price, row.market_price);
+      const latest = positionLatestPrice(row);
+      return exit && latest !== null && exit > 0 ? ((latest - exit) / exit) * 100 : null;
+    })();
+    return `<div class="position-risk-stack compact closed">
+      <span><small>Sold</small><strong>${fmtTradeMoney(firstFinite(row.exit_price, row.latest_price), market)}</strong></span>
+      <span><small>After Sell</small><strong class="${pnlClass(afterExitPct)}">${fmtSignedPct(afterExitPct)}</strong></span>
+    </div>`;
+  }
   const exit = positionExitPlan(row);
   const targets = positionTargets(row, exit);
   const t1 = targets[0] || {};
@@ -5082,6 +5256,7 @@ function positionActionHtml(row = {}, compact = false) {
 }
 
 function positionTradeStateLabel(row = {}, mode = positionModeState(row)) {
+  if (positionIsClosed(row)) return "Closed today";
   const lifecycle = String(row.lifecycle_status || "").toLowerCase();
   if (["target_1_hit", "target_2_hit", "target_3_hit", "stopped", "exit_signal", "expired"].includes(lifecycle)) {
     return humanLabel(lifecycle);
@@ -5093,6 +5268,7 @@ function positionRowHtml(row, compact = false) {
   const summary = row.position_summary || {};
   const market = rowMarket(row);
   const mode = positionModeState(row);
+  const closed = positionIsClosed(row);
   const symbolCell = `<div class="symbol-cell"><span class="symbol-logo">${escapeHtml(symbolInitials(row.symbol))}</span><div><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong><small>${escapeHtml(displayValue(row.company_name || row.strategy, "Position"))}</small></div></div>`;
   const modeCell = `<span class="position-mode-pill ${escapeHtml(mode.className)}">${escapeHtml(mode.label)}</span><small class="position-mode-note">${escapeHtml(mode.note)}</small>`;
   const tradeState = positionTradeStateLabel(row, mode);
@@ -5110,14 +5286,14 @@ function positionRowHtml(row, compact = false) {
   return `<tr class="position-row">
     <td data-label="Symbol">${symbolCell}</td>
     <td data-label="Mode">${modeCell}</td>
-    <td data-label="Qty" class="num quantity">${fmtNumber(row.qty)}<br><small>${escapeHtml(tradeState)}</small></td>
+    <td data-label="Qty" class="num quantity">${fmtNumber(closed ? row.closed_qty || row.entry_qty || 0 : row.qty)}<br><small>${escapeHtml(tradeState)}</small></td>
     <td data-label="Entry / LTP" aria-live="polite">${positionPriceHtml(row, market)}</td>
     <td data-label="P&L">${positionPnlHtml(row, market)}</td>
     <td data-label="Stop / Targets">${positionRiskHtml(row, market)}</td>
     <td data-label="Next action">
       ${positionActionHtml(row)}
       <div class="position-row-actions">
-        <button type="button" class="danger-outline manual-exit-btn" data-symbol="${escapeHtml(row.symbol || "")}" data-market="${escapeHtml(market)}">Exit</button>
+        ${closed ? "" : `<button type="button" class="danger-outline manual-exit-btn" data-symbol="${escapeHtml(row.symbol || "")}" data-market="${escapeHtml(market)}">Exit</button>`}
         <button type="button" class="row-link">Details →</button>
       </div>
     </td>
@@ -5364,7 +5540,8 @@ function defaultPaperAmountForIdea(row = {}) {
   const cash = Number(scoped.cash ?? accountPortfolio.cash ?? 0);
   if (!Number.isFinite(price) || price <= 0) return 0;
   if (!Number.isFinite(cash) || cash <= 0) return price;
-  const target = cash * 0.2;
+  const minimumEconomicNotional = market === "US" ? 250 : 7500;
+  const target = Math.max(cash * 0.2, minimumEconomicNotional);
   if (target >= price) return Math.min(target, cash);
   return price <= cash ? price : 0;
 }
@@ -5380,6 +5557,7 @@ function applyIdeaFollowPayload(payload = {}) {
     tracked_ideas_by_market: payload.tracked_ideas_by_market || state.latest?.tracked_ideas_by_market || {},
     follow_history: payload.follow_history || state.latest?.follow_history || [],
     follow_history_by_market: payload.follow_history_by_market || state.latest?.follow_history_by_market || {},
+    orders: payload.orders || state.latest?.orders || [],
     positions: payload.positions || state.latest?.positions || [],
     portfolio: payload.portfolio || state.latest?.portfolio || {},
     portfolio_by_market: payload.portfolio_by_market || state.latest?.portfolio_by_market || {},
@@ -5389,7 +5567,7 @@ function applyIdeaFollowPayload(payload = {}) {
   return true;
 }
 
-async function followIdea(rowOrId, action, button = null) {
+async function followIdea(rowOrId, action, button = null, options = {}) {
   const row = typeof rowOrId === "object" && rowOrId ? rowOrId : {};
   const ideaId = Number(row.id || rowOrId || 0);
   if (!ideaId) return;
@@ -5411,7 +5589,7 @@ async function followIdea(rowOrId, action, button = null) {
     const response = await fetch(`/api/ideas/${ideaId}/follow`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode, amount }),
+      body: JSON.stringify({ mode, amount, manual_override: Boolean(options.manualOverride) }),
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     if (response.status === 401) {
@@ -5424,16 +5602,20 @@ async function followIdea(rowOrId, action, button = null) {
         mode,
         amount,
         message: payload.detail || "Could not update idea tracking",
+        note: mode === "LIVE"
+          ? "Live requests need your personal broker token, broker guard, cash, and risk checks."
+          : "Paper buys can be manually confirmed from the watchlist, but cash/quantity checks still apply.",
         response: payload,
       });
       return;
     }
     if (applyIdeaFollowPayload(payload)) {
       await refreshStatusOnly();
-      showDetails(mode === "TRACK" ? "Idea Tracking" : "Paper Follow", {
+      showDetails(mode === "TRACK" ? "Idea Tracking" : mode === "LIVE" ? "Live Request" : "Paper Buy", {
         symbol: row.symbol,
         mode,
         amount,
+        note: mode === "LIVE" ? "Guarded live request created. Broker fill still needs reconciliation." : "Paper position created with simulated cash and P&L.",
         follow: payload.follow,
         exit_manager: payload.paper_exit_manager,
       });
@@ -5870,15 +6052,14 @@ function renderOrders(rows) {
   if (!rows.length) {
     body.innerHTML = emptyTableRow(
       9,
-      `No ${activeMarketLabel()} orders yet`,
-      "Orders appear after a paper/live idea is executed or when a risk exit, target, or stop is triggered.",
+      `No ${activeMarketLabel()} orders today`,
+      "Today's paper/live buys, exits, target actions, and rejected requests will appear here.",
       "Open Positions",
       "positions",
     );
     return;
   }
   body.innerHTML = rows
-    .slice(0, 120)
     .map((row) => {
       const side = String(row.side || "").toLowerCase();
       const market = rowMarket(row);
@@ -5898,7 +6079,7 @@ function renderOrders(rows) {
       </tr>`;
     })
     .join("");
-  bindRowDetails(body, rows.slice(0, 120), "Order");
+  bindRowDetails(body, rows, "Order");
 }
 
 function bindRowDetails(body, rows, title) {
@@ -5947,6 +6128,7 @@ async function showDetails(title, value) {
   byId("detail-drawer").classList.add("open");
   byId("drawer-body").innerHTML = `<div class="empty-state">Loading details...</div>`;
   const detailValue = await fetchDetailValue(value);
+  state.currentDrawerValue = detailValue;
   byId("drawer-body").innerHTML = detailHtml(detailValue);
   bindDetailActions();
 }
@@ -5961,6 +6143,21 @@ function bindDetailActions() {
         status: "Modify is available for open broker orders. For now, cancel and place a fresh guarded order from the signal or watchlist.",
       });
     });
+  });
+  byId("drawer-body")?.querySelectorAll("[data-watchlist-buy]").forEach((button) => {
+    button.addEventListener("click", () => buyWatchlistIdea(state.currentDrawerValue || {}, button));
+  });
+  byId("drawer-body")?.querySelectorAll("[data-watchlist-sell]").forEach((button) => {
+    button.addEventListener("click", () => sellWatchlistPosition(state.currentDrawerValue || {}, button));
+  });
+  byId("drawer-body")?.querySelectorAll("[data-watchlist-chart]").forEach((button) => {
+    button.addEventListener("click", () => openWatchlistChart(state.currentDrawerValue || {}));
+  });
+  byId("drawer-body")?.querySelectorAll("[data-watchlist-note]").forEach((button) => {
+    button.addEventListener("click", () => showDetails(button.dataset.watchlistNoteTitle || "Watchlist Action", {
+      status: "not_enabled",
+      message: button.dataset.watchlistNote || "This action needs a broker/order feature connection before OpenStocks can execute it.",
+    }));
   });
 }
 
@@ -6198,6 +6395,82 @@ function quoteDetailRowsHtml(quote = {}, market = state.activeMarket) {
   </section>`;
 }
 
+function preferredManualTradeMode() {
+  const mode = String(state.account?.signal_execution_mode || state.auth?.user?.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
+  if (mode === "AUTO_LIVE") return "LIVE";
+  return "PAPER";
+}
+
+function preferredManualTradeAction() {
+  return preferredManualTradeMode() === "LIVE" ? "live" : "paper";
+}
+
+function preferredManualTradeLabel() {
+  return preferredManualTradeMode() === "LIVE" ? "Buy Live" : "Buy Paper";
+}
+
+function preferredManualTradeNote(row = {}) {
+  const market = rowMarket(row);
+  if (preferredManualTradeMode() === "LIVE") {
+    return "This creates a guarded live request only if your personal broker token, cash, and risk checks pass.";
+  }
+  return `This uses ${market === "US" ? "US" : "India"} paper cash. No real broker order is placed, and P&L is simulated in Positions.`;
+}
+
+function openPositionForSymbol(symbol, market = state.activeMarket) {
+  const normalized = String(symbol || "").toUpperCase();
+  const region = normalizeUiMarket(market);
+  return (state.latest?.positions || []).find((row) => (
+    String(row.symbol || "").toUpperCase() === normalized
+    && rowMarket(row) === region
+    && positionQuantity(row) > 0
+  ));
+}
+
+function openWatchlistChart(row = {}) {
+  const symbol = String(row.symbol || "").toUpperCase();
+  if (symbol) {
+    const input = byId("analyze-symbol");
+    if (input) input.value = symbol;
+    setAnalyzeMarket(rowMarket(row));
+  }
+  byId("detail-drawer")?.classList.remove("open");
+  setView("analyze");
+}
+
+async function buyWatchlistIdea(row = {}, button = null) {
+  const ideaId = Number(row.id || row.idea_id || 0);
+  if (!ideaId) {
+    showDetails("Buy Unavailable", {
+      status: "missing_signal",
+      message: "This watchlist row does not have a signal id. Open a signal idea row to place a paper/live request.",
+    });
+    return;
+  }
+  const action = preferredManualTradeAction();
+  const modeLabel = preferredManualTradeMode() === "LIVE" ? "LIVE broker request" : "PAPER money";
+  const symbol = String(row.symbol || "this stock").toUpperCase();
+  const note = preferredManualTradeNote(row);
+  if (!window.confirm(`Buy ${symbol} using ${modeLabel}?\n\n${note}`)) return;
+  await followIdea(row, action, button, { manualOverride: action === "paper" });
+}
+
+async function sellWatchlistPosition(row = {}, button = null) {
+  const symbol = String(row.symbol || "").toUpperCase();
+  const market = rowMarket(row);
+  const position = openPositionForSymbol(symbol, market);
+  if (!position) {
+    showDetails("Sell Unavailable", {
+      symbol,
+      market_region: market,
+      status: "no_open_position",
+      message: "There is no open paper/live position for this stock. Sell is available after you buy or follow it as a position.",
+    });
+    return;
+  }
+  await manualExitPosition(position, button);
+}
+
 function watchlistStockDetailHtml(row = {}) {
   const market = rowMarket(row);
   const quote = quoteForIdea(row) || {};
@@ -6207,6 +6480,8 @@ function watchlistStockDetailHtml(row = {}) {
   const sign = dayChange !== null && dayChange > 0 ? "+" : "";
   const exchange = row.exchange || quote.exchange || (market === "IN" ? "NSE" : "US");
   const eventTag = ideaHasEvent(row) ? `<span class="event-pill">EVENT</span>` : "";
+  const buyLabel = preferredManualTradeLabel();
+  const tradeNote = preferredManualTradeNote(row);
   return `<section class="trade-sheet">
     <header class="trade-sheet-head">
       <div>
@@ -6215,16 +6490,20 @@ function watchlistStockDetailHtml(row = {}) {
       </div>
       ${eventTag}
     </header>
+    <section class="trade-sheet-caution">
+      <strong>${escapeHtml(buyLabel)}</strong>
+      <span>${escapeHtml(tradeNote)}</span>
+    </section>
     <div class="trade-sheet-actions primary-actions">
-      <button class="buy-action" type="button" data-view-jump="suggestions">BUY</button>
-      <button class="sell-action" type="button" data-view-jump="positions">SELL</button>
+      <button class="buy-action" type="button" data-watchlist-buy>${escapeHtml(buyLabel)}</button>
+      <button class="sell-action" type="button" data-watchlist-sell>Sell Position</button>
     </div>
     <div class="trade-sheet-actions secondary-actions">
-      <button type="button" data-view-jump="analyze">View chart</button>
-      <button type="button" data-view-jump="analyze">Option chain</button>
-      <button type="button" data-view-jump="suggestions">Set alert</button>
-      <button type="button" data-view-jump="suggestions">Add notes</button>
-      <button type="button" data-view-jump="orders">Create GTT</button>
+      <button type="button" data-watchlist-chart>View chart</button>
+      <button type="button" data-watchlist-note-title="Option Chain" data-watchlist-note="Option chain is not wired for this symbol yet. OpenStocks will not pretend to route an unavailable option action.">Option chain</button>
+      <button type="button" data-watchlist-note-title="Set Alert" data-watchlist-note="Price alerts are not enabled yet. Use Buy Paper/Live or View chart for live actions today.">Set alert</button>
+      <button type="button" data-watchlist-note-title="Add Notes" data-watchlist-note="Notes are not saved yet. This button is now explicit so it does not behave like a hidden dummy action.">Add notes</button>
+      <button type="button" data-watchlist-note-title="Create GTT" data-watchlist-note="GTT creation needs broker-side order support. Use Buy Live only when your broker account is connected and guarded.">Create GTT</button>
     </div>
     ${dayRangeHtml({ ...quote, price }, market)}
     ${quoteDetailRowsHtml(quote, market)}
