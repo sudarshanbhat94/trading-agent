@@ -931,6 +931,24 @@ def _latest_signal_ideas_for_user(
     return db.latest_signal_ideas(limit, user_id=user_id, market_region=market_region, symbols=symbols or None)
 
 
+def _monitor_watchlist_for_user(
+    user_id: int,
+    *,
+    market_region: str | None = None,
+    monitor_symbols: list[str] | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    symbols = monitor_symbols if monitor_symbols is not None else db.user_monitor_symbols(user_id)
+    if not symbols:
+        return []
+    return db.monitor_watchlist_rows(
+        symbols,
+        user_id=user_id,
+        market_region=market_region,
+        limit=limit,
+    )
+
+
 def _filter_strategy_plans_for_symbols(plans: list[dict[str, Any]], monitor_symbols: list[str]) -> list[dict[str, Any]]:
     if not monitor_symbols:
         return plans
@@ -1054,6 +1072,11 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["suggestions_by_market"] = {
             "IN": _latest_signal_ideas_for_user(user_id, 30, market_region="IN", monitor_symbols=monitor_symbols),
             "US": _latest_signal_ideas_for_user(user_id, 30, market_region="US", monitor_symbols=monitor_symbols),
+        }
+        snapshot["monitor_watchlist"] = _monitor_watchlist_for_user(user_id, monitor_symbols=monitor_symbols)
+        snapshot["monitor_watchlist_by_market"] = {
+            "IN": _monitor_watchlist_for_user(user_id, market_region="IN", monitor_symbols=monitor_symbols),
+            "US": _monitor_watchlist_for_user(user_id, market_region="US", monitor_symbols=monitor_symbols),
         }
         snapshot["tracked_ideas"] = tracked_ideas
         snapshot["tracked_ideas_by_market"] = {
@@ -3191,6 +3214,15 @@ async def ideas(request: Request) -> dict[str, Any]:
         "ideas_by_market": {
             "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN", symbols=monitor_symbols or None),
             "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US", symbols=monitor_symbols or None),
+        },
+        "monitor_watchlist": db.monitor_watchlist_rows(
+            monitor_symbols,
+            user_id=user_id,
+            market_region=market_region,
+        ) if user_id is not None else [],
+        "monitor_watchlist_by_market": {
+            "IN": db.monitor_watchlist_rows(monitor_symbols, user_id=user_id, market_region="IN") if user_id is not None else [],
+            "US": db.monitor_watchlist_rows(monitor_symbols, user_id=user_id, market_region="US") if user_id is not None else [],
         },
         "tracked_ideas": tracked_ideas,
         "tracked_ideas_by_market": {

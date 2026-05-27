@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from app.agent import TradingAgentService
 from app.db import Database
-from app.models import utc_now
+from app.models import Quote, utc_now
 
 
 class MonitorScopeTests(unittest.TestCase):
@@ -24,6 +24,43 @@ class MonitorScopeTests(unittest.TestCase):
 
         self.assertEqual({row["symbol"] for row in rows}, {"GOOGL", "NVDA"})
         self.assertNotIn("TSLA", {row["symbol"] for row in rows})
+
+    def test_monitor_watchlist_shows_symbols_before_signal_ideas_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            user = db.create_user("inder", "hash", role="user", active=True)
+            db.update_user_monitor_symbols(int(user["id"]), ["GOOGL", "AMZN", "NVDA"])
+            with db.connect() as conn:
+                conn.executemany(
+                    """
+                    insert into universe (symbol, name, exchange, sector, enabled)
+                    values (?, ?, 'NASDAQ', 'US Equity', 1)
+                    """,
+                    [
+                        ("GOOGL", "Alphabet Inc."),
+                        ("AMZN", "Amazon.com Inc."),
+                        ("NVDA", "NVIDIA Corporation"),
+                    ],
+                )
+            db.upsert_quotes(
+                {
+                    "GOOGL": Quote("GOOGL", 190.0, "unit", utc_now(), close=188.0),
+                    "AMZN": Quote("AMZN", 180.0, "unit", utc_now(), close=181.0),
+                }
+            )
+
+            rows = db.monitor_watchlist_rows(
+                db.user_monitor_symbols(int(user["id"])),
+                user_id=int(user["id"]),
+                market_region="US",
+            )
+
+        self.assertEqual([row["symbol"] for row in rows], ["GOOGL", "AMZN", "NVDA"])
+        self.assertTrue(all(row["watchlist_source"] == "monitor_symbols" for row in rows))
+        self.assertTrue(all(row["status"] == "MONITORING" for row in rows))
+        self.assertEqual(rows[0]["latest_price"], 190.0)
+        self.assertEqual(rows[0]["current_return_pct"], 1.0638)
 
     def test_shared_auto_paper_respects_user_monitor_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2814,6 +2814,125 @@ class Database:
                 break
         return output
 
+    def monitor_watchlist_rows(
+        self,
+        symbols: Iterable[str],
+        *,
+        user_id: int | None = None,
+        market_region: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        symbol_params = _normalize_monitor_symbols(symbols)
+        if not symbol_params:
+            return []
+        requested_limit = max(1, min(int(limit or 100), 500))
+        symbol_params = symbol_params[:requested_limit]
+        market_clause, market_params = _market_region_where("u", market_region)
+        where_parts = ["u.enabled = 1", f"upper(u.symbol) in ({','.join('?' for _ in symbol_params)})"]
+        if market_clause:
+            where_parts.append(market_clause)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select
+                    u.symbol,
+                    u.name as company_name,
+                    u.exchange,
+                    u.sector,
+                    u.industry,
+                    {_market_region_case("u")} as market_region,
+                    q.price as latest_price,
+                    q.open as quote_open,
+                    q.high as quote_high,
+                    q.low as quote_low,
+                    q.close as quote_close,
+                    q.volume as quote_volume,
+                    q.ts as quote_updated_at,
+                    q.source as quote_source
+                from universe u
+                left join latest_quotes q on q.symbol = u.symbol
+                where {" and ".join(where_parts)}
+                """,
+                (*symbol_params, *market_params),
+            ).fetchall()
+        universe_by_symbol = {str(row["symbol"] or "").upper(): _row_dict(row) for row in rows}
+        ideas = self.latest_signal_ideas(
+            requested_limit,
+            user_id=user_id,
+            market_region=market_region,
+            symbols=symbol_params,
+        )
+        ideas_by_symbol = {str(row.get("symbol") or "").upper(): dict(row) for row in ideas}
+        output: list[dict[str, Any]] = []
+        for symbol in symbol_params:
+            base = universe_by_symbol.get(symbol)
+            if not base:
+                continue
+            idea = ideas_by_symbol.get(symbol)
+            if idea:
+                item = dict(idea)
+                if item.get("latest_price") in (None, "") and base.get("latest_price") not in (None, ""):
+                    item["latest_price"] = base.get("latest_price")
+                    item["price"] = base.get("latest_price")
+                item.setdefault("company_name", base.get("company_name"))
+                item.setdefault("exchange", base.get("exchange"))
+                item.setdefault("sector", base.get("sector"))
+                item.setdefault("industry", base.get("industry"))
+                item.setdefault("market_region", base.get("market_region"))
+                item["quote_updated_at"] = base.get("quote_updated_at")
+                item["quote_source"] = base.get("quote_source")
+                item["watchlist_source"] = "monitor_symbols"
+                output.append(item)
+                continue
+
+            latest_price = _optional_float(base.get("latest_price"))
+            close_price = _optional_float(base.get("quote_close"))
+            current_return = _return_pct(close_price or latest_price or 0.0, latest_price or 0.0)
+            output.append(
+                {
+                    "id": None,
+                    "symbol": symbol,
+                    "company_name": base.get("company_name"),
+                    "name": base.get("company_name"),
+                    "exchange": base.get("exchange"),
+                    "sector": base.get("sector"),
+                    "industry": base.get("industry"),
+                    "market_region": base.get("market_region"),
+                    "strategy": "custom_monitor_list",
+                    "plan_code": "custom_monitor_list",
+                    "signal_type": "WATCH",
+                    "suggestion": "WATCH",
+                    "status": "MONITORING",
+                    "latest_price": latest_price,
+                    "price": latest_price,
+                    "entry_price": latest_price,
+                    "current_return_pct": current_return,
+                    "peak_return_pct": current_return,
+                    "worst_return_pct": current_return,
+                    "confidence": 0.0,
+                    "combined_score": 0.0,
+                    "confluence": 0,
+                    "overall_score_pct": 0.0,
+                    "overall_grade": "WATCH",
+                    "reason": "Custom monitor symbol. Waiting for deterministic setup or BUY signal.",
+                    "decision_readiness": "monitor_only",
+                    "details": {
+                        "decision_readiness": "monitor_only",
+                        "monitor_scope": "CUSTOM",
+                        "watchlist_source": "monitor_symbols",
+                    },
+                    "watchlist_source": "monitor_symbols",
+                    "quote_open": base.get("quote_open"),
+                    "quote_high": base.get("quote_high"),
+                    "quote_low": base.get("quote_low"),
+                    "quote_close": base.get("quote_close"),
+                    "quote_volume": base.get("quote_volume"),
+                    "quote_updated_at": base.get("quote_updated_at"),
+                    "quote_source": base.get("quote_source"),
+                }
+            )
+        return output
+
     def user_followed_signal_ideas(
         self,
         user_id: int,

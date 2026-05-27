@@ -1878,7 +1878,7 @@ function render(payload) {
   renderStrategies(strategies);
   updatePageFilterButtons();
   renderStrategyPlans(visibleStrategyPlans);
-  renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans);
+  renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
   renderTomorrowPlan(payload.tomorrow_plan || {});
   renderMobileNativeHeader(payload, quotes, activeMarket);
   renderTrackedIdeas(visibleTrackedIdeas);
@@ -1955,7 +1955,7 @@ function renderPositionMarkPanels(payload) {
   updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas);
   renderPositions(positions);
   renderOverviewPositions(positions);
-  renderIdeasWatchlist(suggestions, trackedIdeas, state.latest?.strategy_plans || []);
+  renderIdeasWatchlist(suggestions, trackedIdeas, state.latest?.strategy_plans || [], payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
   renderMobileNativeHeader(payload, filterRowsByMarket(payload.quotes || [], activeMarket), activeMarket);
   renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
   renderTrackedIdeas(visibleTrackedIdeas);
@@ -4535,11 +4535,15 @@ function watchlistQualityGroups(ideas = []) {
   ];
 }
 
-function ideaWatchlistGroups(suggestions = [], trackedIdeas = [], strategyPlans = []) {
+function ideaWatchlistGroups(suggestions = [], trackedIdeas = [], strategyPlans = [], monitorWatchlist = []) {
   const ideas = sortSuggestionRows(suggestions || []);
   const market = normalizeUiMarket(state.activeMarket);
   const ideaIndex = ideaIndexByIdAndSymbol([...(suggestions || []), ...(trackedIdeas || [])]);
   const qualityGroups = watchlistQualityGroups(ideas);
+  const monitorRows = (monitorWatchlist || []).slice();
+  const monitorGroups = monitorRows.length
+    ? [{ key: "monitor", label: `Monitor ${monitorRows.length}`, rows: monitorRows }]
+    : [];
   const planSources = (strategyPlans || []).filter((plan) => plan.enabled !== false && plan.enabled !== 0);
   const derivedPlanSources = planSources.length
     ? []
@@ -4557,7 +4561,7 @@ function ideaWatchlistGroups(suggestions = [], trackedIdeas = [], strategyPlans 
       };
     });
   const tracked = sortSuggestionRows((trackedIdeas || []).slice());
-  return [...qualityGroups, ...planGroups, { key: "tracked", label: `Watchlist ${tracked.length}`, rows: tracked }];
+  return [...qualityGroups, ...monitorGroups, ...planGroups, { key: "tracked", label: `Watchlist ${tracked.length}`, rows: tracked }];
 }
 
 function ideaWatchlistReturn(row = {}) {
@@ -4625,11 +4629,11 @@ function ideaWatchlistRowHtml(row = {}, index = 0) {
   </article>`;
 }
 
-function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans = state.latest?.strategy_plans || []) {
+function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans = state.latest?.strategy_plans || [], monitorWatchlist = []) {
   const tabs = byId("ideas-watchlist-tabs");
   const body = byId("ideas-watchlist-body");
   if (!tabs || !body) return;
-  const groups = ideaWatchlistGroups(suggestions, trackedIdeas, strategyPlans);
+  const groups = ideaWatchlistGroups(suggestions, trackedIdeas, strategyPlans, monitorWatchlist);
   if (state.activeIdeaGroup === "big" || !groups.some((group) => group.key === state.activeIdeaGroup)) {
     state.activeIdeaGroup = groups[0]?.key || "buys";
   }
@@ -4654,7 +4658,7 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   tabs.querySelectorAll("[data-idea-group]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeIdeaGroup = button.dataset.ideaGroup || "buys";
-      renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans);
+      renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, monitorWatchlist);
     });
   });
   body.querySelectorAll(".mobile-watchlist-row").forEach((card) => {
@@ -4952,6 +4956,7 @@ function rerenderIdeasWatchlistFromState() {
     payloadRowsForMarket(state.latest || {}, "suggestions", market),
     payloadRowsForMarket(state.latest || {}, "tracked_ideas", market),
     state.latest?.strategy_plans || [],
+    payloadRowsForMarket(state.latest || {}, "monitor_watchlist", market),
   );
 }
 
@@ -7632,8 +7637,9 @@ function bindControls() {
         payloadRowsForMarket(state.latest || {}, "suggestions", state.activeMarket),
         payloadRowsForMarket(state.latest || {}, "tracked_ideas", state.activeMarket),
         state.latest?.strategy_plans || [],
+        payloadRowsForMarket(state.latest || {}, "monitor_watchlist", state.activeMarket),
       ).map((group) => ({ key: group.key, label: group.label, count: group.rows.length })),
-      note: "Groups come from Strategy Plans, plus your tracked watchlist.",
+      note: "Groups come from Buys, confidence, custom monitor symbols, Strategy Plans, and tracked watchlist.",
     }));
   }
   const portfolioSearch = byId("mobile-portfolio-search");
