@@ -62,6 +62,32 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
 
+    def test_fresh_buy_gate_caps_monthly_expiry_eve_to_probe_size(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 82,
+                "overall_grade": "A",
+                "confluence": 22,
+                "details": {
+                    "data_readiness": {"trade_decision_ready": True},
+                    "macro_event_context": {
+                        "is_monthly_expiry_eve": True,
+                        "event_risk_score": 0.35,
+                        "recommended_action": "reduce_size",
+                        "expiry_risk_policy": "probe_size_only",
+                        "expiry_size_multiplier": 0.35,
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
+        self.assertLessEqual(gate["size_multiplier"], 0.35)
+        self.assertIn("monthly expiry eve", " ".join(gate["risk_warnings"]))
+
     def test_fresh_buy_gate_reduces_size_when_sentiment_is_missing(self) -> None:
         gate = fresh_buy_quality_gate(
             {

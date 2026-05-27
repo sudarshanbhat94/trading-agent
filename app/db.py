@@ -5873,6 +5873,10 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         risk_gates.get("data_readiness"),
         context_summary.get("data_readiness"),
     )
+    macro_event_context = _first_dict(
+        context.get("macro_event_context"),
+        context_summary.get("macro_event_context"),
+    )
     action = str(row.get("action") or "HOLD").upper()
     combined = float(score_breakdown.get("combined") or 0.0)
     confluence_total = float(confluence.get("total") or 0.0)
@@ -5918,6 +5922,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "soft_flags": system_audit.get("soft_flags", []),
         "failed_gates": decision_gate.get("failed_gates", []),
         "data_readiness": data_readiness,
+        "macro_event_context": macro_event_context,
         "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
         "entry_quality": entry_quality,
         "breakout_quality": breakout,

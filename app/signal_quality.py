@@ -169,6 +169,14 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
         cautions.append("live quote is available but intraday candles are stale; use probe size only")
         missing_data.append("stale_intraday_candles")
+    macro_event = details.get("macro_event_context") if isinstance(details.get("macro_event_context"), dict) else {}
+    if not macro_event and isinstance(item.get("macro_event_context"), dict):
+        macro_event = item["macro_event_context"]
+    if macro_event.get("is_monthly_expiry_eve"):
+        expiry_size = _number(macro_event.get("expiry_size_multiplier"))
+        expiry_cap = min(expiry_size if expiry_size is not None else OPPORTUNITY_PROBE_SIZE_MULTIPLIER, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
+        size_multiplier = min(size_multiplier, expiry_cap)
+        cautions.append("monthly expiry eve; use probe size until expiry risk clears")
 
     severe_flags = _severe_risk_flags(
         risk_flags,

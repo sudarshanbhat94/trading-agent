@@ -1015,6 +1015,119 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual(action, "BUY")
 
+    def test_monthly_expiry_eve_allows_confirmed_probe_size_buy(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        candles = _trend_candles(volume_spike=True)
+        quote = Quote(
+            "EXPIRYPROBE",
+            candles[-1].close,
+            "upstox-live",
+            utc_now(),
+            open=candles[-1].open,
+            high=candles[-1].high,
+            low=candles[-1].low,
+            volume=candles[-1].volume,
+        )
+        macro_event = {
+            "enabled": True,
+            "date": "2026-05-27",
+            "symbol": "EXPIRYPROBE",
+            "is_expiry_day": False,
+            "is_monthly_expiry_day": False,
+            "is_monthly_expiry_eve": True,
+            "expiry_type": None,
+            "event_risk_score": 0.35,
+            "recommended_action": "reduce_size",
+        }
+        pre_filter = engine._pre_filter_context(
+            "EXPIRYPROBE",
+            {},
+            quote,
+            candles,
+            {},
+            {"available": True, "delivery_score": 0.8, "net_bias": "accumulation", "source": "unit-test"},
+            {"breadth_regime": "bull_confirmed"},
+            {},
+            macro_event,
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 5.4,
+                "day_range_position": 0.86,
+                "day_high_distance_pct": 0.5,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["macro_event_context"] = macro_event
+        context["pre_filter"] = pre_filter
+
+        action = engine._action_from_context("EXPIRYPROBE", 0.52, {}, context, {})
+
+        self.assertEqual(action, "BUY")
+        self.assertFalse(pre_filter["buy_blocked"])
+        self.assertEqual(pre_filter["buy_threshold"], 0.40)
+        self.assertEqual(macro_event["expiry_risk_policy"], "probe_size_only")
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+        self.assertLessEqual(context["sizing_grade"]["final_multiplier"], 0.35)
+
+    def test_monthly_expiry_day_still_blocks_fresh_buy(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        candles = _trend_candles(volume_spike=True)
+        quote = Quote(
+            "EXPIRYDAY",
+            candles[-1].close,
+            "upstox-live",
+            utc_now(),
+            open=candles[-1].open,
+            high=candles[-1].high,
+            low=candles[-1].low,
+            volume=candles[-1].volume,
+        )
+        macro_event = {
+            "enabled": True,
+            "date": "2026-05-28",
+            "symbol": "EXPIRYDAY",
+            "is_expiry_day": True,
+            "is_monthly_expiry_day": True,
+            "is_monthly_expiry_eve": False,
+            "expiry_type": "monthly",
+            "event_risk_score": 0.4,
+            "recommended_action": "reduce_size",
+        }
+        pre_filter = engine._pre_filter_context(
+            "EXPIRYDAY",
+            {},
+            quote,
+            candles,
+            {},
+            {"available": True, "delivery_score": 0.8, "net_bias": "accumulation", "source": "unit-test"},
+            {"breadth_regime": "bull_confirmed"},
+            {},
+            macro_event,
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 5.4,
+                "day_range_position": 0.86,
+                "day_high_distance_pct": 0.5,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["macro_event_context"] = macro_event
+        context["pre_filter"] = pre_filter
+
+        action = engine._action_from_context("EXPIRYDAY", 0.52, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertTrue(pre_filter["buy_blocked"])
+        self.assertEqual(pre_filter["elimination_reason"], "monthly_expiry_no_new_longs")
+        failed = {item["gate"] for item in context["decision_gate_context"]["failed_gates"]}
+        self.assertIn("macro_calendar_gate", failed)
+
     def test_late_intraday_momentum_is_detected_but_not_auto_buy(self) -> None:
         engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
         context = _momentum_gate_context(

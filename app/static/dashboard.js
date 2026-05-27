@@ -911,7 +911,7 @@ function reasonFromSnakeCase(value, fallback = "-") {
     market_breadth_bear_confirmed_no_new_longs: "The broader market is in a confirmed bearish breadth regime, so fresh BUY signals are blocked.",
     expiry_day_no_new_longs: "It is expiry day, so OpenStocks is waiting instead of opening a fresh long.",
     monthly_expiry_no_new_longs: "Monthly expiry risk is active, so OpenStocks is waiting for cleaner confirmation.",
-    monthly_expiry_eve_no_new_longs: "Monthly expiry is close, so OpenStocks is reducing event risk and avoiding fresh longs.",
+    monthly_expiry_eve_no_new_longs: "Monthly expiry is close, so OpenStocks only allows confirmed probe-size entries.",
     earnings_lockout: "Earnings are too close, so OpenStocks is waiting for clarity.",
     extended_entry_no_new_longs: "The entry is extended from the ideal breakout zone, so OpenStocks is waiting for a better price.",
     false_breakout_two_day_rule_failed: "The breakout failed confirmation and closed back below resistance.",

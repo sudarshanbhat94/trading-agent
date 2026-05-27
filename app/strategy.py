@@ -1400,18 +1400,23 @@ class StrategyEngine:
         else:
             earnings_window = earnings_days_value is not None and 0 <= earnings_days_value <= 14
         earnings_block = earnings_window and not event_thesis.get("supported") and not has_position
-        monthly_expiry_block = bool(
+        monthly_expiry_day_block = bool(
             macro_event_context.get("is_monthly_expiry_day")
-            or macro_event_context.get("is_monthly_expiry_eve")
             or (macro_event_context.get("is_expiry_day") and macro_event_context.get("expiry_type") == "monthly")
         ) and not has_position
+        monthly_expiry_eve_risk = bool(macro_event_context.get("is_monthly_expiry_eve")) and not has_position
+        if monthly_expiry_eve_risk:
+            buy_threshold = max(buy_threshold, 0.40)
+            macro_event_context["expiry_risk_policy"] = "probe_size_only"
+            expiry_size = _float_or_none(macro_event_context.get("expiry_size_multiplier"))
+            macro_event_context["expiry_size_multiplier"] = min(expiry_size if expiry_size is not None else 0.35, 0.35)
+            macro_event_context["expiry_risk_reason"] = "monthly_expiry_eve_reduce_size"
+        monthly_expiry_block = monthly_expiry_day_block
         macro_failed = earnings_block or monthly_expiry_block
         macro_reason = (
             "earnings_lockout"
             if earnings_block
             else "monthly_expiry_no_new_longs"
-            if macro_event_context.get("is_monthly_expiry_day") or macro_event_context.get("is_expiry_day")
-            else "monthly_expiry_eve_no_new_longs"
             if monthly_expiry_block
             else None
         )
@@ -2431,6 +2436,13 @@ class StrategyEngine:
         if breadth.get("breadth_regime") == "bear_warning":
             multiplier *= 0.5
             modifiers.append("breadth_bear_warning x0.5")
+        macro_event_context = context.get("macro_event_context") if isinstance(context.get("macro_event_context"), dict) else {}
+        if macro_event_context.get("is_monthly_expiry_eve"):
+            expiry_size = _float_or_none(macro_event_context.get("expiry_size_multiplier"))
+            expiry_cap = min(expiry_size if expiry_size is not None else 0.35, 0.35)
+            multiplier = min(multiplier, expiry_cap)
+            allocation_cap = min(allocation_cap, expiry_cap)
+            modifiers.append(f"monthly_expiry_eve_probe_size_cap={expiry_cap}")
         multiplier = max(min(multiplier, 2.0), 0.0)
         max_position_pct = min(float(self.settings.max_position_pct), 0.15)
         recommended = min(max_position_pct, max_position_pct * multiplier)
