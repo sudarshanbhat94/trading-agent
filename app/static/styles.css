@@ -20502,3 +20502,138 @@ body {
     }
   }
 }
+
+/* Absolute final dark-theme guard: dark mode means pitch black, not blue-black. */
+html:has(body[data-theme="dark"]),
+body[data-theme="dark"] {
+  --bg: #000000;
+  --surface: #000000;
+  --surface-soft: #000000;
+  --surface-strong: #000000;
+  --chrome: #000000;
+  --chrome-soft: #000000;
+  --surface-0: #000000;
+  --surface-1: #000000;
+  --surface-2: #000000;
+  --surface-3: #000000;
+  --terminal-bg: #000000;
+  --terminal-surface: #000000;
+  --mobile-app-bg: #000000;
+  --mobile-surface: #000000;
+  --mobile-surface-soft: #000000;
+  --mobile-nav-bg: rgba(0, 0, 0, 0.98);
+  background: #000000 !important;
+}
+
+body[data-theme="dark"] :is(
+  .login-screen,
+  .app-shell,
+  .terminal-body,
+  .workspace,
+  .view,
+  .terminal-topbar,
+  .app-sidebar,
+  .market-rail,
+  .market-tape,
+  .market-tape-viewport,
+  .market-tape-track,
+  .mobile-native-topbar,
+  .mobile-bottom-nav,
+  .mobile-watchlist-app,
+  .mobile-watchlist-tabs,
+  .mobile-watchlist-list,
+  .mobile-portfolio-app,
+  .mobile-portfolio-tabs,
+  .mobile-portfolio-tools,
+  .mobile-portfolio-list,
+  .mobile-orders-app,
+  .mobile-orders-list,
+  .panel,
+  .panel-head,
+  .dashboard-card,
+  .connect-card,
+  .admin-terminal,
+  .settings-group,
+  .table-wrap,
+  .macro-table-shell,
+  .decision-split,
+  .decision-card-list,
+  .decision-feed-card,
+  .decision-detail-panel,
+  .decision-detail-hero,
+  .decision-reason-block,
+  .decision-review-grid > div,
+  .sentiment-card,
+  .strategy-plan-card,
+  .analysis-result-shell,
+  .analysis-hero,
+  .analysis-chart,
+  .manual-analysis-card div,
+  .detail-drawer,
+  .drawer-head,
+  .drawer-body,
+  .trade-sheet,
+  .trade-sheet-section,
+  .account-profile-card,
+  .account-menu-list,
+  .account-history-card,
+  .account-history-table-wrap,
+  .empty-state,
+  .empty-table-state,
+  .product-empty,
+  .kpi,
+  .ops-card,
+  .score-radar,
+  .target-ladder span,
+  .position-risk-stack span,
+  .position-price-pair span,
+  .mobile-watchlist-row,
+  .mobile-portfolio-row,
+  .mobile-order-card
+) {
+  background: #000000 !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(
+  input,
+  select,
+  textarea,
+  .global-search input,
+  .rail-search input,
+  .symbol-search input,
+  .signal-search-bar,
+  .signal-search-bar input,
+  .settings-form input,
+  .settings-form select,
+  .field input,
+  .field select,
+  .connect-grid input,
+  .mobile-watchlist-search,
+  .mobile-watchlist-search input,
+  .mobile-market-switch,
+  .market-workspace-tabs,
+  .market-workspace-tab,
+  .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab,
+  .mobile-native-topbar .market-workspace-tab.active,
+  .product-action-card,
+  .product-action-metrics button,
+  .product-track-item,
+  .mobile-portfolio-summary,
+  .mobile-portfolio-summary > div,
+  .mobile-portfolio-summary.compact > div,
+  .mobile-portfolio-summary.broker-card,
+  .mobile-portfolio-day-pnl
+) {
+  background: #000000 !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] .market-tape-viewport::before {
+  background: linear-gradient(90deg, #000000 0%, transparent 100%) !important;
+}
+
+body[data-theme="dark"] .market-tape-viewport::after {
+  background: linear-gradient(270deg, #000000 0%, transparent 100%) !important;
+}
