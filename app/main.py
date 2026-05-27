@@ -931,6 +931,49 @@ def _latest_signal_ideas_for_user(
     return db.latest_signal_ideas(limit, user_id=user_id, market_region=market_region, symbols=symbols or None)
 
 
+def _latest_decision_summaries_for_user(
+    user_id: int,
+    limit: int,
+    *,
+    market_region: str | None = None,
+    monitor_symbols: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    symbols = monitor_symbols if monitor_symbols is not None else db.user_monitor_symbols(user_id)
+    return db.latest_decision_summaries(limit, market_region=market_region, symbols=symbols or None)
+
+
+def _followed_signal_ideas_for_user(
+    user_id: int,
+    limit: int,
+    *,
+    market_region: str | None = None,
+    monitor_symbols: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    symbols = monitor_symbols if monitor_symbols is not None else db.user_monitor_symbols(user_id)
+    return db.user_followed_signal_ideas(
+        user_id,
+        limit,
+        market_region=market_region,
+        symbols=symbols or None,
+    )
+
+
+def _follow_history_for_user(
+    user_id: int,
+    limit: int,
+    *,
+    market_region: str | None = None,
+    monitor_symbols: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    symbols = monitor_symbols if monitor_symbols is not None else db.user_monitor_symbols(user_id)
+    return db.user_follow_history(
+        user_id,
+        limit,
+        market_region=market_region,
+        symbols=symbols or None,
+    )
+
+
 def _monitor_watchlist_for_user(
     user_id: int,
     *,
@@ -1063,10 +1106,24 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         monitor_symbols = db.user_monitor_symbols(user_id)
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
-        tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
-        follow_history = db.user_follow_history(user_id, 500)
+        tracked_ideas = _followed_signal_ideas_for_user(user_id, 100, monitor_symbols=monitor_symbols)
+        follow_history = _follow_history_for_user(user_id, 500, monitor_symbols=monitor_symbols)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
+        snapshot["decisions"] = _with_detail_urls(
+            _latest_decision_summaries_for_user(user_id, 80, monitor_symbols=monitor_symbols),
+            "decisions",
+        )
+        snapshot["decisions_by_market"] = {
+            "IN": _with_detail_urls(
+                _latest_decision_summaries_for_user(user_id, 80, market_region="IN", monitor_symbols=monitor_symbols),
+                "decisions",
+            ),
+            "US": _with_detail_urls(
+                _latest_decision_summaries_for_user(user_id, 80, market_region="US", monitor_symbols=monitor_symbols),
+                "decisions",
+            ),
+        }
         snapshot["suggestions"] = _latest_signal_ideas_for_user(user_id, 50, monitor_symbols=monitor_symbols)
         snapshot["signal_ideas"] = snapshot["suggestions"]
         snapshot["suggestions_by_market"] = {
@@ -1080,8 +1137,8 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         }
         snapshot["tracked_ideas"] = tracked_ideas
         snapshot["tracked_ideas_by_market"] = {
-            "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN"),
-            "US": db.user_followed_signal_ideas(user_id, 100, market_region="US"),
+            "IN": _followed_signal_ideas_for_user(user_id, 100, market_region="IN", monitor_symbols=monitor_symbols),
+            "US": _followed_signal_ideas_for_user(user_id, 100, market_region="US", monitor_symbols=monitor_symbols),
         }
         snapshot["follow_history"] = follow_history
         snapshot["follow_history_by_market"] = _rows_by_market(follow_history)
@@ -1200,6 +1257,15 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                 }
             )
     return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:500]
+
+
+def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["detail_url"] = f"/api/{collection}/{item.get('id')}"
+        output.append(item)
+    return output
 
 
 def _position_target_at(targets: list[Any], index: int) -> dict[str, Any]:
@@ -2233,7 +2299,7 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
 
     paper_cash_by_market = _user_paper_cash_by_market(updated_user)
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-    follow_history = db.user_follow_history(int(user["id"]), 500)
+    follow_history = _follow_history_for_user(int(user["id"]), 500, monitor_symbols=monitor_symbols)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     account_payload = await account.snapshot()
     user_portfolio = _user_follow_portfolio(
@@ -3200,8 +3266,13 @@ async def ideas(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     user_id = int(user["id"]) if user.get("role") != "admin" else None
     market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
-    tracked_ideas = db.user_followed_signal_ideas(user_id, 100, market_region=market_region) if user_id is not None else []
     monitor_symbols = db.user_monitor_symbols(user_id) if user_id is not None else []
+    tracked_ideas = _followed_signal_ideas_for_user(
+        user_id,
+        100,
+        market_region=market_region,
+        monitor_symbols=monitor_symbols,
+    ) if user_id is not None else []
     return {
         "ok": True,
         "market": market_region,
@@ -3226,8 +3297,8 @@ async def ideas(request: Request) -> dict[str, Any]:
         },
         "tracked_ideas": tracked_ideas,
         "tracked_ideas_by_market": {
-            "IN": db.user_followed_signal_ideas(user_id, 100, market_region="IN") if user_id is not None else [],
-            "US": db.user_followed_signal_ideas(user_id, 100, market_region="US") if user_id is not None else [],
+            "IN": _followed_signal_ideas_for_user(user_id, 100, market_region="IN", monitor_symbols=monitor_symbols) if user_id is not None else [],
+            "US": _followed_signal_ideas_for_user(user_id, 100, market_region="US", monitor_symbols=monitor_symbols) if user_id is not None else [],
         },
         "positions": _user_follow_positions(tracked_ideas),
         "strategy_plans": _filter_strategy_plans_for_symbols(db.strategy_plans(), monitor_symbols),
@@ -3273,8 +3344,9 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         f"{user.get('username')} followed idea #{idea_id}",
         {"user_id": user.get("id"), "idea_id": idea_id, "mode": mode, "amount": amount, "qty": qty},
     )
-    tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-    follow_history = db.user_follow_history(int(user["id"]), 500)
+    monitor_symbols = db.user_monitor_symbols(int(user["id"]))
+    tracked_ideas = _followed_signal_ideas_for_user(int(user["id"]), 100, monitor_symbols=monitor_symbols)
+    follow_history = _follow_history_for_user(int(user["id"]), 500, monitor_symbols=monitor_symbols)
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     user_portfolio = _user_follow_portfolio(
@@ -3287,14 +3359,14 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         "ok": True,
         "follow": follow,
         "paper_exit_manager": exit_manager,
-        "ideas": _latest_signal_ideas_for_user(int(user["id"]), 50),
+        "ideas": _latest_signal_ideas_for_user(int(user["id"]), 50, monitor_symbols=monitor_symbols),
         "tracked_ideas": tracked_ideas,
         "follow_history": follow_history,
         "follow_history_by_market": _rows_by_market(follow_history),
         "orders": _follow_history_order_events(follow_history),
         "tracked_ideas_by_market": {
-            "IN": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="IN"),
-            "US": db.user_followed_signal_ideas(int(user["id"]), 100, market_region="US"),
+            "IN": _followed_signal_ideas_for_user(int(user["id"]), 100, market_region="IN", monitor_symbols=monitor_symbols),
+            "US": _followed_signal_ideas_for_user(int(user["id"]), 100, market_region="US", monitor_symbols=monitor_symbols),
         },
         "positions": _user_follow_positions(tracked_ideas),
         "portfolio": user_portfolio,
@@ -3364,7 +3436,8 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
             "skipped": skipped,
         },
     )
-    tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
+    monitor_symbols = db.user_monitor_symbols(int(user["id"]))
+    tracked_ideas = _followed_signal_ideas_for_user(int(user["id"]), 100, monitor_symbols=monitor_symbols)
     follow_history = db.user_follow_history(int(user["id"]), 500)
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
@@ -3379,7 +3452,7 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
         "plan": plan,
         "followed": followed,
         "skipped": skipped,
-        "ideas": _latest_signal_ideas_for_user(int(user["id"]), 50),
+        "ideas": _latest_signal_ideas_for_user(int(user["id"]), 50, monitor_symbols=monitor_symbols),
         "tracked_ideas": tracked_ideas,
         "follow_history": follow_history,
         "follow_history_by_market": _rows_by_market(follow_history),

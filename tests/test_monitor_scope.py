@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from app.agent import TradingAgentService
 from app.db import Database
-from app.models import Quote, utc_now
+from app.models import Decision, Quote, utc_now
 
 
 class MonitorScopeTests(unittest.TestCase):
@@ -24,6 +24,64 @@ class MonitorScopeTests(unittest.TestCase):
 
         self.assertEqual({row["symbol"] for row in rows}, {"GOOGL", "NVDA"})
         self.assertNotIn("TSLA", {row["symbol"] for row in rows})
+
+    def test_latest_decisions_can_be_limited_to_monitor_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            db.insert_decisions(
+                [
+                    Decision("GOOGL", "BUY", 0.8, 190, 0.7, 0.1, "allowed", utc_now(), "unit"),
+                    Decision("TSLA", "BUY", 0.9, 300, 0.8, 0.1, "outside", utc_now(), "unit"),
+                    Decision("NVDA", "HOLD", 0.5, 210, 0.6, 0.1, "allowed", utc_now(), "unit"),
+                ]
+            )
+
+            rows = db.latest_decision_summaries(10, symbols=["GOOGL", "NVDA"])
+
+        self.assertEqual({row["symbol"] for row in rows}, {"GOOGL", "NVDA"})
+        self.assertNotIn("TSLA", {row["symbol"] for row in rows})
+
+    def test_followed_ideas_can_be_limited_to_monitor_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            user = db.create_user("inder", "hash", role="user", active=True)
+            googl = self._insert_idea(db, "GOOGL")
+            tsla = self._insert_idea(db, "TSLA")
+            db.follow_signal_idea(int(user["id"]), googl, mode="TRACK")
+            db.follow_signal_idea(int(user["id"]), tsla, mode="TRACK")
+
+            rows = db.user_followed_signal_ideas(int(user["id"]), 10, symbols=["GOOGL"])
+
+        self.assertEqual([row["symbol"] for row in rows], ["GOOGL"])
+
+    def test_follow_history_can_be_limited_to_monitor_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            user = db.create_user("inder", "hash", role="user", active=True)
+            googl = self._insert_idea(db, "GOOGL")
+            tsla = self._insert_idea(db, "TSLA")
+            now = utc_now()
+            with db.connect() as conn:
+                conn.executemany(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (?, ?, 'PAPER', 'ACTIVE', 1, 100, 100, 100, 0, 0, ?, ?, '{}')
+                    """,
+                    [
+                        (int(user["id"]), googl, now, now),
+                        (int(user["id"]), tsla, now, now),
+                    ],
+                )
+
+            rows = db.user_follow_history(int(user["id"]), 10, symbols=["GOOGL"])
+
+        self.assertEqual([row["symbol"] for row in rows], ["GOOGL"])
 
     def test_monitor_watchlist_shows_symbols_before_signal_ideas_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

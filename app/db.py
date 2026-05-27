@@ -2938,9 +2938,17 @@ class Database:
         user_id: int,
         limit: int = 50,
         market_region: str | None = None,
+        symbols: Iterable[str] | None = None,
     ) -> list[dict[str, Any]]:
         market_clause, market_params = _market_region_where("u", market_region)
         market_sql = f"and {market_clause}" if market_clause else ""
+        symbol_params: list[str] = []
+        symbol_sql = ""
+        if symbols is not None:
+            symbol_params = _normalize_monitor_symbols(symbols)
+            if not symbol_params:
+                return []
+            symbol_sql = f"and upper(i.symbol) in ({','.join('?' for _ in symbol_params)})"
         today_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
         with self.connect() as conn:
             rows = conn.execute(
@@ -3016,10 +3024,11 @@ class Database:
                 left join latest_quotes q on q.symbol = i.symbol
                 where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
                 {market_sql}
+                {symbol_sql}
                 order by f.updated_at desc, f.id desc
                 limit ?
                 """,
-                (today_ist, today_ist, int(user_id), *market_params, max(1, min(int(limit), 200))),
+                (today_ist, today_ist, int(user_id), *market_params, *symbol_params, max(1, min(int(limit), 200))),
             ).fetchall()
         output: list[dict[str, Any]] = []
         for row in rows:
@@ -3069,9 +3078,17 @@ class Database:
         user_id: int,
         limit: int = 100,
         market_region: str | None = None,
+        symbols: Iterable[str] | None = None,
     ) -> list[dict[str, Any]]:
         market_clause, market_params = _market_region_where("u", market_region)
         market_sql = f"and {market_clause}" if market_clause else ""
+        symbol_params: list[str] = []
+        symbol_sql = ""
+        if symbols is not None:
+            symbol_params = _normalize_monitor_symbols(symbols)
+            if not symbol_params:
+                return []
+            symbol_sql = f"and upper(i.symbol) in ({','.join('?' for _ in symbol_params)})"
         with self.connect() as conn:
             self._refresh_user_follow_marks(conn)
             rows = conn.execute(
@@ -3108,10 +3125,11 @@ class Database:
                 where f.user_id = ?
                   and f.mode in ('PAPER','LIVE')
                   {market_sql}
+                  {symbol_sql}
                 order by f.updated_at desc, f.id desc
                 limit ?
                 """,
-                (int(user_id), *market_params, max(1, min(int(limit), 500))),
+                (int(user_id), *market_params, *symbol_params, max(1, min(int(limit), 500))),
             ).fetchall()
         history: list[dict[str, Any]] = []
         for row in rows:
@@ -4757,11 +4775,25 @@ class Database:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def latest_decisions(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
+    def latest_decisions(
+        self,
+        limit: int = 80,
+        market_region: str | None = None,
+        symbols: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit or 80), 500))
         fetch_limit = max(limit, min(limit * 4, 1000))
         where_sql, params = _market_region_where("u", market_region)
-        where_clause = f"where {where_sql}" if where_sql else ""
+        clauses: list[str] = []
+        if where_sql:
+            clauses.append(where_sql)
+        symbol_params: list[str] = []
+        if symbols is not None:
+            symbol_params = _normalize_monitor_symbols(symbols)
+            if not symbol_params:
+                return []
+            clauses.append(f"upper(d.symbol) in ({','.join('?' for _ in symbol_params)})")
+        where_clause = f"where {' and '.join(clauses)}" if clauses else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -4772,15 +4804,29 @@ class Database:
                 order by d.id desc
                 limit ?
                 """,
-                (*params, fetch_limit),
+                (*params, *symbol_params, fetch_limit),
             ).fetchall()
         return current_decision_rows(dict(row) for row in rows)[:limit]
 
-    def latest_decision_summaries(self, limit: int = 80, market_region: str | None = None) -> list[dict[str, Any]]:
+    def latest_decision_summaries(
+        self,
+        limit: int = 80,
+        market_region: str | None = None,
+        symbols: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit or 80), 500))
         fetch_limit = max(limit, min(limit * 4, 1000))
         where_sql, params = _market_region_where("u", market_region)
-        where_clause = f"where {where_sql}" if where_sql else ""
+        clauses: list[str] = []
+        if where_sql:
+            clauses.append(where_sql)
+        symbol_params: list[str] = []
+        if symbols is not None:
+            symbol_params = _normalize_monitor_symbols(symbols)
+            if not symbol_params:
+                return []
+            clauses.append(f"upper(d.symbol) in ({','.join('?' for _ in symbol_params)})")
+        where_clause = f"where {' and '.join(clauses)}" if clauses else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -4794,7 +4840,7 @@ class Database:
                 order by d.id desc
                 limit ?
                 """,
-                (*params, fetch_limit),
+                (*params, *symbol_params, fetch_limit),
             ).fetchall()
         ranked_rows = current_decision_rows(dict(row) for row in rows)[:limit]
         for row in ranked_rows:
