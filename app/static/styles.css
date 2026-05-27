@@ -16150,6 +16150,216 @@ body[data-theme="dark"] .market-tape-viewport::after {
   background: linear-gradient(270deg, #000000 0%, transparent 100%) !important;
 }
 
+/* End-of-file mobile pitch-black guard: wins over every legacy page override. */
+html[data-theme="dark"],
+html[data-theme="dark"] body,
+html[data-theme="dark"] body::before,
+html[data-theme="dark"] body::after {
+  background: #000000 !important;
+  background-color: #000000 !important;
+}
+
+html[data-theme="dark"] body :is(
+  #positions-view,
+  #positions-view.view.active,
+  #positions-view .panel.full,
+  #positions-view .position-summary-strip,
+  #positions-view .position-summary-strip button,
+  #orders-view,
+  #orders-view.view.active,
+  #orders-view .panel.full,
+  #orders-view .panel-head,
+  #orders-view .order-filter-tabs,
+  #account-view,
+  #account-view.view.active,
+  #account-view .account-grid,
+  #account-view .account-body,
+  #account-view .panel,
+  #account-view .panel-head,
+  #account-view .account-profile-panel,
+  #account-view .account-broker-panel,
+  #account-view .account-history-panel,
+  #account-view .account-credit-panel,
+  #account-view .account-quotes-panel,
+  .account-page,
+  .account-profile-card,
+  .account-profile-card div,
+  .account-menu-list,
+  .account-menu-list button,
+  .account-metrics,
+  .account-metrics div,
+  .account-pnl-card,
+  .account-note,
+  .account-history-body,
+  .account-history-grid,
+  .account-history-section,
+  .account-history-card,
+  .account-history-card-main,
+  .account-history-metrics,
+  .account-history-metrics > div,
+  .account-history-reason,
+  .account-history-empty,
+  .mobile-portfolio-app,
+  .mobile-portfolio-tabs,
+  .mobile-portfolio-tools,
+  .mobile-portfolio-tools label,
+  .mobile-portfolio-list,
+  .mobile-portfolio-summary,
+  .mobile-portfolio-summary-grid,
+  .mobile-portfolio-summary-grid span,
+  .mobile-portfolio-summary-pnl,
+  .mobile-portfolio-summary.broker-card,
+  .mobile-portfolio-summary.broker-card > div,
+  .mobile-portfolio-row,
+  .mobile-portfolio-row.broker-row,
+  .mobile-portfolio-main,
+  .mobile-portfolio-price,
+  .mobile-portfolio-day-pnl,
+  .mobile-orders-app,
+  .mobile-orders-list,
+  .mobile-order-card
+) {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] body :is(
+  .mobile-market-switch,
+  .market-workspace-tabs,
+  .market-workspace-tab,
+  .market-workspace-tab.active,
+  .market-workspace-tab[aria-selected="true"],
+  .mobile-native-topbar .market-workspace-tab,
+  .mobile-native-topbar .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab[aria-selected="true"],
+  .mobile-native-chevron,
+  .mobile-native-theme
+) {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] body :is(
+  .market-workspace-tab.active,
+  .market-workspace-tab[aria-selected="true"],
+  .mobile-native-topbar .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab[aria-selected="true"]
+) {
+  border-color: color-mix(in srgb, var(--mobile-accent, #60a5fa) 54%, rgba(148, 163, 184, 0.28)) !important;
+  color: var(--mobile-accent, #60a5fa) !important;
+  outline: 1px solid color-mix(in srgb, var(--mobile-accent, #60a5fa) 36%, transparent) !important;
+  outline-offset: -1px !important;
+}
+
+/* Mobile pitch-black correction: no navy fills on page-specific cards or tabs. */
+html[data-theme="dark"],
+html[data-theme="dark"] body,
+html[data-theme="dark"] body::before,
+html[data-theme="dark"] body::after {
+  background: #000000 !important;
+  background-color: #000000 !important;
+}
+
+html[data-theme="dark"] body :is(
+  #positions-view,
+  #positions-view.view.active,
+  #positions-view .panel.full,
+  #positions-view .position-summary-strip,
+  #positions-view .position-summary-strip button,
+  #orders-view,
+  #orders-view.view.active,
+  #orders-view .panel.full,
+  #orders-view .panel-head,
+  #orders-view .order-filter-tabs,
+  #account-view,
+  #account-view.view.active,
+  #account-view .account-grid,
+  #account-view .account-body,
+  #account-view .panel,
+  #account-view .panel-head,
+  #account-view .account-profile-panel,
+  #account-view .account-broker-panel,
+  #account-view .account-history-panel,
+  #account-view .account-credit-panel,
+  #account-view .account-quotes-panel,
+  .account-page,
+  .account-profile-card,
+  .account-profile-card div,
+  .account-menu-list,
+  .account-menu-list button,
+  .account-metrics,
+  .account-metrics div,
+  .account-pnl-card,
+  .account-note,
+  .account-history-body,
+  .account-history-grid,
+  .account-history-section,
+  .account-history-card,
+  .account-history-card-main,
+  .account-history-metrics,
+  .account-history-metrics > div,
+  .account-history-reason,
+  .account-history-empty,
+  .mobile-portfolio-app,
+  .mobile-portfolio-tabs,
+  .mobile-portfolio-tools,
+  .mobile-portfolio-tools label,
+  .mobile-portfolio-list,
+  .mobile-portfolio-summary,
+  .mobile-portfolio-summary-grid,
+  .mobile-portfolio-summary-grid span,
+  .mobile-portfolio-summary-pnl,
+  .mobile-portfolio-summary.broker-card,
+  .mobile-portfolio-summary.broker-card > div,
+  .mobile-portfolio-row,
+  .mobile-portfolio-row.broker-row,
+  .mobile-portfolio-main,
+  .mobile-portfolio-price,
+  .mobile-portfolio-day-pnl,
+  .mobile-orders-app,
+  .mobile-orders-list,
+  .mobile-order-card
+) {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] body :is(
+  .mobile-market-switch,
+  .market-workspace-tabs,
+  .market-workspace-tab,
+  .market-workspace-tab.active,
+  .market-workspace-tab[aria-selected="true"],
+  .mobile-native-topbar .market-workspace-tab,
+  .mobile-native-topbar .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab[aria-selected="true"],
+  .mobile-native-chevron,
+  .mobile-native-theme
+) {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] body :is(
+  .market-workspace-tab.active,
+  .market-workspace-tab[aria-selected="true"],
+  .mobile-native-topbar .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab[aria-selected="true"]
+) {
+  border-color: color-mix(in srgb, var(--mobile-accent, #60a5fa) 54%, rgba(148, 163, 184, 0.28)) !important;
+  color: var(--mobile-accent, #60a5fa) !important;
+  outline: 1px solid color-mix(in srgb, var(--mobile-accent, #60a5fa) 36%, transparent) !important;
+  outline-offset: -1px !important;
+}
+
 @media (max-width: 767px) {
   body[data-theme="dark"] .app-sidebar,
   body[data-theme="dark"].sidebar-collapsed .app-sidebar,
@@ -20505,6 +20715,8 @@ body {
 
 /* Absolute final dark-theme guard: dark mode means pitch black, not blue-black. */
 html:has(body[data-theme="dark"]),
+html[data-theme="dark"],
+html[data-theme="dark"] body,
 body[data-theme="dark"] {
   --bg: #000000;
   --surface: #000000;
@@ -20589,9 +20801,35 @@ body[data-theme="dark"] :is(
   .position-price-pair span,
   .mobile-watchlist-row,
   .mobile-portfolio-row,
-  .mobile-order-card
+  .mobile-portfolio-row.broker-row,
+  .mobile-portfolio-summary,
+  .mobile-portfolio-summary-grid,
+  .mobile-portfolio-summary-grid span,
+  .mobile-portfolio-summary-pnl,
+  .mobile-portfolio-summary.broker-card,
+  .mobile-portfolio-summary.broker-card > div,
+  .mobile-portfolio-day-pnl,
+  .mobile-order-card,
+  .account-page,
+  .account-grid,
+  .account-body,
+  .account-profile-card div,
+  .account-menu-list button,
+  .account-metrics,
+  .account-metrics div,
+  .account-pnl-card,
+  .account-note,
+  .account-history-body,
+  .account-history-grid,
+  .account-history-section,
+  .account-history-card-main,
+  .account-history-metrics,
+  .account-history-metrics > div,
+  .account-history-reason
 ) {
   background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
   box-shadow: none !important;
 }
 
@@ -20615,8 +20853,12 @@ body[data-theme="dark"] :is(
   .market-workspace-tabs,
   .market-workspace-tab,
   .market-workspace-tab.active,
+  .market-workspace-tab[aria-selected="true"],
   .mobile-native-topbar .market-workspace-tab,
   .mobile-native-topbar .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab[aria-selected="true"],
+  .mobile-native-chevron,
+  .mobile-native-theme,
   .product-action-card,
   .product-action-metrics button,
   .product-track-item,
@@ -20627,7 +20869,21 @@ body[data-theme="dark"] :is(
   .mobile-portfolio-day-pnl
 ) {
   background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
   box-shadow: none !important;
+}
+
+html[data-theme="dark"] body :is(
+  .market-workspace-tab.active,
+  .market-workspace-tab[aria-selected="true"],
+  .mobile-native-topbar .market-workspace-tab.active,
+  .mobile-native-topbar .market-workspace-tab[aria-selected="true"]
+) {
+  border-color: color-mix(in srgb, var(--mobile-accent, #60a5fa) 54%, rgba(148, 163, 184, 0.28)) !important;
+  color: var(--mobile-accent, #60a5fa) !important;
+  outline: 1px solid color-mix(in srgb, var(--mobile-accent, #60a5fa) 36%, transparent) !important;
+  outline-offset: -1px !important;
 }
 
 body[data-theme="dark"] .market-tape-viewport::before {

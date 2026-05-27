@@ -771,7 +771,7 @@ function applyTheme(theme) {
     mobileButton.setAttribute("title", next === "dark" ? "Light theme" : "Dark theme");
   }
   const themeMeta = byId("theme-color-meta") || document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.setAttribute("content", next === "dark" ? "#0b0e13" : "#f0f1f4");
+  if (themeMeta) themeMeta.setAttribute("content", next === "dark" ? "#000000" : "#f0f1f4");
 }
 
 function initTheme() {
@@ -2700,6 +2700,7 @@ function applyAccessMode() {
     "refresh-logs-btn",
     "analyze-btn",
     "upstox-connect-btn",
+    "alpaca-connect-btn",
   ]) {
     const element = byId(id);
     if (element) element.disabled = !admin;
@@ -3709,6 +3710,7 @@ function renderSettings(config) {
   }
   renderProviderKeysPanel(config.settings || {});
   renderUpstoxConnect(config.settings || {});
+  renderAlpacaConnect(config.settings || {});
   const configuredRegion = String(config.settings?.market_region || "IN").toUpperCase();
   setActiveMarket(configuredRegion === "US" ? "US" : "IN", { rerender: false });
   setAnalyzeMarket(configuredRegion === "US" ? "US" : "IN");
@@ -3771,6 +3773,18 @@ function renderUpstoxConnect(settings) {
   if (status) {
     status.textContent = saved ? "connected" : "not connected";
     status.className = `settings-inline-status ${saved ? "positive" : ""}`;
+  }
+}
+
+function renderAlpacaConnect(settings) {
+  const status = byId("alpaca-connect-status");
+  const keySaved = Boolean(settings.alpaca_api_key?.saved);
+  const secretSaved = Boolean(settings.alpaca_api_secret?.saved);
+  const provider = plainSetting("us_market_data_provider", settings.us_market_data_provider || "yahoo");
+  const feed = plainSetting("alpaca_data_feed", settings.alpaca_data_feed || "sip");
+  if (status) {
+    status.textContent = keySaved && secretSaved ? `saved · ${provider} · ${feed}` : "not connected";
+    status.className = `settings-inline-status ${keySaved && secretSaved ? "positive" : ""}`;
   }
 }
 
@@ -3966,6 +3980,13 @@ function upstoxConnectPayload() {
   };
 }
 
+function alpacaConnectPayload() {
+  return {
+    settings: collectSettings(),
+    symbol: byId("alpaca-test-symbol")?.value?.trim() || "AAPL",
+  };
+}
+
 function myUpstoxConnectPayload() {
   return {
     access_token: byId("my-upstox-access-token")?.value?.trim(),
@@ -4065,6 +4086,55 @@ async function connectUpstox() {
       status.className = "settings-inline-status negative";
     }
     showBackendError(networkErrorMessage(error, "Upstox connect"), { action: "Upstox connect" });
+  } finally {
+    if (button) button.disabled = !(state.auth && state.auth.admin);
+  }
+}
+
+async function connectAlpaca() {
+  const status = byId("alpaca-connect-status");
+  const button = byId("alpaca-connect-btn");
+  if (status) {
+    status.textContent = "connecting Alpaca";
+    status.className = "settings-inline-status";
+  }
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/alpaca/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(alpacaConnectPayload()),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok || !payload.ok) {
+      if (status) {
+        status.textContent = payload.detail || "Alpaca connect failed";
+        status.className = "settings-inline-status negative";
+      }
+      showDetails("Alpaca Connect", payload);
+      return;
+    }
+    if (status) {
+      const quote = payload.test_quote || {};
+      status.textContent = `Alpaca connected · ${quote.symbol || "AAPL"} ${quote.price || ""}`;
+      status.className = "settings-inline-status positive";
+    }
+    if (payload.config) renderSettings(payload.config);
+    if (payload.status) render(payload.status);
+    fetchLogs();
+    showDetails("Alpaca Connect", {
+      ok: payload.ok,
+      message: payload.message,
+      provider: payload.provider,
+      feed: payload.feed,
+      test_quote: payload.test_quote,
+    });
+  } catch (error) {
+    if (status) {
+      status.textContent = "Alpaca connect failed: backend unreachable";
+      status.className = "settings-inline-status negative";
+    }
+    showBackendError(networkErrorMessage(error, "Alpaca connect"), { action: "Alpaca connect" });
   } finally {
     if (button) button.disabled = !(state.auth && state.auth.admin);
   }
@@ -7851,6 +7921,7 @@ function bindControls() {
   byId("reset-demo-btn").addEventListener("click", resetDemo);
   byId("test-llm-btn").addEventListener("click", testLlm);
   byId("upstox-connect-btn").addEventListener("click", connectUpstox);
+  byId("alpaca-connect-btn").addEventListener("click", connectAlpaca);
   byId("my-upstox-token-save-btn").addEventListener("click", saveMyUpstoxToken);
   byId("my-kite-connect-btn").addEventListener("click", connectMyKite);
   byId("refresh-logs-btn").addEventListener("click", fetchLogs);
