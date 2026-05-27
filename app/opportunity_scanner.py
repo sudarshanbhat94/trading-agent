@@ -890,7 +890,8 @@ class OpportunityScanner:
         overnight_risk_ok = atr_pct <= 6.5 and not (day_gain is not None and day_gain >= 5.0 and participation >= 4.5)
         sentiment_ok = not sentiment.get("negative_catalyst")
         close_strength = _close_strength_from_candles(candles, price)
-        prior_day_follow_through = close_strength.get("latest_close_position", 0.0) >= 0.60
+        latest_close_position = _float_or_none(close_strength.get("latest_close_position"))
+        prior_day_follow_through = latest_close_position is not None and latest_close_position >= 0.60
 
         checks = {
             "history_ok": history >= 55,
