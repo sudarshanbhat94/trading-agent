@@ -234,6 +234,11 @@ class Settings:
     slippage_bps: float = _float("SLIPPAGE_BPS", 5.0)
     taxes_bps: float = _float("TAXES_BPS", 1.0)
     stt_bps: float = _float("STT_BPS", 10.0)
+    paper_min_auto_follow_notional_inr: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_INR", 7500.0)
+    paper_min_auto_follow_notional_usd: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_USD", 250.0)
+    paper_min_exit_net_profit_inr: float = _float("PAPER_MIN_EXIT_NET_PROFIT_INR", 75.0)
+    paper_min_exit_net_profit_usd: float = _float("PAPER_MIN_EXIT_NET_PROFIT_USD", 2.0)
+    paper_min_exit_net_profit_bps: float = _float("PAPER_MIN_EXIT_NET_PROFIT_BPS", 15.0)
 
     llm_provider: str = os.getenv("LLM_PROVIDER", "offline").strip().lower()
     llm_decision_mode: str = os.getenv("LLM_DECISION_MODE", "offline").strip().lower()
@@ -448,6 +453,11 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "slippage_bps", "label": "Slippage Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
     {"key": "taxes_bps", "label": "Taxes/Fees Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
     {"key": "stt_bps", "label": "STT Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
+    {"key": "paper_min_auto_follow_notional_inr", "label": "Min Paper Trade INR", "type": "number", "category": "Risk", "min": 0, "step": 500},
+    {"key": "paper_min_auto_follow_notional_usd", "label": "Min Paper Trade USD", "type": "number", "category": "Risk", "min": 0, "step": 25},
+    {"key": "paper_min_exit_net_profit_inr", "label": "Min Exit Net Profit INR", "type": "number", "category": "Risk", "min": 0, "step": 5},
+    {"key": "paper_min_exit_net_profit_usd", "label": "Min Exit Net Profit USD", "type": "number", "category": "Risk", "min": 0, "step": 0.5},
+    {"key": "paper_min_exit_net_profit_bps", "label": "Min Exit Net Profit Bps", "type": "number", "category": "Risk", "min": 0, "step": 1},
     {"key": "enable_news_sentiment", "label": "News Sentiment", "type": "boolean", "category": "Sentiment"},
     {"key": "enable_llm_sentiment", "label": "LLM Sentiment", "type": "boolean", "category": "Sentiment"},
     {"key": "news_cache_seconds", "label": "News Cache Seconds", "type": "number", "category": "Sentiment", "min": 60, "step": 60},

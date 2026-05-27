@@ -25,6 +25,11 @@ from .signal_quality import (
     fresh_buy_quality_gate,
     trade_readiness_gate,
 )
+from .trade_economics import (
+    entry_size_economics,
+    exit_economics,
+    should_block_low_value_profit_exit,
+)
 from .trading_rules import _score_grade
 
 
@@ -2980,6 +2985,13 @@ class Database:
                 or management.get("last_action_label")
                 or status
             )
+            exit_action = (
+                manual_exit.get("action")
+                or latest_event.get("action")
+                or safety_exit.get("action")
+                or management.get("last_action")
+                or ("SELL" if status in {"EXITED", "LIVE_EXIT_REQUESTED"} else "")
+            )
             history.append(
                 {
                     "follow_id": item.get("follow_id"),
@@ -3008,6 +3020,9 @@ class Database:
                     "cash_effect": realized_pnl if mode == "PAPER" else 0.0,
                     "return_pct": round(float(return_pct), 4),
                     "exit_reason": str(exit_reason or "").strip(),
+                    "exit_action": str(exit_action or "").strip().upper(),
+                    "exit_economics": latest_event.get("economics") if isinstance(latest_event.get("economics"), dict) else {},
+                    "last_skipped_exit": management.get("last_skipped_action") if isinstance(management.get("last_skipped_action"), dict) else {},
                     "strategy": item.get("strategy"),
                     "signal_type": item.get("signal_type"),
                     "opened_at": item.get("opened_at"),
@@ -3152,15 +3167,25 @@ class Database:
         mode: str = "TRACK",
         amount: float = 0.0,
         qty: int = 0,
+        cost_settings: Any = None,
     ) -> dict[str, Any]:
         mode = str(mode or "TRACK").strip().upper()
         if mode not in {"TRACK", "PAPER", "LIVE"}:
             mode = "TRACK"
         with self.connect() as conn:
-            idea = conn.execute("select * from signal_ideas where id = ?", (idea_id,)).fetchone()
+            idea = conn.execute(
+                f"""
+                select i.*, {_market_region_case("u")} as market_region
+                from signal_ideas i
+                left join universe u on u.symbol = i.symbol
+                where i.id = ?
+                """,
+                (idea_id,),
+            ).fetchone()
             if idea is None:
                 raise ValueError("idea not found")
             latest_price = float(idea["latest_price"] or idea["entry_price"] or 0.0)
+            market_region = normalize_market_region(idea["market_region"] or "IN", default="IN")
             idea_details = self._decode_json(idea["details_json"])
             quality_gate: dict[str, Any] | None = None
             if mode in {"PAPER", "LIVE"}:
@@ -3193,6 +3218,14 @@ class Database:
                 qty = int(float(amount) // latest_price)
             if mode in {"PAPER", "LIVE"} and qty <= 0:
                 raise ValueError("amount is too small for one share at the current idea price")
+            if mode in {"PAPER", "LIVE"}:
+                entry_economics = entry_size_economics(latest_price, qty, market_region, cost_settings)
+                if not entry_economics.get("passed"):
+                    raise ValueError(
+                        "trade_economics_min_notional:"
+                        f"notional={entry_economics.get('notional')},"
+                        f"minimum={entry_economics.get('minimum_notional')}"
+                    )
             invested = float(qty * latest_price)
             status = "ACTIVE" if mode != "LIVE" else "LIVE_REQUESTED"
             existing_follow = conn.execute(
@@ -3630,10 +3663,16 @@ class Database:
             }
         return None
 
-    def manage_user_follow_exits(self, user_id: int, market_region: str | None = None) -> dict[str, Any]:
+    def manage_user_follow_exits(
+        self,
+        user_id: int,
+        market_region: str | None = None,
+        cost_settings: Any = None,
+    ) -> dict[str, Any]:
         market_clause, market_params = _market_region_where("u", market_region)
         market_sql = f"and {market_clause}" if market_clause else ""
         actions: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         with self.connect() as conn:
             self._refresh_user_follow_marks(conn)
             rows = conn.execute(
@@ -3684,6 +3723,63 @@ class Database:
                 remaining_unrealized = round((latest_price - entry_price) * remaining_qty, 2)
                 return_pct = _return_pct(entry_price, latest_price)
                 management = follow_details.setdefault("exit_management", {})
+                economics = exit_economics(entry_price, latest_price, exit_qty, item.get("market_region"), cost_settings)
+                if should_block_low_value_profit_exit(event_key, economics):
+                    skip_reason = (
+                        "Skipped low-value profit exit: estimated net P&L "
+                        f"{economics.get('estimated_net_pnl')} is below required "
+                        f"{economics.get('minimum_net_profit')} after brokerage, taxes, slippage, and spread."
+                    )
+                    skip_event = {
+                        "key": event_key,
+                        "action": "SKIP",
+                        "label": "Skip Low-Value Exit",
+                        "reason": skip_reason,
+                        "at": now,
+                        "mode": mode,
+                        "qty_before": qty,
+                        "proposed_exit_qty": exit_qty,
+                        "entry_price": entry_price,
+                        "exit_price": latest_price,
+                        "return_pct": return_pct,
+                        "economics": economics,
+                    }
+                    management["last_skipped_action"] = skip_event
+                    management["last_skip_reason"] = skip_reason
+                    management["last_skip_at"] = now
+                    conn.execute(
+                        """
+                        update user_idea_follows
+                        set latest_price = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?, details_json = ?
+                        where id = ?
+                        """,
+                        (
+                            latest_price,
+                            round((latest_price - entry_price) * qty, 2),
+                            return_pct,
+                            now,
+                            json.dumps(follow_details, default=str, separators=(",", ":")),
+                            item["id"],
+                        ),
+                    )
+                    skipped.append(
+                        {
+                            "follow_id": item.get("id"),
+                            "idea_id": item.get("idea_id"),
+                            "symbol": item.get("symbol"),
+                            "market_region": item.get("market_region"),
+                            "mode": mode,
+                            "action": "SKIP",
+                            "label": "Skip Low-Value Exit",
+                            "reason": skip_reason,
+                            "qty_before": qty,
+                            "proposed_exit_qty": exit_qty,
+                            "exit_price": latest_price,
+                            "return_pct": return_pct,
+                            "economics": economics,
+                        }
+                    )
+                    continue
                 events = management.setdefault("events", [])
                 events.append(
                     {
@@ -3699,6 +3795,7 @@ class Database:
                         "exit_price": latest_price,
                         "realized_pnl": realized_pnl,
                         "return_pct": return_pct,
+                        "economics": economics,
                     }
                 )
                 management["last_action"] = action.get("action")
@@ -3748,7 +3845,13 @@ class Database:
                     "realized_pnl": realized_pnl,
                 }
                 actions.append(action_row)
-        return {"checked": len(rows), "actions": actions, "action_count": len(actions)}
+        return {
+            "checked": len(rows),
+            "actions": actions,
+            "action_count": len(actions),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }
 
     def _refresh_user_follow_marks(self, conn: sqlite3.Connection, symbols: Iterable[str] | None = None) -> None:
         symbol_values = sorted({str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()})

@@ -2282,6 +2282,200 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(action["key"], "MFE_PROFIT_PROTECT")
         self.assertTrue(action["full"])
 
+    def test_paper_exit_skips_tiny_breakeven_reduce_after_costs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="SCHNEIDER",
+                entry_price=1384.0,
+                latest_price=1387.10,
+                peak_return_pct=2.32,
+                details={"lifecycle_status": "active", "highest_target_hit": "NONE", "stop_loss": 1328.0},
+            )
+            _insert_trade_economics_follow(
+                db,
+                idea_id,
+                qty=4,
+                entry_price=1384.0,
+                latest_price=1387.10,
+                details={"mark_state": {"peak_return_pct": 2.32, "worst_return_pct": -0.2}},
+            )
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 0)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["skipped"][0]["reason"].split(":")[0], "Skipped low-value profit exit")
+        self.assertEqual(follow["qty"], 4)
+        self.assertEqual(follow["follow_status"], "ACTIVE")
+
+    def test_paper_exit_allows_economic_target_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="BIGWIN",
+                entry_price=100.0,
+                latest_price=110.0,
+                details={
+                    "lifecycle_status": "target_1_hit",
+                    "highest_target_hit": "T1",
+                    "stop_loss": 96.0,
+                    "target_status": [{"label": "T1", "hit": True, "suggested_exit_pct": 35}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=100, entry_price=100.0, latest_price=110.0)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 1)
+        self.assertEqual(result["actions"][0]["label"], "Reduce")
+        self.assertEqual(result["actions"][0]["exit_qty"], 35)
+        self.assertEqual(follow["qty"], 65)
+
+    def test_stop_loss_exit_is_not_blocked_by_trade_economics_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="STOPME",
+                entry_price=100.0,
+                latest_price=94.0,
+                details={"lifecycle_status": "active", "highest_target_hit": "NONE", "stop_loss": 95.0},
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=10, entry_price=100.0, latest_price=94.0)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+
+        self.assertEqual(result["action_count"], 1)
+        self.assertEqual(result["actions"][0]["action"], "EXIT_FULL")
+        self.assertEqual(result["actions"][0]["realized_pnl"], -60.0)
+
+    def test_paper_follow_rejects_tiny_trade_notional(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="TINYQTY",
+                entry_price=1384.0,
+                latest_price=1384.0,
+                details={
+                    "action": "BUY",
+                    "overall_score_pct": 88,
+                    "overall_grade": "A",
+                    "data_readiness": {"trade_decision_ready": True},
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "trade_economics_min_notional"):
+                db.follow_signal_idea(1, idea_id, mode="PAPER", amount=5_000, cost_settings=_economics_settings())
+
+
+def _economics_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        brokerage_bps=0.0,
+        slippage_bps=5.0,
+        taxes_bps=1.0,
+        stt_bps=10.0,
+        paper_min_auto_follow_notional_inr=7_500.0,
+        paper_min_auto_follow_notional_usd=250.0,
+        paper_min_exit_net_profit_inr=75.0,
+        paper_min_exit_net_profit_usd=2.0,
+        paper_min_exit_net_profit_bps=15.0,
+    )
+
+
+def _insert_trade_economics_idea(
+    db: Database,
+    *,
+    symbol: str,
+    entry_price: float,
+    latest_price: float,
+    peak_return_pct: float | None = None,
+    details: dict | None = None,
+) -> int:
+    now = utc_now()
+    return_pct = ((latest_price - entry_price) / entry_price) * 100 if entry_price else 0.0
+    payload = {
+        "action": "BUY",
+        "overall_score_pct": 88,
+        "overall_grade": "A",
+        "hard_blocked": False,
+        "hard_blocks": [],
+        "data_readiness": {"trade_decision_ready": True},
+    }
+    if details:
+        payload.update(details)
+    with db.connect() as conn:
+        conn.execute(
+            """
+            insert into signal_ideas (
+                first_seen_at, last_seen_at, symbol, strategy, plan_code, signal_type, status,
+                entry_price, latest_price, current_return_pct, peak_return_pct, worst_return_pct,
+                confidence, combined_score, confluence, overall_score_pct, overall_grade,
+                reason, details_json
+            )
+            values (?, ?, ?, 'trade_economics_test', 'trade_economics_test',
+                'BUY', 'ACTIVE', ?, ?, ?, ?, 0, 0.9, 0.7, 24, 88, 'A',
+                'trade economics test', ?)
+            """,
+            (
+                now,
+                now,
+                symbol,
+                entry_price,
+                latest_price,
+                return_pct,
+                peak_return_pct if peak_return_pct is not None else max(return_pct, 0.0),
+                json.dumps(payload),
+            ),
+        )
+        row = conn.execute("select last_insert_rowid() as id").fetchone()
+    return int(row["id"])
+
+
+def _insert_trade_economics_follow(
+    db: Database,
+    idea_id: int,
+    *,
+    qty: int,
+    entry_price: float,
+    latest_price: float,
+    details: dict | None = None,
+) -> None:
+    now = utc_now()
+    payload = details or {}
+    return_pct = ((latest_price - entry_price) / entry_price) * 100 if entry_price else 0.0
+    with db.connect() as conn:
+        conn.execute(
+            """
+            insert into user_idea_follows (
+                user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+            )
+            values (1, ?, 'PAPER', 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                idea_id,
+                qty,
+                entry_price,
+                latest_price,
+                qty * entry_price,
+                (latest_price - entry_price) * qty,
+                return_pct,
+                now,
+                now,
+                json.dumps(payload),
+            ),
+        )
+
 
 def _scanner_settings() -> SimpleNamespace:
     return SimpleNamespace(

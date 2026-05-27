@@ -31,6 +31,7 @@ from .signal_quality import (
 )
 from .strategy import StrategyEngine
 from .tomorrow_plan import build_tomorrow_plan
+from .trade_economics import auto_follow_sizing
 from .trading_rules import build_position_summary, build_self_audit
 
 
@@ -1256,9 +1257,12 @@ class TradingAgentService:
                 cash = self._auto_follow_cash_for_user(int(user["id"]), user, market)
                 price = _float_or_none(idea.get("latest_price") or idea.get("entry_price")) or 0.0
                 size_multiplier = quality_size_multiplier(quality_gate)
-                amount = self._auto_follow_amount(cash, price, size_multiplier=size_multiplier)
+                sizing = self._auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market)
+                amount = float(sizing.get("amount") or 0.0)
                 if amount <= 0:
-                    skip_reason = "position_size_cap_below_one_share" if price > 0 and cash >= price else "insufficient_paper_cash_for_position_size"
+                    skip_reason = str(sizing.get("reason") or "")
+                    if skip_reason != "position_size_below_minimum_trade_economics":
+                        skip_reason = "position_size_cap_below_one_share" if price > 0 and cash >= price else "insufficient_paper_cash_for_position_size"
                     summary["skipped"].append(
                         {
                             "user_id": user.get("id"),
@@ -1266,11 +1270,18 @@ class TradingAgentService:
                             "reason": skip_reason,
                             "cash": round(cash, 4),
                             "price": round(price, 4),
+                            "sizing": sizing,
                         }
                     )
                     continue
                 try:
-                    created = self.db.follow_signal_idea(int(user["id"]), int(idea["id"]), mode="PAPER", amount=amount)
+                    created = self.db.follow_signal_idea(
+                        int(user["id"]),
+                        int(idea["id"]),
+                        mode="PAPER",
+                        amount=amount,
+                        cost_settings=self.strategy.settings,
+                    )
                     summary["followed"] += 1
                     self._log(
                         "INFO",
@@ -1531,18 +1542,33 @@ class TradingAgentService:
         )
         return max(float(base_cash or 0.0) - invested, 0.0)
 
-    def _auto_follow_amount(self, cash: float, price: float, *, size_multiplier: float = 1.0) -> float:
-        if cash <= 0 or price <= 0:
-            return 0.0
-        size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
-        max_pct = max(min(float(self.strategy.settings.max_position_pct or 0.25), 0.50), 0.01)
-        target = cash * max_pct * size_multiplier
-        cap = cash * min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
-        if target >= price:
-            return min(target, cash)
-        if price <= cap:
-            return min(price, cash)
-        return 0.0
+    def _auto_follow_sizing(
+        self,
+        cash: float,
+        price: float,
+        *,
+        size_multiplier: float = 1.0,
+        market_region: str = "IN",
+    ) -> dict[str, Any]:
+        return auto_follow_sizing(
+            cash,
+            price,
+            max_position_pct=float(self.strategy.settings.max_position_pct or 0.25),
+            size_multiplier=size_multiplier,
+            market_region=market_region,
+            settings=self.strategy.settings,
+        )
+
+    def _auto_follow_amount(
+        self,
+        cash: float,
+        price: float,
+        *,
+        size_multiplier: float = 1.0,
+        market_region: str = "IN",
+    ) -> float:
+        sizing = self._auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market_region)
+        return float(sizing.get("amount") or 0.0)
 
     def _candle_fetch_universe(
         self,

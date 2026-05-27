@@ -65,6 +65,7 @@ from .signal_quality import (
 )
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
+from .trade_economics import auto_follow_sizing
 from .universe import UniverseService
 
 
@@ -876,7 +877,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     if user and not is_admin:
         user_id = int(user["id"])
         paper_cash_by_market = _user_paper_cash_by_market(user)
-        paper_exit_manager = db.manage_user_follow_exits(user_id)
+        paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
         follow_history = db.user_follow_history(user_id, 120)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
@@ -977,17 +978,20 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
         closed_qty = int(row.get("closed_qty") or 0)
         exit_price = float(row.get("exit_price") or 0.0)
         if symbol and closed_qty > 0 and exit_price > 0:
+            exit_action = str(row.get("exit_action") or "").upper()
+            partial_reduce = exit_action == "REDUCE" or (row.get("state") == "OPEN" and closed_qty < entry_qty)
+            side = "REDUCE" if partial_reduce else "SELL"
             events.append(
                 {
                     "id": f"follow-{row.get('follow_id')}-exit",
                     "ts": row.get("closed_at") or row.get("updated_at"),
                     "symbol": symbol,
-                    "side": "SELL",
+                    "side": side,
                     "strategy": row.get("strategy") or "paper_follow",
                     "qty": closed_qty,
                     "price": exit_price,
                     "notional": round(closed_qty * exit_price, 2),
-                    "status": "EXITED" if row.get("state") == "CLOSED" else status or "EXIT_PENDING",
+                    "status": "PARTIAL" if partial_reduce else "EXITED" if row.get("state") == "CLOSED" else status or "EXIT_PENDING",
                     "reason": row.get("exit_reason") or f"{mode} follow exit",
                     "market_region": market,
                     "exchange": row.get("exchange"),
@@ -2958,11 +2962,11 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
         _require_user_live_broker(user, normalize_market_region(idea.get("market_region") or "IN", default="IN"))
     try:
-        follow = db.follow_signal_idea(int(user["id"]), idea_id, mode=mode, amount=amount, qty=qty)
+        follow = db.follow_signal_idea(int(user["id"]), idea_id, mode=mode, amount=amount, qty=qty, cost_settings=settings)
     except ValueError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    exit_manager = db.manage_user_follow_exits(int(user["id"]))
+    exit_manager = db.manage_user_follow_exits(int(user["id"]), cost_settings=settings)
     db.insert_agent_log(
         "INFO",
         "ideas",
@@ -3041,6 +3045,7 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
                     int(idea["id"]),
                     mode=mode,
                     amount=per_idea_amount,
+                    cost_settings=settings,
                 )
             )
         except ValueError as exc:
@@ -3250,10 +3255,7 @@ def _default_paper_follow_amount(user: dict[str, Any], idea: dict[str, Any]) -> 
     market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
     cash = float(market_portfolio.get("cash") or 0.0)
     price = float(idea.get("latest_price") or idea.get("price") or idea.get("entry_price") or 0.0)
-    amount = _auto_follow_amount(cash, price, size_multiplier=size_multiplier)
-    if amount <= 0 and price > 0 and (cash <= 0 or price <= cash):
-        return price
-    return amount
+    return _auto_follow_amount(cash, price, size_multiplier=size_multiplier, market_region=market)
 
 
 def _require_user_live_broker(user: dict[str, Any], market_region: str) -> None:
@@ -3474,6 +3476,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         "followed": 0,
         "exited": 0,
         "managed_exits": [],
+        "managed_exit_skips": [],
         "skipped": [],
         "follows": [],
         "exits": [],
@@ -3483,8 +3486,9 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
     idea_mode = "LIVE" if mode == "AUTO_LIVE" else "PAPER"
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
-    exit_management = db.manage_user_follow_exits(user_id)
+    exit_management = db.manage_user_follow_exits(user_id, cost_settings=settings)
     summary["managed_exits"] = exit_management.get("actions", [])
+    summary["managed_exit_skips"] = exit_management.get("skipped", [])
     exit_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "SELL"}
     for symbol in sorted(exit_symbols):
         exited = db.exit_user_follow_position(user_id, symbol, reason="auto_exit_signal_sell")
@@ -3617,20 +3621,24 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         cash = float(market_portfolio.get("cash") or 0.0)
         price = float(idea.get("latest_price") or idea.get("entry_price") or 0.0)
         size_multiplier = quality_size_multiplier(quality_gate)
-        amount = _auto_follow_amount(cash, price, size_multiplier=size_multiplier)
+        sizing = _auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market)
+        amount = float(sizing.get("amount") or 0.0)
         if amount <= 0:
-            skip_reason = "position_size_cap_below_one_share" if price > 0 and cash >= price else "insufficient_paper_cash_for_position_size"
+            skip_reason = str(sizing.get("reason") or "")
+            if skip_reason != "position_size_below_minimum_trade_economics":
+                skip_reason = "position_size_cap_below_one_share" if price > 0 and cash >= price else "insufficient_paper_cash_for_position_size"
             summary["skipped"].append(
                 {
                     "symbol": symbol,
                     "reason": skip_reason,
                     "cash": round(cash, 4),
                     "price": round(price, 4),
+                    "sizing": sizing,
                 }
             )
             continue
         try:
-            follow = db.follow_signal_idea(user_id, int(idea["id"]), mode=idea_mode, amount=amount)
+            follow = db.follow_signal_idea(user_id, int(idea["id"]), mode=idea_mode, amount=amount, cost_settings=settings)
             summary["followed"] += 1
             summary["follows"].append(
                 {
@@ -3650,18 +3658,32 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
     return summary
 
 
-def _auto_follow_amount(cash: float, price: float, *, size_multiplier: float = 1.0) -> float:
-    if cash <= 0 or price <= 0:
-        return 0.0
-    size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
-    max_pct = max(min(float(settings.max_position_pct or 0.25), 0.50), 0.01)
-    target = cash * max_pct * size_multiplier
-    cap = cash * min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
-    if target >= price:
-        return min(target, cash)
-    if price <= cap:
-        return min(price, cash)
-    return 0.0
+def _auto_follow_sizing(
+    cash: float,
+    price: float,
+    *,
+    size_multiplier: float = 1.0,
+    market_region: str = "IN",
+) -> dict[str, Any]:
+    return auto_follow_sizing(
+        cash,
+        price,
+        max_position_pct=float(settings.max_position_pct or 0.25),
+        size_multiplier=size_multiplier,
+        market_region=market_region,
+        settings=settings,
+    )
+
+
+def _auto_follow_amount(
+    cash: float,
+    price: float,
+    *,
+    size_multiplier: float = 1.0,
+    market_region: str = "IN",
+) -> float:
+    sizing = _auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market_region)
+    return float(sizing.get("amount") or 0.0)
 
 
 def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[str]) -> bool:
