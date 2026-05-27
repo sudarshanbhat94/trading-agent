@@ -2029,8 +2029,8 @@ def build_market_data_provider(settings: Settings) -> MarketDataProvider:
     provider = normalize_market_data_provider_name(settings.market_data_provider)
     if provider == "simulated":
         return SimulatedMarketDataProvider()
-    if provider == "yahoo":
-        return yahoo
+    if region == "US":
+        return _build_us_market_data_provider(settings, yahoo)
 
     india_provider = _build_india_market_data_provider(settings, yahoo)
     us_provider = _build_us_market_data_provider(settings, yahoo)

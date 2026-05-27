@@ -4,10 +4,24 @@ import unittest
 from unittest.mock import patch
 
 from app.config import Settings
-from app.market_data import AlpacaMarketDataProvider, MarketDataError
+from app.market_data import AlpacaMarketDataProvider, MarketDataError, build_market_data_provider
 
 
 class AlpacaMarketDataProviderTests(unittest.IsolatedAsyncioTestCase):
+    def test_us_region_honors_us_alpaca_provider_even_when_india_provider_is_yahoo(self) -> None:
+        provider = build_market_data_provider(
+            Settings(
+                market_region="US",
+                market_data_provider="yahoo",
+                us_market_data_provider="alpaca_yahoo",
+                alpaca_api_key="key-123",
+                alpaca_api_secret="secret-456",
+                alpaca_data_feed="iex",
+            )
+        )
+
+        self.assertIn("alpaca-iex-live", provider.source_name)
+
     async def test_quotes_use_alpaca_key_secret_headers_and_feed(self) -> None:
         calls: list[dict] = []
 
