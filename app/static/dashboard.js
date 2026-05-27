@@ -22,6 +22,7 @@ const state = {
   ideaWatchlistSearch: "",
   activeIdeaGroup: "buys",
   currentIdeaWatchlistRows: [],
+  selectedIdeaWatchlistKey: "",
   currentDrawerValue: null,
   signalSearchQuery: "",
   signalSearchRows: [],
@@ -4604,29 +4605,188 @@ function ideaWatchlistMeta(row = {}) {
   return parts.join("");
 }
 
-function ideaWatchlistRowHtml(row = {}, index = 0) {
-  const move = ideaWatchlistMove(row);
-  const price = firstFinite(move.price, ideaWatchlistPrice(row));
+function ideaWatchlistKey(row = {}, index = 0) {
+  const id = row.id || row.idea_id || row.follow_id || row.user_follow?.id;
+  if (id) return `id:${id}`;
+  return `row:${rowMarket(row)}:${String(row.symbol || "").toUpperCase()}:${index}`;
+}
+
+function ideaWatchlistTargets(row = {}) {
+  const rawTargets = Array.isArray(row.target_status) && row.target_status.length
+    ? row.target_status
+    : Array.isArray(row.targets)
+      ? row.targets
+      : [];
+  return normalizedTargets(rawTargets);
+}
+
+function ideaWatchlistLevelsHtml(row = {}, market = rowMarket(row), compact = false) {
+  const targets = ideaWatchlistTargets(row);
+  const t1 = targets[0] || {};
+  const entry = formatZone(row.entry_zone, market);
+  const stop = firstPositiveFinite(row.stop_loss, row.exit_plan?.stop_loss);
+  if (compact) {
+    return `<div class="watchlist-levels compact">
+      <span><small>Entry</small><strong>${escapeHtml(entry)}</strong></span>
+      <span><small>SL</small><strong class="negative">${fmtTradeMoney(stop, market)}</strong></span>
+      <span><small>T1</small><strong class="positive">${fmtTradeMoney(t1.price, market)}</strong></span>
+    </div>`;
+  }
+  return `<div class="watchlist-levels">
+    <span><small>Entry</small><strong>${escapeHtml(entry)}</strong></span>
+    <span><small>Stop</small><strong class="negative">${fmtTradeMoney(stop, market)}</strong></span>
+    <span><small>T1</small><strong class="positive">${fmtTradeMoney(t1.price, market)}</strong></span>
+  </div>`;
+}
+
+function ideaWatchlistSignalHtml(row = {}) {
+  const opportunity = opportunityStatePayload(row);
+  const signal = row.display_signal || row.suggestion || row.signal_type || opportunity.label || "Watch";
+  const confidence = confidencePercent(row);
+  const action = rowActionText(row) || String(signal || "WATCH").toUpperCase();
+  return `<div class="watchlist-signal-cell">
+    <span class="watchlist-signal-pill ${escapeHtml(cssToken(action))}">${escapeHtml(signal)}</span>
+    <small>${confidence ? `${fmtNumber(confidence)}% confidence` : escapeHtml(opportunity.label || "scanner ranked")}</small>
+  </div>`;
+}
+
+function ideaWatchlistSetupHtml(row = {}) {
+  const opportunity = opportunityStatePayload(row);
+  const setup = row.strategy || row.plan_name || row.plan_code || row.setup_bucket_label || row.signal_strategy || "Watchlist";
+  const note = opportunity.summary || row.display_reason || row.setup_bucket_reason || readableDecisionReason(row);
+  return `<div class="watchlist-setup-cell">
+    <strong>${escapeHtml(shortValue(setup, 36))}</strong>
+    <small>${escapeHtml(shortValue(note, 58))}</small>
+  </div>`;
+}
+
+function ideaWatchlistActionHtml(row = {}) {
   const followed = ideaIsFollowed(row);
   const mode = String(row.mode || row.user_follow?.mode || "TRACK").toUpperCase();
   const rowId = row.id || row.idea_id || "";
-  const trackButton = followed
-    ? `<span class="mobile-watchlist-status">${escapeHtml(mode === "TRACK" ? "TRACKING" : mode)}</span>`
-    : `<span class="mobile-watchlist-actions">
-        <button type="button" data-watchlist-buy-row data-idea-id="${escapeHtml(rowId)}">${preferredManualTradeMode() === "LIVE" ? "Buy" : "Paper"}</button>
-        <button type="button" data-watchlist-track data-idea-id="${escapeHtml(rowId)}">Track</button>
-      </span>`;
-  return `<article class="mobile-watchlist-row" role="button" tabindex="0" data-index="${index}">
+  if (followed) {
+    return `<span class="mobile-watchlist-status">${escapeHtml(mode === "TRACK" ? "TRACKING" : `${mode} ACTIVE`)}</span>`;
+  }
+  if (!rowId) return `<button type="button" data-watchlist-open-detail>View</button>`;
+  return `<span class="mobile-watchlist-actions">
+    <button type="button" data-watchlist-buy-row data-idea-id="${escapeHtml(rowId)}">${preferredManualTradeMode() === "LIVE" ? "Buy Live" : "Buy Paper"}</button>
+    <button type="button" data-watchlist-track data-idea-id="${escapeHtml(rowId)}">Track</button>
+  </span>`;
+}
+
+function ideaWatchlistRowHtml(row = {}, index = 0, selectedKey = "") {
+  const move = ideaWatchlistMove(row);
+  const price = firstFinite(move.price, ideaWatchlistPrice(row));
+  const key = ideaWatchlistKey(row, index);
+  const market = rowMarket(row);
+  return `<article class="mobile-watchlist-row ${key === selectedKey ? "active" : ""}" role="button" tabindex="0" data-index="${index}" data-row-key="${escapeHtml(key)}">
     <div class="mobile-watchlist-symbol">
       <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
       <small>${ideaWatchlistMeta(row)}</small>
     </div>
+    ${ideaWatchlistSignalHtml(row)}
+    ${ideaWatchlistSetupHtml(row)}
     <div class="mobile-watchlist-price ${pnlClass(move.pct)}">
       <strong>${fmtNumber(price)}</strong>
       <small>${escapeHtml(move.text)}</small>
-      ${rowId ? trackButton : ""}
     </div>
+    ${ideaWatchlistLevelsHtml(row, market, true)}
+    <div class="watchlist-row-actions">${ideaWatchlistActionHtml(row)}</div>
   </article>`;
+}
+
+function watchlistDetailPanelHtml(row = {}) {
+  if (!row || !Object.keys(row).length) {
+    return `<div class="watchlist-detail-empty">
+      <strong>Select a stock</strong>
+      <span>Pick a row to see price, setup, trade levels, and paper/live actions.</span>
+    </div>`;
+  }
+  const market = rowMarket(row);
+  const quote = quoteForIdea(row) || {};
+  const move = ideaWatchlistMove(row);
+  const price = firstFinite(move.price, ideaWatchlistPrice(row));
+  const exchange = row.exchange || quote.exchange || (market === "IN" ? "NSE" : "US");
+  const opportunity = opportunityStatePayload(row);
+  const lifecycle = ideaLifecycle(row);
+  const dayPct = Number.isFinite(Number(move.pct)) ? Number(move.pct) : null;
+  const dayChange = (() => {
+    const direct = firstFinite(quote.day_change, quote.change);
+    if (direct !== null) return direct;
+    const close = firstFinite(quote.prev_close, quote.previous_close, quote.close);
+    return price !== null && close !== null ? price - close : null;
+  })();
+  const signal = row.display_signal || row.suggestion || row.signal_type || lifecycle.label;
+  const setup = row.strategy || row.plan_name || row.plan_code || row.setup_bucket_label || "Watchlist setup";
+  const reason = opportunity.summary || row.display_reason || row.setup_bucket_reason || readableDecisionReason(row);
+  const nextStep = opportunity.next_step || lifecycle.note || ideaTimelineText(row);
+  const targets = ideaWatchlistTargets(row);
+  return `<section class="watchlist-detail-card">
+    <header class="watchlist-detail-head">
+      <div>
+        <span>${escapeHtml(exchange)} · ${escapeHtml(activeMarketLabel())}</span>
+        <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
+        <p>${escapeHtml(shortValue(setup, 70))}</p>
+      </div>
+      <span class="watchlist-signal-pill ${escapeHtml(cssToken(rowActionText(row) || signal))}">${escapeHtml(signal)}</span>
+    </header>
+
+    <div class="watchlist-detail-price">
+      <strong class="${pnlClass(dayPct)}">${fmtTradeMoney(price, market)}</strong>
+      <span class="${pnlClass(dayPct)}">${dayChange !== null ? fmtSignedTradeMoney(dayChange, market) : "-"} (${fmtSignedPct(dayPct)})</span>
+      <small>${confidencePercent(row) ? `${fmtNumber(confidencePercent(row))}% confidence` : escapeHtml(lifecycle.label)}</small>
+    </div>
+
+    <div class="watchlist-detail-metrics">
+      <div><span>Volume</span><strong>${fmtCompact(quote.volume)}</strong></div>
+      <div><span>Open</span><strong>${fmtTradeMoney(quote.open, market)}</strong></div>
+      <div><span>High</span><strong>${fmtTradeMoney(quote.high || quote.day_high, market)}</strong></div>
+      <div><span>Low</span><strong>${fmtTradeMoney(quote.low || quote.day_low, market)}</strong></div>
+    </div>
+
+    <section class="watchlist-detail-section">
+      <h4>Trade Levels</h4>
+      ${ideaWatchlistLevelsHtml(row, market)}
+      ${targets.length > 1 ? targetLadderHtml({ targets }, market, true) : ""}
+    </section>
+
+    <section class="watchlist-detail-section">
+      <h4>Why It Is Here</h4>
+      <p>${escapeHtml(shortValue(reason, 190))}</p>
+    </section>
+
+    <section class="watchlist-detail-section">
+      <h4>Next Action</h4>
+      <p>${escapeHtml(shortValue(nextStep, 170))}</p>
+    </section>
+
+    <div class="watchlist-detail-actions">
+      <button class="buy-action" type="button" data-watchlist-buy>${escapeHtml(preferredManualTradeLabel())}</button>
+      <button type="button" data-watchlist-track-panel>Track</button>
+      <button type="button" data-watchlist-open-detail>Full audit</button>
+    </div>
+  </section>`;
+}
+
+function bindWatchlistDetailPanel(row = {}) {
+  const panel = byId("ideas-watchlist-detail");
+  if (!panel) return;
+  panel.querySelectorAll("[data-watchlist-buy]").forEach((button) => {
+    button.addEventListener("click", () => buyWatchlistIdea(row, button));
+  });
+  panel.querySelectorAll("[data-watchlist-track-panel]").forEach((button) => {
+    button.addEventListener("click", () => followIdea(row, "track", button));
+  });
+  panel.querySelectorAll("[data-watchlist-open-detail]").forEach((button) => {
+    button.addEventListener("click", () => showDetails("Watchlist Idea", { __detail_type: "watchlist_stock", ...row }));
+  });
+}
+
+function renderWatchlistDetail(row = {}) {
+  const panel = byId("ideas-watchlist-detail");
+  if (!panel) return;
+  panel.innerHTML = watchlistDetailPanelHtml(row);
+  bindWatchlistDetailPanel(row);
 }
 
 function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans = state.latest?.strategy_plans || [], monitorWatchlist = []) {
@@ -4637,9 +4797,19 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   if (state.activeIdeaGroup === "big" || !groups.some((group) => group.key === state.activeIdeaGroup)) {
     state.activeIdeaGroup = groups[0]?.key || "buys";
   }
-  const activeGroup = groups.find((group) => group.key === state.activeIdeaGroup) || groups[0] || { rows: [] };
+  let activeGroup = groups.find((group) => group.key === state.activeIdeaGroup) || groups[0] || { rows: [] };
+  const monitorGroup = groups.find((group) => group.key === "monitor" && (group.rows || []).length);
+  if (monitorGroup && state.activeIdeaGroup === "buys" && !(activeGroup.rows || []).length && !(suggestions || []).length) {
+    state.activeIdeaGroup = monitorGroup.key;
+    activeGroup = monitorGroup;
+  }
   const search = String(state.ideaWatchlistSearch || "").trim().toUpperCase();
   const rows = (activeGroup.rows || []).filter((row) => ideaSearchMatches(row, search));
+  const visibleRows = rows.slice(0, 60);
+  if (!visibleRows.some((row, index) => ideaWatchlistKey(row, index) === state.selectedIdeaWatchlistKey)) {
+    state.selectedIdeaWatchlistKey = visibleRows.length ? ideaWatchlistKey(visibleRows[0], 0) : "";
+  }
+  const selectedRow = visibleRows.find((row, index) => ideaWatchlistKey(row, index) === state.selectedIdeaWatchlistKey) || visibleRows[0] || {};
   state.currentIdeaWatchlistRows = rows;
   tabs.innerHTML = groups
     .map((group) => `<button type="button" class="${group.key === activeGroup.key ? "active" : ""}" data-idea-group="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>`)
@@ -4648,38 +4818,55 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   const count = byId("ideas-watchlist-count");
   if (count) count.textContent = `${rows.length}/${(activeGroup.rows || []).length}`;
   body.innerHTML = rows.length
-    ? rows.slice(0, 60).map((row, index) => ideaWatchlistRowHtml(row, index)).join("")
+    ? visibleRows.map((row, index) => ideaWatchlistRowHtml(row, index, state.selectedIdeaWatchlistKey)).join("")
     : emptyBlock(
         `No ${activeMarketLabel()} rows in ${activeGroup.label || "this group"}`,
         "Run the scanner or switch tabs. Trackable symbols appear here as clean watchlist rows.",
         "Run Stock Check",
         "analyze",
       );
+  renderWatchlistDetail(selectedRow);
   tabs.querySelectorAll("[data-idea-group]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeIdeaGroup = button.dataset.ideaGroup || "buys";
+      state.selectedIdeaWatchlistKey = "";
       renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, monitorWatchlist);
     });
   });
   body.querySelectorAll(".mobile-watchlist-row").forEach((card) => {
-    const row = rows[Number(card.dataset.index)];
+    const row = visibleRows[Number(card.dataset.index)];
     card.addEventListener("click", (event) => {
-      if (event.target.closest("[data-watchlist-track], [data-watchlist-buy-row]")) return;
-      if (row) showDetails("Watchlist Idea", { __detail_type: "watchlist_stock", ...row });
+      if (event.target.closest("[data-watchlist-track], [data-watchlist-buy-row], [data-watchlist-open-detail]")) return;
+      if (!row) return;
+      if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) {
+        showDetails("Watchlist Idea", { __detail_type: "watchlist_stock", ...row });
+        return;
+      }
+      state.selectedIdeaWatchlistKey = card.dataset.rowKey || ideaWatchlistKey(row, Number(card.dataset.index));
+      body.querySelectorAll(".mobile-watchlist-row").forEach((item) => item.classList.toggle("active", item === card));
+      renderWatchlistDetail(row);
     });
   });
   body.querySelectorAll("[data-watchlist-buy-row]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      const row = rows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
+      const row = visibleRows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
       buyWatchlistIdea(row || {}, button);
     });
   });
   body.querySelectorAll("[data-watchlist-track]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      const row = rows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
+      const row = visibleRows.find((item) => Number(item.id || item.idea_id || 0) === Number(button.dataset.ideaId));
       followIdea(row || Number(button.dataset.ideaId), "track", button);
+    });
+  });
+  body.querySelectorAll("[data-watchlist-open-detail]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const card = button.closest(".mobile-watchlist-row");
+      const row = visibleRows[Number(card?.dataset.index || 0)];
+      if (row) showDetails("Watchlist Idea", { __detail_type: "watchlist_stock", ...row });
     });
   });
 }

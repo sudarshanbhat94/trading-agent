@@ -25,6 +25,365 @@
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.25);
 }
 
+/* Full desktop watchlist workspace: scanner table plus selected-stock detail pane. */
+@media (min-width: 768px) {
+  #suggestions-view .mobile-watchlist-app {
+    display: grid !important;
+    grid-template-columns: minmax(760px, 1fr) minmax(360px, 32vw) !important;
+    grid-template-rows: auto auto auto minmax(0, 1fr) !important;
+    grid-template-areas:
+      "tabs detail"
+      "search detail"
+      "header detail"
+      "list detail" !important;
+    align-items: stretch !important;
+    min-height: max(560px, calc(100vh - 188px)) !important;
+    max-height: calc(100vh - 154px) !important;
+    overflow: hidden !important;
+  }
+
+  #suggestions-view .mobile-watchlist-tabs {
+    grid-area: tabs !important;
+  }
+
+  #suggestions-view .mobile-watchlist-search {
+    grid-area: search !important;
+  }
+
+  #suggestions-view .watchlist-desktop-header {
+    grid-area: header !important;
+    grid-template-columns: minmax(150px, 0.9fr) 118px minmax(150px, 1.05fr) 108px 122px minmax(170px, 1.1fr) minmax(130px, auto) !important;
+    gap: 14px !important;
+    padding: 0 18px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-list {
+    grid-area: list !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    align-content: start !important;
+  }
+
+  #suggestions-view .mobile-watchlist-row {
+    grid-template-columns: minmax(150px, 0.9fr) 118px minmax(150px, 1.05fr) 108px 122px minmax(170px, 1.1fr) minmax(130px, auto) !important;
+    gap: 14px !important;
+    min-height: 58px !important;
+    padding: 9px 18px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-row.active {
+    background: color-mix(in srgb, var(--color-brand-primary) 7%, var(--surface-1)) !important;
+    box-shadow: inset 3px 0 0 var(--color-brand-primary) !important;
+  }
+
+  #suggestions-view .watchlist-signal-cell,
+  #suggestions-view .watchlist-setup-cell {
+    display: grid !important;
+    min-width: 0 !important;
+    gap: 4px !important;
+  }
+
+  #suggestions-view .watchlist-signal-cell small,
+  #suggestions-view .watchlist-setup-cell small {
+    overflow: hidden !important;
+    color: var(--text-secondary) !important;
+    font-size: 10.5px !important;
+    line-height: 1.15 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-setup-cell strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-size: 12.5px !important;
+    font-weight: 780 !important;
+    line-height: 1.15 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-signal-pill {
+    display: inline-flex !important;
+    width: max-content !important;
+    max-width: 100% !important;
+    min-height: 22px !important;
+    align-items: center !important;
+    border-radius: 999px !important;
+    background: color-mix(in srgb, var(--color-brand-primary) 10%, var(--surface-1)) !important;
+    color: var(--color-brand-primary) !important;
+    padding: 0 8px !important;
+    font-size: 10.5px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-signal-pill.buy,
+  #suggestions-view .watchlist-signal-pill.fresh-buy,
+  #suggestions-view .watchlist-signal-pill.active-buy {
+    background: color-mix(in srgb, var(--color-buy) 12%, var(--surface-1)) !important;
+    color: var(--color-buy) !important;
+  }
+
+  #suggestions-view .watchlist-signal-pill.avoid,
+  #suggestions-view .watchlist-signal-pill.exit,
+  #suggestions-view .watchlist-signal-pill.sell {
+    background: color-mix(in srgb, var(--color-sell) 12%, var(--surface-1)) !important;
+    color: var(--color-sell) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price > strong {
+    grid-column: 4 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price > small {
+    grid-column: 5 !important;
+  }
+
+  #suggestions-view .watchlist-levels {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 5px !important;
+    min-width: 0 !important;
+  }
+
+  #suggestions-view .watchlist-levels span {
+    display: grid !important;
+    min-width: 0 !important;
+    gap: 2px !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent) !important;
+    border-radius: 7px !important;
+    background: color-mix(in srgb, var(--surface-2) 52%, var(--surface-1)) !important;
+    padding: 5px 6px !important;
+  }
+
+  #suggestions-view .watchlist-levels small {
+    overflow: hidden !important;
+    color: var(--text-muted) !important;
+    font-size: 9px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+    text-overflow: ellipsis !important;
+    text-transform: uppercase !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-levels strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace) !important;
+    font-size: 10.5px !important;
+    font-weight: 760 !important;
+    line-height: 1.1 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-row-actions {
+    display: flex !important;
+    justify-content: flex-end !important;
+    min-width: 0 !important;
+  }
+
+  #suggestions-view .watchlist-detail-pane {
+    grid-area: detail !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    border-left: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent) !important;
+    background: color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)) !important;
+  }
+
+  #suggestions-view .watchlist-detail-card {
+    display: grid !important;
+    gap: 14px !important;
+    padding: 18px !important;
+  }
+
+  #suggestions-view .watchlist-detail-head {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 12px !important;
+    align-items: start !important;
+  }
+
+  #suggestions-view .watchlist-detail-head span {
+    color: var(--text-muted) !important;
+    font-size: 11px !important;
+    font-weight: 760 !important;
+    letter-spacing: 0 !important;
+    text-transform: uppercase !important;
+  }
+
+  #suggestions-view .watchlist-detail-head h3 {
+    margin: 4px 0 3px !important;
+    color: var(--text-primary) !important;
+    font-size: 28px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+  }
+
+  #suggestions-view .watchlist-detail-head p {
+    margin: 0 !important;
+    color: var(--text-secondary) !important;
+    font-size: 12px !important;
+    line-height: 1.35 !important;
+  }
+
+  #suggestions-view .watchlist-detail-price {
+    display: grid !important;
+    gap: 5px !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent) !important;
+    border-radius: 8px !important;
+    background: var(--surface-1) !important;
+    padding: 14px !important;
+  }
+
+  #suggestions-view .watchlist-detail-price strong {
+    font-size: 30px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+  }
+
+  #suggestions-view .watchlist-detail-price span {
+    font-size: 14px !important;
+    font-weight: 780 !important;
+  }
+
+  #suggestions-view .watchlist-detail-price small {
+    color: var(--text-secondary) !important;
+    font-size: 11px !important;
+    font-weight: 720 !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics div,
+  #suggestions-view .watchlist-detail-section {
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent) !important;
+    border-radius: 8px !important;
+    background: var(--surface-1) !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics div {
+    display: grid !important;
+    gap: 5px !important;
+    padding: 10px !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics span,
+  #suggestions-view .watchlist-detail-section h4 {
+    color: var(--text-muted) !important;
+    font-size: 10px !important;
+    font-weight: 850 !important;
+    letter-spacing: 0 !important;
+    text-transform: uppercase !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-size: 12px !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-detail-section {
+    display: grid !important;
+    gap: 10px !important;
+    padding: 13px !important;
+  }
+
+  #suggestions-view .watchlist-detail-section h4 {
+    margin: 0 !important;
+  }
+
+  #suggestions-view .watchlist-detail-section p {
+    margin: 0 !important;
+    color: var(--text-secondary) !important;
+    font-size: 12.5px !important;
+    line-height: 1.45 !important;
+  }
+
+  #suggestions-view .watchlist-detail-actions {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr) minmax(0, 0.9fr) !important;
+    gap: 8px !important;
+  }
+
+  #suggestions-view .watchlist-detail-actions button {
+    min-height: 38px !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    font-weight: 780 !important;
+  }
+
+  #suggestions-view .watchlist-detail-empty {
+    display: grid !important;
+    min-height: 100% !important;
+    align-content: center !important;
+    justify-items: center !important;
+    gap: 8px !important;
+    padding: 28px !important;
+    text-align: center !important;
+  }
+
+  #suggestions-view .watchlist-detail-empty strong {
+    color: var(--text-primary) !important;
+    font-size: 18px !important;
+  }
+
+  #suggestions-view .watchlist-detail-empty span {
+    color: var(--text-secondary) !important;
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1280px) {
+  #suggestions-view .mobile-watchlist-app {
+    grid-template-columns: minmax(620px, 1fr) minmax(330px, 34vw) !important;
+  }
+
+  #suggestions-view .watchlist-desktop-header,
+  #suggestions-view .mobile-watchlist-row {
+    grid-template-columns: minmax(130px, 0.9fr) 106px minmax(128px, 0.9fr) 96px 108px minmax(140px, 0.9fr) minmax(112px, auto) !important;
+    gap: 10px !important;
+    padding-inline: 14px !important;
+  }
+}
+
+@media (max-width: 767px) {
+  #suggestions-view .watchlist-detail-pane,
+  #suggestions-view .watchlist-signal-cell,
+  #suggestions-view .watchlist-setup-cell,
+  #suggestions-view .watchlist-levels {
+    display: none !important;
+  }
+
+  #suggestions-view .mobile-watchlist-symbol {
+    grid-column: 1 !important;
+    grid-row: 1 / span 2 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+  }
+
+  #suggestions-view .watchlist-row-actions {
+    display: flex !important;
+    grid-column: 2 !important;
+    grid-row: 2 !important;
+    justify-content: flex-end !important;
+  }
+}
+
 /* Desktop watchlist polish: keep the mobile app rows, but make desktop read like a trading table. */
 @media (min-width: 768px) {
   #suggestions-view .mobile-watchlist-app {
@@ -19162,5 +19521,359 @@ body {
     padding: 0 8px !important;
     font-size: 16px !important;
     font-weight: 520 !important;
+  }
+}
+
+/* Final watchlist workspace override. Keep this after legacy mobile-watchlist rules. */
+@media (min-width: 768px) {
+  #suggestions-view .mobile-watchlist-app {
+    display: grid !important;
+    grid-template-columns: minmax(760px, 1fr) minmax(360px, 32vw) !important;
+    grid-template-rows: auto auto auto minmax(0, 1fr) !important;
+    grid-template-areas:
+      "tabs detail"
+      "search detail"
+      "header detail"
+      "list detail" !important;
+    min-height: max(560px, calc(100vh - 188px)) !important;
+    max-height: calc(100vh - 154px) !important;
+    overflow: hidden !important;
+  }
+
+  #suggestions-view .mobile-watchlist-tabs { grid-area: tabs !important; }
+  #suggestions-view .mobile-watchlist-search { grid-area: search !important; }
+
+  #suggestions-view .watchlist-desktop-header {
+    display: grid !important;
+    grid-area: header !important;
+    grid-template-columns: minmax(150px, 0.9fr) 118px minmax(150px, 1.05fr) 108px 122px minmax(170px, 1.1fr) minmax(130px, auto) !important;
+    gap: 14px !important;
+    padding: 0 18px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-list {
+    grid-area: list !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    align-content: start !important;
+  }
+
+  #suggestions-view .mobile-watchlist-row {
+    grid-template-columns: minmax(150px, 0.9fr) 118px minmax(150px, 1.05fr) 108px 122px minmax(170px, 1.1fr) minmax(130px, auto) !important;
+    gap: 14px !important;
+    min-height: 58px !important;
+    padding: 9px 18px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-row.active {
+    background: color-mix(in srgb, var(--color-brand-primary) 7%, var(--surface-1)) !important;
+    box-shadow: inset 3px 0 0 var(--color-brand-primary) !important;
+  }
+
+  #suggestions-view .watchlist-signal-cell,
+  #suggestions-view .watchlist-setup-cell {
+    display: grid !important;
+    min-width: 0 !important;
+    gap: 4px !important;
+  }
+
+  #suggestions-view .watchlist-signal-cell small,
+  #suggestions-view .watchlist-setup-cell small {
+    overflow: hidden !important;
+    color: var(--text-secondary) !important;
+    font-size: 10.5px !important;
+    line-height: 1.15 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-setup-cell strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-size: 12.5px !important;
+    font-weight: 780 !important;
+    line-height: 1.15 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-signal-pill {
+    display: inline-flex !important;
+    width: max-content !important;
+    max-width: 100% !important;
+    min-height: 22px !important;
+    align-items: center !important;
+    border-radius: 999px !important;
+    background: color-mix(in srgb, var(--color-brand-primary) 10%, var(--surface-1)) !important;
+    color: var(--color-brand-primary) !important;
+    padding: 0 8px !important;
+    font-size: 10.5px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-signal-pill.buy,
+  #suggestions-view .watchlist-signal-pill.fresh-buy,
+  #suggestions-view .watchlist-signal-pill.active-buy {
+    background: color-mix(in srgb, var(--color-buy) 12%, var(--surface-1)) !important;
+    color: var(--color-buy) !important;
+  }
+
+  #suggestions-view .watchlist-signal-pill.avoid,
+  #suggestions-view .watchlist-signal-pill.exit,
+  #suggestions-view .watchlist-signal-pill.sell {
+    background: color-mix(in srgb, var(--color-sell) 12%, var(--surface-1)) !important;
+    color: var(--color-sell) !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price {
+    display: contents !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price > strong {
+    grid-column: 4 !important;
+    justify-self: end !important;
+    font-size: 14px !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price > small {
+    grid-column: 5 !important;
+    justify-self: end !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-levels {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 5px !important;
+    min-width: 0 !important;
+  }
+
+  #suggestions-view .watchlist-levels span {
+    display: grid !important;
+    min-width: 0 !important;
+    gap: 2px !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent) !important;
+    border-radius: 7px !important;
+    background: color-mix(in srgb, var(--surface-2) 52%, var(--surface-1)) !important;
+    padding: 5px 6px !important;
+  }
+
+  #suggestions-view .watchlist-levels small {
+    overflow: hidden !important;
+    color: var(--text-muted) !important;
+    font-size: 9px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+    text-overflow: ellipsis !important;
+    text-transform: uppercase !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-levels strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace) !important;
+    font-size: 10.5px !important;
+    font-weight: 760 !important;
+    line-height: 1.1 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-row-actions {
+    display: flex !important;
+    justify-content: flex-end !important;
+    min-width: 0 !important;
+  }
+
+  #suggestions-view .watchlist-detail-pane {
+    display: block !important;
+    grid-area: detail !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    border-left: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent) !important;
+    background: color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)) !important;
+  }
+
+  #suggestions-view .watchlist-detail-card {
+    display: grid !important;
+    gap: 14px !important;
+    padding: 18px !important;
+  }
+
+  #suggestions-view .watchlist-detail-head {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 12px !important;
+    align-items: start !important;
+  }
+
+  #suggestions-view .watchlist-detail-head span {
+    color: var(--text-muted) !important;
+    font-size: 11px !important;
+    font-weight: 760 !important;
+    letter-spacing: 0 !important;
+    text-transform: uppercase !important;
+  }
+
+  #suggestions-view .watchlist-detail-head h3 {
+    margin: 4px 0 3px !important;
+    color: var(--text-primary) !important;
+    font-size: 28px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+  }
+
+  #suggestions-view .watchlist-detail-head p {
+    margin: 0 !important;
+    color: var(--text-secondary) !important;
+    font-size: 12px !important;
+    line-height: 1.35 !important;
+  }
+
+  #suggestions-view .watchlist-detail-price {
+    display: grid !important;
+    gap: 5px !important;
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent) !important;
+    border-radius: 8px !important;
+    background: var(--surface-1) !important;
+    padding: 14px !important;
+  }
+
+  #suggestions-view .watchlist-detail-price strong {
+    font-size: 30px !important;
+    font-weight: 850 !important;
+    line-height: 1 !important;
+  }
+
+  #suggestions-view .watchlist-detail-price span {
+    font-size: 14px !important;
+    font-weight: 780 !important;
+  }
+
+  #suggestions-view .watchlist-detail-price small {
+    color: var(--text-secondary) !important;
+    font-size: 11px !important;
+    font-weight: 720 !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics div,
+  #suggestions-view .watchlist-detail-section {
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent) !important;
+    border-radius: 8px !important;
+    background: var(--surface-1) !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics div {
+    display: grid !important;
+    gap: 5px !important;
+    padding: 10px !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics span,
+  #suggestions-view .watchlist-detail-section h4 {
+    color: var(--text-muted) !important;
+    font-size: 10px !important;
+    font-weight: 850 !important;
+    letter-spacing: 0 !important;
+    text-transform: uppercase !important;
+  }
+
+  #suggestions-view .watchlist-detail-metrics strong {
+    overflow: hidden !important;
+    color: var(--text-primary) !important;
+    font-size: 12px !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #suggestions-view .watchlist-detail-section {
+    display: grid !important;
+    gap: 10px !important;
+    padding: 13px !important;
+  }
+
+  #suggestions-view .watchlist-detail-section h4,
+  #suggestions-view .watchlist-detail-section p {
+    margin: 0 !important;
+  }
+
+  #suggestions-view .watchlist-detail-section p {
+    color: var(--text-secondary) !important;
+    font-size: 12.5px !important;
+    line-height: 1.45 !important;
+  }
+
+  #suggestions-view .watchlist-detail-actions {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr) minmax(0, 0.9fr) !important;
+    gap: 8px !important;
+  }
+
+  #suggestions-view .watchlist-detail-actions button {
+    min-height: 38px !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    font-weight: 780 !important;
+  }
+
+  #suggestions-view .watchlist-detail-empty {
+    display: grid !important;
+    min-height: 100% !important;
+    align-content: center !important;
+    justify-items: center !important;
+    gap: 8px !important;
+    padding: 28px !important;
+    text-align: center !important;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1280px) {
+  #suggestions-view .mobile-watchlist-app {
+    grid-template-columns: minmax(620px, 1fr) minmax(330px, 34vw) !important;
+  }
+
+  #suggestions-view .watchlist-desktop-header,
+  #suggestions-view .mobile-watchlist-row {
+    grid-template-columns: minmax(130px, 0.9fr) 106px minmax(128px, 0.9fr) 96px 108px minmax(140px, 0.9fr) minmax(112px, auto) !important;
+    gap: 10px !important;
+    padding-inline: 14px !important;
+  }
+}
+
+@media (max-width: 767px) {
+  #suggestions-view .watchlist-detail-pane,
+  #suggestions-view .watchlist-signal-cell,
+  #suggestions-view .watchlist-setup-cell,
+  #suggestions-view .watchlist-levels {
+    display: none !important;
+  }
+
+  #suggestions-view .mobile-watchlist-symbol {
+    grid-column: 1 !important;
+    grid-row: 1 / span 2 !important;
+  }
+
+  #suggestions-view .mobile-watchlist-price {
+    display: grid !important;
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+  }
+
+  #suggestions-view .watchlist-row-actions {
+    display: flex !important;
+    grid-column: 2 !important;
+    grid-row: 2 !important;
+    justify-content: flex-end !important;
   }
 }
