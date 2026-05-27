@@ -172,6 +172,7 @@ def build_symbol_tool_context(
         "market_breadth_context": market_breadth or {},
         "macro_event_context": macro_event_context or {},
         "opportunity_scan": row.get("_opportunity_scan") or {},
+        "tomorrow_plan_context": _tomorrow_plan_context(row),
         "data_readiness": data_readiness,
         "performance_feedback": selected_performance_feedback,
         "timeframe_data": {
@@ -189,6 +190,28 @@ def build_symbol_tool_context(
         "risk_limits": risk_limits,
         "recent_candles": [candle.to_dict() for candle in analysis_candles[-24:]],
     }
+
+
+def _tomorrow_plan_context(row: dict[str, Any]) -> dict[str, Any]:
+    item = row.get("_tomorrow_plan_item") if isinstance(row.get("_tomorrow_plan_item"), dict) else {}
+    if item:
+        return {
+            "active": True,
+            "plan_date": item.get("plan_date"),
+            "section": item.get("section"),
+            "action": item.get("action"),
+            "trigger_price": item.get("trigger_price"),
+            "max_entry": item.get("max_entry"),
+            "stop_loss": item.get("stop_loss"),
+            "target1": item.get("target1"),
+            "score": item.get("score"),
+            "confidence": item.get("confidence"),
+            "strategy": item.get("strategy"),
+            "validation": item.get("validation"),
+        }
+    if row.get("_tomorrow_plan"):
+        return {"active": True, "source": "tomorrow_plan"}
+    return {}
 
 
 def _decision_timeframe_candles(

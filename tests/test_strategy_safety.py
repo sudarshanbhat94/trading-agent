@@ -1015,6 +1015,81 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual(action, "BUY")
 
+    def test_tomorrow_plan_live_confirmation_lowers_entry_threshold(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.8,
+                "day_range_position": 0.82,
+                "day_high_distance_pct": 0.7,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["tomorrow_plan_context"] = {
+            "active": True,
+            "plan_date": "2026-05-28",
+            "section": "ready_at_open",
+            "action": "READY",
+            "score": 91,
+            "strategy": "prepared_breakout",
+        }
+
+        action = engine._action_from_context("READYPLAN", 0.27, {}, context, {})
+
+        plan = context["tomorrow_plan_decision"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(plan["eligible_for_entry_boost"])
+        self.assertEqual(plan["section"], "ready_at_open")
+        self.assertEqual(context["decision_gate_context"]["buy_threshold"], 0.25)
+
+    def test_tomorrow_plan_waits_without_live_confirmation(self) -> None:
+        engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 0.6,
+                "day_range_position": 0.52,
+                "day_high_distance_pct": 2.4,
+                "confirmed": False,
+                "fast_mover": False,
+            }
+        )
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.70}
+        context["full_spectrum_analysis"]["session_momentum"] = {
+            "available": True,
+            "confirmed": False,
+            "fast_mover": False,
+        }
+        context["full_spectrum_analysis"]["breakout_quality"] = {
+            "breakout_quality": "not_breakout",
+            "two_day_rule_failed": False,
+            "volume_confirmation": False,
+            "volume_expansion": False,
+        }
+        context["full_spectrum_analysis"]["strategy_logic_filters"]["breakout_volume"] = {
+            "volume_confirmed": False,
+            "confirmed": False,
+            "suspect_without_volume": False,
+        }
+        context["tomorrow_plan_context"] = {
+            "active": True,
+            "plan_date": "2026-05-28",
+            "section": "ready_at_open",
+            "action": "READY",
+            "score": 91,
+            "strategy": "prepared_breakout",
+        }
+
+        action = engine._action_from_context("WAITPLAN", 0.27, {}, context, {})
+
+        plan = context["tomorrow_plan_decision"]
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(plan["eligible_for_entry_boost"])
+        self.assertEqual(plan["reason"], "waiting_for_live_confirmation")
+        self.assertEqual(context["decision_gate_context"]["buy_threshold"], 0.30)
+
     def test_monthly_expiry_eve_allows_confirmed_probe_size_buy(self) -> None:
         engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
         candles = _trend_candles(volume_spike=True)

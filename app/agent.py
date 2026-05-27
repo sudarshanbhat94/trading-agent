@@ -1884,6 +1884,7 @@ class TradingAgentService:
         allowed_sections = {"ready_at_open", "near_breakout", "news_watch", "position_actions"}
         planned_symbols: list[str] = []
         seen_plan_symbols: set[str] = set()
+        planned_items_by_symbol: dict[str, dict[str, Any]] = {}
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -1893,6 +1894,7 @@ class TradingAgentService:
             if symbol and symbol not in seen_plan_symbols and section in allowed_sections and action != "AVOID":
                 planned_symbols.append(symbol)
                 seen_plan_symbols.add(symbol)
+                planned_items_by_symbol[symbol] = item
         if not planned_symbols:
             return selected_universe, {"enabled": True, "forced_symbols": [], "added_symbols": [], "reason": "no_tradeable_plan_symbols"}
 
@@ -1905,7 +1907,7 @@ class TradingAgentService:
                 continue
             selected_symbols.add(symbol)
             if symbol in planned_symbols:
-                selected.append({**row, "_tomorrow_plan": True})
+                selected.append(self._tomorrow_plan_row(row, planned_items_by_symbol.get(symbol)))
             else:
                 selected.append(row)
 
@@ -1918,7 +1920,7 @@ class TradingAgentService:
             if not row:
                 missing_symbols.append(symbol)
                 continue
-            selected.append({**row, "_tomorrow_plan": True})
+            selected.append(self._tomorrow_plan_row(row, planned_items_by_symbol.get(symbol)))
             selected_symbols.add(symbol)
             added_symbols.append(symbol)
         return selected, {
@@ -1929,6 +1931,30 @@ class TradingAgentService:
             "missing_symbols": missing_symbols[:20],
             "source": "tomorrow_plan",
         }
+
+    @staticmethod
+    def _tomorrow_plan_row(row: dict[str, Any], item: dict[str, Any] | None) -> dict[str, Any]:
+        item = item if isinstance(item, dict) else {}
+        compact_item = {
+            key: item.get(key)
+            for key in (
+                "plan_date",
+                "market_region",
+                "section",
+                "action",
+                "trigger_price",
+                "max_entry",
+                "stop_loss",
+                "target1",
+                "score",
+                "confidence",
+                "strategy",
+                "rationale",
+                "validation",
+            )
+            if item.get(key) not in (None, "")
+        }
+        return {**row, "_tomorrow_plan": True, "_tomorrow_plan_item": compact_item}
 
     def _fallback_quoted_universe(
         self,

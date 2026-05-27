@@ -411,6 +411,17 @@ class StrategyEngine:
             ]
             if failed_gate_names:
                 reason = f"{reason}, failed_gates={failed_gate_names}"
+            tomorrow_plan_decision = context.get("tomorrow_plan_decision") if isinstance(context.get("tomorrow_plan_decision"), dict) else {}
+            if tomorrow_plan_decision.get("active"):
+                plan_bits = [str(tomorrow_plan_decision.get("section") or "planned")]
+                if tomorrow_plan_decision.get("eligible_for_entry_boost"):
+                    plan_bits.append(
+                        f"live_confirmed:{'+'.join(tomorrow_plan_decision.get('live_confirmation') or [])}"
+                    )
+                    plan_bits.append(f"threshold_boost={float(tomorrow_plan_decision.get('threshold_boost') or 0.0):.2f}")
+                else:
+                    plan_bits.append(str(tomorrow_plan_decision.get("reason") or "waiting"))
+                reason = f"{reason}, tomorrow_plan={'/'.join(plan_bits)}"
             if context.get("llm_primary_fallback"):
                 reason = f"{reason}, {context['llm_primary_fallback'].get('reason', 'llm_primary_failed_safe_hold')}"
             if context.get("llm_primary_gate", {}).get("effect") == "forced_hold_no_trade":
@@ -600,6 +611,12 @@ class StrategyEngine:
         )
         if us_yahoo_reference_signal:
             threshold = min(threshold, 0.25)
+        tomorrow_plan_decision = self._tomorrow_plan_decision_context(context, opportunity_probe)
+        if tomorrow_plan_decision.get("eligible_for_entry_boost"):
+            boost = float(tomorrow_plan_decision.get("threshold_boost") or 0.0)
+            threshold = max(threshold - boost, 0.20)
+            tomorrow_plan_decision["adjusted_buy_threshold"] = round(threshold, 4)
+        context["tomorrow_plan_decision"] = tomorrow_plan_decision
         failed_gates: list[dict[str, Any]] = []
 
         def fail(gate: str, value: Any, reason: str) -> None:
@@ -1518,12 +1535,17 @@ class StrategyEngine:
             item["action"] = self._action_from_context(item["symbol"], combined, positions, context, candles_by_symbol)
             item["confidence"] = self._confidence_for_action(item["action"], combined, item.get("macro_event_context") or {}, market_breadth)
 
-    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float, float, float]:
+    def _scan_priority(self, item: dict[str, Any]) -> tuple[float, float, float, float, float, float, float, float]:
         opportunity_rank = self._opportunity_rank_score(item)
         opportunity_score = self._opportunity_priority_score(item)
+        tomorrow_plan = (item.get("context") or {}).get("tomorrow_plan_decision")
+        if not isinstance(tomorrow_plan, dict):
+            tomorrow_plan = {}
+        tomorrow_priority = float(tomorrow_plan.get("priority_boost") or 0.0)
         return (
             1.0 if item["action"] != "HOLD" else 0.0,
             opportunity_rank,
+            tomorrow_priority,
             opportunity_score,
             abs(float(item["combined"])),
             abs(float(item["context"].get("best_strategy", {}).get("score", 0.0) or 0.0)),
@@ -1532,14 +1554,15 @@ class StrategyEngine:
         )
 
     def _scan_priority_score(self, item: dict[str, Any]) -> float:
-        action_boost, opportunity_rank, opportunity, combined, strategy, technical, sentiment = self._scan_priority(item)
+        action_boost, opportunity_rank, tomorrow_priority, opportunity, combined, strategy, technical, sentiment = self._scan_priority(item)
         rs_percentile = float(((item.get("context") or {}).get("universe_relative_strength") or {}).get("percentile_63") or 50.0)
         rs_score = (rs_percentile - 50.0) / 50.0
         return (
             (action_boost * 0.35)
             + (opportunity_rank * 0.20)
-            + (opportunity * 0.16)
-            + (combined * 0.16)
+            + (tomorrow_priority * 0.08)
+            + (opportunity * 0.14)
+            + (combined * 0.14)
             + (rs_score * 0.08)
             + (strategy * 0.08)
             + (technical * 0.04)
@@ -1580,6 +1603,66 @@ class StrategyEngine:
         elif playbook.get("final_signal") == "MODERATE BUY":
             score += 0.05
         return max(min(score, 1.0), 0.0)
+
+    def _tomorrow_plan_decision_context(
+        self,
+        context: dict[str, Any],
+        opportunity_probe: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        plan = context.get("tomorrow_plan_context") if isinstance(context.get("tomorrow_plan_context"), dict) else {}
+        if not plan or not plan.get("active"):
+            return {"active": False}
+        section = str(plan.get("section") or "").strip().lower()
+        action = str(plan.get("action") or "").strip().upper()
+        allowed_sections = {"ready_at_open", "near_breakout", "news_watch"}
+        if section not in allowed_sections or action == "AVOID":
+            return {
+                "active": True,
+                "section": section or None,
+                "action": action or None,
+                "eligible_for_entry_boost": False,
+                "reason": "tomorrow_plan_section_not_entry_eligible",
+            }
+
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        session_momentum = full.get("session_momentum") if isinstance(full.get("session_momentum"), dict) else {}
+        live_momentum_review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
+        reasons: list[str] = []
+        if opportunity_probe and opportunity_probe.get("ready"):
+            reasons.append(str(opportunity_probe.get("source") or "opportunity_probe"))
+        if session_momentum.get("confirmed"):
+            reasons.append("session_momentum_confirmed")
+        for key in ("strategy_ready", "early_ignition_ready", "live_momentum_ready", "market_action_breakout_ready"):
+            if live_momentum_review.get(key):
+                reasons.append(key)
+
+        threshold_boost_by_section = {
+            "ready_at_open": 0.05,
+            "near_breakout": 0.04,
+            "news_watch": 0.03,
+        }
+        priority_boost_by_section = {
+            "ready_at_open": 0.10,
+            "near_breakout": 0.08,
+            "news_watch": 0.06,
+        }
+        eligible = bool(reasons)
+        return {
+            "active": True,
+            "plan_date": plan.get("plan_date"),
+            "section": section,
+            "action": action or None,
+            "strategy": plan.get("strategy"),
+            "trigger_price": plan.get("trigger_price"),
+            "max_entry": plan.get("max_entry"),
+            "score": plan.get("score"),
+            "confidence": plan.get("confidence"),
+            "eligible_for_entry_boost": eligible,
+            "live_confirmation": reasons,
+            "threshold_boost": threshold_boost_by_section.get(section, 0.0) if eligible else 0.0,
+            "priority_boost": priority_boost_by_section.get(section, 0.0),
+            "reason": "live_confirmation_present" if eligible else "waiting_for_live_confirmation",
+        }
 
     def _pattern_state(self, symbol: str) -> dict[str, Any]:
         db = getattr(self.sentiment, "db", None)
