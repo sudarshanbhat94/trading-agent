@@ -46,7 +46,13 @@ from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
-from .market_data import MarketDataError, build_market_data_provider, normalize_indstocks_access_token, normalize_upstox_access_token
+from .market_data import (
+    AlpacaMarketDataProvider,
+    MarketDataError,
+    build_market_data_provider,
+    normalize_indstocks_access_token,
+    normalize_upstox_access_token,
+)
 from .market_regions import filter_universe_for_open_markets, market_session_context, normalize_market_region
 from .models import Decision, utc_now
 from .order_router import build_order_router
@@ -2683,6 +2689,120 @@ async def test_llm(request: Request) -> dict[str, Any]:
             "reason": LLM_DISABLED_REASON,
         }
     return await llm.test_connection()
+
+
+@app.post("/api/alpaca/connect")
+async def alpaca_connect(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    candidate_overrides, changed_keys = _alpaca_candidate_overrides(payload)
+    candidate_settings = _settings_without_llm(settings_from_overrides(Settings(), candidate_overrides))
+    if not candidate_settings.alpaca_api_key or not candidate_settings.alpaca_api_secret:
+        raise HTTPException(status_code=400, detail="Paste the Alpaca API key and secret first.")
+
+    symbol = _alpaca_test_symbol(payload)
+    provider = AlpacaMarketDataProvider(candidate_settings)
+    try:
+        quotes = await provider.get_quotes([{"symbol": symbol, "exchange": "NASDAQ"}])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=_alpaca_connection_error(exc, candidate_settings.alpaca_data_feed)) from exc
+    quote = quotes.get(symbol)
+    if not quote:
+        raise HTTPException(status_code=502, detail=f"Alpaca connected, but no quote was returned for {symbol}.")
+
+    try:
+        candidate_stack = build_agent_stack(candidate_settings)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Alpaca credentials are valid but provider failed to initialize: {exc}") from exc
+
+    result = await _apply_runtime_stack(
+        candidate_overrides=candidate_overrides,
+        candidate_settings=candidate_settings,
+        candidate_stack=candidate_stack,
+        changed_keys=changed_keys,
+        component="alpaca",
+        event="connected",
+        message="Alpaca US market data connected and saved",
+    )
+    db.insert_agent_log(
+        "INFO",
+        "alpaca",
+        "connected",
+        "Alpaca US market data credentials validated and saved",
+        {
+            "base_url": candidate_settings.alpaca_data_base_url,
+            "feed": candidate_settings.alpaca_data_feed,
+            "provider": candidate_settings.us_market_data_provider,
+            "test_symbol": symbol,
+            "market_region": candidate_settings.market_region,
+        },
+    )
+    return {
+        "ok": True,
+        "message": "Alpaca connected. US market data now uses the configured Alpaca feed.",
+        "provider": result["status"].get("provider"),
+        "us_market_data_provider": candidate_settings.us_market_data_provider,
+        "feed": candidate_settings.alpaca_data_feed,
+        "base_url": candidate_settings.alpaca_data_base_url,
+        "test_quote": {
+            "symbol": quote.symbol,
+            "price": quote.price,
+            "source": quote.source,
+            "asof": quote.asof,
+        },
+        "status": result["status"],
+        "config": result["config"],
+    }
+
+
+def _alpaca_candidate_overrides(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    incoming = payload.get("settings", payload)
+    if not isinstance(incoming, dict):
+        incoming = {}
+    connect_keys = {
+        "market_region",
+        "us_market_data_provider",
+        "us_intraday_candle_lookback_days",
+        "us_daily_candle_lookback_days",
+        "alpaca_api_key",
+        "alpaca_api_secret",
+        "alpaca_data_base_url",
+        "alpaca_data_feed",
+    }
+    current_overrides = db.runtime_settings()
+    candidate_overrides = dict(current_overrides)
+    changed: set[str] = set()
+    for key in connect_keys:
+        if key not in incoming or key not in CONFIG_KEYS:
+            continue
+        value = incoming[key]
+        if key in SECRET_FIELDS and value == "":
+            continue
+        candidate_overrides[key] = value
+        changed.add(key)
+
+    provider = str(candidate_overrides.get("us_market_data_provider") or settings.us_market_data_provider or "").lower()
+    if provider not in {"alpaca", "alpaca_yahoo"}:
+        candidate_overrides["us_market_data_provider"] = "alpaca_yahoo"
+        changed.add("us_market_data_provider")
+    return _runtime_overrides_without_llm(candidate_overrides), sorted(changed)
+
+
+def _alpaca_test_symbol(payload: dict[str, Any]) -> str:
+    symbol = str(payload.get("symbol") or "AAPL").strip().upper()
+    symbol = re.sub(r"[^A-Z0-9.\-]", "", symbol)
+    return symbol or "AAPL"
+
+
+def _alpaca_connection_error(exc: Exception, feed: str) -> str:
+    text = str(exc).strip()
+    lowered = text.lower()
+    if ("403" in lowered or "subscription" in lowered or "not entitled" in lowered) and str(feed).lower() == "sip":
+        return "Alpaca SIP feed is not enabled for this account. Change Alpaca Feed to iex, or enable a SIP market-data subscription in Alpaca."
+    if "401" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
+        return "Alpaca rejected the key or secret. Regenerate the Paper Trading API key/secret in Alpaca and paste both values."
+    if "429" in lowered:
+        return "Alpaca rate limit was hit. Wait a minute and test again."
+    return f"Alpaca connection failed: {text or exc.__class__.__name__}"
 
 
 @app.get("/api/llm/usage")
