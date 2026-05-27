@@ -594,23 +594,30 @@ async def _position_quote_refresh_loop() -> None:
                 await asyncio.sleep(sleep_seconds)
                 continue
 
-            active_rows = db.active_position_universe(market_region="IN")
+            refresh_region = normalize_market_region(settings.market_region or "BOTH", default="BOTH")
+            active_rows = db.active_position_universe(market_region=refresh_region)
             if not active_rows:
-                idle_signature = "idle:no_active_india_positions"
+                idle_signature = f"idle:no_active_{refresh_region.lower()}_positions"
                 if idle_signature != last_idle_signature:
                     last_idle_signature = idle_signature
                     db.set_state(
                         "position_quote_refresh",
-                        {"enabled": True, "status": "idle", "reason": "no_active_india_positions", "updated_at": utc_now()},
+                        {
+                            "enabled": True,
+                            "status": "idle",
+                            "market_region": refresh_region,
+                            "reason": "no_active_positions",
+                            "updated_at": utc_now(),
+                        },
                     )
                 await asyncio.sleep(sleep_seconds)
                 continue
 
-            session_context = market_session_context("IN", active_rows)
+            session_context = market_session_context(refresh_region, active_rows)
             open_rows = filter_universe_for_open_markets(active_rows, session_context) if settings.skip_market_data_when_closed else active_rows
             if not open_rows:
                 active_symbols = [row.get("symbol") for row in active_rows]
-                idle_signature = f"paused:india_market_closed:{','.join(str(symbol) for symbol in active_symbols)}"
+                idle_signature = f"paused:markets_closed:{refresh_region}:{','.join(str(symbol) for symbol in active_symbols)}"
                 if idle_signature != last_idle_signature:
                     last_idle_signature = idle_signature
                     db.set_state(
@@ -618,44 +625,44 @@ async def _position_quote_refresh_loop() -> None:
                         {
                             "enabled": True,
                             "status": "paused",
-                            "reason": "india_market_closed",
+                            "market_region": refresh_region,
+                            "reason": "markets_closed",
                             "active_symbols": active_symbols,
+                            "open_regions": session_context.get("open_regions"),
+                            "closed_regions": session_context.get("closed_regions"),
                             "updated_at": utc_now(),
                         },
                     )
                 await asyncio.sleep(sleep_seconds)
                 continue
 
-            provider = (
-                market_data
-                if normalize_market_region(settings.market_region, default="BOTH") in {"IN", "BOTH"}
-                else build_market_data_provider(replace(settings, market_region="IN"))
-            )
-            quotes = await provider.get_quotes(open_rows)
+            quotes = await market_data.get_quotes(open_rows)
             if quotes:
                 db.upsert_quotes(quotes)
                 broker.sync_marks(quotes)
                 marked = db.refresh_active_position_marks(quotes.keys())
+                updated_at = utc_now()
                 db.set_state(
                     "position_quote_refresh",
                     {
                         "enabled": True,
                         "status": "running",
-                        "market_region": "IN",
+                        "market_region": refresh_region,
                         "interval_seconds": sleep_seconds,
                         "active_symbols": [row.get("symbol") for row in active_rows],
+                        "refreshed_symbols": sorted(quotes.keys()),
                         "quote_count": len(quotes),
                         "marked_positions": marked,
                         "source_counts": _quote_source_counts(quotes),
-                        "updated_at": utc_now(),
+                        "updated_at": updated_at,
                     },
                 )
                 await hub.broadcast(
                     {
                         "event": "position_marks_refreshed",
-                        "market_region": "IN",
+                        "market_region": refresh_region,
                         "symbols": sorted(quotes.keys()),
-                        "updated_at": utc_now(),
+                        "updated_at": updated_at,
                     }
                 )
                 last_error = ""
