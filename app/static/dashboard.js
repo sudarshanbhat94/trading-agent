@@ -7291,7 +7291,7 @@ async function analyzeSymbol(event) {
     const response = await fetch("/api/analyze-symbol", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, market, force_llm: true }),
+      body: JSON.stringify({ symbol, market, force_llm: false }),
       signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));

@@ -35,6 +35,13 @@ from .db import Database
 from .delivery_data import DeliveryDataService
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_brain import LLMBrain
+from .llm_policy import (
+    LLM_DISABLED_REASON,
+    LLM_HARD_DISABLED,
+    assigned_llm_from_payload as _policy_assigned_llm_from_payload,
+    runtime_overrides_without_llm as _runtime_overrides_without_llm,
+    settings_without_llm as _settings_without_llm,
+)
 from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
@@ -69,12 +76,26 @@ from .trade_economics import auto_follow_sizing
 from .universe import UniverseService
 
 
-base_settings = Settings()
+base_settings = _settings_without_llm(Settings())
 db = Database(base_settings.database_path)
 db.init()
-settings = settings_from_overrides(base_settings, db.runtime_settings())
+settings = _settings_without_llm(settings_from_overrides(base_settings, _runtime_overrides_without_llm(db.runtime_settings())))
 if settings.admin_password:
     db.ensure_default_admin_user(settings.admin_username, hash_password(settings.admin_password))
+if LLM_HARD_DISABLED:
+    db.update_runtime_settings(_runtime_overrides_without_llm(db.runtime_settings()))
+    with db.connect() as conn:
+        conn.execute(
+            """
+            update users
+            set assigned_llm_provider = 'offline',
+                assigned_llm_model = 'offline',
+                updated_at = ?
+            where coalesce(assigned_llm_provider, '') != 'offline'
+               or coalesce(assigned_llm_model, '') != 'offline'
+            """,
+            (utc_now(),),
+        )
 db.seed_universe(settings.universe_csv, disable_missing=settings.universe_source == "csv")
 if settings.us_universe_csv.exists():
     db.seed_universe(settings.us_universe_csv, disable_missing=False)
@@ -107,6 +128,8 @@ hub = WebSocketHub()
 
 
 def _estimated_signal_credit_charge() -> float:
+    if LLM_HARD_DISABLED:
+        return 0.0
     return db.average_signal_credit_charge(tokens_per_credit=settings.credit_tokens_per_credit)
 
 
@@ -428,17 +451,18 @@ class UserSignalSessionManager:
 
 
 def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
+    new_settings = _settings_without_llm(new_settings)
     new_market_data = build_market_data_provider(new_settings)
     new_order_router = build_order_router(new_settings, db)
     new_broker = PaperBroker(new_settings, db, new_order_router)
     new_account = AccountService(new_settings, db)
-    monitor_settings = replace(
+    monitor_settings = _settings_without_llm(replace(
         new_settings,
         llm_provider="offline",
         llm_decision_mode="offline",
         enable_llm_sentiment=False,
-    )
-    strategy_settings = replace(new_settings, enable_llm_sentiment=False)
+    ))
+    strategy_settings = _settings_without_llm(replace(new_settings, enable_llm_sentiment=False))
     new_sentiment = SentimentService(monitor_settings, db)
     new_macro = GlobalIntelligenceService(new_settings)
     new_institutional_feeds = FreeInstitutionalFeedsService(new_settings)
@@ -1606,7 +1630,7 @@ async def analyze_symbol(payload: dict[str, Any], request: Request) -> dict[str,
 
 async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     user_id = int(user["id"])
-    force_llm = _payload_bool(payload.get("force_llm", payload.get("run_ai_review")), default=False)
+    force_llm = False
     estimated_charge = _estimated_signal_credit_charge()
     can_spend, credit_before = db.user_has_credit_for(user_id, estimated_charge)
     if not can_spend:
@@ -1847,6 +1871,8 @@ async def _analyze_symbol_for_user(payload: dict[str, Any], user: dict[str, Any]
             "llm_usage": _public_llm_usage(usage),
             "llm_activity": llm_activity,
             "budget_policy": _public_budget_policy(budget_policy),
+            "llm_disabled": LLM_HARD_DISABLED,
+            "llm_disabled_reason": LLM_DISABLED_REASON,
         },
         "decision": decision_payload,
     }
@@ -1884,6 +1910,20 @@ async def _manual_llm_review_if_requested(
         return {"decision": decision, "status": "not_requested", "public": public}
 
     details = _json_object(decision.details_json)
+    if LLM_HARD_DISABLED:
+        details["manual_llm_review"] = {
+            "requested": True,
+            "executed": False,
+            "status": "disabled",
+            "reason": LLM_DISABLED_REASON,
+        }
+        public.update(details["manual_llm_review"])
+        return {
+            "decision": replace(decision, details_json=json.dumps(details, default=str, separators=(",", ":"))),
+            "status": "disabled",
+            "public": public,
+        }
+
     decision_path = str(details.get("decision_path") or "")
     if details.get("llm_output") or decision_path.startswith("llm_"):
         public.update(
@@ -2546,6 +2586,13 @@ async def refresh_universe(request: Request) -> dict[str, Any]:
 @app.post("/api/llm/test")
 async def test_llm(request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)
+    if LLM_HARD_DISABLED:
+        return {
+            "ok": False,
+            "provider": "offline",
+            "model": "offline",
+            "reason": LLM_DISABLED_REASON,
+        }
     return await llm.test_connection()
 
 
@@ -2765,8 +2812,9 @@ async def update_config(payload: dict[str, Any], request: Request) -> dict[str, 
         if key in SECRET_FIELDS and value == "":
             continue
         candidate_overrides[key] = value
+    candidate_overrides = _runtime_overrides_without_llm(candidate_overrides)
 
-    candidate_settings = settings_from_overrides(Settings(), candidate_overrides)
+    candidate_settings = _settings_without_llm(settings_from_overrides(Settings(), candidate_overrides))
     try:
         candidate_stack = build_agent_stack(candidate_settings)
     except Exception as exc:
@@ -2793,6 +2841,8 @@ async def _apply_runtime_stack(
     message: str,
 ) -> dict[str, Any]:
     global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, universe_service, options_intelligence, openclaw_notifier, llm, strategy, agent
+    candidate_overrides = _runtime_overrides_without_llm(candidate_overrides)
+    candidate_settings = _settings_without_llm(candidate_settings)
     was_running = agent.running
     await agent.stop()
     await delivery_service.stop_background_task()
@@ -3591,15 +3641,7 @@ def _market_data_provider_for_user(user: dict[str, Any], market_region: str = "I
 
 
 def _assigned_llm_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
-    provider = str(payload.get("assigned_llm_provider") or payload.get("llm_provider") or settings.user_default_llm_provider or "groq").strip().lower()
-    if provider not in {"groq", "deepseek", "offline"}:
-        provider = "groq"
-    model = str(payload.get("assigned_llm_model") or payload.get("llm_model") or "").strip()
-    if provider == "groq":
-        return provider, model or settings.groq_model or "qwen/qwen3-32b"
-    if provider == "deepseek":
-        return provider, model if model in {"deepseek-v4-pro", "deepseek-v4-flash"} else settings.deepseek_model
-    return "offline", "offline"
+    return _policy_assigned_llm_from_payload(payload, settings)
 
 
 def _strategy_for_user_budget(
@@ -3642,6 +3684,8 @@ def _strategy_for_user_budget(
 
 
 def _llm_settings_for_user(user: dict[str, Any]) -> Settings:
+    if LLM_HARD_DISABLED:
+        return _settings_without_llm(settings)
     provider = str(user.get("assigned_llm_provider") or settings.user_default_llm_provider or settings.llm_provider).strip().lower()
     model = str(user.get("assigned_llm_model") or settings.user_default_llm_model or "").strip()
     if provider == "groq":

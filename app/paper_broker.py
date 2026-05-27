@@ -6,6 +6,7 @@ from typing import Any
 
 from .config import Settings
 from .db import Database
+from .llm_policy import LLM_HARD_DISABLED
 from .market_regions import market_region_for_row, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .order_router import OrderRouter
@@ -153,7 +154,7 @@ class PaperBroker:
         }
 
     def _buy(self, decision: Decision, portfolio_equity: float) -> bool:
-        if self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline":
+        if (not LLM_HARD_DISABLED) and self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline":
             approval = _llm_primary_approval_from_decision(decision)
             if not approval["approved"]:
                 self.db.insert_order(

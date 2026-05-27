@@ -11,6 +11,7 @@ from .analysis_tools import build_symbol_tool_context, deterministic_score, dete
 from .config import Settings
 from .indicators import technical_snapshot
 from .llm_brain import LLMBrain
+from .llm_policy import LLM_HARD_DISABLED
 from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
 from .sentiment import SentimentService
@@ -92,7 +93,7 @@ class StrategyEngine:
         sentiment_scores = await self.sentiment.scores_for_cycle(universe)
         decisions: list[Decision] = []
         llm_reviews = 0
-        llm_primary_required = self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline"
+        llm_primary_required = (not LLM_HARD_DISABLED) and self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline"
         llm_primary = llm_primary_required and self.llm.enabled
         candles_by_symbol = candles_by_symbol or {}
         timeframe_candles_by_symbol = timeframe_candles_by_symbol or {}

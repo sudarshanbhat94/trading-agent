@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.agent import TradingAgentService, _opportunity_scan_by_market
 from app.db import Database
@@ -152,7 +153,8 @@ class DataCoverageTests(unittest.TestCase):
             agent.strategy.settings.llm_max_symbols_per_cycle = 8
             agent.strategy.settings.llm_event_review_estimated_tokens = 12000
 
-            status = agent._shared_llm_cycle_funding_status()
+            with patch("app.agent.LLM_HARD_DISABLED", False):
+                status = agent._shared_llm_cycle_funding_status()
 
         self.assertTrue(status["skip_llm"])
         self.assertEqual(status["reason"], "no_active_user_can_fund_estimated_shared_llm_cycle")

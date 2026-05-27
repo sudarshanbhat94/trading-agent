@@ -12,6 +12,7 @@ from uuid import uuid4
 from .decision_contract import normalize_trade_targets
 from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
+from .llm_policy import LLM_HARD_DISABLED
 from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .market_action_radar import MarketActionRadar
@@ -1433,6 +1434,8 @@ class TradingAgentService:
 
     def _shared_llm_cycle_funding_status(self) -> dict[str, Any]:
         settings = getattr(self.strategy, "settings", None)
+        if LLM_HARD_DISABLED:
+            return {"required": False, "funded": True, "skip_llm": False, "reason": "llm_hard_disabled"}
         if not bool(getattr(settings, "llm_require_funded_shared_cycle", True)):
             return {"required": False, "funded": True, "skip_llm": False}
         if str(getattr(settings, "llm_provider", "offline") or "offline").lower() == "offline":

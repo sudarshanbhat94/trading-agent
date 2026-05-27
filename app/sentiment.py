@@ -17,6 +17,7 @@ import httpx
 
 from .config import Settings
 from .db import Database
+from .llm_policy import LLM_HARD_DISABLED
 from .llm_usage import build_llm_usage_event
 from .market_regions import market_region_for_row
 from .market_data import normalize_upstox_access_token
@@ -807,6 +808,8 @@ class SentimentService:
         return max(math.exp(-age_hours / 72), 0.15)
 
     def _llm_sentiment_enabled(self) -> bool:
+        if LLM_HARD_DISABLED:
+            return False
         if not self.settings.enable_llm_sentiment:
             return False
         if self.settings.llm_provider == "deepseek":

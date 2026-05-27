@@ -15,6 +15,7 @@ import httpx
 
 from .analysis_tools import deterministic_score_breakdown
 from .config import Settings
+from .llm_policy import LLM_HARD_DISABLED
 from .llm_usage import build_llm_usage_event
 from .models import Decision, utc_now
 
@@ -303,6 +304,8 @@ class LLMBrain:
 
     @property
     def enabled(self) -> bool:
+        if LLM_HARD_DISABLED:
+            return False
         return bool(self.api_key) and self.settings.llm_provider in {"deepseek", "groq"}
 
     @property
@@ -335,6 +338,8 @@ class LLMBrain:
         return len(self._endpoint_candidates()) > 1
 
     def _endpoint_candidates(self) -> list[LLMEndpoint]:
+        if LLM_HARD_DISABLED:
+            return []
         if self.settings.llm_provider not in {"deepseek", "groq"}:
             return []
 
