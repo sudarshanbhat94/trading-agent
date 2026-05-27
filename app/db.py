@@ -2727,11 +2727,18 @@ class Database:
         limit: int = 20,
         user_id: int | None = None,
         market_region: str | None = None,
+        symbols: Iterable[str] | None = None,
     ) -> list[dict[str, Any]]:
         market_clause, market_params = _market_region_where("u", market_region)
         where_parts = ["i.status != 'REJECTED'"]
         if market_clause:
             where_parts.append(market_clause)
+        symbol_params: list[str] = []
+        if symbols is not None:
+            symbol_params = _normalize_monitor_symbols(symbols)
+            if not symbol_params:
+                return []
+            where_parts.append(f"upper(i.symbol) in ({','.join('?' for _ in symbol_params)})")
         where_sql = "where " + " and ".join(where_parts)
         requested_limit = max(1, min(int(limit), 500))
         query_limit = max(requested_limit, min(requested_limit * 4, 500))
@@ -2757,7 +2764,7 @@ class Database:
                     last_seen_at desc
                 limit ?
                 """,
-                (*market_params, query_limit),
+                (*market_params, *symbol_params, query_limit),
             ).fetchall()
             follow_rows: list[sqlite3.Row] = []
             if user_id is not None:

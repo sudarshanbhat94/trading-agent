@@ -1157,21 +1157,38 @@ class TradingAgentService:
         ]
         summary["users_checked"] = len(users)
         for user in users:
+            user_id = int(user["id"])
             mode = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
-            exited_symbols = self._auto_exit_followed_signal_ideas_for_user(int(user["id"]), user, exit_symbols)
+            monitor_symbols = self.db.user_monitor_symbols(user_id)
+            monitor_allowed = {str(symbol or "").upper() for symbol in monitor_symbols}
+            scoped_buy_symbols = buy_symbols
+            if monitor_allowed:
+                blocked = sorted(symbol for symbol in buy_symbols if symbol and symbol not in monitor_allowed)
+                if blocked:
+                    summary["skipped"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "username": user.get("username"),
+                            "reason": "outside_custom_monitor_list",
+                            "symbols": blocked[:12],
+                            "monitor_symbols_count": len(monitor_allowed),
+                        }
+                    )
+                scoped_buy_symbols = {symbol for symbol in buy_symbols if symbol in monitor_allowed}
+            exited_symbols = self._auto_exit_followed_signal_ideas_for_user(user_id, user, exit_symbols)
             summary["exited"] += len(exited_symbols)
             active_buy_ideas = [
                 idea
-                for idea in self.db.latest_signal_ideas(200, user_id=int(user["id"]))
+                for idea in self.db.latest_signal_ideas(200, user_id=user_id, symbols=monitor_symbols or None)
                 if str(idea.get("signal_type") or "").upper() == "BUY"
                 and str(idea.get("status") or "").upper() == "ACTIVE"
                 and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
             ]
             summary["active_buy_ideas_checked"] += len(active_buy_ideas)
-            candidate_buy_symbols = buy_symbols | {
+            candidate_buy_symbols = scoped_buy_symbols | {
                 str(idea.get("symbol") or "").upper()
                 for idea in active_buy_ideas
-                if _auto_follow_idea_fresh_enough(idea, buy_symbols)
+                if _auto_follow_idea_fresh_enough(idea, scoped_buy_symbols)
             }
             if mode == "AUTO_LIVE":
                 if candidate_buy_symbols:
@@ -1192,7 +1209,7 @@ class TradingAgentService:
             ]
             active_follow_symbols = {
                 str(item.get("symbol") or "").upper()
-                for item in self.db.user_followed_signal_ideas(int(user["id"]), 200)
+                for item in self.db.user_followed_signal_ideas(user_id, 200)
                 if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
                 and str(item.get("follow_status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}
                 and int(item.get("qty") or 0) > 0
@@ -1208,7 +1225,7 @@ class TradingAgentService:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, **quality_skip_payload(quality_gate)})
                     continue
                 reentry_block = self.db.recent_user_symbol_exit(
-                    int(user["id"]),
+                    user_id,
                     symbol,
                     cooldown_hours=max(
                         int(
@@ -1237,7 +1254,7 @@ class TradingAgentService:
                 if symbol in active_follow_symbols:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed_symbol"})
                     continue
-                if not _auto_follow_idea_fresh_enough(idea, buy_symbols):
+                if not _auto_follow_idea_fresh_enough(idea, scoped_buy_symbols):
                     summary["skipped"].append(
                         {
                             "user_id": user.get("id"),
@@ -1254,7 +1271,7 @@ class TradingAgentService:
                     summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed"})
                     continue
                 market = str(idea.get("market_region") or "IN").upper()
-                cash = self._auto_follow_cash_for_user(int(user["id"]), user, market)
+                cash = self._auto_follow_cash_for_user(user_id, user, market)
                 price = _float_or_none(idea.get("latest_price") or idea.get("entry_price")) or 0.0
                 size_multiplier = quality_size_multiplier(quality_gate)
                 sizing = self._auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market)
@@ -1276,7 +1293,7 @@ class TradingAgentService:
                     continue
                 try:
                     created = self.db.follow_signal_idea(
-                        int(user["id"]),
+                        user_id,
                         int(idea["id"]),
                         mode="PAPER",
                         amount=amount,

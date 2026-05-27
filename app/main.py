@@ -890,9 +890,113 @@ async def position_marks(request: Request, response: Response) -> dict[str, Any]
     return _position_marks_payload(user)
 
 
+def _monitor_symbols_for_user(user: dict[str, Any] | None) -> list[str]:
+    if not user or user.get("role") == "admin":
+        return []
+    return db.user_monitor_symbols(int(user["id"]))
+
+
+def _latest_signal_ideas_for_user(
+    user_id: int,
+    limit: int,
+    *,
+    market_region: str | None = None,
+    monitor_symbols: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    symbols = monitor_symbols if monitor_symbols is not None else db.user_monitor_symbols(user_id)
+    return db.latest_signal_ideas(limit, user_id=user_id, market_region=market_region, symbols=symbols or None)
+
+
+def _filter_strategy_plans_for_symbols(plans: list[dict[str, Any]], monitor_symbols: list[str]) -> list[dict[str, Any]]:
+    if not monitor_symbols:
+        return plans
+    allowed = {str(symbol or "").upper() for symbol in monitor_symbols if str(symbol or "").strip()}
+    filtered_plans: list[dict[str, Any]] = []
+    for plan in plans:
+        item = dict(plan)
+        constituents = [
+            dict(row)
+            for row in (plan.get("constituents") or [])
+            if str((row or {}).get("symbol") or "").upper() in allowed
+        ]
+        by_market: dict[str, list[dict[str, Any]]] = {}
+        for market, rows in (plan.get("constituents_by_market") or {}).items():
+            by_market[str(market)] = [
+                dict(row)
+                for row in (rows or [])
+                if str((row or {}).get("symbol") or "").upper() in allowed
+            ]
+        item["constituents"] = constituents
+        item["constituents_by_market"] = by_market
+        item["top_symbols"] = [row.get("symbol") for row in constituents[:5]]
+        item["active_idea_count"] = len(constituents)
+        filtered_plans.append(item)
+    return filtered_plans
+
+
+def _filter_tomorrow_plan_for_symbols(plan: dict[str, Any], monitor_symbols: list[str]) -> dict[str, Any]:
+    if not monitor_symbols or not isinstance(plan, dict):
+        return plan
+    allowed = {str(symbol or "").upper() for symbol in monitor_symbols if str(symbol or "").strip()}
+
+    def row_allowed(row: Any) -> bool:
+        return isinstance(row, dict) and str(row.get("symbol") or "").upper() in allowed
+
+    def filter_single(raw: dict[str, Any]) -> dict[str, Any]:
+        output = dict(raw)
+        items = [dict(item) for item in (raw.get("items") or []) if row_allowed(item)]
+        sections: dict[str, list[dict[str, Any]]] = {}
+        for section, rows in (raw.get("sections") or {}).items():
+            sections[str(section)] = [dict(item) for item in (rows or []) if row_allowed(item)]
+        if not sections and items:
+            for item in items:
+                sections.setdefault(str(item.get("section") or ""), []).append(item)
+        summary = dict(raw.get("summary") or {})
+        for section, rows in sections.items():
+            summary[section] = len(rows)
+        for section in ("ready_at_open", "btst_buys", "near_breakout", "news_watch", "position_actions", "avoid"):
+            summary.setdefault(section, 0)
+            if section not in sections:
+                summary[section] = 0
+        summary["total_items"] = len(items)
+        output["items"] = items
+        output["sections"] = sections
+        output["summary"] = summary
+        output["monitor_scope"] = "CUSTOM"
+        output["monitor_symbols_count"] = len(allowed)
+        return output
+
+    by_market = plan.get("by_market") if isinstance(plan.get("by_market"), dict) else {}
+    if by_market:
+        output = dict(plan)
+        output["by_market"] = {
+            str(market): filter_single(raw if isinstance(raw, dict) else {})
+            for market, raw in by_market.items()
+        }
+        if plan.get("items") or plan.get("sections"):
+            output.update(filter_single(plan))
+            output["by_market"] = {
+                str(market): filter_single(raw if isinstance(raw, dict) else {})
+                for market, raw in by_market.items()
+            }
+        output["monitor_scope"] = "CUSTOM"
+        output["monitor_symbols_count"] = len(allowed)
+        return output
+    return filter_single(plan)
+
+
+def _tomorrow_plan_for_user(user: dict[str, Any], market_region: str = "BOTH") -> dict[str, Any]:
+    plan = db.latest_tomorrow_plan(market_region)
+    return _filter_tomorrow_plan_for_symbols(plan, _monitor_symbols_for_user(user))
+
+
+def _strategy_plans_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
+    return _filter_strategy_plans_for_symbols(db.strategy_plans(), _monitor_symbols_for_user(user))
+
+
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot = agent.snapshot()
-    snapshot["tomorrow_plan"] = db.latest_tomorrow_plan("BOTH")
+    snapshot["tomorrow_plan"] = _tomorrow_plan_for_user(user, "BOTH") if user else db.latest_tomorrow_plan("BOTH")
     is_admin = bool(user and user.get("role") == "admin")
     snapshot["runtime"] = {
         "market_region": settings.market_region,
@@ -914,17 +1018,18 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["llm_usage"] = _public_llm_usage_summary(snapshot.get("llm_usage", {}))
     if user and not is_admin:
         user_id = int(user["id"])
+        monitor_symbols = db.user_monitor_symbols(user_id)
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
         tracked_ideas = db.user_followed_signal_ideas(user_id, 100)
         follow_history = db.user_follow_history(user_id, 500)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
-        snapshot["suggestions"] = db.latest_signal_ideas(50, user_id=user_id)
+        snapshot["suggestions"] = _latest_signal_ideas_for_user(user_id, 50, monitor_symbols=monitor_symbols)
         snapshot["signal_ideas"] = snapshot["suggestions"]
         snapshot["suggestions_by_market"] = {
-            "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN"),
-            "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US"),
+            "IN": _latest_signal_ideas_for_user(user_id, 30, market_region="IN", monitor_symbols=monitor_symbols),
+            "US": _latest_signal_ideas_for_user(user_id, 30, market_region="US", monitor_symbols=monitor_symbols),
         }
         snapshot["tracked_ideas"] = tracked_ideas
         snapshot["tracked_ideas_by_market"] = {
@@ -945,7 +1050,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
         snapshot["paper_cash_pool_by_market"] = paper_cash_by_market
         snapshot["paper_realized_pnl_by_market"] = realized_pnl_by_market
-        snapshot["strategy_plans"] = db.strategy_plans()
+        snapshot["strategy_plans"] = _filter_strategy_plans_for_symbols(db.strategy_plans(), monitor_symbols)
         snapshot["performance"] = db.performance_summary(user_id=user_id)
         snapshot["paper_exit_manager"] = paper_exit_manager
         snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(
@@ -3010,10 +3115,10 @@ async def reset_demo(request: Request) -> dict[str, Any]:
 
 @app.get("/api/tomorrow-plan")
 async def tomorrow_plan(request: Request, response: Response) -> dict[str, Any]:
-    require_user(request, settings, db)
+    user = require_user(request, settings, db)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
-    plan = db.latest_tomorrow_plan(market_region)
+    plan = _tomorrow_plan_for_user(user, market_region)
     return {"ok": True, "market": market_region, "tomorrow_plan": plan}
 
 
@@ -3023,13 +3128,19 @@ async def ideas(request: Request) -> dict[str, Any]:
     user_id = int(user["id"]) if user.get("role") != "admin" else None
     market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
     tracked_ideas = db.user_followed_signal_ideas(user_id, 100, market_region=market_region) if user_id is not None else []
+    monitor_symbols = db.user_monitor_symbols(user_id) if user_id is not None else []
     return {
         "ok": True,
         "market": market_region,
-        "ideas": db.latest_signal_ideas(50, user_id=user_id, market_region=market_region),
+        "ideas": db.latest_signal_ideas(
+            50,
+            user_id=user_id,
+            market_region=market_region,
+            symbols=monitor_symbols or None,
+        ),
         "ideas_by_market": {
-            "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN"),
-            "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US"),
+            "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN", symbols=monitor_symbols or None),
+            "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US", symbols=monitor_symbols or None),
         },
         "tracked_ideas": tracked_ideas,
         "tracked_ideas_by_market": {
@@ -3037,7 +3148,7 @@ async def ideas(request: Request) -> dict[str, Any]:
             "US": db.user_followed_signal_ideas(user_id, 100, market_region="US") if user_id is not None else [],
         },
         "positions": _user_follow_positions(tracked_ideas),
-        "strategy_plans": db.strategy_plans(),
+        "strategy_plans": _filter_strategy_plans_for_symbols(db.strategy_plans(), monitor_symbols),
         "shared_backend": {
             "running": agent.running,
             "last_cycle_at": agent.snapshot().get("last_cycle_at"),
@@ -3054,11 +3165,10 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     amount = _positive_float(payload.get("amount", 0), field="amount")
     qty = int(_positive_float(payload.get("qty", 0), field="qty"))
     manual_override = bool(payload.get("manual_override") or payload.get("manual_confirmed"))
+    idea = _signal_idea_for_user_guard(idea_id, user)
     if normalized_mode == "PAPER" and amount <= 0 and qty <= 0:
-        idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
         amount = _default_paper_follow_amount(user, idea)
     if normalized_mode == "LIVE":
-        idea = _signal_idea_for_live_guard(idea_id, int(user["id"]))
         _require_user_live_broker(user, normalize_market_region(idea.get("market_region") or "IN", default="IN"))
     try:
         follow = db.follow_signal_idea(
@@ -3095,7 +3205,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         "ok": True,
         "follow": follow,
         "paper_exit_manager": exit_manager,
-        "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
+        "ideas": _latest_signal_ideas_for_user(int(user["id"]), 50),
         "tracked_ideas": tracked_ideas,
         "follow_history": follow_history,
         "follow_history_by_market": _rows_by_market(follow_history),
@@ -3129,7 +3239,7 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
     market_region = normalize_market_region(payload.get("market") or "BOTH", default="BOTH")
     max_symbols = int(_positive_float(payload.get("max_symbols", 5), field="max_symbols") or 5)
     max_symbols = max(1, min(max_symbols, 10))
-    plans = db.strategy_plans()
+    plans = _strategy_plans_for_user(user)
     plan = next((item for item in plans if str(item.get("code") or "") == plan_code), None)
     if plan is None:
         raise HTTPException(status_code=404, detail="Strategy plan not found")
@@ -3187,7 +3297,7 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
         "plan": plan,
         "followed": followed,
         "skipped": skipped,
-        "ideas": db.latest_signal_ideas(50, user_id=int(user["id"])),
+        "ideas": _latest_signal_ideas_for_user(int(user["id"]), 50),
         "tracked_ideas": tracked_ideas,
         "follow_history": follow_history,
         "follow_history_by_market": _rows_by_market(follow_history),
@@ -3203,7 +3313,7 @@ async def follow_strategy_plan(plan_code: str, payload: dict[str, Any], request:
             "cash_pool_by_market": paper_cash_by_market,
             "realized_pnl_by_market": realized_pnl_by_market,
         },
-        "strategy_plans": db.strategy_plans(),
+        "strategy_plans": _strategy_plans_for_user(user),
     }
 
 
@@ -3329,10 +3439,14 @@ def _compact_search_text(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
 
 
-def _signal_idea_for_live_guard(idea_id: int, user_id: int) -> dict[str, Any]:
-    for idea in db.latest_signal_ideas(500, user_id=user_id):
+def _signal_idea_for_user_guard(idea_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    user_id = int(user["id"])
+    monitor_symbols = db.user_monitor_symbols(user_id)
+    for idea in db.latest_signal_ideas(500, user_id=user_id, symbols=monitor_symbols or None):
         if int(idea.get("id") or 0) == int(idea_id):
             return idea
+    if monitor_symbols:
+        raise HTTPException(status_code=404, detail="Signal idea is outside this user's monitor list.")
     raise HTTPException(status_code=404, detail="Signal idea not found.")
 
 
@@ -3591,6 +3705,14 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
     }
 
     user_id = int(user["id"])
+    monitor_symbols = db.user_monitor_symbols(user_id)
+    monitor_allowed = {str(symbol or "").upper() for symbol in monitor_symbols}
+    if monitor_allowed:
+        summary["monitor_scope"] = "CUSTOM"
+        summary["monitor_symbols_count"] = len(monitor_allowed)
+        summary["monitor_symbols_sample"] = sorted(monitor_allowed)[:12]
+    else:
+        summary["monitor_scope"] = "DYNAMIC_OPPORTUNITY"
     idea_mode = "LIVE" if mode == "AUTO_LIVE" else "PAPER"
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
@@ -3645,9 +3767,20 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         return summary
 
     decision_buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "BUY"}
+    if monitor_allowed:
+        blocked = sorted(symbol for symbol in decision_buy_symbols if symbol and symbol not in monitor_allowed)
+        if blocked:
+            summary["skipped"].append(
+                {
+                    "reason": "outside_custom_monitor_list",
+                    "symbols": blocked[:12],
+                    "monitor_symbols_count": len(monitor_allowed),
+                }
+            )
+        decision_buy_symbols = {symbol for symbol in decision_buy_symbols if symbol in monitor_allowed}
     active_buy_ideas = [
         idea
-        for idea in db.latest_signal_ideas(200, user_id=user_id)
+        for idea in db.latest_signal_ideas(200, user_id=user_id, symbols=monitor_symbols or None)
         if str(idea.get("signal_type") or "").upper() == "BUY"
         and str(idea.get("status") or "").upper() == "ACTIVE"
         and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
