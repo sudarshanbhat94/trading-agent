@@ -109,6 +109,15 @@ class FreeInstitutionalFeedsService:
         except Exception:
             return
 
+    async def indices_now(self) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.settings.free_feed_timeout_seconds,
+            headers=self._headers(),
+            follow_redirects=True,
+        ) as client:
+            await self._bootstrap_nse(client)
+            return await self._fetch_indices(client)
+
     async def _fetch_fii_dii(self, client: httpx.AsyncClient) -> dict[str, Any]:
         try:
             response = await client.get("https://www.nseindia.com/api/fiidiiTradeReact")
@@ -159,8 +168,9 @@ class FreeInstitutionalFeedsService:
             if index in {"NIFTY 50", "NIFTY BANK", "INDIA VIX", "NIFTY MIDCAP 100"}:
                 interesting[index] = {
                     "last": _float_or_none(row.get("last")),
+                    "change": _float_or_none(row.get("variation") or row.get("change")),
                     "change_pct": _float_or_none(row.get("percentChange")),
-                    "asof": row.get("date365dAgo") or utc_now(),
+                    "asof": row.get("lastUpdateTime") or row.get("timestamp") or utc_now(),
                 }
         return {
             "status": "ok",

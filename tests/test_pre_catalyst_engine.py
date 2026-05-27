@@ -10,8 +10,10 @@ from app.pre_catalyst_engine import (
     LATE_CHASE_AVOID,
     LOW_QUALITY_SHORT_COVERING,
     OVERHANG_REMOVAL_RERATE,
+    PRE_MOMENTUM_EXPANSION_WATCH,
     PRE_CATALYST_WATCH,
     SECTOR_ROTATION_LEADER,
+    UC_PRE_BREAKOUT_WATCH,
     build_pre_catalyst_watchlist,
     confirm_live_breakout,
 )
@@ -145,6 +147,71 @@ class PreCatalystEngineTests(unittest.TestCase):
         self.assertEqual(candidate["label"], LOW_QUALITY_SHORT_COVERING)
         self.assertEqual(candidate["supporting_signals"]["short_covering"]["position_size_hint"], "tiny_only")
 
+    def test_uc_pre_breakout_watch_uses_price_band_history(self) -> None:
+        candles = _uc_setup_candles("UCLEAD")
+        universe = [{"symbol": "UCLEAD", "exchange": "NSE", "sector": "Specialty Chemicals", "market_cap_cr": 1200}]
+        quotes = {"UCLEAD": Quote("UCLEAD", 99.2, "upstox-live", "2026-05-25T10:00:00+00:00", open=98.8, high=100.0, low=98.4, volume=400_000)}
+
+        result = build_pre_catalyst_watchlist(
+            universe,
+            quotes,
+            {"UCLEAD": {"daily": candles, "analysis": candles}},
+            previous_state={
+                "market_action_history": {
+                    "by_symbol": {
+                        "UCLEAD": {
+                            "only_buyers_days": 1,
+                            "strong_mover_days": 1,
+                            "active_dates": ["2026-05-20"],
+                        }
+                    }
+                }
+            },
+            settings=_settings(),
+        )
+
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["label"], UC_PRE_BREAKOUT_WATCH)
+        self.assertEqual(candidate["catalyst_type"], "price_band_demand")
+        self.assertTrue(candidate["supporting_signals"]["uc_pre_breakout"]["detected"])
+        self.assertIn("UC/price-band", " ".join(candidate["key_reasons"]))
+
+    def test_pre_move_expansion_watch_catches_before_5_to_15_pct_move(self) -> None:
+        candles = _expansion_candles("EXPAND")
+        universe = [{"symbol": "EXPAND", "exchange": "NSE", "sector": "Capital Goods"}]
+        quotes = {"EXPAND": Quote("EXPAND", 118.0, "upstox-live", "2026-05-25T10:00:00+00:00", open=117.0, high=119.0, low=116.7, volume=1_400_000)}
+
+        result = build_pre_catalyst_watchlist(
+            universe,
+            quotes,
+            {"EXPAND": {"daily": candles, "analysis": candles}},
+            settings=_settings(),
+        )
+
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["label"], PRE_MOMENTUM_EXPANSION_WATCH)
+        self.assertEqual(candidate["catalyst_type"], "technical_expansion")
+        self.assertTrue(candidate["supporting_signals"]["pre_move_expansion"]["detected"])
+        self.assertIn("pre-move expansion", " ".join(candidate["key_reasons"]))
+
+    def test_only_buyers_current_event_is_late_chase_avoid(self) -> None:
+        candles = _uc_setup_candles("LOCKED")
+        universe = [{"symbol": "LOCKED", "exchange": "NSE", "sector": "Industrials", "market_cap_cr": 1500}]
+        quotes = {"LOCKED": Quote("LOCKED", 120.0, "upstox-live", "2026-05-25T10:00:00+00:00", open=100.0, high=120.0, low=100.0, volume=2_000_000)}
+
+        result = build_pre_catalyst_watchlist(
+            universe,
+            quotes,
+            {"LOCKED": {"daily": candles, "analysis": candles}},
+            market_action_summary={"events": [{"symbol": "LOCKED", "event_types": ["TOP_GAINER", "ONLY_BUYERS"], "strategy": "circuit_demand_lock"}]},
+            settings=_settings(),
+        )
+
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["label"], LATE_CHASE_AVOID)
+        self.assertEqual(candidate["supporting_signals"]["uc_pre_breakout"]["position_size_hint"], "none_until_tradable_pullback")
+        self.assertIn("do not chase", " ".join(candidate["key_reasons"]))
+
     def test_late_chase_avoid_blocks_extended_live_breakout(self) -> None:
         candles = _vcp_candles("CHASE", start=80, end=98)
         candidate = {
@@ -237,6 +304,57 @@ def _trend_candles(symbol: str, start: float, end: float, volume: float) -> list
                 open=close * 0.995,
                 high=close * 1.015,
                 low=close * 0.985,
+                close=close,
+                volume=volume,
+                source="unit-test",
+            )
+        )
+    return candles
+
+
+def _uc_setup_candles(symbol: str) -> list[Candle]:
+    candles: list[Candle] = []
+    price = 80.0
+    for index in range(70):
+        if index == 48:
+            price *= 1.052
+        else:
+            price *= 1.004 if index > 35 else 1.001
+        width = 5.0 if index < 45 else 2.2
+        volume = 650_000 if index < 45 else 260_000
+        candles.append(
+            Candle(
+                symbol=symbol,
+                ts=f"2026-04-{(index % 28) + 1:02d}",
+                open=price - width * 0.35,
+                high=price + width * 0.45,
+                low=price - width * 0.55,
+                close=price + width * 0.35,
+                volume=volume,
+                source="unit-test",
+            )
+        )
+    return candles
+
+
+def _expansion_candles(symbol: str) -> list[Candle]:
+    candles: list[Candle] = []
+    price = 82.0
+    for index in range(76):
+        progress = index / 75
+        price = 82.0 + 36.0 * progress
+        width = 7.5 if index < 40 else 3.8 if index < 62 else 2.0
+        volume = 700_000
+        if index >= 58:
+            volume = 1_100_000 if index % 3 != 0 else 820_000
+        close = price + (width * 0.30 if index >= 58 else 0.0)
+        candles.append(
+            Candle(
+                symbol=symbol,
+                ts=f"2026-04-{(index % 28) + 1:02d}",
+                open=price - width * 0.20,
+                high=price + width * 0.45,
+                low=price - width * 0.55,
                 close=close,
                 volume=volume,
                 source="unit-test",

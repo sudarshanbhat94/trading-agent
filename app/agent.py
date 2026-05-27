@@ -2757,6 +2757,7 @@ def _opportunity_scan_by_market(
     last_open_scan = summary.get("last_open_scan") if isinstance(summary.get("last_open_scan"), dict) else {}
     if isinstance(last_open_scan.get("by_market"), dict):
         last_open_by_market = last_open_scan.get("by_market") or {}
+    playbook_by_market = summary.get("top_gainers_playbook_by_market") if isinstance(summary.get("top_gainers_playbook_by_market"), dict) else {}
 
     by_market: dict[str, dict[str, Any]] = {}
     for region in ("IN", "US"):
@@ -2811,6 +2812,7 @@ def _opportunity_scan_by_market(
                 1 for item in region_top if (item.get("sentiment") or {}).get("positive_catalyst")
             ),
             "top_candidates": region_top[:25],
+            "top_gainers_playbook": playbook_by_market.get(region, {}),
             "last_open_scan": last_open_by_market.get(region, {}),
             "readiness_note": summary.get("readiness_note"),
         }
@@ -2848,6 +2850,8 @@ def _slim_candidate(item: dict[str, Any]) -> dict[str, Any]:
             "score",
             "bucket",
             "setup",
+            "trade_window",
+            "btst",
             "data_quality",
             "sentiment",
             "price",

@@ -1134,6 +1134,14 @@ class Database:
                 "Start half size until follow-through confirms; never buy D-grade extended entries.",
             ),
             (
+                "btst_next_day",
+                "BTST Next-Day Buy",
+                "Buy-today-sell-tomorrow candidates with strong closing range, volume participation, trend alignment, controlled overnight gap risk, and a clear next-day exit plan.",
+                "Medium-High",
+                "1-2 sessions",
+                "Use guarded size, enter only near the close/entry zone, and sell or trim tomorrow if first strength or first 15-minute support fails.",
+            ),
+            (
                 "pullback_to_strength",
                 "Pullback To Strength",
                 "Uptrend pullback near 20DMA/50DMA support where MTF is B or better and selling pressure is fading.",
@@ -1181,6 +1189,7 @@ class Database:
             update signal_ideas
             set plan_code = case
                 when upper(signal_type) = 'EXIT' then 'defensive_exit_manager'
+                when lower(strategy) like '%btst%' then 'btst_next_day'
                 when lower(strategy) like '%breakout%' or lower(strategy) like '%darvas%' or lower(strategy) like '%vcp%' then 'confirmed_breakout'
                 when lower(strategy) like '%pullback%' or lower(strategy) like '%ema%' or lower(strategy) like '%continuation%' then 'pullback_to_strength'
                 when latest_price > 0 and latest_price <= 250 then 'smallcap_momentum'
@@ -2806,6 +2815,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         market_clause, market_params = _market_region_where("u", market_region)
         market_sql = f"and {market_clause}" if market_clause else ""
+        today_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -2831,7 +2841,49 @@ class Database:
                     u.sector as sector,
                     u.industry as industry,
                     q.ts as quote_updated_at,
-                    q.source as quote_source
+                    q.source as quote_source,
+                    (
+                        select c.close
+                        from candles c
+                        where c.symbol = i.symbol
+                          and substr(c.ts, 1, 10) = (
+                              select max(substr(c2.ts, 1, 10))
+                              from candles c2
+                              where c2.symbol = i.symbol
+                                and substr(c2.ts, 1, 10) < ?
+                          )
+                          and (
+                              c.source like '%:day'
+                              or c.source like '%:30minute'
+                              or c.source like '%:15minute'
+                              or c.source like '%:5minute'
+                              or c.source like '%:1minute'
+                          )
+                        order by
+                          case when c.source like '%:day' then 0 else 1 end,
+                          c.ts desc
+                        limit 1
+                    ) as previous_close,
+                    (
+                        select c.ts
+                        from candles c
+                        where c.symbol = i.symbol
+                          and substr(c.ts, 1, 10) = (
+                              select max(substr(c2.ts, 1, 10))
+                              from candles c2
+                              where c2.symbol = i.symbol
+                                and substr(c2.ts, 1, 10) < ?
+                          )
+                          and (
+                              c.source like '%:day'
+                              or c.source like '%:30minute'
+                              or c.source like '%:15minute'
+                              or c.source like '%:5minute'
+                              or c.source like '%:1minute'
+                          )
+                        order by c.ts desc
+                        limit 1
+                    ) as previous_close_at
                 from user_idea_follows f
                 join signal_ideas i on i.id = f.idea_id
                 left join universe u on u.symbol = i.symbol
@@ -2841,7 +2893,7 @@ class Database:
                 order by f.updated_at desc, f.id desc
                 limit ?
                 """,
-                (int(user_id), *market_params, max(1, min(int(limit), 200))),
+                (today_ist, today_ist, int(user_id), *market_params, max(1, min(int(limit), 200))),
             ).fetchall()
         output: list[dict[str, Any]] = []
         for row in rows:
@@ -4616,6 +4668,56 @@ class Database:
             row.pop("details_json", None)
         return ranked_rows
 
+    def search_decision_summaries(
+        self,
+        query: str,
+        limit: int = 120,
+        market_region: str | None = None,
+    ) -> list[dict[str, Any]]:
+        term = str(query or "").strip()
+        if not term:
+            return []
+        limit = max(1, min(int(limit or 120), 300))
+        like = f"%{term.upper()}%"
+        market_sql, market_params = _market_region_where("u", market_region)
+        clauses = []
+        params: list[Any] = []
+        if market_sql:
+            clauses.append(market_sql)
+            params.extend(market_params)
+        clauses.append(
+            """
+            (
+                upper(coalesce(d.symbol,'')) like ?
+                or upper(coalesce(u.name,'')) like ?
+                or upper(coalesce(d.action,'')) like ?
+                or upper(coalesce(d.strategy,'')) like ?
+                or upper(coalesce(d.reason,'')) like ?
+            )
+            """
+        )
+        params.extend([like, like, like, like, like])
+        where_clause = f"where {' and '.join(clauses)}"
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select d.id, d.ts, d.symbol, d.action, d.strategy, d.confidence, d.price,
+                    d.technical_score, d.sentiment_score, d.reason, d.details_json,
+                    u.name as company_name,
+                    {_market_region_case("u")} as market_region
+                from decisions d
+                left join universe u on u.symbol = d.symbol
+                {where_clause}
+                order by d.id desc
+                limit ?
+                """,
+                (*params, limit),
+            ).fetchall()
+        output = [dict(row) for row in rows]
+        for row in output:
+            row.pop("details_json", None)
+        return output
+
     def decision_by_id(self, decision_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -4648,7 +4750,9 @@ class Database:
             rows = conn.execute(
                 f"""
                 select o.id, o.ts, o.symbol, o.side, o.strategy, o.qty, o.price, o.notional,
-                    o.status, o.reason, {_market_region_case("u")} as market_region
+                    o.status, o.reason, {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name
                 from orders o
                 left join universe u on u.symbol = o.symbol
                 order by o.id desc
@@ -4662,7 +4766,9 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(
                 f"""
-                select o.*, {_market_region_case("u")} as market_region
+                select o.*, {_market_region_case("u")} as market_region,
+                    u.exchange as exchange,
+                    u.name as company_name
                 from orders o
                 left join universe u on u.symbol = o.symbol
                 where o.id = ?
@@ -4670,6 +4776,32 @@ class Database:
                 (order_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def cancel_order(self, order_id: int, reason: str = "cancelled by user") -> dict[str, Any]:
+        open_statuses = {"OPEN", "PENDING", "SUBMITTED", "WORKING", "REQUESTED", "ACCEPTED", "PARTIAL"}
+        with self.connect() as conn:
+            row = conn.execute(
+                "select id, status from orders where id = ?",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("order not found")
+            status = str(row["status"] or "").strip().upper()
+            if status not in open_statuses:
+                raise ValueError("only open orders can be cancelled")
+            conn.execute(
+                """
+                update orders
+                set status = 'cancelled',
+                    reason = ?
+                where id = ?
+                """,
+                (reason, order_id),
+            )
+        cancelled = self.order_by_id(order_id)
+        if cancelled is None:
+            raise ValueError("order not found after cancel")
+        return cancelled
 
     def positions(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -6038,6 +6170,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     }
     if action == "BUY":
         _apply_top_gainers_playbook_signal_details(details, price)
+        _apply_btst_signal_details(details, price)
         display_score = details.get("overall_score_pct", display_score)
         display_grade = details.get("overall_grade", display_grade)
     quality_gate = fresh_buy_quality_gate(
@@ -6117,7 +6250,7 @@ def _apply_top_gainers_playbook_signal_details(details: dict[str, Any], price: f
         details["stop_status"] = {
             "price": round(stop, 2),
             "source": "top_gainers_playbook",
-            "rule": "7pct_below_entry",
+            "rule": str(levels.get("stop_rule") or "7pct_below_entry"),
         }
     targets: list[dict[str, Any]] = []
     for label, key, probability in (
@@ -6156,6 +6289,64 @@ def _apply_top_gainers_playbook_signal_details(details: dict[str, Any], price: f
         "setup_confidence": playbook.get("setup_confidence"),
         "catalyst_review": playbook.get("catalyst_review"),
         "levels": levels,
+    }
+
+
+def _apply_btst_signal_details(details: dict[str, Any], price: float) -> None:
+    scan = details.get("opportunity_scan") if isinstance(details.get("opportunity_scan"), dict) else {}
+    if str(scan.get("setup") or "").strip().lower() != "btst_buy_candidate":
+        return
+    btst = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+    if not btst.get("detected"):
+        return
+    entry_zone = btst.get("entry_zone") if isinstance(btst.get("entry_zone"), dict) else {}
+    entry_low = _optional_float(entry_zone.get("low")) or price
+    entry_high = _optional_float(entry_zone.get("high")) or _optional_float(btst.get("max_entry")) or (price * 1.012 if price else None)
+    stop = _optional_float(btst.get("stop_loss"))
+    target1 = _optional_float(btst.get("target1"))
+    if entry_low and entry_high:
+        details["entry_zone"] = [round(entry_low, 2), round(entry_high, 2)]
+    if stop:
+        details["stop_loss"] = round(stop, 2)
+        details["stop_status"] = {
+            "price": round(stop, 2),
+            "source": "btst_buy_candidate",
+            "rule": "overnight_risk_control",
+        }
+    if target1:
+        distance = ((target1 - price) / price) * 100.0 if price else None
+        details["targets"] = [
+            {
+                "label": "BTST-T1",
+                "price": round(target1, 2),
+                "distance_pct": round(distance, 2) if distance is not None else None,
+                "probability_label": "next_day_follow_through",
+                "source": "btst_buy_candidate",
+            }
+        ]
+        details["target_status"] = details["targets"]
+    score = _optional_float(btst.get("score"))
+    if score is not None:
+        score_pct = score * 100.0 if score <= 1.0 else score
+        details["setup_score_pct"] = max(_optional_float(details.get("setup_score_pct")) or 0.0, score_pct)
+        if score_pct > float(details.get("overall_score_pct") or 0.0):
+            details["overall_score_pct"] = score_pct
+            details["overall_grade"] = _score_grade(score_pct)
+    details["holding_period"] = "BTST"
+    details["days_to_expiry"] = 2
+    details["timeline"] = {
+        "entry": "today_before_close",
+        "exit": "tomorrow_first_strength_or_first_15m_failure",
+        "max_holding_days": 2,
+    }
+    details["btst_signal"] = {
+        "source": "btst_buy_candidate",
+        "score": btst.get("score"),
+        "confidence": btst.get("confidence"),
+        "next_day_bias": btst.get("next_day_bias"),
+        "exit_plan": btst.get("exit_plan"),
+        "checks": btst.get("checks"),
+        "evidence": btst.get("evidence"),
     }
 
 
@@ -6249,6 +6440,8 @@ def _strategy_plan_code(
     classification = ((system_audit.get("classification") or {}) if isinstance(system_audit.get("classification"), dict) else {}).get("classification")
     if action == "SELL" or "exit" in name or "risk" in name:
         return "defensive_exit_manager"
+    if "btst" in name or "buy_today_sell_tomorrow" in name:
+        return "btst_next_day"
     if "aggressive_relative_strength" in name or "relative_strength_breakout" in name or "fifty_two_week_high_momentum" in name:
         return "aggressive_rs_breakout"
     if "breakout" in name or "darvas" in name or "vcp" in name:

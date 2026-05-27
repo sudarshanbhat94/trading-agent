@@ -47,6 +47,112 @@ class OpportunityScannerTests(unittest.TestCase):
         self.assertNotIn("stale_intraday_candles", item["data_quality"]["missing"])
         self.assertTrue(item["data_quality"]["actionable_data_ready"])
 
+    def test_us_top_mover_uses_us_playbook_not_indian_rules(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        candles = _candles("NVDA", "polygon:day", 260, datetime(2025, 5, 1, tzinfo=timezone.utc))
+        pivot = max(candle.high for candle in candles[-41:-1])
+        price = round(pivot * 1.02, 2)
+        candles[-1] = Candle("NVDA", candles[-1].ts, price * 0.98, price * 1.01, price * 0.97, price, 8_000_000, "polygon:day")
+        row = {
+            "symbol": "NVDA",
+            "name": "NVIDIA Corporation",
+            "exchange": "NASDAQ",
+            "sector": "Technology",
+            "index_membership": "NASDAQ100",
+            "market_cap": 4_000_000_000_000,
+            "_market_action": {
+                "symbol": "NVDA",
+                "market_region": "US",
+                "event_types": ["TOP_GAINER", "VOLUME_SHOCKER", "52_WEEK_HIGH"],
+                "pct_change": 6.0,
+                "price": price,
+                "volume": 82_000_000,
+                "avg_volume": 32_000_000,
+                "volume_multiplier": 2.56,
+            },
+        }
+
+        item = scanner._score_row(
+            row,
+            Quote("NVDA", price, "polygon-live", "2026-05-26T21:00:00+00:00", open=price * 0.96, high=price * 1.01, low=price * 0.95, volume=82_000_000),
+            {"analysis": candles, "daily": candles},
+            False,
+            {"headlines": ["Nvidia earnings beat estimates and guidance raised"], "headline_count": 1, "score": 0.5, "confidence": 0.8, "events": [{"event_type": "earnings", "confidence": 0.8, "source_weight": 1.0}]},
+            {"rs_rank": 96, "improving": True},
+        )
+
+        playbook = item["top_gainers_playbook"]
+        self.assertTrue(playbook["available"])
+        self.assertEqual(playbook["source"], "yahoo_us_top_movers_playbook")
+        self.assertEqual(playbook["market_region"], "US")
+        self.assertNotIn("delivery_pct", playbook["data_gaps"])
+        self.assertEqual(playbook["delivery"]["trend"], "not_applicable_us")
+
+    def test_btst_buy_candidate_scores_next_day_follow_through_setup(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "BTSTWIN", "exchange": "NSE", "sector": "Industrials"}
+        daily = _candles("BTSTWIN", "upstox-live:day", 90, datetime(2026, 2, 1, tzinfo=timezone.utc))
+        intraday = _candles("BTSTWIN", "upstox-live:30minute", 24, datetime(2026, 5, 26, 3, 45, tzinfo=timezone.utc))
+        quote = Quote(
+            "BTSTWIN",
+            114.0,
+            "upstox-live",
+            "2026-05-26T15:10:00+05:30",
+            open=111.0,
+            high=114.4,
+            low=110.6,
+            volume=2_200_000,
+        )
+
+        result = scanner.rank(
+            [row],
+            {"BTSTWIN": quote},
+            {"BTSTWIN": {"analysis": daily, "daily": daily, "intraday": intraday}},
+            sentiment_by_symbol={
+                "BTSTWIN": {
+                    "score": 0.3,
+                    "confidence": 0.4,
+                    "headline_count": 1,
+                    "events": [{"event_type": "order_win", "confidence": 0.4, "source_weight": 0.8}],
+                }
+            },
+        )
+
+        self.assertEqual(result.candidates[0]["setup"], "btst_buy_candidate")
+        self.assertEqual(result.candidates[0]["bucket"], "Actionable")
+        self.assertTrue(result.candidates[0]["btst"]["detected"])
+        self.assertEqual(result.candidates[0]["btst"]["action_bias"], "BUY")
+        self.assertEqual(result.summary["btst_buy_candidates"][0]["symbol"], "BTSTWIN")
+
+    def test_btst_rejects_late_chase_gap_risk(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "BTSTLATE", "exchange": "NSE", "sector": "Industrials"}
+        daily = _candles("BTSTLATE", "upstox-live:day", 90, datetime(2026, 2, 1, tzinfo=timezone.utc))
+        intraday = _candles("BTSTLATE", "upstox-live:30minute", 24, datetime(2026, 5, 26, 3, 45, tzinfo=timezone.utc))
+        quote = Quote(
+            "BTSTLATE",
+            122.0,
+            "upstox-live",
+            "2026-05-26T15:10:00+05:30",
+            open=112.0,
+            high=122.5,
+            low=111.8,
+            volume=5_500_000,
+        )
+
+        item = scanner._score_row(
+            row,
+            quote,
+            {"analysis": daily, "daily": daily, "intraday": intraday},
+            False,
+            {},
+            {"rs_rank": 82, "improving": True},
+        )
+
+        self.assertFalse(item["btst"]["detected"])
+        self.assertFalse(item["btst"]["checks"]["day_move_ok"])
+        self.assertNotEqual(item["setup"], "btst_buy_candidate")
+
 
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(

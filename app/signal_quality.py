@@ -47,17 +47,20 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     phase3 = details.get("strategy_logic_filters") if isinstance(details.get("strategy_logic_filters"), dict) else {}
     phase3_blocks = phase3.get("hard_blocks") if isinstance(phase3.get("hard_blocks"), list) else []
     playbook_probe = _top_gainers_playbook_probe(item, details)
+    btst_probe = _btst_buy_probe(item, details)
     if playbook_probe:
-        hard_blocks = _filter_playbook_absorbable_blocks(hard_blocks)
-        phase3_blocks = _filter_playbook_absorbable_blocks(phase3_blocks)
+        hard_blocks = _filter_playbook_absorbable_blocks(hard_blocks, playbook_probe)
+        phase3_blocks = _filter_playbook_absorbable_blocks(phase3_blocks, playbook_probe)
         hard_blocked = bool(hard_blocks or phase3_blocks)
     if hard_blocked or hard_blocks or phase3_blocks:
         return _blocked("hard_blocked", "System hard blocks are present.")
 
-    opportunity_probe = bool(playbook_probe) or _opportunity_probe_ready(item, details)
+    opportunity_probe = bool(playbook_probe) or bool(btst_probe) or _opportunity_probe_ready(item, details)
     min_score = (
         float(playbook_probe.get("min_score") or OPPORTUNITY_PROBE_MIN_SCORE)
         if playbook_probe
+        else float(btst_probe.get("min_score") or 70.0)
+        if btst_probe
         else OPPORTUNITY_PROBE_MIN_SCORE
         if opportunity_probe
         else FRESH_BUY_MIN_SCORE
@@ -78,6 +81,8 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         score = max(score or 0.0, setup_score)
     if playbook_probe and _number(playbook_probe.get("quant_score")) is not None:
         score = max(score or 0.0, float(playbook_probe["quant_score"]))
+    if btst_probe and _number(btst_probe.get("btst_score")) is not None:
+        score = max(score or 0.0, float(btst_probe["btst_score"]))
     if score is None or score < min_score:
         return _blocked(
             "overall_score_below_opportunity_probe_minimum" if opportunity_probe else "overall_score_below_70",
@@ -135,9 +140,12 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     data_readiness = item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness")
     if not isinstance(data_readiness, dict):
         return _blocked("data_readiness_missing", "Fresh BUY requires Phase-2 data readiness evidence from a fresh scan.")
-    data_readiness_override = bool(
-        opportunity_probe and _opportunity_probe_data_readiness_override(item, details, data_readiness)
+    data_readiness_override_mode = (
+        _opportunity_probe_data_readiness_override(item, details, data_readiness)
+        if opportunity_probe
+        else ""
     )
+    data_readiness_override = bool(data_readiness_override_mode)
     if data_readiness.get("trade_decision_ready") is not True and not data_readiness_override:
         missing = _missing_data_labels(data_readiness)
         message = "Phase-2 data readiness is not complete for a fresh trade decision."
@@ -162,13 +170,20 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         size_multiplier = min(size_multiplier, 0.50 if len(soft_missing) >= 3 else 0.75)
         cautions.append("supporting market data has gaps; use reduced paper size")
         missing_data.extend(soft_missing)
-    if opportunity_probe:
+    if btst_probe:
+        size_multiplier = min(size_multiplier, float(btst_probe.get("size_multiplier") or 0.75))
+        cautions.append("BTST overnight setup; buy only with guarded size and sell/trim tomorrow if follow-through fails")
+    elif opportunity_probe:
         size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
         cautions.append("opportunity scan setup; use probe size until confirmation matures")
     if data_readiness_override:
         size_multiplier = min(size_multiplier, OPPORTUNITY_PROBE_SIZE_MULTIPLIER)
-        cautions.append("live quote is available but intraday candles are stale; use probe size only")
-        missing_data.append("stale_intraday_candles")
+        if data_readiness_override_mode == "us_yahoo_reference_reduced_size":
+            cautions.append("US Yahoo reference mode; use reduced paper size and do not live-auto-execute")
+            missing_data.append("us_realtime_quote")
+        else:
+            cautions.append("live quote is available but intraday candles are stale; use probe size only")
+            missing_data.append("stale_intraday_candles")
     macro_event = details.get("macro_event_context") if isinstance(details.get("macro_event_context"), dict) else {}
     if not macro_event and isinstance(item.get("macro_event_context"), dict):
         macro_event = item["macro_event_context"]
@@ -182,6 +197,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         risk_flags,
         opportunity_probe=opportunity_probe,
         playbook_entry_ok=bool(playbook_probe),
+        playbook_market_region=_upper(playbook_probe.get("market_region")) if playbook_probe else "",
     )
     if severe_flags:
         return _blocked(
@@ -241,6 +257,7 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     severe_flags = _severe_risk_flags(
         risk_flags,
         playbook_entry_ok=bool(_top_gainers_playbook_probe(item, details)),
+        playbook_market_region=_upper((_top_gainers_playbook_probe(item, details) or {}).get("market_region")),
     )
     if severe_flags:
         return _blocked(
@@ -373,6 +390,7 @@ def _severe_risk_flags(
     *,
     opportunity_probe: bool = False,
     playbook_entry_ok: bool = False,
+    playbook_market_region: str = "",
 ) -> list[str]:
     severe_tokens = _opportunity_probe_hard_risk_tokens() if opportunity_probe else (
         "hard_block",
@@ -391,6 +409,12 @@ def _severe_risk_flags(
         if not normalized:
             continue
         if playbook_entry_ok and "price_extended_from_pivot" in normalized:
+            continue
+        if (
+            playbook_entry_ok
+            and playbook_market_region == "US"
+            and ("possible_circuit" in normalized or "extreme_atr_volatility" in normalized)
+        ):
             continue
         if any(exception in normalized for exception in reduce_size_exceptions):
             continue
@@ -453,6 +477,7 @@ def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> b
     if bucket == "actionable" and setup in {
         "opening_ignition",
         "intraday_momentum",
+        "btst_buy_candidate",
         "breakout_continuation",
         "near_breakout",
         "news_catalyst",
@@ -477,12 +502,19 @@ def _top_gainers_playbook_probe(item: dict[str, Any], details: dict[str, Any]) -
         return {}
     if playbook.get("hard_excluded") or playbook.get("hard_excludes"):
         return {}
+    catalyst = playbook.get("catalyst_review") if isinstance(playbook.get("catalyst_review"), dict) else {}
+    if catalyst.get("catalyst_confirmed") is not True:
+        return {}
     anti_codes = {
         _upper(flag.get("code"))
         for flag in playbook.get("anti_patterns") or []
         if isinstance(flag, dict)
     }
     if anti_codes & {"CHASING", "OPERATOR_RISK", "SHORT_COVER", "STAGE_TRAP", "ILLIQUID_BREAKOUT", "FAILED_BREAKOUT_RISK"}:
+        return {}
+    weinstein = playbook.get("weinstein") if isinstance(playbook.get("weinstein"), dict) else {}
+    stage = str(weinstein.get("stage") or "").strip()
+    if stage in {"Stage 3", "Stage 4"}:
         return {}
     levels = playbook.get("levels") if isinstance(playbook.get("levels"), dict) else {}
     price = _number(item.get("latest_price"), item.get("price"), details.get("latest_price"), playbook.get("cmp"))
@@ -506,6 +538,8 @@ def _top_gainers_playbook_probe(item: dict[str, Any], details: dict[str, Any]) -
         "signal": signal,
         "quant_score": quant_score,
         "min_score": min_score,
+        "market_region": _upper(playbook.get("market_region") or item.get("market_region") or details.get("market_region")),
+        "stage": stage,
         "entry": entry,
         "max_entry": max_entry,
         "stop": stop,
@@ -513,15 +547,64 @@ def _top_gainers_playbook_probe(item: dict[str, Any], details: dict[str, Any]) -
     }
 
 
-def _filter_playbook_absorbable_blocks(blocks: list[Any]) -> list[Any]:
+def _btst_buy_probe(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    if not isinstance(scan, dict) or str(scan.get("setup") or "").strip().lower() != "btst_buy_candidate":
+        return {}
+    btst = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+    if not btst.get("detected"):
+        return {}
+    data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+    if data_quality.get("actionable_data_ready") is False:
+        return {}
+    if str(scan.get("bucket") or "").strip().lower() != "actionable":
+        return {}
+    score = _number(btst.get("score"), scan.get("score"))
+    if score is None:
+        return {}
+    score_pct = score * 100.0 if score <= 1.0 else score
+    if score_pct < 70.0:
+        return {}
+    checks = btst.get("checks") if isinstance(btst.get("checks"), dict) else {}
+    required = {
+        "liquidity_ok",
+        "trend_ok",
+        "range_ok",
+        "day_move_ok",
+        "not_extended",
+        "volume_ok",
+        "overnight_risk_ok",
+        "sentiment_ok",
+    }
+    if any(checks.get(key) is False for key in required):
+        return {}
+    return {
+        "btst_score": score_pct,
+        "min_score": 70.0,
+        "size_multiplier": 0.75,
+        "entry_zone": btst.get("entry_zone"),
+        "stop_loss": btst.get("stop_loss"),
+        "target1": btst.get("target1"),
+    }
+
+
+def _filter_playbook_absorbable_blocks(blocks: list[Any], playbook_probe: dict[str, Any]) -> list[Any]:
     output: list[Any] = []
     for block in blocks:
         flag = ""
+        value = None
         if isinstance(block, dict):
             flag = _upper(block.get("flag") or block.get("gate") or block.get("reason"))
+            value = block.get("value") if "value" in block else block
         else:
             flag = _upper(block)
         if "PRICE_EXTENDED_FROM_PIVOT" in flag:
+            continue
+        if "GRADE_VIOLATION" in flag:
+            continue
+        if "MTF_HARD_BLOCK" in flag and playbook_probe.get("stage") == "Stage 2":
+            continue
+        if "DATA_READINESS_BLOCK" in flag and _playbook_reference_data_block_absorbable(value, playbook_probe):
             continue
         output.append(block)
     return output
@@ -535,6 +618,7 @@ def _live_quote_probe_data_ok(item: dict[str, Any], details: dict[str, Any], sca
     if setup not in {
         "opening_ignition",
         "intraday_momentum",
+        "btst_buy_candidate",
         "breakout_continuation",
         "near_breakout",
         "news_catalyst",
@@ -563,12 +647,40 @@ def _live_quote_probe_data_ok(item: dict[str, Any], details: dict[str, Any], sca
     return data_readiness.get("trade_decision_ready") is True and liquidity_ok
 
 
-def _opportunity_probe_data_readiness_override(item: dict[str, Any], details: dict[str, Any], data_readiness: dict[str, Any]) -> bool:
+def _opportunity_probe_data_readiness_override(item: dict[str, Any], details: dict[str, Any], data_readiness: dict[str, Any]) -> str:
     scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
     if not isinstance(scan, dict):
-        return False
+        return ""
+    playbook_probe = _top_gainers_playbook_probe(item, details)
+    if playbook_probe and _playbook_reference_data_readiness_absorbable(item, details, data_readiness, playbook_probe):
+        return "us_yahoo_reference_reduced_size"
     setup = str(scan.get("setup") or "").strip().lower()
     if not _live_quote_probe_data_ok(item, details, scan, setup):
+        return ""
+    hard_gaps = data_readiness.get("hard_gaps") or []
+    keys = {
+        str(gap.get("key") or "").strip().lower()
+        for gap in hard_gaps
+        if isinstance(gap, dict) and str(gap.get("key") or "").strip()
+    }
+    if bool(keys) and keys <= {"in_intraday_candles"}:
+        return "live_quote_intraday_candles_stale"
+    return ""
+
+
+def _playbook_reference_data_readiness_absorbable(
+    item: dict[str, Any],
+    details: dict[str, Any],
+    data_readiness: dict[str, Any],
+    playbook_probe: dict[str, Any],
+) -> bool:
+    if playbook_probe.get("market_region") != "US":
+        return False
+    quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote")
+    quote = quote if isinstance(quote, dict) else {}
+    sources = data_readiness.get("sources") if isinstance(data_readiness.get("sources"), dict) else {}
+    source = str(quote.get("source") or sources.get("quote") or "").lower()
+    if "yahoo" not in source:
         return False
     hard_gaps = data_readiness.get("hard_gaps") or []
     keys = {
@@ -576,7 +688,24 @@ def _opportunity_probe_data_readiness_override(item: dict[str, Any], details: di
         for gap in hard_gaps
         if isinstance(gap, dict) and str(gap.get("key") or "").strip()
     }
-    return bool(keys) and keys <= {"in_intraday_candles"}
+    return bool(keys) and keys <= {"us_realtime_quote", "us_minute_bars", "us_sec_filings"}
+
+
+def _playbook_reference_data_block_absorbable(value: Any, playbook_probe: dict[str, Any]) -> bool:
+    if playbook_probe.get("market_region") != "US":
+        return False
+    if isinstance(value, dict) and "hard_gaps" in value:
+        keys = {
+            str(gap.get("key") or "").strip().lower()
+            for gap in value.get("hard_gaps") or []
+            if isinstance(gap, dict) and str(gap.get("key") or "").strip()
+        }
+    elif isinstance(value, dict):
+        key = str(value.get("key") or "").strip().lower()
+        keys = {key} if key else set()
+    else:
+        keys = set()
+    return bool(keys) and keys <= {"us_realtime_quote", "us_minute_bars", "us_sec_filings"}
 
 
 def _missing_sentiment_news(data_readiness: dict[str, Any]) -> bool:

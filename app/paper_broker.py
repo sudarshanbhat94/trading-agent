@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from .config import Settings
@@ -8,6 +9,7 @@ from .db import Database
 from .market_regions import market_region_for_row, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .order_router import OrderRouter
+from .trade_economics import exit_economics, minimum_auto_follow_notional, should_block_low_value_profit_exit
 from .trading_rules import capital_position_limit
 
 MARKET_REGIONS = ("IN", "US")
@@ -233,6 +235,27 @@ class PaperBroker:
         absolute_cap = min(float(self.settings.max_position_pct), 0.15)
         max_position_pct = min(float(max_position_pct), absolute_cap)
         max_position_value = portfolio_equity * max_position_pct
+        max_order_value = portfolio_equity * self.settings.max_order_value_pct
+        cash_before = self.cash_for_market(market_region)
+        fill_price = _paper_fill_price(decision.price, "BUY", self.settings)
+        unit_cash_required = fill_price * (1 + (_fee_bps(self.settings) / 10_000))
+        economic_floor = _economic_floor_adjustment(
+            decision,
+            sizing_grade,
+            rule_audit,
+            settings=self.settings,
+            market_region=market_region,
+            portfolio_equity=portfolio_equity,
+            cash_before=cash_before,
+            current_value=current_value,
+            max_position_value=max_position_value,
+            max_order_value=max_order_value,
+            fill_price=fill_price,
+            unit_cash_required=unit_cash_required,
+        )
+        if economic_floor["applied"]:
+            max_position_value = max(max_position_value, current_value + float(economic_floor["cash_required"]))
+            max_order_value = max(max_order_value, float(economic_floor["cash_required"]))
         if current_value >= max_position_value:
             self.db.insert_order(
                 decision.symbol,
@@ -250,18 +273,16 @@ class PaperBroker:
                         "max_position_value": round(max_position_value, 2),
                         "max_position_pct": max_position_pct,
                         "sizing_grade": sizing_grade,
+                        "trade_economics": economic_floor,
                         "portfolio_equity": portfolio_equity,
                     },
                 ),
             )
             return False
 
-        max_order_value = portfolio_equity * self.settings.max_order_value_pct
-        cash_before = self.cash_for_market(market_region)
         sizing_plan = _sizing_plan_from_decision(decision, portfolio_equity, max_order_value)
-        spend = min(max_order_value, max_position_value - current_value, cash_before, sizing_plan["max_notional"])
-        fill_price = _paper_fill_price(decision.price, "BUY", self.settings)
-        unit_cash_required = fill_price * (1 + (_fee_bps(self.settings) / 10_000))
+        sizing_max_notional = float(sizing_plan.get("max_notional_raw") or sizing_plan["max_notional"])
+        spend = min(max_order_value, max_position_value - current_value, cash_before, sizing_max_notional)
         qty = min(int(spend // unit_cash_required), int(sizing_plan["risk_qty"]))
         if qty <= 0:
             self.db.insert_order(
@@ -284,11 +305,41 @@ class PaperBroker:
                         "price": decision.price,
                         "fill_price_after_slippage": round(fill_price, 4),
                         "unit_cash_required_with_costs": round(unit_cash_required, 4),
+                        "trade_economics": economic_floor,
                     },
                 ),
             )
             return False
         gross_notional = qty * fill_price
+        if (
+            bool(economic_floor.get("allowed"))
+            and not bool(economic_floor.get("applied"))
+            and gross_notional < float(economic_floor.get("minimum_notional") or 0.0)
+        ):
+            self.db.insert_order(
+                decision.symbol,
+                "BUY",
+                0,
+                decision.price,
+                "VETOED",
+                "position_size_below_minimum_trade_economics",
+                decision.strategy,
+                _order_details_json(
+                    decision,
+                    {
+                        "veto_gate": "trade_economics_min_notional",
+                        "cash_before": round(cash_before, 2),
+                        "max_order_value": round(max_order_value, 2),
+                        "atr_risk_sizing": sizing_plan,
+                        "max_position_value_remaining": round(max_position_value - current_value, 2),
+                        "planned_spend": round(spend, 2),
+                        "planned_qty": qty,
+                        "planned_notional": round(gross_notional, 2),
+                        "trade_economics": economic_floor,
+                    },
+                ),
+            )
+            return False
         estimated_costs = _trade_cost(gross_notional, self.settings)
         cash_after = cash_before - gross_notional - estimated_costs
 
@@ -345,6 +396,7 @@ class PaperBroker:
                         "max_position_value": round(max_position_value, 2),
                         "max_order_value_pct": self.settings.max_order_value_pct,
                         "max_order_value": round(max_order_value, 2),
+                        "trade_economics": economic_floor,
                         "atr_risk_sizing": sizing_plan,
                         "sizing_grade": sizing_grade,
                         "planned_spend": round(spend, 2),
@@ -389,6 +441,33 @@ class PaperBroker:
             proceeds = qty * fill_price
             estimated_costs = _trade_cost(proceeds, self.settings)
             net_proceeds = proceeds - estimated_costs
+            economics = exit_economics(float(row["avg_price"]), fill_price, qty, market_region, self.settings)
+            action_key = _exit_action_key_from_decision(decision, full=True)
+            if should_block_low_value_profit_exit(action_key, economics):
+                self.db.insert_order(
+                    decision.symbol,
+                    "SELL",
+                    0,
+                    decision.price,
+                    "VETOED",
+                    "low_value_profit_exit_blocked",
+                    strategy,
+                    _order_details_json(
+                        decision,
+                        {
+                            "veto_gate": "trade_economics_min_exit_profit",
+                            "action_key": action_key,
+                            "market_region": market_region,
+                            "planned_qty": qty,
+                            "avg_price": round(float(row["avg_price"]), 2),
+                            "decision_price": decision.price,
+                            "filled_price_after_slippage": fill_price,
+                            "planned_notional": round(proceeds, 2),
+                            "exit_economics": economics,
+                        },
+                    ),
+                )
+                return False
             realized = row["realized_pnl"] + (fill_price - row["avg_price"]) * qty - estimated_costs
             conn.execute(
                 """
@@ -422,6 +501,7 @@ class PaperBroker:
                         "filled_price": fill_price,
                         "filled_notional": round(proceeds, 2),
                         "estimated_costs": round(estimated_costs, 2),
+                        "exit_economics": economics,
                         "cost_model": _cost_model(self.settings),
                         "realized_pnl_after": round(realized, 2),
                     },
@@ -469,6 +549,36 @@ class PaperBroker:
             proceeds = qty * fill_price
             estimated_costs = _trade_cost(proceeds, self.settings)
             net_proceeds = proceeds - estimated_costs
+            economics = exit_economics(float(row["avg_price"]), fill_price, qty, market_region, self.settings)
+            action_key = _exit_action_key_from_decision(decision, full=False)
+            if should_block_low_value_profit_exit(action_key, economics):
+                self.db.insert_order(
+                    symbol,
+                    "SELL",
+                    0,
+                    price,
+                    "VETOED",
+                    "low_value_profit_exit_blocked",
+                    strategy,
+                    _order_details_json(
+                        decision or Decision(symbol, "SELL", 0.99, price, 0.0, 0.0, reason, utc_now(), strategy),
+                        {
+                            "veto_gate": "trade_economics_min_exit_profit",
+                            "partial_sell": True,
+                            "action_key": action_key,
+                            "pct_of_position": pct,
+                            "market_region": market_region,
+                            "planned_qty": qty,
+                            "remaining_qty": int(row["qty"]),
+                            "avg_price": round(float(row["avg_price"]), 2),
+                            "decision_price": price,
+                            "filled_price_after_slippage": fill_price,
+                            "planned_notional": round(proceeds, 2),
+                            "exit_economics": economics,
+                        },
+                    ),
+                )
+                return False
             realized = row["realized_pnl"] + (fill_price - row["avg_price"]) * qty - estimated_costs
             details = _json_object(row["details_json"])
             if pct <= 0.34 and not details.get("tier1_hit"):
@@ -508,6 +618,7 @@ class PaperBroker:
                     "filled_notional": round(proceeds, 2),
                     "decision_price": price,
                     "estimated_costs": round(estimated_costs, 2),
+                    "exit_economics": economics,
                     "cost_model": _cost_model(self.settings),
                 },
             ),
@@ -682,8 +793,145 @@ def _sizing_plan_from_decision(decision: Decision, portfolio_equity: float, max_
         "risk_budget": round(risk_budget, 2),
         "risk_per_share": round(risk_per_share, 4),
         "risk_qty": risk_qty,
+        "max_notional_raw": max_notional,
         "max_notional": round(max_notional, 2),
     }
+
+
+def _economic_floor_adjustment(
+    decision: Decision,
+    sizing_grade: dict[str, Any],
+    rule_audit: dict[str, Any],
+    *,
+    settings: Settings,
+    market_region: str,
+    portfolio_equity: float,
+    cash_before: float,
+    current_value: float,
+    max_position_value: float,
+    max_order_value: float,
+    fill_price: float,
+    unit_cash_required: float,
+) -> dict[str, Any]:
+    minimum_notional = minimum_auto_follow_notional(settings, market_region)
+    minimum_qty = int(math.ceil(minimum_notional / fill_price)) if minimum_notional > 0 and fill_price > 0 else 0
+    cash_required = minimum_qty * unit_cash_required
+    remaining_position_cap = max(max_position_value - current_value, 0.0)
+    result = {
+        "minimum_notional": round(minimum_notional, 2),
+        "minimum_qty": minimum_qty,
+        "cash_required": cash_required,
+        "cash_required_display": round(cash_required, 2),
+        "old_max_order_value": round(max_order_value, 2),
+        "old_remaining_position_cap": round(remaining_position_cap, 2),
+        "applied": False,
+        "reason": "not_needed",
+    }
+    if minimum_notional <= 0:
+        result["reason"] = "minimum_notional_disabled"
+        return result
+    if fill_price <= 0 or unit_cash_required <= 0:
+        result["reason"] = "missing_price_for_trade_economics"
+        return result
+    if cash_required <= max_order_value and cash_required <= remaining_position_cap:
+        return result
+    allowed = _economic_floor_allowed(decision, sizing_grade, rule_audit)
+    result["allowed"] = bool(allowed["allowed"])
+    result["allow_reason"] = allowed["reason"]
+    if not allowed["allowed"]:
+        result["reason"] = allowed["reason"]
+        return result
+    if cash_required > cash_before:
+        result["reason"] = "insufficient_cash_for_minimum_economic_trade"
+        return result
+    concentration_cap = max(min(float(cash_before or 0.0), float(portfolio_equity or 0.0)) * 0.60, max_order_value)
+    if cash_required > concentration_cap:
+        result["reason"] = "minimum_economic_trade_above_60pct_cash_cap"
+        result["concentration_cap"] = round(concentration_cap, 2)
+        return result
+    result["applied"] = True
+    result["reason"] = "minimum_economic_trade_floor_applied"
+    result["concentration_cap"] = round(concentration_cap, 2)
+    return result
+
+
+def _economic_floor_allowed(
+    decision: Decision,
+    sizing_grade: dict[str, Any],
+    rule_audit: dict[str, Any],
+) -> dict[str, Any]:
+    if rule_audit.get("hard_blocked"):
+        return {"allowed": False, "reason": "system_rule_hard_block"}
+    allocation_cap = _float_or_none(rule_audit.get("allocation_cap_multiplier"))
+    if allocation_cap is not None and allocation_cap < 0.75:
+        return {"allowed": False, "reason": "reduced_allocation_cap"}
+    sizing_multiplier = _first_float(
+        sizing_grade.get("final_multiplier"),
+        sizing_grade.get("max_multiplier"),
+        sizing_grade.get("size_multiplier"),
+    )
+    if sizing_multiplier is not None and sizing_multiplier < 0.75:
+        return {"allowed": False, "reason": "reduced_quality_probe_size"}
+
+    details = _json_object(decision.details_json)
+    if _has_reduced_size_policy(details):
+        return {"allowed": False, "reason": "reduced_size_policy"}
+
+    audit = rule_audit or {}
+    context = details.get("context") if isinstance(details.get("context"), dict) else {}
+    context_audit = context.get("system_gate_audit") if isinstance(context.get("system_gate_audit"), dict) else {}
+    grade = str(
+        details.get("overall_grade")
+        or audit.get("overall_grade")
+        or context_audit.get("overall_grade")
+        or ""
+    ).upper()
+    score = _first_float(
+        details.get("overall_score_pct"),
+        audit.get("overall_score_pct"),
+        context_audit.get("overall_score_pct"),
+        (details.get("score_breakdown") or {}).get("score_percent") if isinstance(details.get("score_breakdown"), dict) else None,
+    )
+    confidence = _float_or_none(decision.confidence) or 0.0
+    if grade in {"A", "B"} or (score is not None and score >= 75.0) or confidence >= 0.75:
+        return {"allowed": True, "reason": "conviction_setup"}
+    return {"allowed": False, "reason": "quality_below_economic_floor_threshold"}
+
+
+def _has_reduced_size_policy(details: dict[str, Any]) -> bool:
+    values = [
+        details.get("setup_bucket"),
+        details.get("opportunity_state"),
+        details.get("opportunity_label"),
+        details.get("position_size_hint"),
+        details.get("trade_window"),
+        details.get("label"),
+    ]
+    context = details.get("context") if isinstance(details.get("context"), dict) else {}
+    values.extend(
+        [
+            context.get("setup_bucket"),
+            context.get("opportunity_state"),
+            context.get("position_size_hint"),
+            (context.get("opportunity_scan") or {}).get("bucket") if isinstance(context.get("opportunity_scan"), dict) else None,
+            (context.get("opportunity_scan") or {}).get("setup") if isinstance(context.get("opportunity_scan"), dict) else None,
+        ]
+    )
+    joined = " ".join(str(value or "") for value in values).upper()
+    reduced_tokens = (
+        "LOW_QUALITY_SHORT_COVERING",
+        "LOW QUALITY SHORT COVERING",
+        "SMALL_SIZE_ONLY",
+        "SMALL SIZE ONLY",
+        "TINY_SIZE",
+        "TINY SIZE",
+        "PROBE",
+        "WATCH_FOR_PULLBACK",
+        "WATCH FOR PULLBACK",
+        "LATE_CHASE",
+        "LATE CHASE",
+    )
+    return any(token in joined for token in reduced_tokens)
 
 
 def _sizing_grade_from_decision(decision: Decision) -> dict[str, Any]:
@@ -716,6 +964,25 @@ def _partial_sell_pct_from_decision(decision: Decision) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _exit_action_key_from_decision(decision: Decision | None, *, full: bool) -> str:
+    details = _json_object(decision.details_json) if decision else {}
+    gates = details.get("risk_gates") if isinstance(details.get("risk_gates"), dict) else {}
+    reason = str((decision.reason if decision else "") or details.get("action_reason") or "").lower()
+    if bool(gates.get("stop_triggered")) or "risk exit" in reason or "stop loss" in reason or "stop_hit" in reason:
+        return "STOP_LOSS"
+    if "target_2" in reason or "target2" in reason or "tier2" in reason:
+        return "TARGET_2_REDUCE"
+    if "target_1" in reason or "target1" in reason or "tier1" in reason:
+        return "TARGET_1_PARTIAL"
+    if "breakeven" in reason or "break-even" in reason:
+        return "MFE_BREAKEVEN_REDUCE"
+    if "profit protect" in reason or "protect profit" in reason:
+        return "MFE_PROFIT_PROTECT"
+    if bool(gates.get("take_profit_triggered")) and not full:
+        return "TARGET_1_PARTIAL"
+    return "FULL_EXIT" if full else "PARTIAL_EXIT"
 
 
 def _llm_primary_approval_from_decision(decision: Decision) -> dict[str, Any]:
@@ -775,6 +1042,14 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_float(*values: Any) -> float | None:
+    for value in values:
+        parsed = _float_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _paper_fill_price(price: float, side: str, settings: Settings) -> float:

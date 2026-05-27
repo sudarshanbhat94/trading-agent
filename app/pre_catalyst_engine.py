@@ -17,6 +17,8 @@ OVERHANG_REMOVAL_RERATE = "OVERHANG_REMOVAL_RERATE"
 SECTOR_ROTATION_LEADER = "SECTOR_ROTATION_LEADER"
 LOW_QUALITY_SHORT_COVERING = "LOW_QUALITY_SHORT_COVERING"
 LATE_CHASE_AVOID = "LATE_CHASE_AVOID"
+UC_PRE_BREAKOUT_WATCH = "UC_PRE_BREAKOUT_WATCH"
+PRE_MOMENTUM_EXPANSION_WATCH = "PRE_MOMENTUM_EXPANSION_WATCH"
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,11 @@ def build_pre_catalyst_watchlist(
         rs_profiles=rs_profiles,
     )
     market_events = _events_by_symbol(market_action_summary)
+    market_action_history = build_market_action_history(
+        market_action_summary,
+        previous_state=previous_state.get("market_action_history") if isinstance(previous_state, dict) else {},
+        now=now,
+    )
     previous_candidates = {
         str(item.get("symbol") or "").upper(): item
         for item in (previous_state.get("candidates") if isinstance(previous_state, dict) else []) or []
@@ -132,7 +139,30 @@ def build_pre_catalyst_watchlist(
         catalyst = calendar["by_symbol"].get(symbol) or _missing_calendar(symbol)
         overhang = detect_overhang_removal(row, quote, candles, sentiment)
         sector_leader = sector_leaders.get(symbol) or {}
-        short_covering = detect_short_covering_bounce(row, quote, candles, sentiment, market_events.get(symbol))
+        rs_profile = rs_profiles.get(symbol) or {}
+        current_market_event = market_events.get(symbol)
+        action_history = (market_action_history.get("by_symbol") or {}).get(symbol) or {}
+        short_covering = detect_short_covering_bounce(row, quote, candles, sentiment, current_market_event)
+        uc_pre_breakout = detect_uc_pre_breakout(
+            row,
+            quote,
+            candles,
+            sentiment,
+            setup,
+            rs_profile,
+            market_action_history=action_history,
+            market_action=current_market_event,
+        )
+        momentum_expansion = detect_pre_move_expansion(
+            row,
+            quote,
+            candles,
+            sentiment,
+            setup,
+            rs_profile,
+            sector_leader,
+            market_action_history=action_history,
+        )
         score_profile = _pre_catalyst_score(
             row=row,
             quote=quote,
@@ -141,10 +171,12 @@ def build_pre_catalyst_watchlist(
             stage=stage,
             catalyst=catalyst,
             sentiment=sentiment,
-            rs=rs_profiles.get(symbol) or {},
+            rs=rs_profile,
             sector_leader=sector_leader,
             overhang=overhang,
             short_covering=short_covering,
+            uc_pre_breakout=uc_pre_breakout,
+            momentum_expansion=momentum_expansion,
             settings=settings,
         )
         label = classify_opportunity(
@@ -153,11 +185,20 @@ def build_pre_catalyst_watchlist(
             overhang=overhang,
             sector_leader=sector_leader,
             short_covering=short_covering,
+            uc_pre_breakout=uc_pre_breakout,
+            momentum_expansion=momentum_expansion,
             live_confirmation=None,
             score=score_profile["score"],
             min_score=min_score,
         )
-        if label == "" or (score_profile["score"] < min_score and not overhang.get("detected") and not sector_leader.get("detected") and not short_covering.get("detected")):
+        if label == "" or (
+            score_profile["score"] < min_score
+            and not overhang.get("detected")
+            and not sector_leader.get("detected")
+            and not short_covering.get("detected")
+            and not uc_pre_breakout.get("detected")
+            and not momentum_expansion.get("detected")
+        ):
             continue
 
         candidate = _candidate_from_parts(
@@ -169,10 +210,12 @@ def build_pre_catalyst_watchlist(
             catalyst=catalyst,
             stage=stage,
             sentiment=sentiment,
-            rs=rs_profiles.get(symbol) or {},
+            rs=rs_profile,
             sector_leader=sector_leader,
             overhang=overhang,
             short_covering=short_covering,
+            uc_pre_breakout=uc_pre_breakout,
+            momentum_expansion=momentum_expansion,
         )
         candidates.append(candidate)
         log_events.append({"event": "watchlist_candidate", "symbol": symbol, "label": label, "reasons": candidate.key_reasons[:5]})
@@ -221,6 +264,7 @@ def build_pre_catalyst_watchlist(
         "live_confirmations": live_confirmations,
         "calendar_enrichment": calendar,
         "sector_rotation_leaders": list(sector_leaders.values())[:candidate_limit],
+        "market_action_history": market_action_history,
         "label_counts": _counts([candidate.label for candidate in candidates] + [item.get("label") for item in live_confirmations]),
         "data_gaps": data_gaps,
         "log_events": log_events[-80:],
@@ -302,6 +346,85 @@ def enrich_catalyst_calendar(
         "missing_earnings_symbols": missing,
         "data_gaps": [] if missing == 0 else ["earnings_calendar_missing_for_some_symbols"],
         "earnings_by_symbol": earnings_by_symbol,
+        "by_symbol": by_symbol,
+    }
+
+
+def build_market_action_history(
+    market_action_summary: dict[str, Any] | None,
+    *,
+    previous_state: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    market_action_summary = market_action_summary or {}
+    previous_state = previous_state or {}
+    now = now or datetime.now(timezone.utc)
+    today_key = now.date().isoformat()
+    previous_by_symbol = previous_state.get("by_symbol") if isinstance(previous_state, dict) else {}
+    by_symbol: dict[str, dict[str, Any]] = {
+        str(symbol).upper(): dict(item)
+        for symbol, item in (previous_by_symbol or {}).items()
+        if isinstance(item, dict)
+    }
+
+    raw_events = market_action_summary.get("events") or []
+    if not raw_events and isinstance(market_action_summary.get("events_by_symbol"), dict):
+        raw_events = [
+            {**value, "symbol": symbol}
+            for symbol, value in (market_action_summary.get("events_by_symbol") or {}).items()
+            if isinstance(value, dict)
+        ]
+    for event in raw_events:
+        if not isinstance(event, dict):
+            continue
+        symbol = str(event.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        event_types = _unique([str(item).upper() for item in event.get("event_types") or []])
+        prior = by_symbol.get(symbol) or {}
+        active_dates = [
+            str(item)
+            for item in (prior.get("active_dates") or [])
+            if str(item or "").strip()
+        ][-30:]
+        first_seen_today = today_key not in active_dates
+        if first_seen_today:
+            active_dates.append(today_key)
+        seen_count = int(prior.get("seen_count") or 0) + (1 if first_seen_today else 0)
+        only_buyers_days = int(prior.get("only_buyers_days") or 0) + (1 if first_seen_today and "ONLY_BUYERS" in event_types else 0)
+        top_gainer_days = int(prior.get("top_gainer_days") or 0) + (1 if first_seen_today and "TOP_GAINER" in event_types else 0)
+        volume_shocker_days = int(prior.get("volume_shocker_days") or 0) + (1 if first_seen_today and "VOLUME_SHOCKER" in event_types else 0)
+        strong_mover_days = int(prior.get("strong_mover_days") or 0) + (
+            1
+            if first_seen_today
+            and (
+                "STRONG_INTRADAY_GAIN" in event_types
+                or (_float_or_none(event.get("pct_change")) or 0.0) >= 5.0
+            )
+            else 0
+        )
+        by_symbol[symbol] = {
+            "symbol": symbol,
+            "seen_count": seen_count,
+            "only_buyers_days": only_buyers_days,
+            "top_gainer_days": top_gainer_days,
+            "volume_shocker_days": volume_shocker_days,
+            "strong_mover_days": strong_mover_days,
+            "active_dates": active_dates,
+            "last_seen_at": utc_now(),
+            "last_event_types": event_types,
+            "last_strategy": event.get("strategy"),
+            "last_trade_window": event.get("trade_window"),
+            "last_pct_change": _round(event.get("pct_change")),
+            "last_volume_multiplier": _round(event.get("volume_multiplier")),
+            "last_reason": event.get("reason"),
+        }
+
+    return {
+        "enabled": True,
+        "source": "market_action_radar_persistent_rollup",
+        "updated_at": utc_now(),
+        "symbols": len(by_symbol),
         "by_symbol": by_symbol,
     }
 
@@ -461,6 +584,209 @@ def detect_short_covering_bounce(
     }
 
 
+def detect_uc_pre_breakout(
+    row: dict[str, Any],
+    quote: Quote,
+    candles: list[Candle],
+    sentiment: dict[str, Any] | None,
+    setup: dict[str, Any],
+    rs: dict[str, Any],
+    *,
+    market_action_history: dict[str, Any] | None = None,
+    market_action: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    market = market_region_for_row(row)
+    if market != "IN":
+        return {"detected": False, "score": 0.0, "market_region": market}
+    market_action_history = market_action_history or {}
+    market_action = market_action or {}
+    event_types = {str(item or "").upper() for item in market_action.get("event_types") or []}
+    already_locked = "ONLY_BUYERS" in event_types or str(market_action.get("strategy") or "") == "circuit_demand_lock"
+    if already_locked:
+        return {
+            "detected": True,
+            "score": 0.68,
+            "status": "already_locked_no_chase",
+            "event_types": sorted(event_types),
+            "trade_window": "wait_for_pullback",
+            "position_size_hint": "none_until_tradable_pullback",
+            "reason": "stock is already in only-buyers/upper-circuit demand lock",
+        }
+
+    if len(candles) < 35 or quote.price <= 0:
+        return {"detected": False, "score": 0.0, "reason": "insufficient_history"}
+    if quote.price < 10:
+        return {"detected": False, "score": 0.0, "reason": "below_min_price_for_uc_watch"}
+
+    closes = [float(candle.close) for candle in candles if candle.close]
+    if len(closes) < 35:
+        return {"detected": False, "score": 0.0, "reason": "insufficient_closes"}
+    returns = _daily_returns_pct(candles)
+    recent_returns = returns[-20:]
+    limit_like_days = 0
+    strong_days = 0
+    for candle, ret in zip(candles[-len(recent_returns):], recent_returns):
+        close_position = _candle_close_position(candle)
+        if ret >= 4.75 and close_position >= 0.80:
+            limit_like_days += 1
+        if 3.0 <= ret <= 15.5 and close_position >= 0.70:
+            strong_days += 1
+
+    latest = candles[-1]
+    close_near_high = _candle_close_position(latest) >= 0.82
+    near_high = bool(setup.get("near_prior_high") or setup.get("near_pivot"))
+    quiet_or_dry = bool(setup.get("quiet_range_contraction") or setup.get("volume_dryup") or setup.get("pre_rally_compression"))
+    history_only_buyers = int(market_action_history.get("only_buyers_days") or 0)
+    history_strong = int(market_action_history.get("strong_mover_days") or 0)
+    price_band_memory = bool(limit_like_days or history_only_buyers)
+    market_cap_cr = _market_cap_crore(row)
+    free_float_pct = _float_or_none(row.get("free_float_pct") or row.get("free_float"))
+    low_float_hint = bool(
+        (market_cap_cr is not None and 200 <= market_cap_cr <= 5_000)
+        or (free_float_pct is not None and free_float_pct <= 35)
+    )
+    avg_volume = _mean(candle.volume for candle in candles[-20:])
+    avg_price = _mean(candle.close for candle in candles[-20:])
+    avg_turnover = avg_price * avg_volume
+    liquidity_ok = avg_turnover >= 5_000_000 and quote.price >= 10
+    accumulation = _accumulation_profile(candles)
+    rs_score = _clamp(float(rs.get("percentile_63") or 0.0) / 100.0, 0.0, 1.0)
+    news_score = _news_quality_score(sentiment or {})
+    negative_tone = _negative_news_tone(sentiment or {})
+    extension = _float_or_none(setup.get("extension_from_pivot_pct")) or 0.0
+    day_gain = _day_gain_pct(quote)
+    not_already_chasing = extension <= 5.0 and day_gain < 7.5
+    uc_signature = bool(price_band_memory or low_float_hint or history_strong >= 2)
+    score = _clamp(
+        (0.14 if near_high else 0.0)
+        + (0.12 if close_near_high else 0.0)
+        + (0.12 if quiet_or_dry else 0.0)
+        + (0.14 if price_band_memory else 0.0)
+        + (0.10 if low_float_hint else 0.0)
+        + (0.10 if accumulation.get("score", 0.0) >= 0.55 else 0.0)
+        + (0.12 * rs_score)
+        + (0.08 if liquidity_ok else 0.0)
+        + (0.08 if news_score >= 0.30 else 0.0)
+        + (0.08 if history_strong >= 2 else 0.0),
+        0.0,
+        1.0,
+    )
+    detected = bool(
+        score >= 0.58
+        and uc_signature
+        and near_high
+        and close_near_high
+        and liquidity_ok
+        and not_already_chasing
+        and not negative_tone
+    )
+    return {
+        "detected": detected,
+        "score": round(score, 4),
+        "status": "pre_breakout_watch" if detected else "not_enough_uc_evidence",
+        "limit_like_days_20": limit_like_days,
+        "strong_mover_days_20": strong_days,
+        "history_only_buyers_days": history_only_buyers,
+        "history_strong_mover_days": history_strong,
+        "price_band_memory": price_band_memory,
+        "low_float_hint": low_float_hint,
+        "market_cap_cr": _round(market_cap_cr),
+        "avg_turnover": _round(avg_turnover, 2),
+        "liquidity_ok": liquidity_ok,
+        "close_near_day_high": close_near_high,
+        "near_breakout_zone": near_high,
+        "quiet_or_volume_dryup": quiet_or_dry,
+        "accumulation": accumulation,
+        "rs_percentile_63": _round(rs.get("percentile_63"), 2),
+        "news_score": _round(news_score),
+        "negative_tone": negative_tone,
+        "position_size_hint": "watch_only_until_live_confirmation",
+    }
+
+
+def detect_pre_move_expansion(
+    row: dict[str, Any],
+    quote: Quote,
+    candles: list[Candle],
+    sentiment: dict[str, Any] | None,
+    setup: dict[str, Any],
+    rs: dict[str, Any],
+    sector_leader: dict[str, Any],
+    *,
+    market_action_history: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if len(candles) < 45 or quote.price <= 0:
+        return {"detected": False, "score": 0.0, "reason": "insufficient_history"}
+    sentiment = sentiment or {}
+    market_action_history = market_action_history or {}
+    closes = [float(candle.close) for candle in candles if candle.close]
+    ret_5 = _return_pct(closes, 5)
+    ret_20 = _return_pct(closes, 20)
+    ret_63 = _return_pct(closes, 63)
+    sma20 = _sma(closes, 20)
+    sma50 = _sma(closes, 50)
+    trend_aligned = bool(sma20 and quote.price >= sma20 and (not sma50 or sma20 >= sma50 * 0.98))
+    atr5 = _average_true_range_pct(candles[-6:])
+    atr20 = _average_true_range_pct(candles[-21:])
+    volatility_compression = bool(atr5 is not None and atr20 is not None and atr5 <= atr20 * 0.78)
+    accumulation = _accumulation_profile(candles)
+    rs_score = _clamp(float(rs.get("percentile_63") or 0.0) / 100.0, 0.0, 1.0)
+    news_score = _news_quality_score(sentiment)
+    sector_score = _clamp(float(sector_leader.get("score") or 0.0), 0.0, 1.0)
+    history_strong = int(market_action_history.get("strong_mover_days") or 0)
+    near_breakout = bool(setup.get("near_pivot") or setup.get("near_prior_high") or setup.get("pre_rally_compression"))
+    dry_or_tight = bool(setup.get("volume_dryup") or setup.get("quiet_range_contraction") or volatility_compression)
+    accumulation_ready = float(accumulation.get("score") or 0.0) >= 0.55
+    momentum_bias = bool(
+        accumulation_ready
+        or news_score >= 0.30
+        or sector_score >= 0.55
+        or ((ret_5 or 0.0) >= 2.5 and (ret_20 or 0.0) >= 6.0)
+        or history_strong >= 2
+    )
+    extension = _float_or_none(setup.get("extension_from_pivot_pct")) or 0.0
+    day_gain = _day_gain_pct(quote)
+    too_late = extension > 5.0 or day_gain >= 8.0
+    negative_tone = _negative_news_tone(sentiment)
+    score = _clamp(
+        (0.14 if near_breakout else 0.0)
+        + (0.12 if dry_or_tight else 0.0)
+        + (0.14 if trend_aligned else 0.0)
+        + (0.14 * rs_score)
+        + (0.12 * float(accumulation.get("score") or 0.0))
+        + (0.10 if volatility_compression else 0.0)
+        + (0.10 if (ret_20 or 0.0) > 4.0 else 0.0)
+        + (0.08 if news_score >= 0.30 else 0.0)
+        + (0.08 if sector_score >= 0.55 else 0.0)
+        + (0.06 if history_strong >= 2 else 0.0),
+        0.0,
+        1.0,
+    )
+    detected = bool(score >= 0.60 and near_breakout and dry_or_tight and momentum_bias and not too_late and not negative_tone)
+    return {
+        "detected": detected,
+        "score": round(score, 4),
+        "status": "pre_expansion_watch" if detected else "not_enough_expansion_evidence",
+        "return_5_pct": _round(ret_5),
+        "return_20_pct": _round(ret_20),
+        "return_63_pct": _round(ret_63),
+        "trend_aligned": trend_aligned,
+        "volatility_compression": volatility_compression,
+        "atr_5_pct": _round(atr5),
+        "atr_20_pct": _round(atr20),
+        "near_breakout_zone": near_breakout,
+        "dry_or_tight": dry_or_tight,
+        "accumulation": accumulation,
+        "rs_percentile_63": _round(rs.get("percentile_63"), 2),
+        "sector_score": _round(sector_score),
+        "news_score": _round(news_score),
+        "history_strong_mover_days": history_strong,
+        "too_late": too_late,
+        "negative_tone": negative_tone,
+        "position_size_hint": "normal_if_live_confirmation_holds",
+    }
+
+
 def confirm_live_breakout(
     candidate: dict[str, Any],
     quote: Quote,
@@ -490,8 +816,11 @@ def confirm_live_breakout(
     volume_confirmed = bool(volume_ratio >= 1.35 or "VOLUME_SHOCKER" in market_action_events)
     catalyst_confirmed = _sentiment_has_positive_catalyst(sentiment) or bool(market_action_events)
     too_extended = extension > 5.0 or day_gain >= 8.0
+    demand_locked = "ONLY_BUYERS" in market_action_events or str(market_action.get("strategy") or "") == "circuit_demand_lock"
 
-    if too_extended and breakout:
+    if demand_locked:
+        label = LATE_CHASE_AVOID
+    elif too_extended and breakout:
         label = LATE_CHASE_AVOID
     elif candidate.get("label") == LOW_QUALITY_SHORT_COVERING:
         label = LOW_QUALITY_SHORT_COVERING
@@ -531,6 +860,8 @@ def confirm_live_breakout(
         reasons.append("waiting for fresh intraday candle confirmation")
     if too_extended:
         reasons.append("late chase risk; too extended from pivot")
+    if demand_locked:
+        reasons.append("upper-circuit/only-buyer demand lock; wait for tradable pullback")
     return {
         "symbol": candidate.get("symbol"),
         "label": label,
@@ -548,6 +879,7 @@ def confirm_live_breakout(
         "first_range_hold": range_hold,
         "volume_confirmed": volume_confirmed,
         "catalyst_confirmed": catalyst_confirmed,
+        "demand_locked": demand_locked,
         "key_reasons": reasons,
         "source_candidate": candidate,
     }
@@ -560,6 +892,8 @@ def classify_opportunity(
     overhang: dict[str, Any],
     sector_leader: dict[str, Any],
     short_covering: dict[str, Any],
+    uc_pre_breakout: dict[str, Any],
+    momentum_expansion: dict[str, Any],
     live_confirmation: dict[str, Any] | None,
     score: float,
     min_score: float,
@@ -572,10 +906,16 @@ def classify_opportunity(
         return str(live_confirmation["label"])
     if overhang.get("detected"):
         return OVERHANG_REMOVAL_RERATE
+    if uc_pre_breakout.get("status") == "already_locked_no_chase":
+        return LATE_CHASE_AVOID
+    if uc_pre_breakout.get("detected") and score >= min_score:
+        return UC_PRE_BREAKOUT_WATCH
     if sector_leader.get("detected") and score >= min_score:
         return SECTOR_ROTATION_LEADER
     if catalyst.get("catalyst_type") == "earnings" and setup.get("pre_catalyst_ready") and score >= min_score:
         return PRE_CATALYST_WATCH
+    if momentum_expansion.get("detected") and score >= min_score:
+        return PRE_MOMENTUM_EXPANSION_WATCH
     if setup.get("pre_catalyst_ready") and score >= min_score:
         return PRE_CATALYST_WATCH
     return ""
@@ -595,6 +935,8 @@ def _candidate_from_parts(
     sector_leader: dict[str, Any],
     overhang: dict[str, Any],
     short_covering: dict[str, Any],
+    uc_pre_breakout: dict[str, Any],
+    momentum_expansion: dict[str, Any],
 ) -> OpportunityCandidate:
     symbol = str(row.get("symbol") or "").upper()
     pivot = _float_or_none(setup.get("pivot"))
@@ -616,18 +958,36 @@ def _candidate_from_parts(
         reasons.append(sector_leader.get("reason") or "sector rotation leader")
     if short_covering.get("detected"):
         reasons.append("low-quality bounce; conservative watch only")
+    if uc_pre_breakout.get("status") == "already_locked_no_chase":
+        reasons.append("already upper-circuit/only-buyer locked; do not chase")
+    elif uc_pre_breakout.get("detected"):
+        reasons.append("UC/price-band precursor pattern detected")
+    if momentum_expansion.get("detected"):
+        reasons.append("pre-move expansion setup for possible 5-15% move")
     setup_summary = (
+        "already locked; wait for pullback"
+        if uc_pre_breakout.get("status") == "already_locked_no_chase"
+        else "UC/price-band precursor near breakout"
+        if uc_pre_breakout.get("detected")
+        else "pre-move expansion setup"
+        if momentum_expansion.get("detected")
+        else
         "tight VCP/base near pivot"
         if setup.get("tight_base") or setup.get("progressive_contraction")
         else "pre-catalyst technical setup"
     )
+    catalyst_type = str(catalyst.get("catalyst_type") or "unknown")
+    if uc_pre_breakout.get("detected") and catalyst_type == "unknown":
+        catalyst_type = "price_band_demand"
+    elif momentum_expansion.get("detected") and catalyst_type == "unknown":
+        catalyst_type = "technical_expansion"
     return OpportunityCandidate(
         symbol=symbol,
         label=label,
         confidence=round(_clamp(score_profile["score"] * 0.88 + score_profile.get("evidence_quality", 0.0) * 0.12, 0.0, 1.0), 4),
         score=round(score_profile["score"], 4),
         market_region=market_region_for_row(row),
-        catalyst_type=str(catalyst.get("catalyst_type") or "unknown"),
+        catalyst_type=catalyst_type,
         catalyst_date=catalyst.get("catalyst_date"),
         setup_summary=setup_summary,
         entry_zone=entry_zone,
@@ -646,6 +1006,8 @@ def _candidate_from_parts(
             "sentiment": _sentiment_summary(sentiment),
             "overhang_removal": overhang,
             "short_covering": short_covering,
+            "uc_pre_breakout": uc_pre_breakout,
+            "pre_move_expansion": momentum_expansion,
             "score_components": score_profile.get("components"),
         },
     )
@@ -664,6 +1026,8 @@ def _pre_catalyst_score(
     sector_leader: dict[str, Any],
     overhang: dict[str, Any],
     short_covering: dict[str, Any],
+    uc_pre_breakout: dict[str, Any],
+    momentum_expansion: dict[str, Any],
     settings: Any | None,
 ) -> dict[str, Any]:
     market_region = market_region_for_row(row)
@@ -688,6 +1052,8 @@ def _pre_catalyst_score(
         news_quality = max(news_quality, float(overhang.get("score") or 0.0))
     if short_covering.get("detected"):
         news_quality = min(news_quality, 0.25)
+    uc_score = _clamp(float(uc_pre_breakout.get("score") or 0.0), 0.0, 1.0)
+    expansion_score = _clamp(float(momentum_expansion.get("score") or 0.0), 0.0, 1.0)
     stage_score = 1.0 if stage.get("buy_permitted") else 0.45 if stage.get("stage") == "Stage1_Base" else 0.15
     score = (
         catalyst_score * 0.12
@@ -707,6 +1073,10 @@ def _pre_catalyst_score(
         score = max(score, 0.58 + sector_score * 0.18)
     if short_covering.get("detected"):
         score = max(score, float(short_covering.get("score") or 0.0))
+    if uc_pre_breakout.get("detected"):
+        score = max(score, uc_score)
+    if momentum_expansion.get("detected"):
+        score = max(score, expansion_score)
     if setup.get("pre_rally_compression") and rs_score >= 0.58 and liquidity >= 0.22 and extension_score >= 0.55:
         score = max(score, 0.54 + min(pre_rally_score, 1.0) * 0.12 + min(rs_score, 1.0) * 0.07)
     reasons = []
@@ -732,6 +1102,12 @@ def _pre_catalyst_score(
         reasons.append("news/catalyst quality support")
     if catalyst_score >= 0.75:
         reasons.append("near known catalyst window")
+    if uc_pre_breakout.get("status") == "already_locked_no_chase":
+        reasons.append("already in only-buyers/upper-circuit; no chase")
+    elif uc_pre_breakout.get("detected"):
+        reasons.append("UC/price-band demand precursor")
+    if momentum_expansion.get("detected"):
+        reasons.append("pre-move expansion pressure")
     return {
         "score": round(_clamp(score, 0.0, 1.0), 4),
         "evidence_quality": round(_clamp((setup_score + rs_score + liquidity + news_quality) / 4.0, 0.0, 1.0), 4),
@@ -746,6 +1122,8 @@ def _pre_catalyst_score(
             "extension_from_pivot": round(extension_score, 4),
             "news_quality": round(news_quality, 4),
             "stage": round(stage_score, 4),
+            "uc_pre_breakout": round(uc_score, 4),
+            "pre_move_expansion": round(expansion_score, 4),
         },
         "reasons": reasons,
     }
@@ -1189,6 +1567,121 @@ def _vwap(candles: list[Candle]) -> float | None:
         return None
     total_value = sum(((candle.high + candle.low + candle.close) / 3.0) * float(candle.volume or 0.0) for candle in usable)
     return total_value / total_volume
+
+
+def _daily_returns_pct(candles: list[Candle]) -> list[float]:
+    returns: list[float] = []
+    for index in range(1, len(candles)):
+        prev = _float_or_none(candles[index - 1].close)
+        current = _float_or_none(candles[index].close)
+        if prev and current is not None:
+            returns.append(((current - prev) / prev) * 100.0)
+    return returns
+
+
+def _candle_close_position(candle: Candle) -> float:
+    high = _float_or_none(candle.high)
+    low = _float_or_none(candle.low)
+    close = _float_or_none(candle.close)
+    if high is None or low is None or close is None or high <= low:
+        return 0.5
+    return _clamp((close - low) / (high - low), 0.0, 1.0)
+
+
+def _accumulation_profile(candles: list[Candle]) -> dict[str, Any]:
+    window = candles[-12:] if len(candles) >= 12 else candles[:]
+    if len(window) < 4:
+        return {"available": False, "score": 0.0}
+    up_volume = 0.0
+    down_volume = 0.0
+    up_days = 0
+    down_days = 0
+    for index, candle in enumerate(window):
+        previous_close = _float_or_none(window[index - 1].close) if index > 0 else _float_or_none(candle.open)
+        close = _float_or_none(candle.close)
+        volume = float(candle.volume or 0.0)
+        if close is None or previous_close is None:
+            continue
+        if close >= previous_close:
+            up_volume += volume
+            up_days += 1
+        else:
+            down_volume += volume
+            down_days += 1
+    volume_ratio = up_volume / down_volume if down_volume > 0 else (up_volume if up_volume > 0 else 0.0)
+    recent_volume = _mean(candle.volume for candle in candles[-5:])
+    prior_volume = _mean(candle.volume for candle in candles[-25:-5]) if len(candles) >= 25 else _mean(candle.volume for candle in candles[:-5])
+    volume_trend = recent_volume / prior_volume if prior_volume else 0.0
+    close_near_high_days = sum(1 for candle in window if _candle_close_position(candle) >= 0.70)
+    score = _clamp(
+        (0.30 if volume_ratio >= 1.20 else 0.0)
+        + (0.25 if up_days >= down_days + 2 else 0.0)
+        + (0.20 if volume_trend >= 1.10 else 0.0)
+        + (0.15 if close_near_high_days >= max(3, len(window) // 3) else 0.0)
+        + (0.10 if up_days > down_days else 0.0),
+        0.0,
+        1.0,
+    )
+    return {
+        "available": True,
+        "score": round(score, 4),
+        "up_days": up_days,
+        "down_days": down_days,
+        "up_down_volume_ratio": _round(volume_ratio),
+        "recent_volume_trend": _round(volume_trend),
+        "close_near_high_days": close_near_high_days,
+    }
+
+
+def _average_true_range_pct(candles: list[Candle]) -> float | None:
+    if len(candles) < 2:
+        return None
+    ranges: list[float] = []
+    for index in range(1, len(candles)):
+        candle = candles[index]
+        prev_close = _float_or_none(candles[index - 1].close)
+        if prev_close is None or prev_close <= 0:
+            continue
+        true_range = max(
+            float(candle.high) - float(candle.low),
+            abs(float(candle.high) - prev_close),
+            abs(float(candle.low) - prev_close),
+        )
+        ranges.append((true_range / prev_close) * 100.0)
+    return _mean(ranges) if ranges else None
+
+
+def _market_cap_crore(row: dict[str, Any]) -> float | None:
+    value = _float_or_none(
+        row.get("market_cap_cr")
+        or row.get("mcap_cr")
+        or row.get("market_cap_crore")
+        or row.get("market_cap")
+    )
+    if value is None:
+        return None
+    if value > 10_000_000:
+        return value / 10_000_000
+    return value
+
+
+def _negative_news_tone(sentiment: dict[str, Any]) -> bool:
+    score = _float_or_none(sentiment.get("score")) or 0.0
+    events = [event for event in sentiment.get("events") or [] if isinstance(event, dict)]
+    text = " ".join(
+        [
+            str(sentiment.get("headlines") or ""),
+            " ".join(str(event.get("title") or event.get("headline") or event.get("summary") or "") for event in events),
+        ]
+    ).lower()
+    severe_terms = ("fraud", "default", "insolvency", "bankruptcy", "downgrade", "sell rating", "pledge", "forensic")
+    has_resolution = any(token in text for token in ("cleared", "settled", "resolved", "approved", "withdrawn", "dismissed"))
+    severe_event = any(
+        str(event.get("event_type") or "").lower() in {"analyst_downgrade", "debt_liquidity", "fraud_governance"}
+        and float(event.get("score") or 0.0) < -0.10
+        for event in events
+    )
+    return bool((score <= -0.30 or severe_event or any(token in text for token in severe_terms)) and not has_resolution)
 
 
 def _base_range_pct(candles: list[Candle]) -> float | None:

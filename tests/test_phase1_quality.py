@@ -265,6 +265,7 @@ class Phase1QualityGateTests(unittest.TestCase):
                         "hard_excludes": [],
                         "anti_patterns": [],
                         "cmp": 108.0,
+                        "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "MODERATE"},
                         "levels": {
                             "pivot": 105.0,
                             "entry": 108.0,

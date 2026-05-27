@@ -38,8 +38,13 @@ def auto_follow_sizing(
     size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
     max_pct = max(min(float(max_position_pct or 0.25), 0.50), 0.01)
     target = cash * max_pct * size_multiplier
-    cap = cash * min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
     min_notional = minimum_auto_follow_notional(settings, market)
+    base_cap_pct = min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
+    cap = cash * base_cap_pct
+    economics_floor_applied = False
+    if min_notional > cap and size_multiplier >= 0.75 and min_notional <= cash * 0.60:
+        cap = min_notional
+        economics_floor_applied = True
     min_qty = max(1, int(math.ceil(min_notional / price))) if min_notional > 0 else 1
     max_qty_by_cap = int(min(cash, cap) // price)
     target_qty = int(min(cash, target) // price)
@@ -60,6 +65,8 @@ def auto_follow_sizing(
             "price": round(price, 4),
             "target_notional": round(target, 2),
             "cap_notional": round(cap, 2),
+            "base_cap_pct": round(base_cap_pct, 4),
+            "economics_floor_applied": economics_floor_applied,
             "minimum_notional": round(min_notional, 2),
             "minimum_qty": min_qty,
         }
@@ -75,6 +82,8 @@ def auto_follow_sizing(
         "price": round(price, 4),
         "target_notional": round(target, 2),
         "cap_notional": round(cap, 2),
+        "base_cap_pct": round(base_cap_pct, 4),
+        "economics_floor_applied": economics_floor_applied,
         "minimum_notional": round(min_notional, 2),
         "minimum_qty": min_qty,
     }

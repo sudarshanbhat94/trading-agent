@@ -719,6 +719,44 @@ async def status(request: Request) -> dict[str, Any]:
     return _status_payload(user)
 
 
+@app.get("/api/signals/search")
+async def signal_search(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    query = str(request.query_params.get("q") or "").strip()
+    market = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
+    try:
+        limit = max(1, min(int(request.query_params.get("limit") or 120), 300))
+    except (TypeError, ValueError):
+        limit = 120
+    if not query:
+        return {"query": "", "market": market, "results": []}
+    rows = db.search_decision_summaries(query, limit=limit, market_region=market)
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["detail_url"] = f"/api/decisions/{item.get('id')}"
+        if user.get("role") != "admin":
+            item.pop("details_json", None)
+        results.append(item)
+    return {"query": query, "market": market, "count": len(results), "results": results}
+
+
+@app.get("/api/market-indices")
+async def market_indices(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    market = normalize_market_region(request.query_params.get("market") or "IN", default="IN")
+    if market == "US":
+        return {"market": "US", "status": "quotes", "items": {}}
+    indices = await institutional_feeds.indices_now()
+    if indices.get("status") == "ok":
+        institutional_context = db.get_state("institutional_context", {})
+        if isinstance(institutional_context, dict):
+            feeds = institutional_context.setdefault("feeds", {})
+            feeds["indices"] = indices
+            db.set_state("institutional_context", institutional_context)
+    return {"market": "IN", **indices}
+
+
 def _compact_tracked_idea(row: dict[str, Any]) -> dict[str, Any]:
     user_follow = row.get("user_follow") if isinstance(row.get("user_follow"), dict) else {}
     follow_details = row.get("follow_details") if isinstance(row.get("follow_details"), dict) else {}
@@ -954,10 +992,12 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
         symbol = row.get("symbol")
         market = row.get("market_region")
         mode = str(row.get("mode_label") or row.get("mode") or "Paper").strip()
+        mode_code = str(row.get("mode") or "").strip().upper()
         status = str(row.get("status") or row.get("state") or "").upper()
         entry_qty = int(row.get("entry_qty") or row.get("qty") or 0)
         entry_price = float(row.get("entry_price") or 0.0)
         if symbol and entry_qty > 0 and entry_price > 0:
+            entry_status = "REQUESTED" if mode_code == "LIVE" and status == "LIVE_REQUESTED" else "FILLED"
             events.append(
                 {
                     "id": f"follow-{row.get('follow_id')}-entry",
@@ -968,7 +1008,7 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "qty": entry_qty,
                     "price": entry_price,
                     "notional": round(entry_qty * entry_price, 2),
-                    "status": "OPEN" if row.get("state") == "OPEN" else "FILLED",
+                    "status": entry_status,
                     "reason": f"{mode} follow opened from signal idea",
                     "market_region": market,
                     "exchange": row.get("exchange"),
@@ -981,6 +1021,15 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
             exit_action = str(row.get("exit_action") or "").upper()
             partial_reduce = exit_action == "REDUCE" or (row.get("state") == "OPEN" and closed_qty < entry_qty)
             side = "REDUCE" if partial_reduce else "SELL"
+            exit_status = (
+                "REQUESTED"
+                if status == "LIVE_EXIT_REQUESTED"
+                else "PARTIAL"
+                if partial_reduce
+                else "EXITED"
+                if row.get("state") == "CLOSED"
+                else status or "EXIT_PENDING"
+            )
             events.append(
                 {
                     "id": f"follow-{row.get('follow_id')}-exit",
@@ -991,7 +1040,7 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "qty": closed_qty,
                     "price": exit_price,
                     "notional": round(closed_qty * exit_price, 2),
-                    "status": "PARTIAL" if partial_reduce else "EXITED" if row.get("state") == "CLOSED" else status or "EXIT_PENDING",
+                    "status": exit_status,
                     "reason": row.get("exit_reason") or f"{mode} follow exit",
                     "market_region": market,
                     "exchange": row.get("exchange"),
@@ -1036,6 +1085,21 @@ def _follow_position_exit_plan(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_APP_LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
+
+
+def _position_opened_today(raw: Any) -> bool:
+    if not raw:
+        return False
+    try:
+        opened_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if opened_at.tzinfo is None:
+        opened_at = opened_at.replace(tzinfo=timezone.utc)
+    return opened_at.astimezone(_APP_LOCAL_TZ).date() == datetime.now(_APP_LOCAL_TZ).date()
+
+
 def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     positions: list[dict[str, Any]] = []
     for item in tracked_ideas:
@@ -1045,6 +1109,18 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
             continue
         entry_price = float(item.get("follow_entry_price") or item.get("entry_price") or 0.0)
         latest_price = float(item.get("follow_latest_price") or item.get("latest_price") or entry_price)
+        previous_close = _float_or_none(item.get("previous_close"))
+        unrealized_pnl = round((latest_price - entry_price) * qty, 2)
+        stock_day_change_pct = round(((latest_price - previous_close) / previous_close) * 100.0, 4) if previous_close and previous_close > 0 else None
+        opened_today = _position_opened_today(item.get("followed_at"))
+        if opened_today:
+            today_pnl = unrealized_pnl
+            today_pnl_pct = round(((latest_price - entry_price) / entry_price) * 100.0, 4) if entry_price > 0 else None
+            today_pnl_source = "entry_today"
+        else:
+            today_pnl = round((latest_price - previous_close) * qty, 2) if previous_close and previous_close > 0 else None
+            today_pnl_pct = stock_day_change_pct
+            today_pnl_source = "previous_close" if today_pnl is not None else "unavailable"
         exit_management = item.get("follow_details", {}).get("exit_management", {}) if isinstance(item.get("follow_details"), dict) else {}
         mark_state = item.get("follow_details", {}).get("mark_state", {}) if isinstance(item.get("follow_details"), dict) else {}
         managed_action = str(exit_management.get("last_action_label") or "").strip()
@@ -1082,6 +1158,15 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
                 "qty": qty,
                 "avg_price": entry_price,
                 "market_price": latest_price,
+                "previous_close": previous_close,
+                "previous_close_at": item.get("previous_close_at"),
+                "today_pnl": today_pnl,
+                "day_pnl": today_pnl,
+                "day_change_pct": stock_day_change_pct,
+                "today_pnl_pct": today_pnl_pct,
+                "position_day_change_pct": today_pnl_pct,
+                "today_pnl_source": today_pnl_source,
+                "day_pnl_source": today_pnl_source,
                 "entry_zone": item.get("entry_zone"),
                 "stop_loss": item.get("stop_loss"),
                 "stop_status": item.get("stop_status"),
@@ -1093,6 +1178,7 @@ def _user_follow_positions(tracked_ideas: list[dict[str, Any]]) -> list[dict[str
                 "execution_state": item.get("execution_state"),
                 "execution_state_label": item.get("execution_state_label"),
                 "realized_pnl": 0.0,
+                "unrealized_pnl": unrealized_pnl,
                 "opened_at": item.get("followed_at"),
                 "updated_at": item.get("follow_updated_at"),
                 "marked_at": mark_state.get("last_mark_at") or item.get("follow_updated_at"),
@@ -1311,6 +1397,18 @@ async def order_detail(order_id: int, request: Request) -> dict[str, Any]:
     if user.get("role") != "admin":
         row = _sanitize_order_row_for_user(row)
     return row
+
+
+@app.post("/api/orders/{order_id}/cancel")
+async def cancel_order(order_id: int, request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    try:
+        row = db.cancel_order(order_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if user.get("role") != "admin":
+        row = _sanitize_order_row_for_user(row)
+    return {"ok": True, "order": row}
 
 
 @app.post("/api/positions/{symbol}/exit")

@@ -7,6 +7,7 @@ from typing import Any
 IST = timezone(timedelta(hours=5, minutes=30))
 SECTION_ORDER = {
     "ready_at_open": 10,
+    "btst_buys": 15,
     "near_breakout": 20,
     "news_watch": 30,
     "position_actions": 40,
@@ -41,6 +42,7 @@ def build_tomorrow_plan(
     opportunity_scan = opportunity_scan if isinstance(opportunity_scan, dict) else {}
     sections = {
         "ready_at_open": _ready_at_open_items(ideas),
+        "btst_buys": _btst_buy_items(ideas, opportunity_scan, region),
         "near_breakout": _near_breakout_items(ideas),
         "news_watch": _news_watch_items(pre_catalyst, region),
         "position_actions": _position_action_items(positions),
@@ -86,6 +88,50 @@ def _ready_at_open_items(ideas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if _quality_reason(idea) and not _quality_passed(idea):
             continue
         rows.append(_plan_item_from_idea(idea, "Validate at pre-open; buy only if price remains inside the entry zone and first live volume confirms."))
+    return sorted(rows, key=_item_rank, reverse=True)[:12]
+
+
+def _btst_buy_items(ideas: list[dict[str, Any]], opportunity_scan: dict[str, Any], region: str) -> list[dict[str, Any]]:
+    rows = []
+    seen: set[str] = set()
+    for idea in ideas:
+        details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+        scan = details.get("opportunity_scan") if isinstance(details.get("opportunity_scan"), dict) else {}
+        if str(scan.get("setup") or "").lower() != "btst_buy_candidate":
+            continue
+        if str(idea.get("signal_type") or "").upper() != "BUY":
+            continue
+        item = _plan_item_from_idea(idea, "BTST BUY: enter only inside the entry zone near close; sell/trim tomorrow if first strength fades or first 15-minute low breaks.")
+        item["action"] = "BTST BUY"
+        item["details"]["btst"] = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+        rows.append(item)
+        seen.add(str(item.get("symbol") or "").upper())
+    for candidate in opportunity_scan.get("btst_buy_candidates") or []:
+        if not isinstance(candidate, dict) or _row_market(candidate) != region:
+            continue
+        symbol = str(candidate.get("symbol") or "").upper()
+        if not symbol or symbol in seen:
+            continue
+        btst = candidate.get("btst") if isinstance(candidate.get("btst"), dict) else {}
+        entry = btst.get("entry_zone") if isinstance(btst.get("entry_zone"), dict) else {}
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": candidate.get("name") or symbol,
+                "action": "BTST BUY",
+                "trigger_price": _number(entry.get("low")) or _number(candidate.get("price")),
+                "max_entry": _number(entry.get("high") or btst.get("max_entry")),
+                "stop_loss": _number(btst.get("stop_loss")),
+                "target1": _number(btst.get("target1")),
+                "score": _score_pct(btst.get("score") or candidate.get("score")),
+                "confidence": _score_pct(btst.get("confidence") or candidate.get("score")),
+                "strategy": "btst_buy_candidate",
+                "rationale": "; ".join((btst.get("reasons") or candidate.get("reasons") or [])[:3])
+                or "BTST candidate with closing strength and controlled overnight risk.",
+                "validation": "Buy only if final quote remains near high with volume participation; no chase above max entry.",
+                "details": {"btst": btst, "opportunity_scan": candidate},
+            }
+        )
     return sorted(rows, key=_item_rank, reverse=True)[:12]
 
 
@@ -235,6 +281,7 @@ def _plan_item_from_idea(idea: dict[str, Any], validation: str) -> dict[str, Any
 def _summary(sections: dict[str, list[dict[str, Any]]], macro_context: dict[str, Any], opportunity_scan: dict[str, Any]) -> dict[str, Any]:
     return {
         "ready_at_open": len(sections.get("ready_at_open") or []),
+        "btst_buys": len(sections.get("btst_buys") or []),
         "near_breakout": len(sections.get("near_breakout") or []),
         "news_watch": len(sections.get("news_watch") or []),
         "position_actions": len(sections.get("position_actions") or []),

@@ -14,9 +14,11 @@ from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
 from app.opportunity_state import opportunity_state_from_signal_details
 from app.agent import _auto_follow_idea_fresh_enough
+from app.paper_broker import PaperBroker
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 from app.strategy import StrategyEngine, _compact_context, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
+from app.trade_economics import auto_follow_sizing
 
 
 class StrategySafetyTests(unittest.TestCase):
@@ -1322,8 +1324,13 @@ class StrategySafetyTests(unittest.TestCase):
         context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 40
         context["full_spectrum_analysis"]["confluence_score"]["total"] = 12
         context["full_spectrum_analysis"]["stage_analysis"] = {"stage": "Stage 1", "buy_permitted": False}
+        context["full_spectrum_analysis"]["entry_quality"] = {"entry_grade": "D", "distance_from_pivot_pct": 29.6}
         context["full_spectrum_analysis"]["risk_overrides"] = {
-            "flags": ["price_extended_from_pivot"],
+            "flags": [
+                "price_extended_from_pivot",
+                "scorecard_possible_circuit_risk_no_new_longs",
+                "scorecard_extreme_atr_volatility_no_new_longs",
+            ],
             "no_new_longs": True,
         }
         context["full_spectrum_analysis"]["live_momentum_review"] = {
@@ -1341,6 +1348,7 @@ class StrategySafetyTests(unittest.TestCase):
             "data_quality": {"actionable_data_ready": True},
             "top_gainers_playbook": {
                 "available": True,
+                "market_region": "US",
                 "final_signal": "MODERATE BUY",
                 "quant_score": 62,
                 "hard_excluded": False,
@@ -1409,6 +1417,278 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual(action, "HOLD")
         self.assertFalse(context["decision_gate_context"]["opportunity_probe"]["ready"])
+
+    def test_top_gainers_playbook_mtf_d_needs_playbook_stage2(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 6.1,
+                "confirmed": False,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["trend_context"]["timeframe_alignment"] = {"alignment_grade": "D"}
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["opportunity_scan"] = {
+            "setup": "earnings_beat_gap_and_go",
+            "bucket": "Small Size Only",
+            "score": 1.0,
+            "data_quality": {"actionable_data_ready": True},
+            "top_gainers_playbook": {
+                "available": True,
+                "market_region": "US",
+                "final_signal": "MODERATE BUY",
+                "quant_score": 66,
+                "hard_excluded": False,
+                "hard_excludes": [],
+                "anti_patterns": [],
+                "cmp": 108.0,
+                "volume": 8_000_000,
+                "volume_ratio": 2.2,
+                "weinstein": {"stage": "Stage 1"},
+                "levels": {
+                    "pivot": 105.0,
+                    "entry": 108.0,
+                    "max_entry": 110.25,
+                    "stop": 100.44,
+                    "target1": 129.6,
+                },
+                "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "MODERATE"},
+            },
+        }
+
+        action = engine._action_from_context("PLAYMTF", 0.02, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        blocking = {gate["gate"] for gate in context["decision_gate_context"]["blocking_failed_gates"]}
+        self.assertIn("system_rule_MTF_HARD_BLOCK", blocking)
+        self.assertIn("timeframe_alignment_gate", blocking)
+
+    def test_top_gainers_playbook_stage2_can_absorb_legacy_mtf_conflict(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 6.1,
+                "confirmed": False,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["trend_context"]["timeframe_alignment"] = {"alignment_grade": "D"}
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["opportunity_scan"] = {
+            "setup": "earnings_beat_gap_and_go",
+            "bucket": "Small Size Only",
+            "score": 1.0,
+            "data_quality": {"actionable_data_ready": True},
+            "top_gainers_playbook": {
+                "available": True,
+                "market_region": "US",
+                "final_signal": "MODERATE BUY",
+                "quant_score": 66,
+                "hard_excluded": False,
+                "hard_excludes": [],
+                "anti_patterns": [],
+                "cmp": 108.0,
+                "volume": 8_000_000,
+                "volume_ratio": 2.2,
+                "weinstein": {"stage": "Stage 2"},
+                "levels": {
+                    "pivot": 105.0,
+                    "entry": 108.0,
+                    "max_entry": 110.25,
+                    "stop": 100.44,
+                    "target1": 129.6,
+                },
+                "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "MODERATE"},
+            },
+        }
+
+        action = engine._action_from_context("PLAYMTF2", 0.02, {}, context, {})
+
+        self.assertEqual(action, "BUY")
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+
+    def test_top_gainers_playbook_suspect_breakout_without_volume_stays_hold(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 6.1,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["strategy_logic_filters"]["breakout_volume"] = {
+            "suspect_without_volume": True,
+            "volume_confirmed": False,
+        }
+        context["opportunity_scan"] = {
+            "setup": "earnings_beat_gap_and_go",
+            "bucket": "Small Size Only",
+            "score": 1.0,
+            "data_quality": {"actionable_data_ready": True},
+            "top_gainers_playbook": {
+                "available": True,
+                "market_region": "US",
+                "final_signal": "MODERATE BUY",
+                "quant_score": 66,
+                "hard_excluded": False,
+                "hard_excludes": [],
+                "anti_patterns": [],
+                "cmp": 108.0,
+                "volume": 8_000_000,
+                "volume_ratio": 2.2,
+                "weinstein": {"stage": "Stage 2"},
+                "levels": {
+                    "pivot": 105.0,
+                    "entry": 108.0,
+                    "max_entry": 110.25,
+                    "stop": 100.44,
+                    "target1": 129.6,
+                },
+                "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "MODERATE"},
+            },
+        }
+
+        action = engine._action_from_context("PLAYVOLUME", 0.30, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        blocking = {gate["gate"] for gate in context["decision_gate_context"]["blocking_failed_gates"]}
+        self.assertIn("breakout_volume_gate", blocking)
+
+    def test_us_yahoo_playbook_can_buy_as_reduced_reference_mode(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 6.1,
+                "confirmed": False,
+                "fast_mover": True,
+            }
+        )
+        context["market_region"] = "US"
+        context["quote"]["source"] = "yahoo-delayed"
+        context["data_readiness"] = {
+            "market_region": "US",
+            "trade_decision_ready": False,
+            "grade": "C",
+            "hard_gaps": [
+                {"key": "us_realtime_quote", "label": "US consolidated real-time quote"},
+                {"key": "us_minute_bars", "label": "US minute bars"},
+            ],
+            "sources": {"quote": "yahoo-delayed", "daily": "yahoo-delayed"},
+        }
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["opportunity_scan"] = {
+            "setup": "earnings_beat_gap_and_go",
+            "bucket": "Small Size Only",
+            "score": 1.0,
+            "data_quality": {"actionable_data_ready": True},
+            "top_gainers_playbook": {
+                "available": True,
+                "market_region": "US",
+                "final_signal": "STRONG BUY",
+                "quant_score": 74,
+                "hard_excluded": False,
+                "hard_excludes": [],
+                "anti_patterns": [],
+                "cmp": 108.0,
+                "volume": 8_000_000,
+                "volume_ratio": 2.6,
+                "weinstein": {"stage": "Stage 2"},
+                "levels": {
+                    "pivot": 105.0,
+                    "entry": 108.0,
+                    "max_entry": 110.25,
+                    "stop": 100.44,
+                    "target1": 129.6,
+                },
+                "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "STRONG"},
+            },
+        }
+
+        action = engine._action_from_context("PLAYYHOO", 0.02, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertEqual(probe["data_quality_override"], "us_yahoo_reference_reduced_size")
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+
+    def test_auto_follow_quality_gate_allows_us_playbook_reference_only_reduced_size(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "symbol": "PLAYYHOO",
+                "signal_type": "BUY",
+                "action": "BUY",
+                "latest_price": 108.0,
+                "risk_flags": [
+                    "scorecard_possible_circuit_risk_no_new_longs",
+                    "scorecard_extreme_atr_volatility_no_new_longs",
+                ],
+                "details": {
+                    "action": "BUY",
+                    "overall_score_pct": 45,
+                    "overall_grade": "D",
+                    "confluence": 0,
+                    "quote": {"price": 108.0, "source": "yahoo-delayed"},
+                    "data_readiness": {
+                        "market_region": "US",
+                        "trade_decision_ready": False,
+                        "hard_gaps": [
+                            {"key": "us_realtime_quote", "label": "US consolidated real-time quote"},
+                            {"key": "us_minute_bars", "label": "US minute bars"},
+                        ],
+                        "sources": {"quote": "yahoo-delayed", "daily": "yahoo-delayed"},
+                    },
+                    "opportunity_scan": {
+                        "setup": "earnings_beat_gap_and_go",
+                        "top_gainers_playbook": {
+                            "available": True,
+                            "market_region": "US",
+                            "final_signal": "STRONG BUY",
+                            "quant_score": 74,
+                            "hard_excluded": False,
+                            "hard_excludes": [],
+                            "anti_patterns": [],
+                            "cmp": 108.0,
+                            "volume": 8_000_000,
+                            "volume_ratio": 2.6,
+                            "weinstein": {"stage": "Stage 2"},
+                            "levels": {
+                                "entry": 108.0,
+                                "max_entry": 110.25,
+                                "stop": 100.44,
+                            },
+                            "catalyst_review": {"catalyst_confirmed": True, "catalyst_strength": "STRONG"},
+                        },
+                    },
+                    "targets": [{"label": "T1", "distance_pct": 12.0, "probability": "likely"}],
+                    "stop_status": {"price": 100.44},
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
+        self.assertLessEqual(gate["size_multiplier"], 0.35)
 
     def test_live_confirmed_probe_can_use_trade_ready_data_when_scan_quality_lags(self) -> None:
         engine = StrategyEngine(
@@ -1627,6 +1907,57 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual(action, "HOLD")
         self.assertFalse(context["decision_gate_context"]["opportunity_probe"]["ready"])
+
+    def test_btst_candidate_can_become_buy_action(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={"available": True, "confirmed": False, "fast_mover": False}
+        )
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.40}
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 42
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 42
+        context["opportunity_scan"] = _btst_scan_payload()
+
+        action = engine._action_from_context("BTSTBUY", 0.19, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(probe["source"], "btst_buy_candidate")
+        self.assertEqual(probe["size_policy"], "btst_guarded_buy")
+
+    def test_btst_quality_gate_keeps_buy_action_with_guarded_size(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "action": "BUY",
+                "overall_score_pct": 72,
+                "overall_grade": "B",
+                "confluence": 18,
+                "details": {
+                    "action": "BUY",
+                    "latest_price": 108.0,
+                    "overall_score_pct": 72,
+                    "overall_grade": "B",
+                    "setup_score_pct": 76,
+                    "data_readiness": {"trade_decision_ready": True, "grade": "A"},
+                    "entry_zone": [107.0, 109.0],
+                    "stop_loss": 104.0,
+                    "targets": [{"label": "BTST-T1", "price": 112.0, "distance_pct": 3.7}],
+                    "opportunity_scan": _btst_scan_payload(),
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["opportunity_probe"])
+        self.assertGreaterEqual(gate["size_multiplier"], 0.75)
 
     def test_circuit_demand_lock_does_not_become_rule_based_buy(self) -> None:
         engine = StrategyEngine(
@@ -2377,6 +2708,145 @@ class StrategySafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "trade_economics_min_notional"):
                 db.follow_signal_idea(1, idea_id, mode="PAPER", amount=5_000, cost_settings=_economics_settings())
 
+    def test_auto_follow_sizing_uses_minimum_economic_size_when_cash_allows(self) -> None:
+        sizing = auto_follow_sizing(
+            25_000.0,
+            100.0,
+            max_position_pct=0.15,
+            size_multiplier=1.0,
+            market_region="IN",
+            settings=_economics_settings(),
+        )
+
+        self.assertTrue(sizing["passed"])
+        self.assertEqual(sizing["qty"], 75)
+        self.assertEqual(sizing["amount"], 7_500.0)
+        self.assertTrue(sizing["economics_floor_applied"])
+
+    def test_auto_follow_sizing_does_not_upsize_reduced_quality_probe(self) -> None:
+        sizing = auto_follow_sizing(
+            25_000.0,
+            100.0,
+            max_position_pct=0.15,
+            size_multiplier=0.35,
+            market_region="IN",
+            settings=_economics_settings(),
+        )
+
+        self.assertFalse(sizing["passed"])
+        self.assertFalse(sizing["economics_floor_applied"])
+
+    def test_paper_broker_uses_minimum_economic_size_for_conviction_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            broker = PaperBroker(_paper_broker_settings(initial_cash=25_000.0), db)
+            decision = _paper_buy_decision("ECONBUY", score=82.0, grade="A", confidence=0.82)
+
+            filled = broker.execute(decision, portfolio_equity=25_000.0)
+            [position] = db.positions()
+            with db.connect() as conn:
+                order = conn.execute("select * from orders where symbol = 'ECONBUY'").fetchone()
+
+        self.assertTrue(filled)
+        self.assertEqual(position["qty"], 75)
+        self.assertEqual(order["status"], "FILLED")
+        details = json.loads(order["details_json"])
+        economics = details["execution"]["sizing"]["trade_economics"]
+        self.assertTrue(economics["applied"])
+        self.assertEqual(economics["reason"], "minimum_economic_trade_floor_applied")
+        self.assertGreaterEqual(order["notional"], 7_500.0)
+
+    def test_paper_broker_vetoes_conviction_buy_when_only_tiny_size_possible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            broker = PaperBroker(_paper_broker_settings(initial_cash=10_000.0), db)
+            decision = _paper_buy_decision("TOOSMALL", score=82.0, grade="A", confidence=0.82)
+
+            filled = broker.execute(decision, portfolio_equity=10_000.0)
+            positions = db.positions()
+            with db.connect() as conn:
+                order = conn.execute("select * from orders where symbol = 'TOOSMALL'").fetchone()
+
+        self.assertFalse(filled)
+        self.assertEqual(positions, [])
+        self.assertEqual(order["status"], "VETOED")
+        self.assertEqual(order["reason"], "position_size_below_minimum_trade_economics")
+
+    def test_paper_broker_does_not_upsize_reduced_quality_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            broker = PaperBroker(_paper_broker_settings(initial_cash=25_000.0), db)
+            decision = _paper_buy_decision(
+                "PROBESIZE",
+                score=82.0,
+                grade="A",
+                confidence=0.82,
+                sizing_multiplier=0.35,
+                setup_bucket="SMALL_SIZE_ONLY",
+            )
+
+            filled = broker.execute(decision, portfolio_equity=25_000.0)
+            [position] = db.positions()
+            with db.connect() as conn:
+                order = conn.execute("select * from orders where symbol = 'PROBESIZE'").fetchone()
+
+        self.assertTrue(filled)
+        self.assertLess(position["qty"], 75)
+        details = json.loads(order["details_json"])
+        economics = details["execution"]["sizing"]["trade_economics"]
+        self.assertFalse(economics["applied"])
+        self.assertEqual(economics["reason"], "reduced_allocation_cap")
+
+    def test_paper_broker_blocks_tiny_profit_partial_exit_after_costs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            broker = PaperBroker(_paper_broker_settings(initial_cash=25_000.0), db)
+            _insert_paper_position(db, symbol="SCHNEIDER", qty=4, avg_price=1384.0, market_price=1387.10)
+            decision = _paper_sell_decision(
+                "SCHNEIDER",
+                price=1387.10,
+                reason="profit tier1: price 1387.10 >= target1 1387.00; tighten stop to break-even",
+                partial_sell_pct=0.33,
+            )
+
+            sold = broker.execute(decision, portfolio_equity=25_000.0)
+            [position] = db.positions()
+            with db.connect() as conn:
+                order = conn.execute("select * from orders where symbol = 'SCHNEIDER'").fetchone()
+
+        self.assertFalse(sold)
+        self.assertEqual(position["qty"], 4)
+        self.assertEqual(order["status"], "VETOED")
+        self.assertEqual(order["reason"], "low_value_profit_exit_blocked")
+        details = json.loads(order["details_json"])
+        self.assertEqual(details["execution"]["veto_gate"], "trade_economics_min_exit_profit")
+
+    def test_paper_broker_still_allows_stop_loss_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            broker = PaperBroker(_paper_broker_settings(initial_cash=25_000.0), db)
+            _insert_paper_position(db, symbol="STOPSELL", qty=10, avg_price=100.0, market_price=94.0)
+            decision = _paper_sell_decision(
+                "STOPSELL",
+                price=94.0,
+                reason="risk exit: price 94.00 <= stop 95.00",
+                stop_triggered=True,
+            )
+
+            sold = broker.execute(decision, portfolio_equity=25_000.0)
+            positions = db.positions()
+            with db.connect() as conn:
+                order = conn.execute("select * from orders where symbol = 'STOPSELL'").fetchone()
+
+        self.assertTrue(sold)
+        self.assertEqual(positions, [])
+        self.assertEqual(order["status"], "FILLED")
+
 
 def _economics_settings() -> SimpleNamespace:
     return SimpleNamespace(
@@ -2390,6 +2860,153 @@ def _economics_settings() -> SimpleNamespace:
         paper_min_exit_net_profit_usd=2.0,
         paper_min_exit_net_profit_bps=15.0,
     )
+
+
+def _paper_broker_settings(initial_cash: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        initial_cash_inr=initial_cash,
+        max_positions=10,
+        max_position_pct=0.15,
+        max_order_value_pct=0.10,
+        daily_loss_limit_pct=0.05,
+        llm_decision_mode="offline",
+        llm_provider="offline",
+        brokerage_bps=0.0,
+        slippage_bps=5.0,
+        taxes_bps=1.0,
+        stt_bps=10.0,
+        paper_min_auto_follow_notional_inr=7_500.0,
+        paper_min_auto_follow_notional_usd=250.0,
+        paper_min_exit_net_profit_inr=75.0,
+        paper_min_exit_net_profit_usd=2.0,
+        paper_min_exit_net_profit_bps=15.0,
+    )
+
+
+def _paper_buy_decision(
+    symbol: str,
+    *,
+    score: float,
+    grade: str,
+    confidence: float,
+    sizing_multiplier: float = 1.0,
+    setup_bucket: str = "ACTIONABLE",
+) -> Decision:
+    return Decision(
+        symbol=symbol,
+        action="BUY",
+        confidence=confidence,
+        price=100.0,
+        technical_score=0.8,
+        sentiment_score=0.2,
+        reason="conviction setup",
+        asof=utc_now(),
+        strategy="unit_test_strategy",
+        details_json=json.dumps(
+            {
+                "overall_score_pct": score,
+                "overall_grade": grade,
+                "setup_bucket": setup_bucket,
+                "sizing_grade": {"final_multiplier": sizing_multiplier},
+                "system_gate_audit": {
+                    "hard_blocked": False,
+                    "overall_score_pct": score,
+                    "overall_grade": grade,
+                    "allocation_cap_multiplier": sizing_multiplier,
+                },
+                "context": {
+                    "market_region": "IN",
+                    "full_spectrum_analysis": {
+                        "trade_plan": {
+                            "stop_loss": 99.0,
+                            "position_sizing": {"max_capital_at_risk_pct": 0.01},
+                        }
+                    },
+                },
+            }
+        ),
+    )
+
+
+def _btst_scan_payload() -> dict:
+    return {
+        "setup": "btst_buy_candidate",
+        "bucket": "Actionable",
+        "score": 0.76,
+        "data_quality": {"actionable_data_ready": True, "missing": []},
+        "btst": {
+            "detected": True,
+            "score": 0.76,
+            "confidence": 0.79,
+            "action_bias": "BUY",
+            "next_day_bias": "positive_follow_through",
+            "entry_zone": {"low": 107.0, "high": 109.0},
+            "stop_loss": 104.0,
+            "target1": 112.0,
+            "checks": {
+                "liquidity_ok": True,
+                "trend_ok": True,
+                "range_ok": True,
+                "day_move_ok": True,
+                "not_extended": True,
+                "volume_ok": True,
+                "overnight_risk_ok": True,
+                "sentiment_ok": True,
+            },
+        },
+    }
+
+
+def _paper_sell_decision(
+    symbol: str,
+    *,
+    price: float,
+    reason: str,
+    partial_sell_pct: float | None = None,
+    stop_triggered: bool = False,
+) -> Decision:
+    return Decision(
+        symbol=symbol,
+        action="SELL",
+        confidence=0.99,
+        price=price,
+        technical_score=0.0,
+        sentiment_score=0.0,
+        reason=reason,
+        asof=utc_now(),
+        strategy="risk_exit",
+        details_json=json.dumps(
+            {
+                "decision_path": "risk_exit",
+                "final_action": "SELL",
+                "action_reason": reason,
+                "risk_gates": {
+                    "stop_triggered": stop_triggered,
+                    "take_profit_triggered": partial_sell_pct is not None,
+                    "partial_sell_pct": partial_sell_pct,
+                },
+                "context": {"market_region": "IN"},
+            }
+        ),
+    )
+
+
+def _insert_paper_position(
+    db: Database,
+    *,
+    symbol: str,
+    qty: int,
+    avg_price: float,
+    market_price: float,
+) -> None:
+    with db.connect() as conn:
+        conn.execute(
+            """
+            insert into positions (symbol, strategy, qty, avg_price, market_price, realized_pnl, updated_at, details_json)
+            values (?, 'unit_test_strategy', ?, ?, ?, 0, ?, '{}')
+            """,
+            (symbol, qty, avg_price, market_price, utc_now()),
+        )
 
 
 def _insert_trade_economics_idea(

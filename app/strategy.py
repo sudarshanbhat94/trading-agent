@@ -193,6 +193,7 @@ class StrategyEngine:
             )
             self._persist_pattern_state_updates(symbol, context)
             context["pre_filter"] = pre_filter
+            self._apply_btst_strategy(context)
             self._apply_live_momentum_strategy(context)
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
@@ -901,6 +902,35 @@ class StrategyEngine:
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
         if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
             return {"ready": False, "reason": "opportunity_scan_wait_state", "setup": setup}
+        if setup == "btst_buy_candidate":
+            btst = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+            data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+            scan_score = _float_or_none(scan.get("score")) or 0.0
+            btst_score = _float_or_none(btst.get("score")) or scan_score
+            ready = (
+                bool(btst.get("detected"))
+                and str(scan.get("bucket") or "").strip().lower() == "actionable"
+                and btst_score >= 0.70
+                and data_quality.get("actionable_data_ready") is not False
+            )
+            return {
+                "ready": ready,
+                "reason": "btst_buy_candidate_ready" if ready else "btst_buy_candidate_not_ready",
+                "setup": setup,
+                "source": "btst_buy_candidate" if ready else None,
+                "scan_score": round(scan_score, 4),
+                "btst_score": round(btst_score, 4),
+                "combined_floor": 0.18,
+                "min_quality_score": 70.0,
+                "min_confluence": 16.0,
+                "size_policy": "btst_guarded_buy",
+                "data_quality_missing": [
+                    str(item or "").strip().lower()
+                    for item in data_quality.get("missing") or []
+                    if str(item or "").strip()
+                ],
+                "btst": btst,
+            }
         playbook_profile = self._top_gainers_playbook_profile(context, scan)
         if playbook_profile.get("ready"):
             return playbook_profile
@@ -916,6 +946,7 @@ class StrategyEngine:
         allowed_scan_setup = setup in {
             "opening_ignition",
             "intraday_momentum",
+            "btst_buy_candidate",
             "breakout_continuation",
             "near_breakout",
             "news_catalyst",
@@ -976,6 +1007,7 @@ class StrategyEngine:
         signal = str(playbook.get("final_signal") or "").upper()
         if signal not in {"STRONG BUY", "MODERATE BUY"}:
             return {"ready": False, "reason": "no_top_gainers_playbook_buy"}
+        market_region = str(playbook.get("market_region") or context.get("market_region") or "").upper()
         if playbook.get("hard_excluded") or playbook.get("hard_excludes") or str(playbook.get("tier") or "").upper() == "HARD EXCLUDE":
             return {"ready": False, "reason": "top_gainers_playbook_hard_excluded"}
         anti_codes = {
@@ -989,6 +1021,10 @@ class StrategyEngine:
         catalyst = playbook.get("catalyst_review") if isinstance(playbook.get("catalyst_review"), dict) else {}
         if catalyst.get("catalyst_confirmed") is not True:
             return {"ready": False, "reason": "top_gainers_playbook_catalyst_unconfirmed"}
+        weinstein = playbook.get("weinstein") if isinstance(playbook.get("weinstein"), dict) else {}
+        playbook_stage = str(weinstein.get("stage") or "").strip()
+        if playbook_stage in {"Stage 3", "Stage 4"}:
+            return {"ready": False, "reason": "top_gainers_playbook_stage_trap", "stage": playbook_stage}
         levels = playbook.get("levels") if isinstance(playbook.get("levels"), dict) else {}
         entry = _float_or_none(levels.get("entry"))
         max_entry = _float_or_none(levels.get("max_entry"))
@@ -1020,11 +1056,19 @@ class StrategyEngine:
         data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
         sources = data_ready.get("sources") if isinstance(data_ready.get("sources"), dict) else {}
         quote_source = str(quote.get("source") or sources.get("quote") or "").lower()
-        if data_ready.get("trade_decision_ready") is not True and not any(token in quote_source for token in ("upstox", "kite", "nubra")):
+        broker_or_live_source = any(token in quote_source for token in ("upstox", "kite", "nubra", "polygon", "alpaca", "ibkr"))
+        us_yahoo_reference = market_region == "US" and "yahoo" in quote_source
+        data_quality_override = None
+        if data_ready.get("trade_decision_ready") is not True and us_yahoo_reference:
+            if not self._top_gainers_playbook_us_reference_data_ok(playbook, data_ready):
+                return {"ready": False, "reason": "top_gainers_playbook_us_reference_data_missing"}
+            data_quality_override = "us_yahoo_reference_reduced_size"
+        elif data_ready.get("trade_decision_ready") is not True and not broker_or_live_source:
             return {"ready": False, "reason": "top_gainers_playbook_needs_live_quote_or_trade_ready_data"}
         return {
             "ready": True,
             "reason": "top_gainers_playbook_buy_ready",
+            "market_region": market_region,
             "setup": str(scan.get("setup") or "").strip().lower(),
             "source": "top_gainers_playbook",
             "final_signal": signal,
@@ -1039,12 +1083,50 @@ class StrategyEngine:
             "max_entry": round(max_entry, 4),
             "stop": round(stop, 4),
             "stop_risk_pct": round(stop_risk_pct, 4),
+            "playbook_stage": playbook_stage,
+            "playbook_stage_buy_allowed": self._top_gainers_playbook_stage_allows_entry(playbook_stage),
+            "data_quality_override": data_quality_override,
             "data_quality_missing": [
                 str(item or "").strip().lower()
                 for item in (playbook.get("data_gaps") or [])
                 if str(item or "").strip()
             ],
         }
+
+    def _top_gainers_playbook_stage_allows_entry(self, stage: str) -> bool:
+        normalized = str(stage or "").strip()
+        return normalized in {"Stage 1", "Stage 2", ""}
+
+    def _top_gainers_playbook_stage_can_override_alignment(self, profile: dict[str, Any]) -> bool:
+        return (
+            profile.get("source") == "top_gainers_playbook"
+            and profile.get("playbook_entry_zone_valid")
+            and str(profile.get("playbook_stage") or "") == "Stage 2"
+        )
+
+    def _top_gainers_playbook_stage_can_override_legacy_stage_gate(self, profile: dict[str, Any]) -> bool:
+        return (
+            profile.get("source") == "top_gainers_playbook"
+            and profile.get("playbook_entry_zone_valid")
+            and bool(profile.get("playbook_stage_buy_allowed"))
+        )
+
+    def _top_gainers_playbook_us_reference_data_ok(self, playbook: dict[str, Any], data_ready: dict[str, Any]) -> bool:
+        hard_gap_keys = {
+            str(gap.get("key") or "").strip().lower()
+            for gap in data_ready.get("hard_gaps") or []
+            if isinstance(gap, dict) and str(gap.get("key") or "").strip()
+        }
+        allowed_reference_gaps = {"us_realtime_quote", "us_minute_bars", "us_sec_filings"}
+        if hard_gap_keys and not hard_gap_keys <= allowed_reference_gaps:
+            return False
+        required_values = (
+            playbook.get("cmp"),
+            playbook.get("volume"),
+            playbook.get("volume_ratio"),
+            playbook.get("quant_score"),
+        )
+        return all(_float_or_none(value) is not None for value in required_values)
 
     def _rule_audit_with_playbook_overrides(self, rule_audit: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         if not profile.get("playbook_entry_zone_valid"):
@@ -1173,6 +1255,8 @@ class StrategyEngine:
             return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
         if gate_name == "system_rule_GRADE_VIOLATION":
             return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
+        if gate_name in {"system_rule_MTF_HARD_BLOCK", "timeframe_alignment_gate"}:
+            return self._top_gainers_playbook_stage_can_override_alignment(profile)
         if gate_name == "session_momentum_gate":
             if reason == "late_intraday_momentum_wait_for_pullback" or self._gate_value_flag(value, "late_chase"):
                 if profile.get("source") == "top_gainers_playbook" and profile.get("playbook_entry_zone_valid"):
@@ -1189,24 +1273,28 @@ class StrategyEngine:
         if gate_name == "phase2_data_readiness":
             return self._opportunity_probe_can_absorb_data_readiness_block(gate.get("value"), profile)
         if gate_name == "stage_buy_permitted":
+            if profile.get("source") == "top_gainers_playbook":
+                return self._top_gainers_playbook_stage_can_override_legacy_stage_gate(profile)
             return profile.get("source") in {
                 "live_momentum_review",
                 "opportunity_scan",
                 "live_quote_opportunity_scan",
-                "top_gainers_playbook",
             }
         if gate_name == "risk_overrides":
             return self._opportunity_probe_can_absorb_risk_flags(gate.get("value"), profile)
+        if reason == "stage_analysis_not_stage2_markup" and profile.get("source") == "top_gainers_playbook":
+            return self._top_gainers_playbook_stage_can_override_legacy_stage_gate(profile)
         if reason in {
             "overall_score_below_70_no_new_longs",
             "fundamentals_unknown_needs_news_or_delivery_confirmation",
             "broad_momentum_entry_needs_current_session_confirmation",
-            "stage_analysis_not_stage2_markup",
         }:
             return True
         return False
 
     def _opportunity_probe_can_absorb_entry_grade(self, value: Any, reason: str, profile: dict[str, Any]) -> bool:
+        if profile.get("source") == "top_gainers_playbook" and profile.get("playbook_entry_zone_valid"):
+            return True
         if reason == "extended_entry_no_new_longs":
             return False
         if self._gate_value_flag(value, "late_chase"):
@@ -1299,11 +1387,35 @@ class StrategyEngine:
                 and "price_extended_from_pivot" in normalized
             ):
                 continue
+            if (
+                profile.get("source") == "top_gainers_playbook"
+                and profile.get("playbook_entry_zone_valid")
+                and profile.get("market_region") == "US"
+                and (
+                    "possible_circuit" in normalized
+                    or "extreme_atr_volatility" in normalized
+                )
+            ):
+                continue
             if any(token in normalized for token in hard_tokens):
                 return False
         return True
 
     def _opportunity_probe_can_absorb_data_readiness_block(self, value: Any, profile: dict[str, Any]) -> bool:
+        if profile.get("data_quality_override") == "us_yahoo_reference_reduced_size":
+            hard_gap_keys: set[str] = set()
+            if isinstance(value, dict) and "hard_gaps" in value:
+                hard_gap_keys = {
+                    str(gap.get("key") or "").strip().lower()
+                    for gap in value.get("hard_gaps") or []
+                    if isinstance(gap, dict) and str(gap.get("key") or "").strip()
+                }
+            elif isinstance(value, dict):
+                key = str(value.get("key") or "").strip().lower()
+                if key:
+                    hard_gap_keys = {key}
+            allowed_reference_gaps = {"us_realtime_quote", "us_minute_bars", "us_sec_filings"}
+            return bool(hard_gap_keys) and hard_gap_keys <= allowed_reference_gaps
         if profile.get("data_quality_override") != "live_quote_ohlcv_used_for_probe":
             return False
         missing = {
@@ -1417,18 +1529,20 @@ class StrategyEngine:
         else:
             earnings_window = earnings_days_value is not None and 0 <= earnings_days_value <= 14
         earnings_block = earnings_window and not event_thesis.get("supported") and not has_position
-        monthly_expiry_day_block = bool(
+        monthly_expiry_day = bool(
             macro_event_context.get("is_monthly_expiry_day")
             or (macro_event_context.get("is_expiry_day") and macro_event_context.get("expiry_type") == "monthly")
-        ) and not has_position
-        monthly_expiry_eve_risk = bool(macro_event_context.get("is_monthly_expiry_eve")) and not has_position
-        if monthly_expiry_eve_risk:
+        )
+        monthly_expiry_eve = bool(macro_event_context.get("is_monthly_expiry_eve")) and not monthly_expiry_day
+        monthly_expiry_block = monthly_expiry_day and not has_position
+        if monthly_expiry_eve and not has_position:
             buy_threshold = max(buy_threshold, 0.40)
             macro_event_context["expiry_risk_policy"] = "probe_size_only"
-            expiry_size = _float_or_none(macro_event_context.get("expiry_size_multiplier"))
-            macro_event_context["expiry_size_multiplier"] = min(expiry_size if expiry_size is not None else 0.35, 0.35)
+            macro_event_context["expiry_size_multiplier"] = min(
+                _float_or_none(macro_event_context.get("expiry_size_multiplier")) or 0.35,
+                0.35,
+            )
             macro_event_context["expiry_risk_reason"] = "monthly_expiry_eve_reduce_size"
-        monthly_expiry_block = monthly_expiry_day_block
         macro_failed = earnings_block or monthly_expiry_block
         macro_reason = (
             "earnings_lockout"
@@ -1437,7 +1551,17 @@ class StrategyEngine:
             if monthly_expiry_block
             else None
         )
-        gates.append({"gate": "earnings_gate", "passed": not macro_failed, "value": {"macro_event_context": macro_event_context, "event_thesis": event_thesis}})
+        gates.append(
+            {
+                "gate": "earnings_gate",
+                "passed": not macro_failed,
+                "value": {
+                    "macro_event_context": macro_event_context,
+                    "event_thesis": event_thesis,
+                    "expiry_eve_policy": macro_event_context.get("expiry_risk_policy"),
+                },
+            }
+        )
         if macro_failed:
             buy_blocked = True
             block_gate = block_gate or "macro_calendar_gate"
@@ -1525,6 +1649,7 @@ class StrategyEngine:
             )
             self._persist_pattern_state_updates(item["symbol"], context)
             context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
+            self._apply_btst_strategy(context)
             self._apply_live_momentum_strategy(context)
             combined = deterministic_score(context)
             item["sentiment_score"] = sentiment_score
@@ -1782,6 +1907,58 @@ class StrategyEngine:
                 output[market] = {"symbol": symbol, "return_pct": ret}
                 break
         return output
+
+    def _apply_btst_strategy(self, context: dict[str, Any]) -> None:
+        scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+        if str(scan.get("setup") or "").strip().lower() != "btst_buy_candidate":
+            return
+        btst = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+        if not btst.get("detected"):
+            return
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        full["btst_review"] = btst
+        btst_score = _float_or_none(btst.get("score")) or _float_or_none(scan.get("score")) or 0.0
+        strategy = {
+            "name": "btst_buy_candidate",
+            "score": round(max(0.74, min(0.92, btst_score)), 3),
+            "direction": "BUY",
+            "confidence": round(min(0.88, 0.58 + btst_score * 0.30), 3),
+            "notes": [
+                "BTST candidate",
+                "closing strength supports next-day follow-through",
+                "overnight risk checks passed",
+            ],
+            "metadata": btst,
+        }
+        current = context.get("best_strategy") if isinstance(context.get("best_strategy"), dict) else {}
+        if float(current.get("score") or 0.0) < strategy["score"] or str(current.get("name") or "") in {"", "no_actionable_strategy"}:
+            context["best_strategy"] = strategy
+            signals = context.get("strategy_signals")
+            if isinstance(signals, list):
+                signals.append(strategy)
+        entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+        if entry:
+            current_grade = str(entry.get("entry_grade") or "WATCH").upper()
+            if current_grade in {"", "WATCH", "C"}:
+                entry["entry_grade"] = "B"
+                entry["setup_type"] = "btst_buy_candidate"
+                entry["quality_score"] = max(float(entry.get("quality_score") or 0.0), 74.0)
+            entry["volume_confirmation"] = True
+            entry["btst_confirmation"] = btst
+        trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
+        entry_zone = btst.get("entry_zone") if isinstance(btst.get("entry_zone"), dict) else {}
+        low = _float_or_none(entry_zone.get("low"))
+        high = _float_or_none(entry_zone.get("high") or btst.get("max_entry"))
+        if low and high:
+            trade_plan["entry_zone"] = [round(low, 2), round(high, 2)]
+        stop = _float_or_none(btst.get("stop_loss"))
+        target1 = _float_or_none(btst.get("target1"))
+        if stop:
+            trade_plan["stop_loss"] = round(stop, 2)
+        if target1:
+            trade_plan["targets"] = [{"label": "BTST-T1", "price": round(target1, 2)}]
+        trade_plan["holding_period"] = "BTST"
+        full["trade_plan"] = trade_plan
 
     def _apply_live_momentum_strategy(self, context: dict[str, Any]) -> None:
         full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
@@ -2519,10 +2696,10 @@ class StrategyEngine:
         if breadth.get("breadth_regime") == "bear_warning":
             multiplier *= 0.5
             modifiers.append("breadth_bear_warning x0.5")
-        macro_event_context = context.get("macro_event_context") if isinstance(context.get("macro_event_context"), dict) else {}
-        if macro_event_context.get("is_monthly_expiry_eve"):
-            expiry_size = _float_or_none(macro_event_context.get("expiry_size_multiplier"))
-            expiry_cap = min(expiry_size if expiry_size is not None else 0.35, 0.35)
+        macro_event = context.get("macro_event_context") if isinstance(context.get("macro_event_context"), dict) else {}
+        has_position = float((context.get("position") or {}).get("qty") or 0.0) > 0
+        if macro_event.get("is_monthly_expiry_eve") and not has_position:
+            expiry_cap = min(_float_or_none(macro_event.get("expiry_size_multiplier")) or 0.35, 0.35)
             multiplier = min(multiplier, expiry_cap)
             allocation_cap = min(allocation_cap, expiry_cap)
             modifiers.append(f"monthly_expiry_eve_probe_size_cap={expiry_cap}")

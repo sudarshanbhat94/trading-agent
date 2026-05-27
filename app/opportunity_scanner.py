@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from .india_top_gainers import build_playbook_dashboard, evaluate_indian_top_gainer_playbook
 from .market_regions import market_region_for_row
 from .models import Candle, Quote, utc_now
+from .us_top_movers import build_us_playbook_dashboard, evaluate_us_top_mover_playbook
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ _ACTIVE_OPPORTUNITY_SETUPS = {
     "market_action_momentum",
     "news_catalyst",
     "breakout_continuation",
+    "btst_buy_candidate",
     "extended_momentum_watch",
     "opening_ignition",
     "price_shocker_reversal_breakout",
@@ -209,6 +211,11 @@ class OpportunityScanner:
                 for item in candidates
                 if (item.get("market_action") or {}).get("available")
             ][:25],
+            "btst_buy_candidates": [
+                item
+                for item in candidates
+                if item.get("setup") == "btst_buy_candidate" and (item.get("btst") or {}).get("detected")
+            ][:20],
             "setup_counts": self._counts(item.get("setup") for item in selected_items),
             "bucket_counts": self._counts(item.get("bucket") for item in selected_items),
             "news_covered_candidates": news_covered_candidates,
@@ -226,7 +233,15 @@ class OpportunityScanner:
                 "sentiment_enabled": self.sentiment_enabled,
                 "sentiment_weight": self.sentiment_weight,
             },
-            "top_gainers_playbook": build_playbook_dashboard(top_gainers_playbook_records),
+            "top_gainers_playbook": _combined_playbook_dashboard(top_gainers_playbook_records),
+            "top_gainers_playbook_by_market": {
+                "IN": build_playbook_dashboard(
+                    [item for item in top_gainers_playbook_records if str(item.get("market_region") or "IN").upper() == "IN"]
+                ),
+                "US": build_us_playbook_dashboard(
+                    [item for item in top_gainers_playbook_records if str(item.get("market_region") or "").upper() == "US"]
+                ),
+            },
         }
         return OpportunityScanResult(
             selected_universe=selected_universe,
@@ -275,13 +290,37 @@ class OpportunityScanner:
         risk = self._risk_score(metrics)
         rally = self._rally_radar(metrics, trend, breakout, momentum, live_momentum, volume, sentiment, min_turnover)
         market_action_review = self._market_action_review(market_action, metrics, sentiment, min_turnover)
-        top_gainers_playbook = evaluate_indian_top_gainer_playbook(
-            row=row,
-            quote=quote,
-            candles=candles,
-            market_action=market_action,
-            sentiment=sentiment,
-            rs_context=rs_context or {},
+        btst = self._btst_review(
+            row,
+            quote,
+            candles,
+            metrics,
+            trend,
+            breakout,
+            momentum,
+            volume,
+            sentiment,
+            rs_context or {},
+            min_turnover,
+        )
+        top_gainers_playbook = (
+            evaluate_us_top_mover_playbook(
+                row=row,
+                quote=quote,
+                candles=candles,
+                market_action=market_action,
+                sentiment=sentiment,
+                rs_context=rs_context or {},
+            )
+            if market_region == "US"
+            else evaluate_indian_top_gainer_playbook(
+                row=row,
+                quote=quote,
+                candles=candles,
+                market_action=market_action,
+                sentiment=sentiment,
+                rs_context=rs_context or {},
+            )
         )
         data_quality = self._data_quality(row, quote, metrics, sentiment)
         if data_quality["reject_reason"] and not in_position and not reject_reason:
@@ -313,6 +352,7 @@ class OpportunityScanner:
             + catalyst_boost
             + rally["score_boost"]
             + market_action_review["score_boost"]
+            + btst["score_boost"]
             + self._live_momentum_boost(metrics, live_momentum, min_turnover),
             0.0,
             1.0,
@@ -323,9 +363,12 @@ class OpportunityScanner:
         market_action_floor = self._market_action_score_floor(market_action_review, liquidity_profile, metrics)
         if market_action_floor > score:
             score = market_action_floor
+        if btst.get("detected"):
+            score = max(score, float(btst.get("score") or 0.0))
 
         reasons.extend(rally.get("reasons", []))
         reasons.extend(market_action_review.get("reasons", []))
+        reasons.extend(btst.get("reasons", []))
         if top_gainers_playbook.get("available"):
             reasons.append(
                 f"top gainers playbook: {top_gainers_playbook.get('final_signal')} "
@@ -373,7 +416,11 @@ class OpportunityScanner:
         playbook_signal = str(top_gainers_playbook.get("final_signal") or "")
         if playbook_signal in {"STRONG BUY", "MODERATE BUY"} and playbook_strategy.get("code"):
             setup = str(playbook_strategy["code"])
+        elif btst.get("detected"):
+            setup = "btst_buy_candidate"
         bucket = self._bucket(score, risk, reject_reason, metrics)
+        if not reject_reason and btst.get("detected") and float(btst.get("score") or 0.0) >= 0.72 and risk >= 0.45:
+            bucket = "Actionable"
         if not reject_reason and playbook_signal == "STRONG BUY":
             bucket = "Actionable"
         elif not reject_reason and playbook_signal == "MODERATE BUY":
@@ -398,6 +445,7 @@ class OpportunityScanner:
             "sentiment": sentiment,
             "rally_radar": rally,
             "market_action": market_action_review,
+            "btst": btst,
             "top_gainers_playbook": top_gainers_playbook,
             "data_quality": data_quality,
             "liquidity_profile": liquidity_profile,
@@ -408,6 +456,7 @@ class OpportunityScanner:
                 "momentum": round(momentum, 4),
                 "live_momentum": round(live_momentum, 4),
                 "rally_radar": round(rally["score"], 4),
+                "btst": round(float(btst.get("score") or 0.0), 4),
                 "volume": round(volume, 4),
                 "risk": round(risk, 4),
                 "data_quality": round(data_quality["score"], 4),
@@ -789,6 +838,158 @@ class OpportunityScanner:
             if day_gain >= 1.0 and (high_distance is None or high_distance <= 3.0):
                 return max(self.min_score + 0.03, min(0.78, score * 0.84))
         return 0.0
+
+    def _btst_review(
+        self,
+        row: dict[str, Any],
+        quote: Quote,
+        candles: list[Candle],
+        metrics: dict[str, Any],
+        trend: float,
+        breakout: float,
+        momentum: float,
+        volume: float,
+        sentiment: dict[str, Any],
+        rs_context: dict[str, Any],
+        min_turnover: float,
+    ) -> dict[str, Any]:
+        price = _float_or_none(metrics.get("price")) or float(quote.price or 0.0)
+        atr_pct = _float_or_none(metrics.get("atr_pct")) or 3.0
+        day_gain = _float_or_none(metrics.get("day_gain_pct"))
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        turnover = _float_or_none(metrics.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(metrics.get("projected_turnover")) or turnover
+        dist_sma20 = _float_or_none(metrics.get("distance_to_sma20_pct"))
+        dist_sma50 = _float_or_none(metrics.get("distance_to_sma50_pct"))
+        dist_high = min(
+            [
+                value
+                for value in (
+                    _float_or_none(metrics.get("distance_to_20d_high_pct")),
+                    _float_or_none(metrics.get("distance_to_55d_high_pct")),
+                )
+                if value is not None
+            ],
+            default=None,
+        )
+        return_5d = _float_or_none(metrics.get("return_5d_pct")) or 0.0
+        history = int(metrics.get("history_candles") or 0)
+        rs_rank = _float_or_none(rs_context.get("rs_rank") or rs_context.get("percentile_63"))
+        rs_improving = bool(rs_context.get("improving")) or (rs_rank is not None and rs_rank >= 70.0)
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        liquidity_ok = turnover >= min_turnover or projected_turnover >= min_turnover * 1.5
+        trend_ok = trend >= 0.66 and momentum >= 0.55
+        range_ok = range_position >= 0.72 and (high_distance is None or high_distance <= 1.20)
+        day_move_ok = day_gain is not None and 0.60 <= day_gain <= 4.80
+        not_extended = (dist_sma20 is None or -1.5 <= dist_sma20 <= 8.5) and return_5d <= 12.0
+        breakout_zone = breakout >= 0.58 or (dist_high is not None and dist_high <= 4.0)
+        volume_ok = participation >= 1.10 or volume >= 0.60
+        overnight_risk_ok = atr_pct <= 6.5 and not (day_gain is not None and day_gain >= 5.0 and participation >= 4.5)
+        sentiment_ok = not sentiment.get("negative_catalyst")
+        close_strength = _close_strength_from_candles(candles, price)
+        prior_day_follow_through = close_strength.get("latest_close_position", 0.0) >= 0.60
+
+        checks = {
+            "history_ok": history >= 55,
+            "liquidity_ok": liquidity_ok,
+            "trend_ok": trend_ok,
+            "range_ok": range_ok,
+            "day_move_ok": day_move_ok,
+            "not_extended": not_extended,
+            "breakout_zone": breakout_zone,
+            "volume_ok": volume_ok,
+            "overnight_risk_ok": overnight_risk_ok,
+            "sentiment_ok": sentiment_ok,
+            "relative_strength_ok": rs_improving or rs_rank is None,
+            "prior_close_strength_ok": prior_day_follow_through or history < 80,
+        }
+        score = (
+            (1.0 if checks["history_ok"] else 0.0) * 0.07
+            + (1.0 if liquidity_ok else 0.0) * 0.10
+            + trend * 0.14
+            + breakout * 0.13
+            + momentum * 0.11
+            + _clamp((range_position - 0.55) / 0.35, 0.0, 1.0) * 0.12
+            + _clamp((participation - 0.8) / 2.2, 0.0, 1.0) * 0.12
+            + (0.08 if not_extended else 0.0)
+            + (0.06 if overnight_risk_ok else 0.0)
+            + (0.05 if rs_improving else 0.0)
+            + (0.05 if sentiment.get("positive_catalyst") else 0.0)
+        )
+        score = _clamp(score, 0.0, 1.0)
+        detected = bool(score >= 0.70 and all(checks[key] for key in (
+            "history_ok",
+            "liquidity_ok",
+            "trend_ok",
+            "range_ok",
+            "day_move_ok",
+            "not_extended",
+            "breakout_zone",
+            "volume_ok",
+            "overnight_risk_ok",
+            "sentiment_ok",
+        )))
+        stop_risk_pct = _clamp(max(2.2, min(5.5, atr_pct * 0.85)), 2.0, 6.0)
+        target_pct = _clamp(max(2.4, min(6.0, atr_pct * 1.05)), 2.0, 7.0)
+        max_entry_pct = 1.2 if day_gain is not None and day_gain <= 3.5 else 0.8
+        entry_low = price * 0.995 if price else None
+        entry_high = price * (1 + max_entry_pct / 100.0) if price else None
+        stop = price * (1 - stop_risk_pct / 100.0) if price else None
+        target1 = price * (1 + target_pct / 100.0) if price else None
+        reasons: list[str] = []
+        if detected:
+            reasons.append("BTST buy candidate: closing near high with controlled overnight risk")
+        if range_ok:
+            reasons.append("holds upper part of the day range")
+        if volume_ok:
+            reasons.append("volume participation supports next-day follow-through")
+        if trend_ok:
+            reasons.append("trend and momentum are aligned")
+        if rs_improving:
+            reasons.append("relative strength is improving")
+        if sentiment.get("positive_catalyst"):
+            reasons.append("positive news/catalyst improves next-day odds")
+        if not sentiment_ok:
+            reasons.append("negative news blocks BTST buy")
+        if not overnight_risk_ok:
+            reasons.append("overnight gap risk too high for BTST")
+        return {
+            "detected": detected,
+            "score": round(score, 4),
+            "confidence": round(_clamp(0.45 + score * 0.45, 0.0, 0.92), 4),
+            "score_boost": 0.08 if detected else 0.0,
+            "setup": "btst_buy_candidate" if detected else "",
+            "action_bias": "BUY" if detected else "WAIT",
+            "next_day_bias": "positive_follow_through" if detected else "not_ready",
+            "holding_period": "BTST",
+            "entry_zone": {"low": _round(entry_low), "high": _round(entry_high)},
+            "max_entry": _round(entry_high),
+            "stop_loss": _round(stop),
+            "target1": _round(target1),
+            "exit_plan": "Sell tomorrow into first strength or trail below first 15-minute low; do not average down overnight.",
+            "reasons": reasons,
+            "checks": checks,
+            "evidence": {
+                "day_gain_pct": _round(day_gain),
+                "day_range_position": _round(range_position),
+                "day_high_distance_pct": _round(high_distance),
+                "volume_ratio": _round(volume_ratio),
+                "projected_volume_ratio": _round(projected_volume_ratio),
+                "turnover": round(turnover, 2),
+                "projected_turnover": round(projected_turnover, 2),
+                "distance_to_near_high_pct": _round(dist_high),
+                "distance_to_sma20_pct": _round(dist_sma20),
+                "distance_to_sma50_pct": _round(dist_sma50),
+                "atr_pct": _round(atr_pct),
+                "return_5d_pct": _round(return_5d),
+                "rs_rank": _round(rs_rank),
+                "latest_close_position": _round(close_strength.get("latest_close_position")),
+                "sector": row.get("sector") or "",
+            },
+        }
 
     def _rally_radar(
         self,
@@ -1220,8 +1421,11 @@ class OpportunityScanner:
         liquidity_profile = item.get("liquidity_profile") if isinstance(item.get("liquidity_profile"), dict) else {}
         rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
+        btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
         top_gainers_playbook = item.get("top_gainers_playbook") if isinstance(item.get("top_gainers_playbook"), dict) else {}
         trade_window = market_action.get("trade_window") or rally.get("trade_window")
+        if btst.get("detected"):
+            trade_window = "buy_before_close_sell_tomorrow"
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -1234,6 +1438,7 @@ class OpportunityScanner:
             "trade_window": trade_window,
             "rally_evidence": rally.get("evidence", {}),
             "market_action": market_action,
+            "btst": btst,
             "top_gainers_playbook": top_gainers_playbook,
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
@@ -1383,9 +1588,10 @@ class OpportunityScanner:
             item
             for item in scored
             if str(item.get("setup") or "")
-            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel", *_MARKET_ACTION_SETUPS}
+            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel", "btst_buy_candidate", *_MARKET_ACTION_SETUPS}
             or float(((item.get("components") or {}).get("live_momentum")) or 0.0) >= 0.70
             or float(((item.get("components") or {}).get("rally_radar")) or 0.0) >= 0.60
+            or float(((item.get("components") or {}).get("btst")) or 0.0) >= 0.70
             or bool((item.get("market_action") or {}).get("available"))
         ]
         rally_items.sort(
@@ -1457,11 +1663,13 @@ class OpportunityScanner:
             "intraday_momentum": 0.10,
             "market_action_momentum": 0.08,
             "pre_rally_fuel": 0.06,
+            "btst_buy_candidate": 0.11,
             "extended_momentum_watch": 0.02,
             "top_gainer_momentum": 0.05,
         }.get(setup, 0.0)
         live = float(components.get("live_momentum") or 0.0)
         rally = float(components.get("rally_radar") or 0.0)
+        btst = float(components.get("btst") or 0.0)
         gain = _clamp((float(metrics.get("day_gain_pct") or 0.0) - 3.0) / 7.0, 0.0, 1.0)
         volume = _clamp((float(metrics.get("volume_ratio") or 0.0) - 1.0) / 4.0, 0.0, 1.0)
         min_turnover = self._min_turnover_for_market(str(item.get("market_region") or "IN"))
@@ -1472,6 +1680,7 @@ class OpportunityScanner:
             playbook_boost
             + phase_boost
             + rally * 0.30
+            + btst * 0.16
             + live * 0.22
             + gain * 0.18
             + volume * 0.10
@@ -1509,6 +1718,89 @@ class OpportunityScanner:
         return counts
 
 
+def _combined_playbook_dashboard(records: list[dict[str, Any]]) -> dict[str, Any]:
+    records = [item for item in records if isinstance(item, dict) and item.get("available")]
+    records.sort(
+        key=lambda item: (
+            _playbook_signal_rank(item.get("final_signal")),
+            float(item.get("quant_score") or 0.0),
+            float(item.get("gain_pct") or 0.0),
+        ),
+        reverse=True,
+    )
+    excluded = [item for item in records if item.get("hard_excluded") or item.get("tier") == "HARD EXCLUDE"]
+    tier3 = [item for item in records if item.get("tier") == "TIER 3 - WATCH ONLY"]
+    buys = [item for item in records if item.get("final_signal") in {"STRONG BUY", "MODERATE BUY"}]
+    watch = [item for item in records if item.get("final_signal") == "WATCH" or "WATCH" in str(item.get("tier") or "")]
+    avoid = [item for item in records if item.get("final_signal") == "AVOID"]
+    return {
+        "enabled": True,
+        "source": "multi_market_top_movers_playbook",
+        "label": "Top Movers Playbook",
+        "market_region": "BOTH",
+        "generated_at": utc_now(),
+        "total_gainers_evaluated": len(records),
+        "tier_summary": {
+            "tier1": sum(1 for item in records if item.get("tier") == "TIER 1"),
+            "tier2": sum(1 for item in records if item.get("tier") == "TIER 2"),
+            "tier3_watch": len(tier3),
+            "excluded": len(excluded),
+        },
+        "signal_summary": {
+            "strong_buy": sum(1 for item in records if item.get("final_signal") == "STRONG BUY"),
+            "moderate_buy": sum(1 for item in records if item.get("final_signal") == "MODERATE BUY"),
+            "watch": len(watch),
+            "avoid": len(avoid),
+        },
+        "catalyst_distribution": _count_values((item.get("catalyst_review") or {}).get("catalyst_type") for item in records),
+        "top_gainer_pct": max([float(item.get("gain_pct") or 0.0) for item in records], default=0.0),
+        "buy_signals": buys[:12],
+        "tomorrow_watchlist": [
+            item
+            for item in records
+            if item.get("final_signal") in {"WATCH", "QUANT HOLD"} and not item.get("hard_excluded")
+        ][:20],
+        "do_not_chase": [
+            {
+                "symbol": item.get("symbol"),
+                "name": item.get("name"),
+                "reason": _playbook_avoid_reason(item),
+                "anti_patterns": item.get("anti_patterns") or [],
+            }
+            for item in records
+            if item.get("final_signal") == "AVOID" or item.get("hard_excluded")
+        ][:30],
+        "records": records[:80],
+    }
+
+
+def _playbook_signal_rank(value: Any) -> int:
+    return {
+        "STRONG BUY": 5,
+        "MODERATE BUY": 4,
+        "WATCH": 3,
+        "QUANT HOLD": 2,
+        "AVOID": 1,
+    }.get(str(value or ""), 0)
+
+
+def _count_values(values: Any) -> dict[str, int]:
+    output: dict[str, int] = {}
+    for value in values:
+        key = str(value or "UNKNOWN")
+        output[key] = output.get(key, 0) + 1
+    return output
+
+
+def _playbook_avoid_reason(item: dict[str, Any]) -> str:
+    if item.get("hard_excludes"):
+        return f"Do not buy {item.get('symbol')} - hard exclusion: {', '.join(item.get('hard_excludes') or [])}."
+    anti = item.get("anti_patterns") or []
+    if anti:
+        return f"Do not buy {item.get('symbol')} - {anti[0].get('reason') or anti[0].get('label')}."
+    return f"Do not buy {item.get('symbol')} - final signal is {item.get('final_signal')}."
+
+
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
@@ -1519,6 +1811,18 @@ def _return_pct(closes: list[float], lookback: int) -> float | None:
     previous = closes[-(lookback + 1)]
     current = closes[-1]
     return ((current - previous) / previous) * 100 if previous else None
+
+
+def _close_strength_from_candles(candles: list[Candle], fallback_price: float | None = None) -> dict[str, Any]:
+    if not candles:
+        return {"latest_close_position": None}
+    latest = candles[-1]
+    high = _float_or_none(latest.high)
+    low = _float_or_none(latest.low)
+    close = _float_or_none(fallback_price) or _float_or_none(latest.close)
+    if high is None or low is None or close is None or high <= low:
+        return {"latest_close_position": None}
+    return {"latest_close_position": _clamp((close - low) / (high - low), 0.0, 1.0)}
 
 
 def _percentile_ranks(values: dict[str, float]) -> dict[str, float]:

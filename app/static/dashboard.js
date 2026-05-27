@@ -15,10 +15,18 @@ const state = {
   positionMarksTimer: null,
   positionMarksLastFetchAt: 0,
   positionMarksLastAppliedAt: null,
+  marketIndexTimer: null,
+  marketIndices: {},
+  marketIndicesInFlight: false,
   quoteFilter: "",
   ideaWatchlistSearch: "",
   activeIdeaGroup: "buys",
   currentIdeaWatchlistRows: [],
+  signalSearchQuery: "",
+  signalSearchRows: [],
+  signalSearchInFlight: false,
+  signalSearchTimer: null,
+  signalSearchSeq: 0,
   portfolioSearch: "",
   activePortfolioTab: "holdings",
   activeMarket: "IN",
@@ -256,9 +264,271 @@ function portfolioMetricsForMarket(portfolio = {}, positions = [], market = "IN"
     invested,
     market_value: marketValue,
     equity: cash + marketValue,
-    realized_pnl: Number(portfolio.realized_pnl || 0),
+    realized_pnl: firstFinite(
+      portfolio.realized_pnl_by_market?.[region],
+      portfolio.realizedPnlByMarket?.[region],
+      portfolio.realized_by_market?.[region],
+      portfolio.realized_pnl,
+      0,
+    ),
     unrealized_pnl: unrealized,
+    today_pnl: firstFinite(
+      portfolio.today_pnl_by_market?.[region],
+      portfolio.todayPnlByMarket?.[region],
+      portfolio.day_pnl_by_market?.[region],
+      portfolio.today_pnl,
+      portfolio.day_pnl,
+    ),
   };
+}
+
+function quoteForSymbol(symbol, market = state.activeMarket) {
+  const normalizedSymbol = String(symbol || "").toUpperCase();
+  const region = normalizeUiMarket(market);
+  if (!normalizedSymbol) return {};
+  return (state.latest?.quotes || []).find((quote) => (
+    String(quote.symbol || "").toUpperCase() === normalizedSymbol
+    && normalizeUiMarket(rowMarket(quote)) === region
+  )) || {};
+}
+
+function positionDayPnl(row = {}, market = state.activeMarket) {
+  if (positionOpenedToday(row)) {
+    return positionUnrealizedPnl(row);
+  }
+  const qty = positionQuantity(row);
+  const latest = positionLatestPrice(row);
+  const explicitToday = firstFinite(
+    row.today_pnl,
+    row.day_pnl,
+    row.daily_pnl,
+    row.position_summary?.today_pnl,
+    row.position_summary?.day_pnl,
+  );
+  if (explicitToday !== null) return explicitToday;
+  const quote = quoteForSymbol(row.symbol, market);
+  const previousClose = firstPositiveFinite(
+    row.previous_close,
+    row.prev_close,
+    row.position_summary?.previous_close,
+    row.position_summary?.prev_close,
+    quote.previous_close,
+    quote.prev_close,
+  );
+  if (!qty || latest === null || previousClose === null) return null;
+  return (latest - previousClose) * qty;
+}
+
+function positionStockDayPct(row = {}, market = state.activeMarket) {
+  const explicit = firstFinite(row.day_change_pct, row.change_pct, row.daily_change_pct);
+  if (explicit !== null) return explicit;
+  const latest = positionLatestPrice(row);
+  const quote = quoteForSymbol(row.symbol, market);
+  const previousClose = firstPositiveFinite(
+    row.previous_close,
+    row.prev_close,
+    row.position_summary?.previous_close,
+    row.position_summary?.prev_close,
+    quote.previous_close,
+    quote.prev_close,
+  );
+  if (latest === null || previousClose === null) return null;
+  return ((latest - previousClose) / previousClose) * 100;
+}
+
+function positionDayPct(row = {}, market = state.activeMarket) {
+  if (positionOpenedToday(row)) {
+    const explicitTodayPct = firstFinite(row.today_pnl_pct, row.position_day_change_pct);
+    if (explicitTodayPct !== null) return explicitTodayPct;
+    const pnl = positionUnrealizedPnl(row);
+    const entry = positionEntryPrice(row);
+    const qty = positionQuantity(row);
+    const invested = entry !== null ? entry * qty : null;
+    if (pnl !== null && invested && invested > 0) return (pnl / invested) * 100;
+  }
+  return positionStockDayPct(row, market);
+}
+
+function positionDayPnlSource(row = {}, market = state.activeMarket) {
+  const dayPnl = positionDayPnl(row, market);
+  if (dayPnl === null || !Number.isFinite(Number(dayPnl))) return "unavailable";
+  return positionOpenedToday(row) ? "entry_today" : "previous_close";
+}
+
+function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.activeMarket) {
+  const unrealized = Number(portfolio.unrealized_pnl || 0);
+  const realized = Number(portfolio.realized_pnl || 0);
+  const openPositions = (positions || []).filter((row) => Number(row.qty || row.user_follow?.qty || 0) > 0);
+  const calculatedMarketValue = openPositions.reduce(
+    (sum, row) => sum + Number(firstFinite(row.market_price, row.latest_price, row.follow_latest_price) || 0) * Number(row.qty || row.user_follow?.qty || 0),
+    0,
+  );
+  const calculatedInvested = openPositions.reduce(
+    (sum, row) => sum + Number(firstFinite(row.avg_price, row.entry_price, row.follow_entry_price) || 0) * Number(row.qty || row.user_follow?.qty || 0),
+    0,
+  );
+  const dayValues = openPositions
+    .map((row) => positionDayPnl(row, market))
+    .filter((value) => value !== null && Number.isFinite(Number(value)));
+  const daySources = openPositions
+    .map((row) => positionDayPnlSource(row, market))
+    .filter((source) => source !== "unavailable");
+  const explicitToday = firstFinite(
+    portfolio.today_pnl,
+    portfolio.day_pnl,
+    portfolio.todayPnl,
+    portfolio.daily_pnl,
+    portfolio.todays_pnl,
+  );
+  const calculatedToday = dayValues.length
+    ? dayValues.reduce((sum, value) => sum + Number(value || 0), 0)
+    : null;
+  const today = calculatedToday !== null ? calculatedToday : explicitToday;
+  let todaySource = "unavailable";
+  if (calculatedToday === null && explicitToday !== null) {
+    todaySource = "reported";
+  } else if (daySources.includes("entry_today") && daySources.includes("previous_close")) {
+    todaySource = "mixed";
+  } else if (daySources.includes("entry_today")) {
+    todaySource = "entry_today";
+  } else if (daySources.includes("previous_close")) {
+    todaySource = "previous_close";
+  }
+  return {
+    today,
+    today_source: todaySource,
+    today_has_close: explicitToday !== null || dayValues.length > 0,
+    today_count: dayValues.length,
+    today_missing_count: Math.max(openPositions.length - dayValues.length, 0),
+    open_count: openPositions.length,
+    market_value: firstFinite(portfolio.market_value, portfolio.marketValue, calculatedMarketValue) || 0,
+    invested: firstFinite(portfolio.invested, calculatedInvested) || 0,
+    unrealized,
+    realized,
+    total: realized + unrealized,
+  };
+}
+
+function portfolioTodayLabel(metrics = {}) {
+  if (metrics.today_source === "reported") return "reported today";
+  if (metrics.today_source === "entry_today") return "from entry today";
+  if (metrics.today_source === "mixed") return "holdings + today entries";
+  if (metrics.today_source === "previous_close") {
+    return Number(metrics.today_missing_count || 0) > 0 ? "partial previous close" : "from previous close";
+  }
+  return Number(metrics.open_count || 0) > 0 ? "needs previous close" : "no open holdings";
+}
+
+function positionQuantity(row = {}) {
+  return Number(firstFinite(row.qty, row.user_follow?.qty, row.entry_qty, row.open_qty) || 0);
+}
+
+function positionLatestPrice(row = {}) {
+  return firstFinite(
+    row.market_price,
+    row.follow_latest_price,
+    row.user_follow?.latest_price,
+    row.latest_price,
+    row.ltp,
+    row.price,
+    row.last_price,
+    row.entry_price,
+    row.avg_price,
+  );
+}
+
+function positionEntryPrice(row = {}) {
+  return firstFinite(
+    row.avg_price,
+    row.follow_entry_price,
+    row.user_follow?.entry_price,
+    row.entry_price,
+    row.price_at_follow,
+  );
+}
+
+function positionUnrealizedPnl(row = {}) {
+  const explicit = firstFinite(row.unrealized_pnl, row.user_follow?.unrealized_pnl, row.open_pnl, row.pnl);
+  if (explicit !== null) return explicit;
+  const qty = positionQuantity(row);
+  const latest = positionLatestPrice(row);
+  const entry = positionEntryPrice(row);
+  if (!qty || latest === null || entry === null) return null;
+  return (latest - entry) * qty;
+}
+
+function portfolioRowsPnlMetrics(rows = [], market = state.activeMarket) {
+  const openPositions = (rows || []).filter((row) => positionQuantity(row) > 0);
+  const marketValue = openPositions.reduce((sum, row) => {
+    const latest = positionLatestPrice(row);
+    return sum + (latest === null ? 0 : latest * positionQuantity(row));
+  }, 0);
+  const invested = openPositions.reduce((sum, row) => {
+    const entry = positionEntryPrice(row);
+    return sum + (entry === null ? 0 : entry * positionQuantity(row));
+  }, 0);
+  const unrealizedValues = openPositions
+    .map(positionUnrealizedPnl)
+    .filter((value) => value !== null && Number.isFinite(Number(value)));
+  const dayValues = openPositions
+    .map((row) => positionDayPnl(row, market))
+    .filter((value) => value !== null && Number.isFinite(Number(value)));
+  const daySources = openPositions
+    .map((row) => positionDayPnlSource(row, market))
+    .filter((source) => source !== "unavailable");
+  const unrealized = unrealizedValues.reduce((sum, value) => sum + Number(value || 0), 0);
+  const today = dayValues.length
+    ? dayValues.reduce((sum, value) => sum + Number(value || 0), 0)
+    : null;
+  let todaySource = "unavailable";
+  if (daySources.includes("entry_today") && daySources.includes("previous_close")) {
+    todaySource = "mixed";
+  } else if (daySources.includes("entry_today")) {
+    todaySource = "entry_today";
+  } else if (daySources.includes("previous_close")) {
+    todaySource = "previous_close";
+  }
+  return {
+    today,
+    today_source: todaySource,
+    today_has_close: dayValues.length > 0,
+    today_count: dayValues.length,
+    today_missing_count: Math.max(openPositions.length - dayValues.length, 0),
+    open_count: openPositions.length,
+    market_value: marketValue,
+    invested,
+    unrealized,
+    realized: 0,
+    total: unrealized,
+  };
+}
+
+function mobilePortfolioSummaryHtml(tab = "positions", metrics = {}, market = state.activeMarket) {
+  const isHoldings = tab === "holdings";
+  const pnlPct = Number(metrics.invested || 0) > 0 ? (Number(metrics.unrealized || 0) / Number(metrics.invested || 0)) * 100 : null;
+  return `<section class="mobile-portfolio-summary broker-card" aria-label="${isHoldings ? "Holdings summary" : "Positions summary"}">
+    <div class="mobile-portfolio-summary-grid">
+      <span><small>${isHoldings ? "Invested" : "Deployed"}</small><strong>${fmtTradeMoney(metrics.invested, market)}</strong></span>
+      <span><small>Current</small><strong>${fmtTradeMoney(metrics.market_value, market)}</strong></span>
+    </div>
+    <div class="mobile-portfolio-summary-pnl">
+      <small>P&amp;L</small>
+      <strong class="${pnlClass(metrics.unrealized)}">${fmtSignedTradeMoney(metrics.unrealized, market)}</strong>
+      <em class="${pnlClass(pnlPct)}">${fmtSignedPct(pnlPct)}</em>
+    </div>
+  </section>`;
+}
+
+function mobilePortfolioDayPnlHtml(metrics = {}, market = state.activeMarket) {
+  const dayPct = Number(metrics.market_value || 0) > 0 && metrics.today !== null
+    ? (Number(metrics.today) / Number(metrics.market_value)) * 100
+    : null;
+  const label = metrics.today_source === "entry_today" ? "Today from entry" : "Day's P&amp;L";
+  return `<div class="mobile-portfolio-day-pnl" aria-label="Day's P and L">
+    <span>${label}</span>
+    <strong class="${pnlClass(metrics.today)}">${fmtSignedTradeMoney(metrics.today, market)}</strong>
+    <em class="${pnlClass(dayPct)}">${fmtSignedPct(dayPct)}</em>
+  </div>`;
 }
 
 function fmtNumber(value) {
@@ -300,6 +570,18 @@ function fmtCredits(value) {
 function fmtPct(value) {
   const parsed = numericValue(value);
   return parsed !== null ? `${number.format(parsed)}%` : "-";
+}
+
+function fmtSignedPct(value) {
+  const parsed = numericValue(value);
+  if (parsed === null) return "-";
+  return `${parsed > 0 ? "+" : ""}${number.format(parsed)}%`;
+}
+
+function fmtSignedTradeMoney(value, market = "IN") {
+  const parsed = numericValue(value);
+  if (parsed === null) return "-";
+  return `${parsed > 0 ? "+" : ""}${fmtTradeMoney(parsed, market)}`;
 }
 
 function displayValue(value, fallback = "Not available") {
@@ -746,6 +1028,81 @@ function applyDecisionFilter(rows = []) {
   });
 }
 
+function signalSearchActive() {
+  return String(state.signalSearchQuery || "").trim().length > 0;
+}
+
+function signalRowsForRender(payload = state.latest || {}, market = state.activeMarket) {
+  if (signalSearchActive()) {
+    return sortDecisionRows(filterRowsByMarket(state.signalSearchRows || [], market));
+  }
+  return sortDecisionRows(payloadRowsForMarket(payload, "decisions", market));
+}
+
+function updateSignalSearchStatus(rows = []) {
+  const status = byId("signal-search-status");
+  if (!status) return;
+  const query = String(state.signalSearchQuery || "").trim();
+  if (state.signalSearchInFlight) {
+    status.textContent = "Searching database...";
+  } else if (query) {
+    status.textContent = `${fmtNumber(rows.length)} DB result${rows.length === 1 ? "" : "s"} for "${query}"`;
+  } else {
+    status.textContent = "Latest signals";
+  }
+}
+
+function rerenderSignalsFromState() {
+  if (!state.latest) return;
+  const market = normalizeUiMarket(state.activeMarket);
+  const rows = signalRowsForRender(state.latest, market);
+  const visibleRows = applyDecisionFilter(rows);
+  const count = byId("decision-count");
+  if (count) {
+    count.textContent = signalSearchActive()
+      ? `${activeMarketLabel()} · ${filteredCountLabel(visibleRows.length, rows.length, "DB signal")}`
+      : `${activeMarketLabel()} · ${filteredCountLabel(visibleRows.length, rows.length, "signal")}`;
+  }
+  updateSignalSearchStatus(rows);
+  renderDecisions(visibleRows, { controlRunning: Boolean(state.latest?.running) });
+}
+
+async function searchSignalsFromDatabase(query) {
+  const trimmed = String(query || "").trim();
+  state.signalSearchQuery = trimmed;
+  if (!trimmed) {
+    state.signalSearchRows = [];
+    state.signalSearchInFlight = false;
+    rerenderSignalsFromState();
+    return;
+  }
+  const seq = ++state.signalSearchSeq;
+  state.signalSearchInFlight = true;
+  updateSignalSearchStatus(state.signalSearchRows || []);
+  try {
+    const params = new URLSearchParams({
+      q: trimmed,
+      market: normalizeUiMarket(state.activeMarket),
+      limit: "120",
+    });
+    const response = await fetch(`/api/signals/search?${params.toString()}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    if (seq !== state.signalSearchSeq) return;
+    state.signalSearchRows = Array.isArray(payload.results) ? payload.results : [];
+  } catch (error) {
+    if (seq === state.signalSearchSeq) {
+      showBackendError(networkErrorMessage(error, "signal search"), { action: "signal search" });
+      state.signalSearchRows = [];
+    }
+  } finally {
+    if (seq === state.signalSearchSeq) {
+      state.signalSearchInFlight = false;
+      rerenderSignalsFromState();
+    }
+  }
+}
+
 function applySentimentFilter(rows = []) {
   const filter = pageFilter("sentiment");
   if (filter === "all") return rows;
@@ -762,12 +1119,53 @@ function applySentimentFilter(rows = []) {
 function applyOrderFilter(rows = []) {
   const filter = pageFilter("orders");
   if (filter === "all") return rows;
-  return (rows || []).filter((row) => {
-    const status = String(row.status || "").toLowerCase();
-    if (filter === "open") return ["open", "pending", "submitted", "working"].includes(status);
-    if (filter === "filled") return status === "filled";
-    if (filter === "rejected") return status === "rejected" || status === "vetoed" || status === "cancelled";
-    return true;
+  return (rows || []).filter((row) => orderStatusBucket(row) === filter);
+}
+
+function orderStatusBucket(row = {}) {
+  const status = String(row.status || "").trim().toUpperCase();
+  if (["OPEN", "PENDING", "SUBMITTED", "WORKING", "REQUESTED", "ACCEPTED", "PARTIALLY_FILLED", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"].includes(status)) return "open";
+  if (["FILLED", "EXECUTED", "COMPLETE", "COMPLETED", "EXITED", "CLOSED", "PARTIAL", "REDUCED"].includes(status)) return "filled";
+  if (["REJECTED", "VETOED", "CANCELLED", "CANCELED", "FAILED", "EXPIRED"].includes(status)) return "rejected";
+  return status ? "open" : "rejected";
+}
+
+function orderStatusLabel(row = {}) {
+  const bucket = orderStatusBucket(row);
+  if (bucket === "filled") return "EXECUTED";
+  if (bucket === "rejected") return String(row.status || "REJECTED").toUpperCase();
+  return "OPEN";
+}
+
+function orderFilledText(row = {}) {
+  const qty = Number(row.qty || 0);
+  const filled = firstFinite(row.filled_qty, row.executed_qty, row.average_filled_qty);
+  if (filled !== null) return `${fmtNumber(filled)}/${fmtNumber(qty)}`;
+  return orderStatusBucket(row) === "filled" ? `${fmtNumber(qty)}/${fmtNumber(qty)}` : `0/${fmtNumber(qty)}`;
+}
+
+function orderMetaText(row = {}) {
+  const market = rowMarket(row);
+  const exchange = row.exchange || (market === "IN" ? "NSE" : "US");
+  const audit = parseJsonObject(row.details_json);
+  const route = audit.route || {};
+  const product = row.product || route.product || (market === "IN" ? "CNC" : "EQ");
+  const orderType = row.order_type || route.order_type || route.orderType || "LIMIT";
+  return `${exchange}  ${product}  ${orderType}`;
+}
+
+function updateOrderFilterCounts(rows = []) {
+  const counts = {
+    open: (rows || []).filter((row) => orderStatusBucket(row) === "open").length,
+    filled: (rows || []).filter((row) => orderStatusBucket(row) === "filled").length,
+    rejected: (rows || []).filter((row) => orderStatusBucket(row) === "rejected").length,
+    all: (rows || []).length,
+  };
+  const labels = { open: "Open", filled: "Executed", rejected: "Rejected", all: "All" };
+  document.querySelectorAll('[data-filter-group="orders"] [data-filter-value]').forEach((button) => {
+    const key = button.dataset.filterValue || "all";
+    if (!(key in counts)) return;
+    button.innerHTML = `${escapeHtml(labels[key] || humanLabel(key))} <span>${fmtNumber(counts[key])}</span>`;
   });
 }
 
@@ -1263,7 +1661,8 @@ function render(payload) {
   const allSentiment = payload.sentiment || [];
   const positions = filterRowsByMarket(allPositions, activeMarket);
   const quotes = filterRowsByMarket(allQuotes, activeMarket);
-  const decisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
+  const latestDecisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
+  const decisions = signalRowsForRender(payload, activeMarket);
   const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
   const trackedIdeas = payloadRowsForMarket(payload, "tracked_ideas", activeMarket);
   const orders = filterRowsByMarket(allOrders, activeMarket);
@@ -1274,19 +1673,34 @@ function render(payload) {
   const visibleSuggestions = applySuggestionFilter(suggestions);
   const visibleTrackedIdeas = applySuggestionFilter(trackedIdeas);
   const visibleOrders = applyOrderFilter(orders);
+  updateOrderFilterCounts(orders);
   const visibleSentiment = applySentimentFilter(sentiment);
   const visibleStrategyPlans = applyStrategyPlanFilter(strategyPlans);
 
   const scopedPortfolio = marketPortfolioFromPayload(payload, activeMarket);
+  const pnlMetrics = portfolioPnlMetrics(scopedPortfolio, positions, activeMarket);
   const unrealizedPct = Number(scopedPortfolio.invested) > 0
-    ? (Number(scopedPortfolio.unrealized_pnl || 0) / Number(scopedPortfolio.invested)) * 100
+    ? (Number(pnlMetrics.unrealized || 0) / Number(scopedPortfolio.invested)) * 100
     : 0;
   byId("kpi-equity").textContent = fmtMarketMoney(scopedPortfolio.equity, activeMarket);
   byId("kpi-cash").textContent = fmtMarketMoney(scopedPortfolio.cash, activeMarket);
-  byId("kpi-unrealized").textContent = fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket);
-  byId("kpi-unrealized").className = pnlClass(scopedPortfolio.unrealized_pnl);
+  byId("kpi-unrealized").textContent = fmtMarketMoney(pnlMetrics.unrealized, activeMarket);
+  byId("kpi-unrealized").className = pnlClass(pnlMetrics.unrealized);
+  const totalPnlEl = byId("kpi-total-pnl");
+  if (totalPnlEl) {
+    totalPnlEl.textContent = fmtMarketMoney(pnlMetrics.total, activeMarket);
+    totalPnlEl.className = pnlClass(pnlMetrics.total);
+  }
+  const totalPnlNote = byId("kpi-total-pnl-note");
+  if (totalPnlNote) {
+    totalPnlNote.textContent = `realized ${fmtMarketMoney(pnlMetrics.realized, activeMarket)} + holdings`;
+    totalPnlNote.className = pnlClass(pnlMetrics.realized);
+  }
   const equityDelta = byId("kpi-equity-delta");
-  if (equityDelta) equityDelta.textContent = `${fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket)} today`;
+  if (equityDelta) {
+    equityDelta.textContent = `Today ${fmtMarketMoney(pnlMetrics.today, activeMarket)} · ${portfolioTodayLabel(pnlMetrics)}`;
+    equityDelta.className = pnlClass(pnlMetrics.today);
+  }
   const unrealizedPctEl = byId("kpi-unrealized-pct");
   if (unrealizedPctEl) {
     unrealizedPctEl.textContent = fmtPct(unrealizedPct);
@@ -1325,8 +1739,11 @@ function render(payload) {
   byId("position-count").textContent = `${positions.length}/${allPositions.length} open`;
   byId("quote-count").textContent = `${quotes.length}/${allQuotes.length} quotes`;
   byId("account-quote-count").textContent = `${quotes.length} ${activeMarketLabel()} quotes`;
-  byId("decision-count").textContent = `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "signal")}`;
-  byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${decisions.length} signals`;
+  byId("decision-count").textContent = signalSearchActive()
+    ? `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "DB signal")}`
+    : `${activeMarketLabel()} · ${filteredCountLabel(visibleDecisions.length, decisions.length, "signal")}`;
+  updateSignalSearchStatus(decisions);
+  byId("overview-decision-count").textContent = `${activeMarketLabel()} · ${latestDecisions.length} signals`;
   byId("suggestion-count").textContent = visibleSuggestions.length
     ? `${filteredCountLabel(visibleSuggestions.length, suggestions.length, "idea", "ideas")}`
     : suggestions.length
@@ -1341,7 +1758,7 @@ function render(payload) {
   byId("sentiment-count").textContent = `${filteredCountLabel(visibleSentiment.length, sentiment.length, "event")}`;
   byId("nav-positions-badge").textContent = String(positions.length);
   byId("nav-suggestions-badge").textContent = String(suggestions.length);
-  byId("nav-decisions-badge").textContent = String(decisions.length);
+  byId("nav-decisions-badge").textContent = String(latestDecisions.length);
   byId("nav-orders-badge").textContent = String(orders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
   byId("nav-logs-badge").textContent = state.auth?.admin ? String(state.logs.length) : "admin";
@@ -1363,7 +1780,7 @@ function render(payload) {
   renderProductTrackingPanel(trackedIdeas, positions, suggestions);
   renderSuggestions(visibleSuggestions);
   renderDecisions(visibleDecisions, { controlRunning });
-  renderOverviewDecisions(decisions, { controlRunning });
+  renderOverviewDecisions(latestDecisions, { controlRunning });
   renderOverviewPositions(positions);
   renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
   renderOrders(visibleOrders);
@@ -1377,15 +1794,29 @@ function render(payload) {
 }
 
 function updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas) {
+  const pnlMetrics = portfolioPnlMetrics(scopedPortfolio, positions, activeMarket);
   const unrealizedPct = Number(scopedPortfolio.invested) > 0
-    ? (Number(scopedPortfolio.unrealized_pnl || 0) / Number(scopedPortfolio.invested)) * 100
+    ? (Number(pnlMetrics.unrealized || 0) / Number(scopedPortfolio.invested)) * 100
     : 0;
   byId("kpi-equity").textContent = fmtMarketMoney(scopedPortfolio.equity, activeMarket);
   byId("kpi-cash").textContent = fmtMarketMoney(scopedPortfolio.cash, activeMarket);
-  byId("kpi-unrealized").textContent = fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket);
-  byId("kpi-unrealized").className = pnlClass(scopedPortfolio.unrealized_pnl);
+  byId("kpi-unrealized").textContent = fmtMarketMoney(pnlMetrics.unrealized, activeMarket);
+  byId("kpi-unrealized").className = pnlClass(pnlMetrics.unrealized);
+  const totalPnlEl = byId("kpi-total-pnl");
+  if (totalPnlEl) {
+    totalPnlEl.textContent = fmtMarketMoney(pnlMetrics.total, activeMarket);
+    totalPnlEl.className = pnlClass(pnlMetrics.total);
+  }
+  const totalPnlNote = byId("kpi-total-pnl-note");
+  if (totalPnlNote) {
+    totalPnlNote.textContent = `realized ${fmtMarketMoney(pnlMetrics.realized, activeMarket)} + holdings`;
+    totalPnlNote.className = pnlClass(pnlMetrics.realized);
+  }
   const equityDelta = byId("kpi-equity-delta");
-  if (equityDelta) equityDelta.textContent = `${fmtMarketMoney(scopedPortfolio.unrealized_pnl, activeMarket)} today`;
+  if (equityDelta) {
+    equityDelta.textContent = `Today ${fmtMarketMoney(pnlMetrics.today, activeMarket)} · ${portfolioTodayLabel(pnlMetrics)}`;
+    equityDelta.className = pnlClass(pnlMetrics.today);
+  }
   const unrealizedPctEl = byId("kpi-unrealized-pct");
   if (unrealizedPctEl) {
     unrealizedPctEl.textContent = fmtPct(unrealizedPct);
@@ -1882,6 +2313,7 @@ function renderShell(payload = state.latest || {}) {
   const marketActionCount = Number(marketAction.event_count || 0);
   const marketActionTopSymbols = (marketAction.events || []).slice(0, 3).map((item) => item.symbol).filter(Boolean).join(", ");
   const gainersPlaybook = opportunity.top_gainers_playbook || {};
+  const playbookLabel = gainersPlaybook.label || (activeMarket === "US" ? "US Top Movers Playbook" : "NSE Top-Gainers Playbook");
   const gainersSummary = gainersPlaybook.signal_summary || {};
   const gainersBuyCount = Number(gainersSummary.strong_buy || 0) + Number(gainersSummary.moderate_buy || 0);
   const gainersEvaluated = Number(gainersPlaybook.total_gainers_evaluated || 0);
@@ -1909,9 +2341,9 @@ function renderShell(payload = state.latest || {}) {
     ? (premarketCount
       ? `${activeMarketLabel()} watchlist · ${premarketTopSymbols || "building"} · ${fmtNumber(premarket.live_confirmation_count || 0)} confirmed`
       : gainersBuyCount
-        ? `Top-gainers playbook · ${gainersTopSymbols || "building"} · ${fmtNumber(gainersEvaluated)} evaluated`
+        ? `${playbookLabel} · ${gainersTopSymbols || "building"} · ${fmtNumber(gainersEvaluated)} evaluated`
       : gainersEvaluated
-        ? `Top-gainers playbook · 0 buy · ${fmtNumber((gainersPlaybook.signal_summary || {}).watch || 0)} watch`
+        ? `${playbookLabel} · 0 buy · ${fmtNumber((gainersPlaybook.signal_summary || {}).watch || 0)} watch`
       : marketActionCount
         ? `Live radar · ${marketActionTopSymbols || "building"} · ${fmtNumber(tradeableSymbols)} tradeable`
       : scanPaused
@@ -2788,8 +3220,17 @@ function renderAccount(account) {
   )).length;
   const userUpstox = state.auth?.user?.broker_accounts?.upstox || {};
   const userKite = state.auth?.user?.broker_accounts?.kite || {};
-  const indiaPaper = portfolioByMarket.IN || portfolioMetricsForMarket(portfolio, filterRowsByMarket(paper.positions || [], "IN"), "IN");
-  const usPaper = portfolioByMarket.US || portfolioMetricsForMarket(portfolio, filterRowsByMarket(paper.positions || [], "US"), "US");
+  const paperPositions = (paper.positions || []).length
+    ? paper.positions
+    : (account.positions || []).length
+      ? account.positions
+      : openFollowHistory;
+  const indiaPositions = filterRowsByMarket(paperPositions, "IN");
+  const usPositions = filterRowsByMarket(paperPositions, "US");
+  const indiaPaper = portfolioByMarket.IN || portfolioMetricsForMarket(portfolio, indiaPositions, "IN");
+  const usPaper = portfolioByMarket.US || portfolioMetricsForMarket(portfolio, usPositions, "US");
+  const indiaPnl = portfolioPnlMetrics(indiaPaper, indiaPositions, "IN");
+  const usPnl = portfolioPnlMetrics(usPaper, usPositions, "US");
   const cashPool = paper.cash_pool_by_market || state.auth?.user?.paper_cash_by_market || {};
   const indiaCashPool = Number(cashPool.IN ?? (Number(indiaPaper.cash || 0) + Number(indiaPaper.invested || 0)));
   const usCashPool = Number(cashPool.US ?? (Number(usPaper.cash || 0) + Number(usPaper.invested || 0)));
@@ -2843,6 +3284,24 @@ function renderAccount(account) {
       : upstox.connected
         ? "shared Upstox analytics"
         : "not connected";
+  const user = state.auth?.user || {};
+  const initials = symbolInitials(user.display_name || user.username || "OS");
+  const accountMenu = `
+    <section class="account-profile-card">
+      <div>
+        <strong>${escapeHtml(user.display_name || user.username || "OpenStocks User")}</strong>
+        <span>${escapeHtml(user.email || user.username || "")}</span>
+      </div>
+      <em>${escapeHtml(initials)}</em>
+    </section>
+    <section class="account-menu-list">
+      <button type="button" data-view-jump="account"><span>Funds</span><strong>${fmtMarketMoney(indiaPaper.cash, "IN")}</strong></button>
+      <button type="button" data-view-jump="settings"><span>Profile</span><strong>${escapeHtml(user.username || "-")}</strong></button>
+      <button type="button" data-view-jump="settings"><span>Settings</span><strong>Risk, markets, tokens</strong></button>
+      <button type="button" data-view-jump="account"><span>Connected apps</span><strong>${escapeHtml(userFeedLabel)}</strong></button>
+      <button type="button" data-account-logout><span>Logout</span><strong>Sign out</strong></button>
+    </section>
+  `;
   const accountHistoryMarkup = `
     <div class="account-history-grid">
       <section class="account-history-section">
@@ -2863,15 +3322,20 @@ function renderAccount(account) {
   `;
   byId("account-status").textContent = userFeedLabel;
   byId("account-body").innerHTML = `
+    ${accountMenu}
     <div class="account-metrics">
       <div><span>Mode</span><strong>${paper.mode || "-"}</strong></div>
       <div><span>India Cash</span><strong>${fmtMarketMoney(indiaPaper.cash, "IN")}</strong></div>
       <div><span>India Equity</span><strong>${fmtMarketMoney(indiaPaper.equity, "IN")}</strong></div>
-      <div><span>India Realized</span><strong class="${pnlClass(indiaPaper.realized_pnl)}">${fmtMarketMoney(indiaPaper.realized_pnl, "IN")}</strong></div>
+      <div class="account-pnl-card ${pnlClass(indiaPnl.today)}"><span>India Today P&L</span><strong class="${pnlClass(indiaPnl.today)}">${fmtMarketMoney(indiaPnl.today, "IN")}</strong><small>${escapeHtml(portfolioTodayLabel(indiaPnl))}</small></div>
+      <div class="account-pnl-card ${pnlClass(indiaPnl.unrealized)}"><span>India Holdings P&L</span><strong class="${pnlClass(indiaPnl.unrealized)}">${fmtMarketMoney(indiaPnl.unrealized, "IN")}</strong><small>current holdings</small></div>
+      <div class="account-pnl-card ${pnlClass(indiaPnl.total)}"><span>India Net P&L</span><strong class="${pnlClass(indiaPnl.total)}">${fmtMarketMoney(indiaPnl.total, "IN")}</strong><small>realized ${fmtMarketMoney(indiaPnl.realized, "IN")} + holdings</small></div>
       ${Number(indiaPaper.cash_deficit || 0) > 0 ? `<div><span>India Cash Gap</span><strong class="negative">${fmtMarketMoney(indiaPaper.cash_deficit, "IN")}</strong></div>` : ""}
       <div><span>US Cash</span><strong>${fmtMarketMoney(usPaper.cash, "US")}</strong></div>
       <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
-      <div><span>US Realized</span><strong class="${pnlClass(usPaper.realized_pnl)}">${fmtMarketMoney(usPaper.realized_pnl, "US")}</strong></div>
+      <div class="account-pnl-card ${pnlClass(usPnl.today)}"><span>US Today P&L</span><strong class="${pnlClass(usPnl.today)}">${fmtMarketMoney(usPnl.today, "US")}</strong><small>${escapeHtml(portfolioTodayLabel(usPnl))}</small></div>
+      <div class="account-pnl-card ${pnlClass(usPnl.unrealized)}"><span>US Holdings P&L</span><strong class="${pnlClass(usPnl.unrealized)}">${fmtMarketMoney(usPnl.unrealized, "US")}</strong><small>current holdings</small></div>
+      <div class="account-pnl-card ${pnlClass(usPnl.total)}"><span>US Net P&L</span><strong class="${pnlClass(usPnl.total)}">${fmtMarketMoney(usPnl.total, "US")}</strong><small>realized ${fmtMarketMoney(usPnl.realized, "US")} + holdings</small></div>
       ${Number(usPaper.cash_deficit || 0) > 0 ? `<div><span>US Cash Gap</span><strong class="negative">${fmtMarketMoney(usPaper.cash_deficit, "US")}</strong></div>` : ""}
       <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
       <div><span>Signal Action</span><strong>${escapeHtml(signalModeLabel(signalExecutionMode))}</strong></div>
@@ -2908,6 +3372,7 @@ function renderAccount(account) {
   if (monitorForm) monitorForm.addEventListener("submit", saveMonitorSymbols);
   const clearMonitorButton = byId("clear-monitor-symbols-btn");
   if (clearMonitorButton) clearMonitorButton.addEventListener("click", clearMonitorSymbols);
+  byId("account-body")?.querySelector("[data-account-logout]")?.addEventListener("click", logout);
   renderUserBrokerStatus();
 }
 
@@ -3552,6 +4017,8 @@ async function login(event) {
     await loadAuthenticatedData();
     openSocket();
     startPositionMarkPolling();
+    startMarketIndexPolling();
+    startMarketIndexPolling();
   } catch (error) {
     status.textContent = "login failed: backend unreachable";
     status.className = "settings-inline-status negative";
@@ -3566,6 +4033,10 @@ async function logout() {
     if (state.socket) state.socket.close();
     state.socket = null;
     stopPositionMarkPolling();
+    if (state.marketIndexTimer) {
+      window.clearInterval(state.marketIndexTimer);
+      state.marketIndexTimer = null;
+    }
     renderAuth({ authenticated: false, admin: false, admin_configured: state.auth.admin_configured, user: null });
     byId("login-status").textContent = "Signed out.";
     byId("login-status").className = "settings-inline-status";
@@ -3732,11 +4203,32 @@ function findIndexQuote(rows = [], aliases = []) {
   return (rows || []).find((row) => {
     const symbol = String(row.symbol || row.trading_symbol || row.name || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     const label = String(row.company_name || row.display_name || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    return normalizedAliases.some((alias) => symbol === alias || label === alias || symbol.includes(alias));
+    return normalizedAliases.some((alias) => symbol === alias || label === alias);
   });
 }
 
-function mobileIndexPayload(rows = [], market = "IN") {
+function institutionalIndexQuote(payload = {}, label = "") {
+  const liveItems = state.marketIndices?.IN?.items || {};
+  const items = Object.keys(liveItems).length
+    ? liveItems
+    : payload?.institutional_context?.feeds?.indices?.items
+    || payload?.institutional_context?.indices?.items
+    || payload?.indices?.items
+    || {};
+  const raw = items[label] || items[String(label).toUpperCase()] || null;
+  if (!raw || typeof raw !== "object") return null;
+  const price = firstFinite(raw.last, raw.price, raw.value);
+  if (price === null) return null;
+  return {
+    symbol: label,
+    price,
+    day_change_pct: firstFinite(raw.change_pct, raw.percentChange, raw.percent_change),
+    day_change: firstFinite(raw.change, raw.variation, raw.change_value),
+    source: "nse-index-feed",
+  };
+}
+
+function mobileIndexPayload(payload = state.latest || {}, rows = [], market = "IN") {
   const region = normalizeUiMarket(market);
   if (region === "US") {
     return [
@@ -3745,8 +4237,8 @@ function mobileIndexPayload(rows = [], market = "IN") {
     ];
   }
   return [
-    { label: "NIFTY 50", quote: findIndexQuote(rows, ["NIFTY", "NIFTY50", "NIFTY 50"]) },
-    { label: "NIFTY BANK", quote: findIndexQuote(rows, ["BANKNIFTY", "NIFTYBANK", "NIFTY BANK"]) },
+    { label: "NIFTY 50", quote: institutionalIndexQuote(payload, "NIFTY 50") || findIndexQuote(rows, ["NIFTY", "NIFTY50", "NIFTY 50"]) },
+    { label: "NIFTY BANK", quote: institutionalIndexQuote(payload, "NIFTY BANK") || findIndexQuote(rows, ["BANKNIFTY", "NIFTYBANK", "NIFTY BANK"]) },
   ];
 }
 
@@ -3758,20 +4250,78 @@ function renderMobileNativeHeader(payload = state.latest || {}, rows = [], marke
   const secondaryValue = byId("mobile-index-secondary-value");
   const secondaryChange = byId("mobile-index-secondary-change");
   if (!primaryLabel || !primaryValue || !primaryChange || !secondaryLabel || !secondaryValue || !secondaryChange) return;
-  const [primary, secondary] = mobileIndexPayload(rows, market);
+  const [primary, secondary] = mobileIndexPayload(payload, rows, market);
   const paint = (slot, labelEl, valueEl, changeEl) => {
     const quote = slot.quote || {};
     const price = firstFinite(quote.price, quote.last_price, quote.close);
     const pct = quote.symbol ? quoteDayPct(quote) : null;
+    const change = firstFinite(quote.day_change, quote.change, quote.change_value);
     const hasPct = Number.isFinite(pct);
+    const sign = change !== null && change > 0 ? "+" : "";
     labelEl.textContent = slot.label;
     valueEl.textContent = price !== null ? fmtNumber(price) : "-";
-    changeEl.textContent = hasPct ? fmtPct(pct) : (quote.symbol ? "0.00%" : "feed pending");
+    changeEl.textContent = hasPct
+      ? `${change !== null ? `${sign}${fmtNumber(change)} ` : ""}${fmtPct(pct)}`
+      : (quote.symbol ? "0.00%" : "feed pending");
     changeEl.className = hasPct ? pnlClass(pct) : "";
     valueEl.className = hasPct ? pnlClass(pct) : "";
   };
   paint(primary, primaryLabel, primaryValue, primaryChange);
   paint(secondary, secondaryLabel, secondaryValue, secondaryChange);
+}
+
+async function refreshMarketIndices() {
+  if (!state.auth?.authenticated || state.marketIndicesInFlight) return;
+  const market = normalizeUiMarket(state.activeMarket);
+  if (market !== "IN") return;
+  state.marketIndicesInFlight = true;
+  try {
+    const response = await fetch(`/api/market-indices?market=${encodeURIComponent(market)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    state.marketIndices[market] = payload;
+    renderMobileNativeHeader(state.latest || {}, filterRowsByMarket(state.latest?.quotes || [], market), market);
+  } catch {
+    /* Keep last known indices; regular status refresh will retry. */
+  } finally {
+    state.marketIndicesInFlight = false;
+  }
+}
+
+function startMarketIndexPolling() {
+  if (state.marketIndexTimer) return;
+  refreshMarketIndices();
+  state.marketIndexTimer = window.setInterval(refreshMarketIndices, 30000);
+}
+
+function bindSwipeTabList(element) {
+  if (!element || element.dataset.swipeBound === "1") return;
+  element.dataset.swipeBound = "1";
+  let startX = 0;
+  let startY = 0;
+  element.addEventListener("touchstart", (event) => {
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    startX = touch.clientX;
+    startY = touch.clientY;
+  }, { passive: true });
+  element.addEventListener("touchend", (event) => {
+    const touch = event.changedTouches?.[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - startX;
+    const deltaY = touch.clientY - startY;
+    if (Math.abs(deltaX) < 48 || Math.abs(deltaX) < Math.abs(deltaY) * 1.4) return;
+    const buttons = [...element.querySelectorAll("button")].filter((button) => !button.disabled && button.offsetParent !== null);
+    if (buttons.length < 2) return;
+    const activeIndex = Math.max(0, buttons.findIndex((button) => button.classList.contains("active") || button.getAttribute("aria-selected") === "true"));
+    const nextIndex = Math.max(0, Math.min(buttons.length - 1, activeIndex + (deltaX < 0 ? 1 : -1)));
+    if (nextIndex !== activeIndex) buttons[nextIndex].click();
+  }, { passive: true });
+}
+
+function bindSwipeTabLists(root = document) {
+  root.querySelectorAll("[role='tablist'], .page-filter-bar, .order-filter-tabs, .mobile-portfolio-tabs, .mobile-watchlist-tabs")
+    .forEach(bindSwipeTabList);
 }
 
 function ideaIsFollowed(row = {}) {
@@ -3978,6 +4528,7 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
   tabs.innerHTML = groups
     .map((group) => `<button type="button" class="${group.key === activeGroup.key ? "active" : ""}" data-idea-group="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>`)
     .join("");
+  bindSwipeTabList(tabs);
   const count = byId("ideas-watchlist-count");
   if (count) count.textContent = `${rows.length}/${(activeGroup.rows || []).length}`;
   body.innerHTML = rows.length
@@ -3998,7 +4549,7 @@ function renderIdeasWatchlist(suggestions = [], trackedIdeas = [], strategyPlans
     const row = rows[Number(card.dataset.index)];
     card.addEventListener("click", (event) => {
       if (event.target.closest("[data-watchlist-track]")) return;
-      if (row) showDetails("Watchlist Idea", row);
+      if (row) showDetails("Watchlist Idea", { __detail_type: "watchlist_stock", ...row });
     });
   });
   body.querySelectorAll("[data-watchlist-track]").forEach((button) => {
@@ -4130,39 +4681,56 @@ function portfolioSearchMatches(row = {}, search = "") {
 
 function mobileHoldingRowHtml(row = {}, index = 0) {
   const market = rowMarket(row);
-  const latest = firstFinite(row.follow_latest_price, row.user_follow?.latest_price, row.latest_price, row.price, row.entry_price);
-  const entry = firstFinite(row.follow_entry_price, row.user_follow?.entry_price, row.entry_price);
-  const returnPct = Number(row.return_pct ?? row.user_follow?.return_pct ?? row.current_return_pct ?? 0);
+  const latest = positionLatestPrice(row);
+  const entry = positionEntryPrice(row);
+  const qty = positionQuantity(row);
+  const invested = entry !== null ? entry * qty : null;
+  const pnl = positionUnrealizedPnl(row);
+  const explicitReturnPct = firstFinite(row.return_pct, row.user_follow?.return_pct, row.current_return_pct);
+  const returnPct = explicitReturnPct !== null
+    ? explicitReturnPct
+    : latest !== null && entry !== null && entry > 0
+      ? ((latest - entry) / entry) * 100
+      : null;
+  const dayPct = positionStockDayPct(row, market);
   const mode = String(row.mode || row.user_follow?.mode || "TRACK").toUpperCase();
   const exchange = row.exchange || (market === "IN" ? "NSE" : "US");
-  return `<article class="mobile-portfolio-row" role="button" tabindex="0" data-holding-index="${index}">
-    <div>
+  return `<article class="mobile-portfolio-row broker-row" role="button" tabindex="0" data-holding-index="${index}">
+    <div class="mobile-portfolio-main">
+      <small>Qty. ${fmtNumber(qty)} <b>•</b> Avg. ${fmtTradeMoney(entry, market)}</small>
       <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-      <small><span>${escapeHtml(exchange)}</span><span>${escapeHtml(mode === "TRACK" ? "WATCH" : mode)}</span></small>
+      <em>Invested ${fmtTradeMoney(invested, market)} <span>${escapeHtml(exchange)} · ${escapeHtml(mode === "TRACK" ? "WATCH" : mode)}</span></em>
     </div>
-    <div class="mobile-portfolio-price ${pnlClass(returnPct)}">
-      <strong>${fmtTradeMoney(latest, market)}</strong>
-      <small>${fmtPct(returnPct)} · entry ${fmtTradeMoney(entry, market)}</small>
+    <div class="mobile-portfolio-price ${pnlClass(pnl ?? returnPct)}">
+      <small class="${pnlClass(returnPct)}">${fmtSignedPct(returnPct)}</small>
+      <strong>${pnl !== null ? fmtSignedTradeMoney(pnl, market) : "-"}</strong>
+      <em>LTP ${fmtTradeMoney(latest, market)} <span class="${pnlClass(dayPct)}">(${fmtSignedPct(dayPct)})</span></em>
     </div>
   </article>`;
 }
 
 function mobilePositionRowHtml(row = {}, index = 0) {
   const market = rowMarket(row);
-  const qty = Number(row.qty || 0);
-  const entry = Number(row.avg_price || 0);
-  const latest = Number(row.market_price || entry || 0);
-  const pnl = (latest - entry) * qty;
-  const pnlPct = entry > 0 ? ((latest - entry) / entry) * 100 : 0;
+  const qty = positionQuantity(row);
+  const entry = positionEntryPrice(row);
+  const latest = positionLatestPrice(row);
+  const invested = entry !== null ? entry * qty : null;
+  const pnl = positionUnrealizedPnl(row);
+  const pnlPct = latest !== null && entry !== null && entry > 0 ? ((latest - entry) / entry) * 100 : null;
+  const dayPnl = positionDayPnl(row, market);
+  const dayPct = positionStockDayPct(row, market);
   const mode = positionModeState(row);
-  return `<article class="mobile-portfolio-row position" role="button" tabindex="0" data-position-index="${index}">
-    <div>
+  return `<article class="mobile-portfolio-row broker-row position" role="button" tabindex="0" data-position-index="${index}">
+    <div class="mobile-portfolio-main">
+      <small>Qty. ${fmtNumber(qty)} <b>•</b> Avg. ${fmtTradeMoney(entry, market)}</small>
       <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-      <small><span>${escapeHtml(mode.label)}</span><span>${fmtNumber(qty)} qty</span></small>
+      <em>Invested ${fmtTradeMoney(invested, market)} <span>${escapeHtml(mode.label)}</span></em>
     </div>
     <div class="mobile-portfolio-price ${pnlClass(pnl)}">
-      <strong>${fmtTradeMoney(pnl, market)}</strong>
-      <small>${fmtPct(pnlPct)} · LTP ${fmtTradeMoney(latest, market)}</small>
+      <small class="${pnlClass(pnlPct)}">${fmtSignedPct(pnlPct)}</small>
+      <strong>${fmtSignedTradeMoney(pnl, market)}</strong>
+      <em>LTP ${fmtTradeMoney(latest, market)} <span class="${pnlClass(dayPct)}">(${fmtSignedPct(dayPct)})</span></em>
+      <em class="${pnlClass(dayPnl)}">Today ${dayPnl === null ? "-" : fmtSignedTradeMoney(dayPnl, market)}</em>
     </div>
   </article>`;
 }
@@ -4219,11 +4787,15 @@ function renderMobilePortfolio(positions = [], trackedIdeas = [], scopedPortfoli
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   const rows = (activeTab === "holdings" ? holdingRows : positionRows).filter((row) => portfolioSearchMatches(row, search));
-  body.innerHTML = rows.length
+  const market = normalizeUiMarket(state.activeMarket);
+  const metrics = portfolioRowsPnlMetrics(rows, market);
+  const summaryHtml = mobilePortfolioSummaryHtml(activeTab, metrics, market);
+  const dayPnlHtml = mobilePortfolioDayPnlHtml(metrics, market);
+  body.innerHTML = summaryHtml + (rows.length
     ? rows.slice(0, 80).map((row, index) => (
         activeTab === "holdings" ? mobileHoldingRowHtml(row, index) : mobilePositionRowHtml(row, index)
       )).join("")
-    : mobilePortfolioEmpty(activeTab);
+    : mobilePortfolioEmpty(activeTab)) + dayPnlHtml;
   body.querySelectorAll("[data-position-index]").forEach((card) => {
     const row = rows[Number(card.dataset.positionIndex)];
     if (row) card.addEventListener("click", () => showDetails("Position", row));
@@ -4270,18 +4842,21 @@ function renderPositions(rows) {
   const body = byId("positions-body");
   const summary = byId("positions-summary-strip");
   if (summary) {
+    const market = normalizeUiMarket(state.activeMarket);
+    const scopedPortfolio = marketPortfolioFromPayload(state.latest || {}, market);
+    const pnlMetrics = portfolioPnlMetrics(scopedPortfolio, rows, market);
     const winners = rows.filter((row) => (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty) > 0).length;
     const losers = rows.filter((row) => (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty) < 0).length;
     const needsReview = rows.filter(positionNeedsAction).length;
     const deployed = rows.reduce((sum, row) => sum + Number(row.avg_price || 0) * Number(row.qty || 0), 0);
     const pnl = rows.reduce((sum, row) => sum + (Number(row.market_price || 0) - Number(row.avg_price || 0)) * Number(row.qty || 0), 0);
     const pnlPct = deployed > 0 ? (pnl / deployed) * 100 : 0;
-    const market = normalizeUiMarket(state.activeMarket);
     summary.innerHTML = `
       <button type="button"><span>Deployed</span><strong>${fmtTradeMoney(deployed, market)}</strong></button>
-      <button type="button"><span>Unrealised P&L</span><strong class="${pnlClass(pnl)}">${fmtTradeMoney(pnl, market)}</strong><small class="${pnlClass(pnlPct)}">${fmtPct(pnlPct)}</small></button>
-      <button type="button"><span>Winners</span><strong class="positive">${fmtNumber(winners)}</strong></button>
-      <button type="button"><span>Losers</span><strong class="negative">${fmtNumber(losers)}</strong></button>
+      <button type="button"><span>Today P&L</span><strong class="${pnlClass(pnlMetrics.today)}">${fmtTradeMoney(pnlMetrics.today, market)}</strong><small class="${pnlClass(pnlMetrics.today)}">${escapeHtml(portfolioTodayLabel(pnlMetrics))}</small></button>
+      <button type="button"><span>Holdings P&L</span><strong class="${pnlClass(pnl)}">${fmtTradeMoney(pnl, market)}</strong><small class="${pnlClass(pnlPct)}">${fmtPct(pnlPct)} on holdings</small></button>
+      <button type="button"><span>Net P&L</span><strong class="${pnlClass(pnlMetrics.total)}">${fmtTradeMoney(pnlMetrics.total, market)}</strong><small class="${pnlClass(pnlMetrics.realized)}">realized ${fmtTradeMoney(pnlMetrics.realized, market)}</small></button>
+      <button type="button"><span>Winners / Losers</span><strong><span class="positive">${fmtNumber(winners)}</span> / <span class="negative">${fmtNumber(losers)}</span></strong></button>
       <button type="button"><span>Need Action</span><strong class="${needsReview ? "warning" : "positive"}">${fmtNumber(needsReview)}</strong></button>
     `;
   }
@@ -4455,11 +5030,13 @@ function positionPriceHtml(row = {}, market = "IN") {
 function positionPnlHtml(row = {}, market = "IN") {
   const pnl = (Number(row.market_price) - Number(row.avg_price)) * Number(row.qty);
   const pnlPct = Number(row.avg_price) > 0 ? ((Number(row.market_price) - Number(row.avg_price)) / Number(row.avg_price)) * 100 : 0;
+  const dayPnl = positionDayPnl(row, market);
   const marketValue = Number(row.market_price) * Number(row.qty);
   const tone = pnlClass(pnl);
   return `<div class="position-pnl-cell ${tone}">
     <strong class="${tone}">${fmtTradeMoney(pnl, market)}</strong>
-    <small class="${tone}">${fmtPct(pnlPct)} unrealised</small>
+    <small class="${tone}">${fmtPct(pnlPct)} all-time</small>
+    <small class="${pnlClass(dayPnl)}">today ${dayPnl === null ? "-" : fmtTradeMoney(dayPnl, market)}</small>
     <small>value ${fmtTradeMoney(marketValue, market)}</small>
   </div>`;
 }
@@ -5304,18 +5881,20 @@ function renderOrders(rows) {
     .slice(0, 120)
     .map((row) => {
       const side = String(row.side || "").toLowerCase();
-      const exit = exitPlanFromOrder(row);
       const market = rowMarket(row);
-      return `<tr>
-        <td>${fmtTime(row.ts)}</td>
-        <td><span class="tag ${side}">${escapeHtml(row.side)}</span></td>
+      const quote = quoteForSymbol(row.symbol, market);
+      const ltp = firstFinite(quote.price, quote.last_price, quote.latest_price, row.latest_price);
+      const bucket = orderStatusBucket(row);
+      return `<tr class="broker-order-row order-${escapeHtml(bucket)}">
+        <td><span class="tag ${side}">${escapeHtml(String(row.side || "-").toUpperCase())}</span></td>
+        <td>${escapeHtml(orderFilledText(row))}</td>
         <td><strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong></td>
-        <td>${escapeHtml(displayValue(row.strategy, "Strategy pending"))}</td>
-        <td class="num">${row.qty}</td>
+        <td>${escapeHtml(orderMetaText(row))}</td>
+        <td><span class="order-time">${escapeHtml(fmtTime(row.ts))}</span></td>
+        <td><span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(orderStatusLabel(row))}</span></td>
         <td class="num">${fmtMarketMoney(row.price, market)}</td>
-        <td class="num">${fmtMarketMoney(row.notional, market)}</td>
-        <td>${escapeHtml(row.status)}</td>
-        <td>${exitPlanMini(exit, market)}</td>
+        <td class="num">LTP ${fmtMarketMoney(ltp, market)}</td>
+        <td>${escapeHtml(shortValue(readableOrderReason(row), 80))}</td>
       </tr>`;
     })
     .join("");
@@ -5369,6 +5948,42 @@ async function showDetails(title, value) {
   byId("drawer-body").innerHTML = `<div class="empty-state">Loading details...</div>`;
   const detailValue = await fetchDetailValue(value);
   byId("drawer-body").innerHTML = detailHtml(detailValue);
+  bindDetailActions();
+}
+
+function bindDetailActions() {
+  byId("drawer-body")?.querySelectorAll("[data-order-cancel]").forEach((button) => {
+    button.addEventListener("click", () => cancelOrder(Number(button.dataset.orderCancel || 0), button));
+  });
+  byId("drawer-body")?.querySelectorAll("[data-order-modify]").forEach((button) => {
+    button.addEventListener("click", () => {
+      showDetails("Modify Order", {
+        status: "Modify is available for open broker orders. For now, cancel and place a fresh guarded order from the signal or watchlist.",
+      });
+    });
+  });
+}
+
+async function cancelOrder(orderId, button) {
+  if (!orderId) return;
+  const previous = button?.textContent || "CANCEL";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "CANCELLING";
+  }
+  try {
+    const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/cancel`, { method: "POST" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    await refreshStatusOnly();
+    byId("detail-drawer")?.classList.remove("open");
+  } catch (error) {
+    showBackendError(networkErrorMessage(error, "cancel order"), { action: "cancel order", order_id: orderId });
+    if (button) {
+      button.disabled = false;
+      button.textContent = previous;
+    }
+  }
 }
 
 function detailHtml(value) {
@@ -5384,8 +5999,8 @@ function detailHtml(value) {
   if (value.__detail_type === "opportunity_health") {
     return opportunityHealthDetailHtml(value);
   }
-  if (value.suggestion) {
-    return suggestionDetailHtml(value);
+  if (value.suggestion || value.__detail_type === "watchlist_stock") {
+    return watchlistStockDetailHtml(value);
   }
   if (value.exit_plan) {
     return positionDetailHtml(value);
@@ -5393,7 +6008,7 @@ function detailHtml(value) {
   if (value.details_json && value.action) {
     return decisionDetailHtml(value);
   }
-  if (value.details_json && value.side) {
+  if (value.side) {
     return orderDetailHtml(value);
   }
   const rows = Object.entries(value)
@@ -5410,6 +6025,10 @@ function opportunityHealthDetailHtml(value = {}) {
   const scan = value.opportunity_scan || {};
   const marketAction = value.market_action_radar || scan.market_action_radar || {};
   const gainersPlaybook = scan.top_gainers_playbook || {};
+  const playbookLabel = gainersPlaybook.label || (normalizeUiMarket(value.market_region || state.activeMarket) === "US" ? "US Top Movers Playbook" : "NSE Top-Gainers Playbook");
+  const playbookMethod = normalizeUiMarket(gainersPlaybook.market_region || value.market_region || state.activeMarket) === "US"
+    ? "US movers are tiered first, then scored with deterministic Weinstein, VCP, RS, relative volume, 52-week positioning, dollar liquidity, Darvas, ATR-aware stop, and anti-pattern rules. Catalyst text is tagged separately."
+    : "Top gainers are tiered first, then scored with deterministic Weinstein, VCP, RS, volume, 52-week positioning, delivery, Darvas, and anti-pattern rules. Catalyst text is tagged separately.";
   const playbookRecords = Array.isArray(gainersPlaybook.records) ? gainersPlaybook.records : [];
   const marketEvents = marketAction.events || [];
   const premarket = value.premarket_watchlist || {};
@@ -5479,7 +6098,7 @@ function opportunityHealthDetailHtml(value = {}) {
   const summaryRows = [
     ["Live market-action movers", fmtNumber(marketAction.event_count || marketEvents.length || 0)],
     ["Premarket candidates", fmtNumber(premarket.candidate_count || candidates.length || 0)],
-    ["Top gainers evaluated", fmtNumber(gainersPlaybook.total_gainers_evaluated || playbookRecords.length || 0)],
+    [`${playbookLabel} evaluated`, fmtNumber(gainersPlaybook.total_gainers_evaluated || playbookRecords.length || 0)],
     ["Playbook BUY signals", fmtNumber((gainersPlaybook.signal_summary || {}).strong_buy + (gainersPlaybook.signal_summary || {}).moderate_buy || 0)],
     ["Playbook excluded", fmtNumber((gainersPlaybook.tier_summary || {}).excluded || 0)],
     ["Live confirmations", fmtNumber(premarket.live_confirmation_count || 0)],
@@ -5491,18 +6110,18 @@ function opportunityHealthDetailHtml(value = {}) {
   return `<section class="audit-section">
     <h4>Live Market Action</h4>
     <p>${escapeHtml(marketEvents.length ? "Moneycontrol/Yahoo market-action movers are shown immediately; the slower strategy engine still confirms quality before normal conviction." : "No live market-action movers are available for this market yet.")}</p>
-    <h4>NSE Top-Gainers Playbook</h4>
-    <p>${escapeHtml(playbookRecords.length ? "Top gainers are tiered first, then scored with deterministic Weinstein, VCP, RS, volume, 52-week positioning, delivery, Darvas, and anti-pattern rules. Catalyst text is tagged separately." : "No top-gainers playbook records are available yet.")}</p>
+    <h4>${escapeHtml(playbookLabel)}</h4>
+    <p>${escapeHtml(playbookRecords.length ? playbookMethod : "No top-movers playbook records are available yet.")}</p>
     <h4>Premarket Watchlist</h4>
     <p>${escapeHtml(candidates.length ? "Candidates are watches, not automatic BUYs. They need live confirmation at open." : "No premarket candidates are available for this market yet.")}</p>
     <div class="detail-list">${summaryRows}</div>
   </section>
   <section class="audit-section">
-    <h4>Top-Gainers Rulebook</h4>
+    <h4>${escapeHtml(playbookLabel)} Rulebook</h4>
     <div class="table-wrap">
       <table>
         <thead><tr><th>#</th><th>Symbol</th><th>Move</th><th>Signal</th><th>Score</th><th>Stage</th><th>VCP</th><th>RS</th><th>Vol</th><th>Catalyst</th><th>Pivot / Stop</th><th>Risk</th></tr></thead>
-        <tbody>${playbookRows || `<tr><td colspan="12">No NSE top-gainers playbook rows yet</td></tr>`}</tbody>
+        <tbody>${playbookRows || `<tr><td colspan="12">No top-movers playbook rows yet</td></tr>`}</tbody>
       </table>
     </div>
   </section>
@@ -5511,7 +6130,7 @@ function opportunityHealthDetailHtml(value = {}) {
     <div class="table-wrap">
       <table>
         <thead><tr><th>Symbol</th><th>State</th><th>Trigger</th><th>Volume</th><th>What to watch</th></tr></thead>
-        <tbody>${watchRows || `<tr><td colspan="5">No watchlist rows from today’s top gainers.</td></tr>`}</tbody>
+        <tbody>${watchRows || `<tr><td colspan="5">No watchlist rows from today’s top movers.</td></tr>`}</tbody>
       </table>
     </div>
   </section>
@@ -5520,7 +6139,7 @@ function opportunityHealthDetailHtml(value = {}) {
     <div class="table-wrap">
       <table>
         <thead><tr><th>Symbol</th><th>Reason</th></tr></thead>
-        <tbody>${avoidRows || `<tr><td colspan="2">No explicit avoid rows from today’s top gainers.</td></tr>`}</tbody>
+        <tbody>${avoidRows || `<tr><td colspan="2">No explicit avoid rows from today’s top movers.</td></tr>`}</tbody>
       </table>
     </div>
   </section>
@@ -5541,6 +6160,79 @@ function opportunityHealthDetailHtml(value = {}) {
         <tbody>${rows || `<tr><td colspan="7">No candidates for ${escapeHtml(value.market_region || activeMarketLabel())}</td></tr>`}</tbody>
       </table>
     </div>
+  </section>`;
+}
+
+function rangePositionPct(low, high, price) {
+  const lo = Number(low);
+  const hi = Number(high);
+  const current = Number(price);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !Number.isFinite(current) || hi <= lo) return null;
+  return Math.max(0, Math.min(100, ((current - lo) / (hi - lo)) * 100));
+}
+
+function dayRangeHtml(quote = {}, market = state.activeMarket) {
+  const low = firstFinite(quote.low, quote.day_low);
+  const high = firstFinite(quote.high, quote.day_high);
+  const price = firstFinite(quote.price, quote.last_price, quote.latest_price, quote.close);
+  const pct = rangePositionPct(low, high, price);
+  return `<section class="trade-sheet-section">
+    <h4>Day's range</h4>
+    <div class="day-range-labels"><span>Low<br><strong>${fmtTradeMoney(low, market)}</strong></span><span>High<br><strong>${fmtTradeMoney(high, market)}</strong></span></div>
+    <div class="day-range-bar"><span style="width:${pct === null ? 0 : pct}%"></span><i style="left:${pct === null ? 50 : pct}%"></i></div>
+    <div class="day-range-labels muted"><span>Open<br><strong>${fmtTradeMoney(quote.open, market)}</strong></span><span>Prev. close<br><strong>${fmtTradeMoney(quote.previous_close || quote.prev_close || quote.close, market)}</strong></span></div>
+  </section>`;
+}
+
+function quoteDetailRowsHtml(quote = {}, market = state.activeMarket) {
+  const rows = [
+    ["Volume", fmtCompact(quote.volume)],
+    ["Avg. trade price", fmtTradeMoney(quote.avg_trade_price || quote.average_price, market)],
+    ["Last traded quantity", fmtNumber(quote.last_traded_quantity || quote.ltq)],
+    ["Last traded at", quote.ts ? fmtDateTime(quote.ts) : "-"],
+    ["Lower circuit", fmtTradeMoney(quote.lower_circuit || quote.lower_circuit_limit, market)],
+    ["Upper circuit", fmtTradeMoney(quote.upper_circuit || quote.upper_circuit_limit, market)],
+  ];
+  return `<section class="trade-sheet-section compact-list">
+    ${rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}
+  </section>`;
+}
+
+function watchlistStockDetailHtml(row = {}) {
+  const market = rowMarket(row);
+  const quote = quoteForIdea(row) || {};
+  const price = firstFinite(quote.price, quote.last_price, quote.latest_price, ideaWatchlistPrice(row));
+  const dayPct = quote.symbol ? quoteDayPct(quote) : ideaWatchlistReturn(row);
+  const dayChange = firstFinite(quote.day_change, quote.change);
+  const sign = dayChange !== null && dayChange > 0 ? "+" : "";
+  const exchange = row.exchange || quote.exchange || (market === "IN" ? "NSE" : "US");
+  const eventTag = ideaHasEvent(row) ? `<span class="event-pill">EVENT</span>` : "";
+  return `<section class="trade-sheet">
+    <header class="trade-sheet-head">
+      <div>
+        <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
+        <p>${escapeHtml(exchange)} <span class="${pnlClass(dayPct)}">${fmtTradeMoney(price, market)} ${dayChange !== null ? `${sign}${fmtNumber(dayChange)}` : ""} (${fmtSignedPct(dayPct)})</span></p>
+      </div>
+      ${eventTag}
+    </header>
+    <div class="trade-sheet-actions primary-actions">
+      <button class="buy-action" type="button" data-view-jump="suggestions">BUY</button>
+      <button class="sell-action" type="button" data-view-jump="positions">SELL</button>
+    </div>
+    <div class="trade-sheet-actions secondary-actions">
+      <button type="button" data-view-jump="analyze">View chart</button>
+      <button type="button" data-view-jump="analyze">Option chain</button>
+      <button type="button" data-view-jump="suggestions">Set alert</button>
+      <button type="button" data-view-jump="suggestions">Add notes</button>
+      <button type="button" data-view-jump="orders">Create GTT</button>
+    </div>
+    ${dayRangeHtml({ ...quote, price }, market)}
+    ${quoteDetailRowsHtml(quote, market)}
+    <section class="trade-sheet-section compact-list">
+      <h4>Apps</h4>
+      <div><span>Fundamentals</span><strong>${escapeHtml(row.fundamental_quality || row.setup_bucket_label || "Open analysis")}</strong></div>
+      <div><span>Technicals</span><strong>${escapeHtml(row.strategy || row.signal_type || "Open chart")}</strong></div>
+    </section>
   </section>`;
 }
 
@@ -5669,33 +6361,46 @@ function decisionDetailHtml(row) {
 
 function orderDetailHtml(row) {
   const audit = parseJsonObject(row.details_json);
-  const execution = audit.execution || {};
-  const route = audit.route || {};
-  const exit = exitPlanFromOrder(row);
   const market = rowMarket(row);
-  return `
-    ${auditHero({
-      label: "Order audit",
-      symbol: row.symbol,
-      action: row.side,
-      status: row.status,
-      meta: `${row.qty} qty · ${fmtMarketMoney(row.notional, market)}`,
-    })}
-    <section class="audit-section">
-      <h4>Why Order ${escapeHtml(row.status)}</h4>
-      <p>${escapeHtml(readableOrderReason(row))}</p>
-      <div class="audit-chips">
-        <span>Strategy: ${escapeHtml(row.strategy || "-")}</span>
-        <span>Price: ${fmtMarketMoney(row.price, market)}</span>
-        <span>Time: ${escapeHtml(fmtTime(row.ts))}</span>
+  const quote = quoteForSymbol(row.symbol, market);
+  const ltp = firstFinite(quote.price, quote.last_price, quote.latest_price);
+  const dayPct = quote.symbol ? quoteDayPct(quote) : null;
+  const bucket = orderStatusBucket(row);
+  const cancellable = bucket === "open" && Number.isFinite(Number(row.id));
+  const avgPrice = firstFinite(audit.execution?.avg_price, row.avg_price, row.average_price, bucket === "filled" ? row.price : null);
+  return `<section class="trade-sheet order-sheet">
+    <header class="trade-sheet-head">
+      <div>
+        <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
+        <p>${escapeHtml(orderMetaText(row))} <span class="${pnlClass(dayPct)}">${fmtTradeMoney(ltp, market)} ${fmtSignedPct(dayPct)}</span></p>
       </div>
+      <span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(orderStatusLabel(row))}</span>
+    </header>
+    <div class="trade-sheet-actions primary-actions">
+      <button class="modify-action" type="button" ${cancellable ? "" : "disabled"} data-order-modify="${escapeHtml(row.id || "")}">MODIFY</button>
+      <button class="cancel-action" type="button" ${cancellable ? "" : "disabled"} data-order-cancel="${escapeHtml(row.id || "")}">CANCEL</button>
+    </div>
+    <div class="trade-sheet-actions secondary-actions">
+      <button type="button" data-view-jump="analyze">View chart</button>
+      <button type="button" data-view-jump="analyze">Option chain</button>
+      <button type="button" data-view-jump="suggestions">Set alert</button>
+      <button type="button" data-view-jump="orders">Create GTT</button>
+    </div>
+    <section class="trade-sheet-section order-summary-grid">
+      <div><span>Type</span><strong>${escapeHtml(orderMetaText(row).split("  ").pop() || "LIMIT")}</strong></div>
+      <div><span>Price</span><strong>${fmtTradeMoney(row.price, market)}</strong></div>
+      <div><span>Avg. price</span><strong>${fmtTradeMoney(avgPrice, market)}</strong></div>
+      <div><span>Filled qty.</span><strong>${escapeHtml(orderFilledText(row))}</strong></div>
+      <div><span>Value</span><strong>${fmtTradeMoney(row.notional, market)}</strong></div>
+      <div><span>Placed at</span><strong>${escapeHtml(fmtDateTime(row.ts))}</strong></div>
     </section>
-    ${objectCardsHtml("Execution Sizing", execution.sizing)}
-    ${objectCardsHtml("Execution Risk Checks", execution.risk_checks || execution.daily_loss)}
-    ${exitPlanHtml(exit, market)}
-    ${objectCardsHtml("Broker / Route", route)}
-    ${audit.decision ? nestedDecisionHtml(audit.decision) : ""}
-  `;
+    <section class="trade-sheet-section">
+      <h4>Order note</h4>
+      <p>${escapeHtml(readableOrderReason(row))}</p>
+      ${bucket === "open" && !cancellable ? `<p class="muted">This request is tracked from the portfolio workflow. Manage or exit it from Portfolio.</p>` : ""}
+    </section>
+    ${dayRangeHtml({ ...quote, price: ltp }, market)}
+  </section>`;
 }
 
 function exitPlanFromOrder(row) {
@@ -6260,6 +6965,10 @@ function setActiveMarket(market, options = {}) {
   if (options.rerender !== false && state.latest) {
     render(state.latest);
   }
+  if (signalSearchActive()) {
+    searchSignalsFromDatabase(state.signalSearchQuery);
+  }
+  refreshMarketIndices();
 }
 
 function setAnalyzeMarket(market) {
@@ -6597,6 +7306,37 @@ function bindControls() {
       rerenderIdeasWatchlistFromState();
     });
   }
+  const signalSearchForm = byId("signal-search-form");
+  const signalSearchInput = byId("signal-search-input");
+  const signalSearchClear = byId("signal-search-clear");
+  if (signalSearchForm && signalSearchInput) {
+    signalSearchForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (state.signalSearchTimer) window.clearTimeout(state.signalSearchTimer);
+      searchSignalsFromDatabase(signalSearchInput.value || "");
+    });
+    signalSearchInput.addEventListener("input", () => {
+      const value = signalSearchInput.value || "";
+      state.signalSearchQuery = value.trim();
+      if (state.signalSearchTimer) window.clearTimeout(state.signalSearchTimer);
+      state.signalSearchTimer = window.setTimeout(() => searchSignalsFromDatabase(value), 300);
+      if (!value.trim()) {
+        state.signalSearchRows = [];
+        state.signalSearchInFlight = false;
+        rerenderSignalsFromState();
+      } else {
+        updateSignalSearchStatus(state.signalSearchRows || []);
+      }
+    });
+  }
+  if (signalSearchClear && signalSearchInput) {
+    signalSearchClear.addEventListener("click", () => {
+      signalSearchInput.value = "";
+      if (state.signalSearchTimer) window.clearTimeout(state.signalSearchTimer);
+      searchSignalsFromDatabase("");
+      signalSearchInput.focus();
+    });
+  }
   const trackGroupButton = byId("ideas-watchlist-track-group");
   if (trackGroupButton) {
     trackGroupButton.addEventListener("click", () => showDetails("Watchlist Filters", {
@@ -6692,6 +7432,7 @@ function bindControls() {
       setPageFilter(group, button.dataset.filterValue);
     });
   }
+  bindSwipeTabLists();
   for (const tile of document.querySelectorAll(".kpi")) {
     tile.addEventListener("click", () => {
       const portfolio = state.latest?.portfolio || {};
@@ -6708,7 +7449,7 @@ function bindControls() {
         setView("orders");
         return;
       }
-      if (["portfolio", "cash", "invested", "pnl"].includes(target)) {
+      if (["portfolio", "cash", "invested", "pnl", "total-pnl"].includes(target)) {
         setView("account");
         return;
       }
