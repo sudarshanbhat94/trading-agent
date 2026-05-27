@@ -1894,6 +1894,7 @@ function render(payload) {
   renderOverviewPositions(positions);
   renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
   renderOrders(visibleOrders);
+  renderMobileOrders(visibleOrders, dayOrders);
   renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
   renderSectorRotation(scopedMarketContext(payload.sector_rotation_context || {}, activeMarket));
   renderPerformance(payload.performance || {});
@@ -6272,6 +6273,88 @@ function renderOrders(rows) {
     })
     .join("");
   bindRowDetails(body, rows, "Order");
+}
+
+function renderMobileOrders(rows = [], allRows = rows) {
+  const body = byId("mobile-orders-body");
+  const summary = byId("mobile-orders-summary");
+  if (!body || !summary) return;
+  const counts = {
+    open: (allRows || []).filter((row) => orderStatusBucket(row) === "open").length,
+    filled: (allRows || []).filter((row) => orderStatusBucket(row) === "filled").length,
+    rejected: (allRows || []).filter((row) => orderStatusBucket(row) === "rejected").length,
+    all: (allRows || []).length,
+  };
+  const filter = pageFilter("orders");
+  const activeLabel = filter === "filled" ? "Executed" : humanLabel(filter || "all");
+  summary.innerHTML = `<div>
+      <strong>${escapeHtml(filteredCountLabel(rows.length, counts.all, "order"))}</strong>
+      <span>${escapeHtml(activeLabel)} · ${escapeHtml(activeMarketLabel())}</span>
+    </div>
+    <div class="mobile-orders-summary-counts" aria-label="Order status counts">
+      <span>Open ${fmtNumber(counts.open)}</span>
+      <span>Executed ${fmtNumber(counts.filled)}</span>
+      <span>Rejected ${fmtNumber(counts.rejected)}</span>
+    </div>`;
+  if (!rows.length) {
+    const emptyLabel = filter === "all" ? "" : `${activeLabel.toLowerCase()} `;
+    body.innerHTML = `<div class="mobile-orders-empty">
+      <strong>No ${escapeHtml(activeMarketLabel())} ${escapeHtml(emptyLabel)}orders today</strong>
+      <span>Paper and live requests, fills, exits, and rejections will appear here with their reason.</span>
+    </div>`;
+    return;
+  }
+  body.innerHTML = rows.map(mobileOrderCardHtml).join("");
+  [...body.querySelectorAll(".mobile-order-card")].forEach((card) => {
+    const row = rows[Number(card.dataset.index)];
+    if (!row) return;
+    const openDetails = () => showDetails("Order", row);
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, input, select, textarea")) return;
+      openDetails();
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      openDetails();
+    });
+  });
+}
+
+function mobileOrderCardHtml(row = {}, index = 0) {
+  const side = String(row.side || "").toLowerCase();
+  const sideClass = side.includes("sell") ? "sell" : (side.includes("buy") ? "buy" : "neutral");
+  const market = rowMarket(row);
+  const quote = quoteForSymbol(row.symbol, market);
+  const ltp = firstFinite(quote.price, quote.last_price, quote.latest_price, row.latest_price);
+  const bucket = orderStatusBucket(row);
+  const status = orderStatusLabel(row);
+  const company = shortValue(row.company_name || row.name || row.strategy || orderMetaText(row), 34);
+  const reason = shortValue(readableOrderReason(row), 140);
+  const orderPrice = fmtMarketMoney(row.price, market);
+  const ltpText = fmtMarketMoney(ltp, market);
+  return `<article class="mobile-order-card order-${escapeHtml(bucket)}" role="button" tabindex="0" data-index="${index}">
+    <div class="mobile-order-topline">
+      <span class="mobile-order-side ${escapeHtml(sideClass)}">${escapeHtml(String(row.side || "-").toUpperCase())}</span>
+      <div class="mobile-order-status-stack">
+        <span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(status)}</span>
+        <small>${escapeHtml(fmtTime(row.ts))}</small>
+      </div>
+    </div>
+    <div class="mobile-order-instrument">
+      <div>
+        <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+        <small>${escapeHtml(company)}</small>
+      </div>
+      <span>${escapeHtml(orderMetaText(row))}</span>
+    </div>
+    <div class="mobile-order-values">
+      <div><span>Filled</span><strong>${escapeHtml(orderFilledText(row))}</strong></div>
+      <div><span>Order</span><strong>${orderPrice}</strong></div>
+      <div><span>LTP</span><strong>${ltpText}</strong></div>
+    </div>
+    <p class="mobile-order-reason">${escapeHtml(reason)}</p>
+  </article>`;
 }
 
 function bindRowDetails(body, rows, title) {

@@ -384,6 +384,336 @@
   }
 }
 
+.mobile-orders-app {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  #orders-view.view.active {
+    display: block !important;
+    padding: 0 !important;
+    background: var(--mobile-surface) !important;
+  }
+
+  #orders-view .panel.full {
+    display: block !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: var(--mobile-surface) !important;
+    box-shadow: none !important;
+  }
+
+  #orders-view .panel-title-stack,
+  #orders-view #order-count,
+  #orders-view .page-table {
+    display: none !important;
+  }
+
+  #orders-view .panel-head {
+    display: block !important;
+    min-height: 46px !important;
+    border-bottom: 1px solid var(--mobile-line) !important;
+    background: var(--mobile-surface) !important;
+    padding: 0 !important;
+  }
+
+  #orders-view .panel-actions {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  #orders-view .order-filter-tabs {
+    display: flex !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 46px !important;
+    gap: 24px !important;
+    overflow-x: auto !important;
+    border: 0 !important;
+    background: var(--mobile-surface) !important;
+    padding: 0 22px !important;
+    scrollbar-width: none;
+  }
+
+  #orders-view .order-filter-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  #orders-view .order-filter-tabs button {
+    position: relative !important;
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: max-content !important;
+    min-height: 46px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    color: var(--mobile-text-faint) !important;
+    padding: 0 !important;
+    font-size: 14px !important;
+    font-weight: 650 !important;
+    line-height: 1 !important;
+  }
+
+  #orders-view .order-filter-tabs button.active {
+    color: var(--mobile-accent) !important;
+  }
+
+  #orders-view .order-filter-tabs button.active::after {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    background: var(--mobile-accent);
+    content: "";
+  }
+
+  .mobile-orders-app {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: calc(100dvh - var(--mobile-native-topbar-height, 82px) - var(--mobile-tape-height, 30px) - var(--mobile-bottom-nav-height, 72px) - 46px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    min-height: 280px;
+    overflow: hidden;
+    background: var(--mobile-surface);
+  }
+
+  .mobile-orders-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+    min-height: 66px;
+    border-bottom: 1px solid var(--mobile-line);
+    background: color-mix(in srgb, var(--mobile-surface) 92%, var(--mobile-surface-soft));
+    padding: 10px 18px;
+  }
+
+  .mobile-orders-summary strong,
+  .mobile-orders-summary span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-orders-summary strong {
+    display: block;
+    color: var(--mobile-text-primary);
+    font-size: 14px;
+    font-weight: 760;
+    line-height: 1.15;
+  }
+
+  .mobile-orders-summary span {
+    display: block;
+    color: var(--mobile-text-secondary);
+    font-size: 11px;
+    font-weight: 560;
+    line-height: 1.1;
+  }
+
+  .mobile-orders-summary-counts {
+    display: flex;
+    min-width: 0;
+    gap: 10px;
+  }
+
+  .mobile-orders-list {
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--mobile-surface);
+    padding: 0 0 calc(96px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-order-card {
+    display: grid;
+    grid-template-rows: 24px 32px 34px 22px;
+    gap: 6px;
+    height: 140px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--mobile-line);
+    background: var(--mobile-surface);
+    padding: 10px 18px;
+    box-sizing: border-box;
+  }
+
+  .mobile-order-card:focus-visible {
+    outline: 2px solid var(--mobile-accent);
+    outline-offset: -2px;
+  }
+
+  .mobile-order-topline,
+  .mobile-order-instrument,
+  .mobile-order-values {
+    display: grid;
+    min-width: 0;
+    align-items: center;
+  }
+
+  .mobile-order-topline {
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .mobile-order-side {
+    display: inline-flex;
+    width: max-content;
+    max-width: 84px;
+    min-height: 22px;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+    color: var(--mobile-text-secondary);
+    padding: 0 8px;
+    font-size: 10px;
+    font-weight: 860;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-order-side.buy {
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+    color: var(--success);
+  }
+
+  .mobile-order-side.sell {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
+  }
+
+  .mobile-order-status-stack {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .mobile-order-status-stack .order-status-pill {
+    min-height: 22px;
+    padding: 0 8px;
+    font-size: 10px;
+    line-height: 22px;
+  }
+
+  .mobile-order-status-stack small {
+    flex: 0 0 auto;
+    color: var(--mobile-text-muted);
+    font-size: 11px;
+    font-weight: 560;
+    line-height: 1;
+  }
+
+  .mobile-order-instrument {
+    grid-template-columns: minmax(0, 1fr) minmax(86px, auto);
+    gap: 10px;
+  }
+
+  .mobile-order-instrument div,
+  .mobile-order-instrument strong,
+  .mobile-order-instrument small,
+  .mobile-order-instrument span,
+  .mobile-order-values strong,
+  .mobile-order-values span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-order-instrument strong {
+    display: block;
+    color: var(--mobile-text-primary);
+    font-size: 15px;
+    font-weight: 660;
+    line-height: 1.1;
+  }
+
+  .mobile-order-instrument small,
+  .mobile-order-instrument span {
+    display: block;
+    color: var(--mobile-text-secondary);
+    font-size: 11px;
+    font-weight: 540;
+    line-height: 1.25;
+  }
+
+  .mobile-order-instrument span {
+    justify-self: end;
+    text-align: right;
+  }
+
+  .mobile-order-values {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .mobile-order-values div {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .mobile-order-values span {
+    color: var(--mobile-text-muted);
+    font-size: 10px;
+    font-weight: 640;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .mobile-order-values strong {
+    color: var(--mobile-text-primary);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.08;
+  }
+
+  .mobile-order-reason {
+    display: -webkit-box;
+    min-width: 0;
+    max-height: 32px;
+    overflow: hidden;
+    color: var(--mobile-text-secondary);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.32;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    margin: 0;
+  }
+
+  .mobile-orders-empty {
+    display: grid;
+    min-height: 240px;
+    align-content: center;
+    justify-items: center;
+    gap: 8px;
+    padding: 28px 22px;
+    text-align: center;
+  }
+
+  .mobile-orders-empty strong {
+    color: var(--mobile-text-primary);
+    font-size: 15px;
+    font-weight: 720;
+  }
+
+  .mobile-orders-empty span {
+    max-width: 280px;
+    color: var(--mobile-text-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+}
+
 /* Desktop watchlist polish: keep the mobile app rows, but make desktop read like a trading table. */
 @media (min-width: 768px) {
   #suggestions-view .mobile-watchlist-app {
@@ -19875,5 +20205,78 @@ body {
     grid-column: 2 !important;
     grid-row: 2 !important;
     justify-content: flex-end !important;
+  }
+}
+
+/* Final mobile Orders override: keep the phone screen on the card renderer. */
+@media (max-width: 767px) {
+  #orders-view.view.active {
+    display: block !important;
+    padding: 0 !important;
+    background: var(--mobile-surface) !important;
+  }
+
+  #orders-view .panel.full {
+    display: block !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: var(--mobile-surface) !important;
+    box-shadow: none !important;
+  }
+
+  #orders-view .panel-title-stack,
+  #orders-view #order-count,
+  #orders-view .page-table {
+    display: none !important;
+  }
+
+  #orders-view .panel-head {
+    display: block !important;
+    min-height: 46px !important;
+    border-bottom: 1px solid var(--mobile-line) !important;
+    background: var(--mobile-surface) !important;
+    padding: 0 !important;
+  }
+
+  #orders-view .panel-actions {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  #orders-view .order-filter-tabs {
+    display: flex !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 46px !important;
+    gap: 24px !important;
+    overflow-x: auto !important;
+    border: 0 !important;
+    background: var(--mobile-surface) !important;
+    padding: 0 22px !important;
+    scrollbar-width: none !important;
+  }
+
+  .mobile-orders-app {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    height: calc(100dvh - var(--mobile-native-topbar-height, 82px) - var(--mobile-tape-height, 30px) - var(--mobile-bottom-nav-height, 72px) - 46px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
+    min-height: 280px !important;
+    overflow: hidden !important;
+    background: var(--mobile-surface) !important;
+  }
+
+  .mobile-orders-list {
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .mobile-order-card {
+    height: 140px !important;
   }
 }
