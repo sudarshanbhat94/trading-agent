@@ -5965,10 +5965,20 @@ function renderDecisions(rows, options = {}) {
   [...body.querySelectorAll(".decision-feed-card")].forEach((card) => {
     const row = visibleRows[Number(card.dataset.index)];
     if (!row) return;
-    card.addEventListener("click", () => {
+    const openSignal = () => {
       for (const item of body.querySelectorAll(".decision-feed-card")) item.classList.remove("active");
       card.classList.add("active");
+      if (isMobileSidebar()) {
+        showDetails("Signal", row);
+        return;
+      }
       renderDecisionDetailFromRow(row);
+    };
+    card.addEventListener("click", openSignal);
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      openSignal();
     });
   });
   body.querySelector(".decision-feed-card")?.classList.add("active");
@@ -6334,24 +6344,24 @@ function mobileOrderCardHtml(row = {}, index = 0) {
   const orderPrice = fmtMarketMoney(row.price, market);
   const ltpText = fmtMarketMoney(ltp, market);
   return `<article class="mobile-order-card order-${escapeHtml(bucket)}" role="button" tabindex="0" data-index="${index}">
-    <div class="mobile-order-topline">
-      <span class="mobile-order-side ${escapeHtml(sideClass)}">${escapeHtml(String(row.side || "-").toUpperCase())}</span>
-      <div class="mobile-order-status-stack">
-        <span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(status)}</span>
-        <small>${escapeHtml(fmtTime(row.ts))}</small>
+    <div class="mobile-order-line mobile-order-topline">
+      <div class="mobile-order-left">
+        <span class="mobile-order-side ${escapeHtml(sideClass)}">${escapeHtml(String(row.side || "-").toUpperCase())}</span>
+        <span class="mobile-order-filled">${escapeHtml(orderFilledText(row))}</span>
       </div>
+      <small>${escapeHtml(fmtTime(row.ts))}</small>
     </div>
-    <div class="mobile-order-instrument">
-      <div>
-        <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
-        <small>${escapeHtml(company)}</small>
-      </div>
+    <div class="mobile-order-line mobile-order-status-row">
+      <span>${escapeHtml(company)}</span>
+      <span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(status)}</span>
+    </div>
+    <div class="mobile-order-line mobile-order-primary">
+      <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
+      <strong class="mobile-order-price">${orderPrice}</strong>
+    </div>
+    <div class="mobile-order-line mobile-order-meta">
       <span>${escapeHtml(orderMetaText(row))}</span>
-    </div>
-    <div class="mobile-order-values">
-      <div><span>Filled</span><strong>${escapeHtml(orderFilledText(row))}</strong></div>
-      <div><span>Order</span><strong>${orderPrice}</strong></div>
-      <div><span>LTP</span><strong>${ltpText}</strong></div>
+      <span>LTP&nbsp; ${ltpText}</span>
     </div>
     <p class="mobile-order-reason">${escapeHtml(reason)}</p>
   </article>`;
