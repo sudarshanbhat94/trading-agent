@@ -16150,6 +16150,188 @@ body[data-theme="dark"] .market-tape-viewport::after {
   background: linear-gradient(270deg, #000000 0%, transparent 100%) !important;
 }
 
+/* Account audit pass: make funds and P&L math verifiable without exposing raw payloads. */
+.account-funds-panel,
+.account-verification-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.account-funds-grid,
+.account-verification-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-fund-card,
+.account-verify-card {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.account-fund-head,
+.account-fund-equity,
+.account-fund-grid,
+.account-verify-formulas {
+  min-width: 0;
+}
+
+.account-fund-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.account-fund-head span,
+.account-fund-equity small,
+.account-fund-grid small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.account-fund-head strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-fund-equity {
+  display: grid;
+  gap: 3px;
+}
+
+.account-fund-equity strong {
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.account-fund-equity em {
+  font-style: normal;
+  font-weight: 850;
+}
+
+.account-fund-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.account-fund-grid span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 9px;
+}
+
+.account-fund-grid strong,
+.account-verify-table .num,
+.account-verify-formulas strong {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.account-verify-formulas {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.account-formula-note {
+  margin: 0;
+}
+
+.account-verify-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.account-verify-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.account-verify-table th,
+.account-verify-table td {
+  border-top: 1px solid var(--line);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.account-verify-table th {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.account-verify-table td {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.account-verify-table td > strong,
+.account-verify-table td > small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-verify-table small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+body[data-theme="dark"] :is(
+  .account-funds-panel,
+  .account-verification-panel,
+  .account-fund-card,
+  .account-verify-card,
+  .account-fund-grid span,
+  .account-verify-table-wrap
+) {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  background-image: none !important;
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] :is(.account-fund-equity strong, .account-verify-table td, .account-verify-table td strong) {
+  color: #e8eef8 !important;
+}
+
+@media (max-width: 900px) {
+  .account-funds-grid,
+  .account-verification-grid,
+  .account-verify-formulas {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .account-fund-equity strong {
+    font-size: 20px;
+  }
+
+  .account-verify-table {
+    min-width: 660px;
+  }
+}
+
 /* End-of-file mobile pitch-black guard: wins over every legacy page override. */
 html[data-theme="dark"],
 html[data-theme="dark"] body,

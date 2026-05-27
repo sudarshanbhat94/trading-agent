@@ -287,10 +287,11 @@ function portfolioMetricsForMarket(portfolio = {}, positions = [], market = "IN"
   const region = normalizeUiMarket(market);
   const nested = portfolio.portfolio_by_market || portfolio.portfolioByMarket;
   if (nested && nested[region]) return nested[region];
-  const invested = positions.reduce((sum, row) => sum + (Number(row.avg_price) || 0) * (Number(row.qty) || 0), 0);
-  const marketValue = positions.reduce((sum, row) => sum + (Number(row.market_price) || 0) * (Number(row.qty) || 0), 0);
-  const unrealized = positions.reduce(
-    (sum, row) => sum + ((Number(row.market_price) || 0) - (Number(row.avg_price) || 0)) * (Number(row.qty) || 0),
+  const openPositions = (positions || []).filter((row) => positionQuantity(row) > 0 && !positionIsClosed(row));
+  const invested = openPositions.reduce((sum, row) => sum + positionInvestedAmount(row), 0);
+  const marketValue = openPositions.reduce((sum, row) => sum + positionMarketValue(row), 0);
+  const unrealized = openPositions.reduce(
+    (sum, row) => sum + (positionFormulaUnrealizedPnl(row) || 0),
     0,
   );
   const configuredCash = Number(currentSettings().initial_cash_inr || 0);
@@ -407,19 +408,46 @@ function positionDayPnlSource(row = {}, market = state.activeMarket) {
   return positionOpenedToday(row) ? "entry_today" : "previous_close";
 }
 
-function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.activeMarket) {
-  const unrealized = Number(portfolio.unrealized_pnl || 0);
-  const realized = Number(portfolio.realized_pnl || 0);
-  const openPositions = (positions || []).filter((row) => positionQuantity(row) > 0);
+function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.activeMarket, historyRows = []) {
+  const openPositions = (positions || []).filter((row) => positionQuantity(row) > 0 && !positionIsClosed(row));
   const dayClosedPositions = (positions || []).filter(positionClosedToday);
-  const calculatedMarketValue = openPositions.reduce(
-    (sum, row) => sum + Number(firstFinite(row.market_price, row.latest_price, row.follow_latest_price) || 0) * Number(row.qty || row.user_follow?.qty || 0),
-    0,
+  const calculatedMarketValue = openPositions.reduce((sum, row) => sum + positionMarketValue(row), 0);
+  const calculatedInvested = openPositions.reduce((sum, row) => sum + positionInvestedAmount(row), 0);
+  const openPnlValues = openPositions
+    .map(positionFormulaUnrealizedPnl)
+    .filter((value) => value !== null && Number.isFinite(Number(value)));
+  const reportedUnrealized = firstFinite(portfolio.unrealized_pnl, portfolio.unrealizedPnl, portfolio.open_pnl);
+  const calculatedUnrealized = openPnlValues.length
+    ? openPnlValues.reduce((sum, value) => sum + Number(value || 0), 0)
+    : null;
+  const realizedRows = (historyRows || [])
+    .filter((row) => String(row.mode || row.user_follow?.mode || "PAPER").toUpperCase() === "PAPER")
+    .map(positionRealizedPnl)
+    .filter((value) => value !== null && Number.isFinite(Number(value)) && Number(value) !== 0);
+  const calculatedRealized = realizedRows.length
+    ? realizedRows.reduce((sum, value) => sum + Number(value || 0), 0)
+    : null;
+  const realized = calculatedRealized !== null
+    ? calculatedRealized
+    : firstFinite(portfolio.realized_pnl, portfolio.realizedPnl, 0) || 0;
+  const unrealized = calculatedUnrealized !== null ? calculatedUnrealized : reportedUnrealized || 0;
+  const marketValue = openPositions.length
+    ? calculatedMarketValue
+    : firstFinite(portfolio.market_value, portfolio.marketValue, 0) || 0;
+  const invested = openPositions.length
+    ? calculatedInvested
+    : firstFinite(portfolio.invested, 0) || 0;
+  const startingCash = firstFinite(portfolio.starting_cash, portfolio.startingCash);
+  const rawCashFromFormula = startingCash !== null ? startingCash + realized - invested : null;
+  const reportedCash = firstFinite(
+    portfolio.cash,
+    portfolio.available_cash,
+    portfolio.availableCash,
   );
-  const calculatedInvested = openPositions.reduce(
-    (sum, row) => sum + Number(firstFinite(row.avg_price, row.entry_price, row.follow_entry_price) || 0) * Number(row.qty || row.user_follow?.qty || 0),
-    0,
-  );
+  const cash = rawCashFromFormula !== null ? Math.max(rawCashFromFormula, 0) : reportedCash || 0;
+  const reportedEquity = firstFinite(portfolio.equity, portfolio.portfolio_value);
+  const equity = rawCashFromFormula !== null ? rawCashFromFormula + marketValue : reportedEquity || cash + marketValue;
+  const startingCashValue = startingCash !== null ? startingCash : cash + invested - realized;
   const dayValues = [...openPositions, ...dayClosedPositions]
     .map((row) => positionDayPnl(row, market))
     .filter((value) => value !== null && Number.isFinite(Number(value)));
@@ -458,10 +486,18 @@ function portfolioPnlMetrics(portfolio = {}, positions = [], market = state.acti
     today_count: dayValues.length,
     today_missing_count: Math.max(openPositions.length - dayValues.length, 0),
     open_count: openPositions.length,
-    market_value: firstFinite(portfolio.market_value, portfolio.marketValue, calculatedMarketValue) || 0,
-    invested: firstFinite(portfolio.invested, calculatedInvested) || 0,
+    cash,
+    starting_cash: startingCashValue,
+    equity,
+    market_value: marketValue,
+    invested,
     unrealized,
+    calculated_unrealized: calculatedUnrealized,
+    reported_unrealized: reportedUnrealized,
+    unrealized_source: calculatedUnrealized !== null ? "rows" : "reported",
     realized,
+    calculated_realized: calculatedRealized,
+    realized_source: calculatedRealized !== null ? "history" : "reported",
     total: realized + unrealized,
   };
 }
@@ -505,14 +541,38 @@ function positionEntryPrice(row = {}) {
   );
 }
 
-function positionUnrealizedPnl(row = {}) {
-  const explicit = firstFinite(row.unrealized_pnl, row.user_follow?.unrealized_pnl, row.open_pnl, row.pnl);
-  if (explicit !== null) return explicit;
+function positionInvestedAmount(row = {}) {
+  const explicit = firstFinite(row.invested_amount, row.entry_notional);
+  if (explicit !== null && explicit > 0) return explicit;
+  const qty = positionQuantity(row);
+  const entry = positionEntryPrice(row);
+  if (!qty || entry === null) return 0;
+  return entry * qty;
+}
+
+function positionMarketValue(row = {}) {
+  const explicit = firstFinite(row.market_value, row.position_summary?.market_value);
+  if (explicit !== null && explicit > 0) return explicit;
+  const qty = positionQuantity(row);
+  const latest = positionLatestPrice(row);
+  if (!qty || latest === null) return 0;
+  return latest * qty;
+}
+
+function positionFormulaUnrealizedPnl(row = {}) {
   const qty = positionQuantity(row);
   const latest = positionLatestPrice(row);
   const entry = positionEntryPrice(row);
   if (!qty || latest === null || entry === null) return null;
   return (latest - entry) * qty;
+}
+
+function positionUnrealizedPnl(row = {}) {
+  const formula = positionFormulaUnrealizedPnl(row);
+  if (formula !== null) return formula;
+  const explicit = firstFinite(row.unrealized_pnl, row.user_follow?.unrealized_pnl, row.open_pnl, row.pnl);
+  if (explicit !== null) return explicit;
+  return null;
 }
 
 function positionRealizedPnl(row = {}) {
@@ -559,18 +619,12 @@ function positionClosedToday(row = {}) {
 }
 
 function portfolioRowsPnlMetrics(rows = [], market = state.activeMarket) {
-  const openPositions = (rows || []).filter((row) => positionQuantity(row) > 0);
+  const openPositions = (rows || []).filter((row) => positionQuantity(row) > 0 && !positionIsClosed(row));
   const dayClosedPositions = (rows || []).filter(positionClosedToday);
-  const marketValue = openPositions.reduce((sum, row) => {
-    const latest = positionLatestPrice(row);
-    return sum + (latest === null ? 0 : latest * positionQuantity(row));
-  }, 0);
-  const invested = openPositions.reduce((sum, row) => {
-    const entry = positionEntryPrice(row);
-    return sum + (entry === null ? 0 : entry * positionQuantity(row));
-  }, 0);
+  const marketValue = openPositions.reduce((sum, row) => sum + positionMarketValue(row), 0);
+  const invested = openPositions.reduce((sum, row) => sum + positionInvestedAmount(row), 0);
   const unrealizedValues = openPositions
-    .map(positionUnrealizedPnl)
+    .map(positionFormulaUnrealizedPnl)
     .filter((value) => value !== null && Number.isFinite(Number(value)));
   const dayValues = [...openPositions, ...dayClosedPositions]
     .map((row) => positionDayPnl(row, market))
@@ -635,6 +689,89 @@ function mobilePortfolioDayPnlHtml(metrics = {}, market = state.activeMarket) {
     <strong class="${pnlClass(metrics.today)}">${fmtSignedTradeMoney(metrics.today, market)}</strong>
     <em class="${pnlClass(dayPct)}">${fmtSignedPct(dayPct)}</em>
   </div>`;
+}
+
+function accountFundsCardHtml(label, market, portfolio = {}, metrics = {}) {
+  const start = firstFinite(metrics.starting_cash, portfolio.starting_cash, portfolio.startingCash);
+  const netPct = start && start > 0 ? (Number(metrics.total || 0) / start) * 100 : null;
+  return `<article class="account-fund-card">
+    <div class="account-fund-head">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(marketCurrencyLabel(market))}</strong>
+    </div>
+    <div class="account-fund-equity">
+      <small>Equity</small>
+      <strong>${fmtMarketMoney(metrics.equity, market)}</strong>
+      <em class="${pnlClass(metrics.total)}">${fmtSignedTradeMoney(metrics.total, market)} ${netPct !== null ? `(${fmtSignedPct(netPct)})` : ""}</em>
+    </div>
+    <div class="account-fund-grid">
+      <span><small>Cash</small><strong>${fmtMarketMoney(metrics.cash, market)}</strong></span>
+      <span><small>Invested</small><strong>${fmtMarketMoney(metrics.invested, market)}</strong></span>
+      <span><small>Current value</small><strong>${fmtMarketMoney(metrics.market_value, market)}</strong></span>
+      <span><small>Starting capital</small><strong>${fmtMarketMoney(start, market)}</strong></span>
+    </div>
+  </article>`;
+}
+
+function portfolioVerificationHtml(label, market, portfolio = {}, positions = [], historyRows = []) {
+  const metrics = portfolioPnlMetrics(portfolio, positions, market, historyRows);
+  const openRows = (positions || []).filter((row) => positionQuantity(row) > 0 && !positionIsClosed(row));
+  const realizedRows = (historyRows || [])
+    .filter((row) => String(row.mode || row.user_follow?.mode || "PAPER").toUpperCase() === "PAPER")
+    .map((row) => ({ row, realized: positionRealizedPnl(row) }))
+    .filter((item) => item.realized !== null && Number.isFinite(Number(item.realized)) && (Number(item.realized) !== 0 || positionIsClosed(item.row)))
+    .slice(0, 8);
+  const holdingRows = openRows.slice(0, 10).map((row) => {
+    const qty = positionQuantity(row);
+    const entry = positionEntryPrice(row);
+    const latest = positionLatestPrice(row);
+    const pnl = positionFormulaUnrealizedPnl(row);
+    return `<tr>
+      <td><strong>${escapeHtml(row.symbol || "-")}</strong><small>${escapeHtml(row.company_name || row.exchange || "")}</small></td>
+      <td class="num">${fmtNumber(qty)}</td>
+      <td class="num">${fmtMarketMoney(entry, market)}</td>
+      <td class="num">${fmtMarketMoney(latest, market)}</td>
+      <td class="num ${pnlClass(pnl)}">${fmtSignedTradeMoney(pnl, market)}</td>
+      <td><small>(${fmtMarketMoney(latest, market)} - ${fmtMarketMoney(entry, market)}) x ${fmtNumber(qty)}</small></td>
+    </tr>`;
+  }).join("");
+  const realizedLedgerRows = realizedRows.map(({ row, realized }) => {
+    const qty = firstPositiveFinite(row.closed_qty, row.entry_qty, row.qty) ?? firstFinite(row.closed_qty, row.entry_qty, row.qty);
+    const when = positionClosedAt(row) || (row.updated_at ? new Date(row.updated_at) : null);
+    return `<tr>
+      <td><strong>${escapeHtml(row.symbol || "-")}</strong><small>${escapeHtml(row.status || row.state || "")}</small></td>
+      <td class="num">${fmtNumber(qty)}</td>
+      <td class="num">${fmtMarketMoney(positionEntryPrice(row), market)}</td>
+      <td class="num">${fmtMarketMoney(firstFinite(row.exit_price, row.latest_price, row.market_price), market)}</td>
+      <td class="num ${pnlClass(realized)}">${fmtSignedTradeMoney(realized, market)}</td>
+      <td><small>${escapeHtml(fmtDateTime(when))} · ${escapeHtml(shortValue(row.exit_reason || row.exit_action || "realized", 70))}</small></td>
+    </tr>`;
+  }).join("");
+  const formulaRows = [
+    ["Holdings P&L", `${fmtSignedTradeMoney(metrics.unrealized, market)} = sum of each open row's (LTP - Avg) x Qty`],
+    ["Realized P&L", `${fmtSignedTradeMoney(metrics.realized, market)} = sum of closed paper exits and partial exits`],
+    ["Net P&L", `${fmtSignedTradeMoney(metrics.total, market)} = realized + holdings P&L`],
+    ["Equity", `${fmtMarketMoney(metrics.equity, market)} = cash + current value`],
+  ].map(([name, detail]) => `<div><span>${escapeHtml(name)}</span><strong>${escapeHtml(detail)}</strong></div>`).join("");
+  return `<article class="account-verify-card">
+    <div class="account-history-head">
+      <strong>${escapeHtml(label)} P&amp;L Verification</strong>
+      <span>${fmtNumber(openRows.length)} open · ${fmtNumber(realizedRows.length)} realized rows shown</span>
+    </div>
+    <div class="detail-list account-verify-formulas">${formulaRows}</div>
+    <div class="account-verify-table-wrap">
+      <table class="account-verify-table">
+        <thead><tr><th>Holding</th><th>Qty</th><th>Avg</th><th>LTP</th><th>Open P&amp;L</th><th>Formula</th></tr></thead>
+        <tbody>${holdingRows || `<tr><td colspan="6">No open ${escapeHtml(label)} paper holdings.</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div class="account-verify-table-wrap">
+      <table class="account-verify-table">
+        <thead><tr><th>Closed / Partial</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Realized</th><th>When / reason</th></tr></thead>
+        <tbody>${realizedLedgerRows || `<tr><td colspan="6">No realized ${escapeHtml(label)} paper P&amp;L yet.</td></tr>`}</tbody>
+      </table>
+    </div>
+  </article>`;
 }
 
 function fmtNumber(value) {
@@ -1789,11 +1926,11 @@ function render(payload) {
 
   const scopedPortfolio = marketPortfolioFromPayload(payload, activeMarket);
   const pnlMetrics = portfolioPnlMetrics(scopedPortfolio, positions, activeMarket);
-  const unrealizedPct = Number(scopedPortfolio.invested) > 0
-    ? (Number(pnlMetrics.unrealized || 0) / Number(scopedPortfolio.invested)) * 100
+  const unrealizedPct = Number(pnlMetrics.invested) > 0
+    ? (Number(pnlMetrics.unrealized || 0) / Number(pnlMetrics.invested)) * 100
     : 0;
-  byId("kpi-equity").textContent = fmtMarketMoney(scopedPortfolio.equity, activeMarket);
-  byId("kpi-cash").textContent = fmtMarketMoney(scopedPortfolio.cash, activeMarket);
+  byId("kpi-equity").textContent = fmtMarketMoney(pnlMetrics.equity, activeMarket);
+  byId("kpi-cash").textContent = fmtMarketMoney(pnlMetrics.cash, activeMarket);
   byId("kpi-unrealized").textContent = fmtMarketMoney(pnlMetrics.unrealized, activeMarket);
   byId("kpi-unrealized").className = pnlClass(pnlMetrics.unrealized);
   const totalPnlEl = byId("kpi-total-pnl");
@@ -1906,11 +2043,11 @@ function render(payload) {
 
 function updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas) {
   const pnlMetrics = portfolioPnlMetrics(scopedPortfolio, positions, activeMarket);
-  const unrealizedPct = Number(scopedPortfolio.invested) > 0
-    ? (Number(pnlMetrics.unrealized || 0) / Number(scopedPortfolio.invested)) * 100
+  const unrealizedPct = Number(pnlMetrics.invested) > 0
+    ? (Number(pnlMetrics.unrealized || 0) / Number(pnlMetrics.invested)) * 100
     : 0;
-  byId("kpi-equity").textContent = fmtMarketMoney(scopedPortfolio.equity, activeMarket);
-  byId("kpi-cash").textContent = fmtMarketMoney(scopedPortfolio.cash, activeMarket);
+  byId("kpi-equity").textContent = fmtMarketMoney(pnlMetrics.equity, activeMarket);
+  byId("kpi-cash").textContent = fmtMarketMoney(pnlMetrics.cash, activeMarket);
   byId("kpi-unrealized").textContent = fmtMarketMoney(pnlMetrics.unrealized, activeMarket);
   byId("kpi-unrealized").className = pnlClass(pnlMetrics.unrealized);
   const totalPnlEl = byId("kpi-total-pnl");
@@ -3339,10 +3476,12 @@ function renderAccount(account) {
       : openFollowHistory;
   const indiaPositions = filterRowsByMarket(paperPositions, "IN");
   const usPositions = filterRowsByMarket(paperPositions, "US");
+  const indiaHistory = filterRowsByMarket(followHistory, "IN");
+  const usHistory = filterRowsByMarket(followHistory, "US");
   const indiaPaper = portfolioByMarket.IN || portfolioMetricsForMarket(portfolio, indiaPositions, "IN");
   const usPaper = portfolioByMarket.US || portfolioMetricsForMarket(portfolio, usPositions, "US");
-  const indiaPnl = portfolioPnlMetrics(indiaPaper, indiaPositions, "IN");
-  const usPnl = portfolioPnlMetrics(usPaper, usPositions, "US");
+  const indiaPnl = portfolioPnlMetrics(indiaPaper, indiaPositions, "IN", indiaHistory);
+  const usPnl = portfolioPnlMetrics(usPaper, usPositions, "US", usHistory);
   const cashPool = paper.cash_pool_by_market || state.auth?.user?.paper_cash_by_market || {};
   const indiaCashPool = Number(cashPool.IN ?? (Number(indiaPaper.cash || 0) + Number(indiaPaper.invested || 0)));
   const usCashPool = Number(cashPool.US ?? (Number(usPaper.cash || 0) + Number(usPaper.invested || 0)));
@@ -3407,11 +3546,39 @@ function renderAccount(account) {
       <em>${escapeHtml(initials)}</em>
     </section>
     <section class="account-menu-list">
-      <button type="button" data-view-jump="account"><span>Funds</span><strong>${fmtMarketMoney(indiaPaper.cash, "IN")}</strong></button>
+      <button type="button" data-view-jump="account"><span>Funds</span><strong>IN ${fmtMarketMoney(indiaPnl.cash, "IN")} · US ${fmtMarketMoney(usPnl.cash, "US")}</strong></button>
       <button type="button" data-view-jump="settings"><span>Profile</span><strong>${escapeHtml(user.username || "-")}</strong></button>
       <button type="button" data-view-jump="settings"><span>Settings</span><strong>Risk, markets, tokens</strong></button>
       <button type="button" data-view-jump="account"><span>Connected apps</span><strong>${escapeHtml(userFeedLabel)}</strong></button>
       <button type="button" data-account-logout><span>Logout</span><strong>Sign out</strong></button>
+    </section>
+  `;
+  const fundsOverview = `
+    <section class="account-funds-panel">
+      <div class="account-history-head">
+        <strong>Paper Funds</strong>
+        <span>India and US cash pools are tracked separately.</span>
+      </div>
+      <div class="account-funds-grid">
+        ${accountFundsCardHtml("India", "IN", indiaPaper, indiaPnl)}
+        ${accountFundsCardHtml("US", "US", usPaper, usPnl)}
+      </div>
+    </section>
+  `;
+  const verificationMarkup = `
+    <section class="account-verification-panel">
+      <div class="account-history-head">
+        <strong>How To Verify P&amp;L</strong>
+        <span>These totals are recomputed from position rows and closed paper history.</span>
+      </div>
+      <div class="account-note account-formula-note">
+        <strong>Verification rule</strong>
+        <span>Open P&amp;L is calculated as (LTP - average price) x quantity for each holding. Net P&amp;L is realized exits plus open P&amp;L. Equity is cash plus current value.</span>
+      </div>
+      <div class="account-verification-grid">
+        ${portfolioVerificationHtml("India", "IN", indiaPaper, indiaPositions, indiaHistory)}
+        ${portfolioVerificationHtml("US", "US", usPaper, usPositions, usHistory)}
+      </div>
     </section>
   `;
   const accountHistoryMarkup = `
@@ -3435,16 +3602,17 @@ function renderAccount(account) {
   byId("account-status").textContent = userFeedLabel;
   byId("account-body").innerHTML = `
     ${accountMenu}
+    ${fundsOverview}
     <div class="account-metrics">
       <div><span>Mode</span><strong>${paper.mode || "-"}</strong></div>
-      <div><span>India Cash</span><strong>${fmtMarketMoney(indiaPaper.cash, "IN")}</strong></div>
-      <div><span>India Equity</span><strong>${fmtMarketMoney(indiaPaper.equity, "IN")}</strong></div>
+      <div><span>India Cash</span><strong>${fmtMarketMoney(indiaPnl.cash, "IN")}</strong></div>
+      <div><span>India Equity</span><strong>${fmtMarketMoney(indiaPnl.equity, "IN")}</strong></div>
       <div class="account-pnl-card ${pnlClass(indiaPnl.today)}"><span>India Today P&L</span><strong class="${pnlClass(indiaPnl.today)}">${fmtMarketMoney(indiaPnl.today, "IN")}</strong><small>${escapeHtml(portfolioTodayLabel(indiaPnl))}</small></div>
       <div class="account-pnl-card ${pnlClass(indiaPnl.unrealized)}"><span>India Holdings P&L</span><strong class="${pnlClass(indiaPnl.unrealized)}">${fmtMarketMoney(indiaPnl.unrealized, "IN")}</strong><small>current holdings</small></div>
       <div class="account-pnl-card ${pnlClass(indiaPnl.total)}"><span>India Net P&L</span><strong class="${pnlClass(indiaPnl.total)}">${fmtMarketMoney(indiaPnl.total, "IN")}</strong><small>realized ${fmtMarketMoney(indiaPnl.realized, "IN")} + holdings</small></div>
       ${Number(indiaPaper.cash_deficit || 0) > 0 ? `<div><span>India Cash Gap</span><strong class="negative">${fmtMarketMoney(indiaPaper.cash_deficit, "IN")}</strong></div>` : ""}
-      <div><span>US Cash</span><strong>${fmtMarketMoney(usPaper.cash, "US")}</strong></div>
-      <div><span>US Equity</span><strong>${fmtMarketMoney(usPaper.equity, "US")}</strong></div>
+      <div><span>US Cash</span><strong>${fmtMarketMoney(usPnl.cash, "US")}</strong></div>
+      <div><span>US Equity</span><strong>${fmtMarketMoney(usPnl.equity, "US")}</strong></div>
       <div class="account-pnl-card ${pnlClass(usPnl.today)}"><span>US Today P&L</span><strong class="${pnlClass(usPnl.today)}">${fmtMarketMoney(usPnl.today, "US")}</strong><small>${escapeHtml(portfolioTodayLabel(usPnl))}</small></div>
       <div class="account-pnl-card ${pnlClass(usPnl.unrealized)}"><span>US Holdings P&L</span><strong class="${pnlClass(usPnl.unrealized)}">${fmtMarketMoney(usPnl.unrealized, "US")}</strong><small>current holdings</small></div>
       <div class="account-pnl-card ${pnlClass(usPnl.total)}"><span>US Net P&L</span><strong class="${pnlClass(usPnl.total)}">${fmtMarketMoney(usPnl.total, "US")}</strong><small>realized ${fmtMarketMoney(usPnl.realized, "US")} + holdings</small></div>
@@ -3462,6 +3630,7 @@ function renderAccount(account) {
     ${cashEditor}
     ${signalModeEditor}
     ${monitorEditor}
+    ${verificationMarkup}
     <div class="account-note">
       <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
       <span>${state.auth?.admin ? "Admins manage users, credits, and runtime broker connections. Signals are run from user accounts." : "Signals and symbol analysis consume this user's credits and use this user's broker feed when connected."}</span>
