@@ -14,7 +14,7 @@ from typing import Any, Iterable
 from .decision_contract import current_decision_rows, normalize_trade_targets, ranked_decision_rows
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
-from .market_regions import INDIA_EXCHANGES, normalize_market_region
+from .market_regions import INDIA_EXCHANGES, market_session_for_region, normalize_market_region
 from .opportunity_state import is_signal_candidate_state, opportunity_state_from_signal_details
 from .signal_quality import (
     AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
@@ -78,6 +78,53 @@ def _is_cross_market_quote(existing_exchange: Any, quote_source: Any) -> bool:
         return False
     existing_region = "IN" if exchange in INDIA_EXCHANGES else "US"
     return existing_region != source_region
+
+
+def _market_session_exit_block(
+    conn: sqlite3.Connection,
+    market_region: Any,
+    now_utc: datetime | None = None,
+) -> dict[str, Any] | None:
+    region = normalize_market_region(market_region or "IN", default="IN")
+    if region == "BOTH":
+        return None
+
+    enforce = now_utc is not None
+    state: dict[str, Any] = {}
+    try:
+        row = conn.execute("select value from agent_state where key = 'market_session_context'").fetchone()
+    except sqlite3.Error:
+        row = None
+    if row is not None:
+        enforce = True
+        try:
+            state = json.loads(row["value"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            state = {}
+    if not enforce:
+        return None
+
+    checked_at = _parse_dt(state.get("checked_at"))
+    reference_dt = now_utc or datetime.now(timezone.utc)
+    session = None
+    stored_sessions = state.get("sessions") if isinstance(state.get("sessions"), dict) else {}
+    if checked_at and abs((reference_dt - checked_at).total_seconds()) <= 30 * 60:
+        stored_session = stored_sessions.get(region)
+        if isinstance(stored_session, dict):
+            session = stored_session
+    if session is None:
+        session = market_session_for_region(region, now_utc)
+    if session.get("is_open"):
+        return None
+    return {
+        "reason": "market_closed_exit_pending",
+        "market_region": region,
+        "session_status": session.get("status"),
+        "session_reason": session.get("reason"),
+        "local_time": session.get("local_time"),
+        "next_open": session.get("next_open"),
+        "policy": "Do not mark paper/live exits as executed outside the regular market session; re-evaluate at next open.",
+    }
 
 
 def _normalize_signal_execution_mode(value: Any) -> str:
@@ -3641,7 +3688,11 @@ class Database:
             row = conn.execute("select * from user_idea_follows where id = last_insert_rowid()").fetchone()
         return _row_dict(row) if row else {}
 
-    def exit_unsafe_active_follows(self, reason: str = "quality_gate_failed_after_follow") -> list[dict[str, Any]]:
+    def exit_unsafe_active_follows(
+        self,
+        reason: str = "quality_gate_failed_after_follow",
+        now_utc: datetime | None = None,
+    ) -> list[dict[str, Any]]:
         exited: list[dict[str, Any]] = []
         with self.connect() as conn:
             self._refresh_user_follow_marks(conn)
@@ -3667,7 +3718,8 @@ class Database:
                 order by f.id desc
                 """
             ).fetchall()
-            now = utc_now()
+            now_dt = now_utc or datetime.now(timezone.utc)
+            now = now_dt.isoformat()
             for row in rows:
                 item = _row_dict(row)
                 idea_details = self._decode_json(item.get("idea_details_json"))
@@ -3698,6 +3750,35 @@ class Database:
                     for token in ("stop", "severe", "hard_block", "exit_signal", "not_tradeable_state")
                 )
                 economics = exit_economics(entry_price, latest_price, qty, item.get("market_region"), None)
+                session_block = _market_session_exit_block(conn, item.get("market_region"), now_utc)
+                if session_block:
+                    follow_details["safety_exit_pending"] = {
+                        **session_block,
+                        "quality_reason": safety_reason,
+                        "quality_message": quality_gate.get("message"),
+                        "checked_at": now,
+                        "exit_price": latest_price,
+                        "qty": qty,
+                        "realized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                        "economics": economics,
+                    }
+                    conn.execute(
+                        """
+                        update user_idea_follows
+                        set latest_price = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?, details_json = ?
+                        where id = ?
+                        """,
+                        (
+                            latest_price,
+                            realized_pnl,
+                            return_pct,
+                            now,
+                            json.dumps(follow_details, default=str, separators=(",", ":")),
+                            item["id"],
+                        ),
+                    )
+                    continue
                 if realized_pnl > 0 and not hard_exit and not economics.get("passed"):
                     follow_details["safety_exit_blocked"] = {
                         "reason": "low_value_profit_exit_blocked",
@@ -4097,6 +4178,7 @@ class Database:
         user_id: int,
         market_region: str | None = None,
         cost_settings: Any = None,
+        now_utc: datetime | None = None,
     ) -> dict[str, Any]:
         market_clause, market_params = _market_region_where("u", market_region)
         market_sql = f"and {market_clause}" if market_clause else ""
@@ -4128,7 +4210,8 @@ class Database:
                 """,
                 (int(user_id), *market_params),
             ).fetchall()
-            now = utc_now()
+            now_dt = now_utc or datetime.now(timezone.utc)
+            now = now_dt.isoformat()
             for row in rows:
                 item = _row_dict(row)
                 idea_details = self._decode_json(item.get("idea_details_json"))
@@ -4153,6 +4236,61 @@ class Database:
                 return_pct = _return_pct(entry_price, latest_price)
                 management = follow_details.setdefault("exit_management", {})
                 economics = exit_economics(entry_price, latest_price, exit_qty, item.get("market_region"), cost_settings)
+                session_block = _market_session_exit_block(conn, item.get("market_region"), now_utc)
+                if session_block:
+                    pending_event = {
+                        "key": event_key,
+                        "action": "PENDING",
+                        "label": "Pending Market Open",
+                        "reason": session_block["policy"],
+                        "at": now,
+                        "mode": mode,
+                        "qty_before": qty,
+                        "proposed_exit_qty": exit_qty,
+                        "entry_price": entry_price,
+                        "exit_price": latest_price,
+                        "return_pct": return_pct,
+                        "economics": economics,
+                        **session_block,
+                    }
+                    management["pending_after_hours_exit"] = pending_event
+                    management["last_skipped_action"] = pending_event
+                    management["last_skip_reason"] = pending_event["reason"]
+                    management["last_skip_at"] = now
+                    conn.execute(
+                        """
+                        update user_idea_follows
+                        set latest_price = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?, details_json = ?
+                        where id = ?
+                        """,
+                        (
+                            latest_price,
+                            round((latest_price - entry_price) * qty, 2),
+                            return_pct,
+                            now,
+                            json.dumps(follow_details, default=str, separators=(",", ":")),
+                            item["id"],
+                        ),
+                    )
+                    skipped.append(
+                        {
+                            "follow_id": item.get("id"),
+                            "idea_id": item.get("idea_id"),
+                            "symbol": item.get("symbol"),
+                            "market_region": item.get("market_region"),
+                            "mode": mode,
+                            "action": "PENDING",
+                            "label": "Pending Market Open",
+                            "reason": pending_event["reason"],
+                            "qty_before": qty,
+                            "proposed_exit_qty": exit_qty,
+                            "exit_price": latest_price,
+                            "return_pct": return_pct,
+                            "economics": economics,
+                            "next_open": session_block.get("next_open"),
+                        }
+                    )
+                    continue
                 if should_block_low_value_profit_exit(event_key, economics):
                     skip_reason = (
                         "Skipped low-value profit exit: estimated net P&L "

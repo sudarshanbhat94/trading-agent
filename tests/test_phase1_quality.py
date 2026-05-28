@@ -613,6 +613,54 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual([item["symbol"] for item in active], ["BUYD"])
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
 
+    def test_safety_cleanup_marks_exit_pending_after_market_close(self) -> None:
+        closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            db.set_state(
+                "market_session_context",
+                {
+                    "checked_at": closed_at.isoformat(),
+                    "sessions": {
+                        "IN": {
+                            "is_open": False,
+                            "status": "closed",
+                            "reason": "outside_regular_session_or_weekend",
+                            "local_time": "2026-05-28T21:30:00+05:30",
+                            "next_open": "2026-05-29T09:15:00+05:30",
+                        }
+                    },
+                },
+            )
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="WATCH",
+                score=84,
+                grade="A",
+            )
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set latest_price = 103 where id = ?", (idea_id,))
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 100, 1000, 0, 0, ?, ?, '{}')
+                    """,
+                    (idea_id, closed_at.isoformat(), closed_at.isoformat()),
+                )
+
+            exited = db.exit_unsafe_active_follows(now_utc=closed_at)
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(exited, [])
+        self.assertEqual(follow["follow_status"], "ACTIVE")
+        self.assertEqual(follow["qty"], 10)
+        self.assertEqual(follow["follow_details"]["safety_exit_pending"]["reason"], "market_closed_exit_pending")
+
     def test_safety_exit_blocks_auto_reentry_cooldown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")

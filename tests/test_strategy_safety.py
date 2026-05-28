@@ -2665,6 +2665,50 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["exit_qty"], 35)
         self.assertEqual(follow["qty"], 65)
 
+    def test_paper_exit_is_pending_when_market_is_closed(self) -> None:
+        closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            db.set_state(
+                "market_session_context",
+                {
+                    "checked_at": closed_at.isoformat(),
+                    "sessions": {
+                        "IN": {
+                            "is_open": False,
+                            "status": "closed",
+                            "reason": "outside_regular_session_or_weekend",
+                            "local_time": "2026-05-28T21:30:00+05:30",
+                            "next_open": "2026-05-29T09:15:00+05:30",
+                        }
+                    },
+                },
+            )
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="FINCABLES",
+                entry_price=1152.5,
+                latest_price=1177.25,
+                details={
+                    "lifecycle_status": "target_1_hit",
+                    "highest_target_hit": "T1",
+                    "stop_loss": 1100.0,
+                    "target_status": [{"label": "T1", "hit": True, "suggested_exit_pct": 100}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=5, entry_price=1152.5, latest_price=1177.25)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings(), now_utc=closed_at)
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 0)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["skipped"][0]["label"], "Pending Market Open")
+        self.assertEqual(follow["follow_status"], "ACTIVE")
+        self.assertEqual(follow["qty"], 5)
+        self.assertIn("pending_after_hours_exit", follow["follow_details"]["exit_management"])
+
     def test_stop_loss_exit_is_not_blocked_by_trade_economics_floor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
