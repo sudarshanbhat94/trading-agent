@@ -56,6 +56,30 @@ def _market_region_where(alias: str, market_region: str | None) -> tuple[str, li
     )
 
 
+def _is_cross_market_duplicate(existing_exchange: Any, incoming_exchange: Any) -> bool:
+    existing = str(existing_exchange or "").upper()
+    incoming = str(incoming_exchange or "").upper()
+    return bool(existing in INDIA_EXCHANGES and incoming and incoming not in INDIA_EXCHANGES)
+
+
+def _quote_source_market_region(source: Any) -> str | None:
+    value = str(source or "").strip().lower()
+    if value.startswith(("upstox", "kite", "nubra", "indstocks")):
+        return "IN"
+    if value.startswith(("alpaca", "polygon")):
+        return "US"
+    return None
+
+
+def _is_cross_market_quote(existing_exchange: Any, quote_source: Any) -> bool:
+    exchange = str(existing_exchange or "").upper()
+    source_region = _quote_source_market_region(quote_source)
+    if not exchange or not source_region:
+        return False
+    existing_region = "IN" if exchange in INDIA_EXCHANGES else "US"
+    return existing_region != source_region
+
+
 def _normalize_signal_execution_mode(value: Any) -> str:
     mode = str(value or "SIGNAL_ONLY").strip().upper()
     aliases = {
@@ -1871,6 +1895,24 @@ class Database:
             return 0
         symbols = [row["symbol"] for row in normalized]
         with self.connect() as conn:
+            existing_rows = conn.execute(
+                f"select symbol, exchange from universe where symbol in ({','.join('?' for _ in symbols)})",
+                symbols,
+            ).fetchall()
+            existing_exchanges = {
+                str(row["symbol"] or "").upper(): str(row["exchange"] or "").upper()
+                for row in existing_rows
+            }
+            safe_rows = [
+                row
+                for row in normalized
+                if not _is_cross_market_duplicate(existing_exchanges.get(row["symbol"]), row.get("exchange"))
+            ]
+            if not safe_rows:
+                if disable_missing and symbols:
+                    placeholders = ",".join("?" for _ in symbols)
+                    conn.execute(f"update universe set enabled = 0 where symbol not in ({placeholders})", symbols)
+                return 0
             conn.executemany(
                 """
                 insert into universe (
@@ -1908,12 +1950,12 @@ class Database:
                     base_price = case when excluded.base_price != 100 then excluded.base_price else universe.base_price end,
                     enabled = excluded.enabled
                 """,
-                normalized,
+                safe_rows,
             )
             if disable_missing and symbols:
                 placeholders = ",".join("?" for _ in symbols)
                 conn.execute(f"update universe set enabled = 0 where symbol not in ({placeholders})", symbols)
-        return len(normalized)
+        return len(safe_rows)
 
     def _normalize_universe_row(self, row: dict[str, Any]) -> dict[str, Any]:
         symbol = str(row.get("symbol", "")).strip().upper()
@@ -2322,7 +2364,23 @@ class Database:
         rows = [quote.to_dict() for quote in quotes.values()]
         if not rows:
             return
+        symbols = [str(row.get("symbol") or "").strip().upper() for row in rows if str(row.get("symbol") or "").strip()]
         with self.connect() as conn:
+            existing_rows = conn.execute(
+                f"select symbol, exchange from universe where symbol in ({','.join('?' for _ in symbols)})",
+                symbols,
+            ).fetchall() if symbols else []
+            existing_exchanges = {
+                str(row["symbol"] or "").upper(): str(row["exchange"] or "").upper()
+                for row in existing_rows
+            }
+            safe_rows = [
+                row
+                for row in rows
+                if not _is_cross_market_quote(existing_exchanges.get(str(row.get("symbol") or "").upper()), row.get("source"))
+            ]
+            if not safe_rows:
+                return
             conn.executemany(
                 """
                 insert into latest_quotes (
@@ -2340,14 +2398,14 @@ class Database:
                     volume = excluded.volume,
                     source = excluded.source
                 """,
-                rows,
+                safe_rows,
             )
             conn.executemany(
                 """
                 insert into market_ticks (ts, symbol, price, source)
                 values (:asof, :symbol, :price, :source)
                 """,
-                rows,
+                safe_rows,
             )
 
     def insert_decisions(self, decisions: Iterable[Decision]) -> None:

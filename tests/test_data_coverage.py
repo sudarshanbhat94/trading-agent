@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from app.agent import TradingAgentService, _opportunity_scan_by_market
 from app.db import Database
-from app.models import Candle, Decision, utc_now
+from app.models import Candle, Decision, Quote, utc_now
 from scripts.update_us_universe import build_us_universe_rows
 
 
@@ -106,6 +106,82 @@ class DataCoverageTests(unittest.TestCase):
         self.assertEqual(rows[0]["sector"], "ETF")
         self.assertNotIn("BADW", {row["symbol"] for row in rows})
         self.assertNotIn("TEST", {row["symbol"] for row in rows})
+
+    def test_us_universe_does_not_overwrite_india_symbol_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "coverage.db")
+            db.init()
+            db.upsert_universe_rows(
+                [
+                    {
+                        "symbol": "ATGL",
+                        "name": "Adani Total Gas Limited",
+                        "exchange": "NSE",
+                        "yahoo_symbol": "ATGL.NS",
+                        "upstox_instrument_key": "NSE_EQ|INE399L01023",
+                    }
+                ]
+            )
+
+            inserted = db.upsert_universe_rows(
+                [
+                    {
+                        "symbol": "ATGL",
+                        "name": "Alpha Technology Group Limited",
+                        "exchange": "NASDAQ",
+                        "yahoo_symbol": "ATGL",
+                    }
+                ]
+            )
+            row = db.universe_row("ATGL")
+
+        self.assertEqual(inserted, 0)
+        self.assertEqual(row["exchange"], "NSE")
+        self.assertEqual(row["name"], "Adani Total Gas Limited")
+        self.assertEqual(row["yahoo_symbol"], "ATGL.NS")
+        self.assertEqual(row["upstox_instrument_key"], "NSE_EQ|INE399L01023")
+
+    def test_quote_upsert_ignores_cross_market_symbol_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "coverage.db")
+            db.init()
+            db.upsert_universe_rows(
+                [
+                    {
+                        "symbol": "ATGL",
+                        "name": "Adani Total Gas Limited",
+                        "exchange": "NSE",
+                        "yahoo_symbol": "ATGL.NS",
+                    }
+                ]
+            )
+            db.upsert_quotes(
+                {
+                    "ATGL": Quote(
+                        symbol="ATGL",
+                        price=714.0,
+                        source="upstox-live",
+                        asof="2026-05-28T10:00:00+05:30",
+                    )
+                }
+            )
+            db.upsert_quotes(
+                {
+                    "ATGL": Quote(
+                        symbol="ATGL",
+                        price=21.8,
+                        source="alpaca-iex-live",
+                        asof="2026-05-28T14:30:00+00:00",
+                    )
+                }
+            )
+
+            quote = db.latest_quotes()[0]
+
+        self.assertEqual(quote["symbol"], "ATGL")
+        self.assertEqual(quote["market_region"], "IN")
+        self.assertEqual(quote["price"], 714.0)
+        self.assertEqual(quote["source"], "upstox-live")
 
     def test_shared_ai_cycle_billing_splits_llm_credits_across_active_users(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
