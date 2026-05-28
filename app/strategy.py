@@ -981,11 +981,12 @@ class StrategyEngine:
             data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
             scan_score = _float_or_none(scan.get("score")) or 0.0
             btst_score = _float_or_none(btst.get("score")) or scan_score
+            data_quality_override = self._btst_reference_data_ready(context, data_quality)
             ready = (
                 bool(btst.get("detected"))
                 and str(scan.get("bucket") or "").strip().lower() == "actionable"
                 and btst_score >= 0.70
-                and data_quality.get("actionable_data_ready") is not False
+                and (data_quality.get("actionable_data_ready") is not False or data_quality_override)
             )
             return {
                 "ready": ready,
@@ -998,6 +999,7 @@ class StrategyEngine:
                 "min_quality_score": 70.0,
                 "min_confluence": 16.0,
                 "size_policy": "btst_guarded_buy",
+                "data_quality_override": "phase2_fresh_reference_data" if data_quality_override else None,
                 "data_quality_missing": [
                     str(item or "").strip().lower()
                     for item in data_quality.get("missing") or []
@@ -2034,6 +2036,21 @@ class StrategyEngine:
             trade_plan["targets"] = [{"label": "BTST-T1", "price": round(target1, 2)}]
         trade_plan["holding_period"] = "BTST"
         full["trade_plan"] = trade_plan
+
+    def _btst_reference_data_ready(self, context: dict[str, Any], data_quality: dict[str, Any]) -> bool:
+        data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+        market_region = str(data_ready.get("market_region") or context.get("market_region") or "").upper()
+        if market_region != "US" or data_ready.get("trade_decision_ready") is not True:
+            return False
+        freshness = data_ready.get("fresh_market_data_gate") if isinstance(data_ready.get("fresh_market_data_gate"), dict) else {}
+        if freshness.get("passed") is not True:
+            return False
+        missing = {
+            str(item or "").strip().lower()
+            for item in data_quality.get("missing") or []
+            if str(item or "").strip()
+        }
+        return bool(missing) and missing <= {"us_realtime_intraday_for_actionable_trade"}
 
     def _apply_live_momentum_strategy(self, context: dict[str, Any]) -> None:
         full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}

@@ -1927,6 +1927,47 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(probe["source"], "btst_buy_candidate")
         self.assertEqual(probe["size_policy"], "btst_guarded_buy")
 
+    def test_us_btst_reference_data_can_become_guarded_paper_buy(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={"available": True, "confirmed": False, "fast_mover": False}
+        )
+        context["market_region"] = "US"
+        context["quote"].update({"source": "yahoo-delayed"})
+        context["data_readiness"] = {
+            "market_region": "US",
+            "trade_decision_ready": True,
+            "grade": "B",
+            "hard_gaps": [],
+            "soft_gaps": [{"key": "us_consolidated_tape"}],
+            "sources": {"quote": "yahoo-delayed", "intraday": "alpaca-iex-live:1minute"},
+            "fresh_market_data_gate": {"passed": True, "reason": "current_session_data"},
+        }
+        context["best_strategy"] = {"name": "volume_price_accumulation", "score": 0.40}
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 42
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 42
+        scan = _btst_scan_payload()
+        scan["score"] = 0.95
+        scan["data_quality"] = {
+            "actionable_data_ready": False,
+            "missing": ["us_realtime_intraday_for_actionable_trade"],
+        }
+        scan["btst"]["score"] = 0.95
+        context["opportunity_scan"] = scan
+
+        action = engine._action_from_context("USBTST", 0.19, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(probe["source"], "btst_buy_candidate")
+        self.assertEqual(probe["data_quality_override"], "phase2_fresh_reference_data")
+
     def test_btst_quality_gate_keeps_buy_action_with_guarded_size(self) -> None:
         gate = fresh_buy_quality_gate(
             {
