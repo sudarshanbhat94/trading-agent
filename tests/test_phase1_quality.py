@@ -204,7 +204,7 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertFalse(hard_stop_gate["passed"])
         self.assertEqual(hard_stop_gate["reason"], "stop_risk_too_wide")
 
-    def test_fresh_buy_gate_allows_opportunity_probe_with_c_grade(self) -> None:
+    def test_fresh_buy_gate_blocks_opportunity_probe_with_c_grade(self) -> None:
         gate = fresh_buy_quality_gate(
             {
                 "signal_type": "BUY",
@@ -224,12 +224,10 @@ class Phase1QualityGateTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(gate["passed"])
-        self.assertTrue(gate["opportunity_probe"])
-        self.assertEqual(gate["size_multiplier"], 0.35)
-        self.assertEqual(gate["min_score"], 62.0)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "overall_score_below_70")
 
-    def test_fresh_buy_gate_allows_top_gainers_playbook_probe(self) -> None:
+    def test_fresh_buy_gate_blocks_low_score_top_gainers_playbook_probe(self) -> None:
         item = {
             "signal_type": "BUY",
             "status": "ACTIVE",
@@ -279,14 +277,11 @@ class Phase1QualityGateTests(unittest.TestCase):
         }
         gate = fresh_buy_quality_gate(item)
 
-        self.assertTrue(gate["passed"])
-        self.assertTrue(gate["opportunity_probe"])
-        self.assertEqual(gate["min_score"], 55.0)
-        self.assertEqual(gate["min_confluence"], 0.0)
-        self.assertLessEqual(gate["size_multiplier"], 0.35)
-        self.assertTrue(auto_follow_quality_gate(item)["passed"])
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "hard_blocked")
+        self.assertFalse(auto_follow_quality_gate(item)["passed"])
 
-    def test_fresh_buy_gate_allows_live_quote_probe_when_intraday_candles_lag(self) -> None:
+    def test_fresh_buy_gate_blocks_live_quote_probe_when_intraday_candles_lag(self) -> None:
         gate = fresh_buy_quality_gate(
             {
                 "signal_type": "BUY",
@@ -321,12 +316,10 @@ class Phase1QualityGateTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(gate["passed"])
-        self.assertTrue(gate["opportunity_probe"])
-        self.assertEqual(gate["size_multiplier"], 0.35)
-        self.assertIn("stale_intraday_candles", gate["missing_data"])
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "stale_market_data")
 
-    def test_stored_signal_idea_probe_can_use_phase2_upstox_readiness_without_quote_payload(self) -> None:
+    def test_stored_signal_idea_probe_blocks_stale_intraday_marker(self) -> None:
         gate = fresh_buy_quality_gate(
             {
                 "signal_type": "BUY",
@@ -357,9 +350,8 @@ class Phase1QualityGateTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(gate["passed"])
-        self.assertTrue(gate["opportunity_probe"])
-        self.assertEqual(gate["size_multiplier"], 0.35)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "stale_market_data")
 
     def test_fresh_buy_gate_rejects_probe_when_quote_is_stale(self) -> None:
         gate = fresh_buy_quality_gate(
@@ -395,7 +387,7 @@ class Phase1QualityGateTests(unittest.TestCase):
         )
 
         self.assertFalse(gate["passed"])
-        self.assertEqual(gate["reason"], "overall_score_below_70")
+        self.assertEqual(gate["reason"], "stale_market_data")
 
     def test_runtime_overrides_are_clamped_to_phase1_minimums(self) -> None:
         settings = settings_from_overrides(

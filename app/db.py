@@ -3537,7 +3537,7 @@ class Database:
         with self.connect() as conn:
             self._refresh_user_follow_marks(conn)
             rows = conn.execute(
-                """
+                f"""
                 select
                     f.*,
                     i.symbol,
@@ -3547,9 +3547,11 @@ class Database:
                     i.overall_grade,
                     i.confluence,
                     i.latest_price as idea_latest_price,
-                    i.details_json as idea_details_json
+                    i.details_json as idea_details_json,
+                    {_market_region_case("u")} as market_region
                 from user_idea_follows f
                 join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
                 where f.status in ('ACTIVE','LIVE_REQUESTED')
                   and upper(f.mode) in ('PAPER','LIVE')
                   and f.qty > 0
@@ -3581,6 +3583,40 @@ class Database:
                 realized_pnl = round((latest_price - entry_price) * qty, 2)
                 return_pct = _return_pct(entry_price, latest_price)
                 follow_details = self._decode_json(item.get("details_json"))
+                safety_reason = str(quality_gate.get("reason") or "")
+                hard_exit = any(
+                    token in safety_reason
+                    for token in ("stop", "severe", "hard_block", "exit_signal", "not_tradeable_state")
+                )
+                economics = exit_economics(entry_price, latest_price, qty, item.get("market_region"), None)
+                if realized_pnl > 0 and not hard_exit and not economics.get("passed"):
+                    follow_details["safety_exit_blocked"] = {
+                        "reason": "low_value_profit_exit_blocked",
+                        "quality_reason": safety_reason,
+                        "checked_at": now,
+                        "exit_price": latest_price,
+                        "qty": qty,
+                        "realized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                        "economics": economics,
+                        "policy": "hold/tighten stop instead of exiting for uneconomic small profit",
+                    }
+                    conn.execute(
+                        """
+                        update user_idea_follows
+                        set latest_price = ?, unrealized_pnl = ?, return_pct = ?, updated_at = ?, details_json = ?
+                        where id = ?
+                        """,
+                        (
+                            latest_price,
+                            realized_pnl,
+                            return_pct,
+                            now,
+                            json.dumps(follow_details, default=str, separators=(",", ":")),
+                            item["id"],
+                        ),
+                    )
+                    continue
                 follow_details["safety_exit"] = {
                     "reason": reason,
                     "quality_reason": quality_gate.get("reason"),
@@ -3590,6 +3626,7 @@ class Database:
                     "qty": qty,
                     "realized_pnl": realized_pnl,
                     "return_pct": return_pct,
+                    "economics": economics,
                 }
                 next_status = "LIVE_EXIT_REQUESTED" if str(item.get("mode") or "").upper() == "LIVE" else "EXITED"
                 conn.execute(
@@ -3752,6 +3789,86 @@ class Database:
                     "realized_pnl": realized_pnl,
                     "return_pct": return_pct,
                     "mode": item.get("mode"),
+                }
+                next_status = "LIVE_EXIT_REQUESTED" if str(item.get("mode") or "").upper() == "LIVE" else "EXITED"
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set status = ?, latest_price = ?, unrealized_pnl = ?, return_pct = ?,
+                        updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        next_status,
+                        latest_price,
+                        realized_pnl,
+                        return_pct,
+                        now,
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        item["id"],
+                    ),
+                )
+                item.update(
+                    {
+                        "status": next_status,
+                        "latest_price": latest_price,
+                        "unrealized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                        "updated_at": now,
+                    }
+                )
+                exited.append(item)
+        return exited
+
+    def exit_active_follows_outside_monitor_scope(
+        self,
+        user_id: int,
+        allowed_symbols: list[str] | set[str],
+        *,
+        reason: str = "outside_custom_monitor_list",
+    ) -> list[dict[str, Any]]:
+        allowed = {str(symbol or "").strip().upper() for symbol in allowed_symbols if str(symbol or "").strip()}
+        if not allowed:
+            return []
+        exited: list[dict[str, Any]] = []
+        now = utc_now()
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                """
+                select
+                    f.*,
+                    i.symbol,
+                    i.latest_price as idea_latest_price
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where f.user_id = ?
+                  and f.status in ('ACTIVE','LIVE_REQUESTED')
+                  and upper(f.mode) in ('PAPER','LIVE')
+                  and f.qty > 0
+                order by f.id desc
+                """,
+                (int(user_id),),
+            ).fetchall()
+            for row in rows:
+                item = _row_dict(row)
+                symbol = str(item.get("symbol") or "").upper()
+                if not symbol or symbol in allowed:
+                    continue
+                qty = int(item.get("qty") or 0)
+                entry_price = float(item.get("entry_price") or 0.0)
+                latest_price = float(item.get("idea_latest_price") or item.get("latest_price") or entry_price or 0.0)
+                realized_pnl = round((latest_price - entry_price) * qty, 2)
+                return_pct = _return_pct(entry_price, latest_price)
+                details = self._decode_json(item.get("details_json"))
+                details["monitor_scope_exit"] = {
+                    "reason": reason,
+                    "exited_at": now,
+                    "exit_price": latest_price,
+                    "qty": qty,
+                    "realized_pnl": realized_pnl,
+                    "return_pct": return_pct,
+                    "allowed_symbols": sorted(allowed),
                 }
                 next_status = "LIVE_EXIT_REQUESTED" if str(item.get("mode") or "").upper() == "LIVE" else "EXITED"
                 conn.execute(

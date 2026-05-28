@@ -22,6 +22,9 @@ def auto_follow_sizing(
     size_multiplier: float = 1.0,
     market_region: str | None = "IN",
     settings: Any = None,
+    stop_loss: float | None = None,
+    confidence: float | None = None,
+    avg_daily_turnover: float | None = None,
 ) -> dict[str, Any]:
     cash = max(float(cash or 0.0), 0.0)
     price = max(float(price or 0.0), 0.0)
@@ -37,10 +40,22 @@ def auto_follow_sizing(
 
     size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
     max_pct = max(min(float(max_position_pct or 0.25), 0.50), 0.01)
-    target = cash * max_pct * size_multiplier
+    confidence_multiplier = _confidence_multiplier(confidence)
+    target = cash * max_pct * size_multiplier * confidence_multiplier
     min_notional = minimum_auto_follow_notional(settings, market)
     base_cap_pct = min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
     cap = cash * base_cap_pct
+    liquidity_cap = None
+    if avg_daily_turnover is not None and float(avg_daily_turnover or 0.0) > 0:
+        liquidity_cap = max(float(avg_daily_turnover or 0.0) * 0.01, min_notional)
+        cap = min(cap, liquidity_cap)
+    risk_qty = None
+    stop = max(float(stop_loss or 0.0), 0.0)
+    if stop > 0 and stop < price:
+        risk_budget_pct = _setting(settings, "paper_risk_per_trade_pct", 0.01)
+        risk_budget = cash * max(min(float(risk_budget_pct or 0.01), 0.05), 0.001) * max(size_multiplier, 0.10)
+        per_share_risk = max(price - stop, price * 0.005)
+        risk_qty = max(int(risk_budget // per_share_risk), 0)
     economics_floor_applied = False
     if min_notional > cap and size_multiplier >= 0.75 and min_notional <= cash * 0.60:
         cap = min_notional
@@ -48,6 +63,9 @@ def auto_follow_sizing(
     min_qty = max(1, int(math.ceil(min_notional / price))) if min_notional > 0 else 1
     max_qty_by_cap = int(min(cash, cap) // price)
     target_qty = int(min(cash, target) // price)
+    if risk_qty is not None:
+        max_qty_by_cap = min(max_qty_by_cap, risk_qty)
+        target_qty = min(target_qty, risk_qty)
 
     qty = target_qty
     if qty < min_qty and min_qty <= max_qty_by_cap:
@@ -66,6 +84,9 @@ def auto_follow_sizing(
             "target_notional": round(target, 2),
             "cap_notional": round(cap, 2),
             "base_cap_pct": round(base_cap_pct, 4),
+            "confidence_multiplier": round(confidence_multiplier, 4),
+            "risk_qty": risk_qty,
+            "liquidity_cap_notional": round(liquidity_cap, 2) if liquidity_cap is not None else None,
             "economics_floor_applied": economics_floor_applied,
             "minimum_notional": round(min_notional, 2),
             "minimum_qty": min_qty,
@@ -83,6 +104,9 @@ def auto_follow_sizing(
         "target_notional": round(target, 2),
         "cap_notional": round(cap, 2),
         "base_cap_pct": round(base_cap_pct, 4),
+        "confidence_multiplier": round(confidence_multiplier, 4),
+        "risk_qty": risk_qty,
+        "liquidity_cap_notional": round(liquidity_cap, 2) if liquidity_cap is not None else None,
         "economics_floor_applied": economics_floor_applied,
         "minimum_notional": round(min_notional, 2),
         "minimum_qty": min_qty,
@@ -179,6 +203,24 @@ def _one_way_cost_bps(settings: Any = None) -> float:
         + _setting(settings, "taxes_bps", 1.0)
         + _setting(settings, "stt_bps", 10.0)
     )
+
+
+def _confidence_multiplier(confidence: float | None) -> float:
+    if confidence is None:
+        return 1.0
+    try:
+        value = float(confidence)
+    except (TypeError, ValueError):
+        return 1.0
+    if value > 1.0:
+        value = value / 100.0
+    if value >= 0.82:
+        return 1.0
+    if value >= 0.70:
+        return 0.80
+    if value >= 0.58:
+        return 0.55
+    return 0.35
 
 
 def _setting(settings: Any, name: str, default: float) -> float:

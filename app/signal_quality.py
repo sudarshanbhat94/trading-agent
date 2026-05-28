@@ -42,6 +42,10 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     if action != "BUY" and signal_type != "BUY":
         return _blocked("not_buy_action", "Latest engine action is not BUY.")
 
+    hard_entry_veto = _entry_hard_veto(item, details)
+    if hard_entry_veto:
+        return hard_entry_veto
+
     hard_blocked = bool(item.get("hard_blocked") or details.get("hard_blocked"))
     hard_blocks = details.get("hard_blocks") if isinstance(details.get("hard_blocks"), list) else []
     phase3 = details.get("strategy_logic_filters") if isinstance(details.get("strategy_logic_filters"), dict) else {}
@@ -56,7 +60,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         return _blocked("hard_blocked", "System hard blocks are present.")
 
     opportunity_probe = bool(playbook_probe) or bool(btst_probe) or _opportunity_probe_ready(item, details)
-    min_score = (
+    probe_score_floor = (
         float(playbook_probe.get("min_score") or OPPORTUNITY_PROBE_MIN_SCORE)
         if playbook_probe
         else float(btst_probe.get("min_score") or 70.0)
@@ -65,6 +69,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         if opportunity_probe
         else FRESH_BUY_MIN_SCORE
     )
+    min_score = max(float(probe_score_floor), FRESH_BUY_MIN_SCORE)
     min_confluence = (
         0.0
         if playbook_probe
@@ -72,20 +77,18 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         if opportunity_probe
         else ACTIONABLE_MIN_CONFLUENCE
     )
-    allowed_grades = OPPORTUNITY_PROBE_ALLOWED_GRADES if opportunity_probe else FRESH_BUY_ALLOWED_GRADES
+    allowed_grades = FRESH_BUY_ALLOWED_GRADES
 
     tradeability_score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
     setup_score = _number(details.get("setup_score_pct"))
     score = tradeability_score
-    if opportunity_probe and setup_score is not None:
-        score = max(score or 0.0, setup_score)
     if playbook_probe and _number(playbook_probe.get("quant_score")) is not None:
-        score = max(score or 0.0, float(playbook_probe["quant_score"]))
+        score = tradeability_score
     if btst_probe and _number(btst_probe.get("btst_score")) is not None:
-        score = max(score or 0.0, float(btst_probe["btst_score"]))
+        score = tradeability_score
     if score is None or score < min_score:
         return _blocked(
-            "overall_score_below_opportunity_probe_minimum" if opportunity_probe else "overall_score_below_70",
+            "overall_score_below_70",
             f"Overall score must be at least {min_score:.0f}.",
             overall_score_pct=score,
             min_score=min_score,
@@ -94,14 +97,10 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         )
 
     grade = _upper(item.get("overall_grade") or details.get("overall_grade"))
-    if opportunity_probe:
-        grade = _upper(details.get("setup_grade") or grade)
-    if playbook_probe:
-        grade = _score_grade(score)
     if grade not in allowed_grades:
         return _blocked(
-            "grade_not_a_b_or_c_for_opportunity_probe" if opportunity_probe else "grade_not_a_or_b",
-            "Fresh BUY requires grade A or B." if not opportunity_probe else "Opportunity probe requires grade A, B, or C.",
+            "grade_not_a_or_b",
+            "Fresh BUY requires grade A or B.",
             overall_grade=grade or None,
             min_score=min_score,
             min_confluence=min_confluence,
@@ -376,6 +375,120 @@ def _details(item: dict[str, Any]) -> dict[str, Any]:
     return details if isinstance(details, dict) else {}
 
 
+def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any] | None:
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    scan = scan if isinstance(scan, dict) else {}
+    label = _upper(
+        item.get("label")
+        or details.get("label")
+        or details.get("classification_label")
+        or scan.get("label")
+        or scan.get("bucket")
+    )
+    setup = str(scan.get("setup") or details.get("setup") or details.get("strategy") or "").strip().lower()
+    best_strategy = details.get("best_strategy") if isinstance(details.get("best_strategy"), dict) else {}
+    best_strategy_name = str(best_strategy.get("name") or details.get("best_strategy_name") or item.get("strategy") or setup).strip().lower()
+    if best_strategy_name == "no_actionable_strategy" or setup == "no_actionable_strategy":
+        return _blocked("no_actionable_strategy", "No actionable setup is present for a fresh BUY.")
+    if label in {"LOW_QUALITY_SHORT_COVERING", "LATE_CHASE_AVOID", "DATA_STALE_WATCH"}:
+        return _blocked(
+            label.lower(),
+            "This candidate is watch-only by classification and cannot be auto-entered.",
+            classification_label=label,
+        )
+    if setup in {"extended_momentum_watch", "circuit_demand_lock", "pre_rally_fuel"}:
+        return _blocked("missing_actionable_setup", "Setup is a watch state, not a fresh BUY entry.")
+
+    stale_reason = _stale_data_reason(item, details, scan)
+    if stale_reason:
+        return _blocked(stale_reason, "Fresh BUY is blocked until quote and live-confirmation data are from the current session.")
+
+    technical_score = _number(
+        item.get("technical_score"),
+        details.get("technical_score"),
+        details.get("technical_math_score"),
+        (details.get("technical_math") or {}).get("score") if isinstance(details.get("technical_math"), dict) else None,
+    )
+    if technical_score is not None and technical_score < 0.50:
+        return _blocked(
+            "technical_score_below_0_50",
+            "Fresh BUY requires technical score of at least 0.50.",
+            technical_score=technical_score,
+        )
+    trend_text = " ".join(
+        str(value or "").lower()
+        for value in (
+            item.get("technical_trend"),
+            details.get("technical_trend"),
+            details.get("trend"),
+            details.get("stage"),
+            scan.get("trend"),
+        )
+    )
+    if any(token in trend_text for token in ("downtrend", "stage 4", "stage4", "bearish_trend")):
+        return _blocked("downtrend", "Fresh BUY is blocked while the symbol is in a downtrend.")
+
+    sentiment = details.get("sentiment") if isinstance(details.get("sentiment"), dict) else scan.get("sentiment")
+    sentiment = sentiment if isinstance(sentiment, dict) else {}
+    allow_overhang = label == "OVERHANG_REMOVAL_RERATE" or setup == "overhang_removal_rerate"
+    sentiment_score = _number(sentiment.get("score"), details.get("sentiment_score"), item.get("sentiment_score"))
+    sentiment_confidence = _number(sentiment.get("confidence"), details.get("sentiment_confidence"))
+    negative_catalyst = bool(
+        sentiment.get("negative_catalyst")
+        or details.get("negative_catalyst")
+        or scan.get("negative_catalyst")
+        or (
+            sentiment_score is not None
+            and sentiment_score <= -0.30
+            and (sentiment_confidence is None or sentiment_confidence >= 0.30)
+        )
+    )
+    if negative_catalyst and not allow_overhang:
+        return _blocked("negative_catalyst", "Negative catalyst/news tone blocks normal-conviction BUY.")
+    return None
+
+
+def _stale_data_reason(item: dict[str, Any], details: dict[str, Any], scan: dict[str, Any]) -> str:
+    data_readiness = item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness")
+    data_readiness = data_readiness if isinstance(data_readiness, dict) else {}
+    freshness_gate = data_readiness.get("fresh_market_data_gate") if isinstance(data_readiness.get("fresh_market_data_gate"), dict) else {}
+    if freshness_gate and freshness_gate.get("passed") is False:
+        return str(freshness_gate.get("reason") or "stale_market_data")
+    labels = {
+        str(value or "").strip().lower()
+        for value in data_readiness.get("missing_data") or []
+        if str(value or "").strip()
+    }
+    for collection_key in ("hard_gaps", "soft_gaps"):
+        for gap in data_readiness.get(collection_key) or []:
+            if isinstance(gap, dict):
+                for key in ("key", "label", "reason"):
+                    value = str(gap.get(key) or "").strip().lower()
+                    if value:
+                        labels.add(value)
+            else:
+                labels.add(str(gap or "").strip().lower())
+    data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+    labels.update(str(value or "").strip().lower() for value in data_quality.get("missing") or [] if str(value or "").strip())
+    labels.update(
+        str(value or "").strip().lower()
+        for value in (item.get("missing_data") or details.get("missing_data") or [])
+        if str(value or "").strip()
+    )
+    if any(
+        token in label
+        for label in labels
+        for token in ("stale_quote", "prior_session", "previous_session", "moneycontrol_prior", "stale_intraday")
+    ):
+        return "stale_market_data"
+    quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote")
+    quote = quote if isinstance(quote, dict) else {}
+    source = str(quote.get("source") or data_quality.get("quote_source") or "").lower()
+    if "moneycontrol" in source and any(token in source for token in ("prior", "previous", "delayed")):
+        return "moneycontrol_prior_session_data"
+    return ""
+
+
 def _risk_flags(item: dict[str, Any], details: dict[str, Any]) -> list[str]:
     flags = item.get("risk_flags")
     if not isinstance(flags, list):
@@ -531,7 +644,7 @@ def _top_gainers_playbook_probe(item: dict[str, Any], details: dict[str, Any]) -
     quant_score = _number(playbook.get("quant_score"))
     if quant_score is None:
         return {}
-    min_score = 70.0 if signal == "STRONG BUY" else 55.0
+    min_score = 70.0
     if quant_score < min_score:
         return {}
     return {

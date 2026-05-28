@@ -145,9 +145,8 @@ class StrategySafetyTests(unittest.TestCase):
 
         action = engine._action_from_context("DDOG", 0.31, {}, context, {})
 
-        self.assertEqual(action, "BUY")
-        self.assertGreaterEqual(context["system_gate_audit"]["overall_score_pct"], 70)
-        self.assertEqual(context["decision_gate_context"]["failed_gates"], [])
+        self.assertEqual(action, "HOLD")
+        self.assertIn("session_momentum_gate", {gate["gate"] for gate in context["decision_gate_context"]["failed_gates"]})
 
     def test_fresh_buy_requires_data_readiness(self) -> None:
         gate = fresh_buy_quality_gate(
@@ -202,9 +201,9 @@ class StrategySafetyTests(unittest.TestCase):
         )
 
         self.assertFalse(gate["passed"])
-        self.assertEqual(gate["reason"], "auto_follow_severe_risk_flags")
+        self.assertEqual(gate["reason"], "overall_score_below_70")
 
-    def test_auto_follow_freshness_allows_current_cycle_probe_buy_symbol(self) -> None:
+    def test_auto_follow_freshness_blocks_current_cycle_low_quality_probe_buy_symbol(self) -> None:
         fresh = _auto_follow_idea_fresh_enough(
             {
                 "symbol": "WOCKPHARMA",
@@ -219,9 +218,9 @@ class StrategySafetyTests(unittest.TestCase):
             {"WOCKPHARMA"},
         )
 
-        self.assertTrue(fresh)
+        self.assertFalse(fresh)
 
-    def test_auto_follow_freshness_allows_active_buy_now_probe(self) -> None:
+    def test_auto_follow_freshness_blocks_low_quality_active_buy_now_probe(self) -> None:
         fresh = _auto_follow_idea_fresh_enough(
             {
                 "symbol": "ATGL",
@@ -237,7 +236,7 @@ class StrategySafetyTests(unittest.TestCase):
             set(),
         )
 
-        self.assertTrue(fresh)
+        self.assertFalse(fresh)
 
     def test_auto_follow_freshness_blocks_stale_buy_now_probe(self) -> None:
         fresh = _auto_follow_idea_fresh_enough(
@@ -1305,7 +1304,7 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertTrue(context["decision_gate_context"]["opportunity_probe"]["ready"])
         self.assertFalse(context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"])
 
-    def test_top_gainers_playbook_buy_becomes_deterministic_buy(self) -> None:
+    def test_top_gainers_playbook_late_low_score_stays_hold(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
             SimpleNamespace(),
@@ -1369,10 +1368,9 @@ class StrategySafetyTests(unittest.TestCase):
         action = engine._action_from_context("PLAYBUY", 0.02, {}, context, {})
 
         probe = context["decision_gate_context"]["opportunity_probe"]
-        self.assertEqual(action, "BUY")
-        self.assertTrue(probe["ready"])
-        self.assertEqual(probe["source"], "top_gainers_playbook")
-        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(probe["ready"])
+        self.assertEqual(probe["reason"], "top_gainers_playbook_quant_below_signal_floor")
 
     def test_top_gainers_playbook_chasing_stays_hold(self) -> None:
         engine = StrategyEngine(
@@ -1515,8 +1513,8 @@ class StrategySafetyTests(unittest.TestCase):
 
         action = engine._action_from_context("PLAYMTF2", 0.02, {}, context, {})
 
-        self.assertEqual(action, "BUY")
-        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+        self.assertEqual(action, "HOLD")
+        self.assertTrue(context["decision_gate_context"]["blocking_failed_gates"])
 
     def test_top_gainers_playbook_suspect_breakout_without_volume_stays_hold(self) -> None:
         engine = StrategyEngine(
@@ -1632,7 +1630,7 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(probe["data_quality_override"], "us_yahoo_reference_reduced_size")
         self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
 
-    def test_auto_follow_quality_gate_allows_us_playbook_reference_only_reduced_size(self) -> None:
+    def test_auto_follow_quality_gate_blocks_low_score_us_playbook_reference_only(self) -> None:
         gate = auto_follow_quality_gate(
             {
                 "symbol": "PLAYYHOO",
@@ -1686,11 +1684,10 @@ class StrategySafetyTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(gate["passed"])
-        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
-        self.assertLessEqual(gate["size_multiplier"], 0.35)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "overall_score_below_70")
 
-    def test_live_confirmed_probe_can_use_trade_ready_data_when_scan_quality_lags(self) -> None:
+    def test_live_confirmed_probe_blocks_stale_intraday_marker(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
             SimpleNamespace(),
@@ -1727,12 +1724,13 @@ class StrategySafetyTests(unittest.TestCase):
         action = engine._action_from_context("LIVEPROBE", 0.24, {}, context, {})
 
         probe = context["decision_gate_context"]["opportunity_probe"]
-        self.assertEqual(action, "BUY")
+        self.assertEqual(action, "HOLD")
         self.assertTrue(probe["ready"])
         self.assertEqual(probe["source"], "live_momentum_review")
         self.assertEqual(probe["data_quality_override"], "live_momentum_review_with_trade_ready_data")
+        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in context["decision_gate_context"]["failed_gates"]})
 
-    def test_scan_probe_can_use_live_quote_when_only_intraday_candles_are_stale(self) -> None:
+    def test_scan_probe_blocks_when_only_intraday_candles_are_stale(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
             SimpleNamespace(),
@@ -1777,13 +1775,11 @@ class StrategySafetyTests(unittest.TestCase):
         action = engine._action_from_context("LIVEQUOTE", 0.24, {}, context, {})
 
         probe = context["decision_gate_context"]["opportunity_probe"]
-        self.assertEqual(action, "BUY")
+        self.assertEqual(action, "HOLD")
         self.assertTrue(probe["ready"])
         self.assertEqual(probe["source"], "live_quote_opportunity_scan")
         self.assertEqual(probe["data_quality_override"], "live_quote_ohlcv_used_for_probe")
-        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
-        self.assertFalse(context["system_gate_audit"]["hard_blocked"])
-        self.assertEqual(context["system_gate_audit"]["hard_blocks"], [])
+        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in context["decision_gate_context"]["blocking_failed_gates"]})
 
     def test_high_score_scan_probe_absorbs_watch_grade_without_hiding_hard_risks(self) -> None:
         engine = StrategyEngine(

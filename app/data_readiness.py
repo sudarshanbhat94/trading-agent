@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .market_regions import market_region_for_row
+from .market_regions import market_region_for_row, market_session_for_region
 from .models import Candle, Quote
 
 
@@ -162,6 +162,7 @@ def assess_phase2_data_readiness(
         check("in_sector_breadth", "Sector / market breadth", breadth_ok, SOFT, market_breadth.get("source"))
         check("in_options_oi", "Option chain / OI for F&O names", option_ok, SOFT, options_data.get("source"))
 
+    freshness_gate = _fresh_market_data_gate(market, quote, intraday)
     hard_gaps = [item for item in checks if not item["available"] and item["severity"] == HARD]
     soft_gaps = [item for item in checks if not item["available"] and item["severity"] == SOFT]
     available = [item for item in checks if item["available"]]
@@ -179,6 +180,7 @@ def assess_phase2_data_readiness(
         "soft_gaps": soft_gaps,
         "available": available,
         "missing_data": [item["key"] for item in hard_gaps + soft_gaps],
+        "fresh_market_data_gate": freshness_gate,
         "sources": {
             "quote": quote_source,
             "daily": daily_source,
@@ -222,6 +224,104 @@ def _quote_age_minutes(asof: Any) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return max((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 60.0, 0.0)
+
+
+def _fresh_market_data_gate(market: str, quote: Quote, intraday: list[Candle]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    try:
+        session = market_session_for_region(market, now)
+    except Exception:
+        session = {"region": market, "is_open": False, "status": "unknown", "reason": "session_lookup_failed"}
+    quote_dt = _parse_ts(quote.asof)
+    latest_intraday_dt = _parse_ts(intraday[-1].ts) if intraday else None
+    source = str(quote.source or "").lower()
+    max_age = _max_quote_age_minutes(market, source)
+    quote_age = ((now - quote_dt.astimezone(timezone.utc)).total_seconds() / 60.0) if quote_dt else None
+
+    def blocked(reason: str, message: str, *, stale_label: str = "DATA_STALE_WATCH") -> dict[str, Any]:
+        return {
+            "passed": False,
+            "reason": reason,
+            "message": message,
+            "label": stale_label,
+            "market_region": market,
+            "is_market_open": bool(session.get("is_open")),
+            "session": session,
+            "quote_source": quote.source,
+            "quote_asof": quote.asof,
+            "quote_age_minutes": round(quote_age, 2) if quote_age is not None else None,
+            "max_quote_age_minutes": max_age,
+            "latest_intraday_ts": intraday[-1].ts if intraday else None,
+            "checked_at": now.isoformat(),
+            "policy": "watch_only_until_current_session_data_confirms",
+        }
+
+    if "moneycontrol" in source:
+        return blocked(
+            "moneycontrol_not_live_trade_feed",
+            "Moneycontrol market-action data is validation/feedback only and cannot be treated as a live trade quote.",
+        )
+    if not quote_dt:
+        return blocked("quote_timestamp_missing", "Fresh BUY requires a quote timestamp from the current market session.")
+    if session.get("is_open") is not True:
+        return blocked("market_closed_live_buy_blocked", "Market is closed; use this only as prep/watch data until the next live session.")
+    if quote_age is not None and quote_age < -2:
+        return blocked("quote_timestamp_in_future", "Quote timestamp is ahead of the current clock; wait for a clean feed refresh.")
+    if quote_age is None or quote_age > max_age:
+        return blocked("quote_stale_for_current_session", "Quote is too old for a fresh BUY decision.")
+    if not _timestamp_in_current_session_date(quote_dt, session):
+        return blocked("quote_not_current_session", "Quote timestamp is not from the current valid market session.")
+    if latest_intraday_dt is not None and not _timestamp_in_current_session_date(latest_intraday_dt, session):
+        return blocked("intraday_not_current_session", "Latest intraday candle is not from the current valid market session.")
+    if latest_intraday_dt is not None:
+        intraday_age = (now - latest_intraday_dt.astimezone(timezone.utc)).total_seconds() / 60.0
+        if intraday_age > max(max_age * 2, 20.0):
+            return blocked("intraday_stale_for_current_session", "Latest intraday candle is too old for live confirmation.")
+
+    return {
+        "passed": True,
+        "reason": "current_session_data",
+        "message": "Quote and intraday timestamps are acceptable for the current live session.",
+        "label": "LIVE_DATA_READY",
+        "market_region": market,
+        "is_market_open": True,
+        "session": session,
+        "quote_source": quote.source,
+        "quote_asof": quote.asof,
+        "quote_age_minutes": round(quote_age, 2) if quote_age is not None else None,
+        "max_quote_age_minutes": max_age,
+        "latest_intraday_ts": intraday[-1].ts if intraday else None,
+        "checked_at": now.isoformat(),
+        "policy": "fresh_buy_allowed_to_reach_quality_gates",
+    }
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _timestamp_in_current_session_date(value: datetime, session: dict[str, Any]) -> bool:
+    local_time = _parse_ts(session.get("local_time"))
+    if local_time is None:
+        return True
+    return value.astimezone(local_time.tzinfo).date() == local_time.date()
+
+
+def _max_quote_age_minutes(market: str, source: str) -> float:
+    normalized = str(source or "").lower()
+    if market == "US" and "yahoo" in normalized:
+        return 20.0
+    if market == "US":
+        return 5.0
+    return 8.0
 
 
 def _contains_any(values: list[Any], needles: tuple[str, ...]) -> bool:

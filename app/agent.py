@@ -1176,6 +1176,18 @@ class TradingAgentService:
                         }
                     )
                 scoped_buy_symbols = {symbol for symbol in buy_symbols if symbol in monitor_allowed}
+                scope_exits = self.db.exit_active_follows_outside_monitor_scope(user_id, monitor_allowed)
+                if scope_exits:
+                    summary["exited"] += len(scope_exits)
+                    summary["skipped"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "username": user.get("username"),
+                            "reason": "cleaned_active_follows_outside_custom_monitor_list",
+                            "symbols": [str(item.get("symbol") or "").upper() for item in scope_exits[:12]],
+                            "monitor_symbols_count": len(monitor_allowed),
+                        }
+                    )
             exited_symbols = self._auto_exit_followed_signal_ideas_for_user(user_id, user, exit_symbols)
             summary["exited"] += len(exited_symbols)
             active_buy_ideas = [
@@ -1275,7 +1287,22 @@ class TradingAgentService:
                 cash = self._auto_follow_cash_for_user(user_id, user, market)
                 price = _float_or_none(idea.get("latest_price") or idea.get("entry_price")) or 0.0
                 size_multiplier = quality_size_multiplier(quality_gate)
-                sizing = self._auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market)
+                idea_details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+                opportunity_scan = idea_details.get("opportunity_scan") if isinstance(idea_details.get("opportunity_scan"), dict) else {}
+                liquidity_scan = opportunity_scan.get("liquidity_profile") if isinstance(opportunity_scan.get("liquidity_profile"), dict) else {}
+                sizing = self._auto_follow_sizing(
+                    cash,
+                    price,
+                    size_multiplier=size_multiplier,
+                    market_region=market,
+                    stop_loss=_float_or_none(idea.get("stop_loss") or idea_details.get("stop_loss")),
+                    confidence=_float_or_none(idea.get("confidence")),
+                    avg_daily_turnover=_float_or_none(
+                        opportunity_scan.get("avg20_turnover")
+                        or opportunity_scan.get("turnover")
+                        or liquidity_scan.get("avg20_turnover")
+                    ),
+                )
                 amount = float(sizing.get("amount") or 0.0)
                 if amount <= 0:
                     skip_reason = str(sizing.get("reason") or "")
@@ -1569,6 +1596,9 @@ class TradingAgentService:
         *,
         size_multiplier: float = 1.0,
         market_region: str = "IN",
+        stop_loss: float | None = None,
+        confidence: float | None = None,
+        avg_daily_turnover: float | None = None,
     ) -> dict[str, Any]:
         return auto_follow_sizing(
             cash,
@@ -1577,6 +1607,9 @@ class TradingAgentService:
             size_multiplier=size_multiplier,
             market_region=market_region,
             settings=self.strategy.settings,
+            stop_loss=stop_loss,
+            confidence=confidence,
+            avg_daily_turnover=avg_daily_turnover,
         )
 
     def _auto_follow_amount(
@@ -2695,20 +2728,20 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if signal_type != "BUY" or status not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
         return False
     details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
-    if symbol in fresh_buy_symbols:
-        return True
-    if not _idea_seen_recently(idea):
-        return False
     if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:
         return False
     current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
     if current_return < -1.5:
         return False
-    if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
-        return True
     score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
     grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
     if score < 70 or grade not in {"A", "B"}:
+        return False
+    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
+        return False
+    if symbol in fresh_buy_symbols:
+        return True
+    if not _idea_seen_recently(idea):
         return False
     return _price_inside_entry_zone(idea, cushion_pct=0.003)
 

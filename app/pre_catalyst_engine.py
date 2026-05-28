@@ -12,11 +12,14 @@ from .strategy_presets import evaluate_strategy_presets
 
 
 PRE_CATALYST_WATCH = "PRE_CATALYST_WATCH"
+READY_AT_OPEN = "READY_AT_OPEN"
+NEAR_BREAKOUT = "NEAR_BREAKOUT"
 EARNINGS_VCP_BREAKOUT = "EARNINGS_VCP_BREAKOUT"
 OVERHANG_REMOVAL_RERATE = "OVERHANG_REMOVAL_RERATE"
 SECTOR_ROTATION_LEADER = "SECTOR_ROTATION_LEADER"
 LOW_QUALITY_SHORT_COVERING = "LOW_QUALITY_SHORT_COVERING"
 LATE_CHASE_AVOID = "LATE_CHASE_AVOID"
+DATA_STALE_WATCH = "DATA_STALE_WATCH"
 UC_PRE_BREAKOUT_WATCH = "UC_PRE_BREAKOUT_WATCH"
 PRE_MOMENTUM_EXPANSION_WATCH = "PRE_MOMENTUM_EXPANSION_WATCH"
 
@@ -222,6 +225,7 @@ def build_pre_catalyst_watchlist(
 
     candidates.sort(key=lambda item: (item.score, item.confidence), reverse=True)
     candidates = candidates[:candidate_limit]
+    candidate_dicts = [candidate.to_dict() for candidate in candidates]
     live_confirmations: list[dict[str, Any]] = []
     for candidate in candidates:
         symbol = candidate.symbol
@@ -237,6 +241,12 @@ def build_pre_catalyst_watchlist(
         )
         if live.get("label") and live.get("label") != PRE_CATALYST_WATCH:
             live_confirmations.append(live)
+    missed_move_review = review_missed_moves(
+        market_action_summary,
+        previous_state=previous_state,
+        current_candidates=candidate_dicts,
+        now=now,
+    )
 
     current_symbols = {candidate.symbol for candidate in candidates}
     previous_symbols = set(previous_candidates)
@@ -260,11 +270,13 @@ def build_pre_catalyst_watchlist(
         "missing_history_symbols": missing_history,
         "candidate_limit": candidate_limit,
         "min_score": min_score,
-        "candidates": [candidate.to_dict() for candidate in candidates],
+        "candidates": candidate_dicts,
         "live_confirmations": live_confirmations,
+        "groups": _watchlist_groups(candidate_dicts, live_confirmations),
         "calendar_enrichment": calendar,
         "sector_rotation_leaders": list(sector_leaders.values())[:candidate_limit],
         "market_action_history": market_action_history,
+        "missed_move_review": missed_move_review,
         "label_counts": _counts([candidate.label for candidate in candidates] + [item.get("label") for item in live_confirmations]),
         "data_gaps": data_gaps,
         "log_events": log_events[-80:],
@@ -426,6 +438,117 @@ def build_market_action_history(
         "updated_at": utc_now(),
         "symbols": len(by_symbol),
         "by_symbol": by_symbol,
+    }
+
+
+def review_missed_moves(
+    market_action_summary: dict[str, Any] | None,
+    *,
+    previous_state: dict[str, Any] | None = None,
+    current_candidates: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+    min_move_pct: float = 5.0,
+) -> dict[str, Any]:
+    """Compare today's confirmed movers with the prior discovery state.
+
+    This is a deterministic calibration ledger: it explains whether a mover
+    was absent, watched, stale, or correctly avoided before it appeared in the
+    late market-action feed.
+    """
+
+    market_action_summary = market_action_summary or {}
+    previous_state = previous_state or {}
+    current_candidates = current_candidates or []
+    previous_candidates = {
+        str(item.get("symbol") or "").upper(): item
+        for item in (previous_state.get("candidates") or [])
+        if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+    }
+    current_by_symbol = {
+        str(item.get("symbol") or "").upper(): item
+        for item in current_candidates
+        if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+    }
+    rows: list[dict[str, Any]] = []
+    for symbol, event in sorted(_events_by_symbol(market_action_summary).items()):
+        event_types = {str(item or "").upper() for item in event.get("event_types") or []}
+        move_pct = _float_or_none(
+            event.get("pct_change")
+            or event.get("day_gain_pct")
+            or event.get("change_pct")
+            or event.get("percent_change")
+        )
+        top_mover = bool(
+            (move_pct is not None and move_pct >= min_move_pct)
+            or event_types
+            & {
+                "TOP_GAINER",
+                "PRICE_SHOCKER",
+                "VOLUME_SHOCKER",
+                "ONLY_BUYERS",
+                "52_WEEK_HIGH",
+                "STRONG_INTRADAY_GAIN",
+            }
+        )
+        if not top_mover:
+            continue
+        prior = previous_candidates.get(symbol)
+        current = current_by_symbol.get(symbol)
+        prior_label = str((prior or {}).get("label") or "")
+        current_label = str((current or {}).get("label") or "")
+        status = "absent_from_prior_watchlist"
+        reasons = ["not present in previous pre-catalyst candidates"]
+        if prior_label == DATA_STALE_WATCH:
+            status = "stale_watch_before_move"
+            reasons = ["previously seen but blocked by stale data"]
+        elif prior_label == LATE_CHASE_AVOID:
+            status = "correctly_avoided_late_chase"
+            reasons = ["previously identified as too extended/locked; no chase"]
+        elif prior_label == LOW_QUALITY_SHORT_COVERING:
+            status = "low_quality_watch_before_move"
+            reasons = ["previously classified as low-quality squeeze/bounce"]
+        elif prior:
+            status = "correctly_watched_before_move"
+            reasons = [f"prior label {prior_label or 'WATCH'} was present before top-mover confirmation"]
+        elif current:
+            status = "caught_same_cycle"
+            reasons = [f"current discovery label {current_label or 'WATCH'} exists, but prior-day watch was absent"]
+        if "ONLY_BUYERS" in event_types:
+            reasons.append("current event has only-buyers/circuit demand; keep pullback policy")
+        rows.append(
+            {
+                "symbol": symbol,
+                "status": status,
+                "move_pct": _round(move_pct),
+                "event_types": sorted(event_types),
+                "previous_label": prior_label or None,
+                "current_label": current_label or None,
+                "reason": "; ".join(reasons),
+                "market_action": {
+                    "strategy": event.get("strategy"),
+                    "trade_window": event.get("trade_window"),
+                    "volume_multiplier": _round(event.get("volume_multiplier")),
+                    "source": event.get("source"),
+                },
+            }
+        )
+    status_counts = _counts([row["status"] for row in rows])
+    hints: list[str] = []
+    if status_counts.get("absent_from_prior_watchlist"):
+        hints.append("Review pre-move compression, RS, sector-rank, and news thresholds for absent winners.")
+    if status_counts.get("stale_watch_before_move"):
+        hints.append("Fix stale quote/candle coverage before open; stale watches must not disappear from dashboards.")
+    if status_counts.get("correctly_avoided_late_chase"):
+        hints.append("Keep late-chase policy; show these as pullback candidates, not normal BUY.")
+    return {
+        "enabled": True,
+        "source": "market_action_vs_prior_pre_catalyst_watchlist",
+        "generated_at": (now or datetime.now(timezone.utc)).isoformat(),
+        "min_move_pct": min_move_pct,
+        "reviewed_movers": len(rows),
+        "status_counts": status_counts,
+        "items": rows[:80],
+        "tuning_hints": hints,
     }
 
 
@@ -800,6 +923,16 @@ def confirm_live_breakout(
     intraday = candle_set.get("intraday") or []
     intraday_fresh = _intraday_candles_match_quote_session(intraday, quote)
     usable_intraday = intraday if intraday_fresh else []
+    market_region = _quote_market_region(quote)
+    source = str(quote.source or "").lower()
+    market_action_events = [str(item).upper() for item in market_action.get("event_types", []) if str(item or "").strip()]
+    stale_market_action = bool(
+        market_action.get("prior_session")
+        or market_action.get("stale")
+        or str(market_action.get("freshness") or "").lower() in {"stale", "prior_session", "previous_session"}
+        or "PRIOR_SESSION" in market_action_events
+        or "STALE_DATA" in market_action_events
+    )
     pivot = _float_or_none(candidate.get("pivot"))
     if pivot is None:
         pivot = _setup_features(daily, quote).get("pivot")
@@ -811,20 +944,24 @@ def confirm_live_breakout(
     vwap = _vwap(usable_intraday)
     vwap_hold = bool(vwap and quote.price >= vwap) if vwap else _range_position(quote) >= 0.60
     range_hold = _first_range_hold(usable_intraday, quote.price) if usable_intraday else False
-    market_action_events = [str(item).upper() for item in market_action.get("event_types", []) if str(item or "").strip()]
     breakout = bool((pivot and quote.price >= pivot) or "52_WEEK_HIGH" in market_action_events or "VOLUME_SHOCKER" in market_action_events)
-    volume_confirmed = bool(volume_ratio >= 1.35 or "VOLUME_SHOCKER" in market_action_events)
+    volume_threshold = 2.0 if market_region == "US" and any(token in source for token in ("yahoo", "iex")) else 1.5
+    volume_confirmed = bool(volume_ratio >= volume_threshold or ("VOLUME_SHOCKER" in market_action_events and volume_ratio >= 1.20))
     catalyst_confirmed = _sentiment_has_positive_catalyst(sentiment) or bool(market_action_events)
     too_extended = extension > 5.0 or day_gain >= 8.0
     demand_locked = "ONLY_BUYERS" in market_action_events or str(market_action.get("strategy") or "") == "circuit_demand_lock"
+    sector_participation = _sector_participation_ok(candidate, market_action)
+    data_stale = bool(stale_market_action or (breakout and not intraday_fresh))
 
     if demand_locked:
         label = LATE_CHASE_AVOID
     elif too_extended and breakout:
         label = LATE_CHASE_AVOID
+    elif data_stale:
+        label = DATA_STALE_WATCH
     elif candidate.get("label") == LOW_QUALITY_SHORT_COVERING:
         label = LOW_QUALITY_SHORT_COVERING
-    elif breakout and intraday_fresh and vwap_hold and range_hold and volume_confirmed and catalyst_confirmed:
+    elif breakout and intraday_fresh and vwap_hold and range_hold and volume_confirmed and catalyst_confirmed and sector_participation:
         if candidate.get("catalyst_type") == "earnings":
             label = EARNINGS_VCP_BREAKOUT
         elif candidate.get("label") == OVERHANG_REMOVAL_RERATE:
@@ -842,6 +979,7 @@ def confirm_live_breakout(
         + (0.14 if range_hold else 0.0)
         + (0.20 if volume_confirmed else 0.0)
         + (0.16 if catalyst_confirmed else 0.0)
+        + (0.06 if sector_participation else -0.04)
         + (0.10 if intraday_fresh else -0.10)
         + (0.10 if not too_extended else -0.16),
         0.0,
@@ -858,6 +996,10 @@ def confirm_live_breakout(
         reasons.append("volume confirmation active")
     if not intraday_fresh:
         reasons.append("waiting for fresh intraday candle confirmation")
+    if stale_market_action:
+        reasons.append("market-action data is prior-session/stale; watch only")
+    if not sector_participation:
+        reasons.append("sector participation is not confirmed")
     if too_extended:
         reasons.append("late chase risk; too extended from pivot")
     if demand_locked:
@@ -872,14 +1014,20 @@ def confirm_live_breakout(
         "gap_pct": _round(gap_pct),
         "extension_from_pivot_pct": _round(extension),
         "volume_ratio": _round(volume_ratio),
+        "volume_threshold": volume_threshold,
         "vwap": _round(vwap),
         "intraday_fresh": intraday_fresh,
+        "data_stale": data_stale,
+        "market_region": market_region,
         "breakout": breakout,
         "vwap_hold": vwap_hold,
         "first_range_hold": range_hold,
         "volume_confirmed": volume_confirmed,
         "catalyst_confirmed": catalyst_confirmed,
+        "sector_participation": sector_participation,
         "demand_locked": demand_locked,
+        "fresh_action": "BUY_NOW" if label in {EARNINGS_VCP_BREAKOUT, OVERHANG_REMOVAL_RERATE, SECTOR_ROTATION_LEADER} else "WATCH",
+        "trade_window": "actionable_if_entry_zone_holds" if label in {EARNINGS_VCP_BREAKOUT, OVERHANG_REMOVAL_RERATE, SECTOR_ROTATION_LEADER} else "watch_only",
         "key_reasons": reasons,
         "source_candidate": candidate,
     }
@@ -919,6 +1067,75 @@ def classify_opportunity(
     if setup.get("pre_catalyst_ready") and score >= min_score:
         return PRE_CATALYST_WATCH
     return ""
+
+
+def _watchlist_groups(candidates: list[dict[str, Any]], live_confirmations: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {
+        READY_AT_OPEN: [],
+        NEAR_BREAKOUT: [],
+        PRE_CATALYST_WATCH: [],
+        UC_PRE_BREAKOUT_WATCH: [],
+        SECTOR_ROTATION_LEADER: [],
+        OVERHANG_REMOVAL_RERATE: [],
+        LOW_QUALITY_SHORT_COVERING: [],
+        LATE_CHASE_AVOID: [],
+        DATA_STALE_WATCH: [],
+    }
+    for item in candidates:
+        label = str(item.get("label") or PRE_CATALYST_WATCH)
+        setup = item.get("supporting_signals", {}).get("setup", {}) if isinstance(item.get("supporting_signals"), dict) else {}
+        extension = _float_or_none(setup.get("extension_from_pivot_pct"))
+        near_pivot = bool(setup.get("near_pivot") or setup.get("near_prior_high"))
+        score = _float_or_none(item.get("score")) or 0.0
+        bucket = label if label in groups else PRE_CATALYST_WATCH
+        if label in {LOW_QUALITY_SHORT_COVERING, LATE_CHASE_AVOID, DATA_STALE_WATCH}:
+            groups[bucket].append(item)
+        elif score >= 0.70 and near_pivot and (extension is None or -4.0 <= extension <= 2.0):
+            groups[READY_AT_OPEN].append(item)
+        elif near_pivot and (extension is None or -4.0 <= extension <= 4.0):
+            groups[NEAR_BREAKOUT].append(item)
+        else:
+            groups[bucket].append(item)
+    for live in live_confirmations:
+        label = str(live.get("label") or "")
+        if label in groups:
+            groups[label].append(live)
+    for key, items in groups.items():
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for item in sorted(items, key=lambda row: float(row.get("score") or 0.0), reverse=True):
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol and symbol in seen:
+                continue
+            if symbol:
+                seen.add(symbol)
+            unique.append(item)
+        groups[key] = unique
+    return groups
+
+
+def _quote_market_region(quote: Quote) -> str:
+    source = str(quote.source or "").lower()
+    symbol = str(quote.symbol or "").upper()
+    if any(token in source for token in ("alpaca", "polygon", "iex", "sip")) or "." not in symbol and source.startswith("yahoo"):
+        return "US"
+    return "IN"
+
+
+def _sector_participation_ok(candidate: dict[str, Any], market_action: dict[str, Any]) -> bool:
+    supporting = candidate.get("supporting_signals") if isinstance(candidate.get("supporting_signals"), dict) else {}
+    sector = supporting.get("sector_rotation") if isinstance(supporting.get("sector_rotation"), dict) else {}
+    if sector.get("detected") or sector.get("sector_tailwind"):
+        return True
+    raw = market_action.get("sector_participation")
+    if raw is None:
+        raw = market_action.get("sector_confirmation")
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    score = _float_or_none(raw)
+    return score is None or score >= 0.0
 
 
 def _candidate_from_parts(

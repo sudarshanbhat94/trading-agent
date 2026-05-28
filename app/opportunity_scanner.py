@@ -57,6 +57,10 @@ _MARKET_ACTION_SETUPS = {
     "top_gainer_momentum",
 }
 
+ACTIONABLE_WATCH = "ACTIONABLE_WATCH"
+DATA_STALE_WATCH = "DATA_STALE_WATCH"
+LATE_CHASE_AVOID = "LATE_CHASE_AVOID"
+
 
 class OpportunityScanner:
     """Ranks a broad quote universe before the expensive strategy/LLM pass."""
@@ -418,15 +422,24 @@ class OpportunityScanner:
             setup = str(playbook_strategy["code"])
         elif btst.get("detected"):
             setup = "btst_buy_candidate"
+        late_chase = self._late_chase(metrics, market_action_review)
         bucket = self._bucket(score, risk, reject_reason, metrics)
         if not reject_reason and btst.get("detected") and float(btst.get("score") or 0.0) >= 0.72 and risk >= 0.45:
             bucket = "Actionable"
-        if not reject_reason and playbook_signal == "STRONG BUY":
+        if late_chase:
+            bucket = LATE_CHASE_AVOID
+            if setup != "circuit_demand_lock":
+                setup = "extended_momentum_watch"
+            reasons.append("late chase avoid: move is already too extended for a fresh entry")
+        elif not reject_reason and playbook_signal == "STRONG BUY":
             bucket = "Actionable"
         elif not reject_reason and playbook_signal == "MODERATE BUY":
             bucket = "Small Size Only"
         elif not reject_reason and playbook_signal == "WATCH" and bucket == "Avoid":
             bucket = "Watch"
+        if bucket == "Avoid" and not reject_reason and self._good_mover_watchable(market_action_review, rally, metrics):
+            bucket = ACTIONABLE_WATCH
+            reasons.append("good mover visible as actionable watch; entry gates still need confirmation")
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -449,6 +462,8 @@ class OpportunityScanner:
             "top_gainers_playbook": top_gainers_playbook,
             "data_quality": data_quality,
             "liquidity_profile": liquidity_profile,
+            "late_chase": late_chase,
+            "actionable_watch": bucket == ACTIONABLE_WATCH,
             "components": {
                 "liquidity": round(liquidity, 4),
                 "trend": round(trend, 4),
@@ -1391,7 +1406,10 @@ class OpportunityScanner:
 
     def _bucket(self, score: float, risk: float, reject_reason: str, metrics: dict[str, Any]) -> str:
         if reject_reason:
-            return "Avoid"
+            return DATA_STALE_WATCH if reject_reason == "stale_quote" else "Avoid"
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        if day_gain >= 8.0:
+            return LATE_CHASE_AVOID
         if int(metrics.get("history_candles") or 0) < 20 and score >= 0.58:
             return "Small Size Only"
         if score >= 0.72 and risk >= 0.45:
@@ -1403,6 +1421,10 @@ class OpportunityScanner:
         return "Avoid"
 
     def _quality_reject_reason(self, item: dict[str, Any]) -> str:
+        if item.get("bucket") == DATA_STALE_WATCH:
+            return "stale_quote"
+        if item.get("bucket") == LATE_CHASE_AVOID:
+            return ""
         if item.get("bucket") == "Avoid":
             return "avoid_bucket_quality_gate"
         data_quality = item.get("data_quality") if isinstance(item.get("data_quality"), dict) else {}
@@ -1412,8 +1434,35 @@ class OpportunityScanner:
         if score < self.min_score:
             return "below_opportunity_score"
         if self.require_active_setup and item.get("setup") not in _ACTIVE_OPPORTUNITY_SETUPS:
+            if self._good_mover_watchable(item.get("market_action") or {}, item.get("rally_radar") or {}, item.get("metrics") or {}):
+                item["bucket"] = ACTIONABLE_WATCH
+                item["actionable_watch"] = True
+                return ""
             return "no_active_opportunity_setup"
         return ""
+
+    def _late_chase(self, metrics: dict[str, Any], market_action_review: dict[str, Any]) -> bool:
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        dist_sma20 = _float_or_none(metrics.get("distance_to_sma20_pct"))
+        market_evidence = market_action_review.get("evidence") if isinstance(market_action_review.get("evidence"), dict) else {}
+        market_extended = bool(market_evidence.get("extended")) and day_gain >= 8.0
+        return bool(day_gain >= 8.0 or (dist_sma20 is not None and dist_sma20 > 14.0) or market_extended)
+
+    def _good_mover_watchable(
+        self,
+        market_action_review: dict[str, Any],
+        rally: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> bool:
+        if market_action_review.get("available"):
+            return True
+        phase = str(rally.get("phase") or "")
+        if phase in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel"}:
+            return True
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or _float_or_none(metrics.get("projected_volume_ratio")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        return bool(day_gain >= 3.0 and volume_ratio >= 1.2 and (high_distance is None or high_distance <= 3.0))
 
     def _public_item(self, item: dict[str, Any]) -> dict[str, Any]:
         metrics = item.get("metrics") or {}
@@ -1434,6 +1483,7 @@ class OpportunityScanner:
             "score": item.get("score"),
             "bucket": item.get("bucket"),
             "setup": item.get("setup"),
+            "label": LATE_CHASE_AVOID if item.get("bucket") == LATE_CHASE_AVOID else DATA_STALE_WATCH if item.get("bucket") == DATA_STALE_WATCH else ACTIONABLE_WATCH if item.get("bucket") == ACTIONABLE_WATCH else item.get("setup"),
             "rally_phase": rally.get("phase"),
             "rally_score": rally.get("score"),
             "trade_window": trade_window,
@@ -1441,6 +1491,8 @@ class OpportunityScanner:
             "market_action": market_action,
             "btst": btst,
             "top_gainers_playbook": top_gainers_playbook,
+            "actionable_watch": bool(item.get("actionable_watch")),
+            "late_chase": bool(item.get("late_chase")),
             "forced_inclusion": item.get("forced_inclusion", False),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),

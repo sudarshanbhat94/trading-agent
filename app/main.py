@@ -53,7 +53,7 @@ from .market_data import (
     normalize_indstocks_access_token,
     normalize_upstox_access_token,
 )
-from .market_regions import filter_universe_for_open_markets, market_session_context, normalize_market_region
+from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context, normalize_market_region
 from .models import Decision, utc_now
 from .order_router import build_order_router
 from .options_intelligence import OptionsIntelligenceService
@@ -584,6 +584,35 @@ def _quote_source_counts(quotes: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
+def _position_quote_refresh_rows(
+    active_rows: list[dict[str, Any]],
+    session_context: dict[str, Any],
+    refresh_region: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not settings.skip_market_data_when_closed:
+        return active_rows, False
+
+    refresh_rows = filter_universe_for_open_markets(active_rows, session_context)
+    seen = {str(row.get("symbol") or "").upper() for row in refresh_rows}
+    closed_us_polling = (
+        normalize_market_region(refresh_region or "BOTH", default="BOTH") in {"US", "BOTH"}
+        and settings.us_market_data_provider in {"alpaca", "alpaca_yahoo"}
+        and bool(settings.alpaca_api_key and settings.alpaca_api_secret)
+    )
+    if not closed_us_polling:
+        return refresh_rows, False
+
+    added_closed_us = False
+    for row in active_rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol or symbol in seen or market_region_for_row(row) != "US":
+            continue
+        refresh_rows.append(row)
+        seen.add(symbol)
+        added_closed_us = True
+    return refresh_rows, added_closed_us
+
+
 async def _position_quote_refresh_loop() -> None:
     last_error = ""
     last_idle_signature = ""
@@ -614,8 +643,8 @@ async def _position_quote_refresh_loop() -> None:
                 continue
 
             session_context = market_session_context(refresh_region, active_rows)
-            open_rows = filter_universe_for_open_markets(active_rows, session_context) if settings.skip_market_data_when_closed else active_rows
-            if not open_rows:
+            refresh_rows, closed_us_polling = _position_quote_refresh_rows(active_rows, session_context, refresh_region)
+            if not refresh_rows:
                 active_symbols = [row.get("symbol") for row in active_rows]
                 idle_signature = f"paused:markets_closed:{refresh_region}:{','.join(str(symbol) for symbol in active_symbols)}"
                 if idle_signature != last_idle_signature:
@@ -636,7 +665,7 @@ async def _position_quote_refresh_loop() -> None:
                 await asyncio.sleep(sleep_seconds)
                 continue
 
-            quotes = await market_data.get_quotes(open_rows)
+            quotes = await market_data.get_quotes(refresh_rows)
             if quotes:
                 db.upsert_quotes(quotes)
                 broker.sync_marks(quotes)
@@ -651,6 +680,9 @@ async def _position_quote_refresh_loop() -> None:
                         "interval_seconds": sleep_seconds,
                         "active_symbols": [row.get("symbol") for row in active_rows],
                         "refreshed_symbols": sorted(quotes.keys()),
+                        "closed_us_polling": closed_us_polling,
+                        "open_regions": session_context.get("open_regions"),
+                        "closed_regions": session_context.get("closed_regions"),
                         "quote_count": len(quotes),
                         "marked_positions": marked,
                         "source_counts": _quote_source_counts(quotes),
@@ -4054,6 +4086,16 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
                 }
             )
         decision_buy_symbols = {symbol for symbol in decision_buy_symbols if symbol in monitor_allowed}
+        scope_exits = db.exit_active_follows_outside_monitor_scope(user_id, monitor_allowed)
+        if scope_exits:
+            summary["exited"] += len(scope_exits)
+            summary["skipped"].append(
+                {
+                    "reason": "cleaned_active_follows_outside_custom_monitor_list",
+                    "symbols": [str(item.get("symbol") or "").upper() for item in scope_exits[:12]],
+                    "monitor_symbols_count": len(monitor_allowed),
+                }
+            )
     active_buy_ideas = [
         idea
         for idea in db.latest_signal_ideas(200, user_id=user_id, symbols=monitor_symbols or None)
@@ -4138,7 +4180,22 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         cash = float(market_portfolio.get("cash") or 0.0)
         price = float(idea.get("latest_price") or idea.get("entry_price") or 0.0)
         size_multiplier = quality_size_multiplier(quality_gate)
-        sizing = _auto_follow_sizing(cash, price, size_multiplier=size_multiplier, market_region=market)
+        idea_details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+        opportunity_scan = idea_details.get("opportunity_scan") if isinstance(idea_details.get("opportunity_scan"), dict) else {}
+        liquidity_scan = opportunity_scan.get("liquidity_profile") if isinstance(opportunity_scan.get("liquidity_profile"), dict) else {}
+        sizing = _auto_follow_sizing(
+            cash,
+            price,
+            size_multiplier=size_multiplier,
+            market_region=market,
+            stop_loss=_float_or_none(idea.get("stop_loss") or idea_details.get("stop_loss")),
+            confidence=_float_or_none(idea.get("confidence")),
+            avg_daily_turnover=_float_or_none(
+                opportunity_scan.get("avg20_turnover")
+                or opportunity_scan.get("turnover")
+                or liquidity_scan.get("avg20_turnover")
+            ),
+        )
         amount = float(sizing.get("amount") or 0.0)
         if amount <= 0:
             skip_reason = str(sizing.get("reason") or "")
@@ -4181,6 +4238,9 @@ def _auto_follow_sizing(
     *,
     size_multiplier: float = 1.0,
     market_region: str = "IN",
+    stop_loss: float | None = None,
+    confidence: float | None = None,
+    avg_daily_turnover: float | None = None,
 ) -> dict[str, Any]:
     return auto_follow_sizing(
         cash,
@@ -4189,6 +4249,9 @@ def _auto_follow_sizing(
         size_multiplier=size_multiplier,
         market_region=market_region,
         settings=settings,
+        stop_loss=stop_loss,
+        confidence=confidence,
+        avg_daily_turnover=avg_daily_turnover,
     )
 
 
@@ -4210,20 +4273,20 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if signal_type != "BUY" or status not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
         return False
     details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
-    if symbol in fresh_buy_symbols:
-        return True
-    if not _idea_seen_recently(idea):
-        return False
     if str(idea.get("trade_state") or "").upper() == "RISK_REVIEW" or str(idea.get("setup_bucket") or "").upper() in {"RISK_REVIEW", "AVOID"}:
         return False
     current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
     if current_return < -1.5:
         return False
-    if str(idea.get("fresh_action") or "").upper() == "BUY_NOW":
-        return True
     score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
     grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
     if score < 70 or grade not in {"A", "B"}:
+        return False
+    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
+        return False
+    if symbol in fresh_buy_symbols:
+        return True
+    if not _idea_seen_recently(idea):
         return False
     return _price_inside_entry_zone(idea, cushion_pct=0.003)
 

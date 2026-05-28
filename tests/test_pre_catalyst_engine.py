@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from app.models import Candle, Quote
 from app.pre_catalyst_engine import (
     EARNINGS_VCP_BREAKOUT,
+    DATA_STALE_WATCH,
     LATE_CHASE_AVOID,
     LOW_QUALITY_SHORT_COVERING,
     OVERHANG_REMOVAL_RERATE,
@@ -16,6 +17,7 @@ from app.pre_catalyst_engine import (
     UC_PRE_BREAKOUT_WATCH,
     build_pre_catalyst_watchlist,
     confirm_live_breakout,
+    review_missed_moves,
 )
 
 
@@ -251,9 +253,26 @@ class PreCatalystEngineTests(unittest.TestCase):
             {"score": 0.45, "confidence": 0.7, "events": [{"event_type": "earnings", "confidence": 0.8, "source_weight": 0.8}]},
         )
 
-        self.assertEqual(live["label"], PRE_CATALYST_WATCH)
+        self.assertEqual(live["label"], DATA_STALE_WATCH)
         self.assertFalse(live["intraday_fresh"])
+        self.assertTrue(live["data_stale"])
         self.assertIn("waiting for fresh intraday", " ".join(live["key_reasons"]))
+
+    def test_missed_move_review_marks_absent_and_watched_movers(self) -> None:
+        review = review_missed_moves(
+            {
+                "events": [
+                    {"symbol": "MISSED", "event_types": ["TOP_GAINER"], "pct_change": 9.4, "strategy": "top_gainer_momentum"},
+                    {"symbol": "READY", "event_types": ["VOLUME_SHOCKER"], "pct_change": 5.8, "strategy": "market_action_momentum"},
+                ]
+            },
+            previous_state={"candidates": [{"symbol": "READY", "label": PRE_CATALYST_WATCH}]},
+        )
+
+        by_symbol = {item["symbol"]: item for item in review["items"]}
+        self.assertEqual(by_symbol["MISSED"]["status"], "absent_from_prior_watchlist")
+        self.assertEqual(by_symbol["READY"]["status"], "correctly_watched_before_move")
+        self.assertIn("absent_from_prior_watchlist", review["status_counts"])
 
 
 def _settings() -> SimpleNamespace:

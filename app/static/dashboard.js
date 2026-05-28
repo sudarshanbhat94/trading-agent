@@ -5600,7 +5600,7 @@ function positionPriceHtml(row = {}, market = "IN") {
   const markedAt = row.marked_at || row.updated_at || row.position_summary?.mark_timestamp || row.position_summary?.price_timestamp;
   const quoteAt = row.quote_updated_at || row.position_summary?.quote_timestamp;
   const source = humanLabel(row.quote_source || row.position_summary?.price_source || "live quote");
-  const markText = `Mark ${fmtFreshness(markedAt)}`;
+  const markText = `Checked ${fmtFreshness(markedAt)}`;
   const quoteText = quoteAt ? `tick ${fmtFreshness(quoteAt)}` : "tick waiting";
   return `<div class="position-price-pair">
     <span><small>Entry</small><strong>${fmtTradeMoney(row.avg_price, market)}</strong></span>

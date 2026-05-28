@@ -60,6 +60,56 @@ def _llm_buy_block_reason(context: dict[str, Any]) -> str | None:
     return None
 
 
+def _fresh_market_data_block_reason(context: dict[str, Any]) -> str:
+    data_readiness = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
+    scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+    labels: set[str] = set()
+    gate = data_readiness.get("fresh_market_data_gate") if isinstance(data_readiness.get("fresh_market_data_gate"), dict) else {}
+    if gate and gate.get("passed") is False:
+        return str(gate.get("reason") or "stale_market_data")
+    for value in data_readiness.get("missing_data") or []:
+        if str(value or "").strip():
+            labels.add(str(value).strip().lower())
+    for collection_key in ("hard_gaps", "soft_gaps"):
+        for gap in data_readiness.get(collection_key) or []:
+            if isinstance(gap, dict):
+                for key in ("key", "label", "reason"):
+                    value = str(gap.get(key) or "").strip().lower()
+                    if value:
+                        labels.add(value)
+            elif str(gap or "").strip():
+                labels.add(str(gap).strip().lower())
+    data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+    labels.update(str(value or "").strip().lower() for value in data_quality.get("missing") or [] if str(value or "").strip())
+    if any(
+        token in label
+        for label in labels
+        for token in ("stale_quote", "stale_intraday", "prior_session", "previous_session", "moneycontrol_prior")
+    ):
+        return "stale_market_data"
+    label = str(scan.get("label") or scan.get("bucket") or "").strip().upper()
+    if label == "DATA_STALE_WATCH":
+        return "data_stale_watch"
+    return ""
+
+
+def _negative_catalyst_block_reason(context: dict[str, Any]) -> str:
+    scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+    label = str(scan.get("label") or scan.get("bucket") or "").strip().upper()
+    setup = str(scan.get("setup") or "").strip().lower()
+    if label == "OVERHANG_REMOVAL_RERATE" or setup == "overhang_removal_rerate":
+        return ""
+    sentiment = context.get("sentiment") if isinstance(context.get("sentiment"), dict) else {}
+    score = _float_or_none(sentiment.get("score")) or _float_or_none(context.get("sentiment_score"))
+    confidence = _float_or_none(sentiment.get("confidence"))
+    negative = bool(
+        sentiment.get("negative_catalyst")
+        or scan.get("negative_catalyst")
+        or (score is not None and score <= -0.30 and (confidence is None or confidence >= 0.30))
+    )
+    return "negative_catalyst_no_new_longs" if negative else ""
+
+
 def _signal_confidence(signal: dict[str, Any]) -> float:
     try:
         return max(min(float(signal.get("confidence") or 0.0), 1.0), 0.0)
@@ -612,7 +662,7 @@ class StrategyEngine:
             and "yahoo" in str(data_sources.get("quote") or "").lower()
         )
         if us_yahoo_reference_signal:
-            threshold = min(threshold, 0.25)
+            threshold = max(threshold, 0.45)
         tomorrow_plan_decision = self._tomorrow_plan_decision_context(context, opportunity_probe)
         if tomorrow_plan_decision.get("eligible_for_entry_boost"):
             boost = float(tomorrow_plan_decision.get("threshold_boost") or 0.0)
@@ -623,6 +673,29 @@ class StrategyEngine:
 
         def fail(gate: str, value: Any, reason: str) -> None:
             failed_gates.append({"gate": gate, "value": value, "reason": reason})
+
+        if not has_position and best_strategy_name == "no_actionable_strategy":
+            fail("actionable_strategy_gate", best_strategy_name, "no_actionable_strategy")
+        technical_score = _float_or_none((context.get("technical_math") or {}).get("score")) if isinstance(context.get("technical_math"), dict) else None
+        if not has_position and technical_score is not None and technical_score < 0.50:
+            fail("technical_score_gate", technical_score, "technical_score_below_0_50")
+        stale_data_reason = _fresh_market_data_block_reason(context)
+        if not has_position and stale_data_reason:
+            fail("fresh_market_data_gate", data_ready or context.get("opportunity_scan"), stale_data_reason)
+        negative_catalyst_reason = _negative_catalyst_block_reason(context)
+        if not has_position and negative_catalyst_reason:
+            fail("catalyst_quality_gate", context.get("sentiment"), negative_catalyst_reason)
+        if (
+            not has_position
+            and us_yahoo_reference_signal
+            and not bool(session_momentum.get("confirmed"))
+            and not bool(live_momentum_review.get("strategy_ready"))
+        ):
+            fail(
+                "session_momentum_gate",
+                {"source": data_sources.get("quote"), "session_momentum": session_momentum, "live_momentum_review": live_momentum_review},
+                "us_yahoo_reference_needs_live_confirmation",
+            )
 
         pre_filter_block_reason = str(pre_filter.get("elimination_reason") or "")
         phase3_event_thesis = strategy_logic.get("event_driven_thesis") if isinstance(strategy_logic.get("event_driven_thesis"), dict) else {}
@@ -935,6 +1008,8 @@ class StrategyEngine:
         playbook_profile = self._top_gainers_playbook_profile(context, scan)
         if playbook_profile.get("ready"):
             return playbook_profile
+        if playbook_profile.get("reason") != "no_top_gainers_playbook_buy":
+            return playbook_profile
 
         review_ready = bool(
             review.get("strategy_ready")
@@ -1050,7 +1125,7 @@ class StrategyEngine:
                 "stop_risk_pct": round(stop_risk_pct, 4),
             }
         quant_score = _float_or_none(playbook.get("quant_score")) or 0.0
-        minimum = 70.0 if signal == "STRONG BUY" else 55.0
+        minimum = 70.0
         if quant_score < minimum:
             return {"ready": False, "reason": "top_gainers_playbook_quant_below_signal_floor", "quant_score": quant_score}
         quote = context.get("quote") if isinstance(context.get("quote"), dict) else {}
@@ -1241,7 +1316,7 @@ class StrategyEngine:
             return True
         if gate_name == "overall_quality_gate":
             score = self._gate_overall_score(value)
-            minimum = _float_or_none(profile.get("min_quality_score")) or OPPORTUNITY_PROBE_MIN_SCORE
+            minimum = max(_float_or_none(profile.get("min_quality_score")) or OPPORTUNITY_PROBE_MIN_SCORE, FRESH_BUY_MIN_SCORE)
             playbook_score = _float_or_none(profile.get("playbook_quant_score"))
             if playbook_score is not None and playbook_score >= minimum:
                 return True
@@ -1250,8 +1325,7 @@ class StrategyEngine:
                 return True
             if score is not None and score >= minimum:
                 return True
-            scan_score = _float_or_none(profile.get("scan_score")) or 0.0
-            return bool(profile.get("data_readiness_block_absorbable")) and score is not None and score >= 30.0 and scan_score >= 0.80
+            return False
         if gate_name == "entry_grade_gate":
             return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
         if gate_name == "system_rule_GRADE_VIOLATION":
