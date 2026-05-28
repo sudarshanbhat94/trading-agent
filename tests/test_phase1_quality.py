@@ -562,7 +562,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["trade_state"], "WATCH")
         self.assertEqual(latest["execution_state"], "WATCH")
 
-    def test_safety_cleanup_exits_watch_or_hard_invalidated_paper_follows(self) -> None:
+    def test_safety_cleanup_holds_watch_but_exits_hard_invalidated_paper_follows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -609,8 +609,8 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
             ]
 
-        self.assertEqual(len(exited), 2)
-        self.assertEqual([item["symbol"] for item in active], ["BUYD"])
+        self.assertEqual(len(exited), 1)
+        self.assertEqual({item["symbol"] for item in active}, {"WATCHA", "BUYD"})
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
 
     def test_safety_cleanup_marks_exit_pending_after_market_close(self) -> None:
@@ -635,10 +635,11 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             )
             idea_id = self._insert_signal_idea(
                 db,
-                signal_type="WATCH",
-                status="WATCH",
+                signal_type="BUY",
+                status="ACTIVE",
                 score=84,
                 grade="A",
+                details_extra={"hard_blocked": True, "hard_blocks": [{"flag": "FAILED_BREAKOUT_TWO_DAY_RULE"}]},
             )
             with db.connect() as conn:
                 conn.execute("update signal_ideas set latest_price = 103 where id = ?", (idea_id,))

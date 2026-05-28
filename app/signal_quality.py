@@ -295,8 +295,18 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
     action = _upper(item.get("action") or details.get("action") or signal_type)
     if action in {"SELL", "EXIT"} or signal_type in {"EXIT", "NO_TRADE"}:
         return _blocked("active_follow_exit_signal", "Latest engine action is an exit/no-trade signal.")
-    if status in {"WATCH", "STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT"} or signal_type == "WATCH":
-        return _blocked("active_follow_not_tradeable_state", "Followed position moved into watch/closed state.")
+    if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT"}:
+        return _blocked("active_follow_not_tradeable_state", "Followed position moved into a closed/exit lifecycle state.")
+    if status == "WATCH" or signal_type == "WATCH":
+        return {
+            "passed": True,
+            "fresh_buy_allowed": False,
+            "reason": "active_follow_watch_state_hold",
+            "risk_flags": _risk_flags(item, details),
+            "risk_warnings": [
+                "latest idea is watch-only; keep the existing follow managed by stop, target, and hard invalidation"
+            ],
+        }
 
     hard_blocked = bool(item.get("hard_blocked") or details.get("hard_blocked"))
     hard_blocks = details.get("hard_blocks") if isinstance(details.get("hard_blocks"), list) else []
