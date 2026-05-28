@@ -408,6 +408,11 @@ def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str,
         )
     if setup in {"extended_momentum_watch", "circuit_demand_lock", "pre_rally_fuel"}:
         return _blocked("missing_actionable_setup", "Setup is a watch state, not a fresh BUY entry.")
+    if _us_etf_or_fund_watch_only(item, details):
+        return _blocked(
+            "us_etf_or_fund_watch_only",
+            "US ETFs/funds are watch-only for this equities engine and cannot be auto-entered as normal BUYs.",
+        )
 
     stale_reason = _stale_data_reason(item, details, scan)
     if stale_reason:
@@ -497,6 +502,29 @@ def _stale_data_reason(item: dict[str, Any], details: dict[str, Any], scan: dict
     if "moneycontrol" in source and any(token in source for token in ("prior", "previous", "delayed")):
         return "moneycontrol_prior_session_data"
     return ""
+
+
+def _us_etf_or_fund_watch_only(item: dict[str, Any], details: dict[str, Any]) -> bool:
+    data_readiness = item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness")
+    data_readiness = data_readiness if isinstance(data_readiness, dict) else {}
+    market = _upper(item.get("market_region") or details.get("market_region") or data_readiness.get("market_region"))
+    if market != "US":
+        return False
+    full = details.get("full_spectrum_analysis") if isinstance(details.get("full_spectrum_analysis"), dict) else {}
+    fundamental = full.get("fundamental_quality") if isinstance(full.get("fundamental_quality"), dict) else details.get("fundamental_quality")
+    fundamental = fundamental if isinstance(fundamental, dict) else {}
+    fields = (
+        item.get("security_type"),
+        item.get("quote_type"),
+        details.get("security_type"),
+        details.get("quote_type"),
+        fundamental.get("security_type"),
+        fundamental.get("quote_type"),
+        fundamental.get("sector"),
+        fundamental.get("industry"),
+    )
+    text = " ".join(str(value or "").upper() for value in fields)
+    return any(token in text for token in ("ETF", "ETN", "FUND"))
 
 
 def _risk_flags(item: dict[str, Any], details: dict[str, Any]) -> list[str]:

@@ -62,6 +62,26 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
 
+    def test_fresh_buy_gate_blocks_us_etf_fund_entries(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 86,
+                "overall_grade": "A",
+                "details": {
+                    "market_region": "US",
+                    "data_readiness": {"trade_decision_ready": True, "market_region": "US"},
+                    "full_spectrum_analysis": {
+                        "fundamental_quality": {"security_type": "ETF", "quality_bucket": "etf_reference_available"}
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "us_etf_or_fund_watch_only")
+
     def test_fresh_buy_gate_caps_monthly_expiry_eve_to_probe_size(self) -> None:
         gate = fresh_buy_quality_gate(
             {
