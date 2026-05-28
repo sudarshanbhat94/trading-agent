@@ -224,7 +224,7 @@ def build_pre_catalyst_watchlist(
         log_events.append({"event": "watchlist_candidate", "symbol": symbol, "label": label, "reasons": candidate.key_reasons[:5]})
 
     candidates.sort(key=lambda item: (item.score, item.confidence), reverse=True)
-    candidates = candidates[:candidate_limit]
+    candidates = _balanced_candidate_selection(candidates, candidate_limit)
     candidate_dicts = [candidate.to_dict() for candidate in candidates]
     live_confirmations: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -1112,6 +1112,39 @@ def _watchlist_groups(candidates: list[dict[str, Any]], live_confirmations: list
             unique.append(item)
         groups[key] = unique
     return groups
+
+
+def _balanced_candidate_selection(candidates: list[OpportunityCandidate], candidate_limit: int) -> list[OpportunityCandidate]:
+    limit = max(1, int(candidate_limit or 1))
+    ordered = sorted(candidates, key=lambda item: (item.score, item.confidence), reverse=True)
+    if len(ordered) <= limit:
+        return ordered
+    by_market: dict[str, list[OpportunityCandidate]] = {}
+    for item in ordered:
+        market = str(item.market_region or "OTHER").upper()
+        by_market.setdefault(market, []).append(item)
+    market_order = [market for market in ("IN", "US") if by_market.get(market)]
+    market_order.extend(sorted(market for market in by_market if market not in {"IN", "US"}))
+    if len(market_order) <= 1 or limit < len(market_order):
+        return ordered[:limit]
+
+    selected: list[OpportunityCandidate] = []
+    selected_symbols: set[str] = set()
+    base_quota = max(1, limit // len(market_order))
+    for market in market_order:
+        for item in by_market.get(market, [])[:base_quota]:
+            if len(selected) >= limit:
+                break
+            selected.append(item)
+            selected_symbols.add(item.symbol)
+    for item in ordered:
+        if len(selected) >= limit:
+            break
+        if item.symbol in selected_symbols:
+            continue
+        selected.append(item)
+        selected_symbols.add(item.symbol)
+    return sorted(selected, key=lambda item: (item.score, item.confidence), reverse=True)
 
 
 def _quote_market_region(quote: Quote) -> str:

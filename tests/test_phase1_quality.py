@@ -444,6 +444,80 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(details["quality_downgrade"]["from"], "BUY")
         self.assertEqual(details["quality_gate"]["reason"], "overall_score_below_70")
 
+    def test_hold_refresh_does_not_preserve_old_buy_as_actionable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+                details_extra={"action": "BUY", "quality_gate": {"passed": True}},
+            )
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set symbol = 'OLDFAST' where id = ?", (idea_id,))
+            decision = Decision(
+                symbol="OLDFAST",
+                strategy="phase1_test",
+                action="HOLD",
+                confidence=0.42,
+                price=101,
+                technical_score=0.55,
+                sentiment_score=0.0,
+                reason="latest state is no fresh buy",
+                asof=utc_now(),
+                details_json=json.dumps(
+                    {
+                        "action_reason": "latest state is no fresh buy",
+                        "score_breakdown": {"combined": 0.34, "score_percent": 72},
+                        "system_gate_audit": {"overall_score_pct": 72, "overall_grade": "B", "hard_blocked": False},
+                        "context": {
+                            "full_spectrum_analysis": {
+                                "confluence_score": {"total": 20},
+                                "trade_plan": {"entry_zone": [99, 102], "stop_loss": 95, "targets": []},
+                                "risk_overrides": {"flags": []},
+                            }
+                        },
+                    }
+                ),
+            )
+
+            db.upsert_signal_ideas_from_decisions([decision])
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where symbol = 'OLDFAST'").fetchone()
+
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
+        details = json.loads(row["details_json"])
+        self.assertEqual(details["action"], "HOLD")
+        self.assertFalse(details["quality_gate"]["passed"])
+
+    def test_startup_demotes_non_actionable_active_buy_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+                details_extra={
+                    "action": "HOLD",
+                    "quality_gate": {"passed": False, "reason": "not_buy_action", "message": "Latest engine action is not BUY."},
+                },
+            )
+            db.init()
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where id = ?", (idea_id,)).fetchone()
+
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
+        details = json.loads(row["details_json"])
+        self.assertEqual(details["quality_downgrade"]["reason"], "latest_state_not_fresh_buy")
+
     def test_manual_paper_follow_rejects_watch_or_weak_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")

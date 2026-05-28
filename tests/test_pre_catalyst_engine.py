@@ -10,11 +10,13 @@ from app.pre_catalyst_engine import (
     DATA_STALE_WATCH,
     LATE_CHASE_AVOID,
     LOW_QUALITY_SHORT_COVERING,
+    OpportunityCandidate,
     OVERHANG_REMOVAL_RERATE,
     PRE_MOMENTUM_EXPANSION_WATCH,
     PRE_CATALYST_WATCH,
     SECTOR_ROTATION_LEADER,
     UC_PRE_BREAKOUT_WATCH,
+    _balanced_candidate_selection,
     build_pre_catalyst_watchlist,
     confirm_live_breakout,
     review_missed_moves,
@@ -274,6 +276,23 @@ class PreCatalystEngineTests(unittest.TestCase):
         self.assertEqual(by_symbol["READY"]["status"], "correctly_watched_before_move")
         self.assertIn("absent_from_prior_watchlist", review["status_counts"])
 
+    def test_candidate_limit_keeps_india_and_us_replay_coverage(self) -> None:
+        candidates = [
+            _candidate("US1", "US", 0.95),
+            _candidate("US2", "US", 0.94),
+            _candidate("US3", "US", 0.93),
+            _candidate("US4", "US", 0.92),
+            _candidate("IN1", "IN", 0.71),
+            _candidate("IN2", "IN", 0.70),
+        ]
+
+        selected = _balanced_candidate_selection(candidates, 4)
+        markets = [item.market_region for item in selected]
+
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(markets.count("IN"), 2)
+        self.assertEqual(markets.count("US"), 2)
+
 
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
@@ -282,6 +301,24 @@ def _settings() -> SimpleNamespace:
         pre_catalyst_min_score=0.50,
         dynamic_scan_min_turnover_inr=40_000_000,
         dynamic_scan_min_turnover_usd=2_000_000,
+    )
+
+
+def _candidate(symbol: str, market_region: str, score: float) -> OpportunityCandidate:
+    return OpportunityCandidate(
+        symbol=symbol,
+        label=PRE_CATALYST_WATCH,
+        confidence=score,
+        score=score,
+        market_region=market_region,
+        catalyst_type="technical_expansion",
+        catalyst_date=None,
+        setup_summary="unit-test",
+        entry_zone={"low": 99.0, "high": 101.0},
+        pivot=100.0,
+        invalidation_level=94.0,
+        key_reasons=["unit-test"],
+        supporting_signals={"setup": {"near_pivot": True}},
     )
 
 

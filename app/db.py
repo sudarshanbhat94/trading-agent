@@ -1076,6 +1076,7 @@ class Database:
             self._ensure_column(conn, "users", "broker_updated_at", "text")
             self._seed_strategy_plans(conn)
             self._backfill_signal_plan_codes(conn)
+            self._demote_non_actionable_buy_signal_ideas(conn)
             self._backfill_universe_metadata(conn)
             self._ensure_column(conn, "users", "created_at", "text not null default ''")
             self._ensure_column(conn, "users", "updated_at", "text not null default ''")
@@ -1198,6 +1199,56 @@ class Database:
             where coalesce(plan_code, '') = ''
             """
         )
+
+    def _demote_non_actionable_buy_signal_ideas(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            select id, status, reason, details_json
+            from signal_ideas
+            where upper(signal_type) = 'BUY'
+              and upper(status) in ('ACTIVE','MONITORING')
+            """
+        ).fetchall()
+        for row in rows:
+            details = self._decode_json(row["details_json"])
+            action = str(details.get("action") or details.get("latest_system_action") or "").upper()
+            quality_gate = details.get("quality_gate") if isinstance(details.get("quality_gate"), dict) else {}
+            quality_passed = quality_gate.get("passed") is True
+            if action == "BUY" and quality_passed:
+                continue
+            reason = (
+                str(quality_gate.get("message") or quality_gate.get("reason") or "").strip()
+                or f"Latest engine action is {action or 'not BUY'}."
+            )
+            details["signal_continuity"] = {
+                "preserved": False,
+                "previous_signal_type": "BUY",
+                "previous_status": row["status"],
+                "latest_engine_action": action or "UNKNOWN",
+                "reason": "Old BUY row demoted because the latest deterministic state is not a fresh actionable BUY.",
+            }
+            details["quality_downgrade"] = {
+                "from": "BUY",
+                "to": "WATCH",
+                "reason": "latest_state_not_fresh_buy",
+                "message": reason,
+            }
+            details["latest_system_action"] = action or "UNKNOWN"
+            conn.execute(
+                """
+                update signal_ideas
+                set signal_type = 'WATCH',
+                    status = 'WATCH',
+                    reason = ?,
+                    details_json = ?
+                where id = ?
+                """,
+                (
+                    reason[:1000],
+                    json.dumps(details, default=str, separators=(",", ":")),
+                    row["id"],
+                ),
+            )
 
     def ensure_default_admin_user(self, username: str, password_hash: str | None) -> None:
         username = (username or "admin").strip()
@@ -6693,19 +6744,19 @@ def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
 def _should_preserve_active_buy(existing: sqlite3.Row, idea: dict[str, Any], row: dict[str, Any]) -> bool:
     existing_signal = str(existing["signal_type"] or "").upper()
     existing_status = str(existing["status"] or "").upper()
-    incoming_signal = str(idea.get("signal_type") or "").upper()
-    incoming_status = str(idea.get("status") or "").upper()
     action = str(row.get("action") or "").upper()
     if existing_signal != "BUY":
         return False
     if existing_status not in {"ACTIVE", "MONITORING", "TARGET_1_HIT", "TARGET_2_HIT"}:
         return False
-    if action in {"SELL", "EXIT"} or incoming_signal == "EXIT" or incoming_status == "EXIT_SIGNAL":
+    incoming_signal = str(idea.get("signal_type") or "").upper()
+    incoming_status = str(idea.get("status") or "").upper()
+    if action in {"SELL", "EXIT", "HOLD", "NO_TRADE"} or incoming_signal == "EXIT" or incoming_status == "EXIT_SIGNAL":
         return False
     quality_gate = (idea.get("details") or {}).get("quality_gate") if isinstance(idea.get("details"), dict) else {}
     if action == "BUY" and isinstance(quality_gate, dict) and quality_gate.get("passed") is False:
         return False
-    return action == "HOLD" or incoming_signal in {"WATCH", "NO_TRADE"} or incoming_status in {"WATCH", "MONITORING"}
+    return False
 
 
 def _is_duplicate_active_buy_refresh(existing: sqlite3.Row, idea: dict[str, Any], row: dict[str, Any], now_iso: str) -> bool:
