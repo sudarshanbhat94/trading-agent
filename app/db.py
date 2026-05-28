@@ -436,6 +436,13 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
     risk_gates = audit.get("risk_gates") if isinstance(audit.get("risk_gates"), dict) else {}
     score_breakdown = audit.get("score_breakdown") if isinstance(audit.get("score_breakdown"), dict) else {}
     system_gate = audit.get("system_gate_audit") or context.get("system_gate_audit")
+    data_readiness = audit.get("data_readiness") or context.get("data_readiness")
+    market_region = (
+        audit.get("market_region")
+        or context.get("market_region")
+        or (data_readiness or {}).get("market_region")
+        or row.get("market_region")
+    )
     if isinstance(system_gate, dict):
         system_gate = _pick_keys(
             system_gate,
@@ -461,6 +468,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
         "audit_version": audit.get("audit_version", 1),
         "storage_compacted": True,
         "compacted_at": utc_now(),
+        "market_region": market_region,
         "original_details_bytes": len(str(raw_text).encode("utf-8", "ignore")),
         "decision_path": audit.get("decision_path"),
         "final_action": row.get("action") or audit.get("final_action"),
@@ -470,7 +478,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
         "overall_grade": audit.get("overall_grade"),
         "pre_filter": audit.get("pre_filter") or context.get("pre_filter"),
         "system_gate_audit": system_gate,
-        "data_readiness": audit.get("data_readiness") or context.get("data_readiness"),
+        "data_readiness": data_readiness,
         "performance_feedback": context.get("performance_feedback"),
         "sizing_grade": audit.get("sizing_grade") or context.get("sizing_grade"),
         "llm_primary_fallback": audit.get("llm_primary_fallback") or context.get("llm_primary_fallback"),
@@ -497,6 +505,7 @@ def _compact_decision_details(row: dict[str, Any], raw_details: Any) -> str:
         ),
         "context_summary": {
             "symbol": context.get("symbol") or row.get("symbol"),
+            "market_region": market_region,
             "company": context.get("company"),
             "sector": context.get("sector"),
             "exchange": context.get("exchange"),

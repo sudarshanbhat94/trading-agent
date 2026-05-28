@@ -144,7 +144,7 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertNotIn("us_realtime_quote", readiness["missing_data"])
         self.assertNotIn("us_sec_filings", readiness["missing_data"])
 
-    def test_us_alpaca_iex_is_not_consolidated_trade_grade(self) -> None:
+    def test_us_alpaca_iex_is_paper_reference_grade_with_soft_consolidated_tape_gap(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "MSFT", "exchange": "NASDAQ", "name": "Microsoft", "cik": "789019"},
             quote=Quote(symbol="MSFT", price=430, source="alpaca-iex-live", asof="2026-05-20T14:30:00+00:00", volume=8_000_000),
@@ -161,6 +161,30 @@ class Phase2DataReadinessTests(unittest.TestCase):
             institutional_context={},
             full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.4}},
             execution_mode="paper",
+        )
+
+        self.assertTrue(readiness["trade_decision_ready"])
+        self.assertNotIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
+        self.assertNotIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
+        self.assertIn("us_consolidated_tape", [item["key"] for item in readiness["soft_gaps"]])
+
+    def test_us_alpaca_iex_is_not_live_execution_grade(self) -> None:
+        readiness = assess_phase2_data_readiness(
+            row={"symbol": "MSFT", "exchange": "NASDAQ", "name": "Microsoft", "cik": "789019"},
+            quote=Quote(symbol="MSFT", price=430, source="alpaca-iex-live", asof="2026-05-20T14:30:00+00:00", volume=8_000_000),
+            timeframe_candles={
+                "daily": _candles("MSFT", "alpaca-iex-live:day", 80),
+                "intraday": _candles("MSFT", "alpaca-iex-live:1minute", 40),
+            },
+            sentiment={"status": "AVAILABLE", "score": 0.2, "source": "news", "headlines": ["Microsoft files 10-Q", "analyst upgrade"]},
+            delivery_data={},
+            options_data={"source": "alpaca_options", "flow_available": True},
+            sector_context={},
+            market_breadth={},
+            macro_event_context={"source": "earnings_calendar"},
+            institutional_context={},
+            full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.4}},
+            execution_mode="live",
         )
 
         self.assertFalse(readiness["trade_decision_ready"])

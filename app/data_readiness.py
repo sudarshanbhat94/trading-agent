@@ -80,6 +80,8 @@ def assess_phase2_data_readiness(
     check("volume_baseline", "Volume baseline / unusual-volume check", volume_ratio is not None, HARD, daily_source)
     check("sentiment_news", "News/sentiment source checked", sentiment_status != "DATA_MISSING", SOFT, sentiment.get("source"))
 
+    freshness_gate = _fresh_market_data_gate(market, quote, intraday)
+
     if market == "US":
         quote_age_minutes = _quote_age_minutes(quote.asof)
         yahoo_quote_ok = (
@@ -90,16 +92,24 @@ def assess_phase2_data_readiness(
         yahoo_daily_confirmation_ok = yahoo_quote_ok and len(daily) >= 55 and _source_has(str(daily_source or ""), ("yahoo",))
         consolidated_source_ok = _source_has(quote_source, ("alpaca-sip", "polygon"))
         sip_minute_ok = len(intraday) >= 20 and _source_has(str(intraday_source or ""), ("alpaca-sip", "polygon"))
-        realtime_source_ok = consolidated_source_ok or yahoo_quote_ok
-        minute_source_ok = sip_minute_ok or yahoo_daily_confirmation_ok
+        iex_quote_ok = _source_has(quote_source, ("alpaca-iex", "iex"))
+        iex_minute_ok = len(intraday) >= 20 and _source_has(str(intraday_source or ""), ("alpaca-iex", "iex"))
+        paper_iex_reference_ok = mode == "paper" and iex_quote_ok
+        paper_iex_minute_ok = mode == "paper" and iex_minute_ok and (paper_iex_reference_ok or yahoo_quote_ok)
+        realtime_source_ok = consolidated_source_ok or yahoo_quote_ok or paper_iex_reference_ok
+        minute_source_ok = sip_minute_ok or yahoo_daily_confirmation_ok or paper_iex_minute_ok
         quote_note = (
             f"Yahoo reference quote age {quote_age_minutes:.1f}m"
             if yahoo_quote_ok and quote_age_minutes is not None
+            else "Alpaca IEX reference quote; paper validation only"
+            if paper_iex_reference_ok
             else ""
         )
         minute_note = (
             "Yahoo reference mode uses fresh quote plus daily bars for swing-signal confirmation"
             if yahoo_daily_confirmation_ok and not sip_minute_ok
+            else "Alpaca IEX bars are venue-limited; paper validation uses reduced size and separate freshness/live-confirmation gates"
+            if paper_iex_minute_ok and not sip_minute_ok
             else f"{len(intraday)} candles"
         )
         earnings_checked = not _has_gap(macro_event_context, "earnings_calendar_empty")
@@ -132,6 +142,14 @@ def assess_phase2_data_readiness(
             intraday_source or daily_source,
             minute_note,
         )
+        check(
+            "us_consolidated_tape",
+            "US consolidated SIP/Polygon tape",
+            consolidated_source_ok,
+            SOFT,
+            quote_source,
+            "Paper may use IEX/Yahoo reference data with reduced size; live-grade execution needs consolidated tape.",
+        )
         check("us_earnings_date", "US earnings-date/event calendar", earnings_checked, HARD, macro_event_context.get("source"))
         check("us_sec_filings", "SEC filings / EDGAR event check", sec_checked, SOFT, row.get("cik") or sentiment.get("source"))
         check("us_analyst_revisions", "Analyst revisions / rating changes", analyst_checked, SOFT, sentiment.get("source"))
@@ -162,7 +180,6 @@ def assess_phase2_data_readiness(
         check("in_sector_breadth", "Sector / market breadth", breadth_ok, SOFT, market_breadth.get("source"))
         check("in_options_oi", "Option chain / OI for F&O names", option_ok, SOFT, options_data.get("source"))
 
-    freshness_gate = _fresh_market_data_gate(market, quote, intraday)
     hard_gaps = [item for item in checks if not item["available"] and item["severity"] == HARD]
     soft_gaps = [item for item in checks if not item["available"] and item["severity"] == SOFT]
     available = [item for item in checks if item["available"]]
