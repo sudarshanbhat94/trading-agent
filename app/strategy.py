@@ -67,6 +67,8 @@ def _fresh_market_data_block_reason(context: dict[str, Any]) -> str:
     gate = data_readiness.get("fresh_market_data_gate") if isinstance(data_readiness.get("fresh_market_data_gate"), dict) else {}
     if gate and gate.get("passed") is False:
         return str(gate.get("reason") or "stale_market_data")
+    if gate and gate.get("passed") is True:
+        return ""
     for value in data_readiness.get("missing_data") or []:
         if str(value or "").strip():
             labels.add(str(value).strip().lower())

@@ -60,6 +60,37 @@ class TomorrowPlanTests(unittest.TestCase):
                     "latest_price": 30,
                     "details": {"risk_flags": ["operator_risk"]},
                 },
+                {
+                    "id": 14,
+                    "symbol": "LOWGRADE",
+                    "company_name": "Low Grade Ready Trap",
+                    "market_region": "IN",
+                    "signal_type": "BUY",
+                    "status": "ACTIVE",
+                    "strategy": "live_intraday_momentum",
+                    "latest_price": 144,
+                    "confidence": 0.48,
+                    "overall_score_pct": 57,
+                    "overall_grade": "C",
+                    "details": {
+                        "quality_gate": {"passed": False, "reason": "overall_score_below_70"},
+                        "failed_gates": [{"gate": "overall_quality_gate"}],
+                    },
+                },
+                {
+                    "id": 15,
+                    "symbol": "NOSETUP",
+                    "company_name": "No Setup Industries",
+                    "market_region": "IN",
+                    "signal_type": "BUY",
+                    "status": "ACTIVE",
+                    "strategy": "no_actionable_strategy",
+                    "latest_price": 88,
+                    "confidence": 0.9,
+                    "overall_score_pct": 91,
+                    "overall_grade": "A",
+                    "details": {"quality_gate": {"passed": True}},
+                },
             ],
             positions=[
                 {
@@ -97,6 +128,9 @@ class TomorrowPlanTests(unittest.TestCase):
         self.assertTrue(all(item["market_region"] == "IN" for item in plan["items"]))
         self.assertEqual(plan["sections"]["ready_at_open"][0]["symbol"], "READY")
         self.assertEqual(plan["sections"]["ready_at_open"][0]["section"], "ready_at_open")
+        ready_symbols = {item["symbol"] for item in plan["sections"]["ready_at_open"]}
+        self.assertNotIn("LOWGRADE", ready_symbols)
+        self.assertNotIn("NOSETUP", ready_symbols)
 
     def test_db_persists_latest_plan_with_sections(self) -> None:
         plan = self._sample_plan()

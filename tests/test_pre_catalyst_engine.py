@@ -276,6 +276,14 @@ class PreCatalystEngineTests(unittest.TestCase):
         self.assertEqual(by_symbol["READY"]["status"], "correctly_watched_before_move")
         self.assertIn("absent_from_prior_watchlist", review["status_counts"])
 
+    def test_missed_move_review_uses_prior_candidate_pool(self) -> None:
+        review = review_missed_moves(
+            {"events": [{"symbol": "POOL", "event_types": ["TOP_GAINER"], "pct_change": 8.2}]},
+            previous_state={"candidate_pool": [{"symbol": "POOL", "label": PRE_CATALYST_WATCH}]},
+        )
+
+        self.assertEqual(review["items"][0]["status"], "correctly_watched_before_move")
+
     def test_candidate_limit_keeps_india_and_us_replay_coverage(self) -> None:
         candidates = [
             _candidate("US1", "US", 0.95),

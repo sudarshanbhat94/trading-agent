@@ -224,6 +224,7 @@ def build_pre_catalyst_watchlist(
         log_events.append({"event": "watchlist_candidate", "symbol": symbol, "label": label, "reasons": candidate.key_reasons[:5]})
 
     candidates.sort(key=lambda item: (item.score, item.confidence), reverse=True)
+    all_candidate_dicts = [candidate.to_dict() for candidate in candidates]
     candidates = _balanced_candidate_selection(candidates, candidate_limit)
     candidate_dicts = [candidate.to_dict() for candidate in candidates]
     live_confirmations: list[dict[str, Any]] = []
@@ -244,7 +245,7 @@ def build_pre_catalyst_watchlist(
     missed_move_review = review_missed_moves(
         market_action_summary,
         previous_state=previous_state,
-        current_candidates=candidate_dicts,
+        current_candidates=all_candidate_dicts,
         now=now,
     )
 
@@ -269,6 +270,8 @@ def build_pre_catalyst_watchlist(
         "missing_quote_symbols": missing_quote,
         "missing_history_symbols": missing_history,
         "candidate_limit": candidate_limit,
+        "candidate_pool_count": len(all_candidate_dicts),
+        "candidate_pool": [_compact_candidate_for_pool(item) for item in all_candidate_dicts[: max(candidate_limit, 120)]],
         "min_score": min_score,
         "candidates": candidate_dicts,
         "live_confirmations": live_confirmations,
@@ -459,10 +462,15 @@ def review_missed_moves(
     market_action_summary = market_action_summary or {}
     previous_state = previous_state or {}
     current_candidates = current_candidates or []
+    previous_rows = [
+        item
+        for collection in (previous_state.get("candidates") or [], previous_state.get("candidate_pool") or [])
+        for item in collection
+        if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+    ]
     previous_candidates = {
         str(item.get("symbol") or "").upper(): item
-        for item in (previous_state.get("candidates") or [])
-        if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+        for item in previous_rows
     }
     current_by_symbol = {
         str(item.get("symbol") or "").upper(): item
@@ -1145,6 +1153,23 @@ def _balanced_candidate_selection(candidates: list[OpportunityCandidate], candid
         selected.append(item)
         selected_symbols.add(item.symbol)
     return sorted(selected, key=lambda item: (item.score, item.confidence), reverse=True)
+
+
+def _compact_candidate_for_pool(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": item.get("symbol"),
+        "label": item.get("label"),
+        "confidence": item.get("confidence"),
+        "score": item.get("score"),
+        "market_region": item.get("market_region"),
+        "catalyst_type": item.get("catalyst_type"),
+        "catalyst_date": item.get("catalyst_date"),
+        "setup_summary": item.get("setup_summary"),
+        "entry_zone": item.get("entry_zone"),
+        "pivot": item.get("pivot"),
+        "invalidation_level": item.get("invalidation_level"),
+        "key_reasons": (item.get("key_reasons") or [])[:6],
+    }
 
 
 def _quote_market_region(quote: Quote) -> str:

@@ -89,7 +89,7 @@ class Settings:
     market_action_us_volume_multiplier: float = _float("MARKET_ACTION_US_VOLUME_MULTIPLIER", 1.8)
     market_action_us_near_52w_pct: float = _float("MARKET_ACTION_US_NEAR_52W_PCT", 2.0)
     pre_catalyst_engine_enabled: bool = _bool("PRE_CATALYST_ENGINE_ENABLED", True)
-    pre_catalyst_candidate_limit: int = _int("PRE_CATALYST_CANDIDATE_LIMIT", 40)
+    pre_catalyst_candidate_limit: int = _int("PRE_CATALYST_CANDIDATE_LIMIT", 120)
     pre_catalyst_min_score: float = _float("PRE_CATALYST_MIN_SCORE", 0.56)
     candle_backfill_enabled: bool = _bool("CANDLE_BACKFILL_ENABLED", True)
     candle_backfill_symbols_per_cycle: int = _int("CANDLE_BACKFILL_SYMBOLS_PER_CYCLE", 40)

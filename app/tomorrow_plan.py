@@ -85,7 +85,7 @@ def _ready_at_open_items(ideas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if str(idea.get("status") or "").upper() not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
             continue
-        if _quality_reason(idea) and not _quality_passed(idea):
+        if not _ready_quality_passed(idea):
             continue
         rows.append(_plan_item_from_idea(idea, "Validate at pre-open; buy only if price remains inside the entry zone and first live volume confirms."))
     return sorted(rows, key=_item_rank, reverse=True)[:12]
@@ -271,6 +271,11 @@ def _plan_item_from_idea(idea: dict[str, Any], validation: str) -> dict[str, Any
             "status": idea.get("status"),
             "current_return_pct": idea.get("current_return_pct"),
             "quality_gate": quality,
+            "fresh_action": details.get("fresh_action"),
+            "overall_score_pct": _number(idea.get("overall_score_pct")) or _number(quality.get("overall_score_pct")),
+            "overall_grade": idea.get("overall_grade") or quality.get("overall_grade"),
+            "failed_gates": details.get("failed_gates") or [],
+            "opportunity_state": details.get("opportunity_state") if isinstance(details.get("opportunity_state"), dict) else {},
             "risk_flags": details.get("risk_flags") or [],
             "entry_zone": entry_zone,
             "target_status": details.get("target_status") or [],
@@ -378,3 +383,44 @@ def _quality_passed(idea: dict[str, Any]) -> bool:
     details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
     quality = details.get("quality_gate") if isinstance(details.get("quality_gate"), dict) else {}
     return quality.get("passed") is not False
+
+
+def _ready_quality_passed(idea: dict[str, Any]) -> bool:
+    details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+    quality = details.get("quality_gate") if isinstance(details.get("quality_gate"), dict) else {}
+    strategy = str(idea.get("strategy") or details.get("strategy") or details.get("plan_code") or "").lower()
+    if strategy == "no_actionable_strategy":
+        return False
+    if _quality_reason(idea) and not _quality_passed(idea):
+        return False
+    state = details.get("opportunity_state") if isinstance(details.get("opportunity_state"), dict) else {}
+    fresh_action = str(details.get("fresh_action") or state.get("state") or "").upper()
+    if fresh_action and fresh_action != "BUY_NOW":
+        return False
+    score = _number(idea.get("overall_score_pct")) or _number(quality.get("overall_score_pct")) or 0.0
+    grade = str(idea.get("overall_grade") or quality.get("overall_grade") or "").upper()
+    if score < 70.0:
+        return False
+    if grade and grade not in {"A", "B"}:
+        return False
+    hard_failed_gates = {
+        "actionable_strategy_gate",
+        "fresh_market_data_gate",
+        "technical_score_gate",
+        "overall_quality_gate",
+        "entry_grade_gate",
+        "risk_overrides",
+        "stage_buy_permitted",
+        "breakout_quality_gate",
+        "delivery_gate",
+        "delivery_distribution_gate",
+        "fundamental_confirmation_gate",
+        "phase2_data_readiness",
+    }
+    for gate in details.get("failed_gates") or []:
+        if not isinstance(gate, dict):
+            continue
+        gate_name = str(gate.get("gate") or "").strip()
+        if gate_name in hard_failed_gates or gate_name.startswith(("system_rule_", "phase3_")):
+            return False
+    return True

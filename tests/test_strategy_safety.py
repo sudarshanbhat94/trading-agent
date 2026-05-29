@@ -16,12 +16,28 @@ from app.opportunity_state import opportunity_state_from_signal_details
 from app.agent import _auto_follow_idea_fresh_enough
 from app.paper_broker import PaperBroker
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
-from app.strategy import StrategyEngine, _compact_context, _performance_feedback_block
+from app.strategy import StrategyEngine, _compact_context, _fresh_market_data_block_reason, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
 from app.trade_economics import auto_follow_sizing
 
 
 class StrategySafetyTests(unittest.TestCase):
+    def test_fresh_gate_pass_overrides_stale_probe_marker(self) -> None:
+        reason = _fresh_market_data_block_reason(
+            {
+                "data_readiness": {
+                    "trade_decision_ready": True,
+                    "fresh_market_data_gate": {"passed": True, "reason": "current_session_data"},
+                },
+                "opportunity_scan": {
+                    "bucket": "Actionable",
+                    "data_quality": {"missing": ["stale_intraday_candles"]},
+                },
+            }
+        )
+
+        self.assertEqual(reason, "")
+
     def test_current_decision_rows_keeps_latest_per_symbol_before_ranking(self) -> None:
         rows = current_decision_rows(
             [
