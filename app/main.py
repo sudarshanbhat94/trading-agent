@@ -1265,6 +1265,77 @@ def _compact_pre_catalyst_discovery(discovery: Any) -> dict[str, Any]:
     return output
 
 
+def _compact_tomorrow_plan_item(item: dict[str, Any]) -> dict[str, Any]:
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    keys = (
+        "id",
+        "idea_id",
+        "symbol",
+        "name",
+        "market_region",
+        "exchange",
+        "sector",
+        "industry",
+        "plan_date",
+        "prepared_at",
+        "section",
+        "section_rank",
+        "sort_order",
+        "action",
+        "strategy",
+        "score",
+        "confidence",
+        "trigger_price",
+        "max_entry",
+        "stop_loss",
+        "target1",
+        "target2",
+        "validation",
+        "rationale",
+    )
+    output = {key: item.get(key) for key in keys if key in item}
+    if output.get("name") in (None, ""):
+        output["name"] = details.get("name") or item.get("symbol")
+    for key in ("entry_zone", "fresh_action", "opportunity_state", "overall_grade", "overall_score_pct", "current_return_pct"):
+        if key in details and key not in output:
+            output[key] = details.get(key)
+    if isinstance(details.get("risk_flags"), list):
+        output["risk_flags"] = details["risk_flags"][:4]
+    if isinstance(details.get("failed_gates"), list):
+        output["failed_gates"] = details["failed_gates"][:4]
+    if isinstance(details.get("target_status"), list):
+        output["target_status"] = _compact_targets(details["target_status"], limit=3)
+    return output
+
+
+def _compact_tomorrow_plan(plan: Any) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        return {}
+    output = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"items", "sections", "by_market", "raw", "details"}
+        and not isinstance(value, (list, dict))
+    }
+    if isinstance(plan.get("summary"), dict):
+        output["summary"] = dict(plan["summary"])
+    if isinstance(plan.get("preopen_rules"), list):
+        output["preopen_rules"] = [
+            {key: row.get(key) for key in ("time", "action", "reason") if key in row}
+            for row in plan["preopen_rules"][:6]
+            if isinstance(row, dict)
+        ]
+    items = [_compact_tomorrow_plan_item(row) for row in (plan.get("items") or []) if isinstance(row, dict)]
+    output["items"] = items[:80]
+    if isinstance(plan.get("by_market"), dict):
+        output["by_market"] = {
+            str(market): _compact_tomorrow_plan(raw)
+            for market, raw in plan["by_market"].items()
+            if isinstance(raw, dict)
+        }
+    return output
+
+
 def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
     if not isinstance(scan, dict):
         return {}
@@ -1341,6 +1412,8 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload["market_action_radar"] = _compact_market_action_radar(payload["market_action_radar"])
     if isinstance(payload.get("pre_catalyst_discovery"), dict):
         payload["pre_catalyst_discovery"] = _compact_pre_catalyst_discovery(payload["pre_catalyst_discovery"])
+    if isinstance(payload.get("tomorrow_plan"), dict):
+        payload["tomorrow_plan"] = _compact_tomorrow_plan(payload["tomorrow_plan"])
     return payload
 
 
