@@ -633,6 +633,59 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual({item["symbol"] for item in active}, {"WATCHA", "BUYD"})
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
 
+    def test_safety_cleanup_exits_stale_or_rejected_paper_follows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            stale_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+            )
+            rejected_id = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="REJECTED",
+                score=20,
+                grade="F",
+            )
+            current_watch_id = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="WATCH",
+                score=72,
+                grade="B",
+            )
+            now = datetime.now(timezone.utc)
+            stale_seen = (now - timedelta(hours=36)).isoformat()
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set symbol = 'STALEPAPER', last_seen_at = ? where id = ?", (stale_seen, stale_id))
+                conn.execute("update signal_ideas set symbol = 'REJECTPAPER' where id = ?", (rejected_id,))
+                conn.execute("update signal_ideas set symbol = 'CURWATCH' where id = ?", (current_watch_id,))
+                for idea_id in (stale_id, rejected_id, current_watch_id):
+                    conn.execute(
+                        """
+                        insert into user_idea_follows (
+                            user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                            invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                        )
+                        values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 96, 1000, -40, -4, ?, ?, '{}')
+                        """,
+                        (idea_id, now.isoformat(), now.isoformat()),
+                    )
+
+            exited = db.exit_unsafe_active_follows(now_utc=now)
+            active = [
+                item
+                for item in db.user_followed_signal_ideas(1, 20)
+                if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
+            ]
+
+        self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER"})
+        self.assertEqual({item["symbol"] for item in active}, {"CURWATCH"})
+
     def test_safety_cleanup_marks_exit_pending_after_market_close(self) -> None:
         closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as tmpdir:

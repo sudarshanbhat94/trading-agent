@@ -295,7 +295,7 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
     action = _upper(item.get("action") or details.get("action") or signal_type)
     if action in {"SELL", "EXIT"} or signal_type in {"EXIT", "NO_TRADE"}:
         return _blocked("active_follow_exit_signal", "Latest engine action is an exit/no-trade signal.")
-    if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT"}:
+    if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT", "REJECTED"}:
         return _blocked("active_follow_not_tradeable_state", "Followed position moved into a closed/exit lifecycle state.")
     if status == "WATCH" or signal_type == "WATCH":
         return {

@@ -291,6 +291,32 @@ def _recent_dt(value: Any, *, minutes: int = FRESH_BUY_WINDOW_MINUTES) -> bool:
     return age <= timedelta(minutes=max(int(minutes or FRESH_BUY_WINDOW_MINUTES), 1))
 
 
+def _active_follow_stale_signal_gate(item: dict[str, Any], now_utc: datetime) -> dict[str, Any] | None:
+    last_seen = _parse_dt(item.get("idea_last_seen_at") or item.get("last_seen_at"))
+    if last_seen is None:
+        return {
+            "passed": False,
+            "reason": "active_follow_stale_signal",
+            "message": "Followed paper position is tied to an idea without a current signal timestamp.",
+        }
+    now = now_utc.astimezone(timezone.utc)
+    age_hours = (now - last_seen).total_seconds() / 3600.0
+    if age_hours < -1.0:
+        return None
+    ist_now = now.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    max_age_hours = 84.0 if ist_now.weekday() >= 5 else 30.0
+    if age_hours <= max_age_hours:
+        return None
+    return {
+        "passed": False,
+        "reason": "active_follow_stale_signal",
+        "message": "Followed paper position is tied to an old BUY/WATCH row; close it and wait for a fresh current signal.",
+        "last_seen_at": last_seen.isoformat(),
+        "age_hours": round(age_hours, 2),
+        "max_age_hours": max_age_hours,
+    }
+
+
 def _sector_from_industry(industry: Any) -> str:
     text = str(industry or "").lower()
     if not text:
@@ -3713,6 +3739,7 @@ class Database:
                     i.symbol,
                     i.signal_type,
                     i.status as idea_status,
+                    i.last_seen_at as idea_last_seen_at,
                     i.overall_score_pct,
                     i.overall_grade,
                     i.confluence,
@@ -3733,7 +3760,7 @@ class Database:
             for row in rows:
                 item = _row_dict(row)
                 idea_details = self._decode_json(item.get("idea_details_json"))
-                quality_gate = active_follow_safety_gate(
+                quality_gate = _active_follow_stale_signal_gate(item, now_dt) or active_follow_safety_gate(
                     {
                         "action": idea_details.get("action") or item.get("signal_type"),
                         "signal_type": item.get("signal_type"),
@@ -3757,7 +3784,7 @@ class Database:
                 safety_reason = str(quality_gate.get("reason") or "")
                 hard_exit = any(
                     token in safety_reason
-                    for token in ("stop", "severe", "hard_block", "exit_signal", "not_tradeable_state")
+                    for token in ("stop", "severe", "hard_block", "exit_signal", "not_tradeable_state", "stale_signal")
                 )
                 economics = exit_economics(entry_price, latest_price, qty, item.get("market_region"), None)
                 session_block = _market_session_exit_block(conn, item.get("market_region"), now_utc)
