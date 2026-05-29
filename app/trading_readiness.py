@@ -358,14 +358,7 @@ def latest_replay_review(db: Any) -> dict[str, Any]:
 
 def run_replay_validation(db: Any, symbols: list[str] | None = None) -> dict[str, Any]:
     symbols = [str(symbol or "").upper() for symbol in (symbols or DEFAULT_REPLAY_SYMBOLS) if str(symbol or "").strip()]
-    ideas_by_symbol: dict[str, dict[str, Any]] = {}
-    try:
-        for row in db.latest_signal_ideas(500):
-            symbol = str(row.get("symbol") or "").upper()
-            if symbol and symbol not in ideas_by_symbol:
-                ideas_by_symbol[symbol] = row
-    except Exception:
-        ideas_by_symbol = {}
+    ideas_by_symbol = _latest_replay_ideas(db, symbols)
     items = []
     for symbol in symbols:
         idea = ideas_by_symbol.get(symbol)
@@ -391,6 +384,48 @@ def run_replay_validation(db: Any, symbols: list[str] | None = None) -> dict[str
     }
     db.set_state("replay_review_latest", review)
     return review
+
+
+def _latest_replay_ideas(db: Any, symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """Fetch replay symbols directly; production signal history can be large."""
+
+    if not symbols:
+        return {}
+    placeholders = ",".join("?" for _ in symbols)
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select i.symbol, i.signal_type, i.status, i.reason, i.details_json,
+                       i.last_seen_at, i.overall_score_pct, i.overall_grade
+                from signal_ideas i
+                where i.symbol in ({placeholders})
+                  and i.status != 'REJECTED'
+                order by i.symbol asc, i.last_seen_at desc, i.id desc
+                """,
+                tuple(symbols),
+            ).fetchall()
+    except Exception:
+        return {}
+    output: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row["symbol"] or "").upper()
+        if not symbol or symbol in output:
+            continue
+        details = _json_dict(row["details_json"])
+        output[symbol] = {
+            "symbol": symbol,
+            "signal_type": row["signal_type"],
+            "status": row["status"],
+            "reason": row["reason"],
+            "last_seen_at": row["last_seen_at"],
+            "overall_score_pct": row["overall_score_pct"],
+            "overall_grade": row["overall_grade"],
+            "setup_bucket": details.get("setup_bucket") or details.get("classification_label"),
+            "fresh_action": details.get("fresh_action") or details.get("action"),
+            "display_reason": details.get("display_reason") or details.get("reason"),
+        }
+    return output
 
 
 def build_33_point_report(db: Any, settings: Settings) -> dict[str, Any]:
@@ -572,6 +607,16 @@ def _parse_dt(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _latest_dt(values: Any) -> datetime | None:
