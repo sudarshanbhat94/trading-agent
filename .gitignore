@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 var/
 .DS_Store
+._*
+latest_llm_payload_capture.json
+latest_llm_system_prompt_*.txt
+latest_llm_user_context_*.json
+cupid_llm_payload_reconstructed.json
