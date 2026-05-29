@@ -13,6 +13,8 @@ from .models import utc_now
 READINESS_VERSION = "real-money-readiness-v1"
 DEFAULT_REPLAY_SYMBOLS = ["CUMMINSIND", "JPPOWER", "ATGL", "GUJTHEM", "FINCABLES", "SCHNEIDER", "JETS", "LEVI", "GRRR"]
 LIVE_TRADING_CONFIRMATION = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
+READINESS_CACHE_SECONDS = 20
+DATA_FRESHNESS_CACHE_SECONDS = 45
 
 
 def build_trading_readiness(
@@ -21,6 +23,7 @@ def build_trading_readiness(
     *,
     market_region: str | None = None,
     now_utc: datetime | None = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     """Single deterministic status object for live-order readiness.
 
@@ -30,7 +33,12 @@ def build_trading_readiness(
 
     now = _utc(now_utc)
     market = normalize_market_region(market_region or settings.market_region or "BOTH", default="BOTH")
-    data = build_data_freshness_report(db, settings, market_region=market, now_utc=now)
+    if use_cache:
+        cached = _fresh_state_snapshot(db, "trading_readiness_snapshot", now, READINESS_CACHE_SECONDS, market_region=market)
+        if cached:
+            return cached
+
+    data = build_data_freshness_report(db, settings, market_region=market, now_utc=now, use_cache=use_cache)
     broker = build_broker_sync_status(db, settings, now_utc=now)
     zero_qty = zero_qty_invariant_report(db)
     kill_switch = trading_kill_switch_state(db)
@@ -142,7 +150,7 @@ def live_order_gate(
     market_region: str | None = None,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
-    readiness = build_trading_readiness(db, settings, market_region=market_region, now_utc=now_utc)
+    readiness = build_trading_readiness(db, settings, market_region=market_region, now_utc=now_utc, use_cache=False)
     return {
         "passed": bool(readiness.get("live_order_allowed")),
         "reason": "live_readiness_passed" if readiness.get("live_order_allowed") else "live_readiness_blocked",
@@ -230,10 +238,15 @@ def build_data_freshness_report(
     market_region: str | None = None,
     symbols: list[str] | None = None,
     now_utc: datetime | None = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     now = _utc(now_utc)
     market = normalize_market_region(market_region or settings.market_region or "BOTH", default="BOTH")
     requested_symbols = {str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()}
+    if use_cache and not requested_symbols:
+        cached = _fresh_state_snapshot(db, "data_freshness_snapshot", now, DATA_FRESHNESS_CACHE_SECONDS, market_region=market)
+        if cached:
+            return cached
     quote_rows = []
     try:
         quote_rows = db.latest_quotes()
@@ -617,6 +630,33 @@ def _json_dict(value: Any) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _fresh_state_snapshot(
+    db: Any,
+    key: str,
+    now: datetime,
+    max_age_seconds: int,
+    *,
+    market_region: str | None = None,
+) -> dict[str, Any]:
+    try:
+        snapshot = db.get_state(key, {}) or {}
+    except Exception:
+        return {}
+    if not isinstance(snapshot, dict):
+        return {}
+    checked_at = _parse_dt(snapshot.get("checked_at"))
+    if not checked_at:
+        return {}
+    age = (now - checked_at).total_seconds()
+    if age < 0 or age > max(1, int(max_age_seconds or 1)):
+        return {}
+    expected_market = normalize_market_region(market_region or "BOTH", default="BOTH")
+    snapshot_market = normalize_market_region(snapshot.get("market_region") or "BOTH", default="BOTH")
+    if expected_market != snapshot_market:
+        return {}
+    return snapshot
 
 
 def _latest_dt(values: Any) -> datetime | None:
