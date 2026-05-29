@@ -1294,15 +1294,39 @@ def _compact_tomorrow_plan_item(item: dict[str, Any]) -> dict[str, Any]:
         "rationale",
     )
     output = {key: item.get(key) for key in keys if key in item}
+    for key in ("validation", "rationale"):
+        if output.get(key) not in (None, ""):
+            text = str(output[key]).strip()
+            output[key] = text if len(text) <= 280 else f"{text[:277].rstrip()}..."
     if output.get("name") in (None, ""):
         output["name"] = details.get("name") or item.get("symbol")
-    for key in ("entry_zone", "fresh_action", "opportunity_state", "overall_grade", "overall_score_pct", "current_return_pct"):
+    for key in ("entry_zone", "fresh_action", "overall_grade", "overall_score_pct", "current_return_pct"):
         if key in details and key not in output:
             output[key] = details.get(key)
+    opportunity_state = details.get("opportunity_state")
+    if isinstance(opportunity_state, dict):
+        output["opportunity_state"] = {
+            key: opportunity_state.get(key)
+            for key in ("state", "label", "summary", "next_step")
+            if key in opportunity_state
+        }
+        if isinstance(opportunity_state.get("reasons"), list):
+            output["opportunity_state"]["reasons"] = [str(value)[:160] for value in opportunity_state["reasons"][:4]]
+    elif opportunity_state not in (None, ""):
+        output["opportunity_state"] = str(opportunity_state)[:220]
     if isinstance(details.get("risk_flags"), list):
-        output["risk_flags"] = details["risk_flags"][:4]
+        output["risk_flags"] = [str(value)[:120] for value in details["risk_flags"][:4]]
     if isinstance(details.get("failed_gates"), list):
-        output["failed_gates"] = details["failed_gates"][:4]
+        output["failed_gates"] = [
+            {
+                key: gate.get(key)
+                for key in ("gate", "label", "reason", "severity")
+                if isinstance(gate, dict) and key in gate
+            }
+            if isinstance(gate, dict)
+            else {"gate": str(gate)[:160]}
+            for gate in details["failed_gates"][:4]
+        ]
     if isinstance(details.get("target_status"), list):
         output["target_status"] = _compact_targets(details["target_status"], limit=3)
     return output
@@ -1325,9 +1349,13 @@ def _compact_tomorrow_plan(plan: Any) -> dict[str, Any]:
             for row in plan["preopen_rules"][:6]
             if isinstance(row, dict)
         ]
+    has_by_market = isinstance(plan.get("by_market"), dict)
     items = [_compact_tomorrow_plan_item(row) for row in (plan.get("items") or []) if isinstance(row, dict)]
-    output["items"] = items[:80]
-    if isinstance(plan.get("by_market"), dict):
+    if items and not has_by_market:
+        output["items"] = items[:80]
+    elif not has_by_market:
+        output["items"] = []
+    if has_by_market:
         output["by_market"] = {
             str(market): _compact_tomorrow_plan(raw)
             for market, raw in plan["by_market"].items()
