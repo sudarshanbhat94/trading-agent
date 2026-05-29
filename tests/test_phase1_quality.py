@@ -816,6 +816,41 @@ class Phase1FollowSafetyTests(unittest.TestCase):
 
         self.assertEqual([row["symbol"] for row in latest].count("DUPSYM"), 1)
 
+    def test_latest_signal_ideas_prefers_current_row_for_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            old_high_score = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=91,
+                grade="A",
+            )
+            new_watch = self._insert_signal_idea(
+                db,
+                signal_type="WATCH",
+                status="WATCH",
+                score=42,
+                grade="D",
+            )
+            now = datetime.now(timezone.utc)
+            with db.connect() as conn:
+                conn.execute(
+                    "update signal_ideas set symbol = 'CURSYM', last_seen_at = ?, latest_decision_id = 10 where id = ?",
+                    ((now - timedelta(minutes=30)).isoformat(), old_high_score),
+                )
+                conn.execute(
+                    "update signal_ideas set symbol = 'CURSYM', last_seen_at = ?, latest_decision_id = 11 where id = ?",
+                    (now.isoformat(), new_watch),
+                )
+            latest = db.latest_signal_ideas(5)
+
+        self.assertEqual(len([row for row in latest if row["symbol"] == "CURSYM"]), 1)
+        current = next(row for row in latest if row["symbol"] == "CURSYM")
+        self.assertEqual(current["signal_type"], "WATCH")
+        self.assertEqual(current["overall_grade"], "D")
+
     @staticmethod
     def _insert_signal_idea(
         db: Database,

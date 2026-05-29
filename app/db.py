@@ -2919,14 +2919,15 @@ class Database:
                 left join universe u on u.symbol = i.symbol
                 {where_sql}
                 order by
+                    last_seen_at desc,
+                    coalesce(latest_decision_id, decision_id, id) desc,
+                    case status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
+                    signal_type = 'BUY' desc,
                     overall_score_pct desc,
                     confluence desc,
                     combined_score desc,
                     confidence desc,
-                    case status when 'ACTIVE' then 0 when 'WATCH' then 1 when 'MONITORING' then 2 else 3 end,
-                    signal_type = 'BUY' desc,
-                    current_return_pct desc,
-                    last_seen_at desc
+                    current_return_pct desc
                 limit ?
                 """,
                 (*market_params, *symbol_params, query_limit),

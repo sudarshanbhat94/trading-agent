@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app.decision_contract import current_decision_rows
 from app.db import Database, _compact_decision_details, _paper_exit_action
@@ -671,7 +672,7 @@ class StrategySafetyTests(unittest.TestCase):
                     symbol="INEARLY",
                     price=102.6,
                     source="upstox-live",
-                    asof="2026-05-25T04:15:00+00:00",
+                    asof=_recent_session_asof("IN"),
                     open=100.0,
                     high=102.9,
                     low=99.8,
@@ -697,7 +698,7 @@ class StrategySafetyTests(unittest.TestCase):
                     symbol="INILLQ",
                     price=102.6,
                     source="upstox-live",
-                    asof="2026-05-25T04:15:00+00:00",
+                    asof=_recent_session_asof("IN"),
                     open=100.0,
                     high=102.9,
                     low=99.8,
@@ -748,7 +749,7 @@ class StrategySafetyTests(unittest.TestCase):
                     symbol="USEARLY",
                     price=20.4,
                     source="yahoo-delayed",
-                    asof="2026-05-25T14:00:00+00:00",
+                    asof=_recent_session_asof("US"),
                     open=20.0,
                     high=20.5,
                     low=19.8,
@@ -774,7 +775,7 @@ class StrategySafetyTests(unittest.TestCase):
                     symbol="USILLQ",
                     price=20.4,
                     source="yahoo-delayed",
-                    asof="2026-05-25T14:00:00+00:00",
+                    asof=_recent_session_asof("US"),
                     open=20.0,
                     high=20.5,
                     low=19.8,
@@ -3203,6 +3204,30 @@ def _scanner_settings() -> SimpleNamespace:
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,
     )
+
+
+def _recent_session_asof(market_region: str) -> str:
+    now = datetime.now(timezone.utc)
+    if str(market_region).upper() == "US":
+        local_zone = ZoneInfo("America/New_York")
+        session_hour = 10
+        session_minute = 0
+    else:
+        local_zone = ZoneInfo("Asia/Kolkata")
+        session_hour = 9
+        session_minute = 45
+    local_day = now.astimezone(local_zone).date()
+    while local_day.weekday() >= 5:
+        local_day += timedelta(days=1)
+    local_dt = datetime(
+        local_day.year,
+        local_day.month,
+        local_day.day,
+        session_hour,
+        session_minute,
+        tzinfo=local_zone,
+    )
+    return local_dt.astimezone(timezone.utc).isoformat()
 
 
 class _FakeStateDb:

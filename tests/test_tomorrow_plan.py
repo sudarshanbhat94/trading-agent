@@ -23,6 +23,7 @@ class TomorrowPlanTests(unittest.TestCase):
                     "status": "ACTIVE",
                     "strategy": "weininstein_stage2_breakout",
                     "latest_price": 102,
+                    "last_seen_at": "2026-05-22T11:30:00+05:30",
                     "confidence": 0.82,
                     "overall_score_pct": 78,
                     "details": {
@@ -69,6 +70,7 @@ class TomorrowPlanTests(unittest.TestCase):
                     "status": "ACTIVE",
                     "strategy": "live_intraday_momentum",
                     "latest_price": 144,
+                    "last_seen_at": "2026-05-22T11:30:00+05:30",
                     "confidence": 0.48,
                     "overall_score_pct": 57,
                     "overall_grade": "C",
@@ -86,6 +88,7 @@ class TomorrowPlanTests(unittest.TestCase):
                     "status": "ACTIVE",
                     "strategy": "no_actionable_strategy",
                     "latest_price": 88,
+                    "last_seen_at": "2026-05-22T11:30:00+05:30",
                     "confidence": 0.9,
                     "overall_score_pct": 91,
                     "overall_grade": "A",
@@ -149,6 +152,48 @@ class TomorrowPlanTests(unittest.TestCase):
         self.assertEqual(ready["symbol"], "READY")
         self.assertEqual(ready["name"], "Ready Industries")
         self.assertEqual(ready["idea_id"], 11)
+
+    def test_ready_at_open_rejects_stale_buy_rows(self) -> None:
+        plan = build_tomorrow_plan(
+            market_region="IN",
+            prepared_at="2026-05-29T10:00:00+05:30",
+            signal_ideas=[
+                {
+                    "id": 21,
+                    "symbol": "OLDREADY",
+                    "company_name": "Old Ready Trap",
+                    "market_region": "IN",
+                    "signal_type": "BUY",
+                    "status": "ACTIVE",
+                    "strategy": "live_intraday_momentum",
+                    "latest_price": 100,
+                    "last_seen_at": "2026-05-26T10:00:00+05:30",
+                    "confidence": 0.9,
+                    "overall_score_pct": 91,
+                    "overall_grade": "A",
+                    "details": {"quality_gate": {"passed": True}},
+                },
+                {
+                    "id": 22,
+                    "symbol": "FRESHREADY",
+                    "company_name": "Fresh Ready",
+                    "market_region": "IN",
+                    "signal_type": "BUY",
+                    "status": "ACTIVE",
+                    "strategy": "live_intraday_momentum",
+                    "latest_price": 110,
+                    "last_seen_at": "2026-05-29T09:45:00+05:30",
+                    "confidence": 0.85,
+                    "overall_score_pct": 82,
+                    "overall_grade": "A",
+                    "details": {"quality_gate": {"passed": True}},
+                },
+            ],
+        )
+
+        ready_symbols = {item["symbol"] for item in plan["sections"]["ready_at_open"]}
+        self.assertIn("FRESHREADY", ready_symbols)
+        self.assertNotIn("OLDREADY", ready_symbols)
 
 
 if __name__ == "__main__":

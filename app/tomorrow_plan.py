@@ -41,7 +41,7 @@ def build_tomorrow_plan(
     macro_context = macro_context if isinstance(macro_context, dict) else {}
     opportunity_scan = opportunity_scan if isinstance(opportunity_scan, dict) else {}
     sections = {
-        "ready_at_open": _ready_at_open_items(ideas),
+        "ready_at_open": _ready_at_open_items(ideas, now),
         "btst_buys": _btst_buy_items(ideas, opportunity_scan, region),
         "near_breakout": _near_breakout_items(ideas),
         "news_watch": _news_watch_items(pre_catalyst, region),
@@ -78,12 +78,14 @@ def build_tomorrow_plan(
     }
 
 
-def _ready_at_open_items(ideas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ready_at_open_items(ideas: list[dict[str, Any]], prepared_at: datetime) -> list[dict[str, Any]]:
     rows = []
     for idea in ideas:
         if str(idea.get("signal_type") or "").upper() != "BUY":
             continue
         if str(idea.get("status") or "").upper() not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+            continue
+        if not _ready_signal_recent(idea, prepared_at):
             continue
         if not _ready_quality_passed(idea):
             continue
@@ -269,6 +271,7 @@ def _plan_item_from_idea(idea: dict[str, Any], validation: str) -> dict[str, Any
         "details": {
             "signal_type": idea.get("signal_type"),
             "status": idea.get("status"),
+            "last_seen_at": idea.get("last_seen_at"),
             "current_return_pct": idea.get("current_return_pct"),
             "quality_gate": quality,
             "fresh_action": details.get("fresh_action"),
@@ -424,3 +427,15 @@ def _ready_quality_passed(idea: dict[str, Any]) -> bool:
         if gate_name in hard_failed_gates or gate_name.startswith(("system_rule_", "phase3_")):
             return False
     return True
+
+
+def _ready_signal_recent(idea: dict[str, Any], prepared_at: datetime) -> bool:
+    last_seen = _parse_dt(idea.get("last_seen_at"))
+    if last_seen is None:
+        return False
+    now = prepared_at.astimezone(IST)
+    age_hours = (now - last_seen.astimezone(IST)).total_seconds() / 3600.0
+    if age_hours < -1.0:
+        return False
+    max_age_hours = 84.0 if now.weekday() >= 5 else 30.0
+    return age_hours <= max_age_hours
