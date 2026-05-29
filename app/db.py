@@ -1153,8 +1153,16 @@ class Database:
                     on pattern_states(pattern, updated_at);
                 create index if not exists idx_signal_ideas_symbol_status
                     on signal_ideas(symbol, status);
+                create index if not exists idx_signal_ideas_status_seen
+                    on signal_ideas(status, last_seen_at desc, id desc);
+                create index if not exists idx_signal_ideas_plan_status
+                    on signal_ideas(plan_code, status, current_return_pct desc, last_seen_at desc);
                 create index if not exists idx_user_idea_follows_user
                     on user_idea_follows(user_id, status);
+                create index if not exists idx_user_idea_follows_user_mode
+                    on user_idea_follows(user_id, mode, updated_at desc);
+                create index if not exists idx_user_idea_follows_idea_user
+                    on user_idea_follows(idea_id, user_id, id desc);
                 create index if not exists idx_tomorrow_plan_market_date
                     on tomorrow_plan_items(market_region, plan_date, sort_order);
                 create index if not exists idx_trade_audit_symbol_ts
@@ -3230,59 +3238,36 @@ class Database:
                     u.industry as industry,
                     q.ts as quote_updated_at,
                     q.source as quote_source,
-                    (
-                        select c.close
-                        from candles c
-                        where c.symbol = i.symbol
-                          and substr(c.ts, 1, 10) = (
-                              select max(substr(c2.ts, 1, 10))
-                              from candles c2
-                              where c2.symbol = i.symbol
-                                and substr(c2.ts, 1, 10) < ?
-                          )
-                          and (
-                              c.source like '%:day'
-                              or c.source like '%:30minute'
-                              or c.source like '%:15minute'
-                              or c.source like '%:5minute'
-                              or c.source like '%:1minute'
-                          )
-                        order by
-                          case when c.source like '%:day' then 0 else 1 end,
-                          c.ts desc
-                        limit 1
-                    ) as previous_close,
-                    (
-                        select c.ts
-                        from candles c
-                        where c.symbol = i.symbol
-                          and substr(c.ts, 1, 10) = (
-                              select max(substr(c2.ts, 1, 10))
-                              from candles c2
-                              where c2.symbol = i.symbol
-                                and substr(c2.ts, 1, 10) < ?
-                          )
-                          and (
-                              c.source like '%:day'
-                              or c.source like '%:30minute'
-                              or c.source like '%:15minute'
-                              or c.source like '%:5minute'
-                              or c.source like '%:1minute'
-                          )
-                        order by c.ts desc
-                        limit 1
-                    ) as previous_close_at
+                    pc.close as previous_close,
+                    pc.ts as previous_close_at
                 from user_idea_follows f
                 join signal_ideas i on i.id = f.idea_id
                 left join universe u on u.symbol = i.symbol
                 left join latest_quotes q on q.symbol = i.symbol
+                left join candles pc on pc.rowid = (
+                    select c.rowid
+                    from candles c
+                    where c.symbol = i.symbol
+                      and c.ts < ?
+                      and (
+                          c.source like '%:day'
+                          or c.source like '%:30minute'
+                          or c.source like '%:15minute'
+                          or c.source like '%:5minute'
+                          or c.source like '%:1minute'
+                      )
+                    order by
+                      case when c.source like '%:day' then 0 else 1 end,
+                      c.ts desc
+                    limit 1
+                )
                 where f.user_id = ? and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
                 {market_sql}
                 {symbol_sql}
                 order by f.updated_at desc, f.id desc
                 limit ?
                 """,
-                (today_ist, today_ist, int(user_id), *market_params, *symbol_params, max(1, min(int(limit), 200))),
+                (today_ist, int(user_id), *market_params, *symbol_params, max(1, min(int(limit), 200))),
             ).fetchall()
         output: list[dict[str, Any]] = []
         for row in rows:
@@ -5471,7 +5456,16 @@ class Database:
                 (json.dumps(sum(cash_by_market.values())),),
             )
 
-    def latest_quotes(self) -> list[dict[str, Any]]:
+    def latest_quotes(self, limit: int | None = None, market_region: str | None = None) -> list[dict[str, Any]]:
+        market_clause, market_params = _market_region_where("u", market_region)
+        where_parts = ["u.enabled = 1"]
+        if market_clause:
+            where_parts.append(market_clause)
+        limit_sql = ""
+        params: list[Any] = [*market_params]
+        if limit is not None:
+            limit_sql = "limit ?"
+            params.append(max(1, min(int(limit), 2000)))
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -5480,9 +5474,12 @@ class Database:
                     u.name as company_name
                 from latest_quotes q
                 join universe u on u.symbol = q.symbol
-                where u.enabled = 1
-                order by q.symbol
+                where {" and ".join(where_parts)}
+                order by q.ts desc, q.symbol
+                {limit_sql}
                 """
+                ,
+                params,
             ).fetchall()
             return [dict(row) for row in rows]
 

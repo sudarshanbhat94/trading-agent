@@ -17,7 +17,7 @@ from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .market_action_radar import MarketActionRadar
 from .market_data import MarketDataError, MarketDataProvider
-from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context
+from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
@@ -2228,48 +2228,14 @@ class TradingAgentService:
             "data_note": "Use by_market.IN or by_market.US for symbol-level sector rotation.",
         }
 
-    def snapshot(self) -> dict[str, Any]:
-        quotes = self.db.latest_quotes()
-        decisions = _with_detail_urls(self.db.latest_decision_summaries(80), "decisions")
-        decisions_by_market = {
-            "IN": _with_detail_urls(self.db.latest_decision_summaries(80, market_region="IN"), "decisions"),
-            "US": _with_detail_urls(self.db.latest_decision_summaries(80, market_region="US"), "decisions"),
-        }
-        suggestion_decisions = self.db.latest_decisions(240)
-        orders = _with_detail_urls(self.db.latest_order_summaries(80), "orders")
-        order_audit_history = self.db.latest_orders(240)
-        raw_positions = self.db.positions()
-        portfolio = self.db.latest_portfolio() or {
-            "cash": self.broker.cash,
-            "invested": 0,
-            "market_value": 0,
-            "equity": self.broker.cash,
-            "realized_pnl": 0,
-            "unrealized_pnl": 0,
-        }
-        portfolio_by_market = self.broker.portfolio_by_market(raw_positions)
+    def snapshot(self, *, lightweight: bool = False) -> dict[str, Any]:
+        quotes = self._dashboard_quotes()
         market_health = self._market_health(quotes)
-        market_health["portfolio_equity"] = portfolio.get("equity")
         macro_calendar_context = self.db.get_state("macro_calendar_context", {})
-        positions = self._positions_with_exit_plans(raw_positions, order_audit_history, quotes, market_health, macro_calendar_context)
-        suggestions = self.db.latest_signal_ideas(40)
-        suggestions_by_market = {
-            "IN": self.db.latest_signal_ideas(25, market_region="IN"),
-            "US": self.db.latest_signal_ideas(25, market_region="US"),
-        }
         universe_summary = self.db.universe_summary()
         options_context = self.db.get_state("options_intelligence_context", {})
         opportunity_scan = self.db.get_state("opportunity_scan", {})
-        self_audit = self.db.get_state("self_audit")
-        if not self_audit or "overall_score_pct" not in self_audit:
-            self_audit = build_self_audit(
-                raw_positions,
-                quotes,
-                portfolio,
-                market_health,
-                macro_calendar_context,
-            )
-        return {
+        base_payload: dict[str, Any] = {
             "running": self.running,
             "provider": self.market_data.source_name,
             "last_error": self._last_error,
@@ -2289,22 +2255,18 @@ class TradingAgentService:
                 "timeout_seconds": self.cycle_timeout_seconds,
                 "last_duration_seconds": self._last_cycle_duration_seconds,
             },
-            "portfolio": portfolio,
-            "portfolio_by_market": portfolio_by_market,
-            "positions": positions,
             "quotes": quotes,
-            "decisions": decisions,
-            "decisions_by_market": decisions_by_market,
-            "suggestions": suggestions,
-            "signal_ideas": suggestions,
-            "suggestions_by_market": suggestions_by_market,
-            "strategy_plans": self.db.strategy_plans(),
-            "orders": orders,
-            "equity_curve": self.db.recent_equity(120),
+            "decisions": [],
+            "decisions_by_market": {"IN": [], "US": []},
+            "suggestions": [],
+            "signal_ideas": [],
+            "suggestions_by_market": {"IN": [], "US": []},
+            "strategy_plans": [],
+            "orders": [],
+            "equity_curve": [],
             "strategy_metrics": self.db.strategy_metrics(),
-            "performance": self.db.performance_summary(),
             "sentiment": self.db.latest_sentiment(40),
-            "universe_size": len(self.db.get_universe(enabled_only=True, market_region=self.market_region)),
+            "universe_size": universe_summary.get("enabled"),
             "market_health": market_health,
             "market_session": self.db.get_state("market_session_context", {}),
             "candle_backfill": self.db.get_state("candle_backfill_plan", {}),
@@ -2320,10 +2282,73 @@ class TradingAgentService:
             "opportunity_scan": opportunity_scan,
             "pre_catalyst_discovery": self.db.get_state("pre_catalyst_discovery", {}),
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
-            "self_audit": self_audit,
+            "self_audit": self.db.get_state("self_audit", {}),
             "shared_auto_trade": self._last_shared_auto_trade,
             "llm_usage": self.db.llm_usage_summary(),
         }
+        if lightweight:
+            return base_payload
+
+        decisions = _with_detail_urls(self.db.latest_decision_summaries(80), "decisions")
+        decisions_by_market = {
+            "IN": _with_detail_urls(self.db.latest_decision_summaries(80, market_region="IN"), "decisions"),
+            "US": _with_detail_urls(self.db.latest_decision_summaries(80, market_region="US"), "decisions"),
+        }
+        orders = _with_detail_urls(self.db.latest_order_summaries(80), "orders")
+        order_audit_history = self.db.latest_orders(240)
+        raw_positions = self.db.positions()
+        portfolio = self.db.latest_portfolio() or {
+            "cash": self.broker.cash,
+            "invested": 0,
+            "market_value": 0,
+            "equity": self.broker.cash,
+            "realized_pnl": 0,
+            "unrealized_pnl": 0,
+        }
+        portfolio_by_market = self.broker.portfolio_by_market(raw_positions)
+        market_health["portfolio_equity"] = portfolio.get("equity")
+        positions = self._positions_with_exit_plans(raw_positions, order_audit_history, quotes, market_health, macro_calendar_context)
+        suggestions = self.db.latest_signal_ideas(40)
+        suggestions_by_market = {
+            "IN": self.db.latest_signal_ideas(25, market_region="IN"),
+            "US": self.db.latest_signal_ideas(25, market_region="US"),
+        }
+        self_audit = base_payload.get("self_audit")
+        if not self_audit or "overall_score_pct" not in self_audit:
+            self_audit = build_self_audit(
+                raw_positions,
+                quotes,
+                portfolio,
+                market_health,
+                macro_calendar_context,
+            )
+        base_payload.update(
+            {
+                "portfolio": portfolio,
+                "portfolio_by_market": portfolio_by_market,
+                "positions": positions,
+                "decisions": decisions,
+                "decisions_by_market": decisions_by_market,
+                "suggestions": suggestions,
+                "signal_ideas": suggestions,
+                "suggestions_by_market": suggestions_by_market,
+                "strategy_plans": self.db.strategy_plans(),
+                "orders": orders,
+                "equity_curve": self.db.recent_equity(120),
+                "performance": self.db.performance_summary(),
+                "universe_size": len(self.db.get_universe(enabled_only=True, market_region=self.market_region)),
+                "self_audit": self_audit,
+            }
+        )
+        return base_payload
+
+    def _dashboard_quotes(self) -> list[dict[str, Any]]:
+        region = normalize_market_region(self.market_region or "BOTH", default="BOTH")
+        if region == "BOTH":
+            quotes = self.db.latest_quotes(180, market_region="IN")
+            quotes.extend(self.db.latest_quotes(180, market_region="US"))
+            return quotes
+        return self.db.latest_quotes(300, market_region=region)
 
     def _suggestions(self, decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         latest_by_symbol: dict[str, dict[str, Any]] = {}

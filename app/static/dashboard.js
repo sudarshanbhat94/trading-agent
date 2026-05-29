@@ -2190,7 +2190,7 @@ async function refreshPositionMarks() {
 
 function startPositionMarkPolling() {
   if (!state.auth?.authenticated || state.auth?.admin || state.positionMarksTimer) return;
-  state.positionMarksTimer = window.setInterval(refreshPositionMarks, 1000);
+  state.positionMarksTimer = window.setInterval(refreshPositionMarks, 10000);
   refreshPositionMarks();
 }
 
@@ -3725,6 +3725,34 @@ function renderAccount(account) {
   if (clearMonitorButton) clearMonitorButton.addEventListener("click", clearMonitorSymbols);
   byId("account-body")?.querySelector("[data-account-logout]")?.addEventListener("click", logout);
   renderUserBrokerStatus();
+}
+
+function accountFromStatusPayload(payload = {}) {
+  const paper = {
+    mode: payload.runtime?.execution_mode || "paper",
+    positions: payload.positions || [],
+    follow_history: payload.follow_history || [],
+    closed_positions: (payload.follow_history || []).filter((row) => String(row.state || "").toUpperCase() !== "OPEN"),
+    portfolio: payload.portfolio || {},
+    portfolio_by_market: payload.portfolio_by_market || payload.portfolio?.portfolio_by_market || {},
+    cash_pool_by_market: payload.paper_cash_pool_by_market || state.auth?.user?.paper_cash_by_market || {},
+    realized_pnl_by_market: payload.paper_realized_pnl_by_market || {},
+    cash_by_market: Object.fromEntries(Object.entries(payload.portfolio_by_market || {}).map(([market, row]) => [market, row?.cash || 0])),
+  };
+  return {
+    paper,
+    tracked_ideas: payload.tracked_ideas || [],
+    follow_history: payload.follow_history || [],
+    follow_history_by_market: payload.follow_history_by_market || {},
+    positions: payload.positions || [],
+    broker_sync: payload.broker_sync_status || payload.trading_readiness?.broker_sync || {},
+    upstox: { connected: Boolean(payload.provider && String(payload.provider).includes("upstox")) },
+    signal_execution_mode: payload.user_signal_session?.signal_execution_mode || state.auth?.user?.signal_execution_mode || "SIGNAL_ONLY",
+    signal_execution_mode_message: payload.user_signal_session?.signal_execution_mode_message || "",
+    monitor_symbols: state.auth?.user?.monitor_symbols || [],
+    monitor_symbols_count: state.auth?.user?.monitor_symbols_count || 0,
+    monitor_scope: state.auth?.user?.monitor_scope || "DYNAMIC_OPPORTUNITY",
+  };
 }
 
 async function refreshAccountAndUsers() {
@@ -8534,26 +8562,28 @@ async function loadInitial() {
 
 async function loadAuthenticatedData() {
   try {
-    const [statusResponse, configResponse, accountResponse] = await Promise.all([
+    const [statusResponse, configResponse] = await Promise.all([
       fetch("/api/status"),
       fetch("/api/config"),
-      fetch("/api/account"),
     ]);
-    if ([statusResponse, configResponse, accountResponse].some((response) => response.status === 401)) {
+    if ([statusResponse, configResponse].some((response) => response.status === 401)) {
       handleUnauthorized("Session expired. Sign in again.");
       return;
     }
-    if (!statusResponse.ok || !configResponse.ok || !accountResponse.ok) {
+    if (!statusResponse.ok || !configResponse.ok) {
       showBackendError("Initial load failed. Refresh after the backend is healthy.", {
         status: statusResponse.status,
         config: configResponse.status,
-        account: accountResponse.status,
       });
       return;
     }
-    render(await statusResponse.json());
+    const statusPayload = await statusResponse.json();
+    render(statusPayload);
     renderSettings(await configResponse.json());
-    renderAccount(await accountResponse.json());
+    if (!state.auth?.admin) {
+      renderAccount(accountFromStatusPayload(statusPayload));
+    }
+    refreshAccountAndUsers();
     fetchCredits();
     if (state.auth?.admin) {
       fetchUsers();
@@ -8593,7 +8623,7 @@ function openSocket() {
   socket.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
     if (payload?.event === "position_marks_refreshed") {
-      if (!state.positionMarksTimer) refreshPositionMarks();
+      refreshPositionMarks();
       return;
     }
     if (state.auth?.admin) {

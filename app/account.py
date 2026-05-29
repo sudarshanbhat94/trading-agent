@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -161,19 +162,17 @@ class AccountService:
         }
         output: dict[str, Any] = {"connected": True, "errors": []}
         async with httpx.AsyncClient(timeout=8, headers=headers) as client:
-            await self._fetch_account_part(client, output, "profile", f"{api_base}/user/profile")
-            await self._fetch_account_part(
-                client,
-                output,
-                "funds",
-                f"{api_base.replace('/v2', '/v3')}/user/get-funds-and-margin",
-                headers={"Api-Version": "3.0"},
-            )
-            await self._fetch_account_part(
-                client, output, "positions", f"{api_base}/portfolio/short-term-positions"
-            )
-            await self._fetch_account_part(
-                client, output, "holdings", f"{api_base}/portfolio/long-term-holdings"
+            await asyncio.gather(
+                self._fetch_account_part(client, output, "profile", f"{api_base}/user/profile"),
+                self._fetch_account_part(
+                    client,
+                    output,
+                    "funds",
+                    f"{api_base.replace('/v2', '/v3')}/user/get-funds-and-margin",
+                    headers={"Api-Version": "3.0"},
+                ),
+                self._fetch_account_part(client, output, "positions", f"{api_base}/portfolio/short-term-positions"),
+                self._fetch_account_part(client, output, "holdings", f"{api_base}/portfolio/long-term-holdings"),
             )
         return output
 

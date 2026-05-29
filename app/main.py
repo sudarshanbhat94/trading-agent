@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 
 from .account import AccountService
@@ -556,6 +557,7 @@ maintenance_task: asyncio.Task | None = None
 position_mark_task: asyncio.Task | None = None
 
 app = FastAPI(title="OpenStocks")
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
@@ -795,7 +797,7 @@ async def dashboard(request: Request) -> HTMLResponse:
 @app.get("/api/status")
 async def status(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
-    return _status_payload(user)
+    return await asyncio.to_thread(_status_payload, user)
 
 
 @app.get("/api/signals/search")
@@ -902,6 +904,446 @@ def _compact_tracked_idea(row: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+_SIGNAL_IDEA_LIST_KEYS = (
+    "id",
+    "idea_id",
+    "symbol",
+    "company_name",
+    "name",
+    "market_region",
+    "exchange",
+    "sector",
+    "industry",
+    "strategy",
+    "plan_code",
+    "signal_type",
+    "suggestion",
+    "display_signal",
+    "status",
+    "price",
+    "latest_price",
+    "entry_price",
+    "current_return_pct",
+    "peak_return_pct",
+    "worst_return_pct",
+    "confidence",
+    "combined_score",
+    "confluence",
+    "overall_score_pct",
+    "overall_grade",
+    "reason",
+    "display_reason",
+    "decision_readiness",
+    "tier",
+    "fresh_action",
+    "fresh_action_label",
+    "trade_state",
+    "latest_system_action",
+    "execution_state",
+    "execution_state_label",
+    "execution_state_note",
+    "why_changed",
+    "setup_bucket",
+    "setup_bucket_label",
+    "setup_bucket_reason",
+    "opportunity_state",
+    "opportunity_label",
+    "opportunity_summary",
+    "opportunity_next_step",
+    "opportunity_reasons",
+    "opportunity_terms",
+    "entry_zone",
+    "stop_loss",
+    "expires_at",
+    "days_to_expiry",
+    "lifecycle_status",
+    "highest_target_hit",
+    "detail_url",
+    "latest_decision_id",
+    "decision_id",
+    "watchlist_source",
+    "quote_updated_at",
+    "quote_source",
+    "catalyst_type",
+    "catalyst_date",
+    "earnings_date",
+    "news_quality",
+    "headline_count",
+)
+
+
+def _compact_targets(values: Any, limit: int = 4) -> list[dict[str, Any]]:
+    targets = values if isinstance(values, list) else []
+    output: list[dict[str, Any]] = []
+    for item in targets[:limit]:
+        if not isinstance(item, dict):
+            continue
+        output.append(
+            {
+                key: item.get(key)
+                for key in ("label", "price", "hit", "distance_pct", "basis", "probability_label", "suggested_exit_pct")
+                if key in item
+            }
+        )
+    return output
+
+
+def _compact_user_follow(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    keys = (
+        "id",
+        "user_id",
+        "idea_id",
+        "mode",
+        "status",
+        "qty",
+        "entry_price",
+        "latest_price",
+        "invested_amount",
+        "unrealized_pnl",
+        "return_pct",
+        "created_at",
+        "updated_at",
+    )
+    return {key: raw.get(key) for key in keys if key in raw}
+
+
+def _compact_signal_idea(row: dict[str, Any]) -> dict[str, Any]:
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    full = details.get("full_spectrum") if isinstance(details.get("full_spectrum"), dict) else {}
+    event_risk = full.get("corporate_event_risk") if isinstance(full.get("corporate_event_risk"), dict) else {}
+    news_sentiment = full.get("news_sentiment") if isinstance(full.get("news_sentiment"), dict) else {}
+    item = {key: row.get(key) for key in _SIGNAL_IDEA_LIST_KEYS if key in row}
+    item["targets"] = _compact_targets(row.get("targets") or details.get("targets"))
+    item["target_status"] = _compact_targets(row.get("target_status") or details.get("target_status"))
+    if isinstance(row.get("timeline"), dict):
+        item["timeline"] = {
+            key: row["timeline"].get(key)
+            for key in ("plan_code", "max_days", "started_at", "expires_at", "days_left", "label", "name")
+            if key in row["timeline"]
+        }
+    elif isinstance(details.get("timeline"), dict):
+        item["timeline"] = {
+            key: details["timeline"].get(key)
+            for key in ("plan_code", "max_days", "started_at", "expires_at", "days_left", "label", "name")
+            if key in details["timeline"]
+        }
+    if isinstance(row.get("risk_flags"), list):
+        item["risk_flags"] = row["risk_flags"][:6]
+    elif isinstance(details.get("risk_flags"), list):
+        item["risk_flags"] = details["risk_flags"][:6]
+    if isinstance(row.get("stop_status"), dict):
+        item["stop_status"] = {
+            key: row["stop_status"].get(key)
+            for key in ("price", "hit", "hit_at")
+            if key in row["stop_status"]
+        }
+    elif isinstance(details.get("stop_status"), dict):
+        item["stop_status"] = {
+            key: details["stop_status"].get(key)
+            for key in ("price", "hit", "hit_at")
+            if key in details["stop_status"]
+        }
+    for target_key, source_key in (
+        ("catalyst_type", "event_type"),
+        ("catalyst_date", "earnings_date"),
+        ("earnings_date", "earnings_date"),
+        ("headline_count", "headline_count"),
+    ):
+        if item.get(target_key) in (None, ""):
+            item[target_key] = event_risk.get(source_key) or news_sentiment.get(source_key)
+    if item.get("news_quality") in (None, ""):
+        item["news_quality"] = news_sentiment.get("bias") or news_sentiment.get("quality")
+    follow = _compact_user_follow(row.get("user_follow"))
+    if follow:
+        item["user_follow"] = follow
+    return item
+
+
+def _compact_signal_ideas(rows: Any) -> list[dict[str, Any]]:
+    return [_compact_signal_idea(row) for row in (rows or []) if isinstance(row, dict)]
+
+
+def _compact_market_action_event(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "symbol",
+        "name",
+        "market_region",
+        "exchange",
+        "source",
+        "strategy",
+        "event_types",
+        "pct_change",
+        "volume_multiplier",
+        "market_action_score",
+        "score",
+        "reason",
+        "ts",
+        "price",
+    )
+    output = {key: item.get(key) for key in keys if key in item}
+    if isinstance(output.get("event_types"), list):
+        output["event_types"] = output["event_types"][:4]
+    return output
+
+
+def _compact_playbook_record(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "symbol",
+        "name",
+        "sector",
+        "market_region",
+        "gain_pct",
+        "final_signal",
+        "tier",
+        "quant_score",
+        "volume_ratio",
+        "tier_reasons",
+        "reason",
+    )
+    output = {key: item.get(key) for key in keys if key in item}
+    for nested_key in ("levels", "catalyst_review", "weinstein", "vcp", "relative_strength"):
+        nested = item.get(nested_key)
+        if isinstance(nested, dict):
+            output[nested_key] = {
+                key: nested.get(key)
+                for key in (
+                    "pivot",
+                    "stop",
+                    "catalyst_type",
+                    "catalyst_strength",
+                    "stage",
+                    "score",
+                    "rs_rank",
+                )
+                if key in nested
+            }
+    anti_patterns = item.get("anti_patterns")
+    if isinstance(anti_patterns, list):
+        output["anti_patterns"] = [
+            {key: row.get(key) for key in ("code", "label", "reason") if key in row}
+            for row in anti_patterns[:3]
+            if isinstance(row, dict)
+        ]
+    audit = item.get("audit_trail")
+    if isinstance(audit, dict):
+        output["audit_trail"] = {key: audit.get(key) for key in ("watch", "avoid", "buy") if key in audit}
+    if isinstance(output.get("tier_reasons"), list):
+        output["tier_reasons"] = output["tier_reasons"][:4]
+    return output
+
+
+def _compact_playbook(playbook: Any) -> dict[str, Any]:
+    if not isinstance(playbook, dict):
+        return {}
+    output = {
+        key: value
+        for key, value in playbook.items()
+        if key
+        not in {
+            "records",
+            "tomorrow_watchlist",
+            "do_not_chase",
+            "by_symbol",
+            "raw",
+        }
+        and not isinstance(value, (list, dict))
+    }
+    for key in ("signal_summary", "tier_summary"):
+        if isinstance(playbook.get(key), dict):
+            output[key] = dict(playbook[key])
+    output["records"] = [_compact_playbook_record(row) for row in (playbook.get("records") or [])[:30] if isinstance(row, dict)]
+    output["tomorrow_watchlist"] = [
+        _compact_playbook_record(row) for row in (playbook.get("tomorrow_watchlist") or [])[:20] if isinstance(row, dict)
+    ]
+    output["do_not_chase"] = [
+        {"symbol": row.get("symbol"), "reason": row.get("reason"), "market_region": row.get("market_region")}
+        for row in (playbook.get("do_not_chase") or [])[:20]
+        if isinstance(row, dict)
+    ]
+    return output
+
+
+def _compact_market_action_radar(source: Any) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    events = [_compact_market_action_event(row) for row in (source.get("events") or [])[:60] if isinstance(row, dict)]
+    output = {
+        key: value
+        for key, value in source.items()
+        if key not in {"events", "events_by_symbol", "by_market"} and not isinstance(value, (list, dict))
+    }
+    output["events"] = events
+    output["events_by_symbol"] = {
+        str(row.get("symbol") or "").upper(): row
+        for row in events
+        if row.get("symbol")
+    }
+    if isinstance(source.get("by_market"), dict):
+        output["by_market"] = {
+            str(market): _compact_market_action_radar(raw)
+            for market, raw in source["by_market"].items()
+            if isinstance(raw, dict)
+        }
+    return output
+
+
+def _compact_pre_catalyst_candidate(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "symbol",
+        "label",
+        "market_region",
+        "confidence",
+        "score",
+        "catalyst_type",
+        "catalyst_date",
+        "setup_summary",
+        "pivot",
+        "entry_zone",
+        "invalidation_level",
+        "key_reasons",
+        "supporting_signals",
+        "sector",
+        "industry",
+        "liquidity",
+    )
+    output = {key: item.get(key) for key in keys if key in item}
+    for key in ("key_reasons", "supporting_signals"):
+        if isinstance(output.get(key), list):
+            output[key] = output[key][:6]
+    return output
+
+
+def _compact_pre_catalyst_discovery(discovery: Any) -> dict[str, Any]:
+    if not isinstance(discovery, dict):
+        return {}
+    output = {
+        key: value
+        for key, value in discovery.items()
+        if key
+        not in {
+            "calendar_enrichment",
+            "market_action_history",
+            "log_events",
+            "candidates",
+            "live_confirmations",
+        }
+        and not isinstance(value, (list, dict))
+    }
+    for key in ("label_counts", "data_gaps"):
+        if isinstance(discovery.get(key), dict):
+            output[key] = dict(discovery[key])
+    calendar = discovery.get("calendar_enrichment") if isinstance(discovery.get("calendar_enrichment"), dict) else {}
+    if calendar:
+        output["calendar_enrichment"] = {
+            key: calendar.get(key)
+            for key in (
+                "enabled",
+                "source",
+                "updated_at",
+                "status",
+                "known_earnings_symbols",
+                "inferred_recent_catalyst_symbols",
+                "missing_earnings_symbols",
+                "data_gaps",
+            )
+            if key in calendar
+        }
+    output["candidates"] = [
+        _compact_pre_catalyst_candidate(row)
+        for row in (discovery.get("candidates") or [])[:60]
+        if isinstance(row, dict)
+    ]
+    output["live_confirmations"] = [
+        _compact_pre_catalyst_candidate(row)
+        for row in (discovery.get("live_confirmations") or [])[:40]
+        if isinstance(row, dict)
+    ]
+    output["candidate_count"] = len(output["candidates"])
+    output["live_confirmation_count"] = len(output["live_confirmations"])
+    return output
+
+
+def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
+    if not isinstance(scan, dict):
+        return {}
+    output = {
+        key: value
+        for key, value in scan.items()
+        if key
+        not in {
+            "top_candidates",
+            "top_rally_radar",
+            "top_fast_movers",
+            "top_market_action",
+            "btst_buy_candidates",
+            "market_action_radar",
+            "top_gainers_playbook",
+            "top_gainers_playbook_by_market",
+            "by_market",
+        }
+        and not isinstance(value, (list, dict))
+    }
+    for key in ("bucket_counts", "setup_counts", "rejected_counts", "filters", "raw_scan_policy", "tomorrow_plan"):
+        if isinstance(scan.get(key), dict):
+            output[key] = dict(scan[key])
+    for key, limit in (
+        ("top_candidates", 40),
+        ("top_rally_radar", 25),
+        ("top_fast_movers", 20),
+        ("top_market_action", 20),
+        ("btst_buy_candidates", 12),
+    ):
+        output[key] = [
+            _compact_pre_catalyst_candidate(row) | _compact_market_action_event(row)
+            for row in (scan.get(key) or [])[:limit]
+            if isinstance(row, dict)
+        ]
+    output["market_action_radar"] = _compact_market_action_radar(scan.get("market_action_radar", {}))
+    output["top_gainers_playbook"] = _compact_playbook(scan.get("top_gainers_playbook", {}))
+    if isinstance(scan.get("top_gainers_playbook_by_market"), dict):
+        output["top_gainers_playbook_by_market"] = {
+            str(market): _compact_playbook(raw)
+            for market, raw in scan["top_gainers_playbook_by_market"].items()
+            if isinstance(raw, dict)
+        }
+    if isinstance(scan.get("by_market"), dict):
+        output["by_market"] = {
+            str(market): _compact_opportunity_scan(raw)
+            for market, raw in scan["by_market"].items()
+            if isinstance(raw, dict)
+        }
+    return output
+
+
+def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    for key in ("suggestions", "signal_ideas"):
+        if isinstance(payload.get(key), list):
+            payload[key] = _compact_signal_ideas(payload[key])
+    if isinstance(payload.get("suggestions"), list):
+        payload["signal_ideas"] = payload.get("suggestions", [])
+    if isinstance(payload.get("suggestions_by_market"), dict):
+        payload["suggestions_by_market"] = {
+            market: _compact_signal_ideas(rows)
+            for market, rows in payload["suggestions_by_market"].items()
+        }
+    if isinstance(payload.get("tracked_ideas"), list):
+        payload["tracked_ideas"] = [_compact_tracked_idea(row) for row in payload["tracked_ideas"] if isinstance(row, dict)]
+    if isinstance(payload.get("tracked_ideas_by_market"), dict):
+        payload["tracked_ideas_by_market"] = {
+            market: [_compact_tracked_idea(row) for row in (rows or []) if isinstance(row, dict)]
+            for market, rows in payload["tracked_ideas_by_market"].items()
+        }
+    if isinstance(payload.get("opportunity_scan"), dict):
+        payload["opportunity_scan"] = _compact_opportunity_scan(payload["opportunity_scan"])
+    if isinstance(payload.get("market_action_radar"), dict):
+        payload["market_action_radar"] = _compact_market_action_radar(payload["market_action_radar"])
+    if isinstance(payload.get("pre_catalyst_discovery"), dict):
+        payload["pre_catalyst_discovery"] = _compact_pre_catalyst_discovery(payload["pre_catalyst_discovery"])
+    return payload
+
+
 def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
     if user.get("role") == "admin":
         return {
@@ -966,7 +1408,7 @@ def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
 async def position_marks(request: Request, response: Response) -> dict[str, Any]:
     user = require_user(request, settings, db)
     response.headers["Cache-Control"] = "no-store, max-age=0"
-    return _position_marks_payload(user)
+    return await asyncio.to_thread(_position_marks_payload, user)
 
 
 def _monitor_symbols_for_user(user: dict[str, Any] | None) -> list[str]:
@@ -1135,7 +1577,8 @@ def _strategy_plans_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
-    snapshot = agent.snapshot()
+    is_admin = bool(user and user.get("role") == "admin")
+    snapshot = agent.snapshot(lightweight=not is_admin)
     snapshot["tomorrow_plan"] = _tomorrow_plan_for_user(user, "BOTH") if user else db.latest_tomorrow_plan("BOTH")
     trading_readiness = build_trading_readiness(db, settings, market_region=settings.market_region)
     snapshot["trading_readiness"] = trading_readiness
@@ -1143,7 +1586,6 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot["broker_sync_status"] = trading_readiness.get("broker_sync", {})
     snapshot["replay_review_latest"] = latest_replay_review(db)
     snapshot["real_money_readiness_report"] = build_33_point_report(db, settings)
-    is_admin = bool(user and user.get("role") == "admin")
     snapshot["runtime"] = {
         "market_region": settings.market_region,
         "market_data_provider": settings.market_data_provider,
@@ -1253,7 +1695,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["tracked_ideas_by_market"] = {"IN": [], "US": []}
         snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["user_signal_sessions"] = user_signal_sessions.admin_summary()
-    return snapshot
+    return _compact_dashboard_payload(snapshot)
 
 
 def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3540,19 +3982,25 @@ async def ideas(request: Request) -> dict[str, Any]:
         market_region=market_region,
         monitor_symbols=monitor_symbols,
     ) if user_id is not None else []
+    ideas_rows = db.latest_signal_ideas(
+        50,
+        user_id=user_id,
+        market_region=market_region,
+        symbols=monitor_symbols or None,
+    )
+    ideas_by_market = {
+        "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN", symbols=monitor_symbols or None),
+        "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US", symbols=monitor_symbols or None),
+    }
+    tracked_by_market = {
+        "IN": _followed_signal_ideas_for_user(user_id, 100, market_region="IN", monitor_symbols=monitor_symbols) if user_id is not None else [],
+        "US": _followed_signal_ideas_for_user(user_id, 100, market_region="US", monitor_symbols=monitor_symbols) if user_id is not None else [],
+    }
     return {
         "ok": True,
         "market": market_region,
-        "ideas": db.latest_signal_ideas(
-            50,
-            user_id=user_id,
-            market_region=market_region,
-            symbols=monitor_symbols or None,
-        ),
-        "ideas_by_market": {
-            "IN": db.latest_signal_ideas(30, user_id=user_id, market_region="IN", symbols=monitor_symbols or None),
-            "US": db.latest_signal_ideas(30, user_id=user_id, market_region="US", symbols=monitor_symbols or None),
-        },
+        "ideas": _compact_signal_ideas(ideas_rows),
+        "ideas_by_market": {market: _compact_signal_ideas(rows) for market, rows in ideas_by_market.items()},
         "monitor_watchlist": db.monitor_watchlist_rows(
             monitor_symbols,
             user_id=user_id,
@@ -3562,16 +4010,16 @@ async def ideas(request: Request) -> dict[str, Any]:
             "IN": db.monitor_watchlist_rows(monitor_symbols, user_id=user_id, market_region="IN") if user_id is not None else [],
             "US": db.monitor_watchlist_rows(monitor_symbols, user_id=user_id, market_region="US") if user_id is not None else [],
         },
-        "tracked_ideas": tracked_ideas,
+        "tracked_ideas": [_compact_tracked_idea(row) for row in tracked_ideas],
         "tracked_ideas_by_market": {
-            "IN": _followed_signal_ideas_for_user(user_id, 100, market_region="IN", monitor_symbols=monitor_symbols) if user_id is not None else [],
-            "US": _followed_signal_ideas_for_user(user_id, 100, market_region="US", monitor_symbols=monitor_symbols) if user_id is not None else [],
+            market: [_compact_tracked_idea(row) for row in rows]
+            for market, rows in tracked_by_market.items()
         },
         "positions": _user_follow_positions(tracked_ideas),
         "strategy_plans": _filter_strategy_plans_for_symbols(db.strategy_plans(), monitor_symbols),
         "shared_backend": {
             "running": agent.running,
-            "last_cycle_at": agent.snapshot().get("last_cycle_at"),
+            "last_cycle_at": getattr(agent, "_last_cycle_at", None),
             "admin_controls_engine": True,
         },
     }
