@@ -12353,6 +12353,11 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
   order: 1;
 }
 
+.dashboard-grid > .readiness-card {
+  grid-column: 1 / -1;
+  order: 5;
+}
+
 .dashboard-grid > .product-track-panel {
   order: 2;
 }
@@ -12366,7 +12371,7 @@ body:not([data-theme="dark"]) .plan-symbol.negative strong {
 }
 
 .dashboard-grid > .health-card {
-  order: 5;
+  order: 6;
 }
 
 .position-summary-strip {
@@ -12643,6 +12648,10 @@ body[data-theme="dark"] .position-row-actions .danger-outline {
 
   .dashboard-grid > .positions-preview-card {
     grid-column: span 8;
+  }
+
+  .dashboard-grid > .readiness-card {
+    grid-column: 1 / -1;
   }
 
   .dashboard-grid > .product-track-panel {
