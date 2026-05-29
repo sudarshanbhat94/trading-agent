@@ -411,6 +411,7 @@ def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str,
         return _blocked("no_actionable_strategy", "No actionable setup is present for a fresh BUY.")
     if label in {"ACTIONABLE_WATCH", "LOW_QUALITY_SHORT_COVERING", "LATE_CHASE_AVOID", "DATA_STALE_WATCH"} or bucket in {
         "ACTIONABLE_WATCH",
+        "LOW_QUALITY_SHORT_COVERING",
         "DATA_STALE_WATCH",
         "LATE_CHASE_AVOID",
     }:
@@ -429,12 +430,43 @@ def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str,
         )
     if setup in {"extended_momentum_watch", "circuit_demand_lock", "pre_rally_fuel"}:
         return _blocked("missing_actionable_setup", "Setup is a watch state, not a fresh BUY entry.")
+    if _upper(scan.get("only_buyers") or scan.get("only_buyer") or details.get("only_buyers")) in {"1", "TRUE", "YES"}:
+        return _blocked("upper_circuit_only_buyers_watch", "Only-buyers/circuit demand is pullback-only until tradable liquidity appears.")
+    circuit_text = " ".join(
+        str(value or "").lower()
+        for value in (
+            scan.get("circuit_state"),
+            scan.get("price_band"),
+            scan.get("setup"),
+            details.get("circuit_state"),
+            details.get("classification_label"),
+        )
+    )
+    if any(token in circuit_text for token in ("upper_circuit", "upper circuit", "only_buyer", "only buyer", "circuit_demand")):
+        return _blocked("upper_circuit_only_buyers_watch", "Circuit/only-buyer moves are watch-for-pullback, not normal BUYs.")
+    if any(token in setup for token in ("short_cover", "squeeze")) or any(
+        token in str(label or bucket).lower() for token in ("short_cover", "squeeze")
+    ):
+        return _blocked("low_quality_short_covering", "Short-covering/squeeze bounces are watch or tiny-paper only.")
     day_gain = _number(scan.get("day_gain_pct"), details.get("day_gain_pct"))
     if day_gain is not None and day_gain >= 8.0:
         return _blocked(
             "late_chase_avoid",
             "Fresh BUY is blocked because the current-session move is already too extended.",
             day_gain_pct=day_gain,
+        )
+    pivot_extension = _number(
+        scan.get("pivot_extension_pct"),
+        scan.get("distance_from_pivot_pct"),
+        details.get("pivot_extension_pct"),
+        details.get("distance_from_pivot_pct"),
+        (details.get("entry_quality") or {}).get("distance_from_pivot_pct") if isinstance(details.get("entry_quality"), dict) else None,
+    )
+    if pivot_extension is not None and pivot_extension > 5.0:
+        return _blocked(
+            "late_chase_avoid",
+            "Fresh BUY is blocked because price is more than 5% above the pivot/entry zone.",
+            pivot_extension_pct=pivot_extension,
         )
     if _us_etf_or_fund_watch_only(item, details):
         return _blocked(

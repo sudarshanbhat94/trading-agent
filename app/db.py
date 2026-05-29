@@ -89,7 +89,7 @@ def _market_session_exit_block(
     if region == "BOTH":
         return None
 
-    enforce = now_utc is not None
+    enforce = False
     state: dict[str, Any] = {}
     try:
         row = conn.execute("select value from agent_state where key = 'market_session_context'").fetchone()
@@ -1079,6 +1079,56 @@ class Database:
                     primary key (symbol, pattern)
                 );
 
+                create table if not exists trade_audit_events (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    symbol text not null,
+                    event_type text not null,
+                    side text not null default '',
+                    qty integer not null default 0,
+                    price real not null default 0,
+                    status text not null default '',
+                    reason text not null default '',
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists order_fill_events (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    order_id integer,
+                    broker_order_id text not null default '',
+                    symbol text not null,
+                    side text not null,
+                    qty integer not null default 0,
+                    price real not null default 0,
+                    status text not null,
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists readiness_snapshots (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    status text not null,
+                    live_ready integer not null default 0,
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists broker_sync_results (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    provider text not null default '',
+                    status text not null default '',
+                    details_json text not null default '{}'
+                );
+
+                create table if not exists missed_move_reviews (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    market_region text not null default 'BOTH',
+                    review_date text not null default '',
+                    details_json text not null default '{}'
+                );
+
                 create index if not exists idx_market_ticks_symbol_ts
                     on market_ticks(symbol, ts);
                 create index if not exists idx_candles_symbol_ts
@@ -1107,6 +1157,16 @@ class Database:
                     on user_idea_follows(user_id, status);
                 create index if not exists idx_tomorrow_plan_market_date
                     on tomorrow_plan_items(market_region, plan_date, sort_order);
+                create index if not exists idx_trade_audit_symbol_ts
+                    on trade_audit_events(symbol, ts);
+                create index if not exists idx_order_fill_order_ts
+                    on order_fill_events(order_id, ts);
+                create index if not exists idx_readiness_snapshots_ts
+                    on readiness_snapshots(ts);
+                create index if not exists idx_broker_sync_results_ts
+                    on broker_sync_results(ts);
+                create index if not exists idx_missed_move_reviews_ts
+                    on missed_move_reviews(ts);
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
@@ -1130,6 +1190,8 @@ class Database:
             self._ensure_column(conn, "user_idea_follows", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "tomorrow_plan_items", "validation", "text not null default ''")
             self._ensure_column(conn, "tomorrow_plan_items", "details_json", "text not null default '{}'")
+            self._ensure_column(conn, "trade_audit_events", "details_json", "text not null default '{}'")
+            self._ensure_column(conn, "order_fill_events", "details_json", "text not null default '{}'")
             self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
             self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
             self._ensure_column(conn, "delivery_data", "close", "real")
@@ -3677,6 +3739,38 @@ class Database:
                 )
                 self._refresh_user_follow_marks(conn)
                 row = conn.execute("select * from user_idea_follows where id = ?", (existing_follow["id"],)).fetchone()
+                if row and next_mode in {"PAPER", "LIVE"}:
+                    conn.execute(
+                        """
+                        insert into trade_audit_events
+                            (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            utc_now(),
+                            idea["symbol"],
+                            "idea_follow_update",
+                            "BUY",
+                            int(next_qty or 0),
+                            float(next_entry or 0.0),
+                            next_status,
+                            "follow_signal_idea_update",
+                            json.dumps(
+                                _bounded_for_storage(
+                                    {
+                                        "user_id": user_id,
+                                        "idea_id": idea_id,
+                                        "mode": next_mode,
+                                        "quality_gate": quality_gate,
+                                        "manual_override": bool(manual_override and mode == "PAPER"),
+                                    },
+                                    dict_limit=32,
+                                ),
+                                default=str,
+                                separators=(",", ":"),
+                            ),
+                        ),
+                    )
                 return _row_dict(row) if row else {}
             if mode in {"PAPER", "LIVE"}:
                 existing_symbol_follow = conn.execute(
@@ -3722,6 +3816,41 @@ class Database:
             )
             self._refresh_user_follow_marks(conn)
             row = conn.execute("select * from user_idea_follows where id = last_insert_rowid()").fetchone()
+            if row and mode in {"PAPER", "LIVE"}:
+                conn.execute(
+                    """
+                    insert into trade_audit_events
+                        (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        utc_now(),
+                        idea["symbol"],
+                        "idea_follow_open",
+                        "BUY",
+                        int(qty or 0),
+                        float(latest_price or 0.0),
+                        status,
+                        "follow_signal_idea_open",
+                        json.dumps(
+                            _bounded_for_storage(
+                                {
+                                    "user_id": user_id,
+                                    "idea_id": idea_id,
+                                    "mode": mode,
+                                    "amount": amount,
+                                    "invested": invested,
+                                    "quality_gate": quality_gate,
+                                    "entry_economics": entry_economics if mode in {"PAPER", "LIVE"} else {},
+                                    "manual_override": bool(manual_override and mode == "PAPER"),
+                                },
+                                dict_limit=32,
+                            ),
+                            default=str,
+                            separators=(",", ":"),
+                        ),
+                    ),
+                )
         return _row_dict(row) if row else {}
 
     def exit_unsafe_active_follows(
@@ -4516,15 +4645,196 @@ class Database:
         reason: str,
         strategy: str = "unknown",
         details_json: str = "{}",
-    ) -> None:
+    ) -> int:
+        order_id = 0
         with self.connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 insert into orders (ts, symbol, side, strategy, qty, price, notional, status, reason, details_json)
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (utc_now(), symbol, side, strategy, qty, price, qty * price, status, reason, details_json),
             )
+            order_id = int(cursor.lastrowid or 0)
+            audit_details = _json_load(details_json)
+            if not isinstance(audit_details, dict):
+                audit_details = {"raw_details": _storage_scalar(details_json)}
+            audit_details.setdefault("order_id", order_id)
+            audit_details.setdefault("strategy", strategy)
+            conn.execute(
+                """
+                insert into trade_audit_events
+                    (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    symbol,
+                    "order",
+                    side,
+                    int(qty or 0),
+                    float(price or 0.0),
+                    status,
+                    reason,
+                    json.dumps(_bounded_for_storage(audit_details, dict_limit=32), default=str, separators=(",", ":")),
+                ),
+            )
+        return order_id
+
+    def insert_trade_audit_event(
+        self,
+        *,
+        symbol: str,
+        event_type: str,
+        side: str = "",
+        qty: int = 0,
+        price: float = 0.0,
+        status: str = "",
+        reason: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                insert into trade_audit_events
+                    (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    symbol,
+                    event_type,
+                    side,
+                    int(qty or 0),
+                    float(price or 0.0),
+                    status,
+                    reason,
+                    json.dumps(_bounded_for_storage(details or {}, dict_limit=32), default=str, separators=(",", ":")),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def latest_trade_audit_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from trade_audit_events
+                order by id desc
+                limit ?
+                """,
+                (max(1, min(int(limit or 100), 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_order_fill_event(
+        self,
+        *,
+        order_id: int | None,
+        symbol: str,
+        side: str,
+        qty: int,
+        price: float,
+        status: str,
+        broker_order_id: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                insert into order_fill_events
+                    (ts, order_id, broker_order_id, symbol, side, qty, price, status, details_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    order_id,
+                    broker_order_id,
+                    symbol,
+                    side,
+                    int(qty or 0),
+                    float(price or 0.0),
+                    status,
+                    json.dumps(_bounded_for_storage(details or {}, dict_limit=32), default=str, separators=(",", ":")),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def latest_order_fill_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from order_fill_events
+                order by id desc
+                limit ?
+                """,
+                (max(1, min(int(limit or 100), 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def zero_qty_active_records(self, limit: int = 100) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        rows: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            follow_rows = conn.execute(
+                """
+                select 'user_idea_follow' as record_type, f.id, i.symbol, f.mode, f.status, f.qty,
+                       f.updated_at as ts
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where upper(f.mode) in ('PAPER','LIVE')
+                  and upper(f.status) in ('ACTIVE','LIVE_REQUESTED')
+                  and coalesce(f.qty, 0) <= 0
+                order by f.id desc
+                limit ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+            rows.extend(dict(row) for row in follow_rows)
+            order_rows = conn.execute(
+                """
+                select 'order' as record_type, id, symbol, side as mode, status, qty, ts
+                from orders
+                where upper(status) in ('OPEN','PENDING','SUBMITTED','WORKING','REQUESTED','ACCEPTED','PARTIALLY_FILLED','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
+                  and coalesce(qty, 0) <= 0
+                order by id desc
+                limit ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+            rows.extend(dict(row) for row in order_rows)
+        return rows[:safe_limit]
+
+    def cleanup_zero_qty_active_follows(self, reason: str = "zero_qty_invariant_cleanup") -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        now = utc_now()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select f.*, i.symbol
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where upper(f.mode) in ('PAPER','LIVE')
+                  and upper(f.status) in ('ACTIVE','LIVE_REQUESTED')
+                  and coalesce(f.qty, 0) <= 0
+                """
+            ).fetchall()
+            for row in rows:
+                details = self._decode_json(row["details_json"])
+                if not isinstance(details, dict):
+                    details = {}
+                details["zero_qty_cleanup"] = {"at": now, "reason": reason}
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set status = 'EXITED', updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (now, json.dumps(details, default=str, separators=(",", ":")), row["id"]),
+                )
+                cleaned.append(dict(row))
+        return cleaned
 
     def get_state(self, key: str, default: Any = None) -> Any:
         with self.connect() as conn:

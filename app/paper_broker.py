@@ -11,6 +11,7 @@ from .market_regions import market_region_for_row, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .order_router import OrderRouter
 from .trade_economics import exit_economics, minimum_auto_follow_notional, should_block_low_value_profit_exit
+from .trading_readiness import live_order_gate
 from .trading_rules import capital_position_limit
 
 MARKET_REGIONS = ("IN", "US")
@@ -154,6 +155,21 @@ class PaperBroker:
         }
 
     def _buy(self, decision: Decision, portfolio_equity: float) -> bool:
+        market_region = self._market_region_from_decision(decision)
+        if self.order_router and str(self.settings.execution_mode or "paper").lower() != "paper":
+            gate = live_order_gate(self.db, self.settings, market_region=market_region)
+            if not gate.get("passed"):
+                self.db.insert_order(
+                    decision.symbol,
+                    "BUY",
+                    0,
+                    decision.price,
+                    "LIVE_VETOED",
+                    "live_readiness_blocked",
+                    decision.strategy,
+                    _order_details_json(decision, {"veto_gate": "live_readiness", "blocking_reasons": gate.get("blocking_reasons", [])}),
+                )
+                return False
         if (not LLM_HARD_DISABLED) and self.settings.llm_decision_mode == "primary" and self.settings.llm_provider != "offline":
             approval = _llm_primary_approval_from_decision(decision)
             if not approval["approved"]:
@@ -169,7 +185,6 @@ class PaperBroker:
                 )
                 return False
 
-        market_region = self._market_region_from_decision(decision)
         all_positions = self.db.positions()
         positions = [row for row in all_positions if _position_market(row) == market_region]
         dynamic_position_limit = min(self.settings.max_positions, capital_position_limit(portfolio_equity))
@@ -411,7 +426,20 @@ class PaperBroker:
             ),
         )
         if self.order_router:
-            self.order_router.route(decision, qty)
+            gate = live_order_gate(self.db, self.settings, market_region=market_region)
+            if gate.get("passed"):
+                self.order_router.route(decision, qty)
+            else:
+                self.db.insert_order(
+                    decision.symbol,
+                    "BUY",
+                    0,
+                    decision.price,
+                    "LIVE_VETOED",
+                    "live_readiness_blocked",
+                    decision.strategy,
+                    _order_details_json(decision, {"veto_gate": "live_readiness", "blocking_reasons": gate.get("blocking_reasons", [])}),
+                )
         return True
 
     def _sell(self, decision: Decision) -> bool:
@@ -419,6 +447,20 @@ class PaperBroker:
         if partial_pct is not None and 0 < partial_pct < 1:
             return self.partial_sell(decision.symbol, partial_pct, decision.reason, decision.strategy, decision)
         market_region = self._market_region_for_symbol(decision.symbol)
+        if self.order_router and str(self.settings.execution_mode or "paper").lower() != "paper":
+            gate = live_order_gate(self.db, self.settings, market_region=market_region)
+            if not gate.get("passed"):
+                self.db.insert_order(
+                    decision.symbol,
+                    "SELL",
+                    0,
+                    decision.price,
+                    "LIVE_VETOED",
+                    "live_readiness_blocked",
+                    decision.strategy,
+                    _order_details_json(decision, {"veto_gate": "live_readiness", "blocking_reasons": gate.get("blocking_reasons", [])}),
+                )
+                return False
         cash_before = self.cash_for_market(market_region)
         cash_by_market = self.cash_by_market()
         with self.db.connect() as conn:
@@ -522,7 +564,20 @@ class PaperBroker:
                 strategy=strategy,
                 details_json=decision.details_json,
             )
-            self.order_router.route(routed_decision, qty)
+            gate = live_order_gate(self.db, self.settings, market_region=market_region)
+            if gate.get("passed"):
+                self.order_router.route(routed_decision, qty)
+            else:
+                self.db.insert_order(
+                    decision.symbol,
+                    "SELL",
+                    0,
+                    decision.price,
+                    "LIVE_VETOED",
+                    "live_readiness_blocked",
+                    strategy,
+                    _order_details_json(decision, {"veto_gate": "live_readiness", "blocking_reasons": gate.get("blocking_reasons", [])}),
+                )
         return True
 
     def partial_sell(

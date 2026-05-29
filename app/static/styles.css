@@ -7678,6 +7678,21 @@ td.reason {
   min-height: 64px;
 }
 
+.readiness-card .mini-grid,
+.readiness-panel.mini-grid {
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+}
+
+#trading-readiness-status.positive,
+#trading-readiness-status.warning,
+#trading-readiness-status.negative {
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .signal-rail .mini-grid {
   grid-template-columns: 1fr;
 }

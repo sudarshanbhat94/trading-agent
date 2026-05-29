@@ -9,6 +9,11 @@ from .models import Candle, Quote, utc_now
 
 
 SECTOR_FALLBACKS = {
+    "ATGL": "Gas Utilities",
+    "CUMMINSIND": "Capital Goods",
+    "FINCABLES": "Electrical Equipment",
+    "JPPOWER": "Power Generation",
+    "SCHNEIDER": "Electrical Equipment",
     "CEIGALL": "Infrastructure & Construction",
     "HAPPYFORGE": "Industrials & Auto Ancillary",
     "KERNEX": "Rail & Transport Technology",
@@ -22,6 +27,24 @@ SECTOR_FALLBACKS = {
     "SPARC": "Pharmaceuticals",
     "UNIPARTS": "Auto Ancillary",
 }
+
+GENERIC_SECTORS = {"", "unclassified", "unknown", "na", "n/a", "-", "nse listed equity", "bse listed equity", "equity"}
+
+SECTOR_KEYWORD_FALLBACKS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("bank", "finance", "nbfc", "insurance", "housing finance", "gold loan"), "Financial Services"),
+    (("power", "renewable", "hydro", "wind", "transmission", "utility", "gas utilities"), "Power & Utilities"),
+    (("oil", "gas", "omc", "refiner", "petroleum", "coal"), "Oil Gas & Energy"),
+    (("paint", "adhesive", "decorative coating"), "Paints"),
+    (("airline", "airport", "aviation"), "Aviation"),
+    (("rail", "metro", "wagon"), "Railways"),
+    (("capital goods", "electrical", "equipment", "transformer", "switchgear", "cables", "cable"), "Capital Goods"),
+    (("construction", "infra", "civil", "epc", "port", "logistics"), "Infrastructure & Construction"),
+    (("pharma", "hospital", "healthcare", "diagnostic"), "Healthcare"),
+    (("it services", "software", "technology", "semiconductor", "internet"), "Technology"),
+    (("auto", "vehicle", "tyre", "component", "ancillary"), "Automobiles"),
+    (("steel", "copper", "aluminium", "cement", "chemical", "fertil", "mining", "metal"), "Materials"),
+    (("fmcg", "food", "jewellery", "textile", "retail", "consumer", "alcohol"), "Consumer"),
+)
 
 
 def _mean(values: list[float] | tuple[float, ...]) -> float:
@@ -190,21 +213,15 @@ def _symbol_returns(symbol: str, candles: list[Candle], quote_price: float | Non
 def _sector_for_row(row: dict[str, Any]) -> str:
     symbol = str(row.get("symbol") or "").strip().upper()
     sector = str(row.get("sector") or "").strip()
-    if sector and sector.lower() not in {"unclassified", "unknown", "na", "n/a", "-"}:
+    if sector and sector.lower() not in GENERIC_SECTORS:
         return sector
-    industry = str(row.get("industry") or row.get("macro") or "").lower()
-    if "pharma" in industry:
-        return "Pharmaceuticals"
-    if "auto" in industry or "component" in industry:
-        return "Auto Ancillary"
-    if "construction" in industry or "civil" in industry or "infra" in industry:
-        return "Infrastructure & Construction"
-    if "fertil" in industry or "chemical" in industry:
-        return "Chemicals & Fertilizers"
-    if "electrical" in industry or "equipment" in industry:
-        return "Electrical Equipment"
-    if "brew" in industry or "distiller" in industry or "alcohol" in industry:
-        return "Consumer Alcohol"
+    industry = str(row.get("industry") or row.get("macro") or row.get("name") or "").lower()
+    fallback = SECTOR_FALLBACKS.get(symbol)
+    if fallback:
+        return fallback
+    for tokens, mapped in SECTOR_KEYWORD_FALLBACKS:
+        if any(token in industry for token in tokens):
+            return mapped
     return SECTOR_FALLBACKS.get(symbol, "Unclassified")
 
 

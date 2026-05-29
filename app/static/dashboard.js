@@ -2038,6 +2038,7 @@ function render(payload) {
   renderMacroEvents(payload.upcoming_macro_events || []);
   renderAgentConsole(payload);
   renderSelfAudit(payload.self_audit || {});
+  renderTradingReadiness(payload.trading_readiness || {});
   renderShell(payload);
 }
 
@@ -2362,6 +2363,75 @@ function renderSelfAudit(audit = {}) {
   for (const button of panel.querySelectorAll("[data-detail-type='self-audit']")) {
     button.addEventListener("click", () => showDetails("Self Audit", audit));
   }
+}
+
+function renderTradingReadiness(readiness = {}) {
+  const panel = byId("trading-readiness-panel");
+  const status = byId("trading-readiness-status");
+  if (!panel) return;
+  const liveAllowed = Boolean(readiness.live_order_allowed);
+  const mode = String(readiness.execution_mode || "paper").toLowerCase();
+  const statusText = readiness.status || (liveAllowed ? "LIVE_READY" : mode === "paper" ? "PAPER_ONLY" : "LIVE_BLOCKED");
+  if (status) {
+    status.textContent = statusText === "LIVE_READY" ? "live ready" : statusText === "PAPER_ONLY" ? "paper only" : "blocked";
+    status.className = liveAllowed ? "positive" : mode === "paper" ? "warning" : "negative";
+  }
+  const broker = readiness.broker_sync || {};
+  const data = readiness.data_freshness || {};
+  const market = normalizeUiMarket(state.activeMarket);
+  const marketData = data.markets?.[market] || {};
+  const session = readiness.market_session?.sessions?.[market] || marketData.session || {};
+  const kill = readiness.kill_switch || {};
+  const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
+  const failed = checks.filter((item) => item.severity === "hard" && item.passed === false).length;
+  const items = [
+    {
+      label: "Live Orders",
+      value: liveAllowed ? "Enabled" : "Disabled",
+      note: liveAllowed ? "all gates clear" : shortValue((readiness.blocking_reasons || [])[0] || "readiness blocked", 72),
+      tone: liveAllowed ? "positive" : "negative",
+    },
+    {
+      label: "Kill Switch",
+      value: kill.engaged ? "Engaged" : "Clear",
+      note: kill.reason || "-",
+      tone: kill.engaged ? "negative" : "positive",
+    },
+    {
+      label: "Broker Sync",
+      value: broker.ready_for_live ? "Ready" : (broker.status || "Paper"),
+      note: broker.reason || broker.source_of_truth || "-",
+      tone: broker.ready_for_live ? "positive" : "warning",
+    },
+    {
+      label: "Fresh Data",
+      value: marketData.fresh_for_live_trade ? "Fresh" : "Watch",
+      note: marketData.staleness_reason || "current session",
+      tone: marketData.fresh_for_live_trade ? "positive" : "warning",
+    },
+    {
+      label: "Session",
+      value: session.is_open ? "Open" : "Closed",
+      note: session.holiday || session.reason || "-",
+      tone: session.is_open ? "positive" : "warning",
+    },
+    {
+      label: "Hard Checks",
+      value: failed ? `${fmtNumber(failed)} blocked` : "Clear",
+      note: readiness.policy || "paper remains allowed",
+      tone: failed ? "negative" : "positive",
+    },
+  ];
+  panel.innerHTML = items
+    .map((item) => `<button type="button" data-readiness-detail>
+      <span>${escapeHtml(item.label)}</span>
+      <strong class="${escapeHtml(item.tone)}">${escapeHtml(item.value)}</strong>
+      <small>${escapeHtml(shortValue(item.note, 92))}</small>
+    </button>`)
+    .join("");
+  panel.querySelectorAll("[data-readiness-detail]").forEach((button) => {
+    button.addEventListener("click", () => showDetails("Trading Readiness", readiness));
+  });
 }
 
 function renderPerformance(performance) {
@@ -6492,12 +6562,13 @@ function targetLadderHtml(row = {}, market = "IN", compact = false) {
 function renderOrders(rows) {
   const body = byId("orders-body");
   if (!rows.length) {
+    const empty = ordersEmptyState();
     body.innerHTML = emptyTableRow(
       9,
-      `No ${activeMarketLabel()} orders today`,
-      "Today's paper/live buys, exits, target actions, and rejected requests will appear here.",
-      "Open Positions",
-      "positions",
+      empty.title,
+      empty.message,
+      empty.actionLabel,
+      empty.actionView,
     );
     return;
   }
@@ -6547,9 +6618,10 @@ function renderMobileOrders(rows = [], allRows = rows) {
     </div>`;
   if (!rows.length) {
     const emptyLabel = filter === "all" ? "" : `${activeLabel.toLowerCase()} `;
+    const empty = ordersEmptyState(emptyLabel);
     body.innerHTML = `<div class="mobile-orders-empty">
-      <strong>No ${escapeHtml(activeMarketLabel())} ${escapeHtml(emptyLabel)}orders today</strong>
-      <span>Paper and live requests, fills, exits, and rejections will appear here with their reason.</span>
+      <strong>${escapeHtml(empty.title)}</strong>
+      <span>${escapeHtml(empty.message)}</span>
     </div>`;
     return;
   }
@@ -6568,6 +6640,28 @@ function renderMobileOrders(rows = [], allRows = rows) {
       openDetails();
     });
   });
+}
+
+function ordersEmptyState(prefix = "") {
+  const readiness = state.latest?.trading_readiness || {};
+  const broker = readiness.broker_sync || state.latest?.broker_sync_status || {};
+  const mode = String(readiness.execution_mode || state.latest?.runtime?.execution_mode || "paper").toLowerCase();
+  const liveAllowed = Boolean(readiness.live_order_allowed);
+  const filtered = prefix ? `${prefix} ` : "";
+  let message = "No paper/live buys, exits, target actions, or rejected requests were created today.";
+  if (mode === "paper") {
+    message = "Paper-only mode is active. Orders appear after a paper follow or paper exit is created.";
+  } else if (!liveAllowed) {
+    message = `Live routing is blocked: ${shortValue((readiness.blocking_reasons || [])[0] || broker.reason || "readiness has not passed", 140)}.`;
+  } else if (!broker.connected) {
+    message = "No broker connection is synced, so there are no submitted broker orders to show.";
+  }
+  return {
+    title: `No ${activeMarketLabel()} ${filtered}orders today`,
+    message,
+    actionLabel: "Open Watchlist",
+    actionView: "suggestions",
+  };
 }
 
 function mobileOrderCardHtml(row = {}, index = 0) {

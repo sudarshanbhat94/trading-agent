@@ -9,6 +9,7 @@ from .config import Settings
 from .db import Database
 from .market_data import normalize_indstocks_access_token, normalize_upstox_access_token
 from .models import Decision
+from .trading_readiness import live_order_gate
 
 
 LIVE_TRADING_CONFIRMATION = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
@@ -37,7 +38,7 @@ class IndStocksOrderRouter(OrderRouter):
         security_id = self._security_id(row)
         exchange = str((row or {}).get("exchange") or "NSE").strip().upper()
         if not security_id:
-            self.db.insert_order(
+            local_order_id = self.db.insert_order(
                 decision.symbol,
                 decision.action,
                 qty,
@@ -86,8 +87,18 @@ class IndStocksOrderRouter(OrderRouter):
                 decision.strategy,
                 self._route_details(decision, qty, {"order_id": order_id, "order_status": order_status, "payload": payload}),
             )
+            self.db.insert_order_fill_event(
+                order_id=local_order_id,
+                broker_order_id=str(order_id),
+                symbol=decision.symbol,
+                side=decision.action,
+                qty=qty,
+                price=decision.price,
+                status=str(order_status or "submitted"),
+                details={"router": "indstocks_live", "payload": payload},
+            )
         except Exception as exc:
-            self.db.insert_order(
+            local_order_id = self.db.insert_order(
                 decision.symbol,
                 decision.action,
                 qty,
@@ -202,6 +213,16 @@ class UpstoxOrderRouter(OrderRouter):
                 decision.strategy,
                 self._route_details(decision, qty, {"order_id": order_id, "payload": payload}),
             )
+            self.db.insert_order_fill_event(
+                order_id=local_order_id,
+                broker_order_id=str(order_id),
+                symbol=decision.symbol,
+                side=decision.action,
+                qty=qty,
+                price=decision.price,
+                status="submitted",
+                details={"router": "upstox_sandbox" if self.sandbox else "upstox_live", "payload": payload},
+            )
         except Exception as exc:
             status = "SANDBOX_FAILED" if self.sandbox else "LIVE_FAILED"
             self.db.insert_order(
@@ -241,6 +262,19 @@ def build_order_router(settings: Settings, db: Database) -> OrderRouter | None:
         return None
     if settings.execution_mode == "upstox_sandbox":
         return UpstoxOrderRouter(settings, db, sandbox=True)
+    gate = live_order_gate(db, settings, market_region="IN")
+    if not gate.get("passed"):
+        try:
+            db.insert_agent_log(
+                "WARN",
+                "order_router",
+                "live_order_router_blocked",
+                "Live order router stayed disabled because real-money readiness did not pass.",
+                {"blocking_reasons": gate.get("blocking_reasons", [])},
+            )
+        except Exception:
+            pass
+        return None
     if settings.execution_mode == "upstox_live":
         return UpstoxOrderRouter(settings, db, sandbox=False)
     if settings.execution_mode != "indstocks_live":

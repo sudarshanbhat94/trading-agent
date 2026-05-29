@@ -80,7 +80,7 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
         self.assertIn("us_sec_filings", [item["key"] for item in readiness["soft_gaps"]])
 
-    def test_live_execution_uses_fresh_yahoo_reference_mode_for_us_signals(self) -> None:
+    def test_live_execution_blocks_yahoo_reference_mode_for_us_signals(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "AAPL", "exchange": "NASDAQ", "name": "Apple"},
             quote=Quote(symbol="AAPL", price=190, source="yahoo-delayed", asof=_now_iso(), volume=10_000_000),
@@ -96,9 +96,9 @@ class Phase2DataReadinessTests(unittest.TestCase):
             execution_mode="upstox_live",
         )
 
-        self.assertTrue(readiness["trade_decision_ready"])
+        self.assertFalse(readiness["trade_decision_ready"])
         self.assertEqual(readiness["mode"], "strict")
-        self.assertNotIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
+        self.assertIn("us_realtime_quote", [item["key"] for item in readiness["hard_gaps"]])
 
     def test_us_trade_grade_quote_and_bars_pass_even_when_sec_context_is_soft_missing(self) -> None:
         readiness = assess_phase2_data_readiness(

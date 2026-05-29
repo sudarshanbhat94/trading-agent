@@ -36,6 +36,7 @@ def auto_follow_sizing(
             "qty": 0,
             "reason": "missing_cash_or_price",
             "market_region": market,
+            "product_rules": product_rules(settings, market),
         }
 
     size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
@@ -90,6 +91,8 @@ def auto_follow_sizing(
             "economics_floor_applied": economics_floor_applied,
             "minimum_notional": round(min_notional, 2),
             "minimum_qty": min_qty,
+            "product_rules": product_rules(settings, market),
+            "underuse_reason": "minimum_notional_or_risk_cap_exceeds_available_cash",
         }
 
     amount = min(qty * price, cash)
@@ -110,6 +113,8 @@ def auto_follow_sizing(
         "economics_floor_applied": economics_floor_applied,
         "minimum_notional": round(min_notional, 2),
         "minimum_qty": min_qty,
+        "product_rules": product_rules(settings, market),
+        "underuse_reason": "",
     }
 
 
@@ -148,7 +153,8 @@ def exit_economics(
     entry_notional = entry * qty
     exit_notional = exit_ * qty
     gross_pnl = (exit_ - entry) * qty
-    costs = round_trip_cost(entry_notional, exit_notional, settings)
+    cost_parts = round_trip_cost_breakdown(entry_notional, exit_notional, market, settings)
+    costs = float(cost_parts.get("total") or 0.0)
     net_pnl = gross_pnl - costs
     minimum_net = minimum_exit_net_profit(settings, market, exit_notional)
     return {
@@ -159,6 +165,7 @@ def exit_economics(
         "exit_notional": round(exit_notional, 2),
         "gross_pnl": round(gross_pnl, 2),
         "estimated_round_trip_cost": round(costs, 2),
+        "cost_breakdown": cost_parts,
         "estimated_net_pnl": round(net_pnl, 2),
         "minimum_net_profit": round(minimum_net, 2),
         "cost_bps_each_side": round(_one_way_cost_bps(settings), 4),
@@ -192,8 +199,73 @@ def minimum_exit_net_profit(settings: Any = None, market_region: str | None = "I
 
 
 def round_trip_cost(entry_notional: float, exit_notional: float, settings: Any = None) -> float:
-    one_way = _one_way_cost_bps(settings) / 10_000
-    return max(float(entry_notional or 0.0), 0.0) * one_way + max(float(exit_notional or 0.0), 0.0) * one_way
+    breakdown = round_trip_cost_breakdown(entry_notional, exit_notional, "IN", settings)
+    return float(breakdown.get("total", 0.0) or 0.0)
+
+
+def round_trip_cost_breakdown(
+    entry_notional: float,
+    exit_notional: float,
+    market_region: str | None = "IN",
+    settings: Any = None,
+) -> dict[str, Any]:
+    market = normalize_market_region(market_region or "IN", default="IN")
+    buy = max(float(entry_notional or 0.0), 0.0)
+    sell = max(float(exit_notional or 0.0), 0.0)
+    if market == "US":
+        one_way_bps = _one_way_cost_bps(settings)
+        buy_cost = buy * one_way_bps / 10_000
+        sell_cost = sell * one_way_bps / 10_000
+        return {
+            "market_region": market,
+            "brokerage": round((buy + sell) * _setting(settings, "brokerage_bps", 0.0) / 10_000, 4),
+            "taxes": round((buy + sell) * _setting(settings, "taxes_bps", 1.0) / 10_000, 4),
+            "slippage": round((buy + sell) * _setting(settings, "slippage_bps", 5.0) / 10_000, 4),
+            "total": round(buy_cost + sell_cost, 4),
+            "cost_bps_each_side": round(one_way_bps, 4),
+        }
+
+    brokerage = min(
+        _setting(settings, "india_brokerage_flat_per_order", 20.0) * (1 if buy > 0 else 0)
+        + _setting(settings, "india_brokerage_flat_per_order", 20.0) * (1 if sell > 0 else 0),
+        (buy + sell) * max(_setting(settings, "brokerage_bps", 0.0), 0.0) / 10_000
+        if _setting(settings, "brokerage_bps", 0.0) > 0
+        else 40.0,
+    )
+    stt = (buy + sell) * _setting(settings, "stt_bps", 10.0) / 10_000
+    exchange = (buy + sell) * _setting(settings, "india_exchange_charges_bps", 0.345) / 10_000
+    sebi = (buy + sell) * _setting(settings, "india_sebi_charges_bps", 0.01) / 10_000
+    gst = (brokerage + exchange + sebi) * (_setting(settings, "india_gst_pct", 18.0) / 100)
+    stamp = buy * _setting(settings, "india_stamp_duty_bps", 1.5) / 10_000
+    slippage = (buy + sell) * _setting(settings, "slippage_bps", 5.0) / 10_000
+    total = brokerage + stt + exchange + sebi + gst + stamp + slippage
+    return {
+        "market_region": market,
+        "brokerage": round(brokerage, 4),
+        "stt": round(stt, 4),
+        "exchange_charges": round(exchange, 4),
+        "sebi_charges": round(sebi, 4),
+        "gst": round(gst, 4),
+        "stamp_duty": round(stamp, 4),
+        "slippage": round(slippage, 4),
+        "total": round(total, 4),
+        "cost_bps_each_side": round((total / max(buy + sell, 1.0)) * 10_000, 4),
+    }
+
+
+def product_rules(settings: Any = None, market_region: str | None = "IN") -> dict[str, Any]:
+    market = normalize_market_region(market_region or "IN", default="IN")
+    lot_size = int(_setting(settings, f"{market.lower()}_equity_lot_size", 1))
+    tick_size = _setting(settings, f"{market.lower()}_equity_tick_size", 0.01 if market == "US" else 0.05)
+    freeze_qty = int(_setting(settings, f"{market.lower()}_equity_freeze_qty", 100_000 if market == "IN" else 10_000))
+    return {
+        "market_region": market,
+        "product": "equity_delivery" if market == "IN" else "us_equity_paper_probe",
+        "lot_size": max(lot_size, 1),
+        "tick_size": tick_size,
+        "freeze_qty": max(freeze_qty, 1),
+        "min_notional": minimum_auto_follow_notional(settings, market),
+    }
 
 
 def _one_way_cost_bps(settings: Any = None) -> float:

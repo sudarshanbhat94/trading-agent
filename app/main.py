@@ -79,6 +79,16 @@ from .signal_quality import (
 from .sentiment import SentimentService
 from .strategy import StrategyEngine
 from .trade_economics import auto_follow_sizing
+from .trading_readiness import (
+    build_33_point_report,
+    build_broker_sync_status,
+    build_data_freshness_report,
+    build_trading_readiness,
+    latest_replay_review,
+    live_order_gate,
+    run_replay_validation,
+    set_trading_kill_switch,
+)
 from .universe import UniverseService
 
 
@@ -1127,6 +1137,12 @@ def _strategy_plans_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     snapshot = agent.snapshot()
     snapshot["tomorrow_plan"] = _tomorrow_plan_for_user(user, "BOTH") if user else db.latest_tomorrow_plan("BOTH")
+    trading_readiness = build_trading_readiness(db, settings, market_region=settings.market_region)
+    snapshot["trading_readiness"] = trading_readiness
+    snapshot["data_freshness"] = trading_readiness.get("data_freshness", {})
+    snapshot["broker_sync_status"] = trading_readiness.get("broker_sync", {})
+    snapshot["replay_review_latest"] = latest_replay_review(db)
+    snapshot["real_money_readiness_report"] = build_33_point_report(db, settings)
     is_admin = bool(user and user.get("role") == "admin")
     snapshot["runtime"] = {
         "market_region": settings.market_region,
@@ -2586,6 +2602,98 @@ async def my_kite_connect(payload: dict[str, Any], request: Request) -> dict[str
     }
 
 
+@app.get("/api/trading-readiness")
+async def trading_readiness_status(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return {"ok": True, "trading_readiness": build_trading_readiness(db, settings, market_region=settings.market_region)}
+
+
+@app.get("/api/data-freshness")
+async def data_freshness_status(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    market_region = normalize_market_region(request.query_params.get("market") or settings.market_region or "BOTH", default="BOTH")
+    symbols = [
+        item.strip().upper()
+        for item in str(request.query_params.get("symbols") or "").split(",")
+        if item.strip()
+    ]
+    return {
+        "ok": True,
+        "data_freshness": build_data_freshness_report(db, settings, market_region=market_region, symbols=symbols or None),
+    }
+
+
+@app.get("/api/broker-sync/status")
+async def broker_sync_status(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    if user.get("role") != "admin":
+        try:
+            account_payload = await account.snapshot(user)
+            broker_payload = account_payload.get("broker_sync") or {}
+            db.set_state("broker_sync_status", broker_payload)
+            return {"ok": True, "broker_sync": broker_payload}
+        except Exception as exc:
+            fallback = build_broker_sync_status(db, settings)
+            fallback["status"] = "SYNC_ERROR"
+            fallback["reason"] = _exception_message(exc)
+            return {"ok": False, "broker_sync": fallback}
+    return {"ok": True, "broker_sync": build_broker_sync_status(db, settings)}
+
+
+@app.get("/api/replay-review/latest")
+async def replay_review_latest(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return {"ok": True, "replay_review": latest_replay_review(db)}
+
+
+@app.post("/api/admin/emergency-kill-switch")
+async def admin_emergency_kill_switch(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = require_admin(request, settings, db)
+    switch = set_trading_kill_switch(
+        db,
+        engaged=bool(payload.get("engaged", True)),
+        reason=str(payload.get("reason") or ""),
+        updated_by=str(user.get("username") or "admin"),
+    )
+    db.insert_agent_log("WARN", "admin", "emergency_kill_switch", "Trading kill switch updated", switch)
+    return {"ok": True, "kill_switch": switch, "trading_readiness": build_trading_readiness(db, settings)}
+
+
+@app.post("/api/admin/broker-reconcile/dry-run")
+async def admin_broker_reconcile_dry_run(request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    status = build_broker_sync_status(db, settings)
+    db.set_state("broker_sync_status", {**status, "dry_run_at": utc_now(), "status": status.get("status") or "DRY_RUN"})
+    return {"ok": True, "mode": "dry_run", "broker_sync": status}
+
+
+@app.post("/api/admin/broker-reconcile/apply")
+async def admin_broker_reconcile_apply(request: Request) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    gate = live_order_gate(db, settings, market_region="IN")
+    status = build_broker_sync_status(db, settings)
+    if not gate.get("passed"):
+        return {
+            "ok": False,
+            "mode": "apply_blocked",
+            "reason": "live_readiness_not_passed",
+            "blocking_reasons": gate.get("blocking_reasons", []),
+            "broker_sync": status,
+        }
+    db.set_state("broker_sync_status", {**status, "applied_at": utc_now(), "status": "APPLY_NOOP_NO_BROKER_DIFF"})
+    return {"ok": True, "mode": "apply", "broker_sync": status}
+
+
+@app.post("/api/admin/replay-validation/run")
+async def admin_replay_validation_run(request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    require_admin(request, settings, db)
+    symbols = payload.get("symbols") if isinstance(payload, dict) else None
+    if isinstance(symbols, str):
+        symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
+    review = run_replay_validation(db, symbols if isinstance(symbols, list) else None)
+    return {"ok": True, "replay_review": review}
+
+
 @app.get("/api/account")
 async def account_details(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
@@ -3796,6 +3904,13 @@ def _default_paper_follow_amount(user: dict[str, Any], idea: dict[str, Any]) -> 
 
 def _require_user_live_broker(user: dict[str, Any], market_region: str) -> None:
     region = normalize_market_region(market_region or "IN", default="IN")
+    gate = live_order_gate(db, settings, market_region=region)
+    if not gate.get("passed"):
+        reasons = gate.get("blocking_reasons") or ["real-money readiness has not passed"]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Live trading is disabled by readiness gates: {', '.join(str(item) for item in reasons[:4])}. Use Track or Paper.",
+        )
     if region == "US":
         raise HTTPException(
             status_code=400,

@@ -85,7 +85,8 @@ def assess_phase2_data_readiness(
     if market == "US":
         quote_age_minutes = _quote_age_minutes(quote.asof)
         yahoo_quote_ok = (
-            _source_has(quote_source, ("yahoo",))
+            mode == "paper"
+            and _source_has(quote_source, ("yahoo",))
             and quote_age_minutes is not None
             and quote_age_minutes <= 20
         )
