@@ -720,6 +720,38 @@ class TradingAgentService:
                 "post_market_prep_enabled": getattr(self.strategy.settings, "post_market_prep_enabled", True),
             },
         )
+        now_dt = datetime.now(timezone.utc)
+        previous_prep = self.db.get_state("tomorrow_prep_context", {})
+        previous_prepared_at = (
+            _parse_iso_datetime(previous_prep.get("prepared_at"))
+            if isinstance(previous_prep, dict)
+            else None
+        )
+        throttle_minutes = max(int(getattr(self.strategy.settings, "post_market_prep_min_interval_minutes", 30) or 30), 10)
+        if (
+            getattr(self.strategy.settings, "post_market_prep_enabled", True)
+            and previous_prepared_at
+            and (now_dt - previous_prepared_at.astimezone(timezone.utc)) < timedelta(minutes=throttle_minutes)
+        ):
+            self._last_cycle_at = utc_now()
+            self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
+            self._cycle_started_at = None
+            self._cycle_phase = "idle"
+            self._log(
+                "INFO",
+                "cycle",
+                "post_market_prep_throttled",
+                "Closed-market prep skipped because a recent tomorrow plan already exists.",
+                {
+                    "last_prepared_at": previous_prepared_at.isoformat(),
+                    "min_interval_minutes": throttle_minutes,
+                    "duration_seconds": self._last_cycle_duration_seconds,
+                },
+            )
+            snapshot = self.snapshot()
+            if self.on_update:
+                await self.on_update(snapshot)
+            return snapshot
         macro_context = self.db.get_state("macro_context", {})
         macro_calendar_context = self.db.get_state("macro_calendar_context", {})
         delivery_status = self.db.get_state("delivery_data_status", {})
