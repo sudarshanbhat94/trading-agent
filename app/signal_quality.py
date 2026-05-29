@@ -18,6 +18,14 @@ HARD_STOP_RISK_PCT = 9.0
 CAUTION_T1_DISTANCE_PCT = 10.0
 HARD_T1_DISTANCE_PCT = 18.0
 MIN_SIZE_MULTIPLIER = 0.25
+_WAIT_ONLY_TRADE_WINDOWS = {
+    "confirm_before_entry",
+    "not_ready",
+    "wait_for_pullback",
+    "watch_for_ignition",
+    "watch_for_pullback",
+    "watch_only",
+}
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -395,19 +403,39 @@ def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str,
         or scan.get("label")
         or scan.get("bucket")
     )
+    bucket = _upper(scan.get("bucket") or details.get("setup_bucket") or item.get("setup_bucket"))
     setup = str(scan.get("setup") or details.get("setup") or details.get("strategy") or "").strip().lower()
     best_strategy = details.get("best_strategy") if isinstance(details.get("best_strategy"), dict) else {}
     best_strategy_name = str(best_strategy.get("name") or details.get("best_strategy_name") or item.get("strategy") or setup).strip().lower()
     if best_strategy_name == "no_actionable_strategy" or setup == "no_actionable_strategy":
         return _blocked("no_actionable_strategy", "No actionable setup is present for a fresh BUY.")
-    if label in {"LOW_QUALITY_SHORT_COVERING", "LATE_CHASE_AVOID", "DATA_STALE_WATCH"}:
+    if label in {"ACTIONABLE_WATCH", "LOW_QUALITY_SHORT_COVERING", "LATE_CHASE_AVOID", "DATA_STALE_WATCH"} or bucket in {
+        "ACTIONABLE_WATCH",
+        "DATA_STALE_WATCH",
+        "LATE_CHASE_AVOID",
+    }:
+        classification = label or bucket
         return _blocked(
-            label.lower(),
+            classification.lower(),
             "This candidate is watch-only by classification and cannot be auto-entered.",
-            classification_label=label,
+            classification_label=classification,
+        )
+    trade_window = _scan_trade_window(scan, details)
+    if _is_wait_only_trade_window(trade_window):
+        return _blocked(
+            "opportunity_scan_wait_state",
+            f"Entry window is {trade_window}; wait for pullback/live confirmation instead of auto-entering.",
+            trade_window=trade_window,
         )
     if setup in {"extended_momentum_watch", "circuit_demand_lock", "pre_rally_fuel"}:
         return _blocked("missing_actionable_setup", "Setup is a watch state, not a fresh BUY entry.")
+    day_gain = _number(scan.get("day_gain_pct"), details.get("day_gain_pct"))
+    if day_gain is not None and day_gain >= 8.0:
+        return _blocked(
+            "late_chase_avoid",
+            "Fresh BUY is blocked because the current-session move is already too extended.",
+            day_gain_pct=day_gain,
+        )
     if _us_etf_or_fund_watch_only(item, details):
         return _blocked(
             "us_etf_or_fund_watch_only",
@@ -461,6 +489,25 @@ def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str,
     if negative_catalyst and not allow_overhang:
         return _blocked("negative_catalyst", "Negative catalyst/news tone blocks normal-conviction BUY.")
     return None
+
+
+def _scan_trade_window(scan: dict[str, Any], details: dict[str, Any]) -> str:
+    values = [
+        scan.get("trade_window"),
+        details.get("trade_window"),
+    ]
+    market_action = scan.get("market_action") if isinstance(scan.get("market_action"), dict) else {}
+    rally = scan.get("rally_radar") if isinstance(scan.get("rally_radar"), dict) else {}
+    values.extend([market_action.get("trade_window"), rally.get("trade_window")])
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _is_wait_only_trade_window(value: Any) -> bool:
+    return str(value or "").strip().lower() in _WAIT_ONLY_TRADE_WINDOWS
 
 
 def _stale_data_reason(item: dict[str, Any], details: dict[str, Any], scan: dict[str, Any]) -> str:

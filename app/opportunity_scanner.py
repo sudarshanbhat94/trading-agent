@@ -61,6 +61,15 @@ ACTIONABLE_WATCH = "ACTIONABLE_WATCH"
 DATA_STALE_WATCH = "DATA_STALE_WATCH"
 LATE_CHASE_AVOID = "LATE_CHASE_AVOID"
 
+_WAIT_ONLY_TRADE_WINDOWS = {
+    "confirm_before_entry",
+    "not_ready",
+    "wait_for_pullback",
+    "watch_for_ignition",
+    "watch_for_pullback",
+    "watch_only",
+}
+
 
 class OpportunityScanner:
     """Ranks a broad quote universe before the expensive strategy/LLM pass."""
@@ -440,6 +449,18 @@ class OpportunityScanner:
         if bucket == "Avoid" and not reject_reason and self._good_mover_watchable(market_action_review, rally, metrics):
             bucket = ACTIONABLE_WATCH
             reasons.append("good mover visible as actionable watch; entry gates still need confirmation")
+        trade_window = _resolved_trade_window(market_action_review, rally, btst)
+        if not reject_reason and _is_wait_only_trade_window(trade_window):
+            if (
+                setup == "circuit_demand_lock"
+                or late_chase
+                or (_float_or_none(metrics.get("day_gain_pct")) or 0.0) >= 7.0
+            ):
+                bucket = LATE_CHASE_AVOID
+                reasons.append("wait-only pullback state; do not chase as a fresh entry")
+            elif bucket == "Actionable":
+                bucket = ACTIONABLE_WATCH
+                reasons.append(f"entry window is {trade_window}; keep visible as watch, not BUY")
         return {
             "symbol": symbol,
             "name": row.get("name") or symbol,
@@ -1473,9 +1494,7 @@ class OpportunityScanner:
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
         btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
         top_gainers_playbook = item.get("top_gainers_playbook") if isinstance(item.get("top_gainers_playbook"), dict) else {}
-        trade_window = market_action.get("trade_window") or rally.get("trade_window")
-        if btst.get("detected"):
-            trade_window = "buy_before_close_sell_tomorrow"
+        trade_window = _resolved_trade_window(market_action, rally, btst)
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -1889,6 +1908,20 @@ def _percentile_ranks(values: dict[str, float]) -> dict[str, float]:
         symbol: round((rank / denominator) * 100.0, 2)
         for rank, (symbol, _value) in enumerate(ordered)
     }
+
+
+def _resolved_trade_window(
+    market_action: dict[str, Any],
+    rally: dict[str, Any],
+    btst: dict[str, Any],
+) -> str:
+    if btst.get("detected"):
+        return "buy_before_close_sell_tomorrow"
+    return str(market_action.get("trade_window") or rally.get("trade_window") or "").strip()
+
+
+def _is_wait_only_trade_window(value: Any) -> bool:
+    return str(value or "").strip().lower() in _WAIT_ONLY_TRADE_WINDOWS
 
 
 def _atr_pct(highs: list[float], lows: list[float], closes: list[float], window: int = 14) -> float | None:

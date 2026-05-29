@@ -247,6 +247,58 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertEqual(gate["reason"], "overall_score_below_70")
 
+    def test_fresh_buy_gate_blocks_wait_for_pullback_scan(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "action": "BUY",
+                "overall_score_pct": 86,
+                "overall_grade": "A",
+                "confluence": 24,
+                "details": {
+                    "action": "BUY",
+                    "data_readiness": {"trade_decision_ready": True},
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "52_week_high_volume_breakout",
+                        "trade_window": "wait_for_pullback",
+                        "score": 0.92,
+                        "data_quality": {"actionable_data_ready": True},
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "opportunity_scan_wait_state")
+
+    def test_fresh_buy_gate_blocks_actionable_watch_classification(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "action": "BUY",
+                "overall_score_pct": 86,
+                "overall_grade": "A",
+                "confluence": 24,
+                "details": {
+                    "action": "BUY",
+                    "data_readiness": {"trade_decision_ready": True},
+                    "opportunity_scan": {
+                        "bucket": "ACTIONABLE_WATCH",
+                        "label": "ACTIONABLE_WATCH",
+                        "setup": "market_action_momentum",
+                        "score": 0.92,
+                        "data_quality": {"actionable_data_ready": True},
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "actionable_watch")
+
     def test_fresh_buy_gate_blocks_low_score_top_gainers_playbook_probe(self) -> None:
         item = {
             "signal_type": "BUY",

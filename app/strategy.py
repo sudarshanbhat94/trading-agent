@@ -18,6 +18,15 @@ from .sentiment import SentimentService
 from .signal_quality import FRESH_BUY_MIN_SCORE, OPPORTUNITY_PROBE_MIN_SCORE
 from .trading_rules import evaluate_rules_for_context
 
+_WAIT_ONLY_TRADE_WINDOWS = {
+    "confirm_before_entry",
+    "not_ready",
+    "wait_for_pullback",
+    "watch_for_ignition",
+    "watch_for_pullback",
+    "watch_only",
+}
+
 
 def should_call_llm(signal: dict[str, Any]) -> bool:
     return _llm_prefilter_reason(signal) is None
@@ -110,6 +119,34 @@ def _negative_catalyst_block_reason(context: dict[str, Any]) -> str:
         or (score is not None and score <= -0.30 and (confidence is None or confidence >= 0.30))
     )
     return "negative_catalyst_no_new_longs" if negative else ""
+
+
+def _opportunity_scan_wait_reason(scan: dict[str, Any]) -> str:
+    if not scan:
+        return ""
+    label = str(scan.get("label") or scan.get("bucket") or "").strip().upper()
+    if label in {"ACTIONABLE_WATCH", "DATA_STALE_WATCH", "LATE_CHASE_AVOID", "LOW_QUALITY_SHORT_COVERING"}:
+        return f"opportunity_scan_{label.lower()}"
+    setup = str(scan.get("setup") or "").strip().lower()
+    if setup in {"circuit_demand_lock", "extended_momentum_watch", "pre_rally_fuel"}:
+        return "opportunity_scan_wait_state"
+    trade_window = _scan_trade_window(scan)
+    normalized = str(trade_window or "").strip().lower()
+    if normalized in _WAIT_ONLY_TRADE_WINDOWS:
+        return f"opportunity_scan_{normalized}"
+    return ""
+
+
+def _scan_trade_window(scan: dict[str, Any]) -> str:
+    values = [scan.get("trade_window")]
+    market_action = scan.get("market_action") if isinstance(scan.get("market_action"), dict) else {}
+    rally = scan.get("rally_radar") if isinstance(scan.get("rally_radar"), dict) else {}
+    values.extend([market_action.get("trade_window"), rally.get("trade_window")])
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _signal_confidence(signal: dict[str, Any]) -> float:
@@ -687,6 +724,11 @@ class StrategyEngine:
         negative_catalyst_reason = _negative_catalyst_block_reason(context)
         if not has_position and negative_catalyst_reason:
             fail("catalyst_quality_gate", context.get("sentiment"), negative_catalyst_reason)
+        opportunity_wait_reason = _opportunity_scan_wait_reason(
+            context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+        )
+        if not has_position and opportunity_wait_reason:
+            fail("opportunity_scan_entry_window", context.get("opportunity_scan"), opportunity_wait_reason)
         if (
             not has_position
             and us_yahoo_reference_signal
@@ -976,6 +1018,9 @@ class StrategyEngine:
         review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
         setup = str(scan.get("setup") or review.get("setup") or "").strip().lower()
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        wait_reason = _opportunity_scan_wait_reason(scan)
+        if wait_reason:
+            return {"ready": False, "reason": wait_reason, "setup": setup}
         if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"}:
             return {"ready": False, "reason": "opportunity_scan_wait_state", "setup": setup}
         if setup == "btst_buy_candidate":
@@ -2060,6 +2105,7 @@ class StrategyEngine:
         session = full.get("session_momentum") if isinstance(full.get("session_momentum"), dict) else {}
         components = scan.get("components") if isinstance(scan.get("components"), dict) else {}
         setup = str(scan.get("setup") or "")
+        wait_reason = _opportunity_scan_wait_reason(scan)
         live_score = _float_or_none(components.get("live_momentum")) or 0.0
         day_gain = _float_or_none(scan.get("day_gain_pct") or session.get("day_gain_pct")) or 0.0
         range_position = _float_or_none(scan.get("day_range_position") or session.get("day_range_position")) or 0.0
@@ -2106,7 +2152,10 @@ class StrategyEngine:
         participation = max(volume_ratio, projected_volume_ratio * 0.75)
         volume_confirmed = participation >= 1.15 or turnover >= turnover_floor or projected_turnover >= turnover_floor * 1.2
         near_high = high_distance is None or high_distance <= (1.5 if ignition_setup else 2.0)
-        late_chase = extended_setup or day_gain >= 7.0
+        late_chase = extended_setup or day_gain >= 7.0 or wait_reason in {
+            "opportunity_scan_wait_for_pullback",
+            "opportunity_scan_watch_for_pullback",
+        }
         early_ignition_ready = (
             ignition_setup
             and day_gain >= 1.5
@@ -2134,6 +2183,8 @@ class StrategyEngine:
         confirmed = bool(session.get("confirmed", True)) and (
             early_ignition_ready or live_momentum_ready or market_action_breakout_ready
         )
+        if wait_reason:
+            confirmed = False
         if pre_rally_setup:
             confirmed = False
         if circuit_setup:
@@ -2153,6 +2204,8 @@ class StrategyEngine:
             if pre_rally_setup
             else "live fast mover needs more confirmation"
         )
+        if wait_reason and not (circuit_setup or extended_setup or pre_rally_setup):
+            reason = "opportunity scan entry window is wait-only; wait for pullback or fresh confirmation"
         review = {
             "setup": setup,
             "fast_mover": fast_mover,

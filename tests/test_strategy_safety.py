@@ -830,6 +830,46 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertTrue(result.candidates[0]["market_action"]["available"])
         self.assertEqual(result.summary["top_market_action"][0]["symbol"], "HFCL")
 
+    def test_wait_for_pullback_market_action_is_watch_not_actionable(self) -> None:
+        scanner = OpportunityScanner(_scanner_settings())
+        candles = _flat_candles_with_old_high()
+        result = scanner.rank(
+            [
+                {
+                    "symbol": "PULLWAIT",
+                    "exchange": "NSE",
+                    "sector": "Industrials",
+                    "_market_action": {
+                        "symbol": "PULLWAIT",
+                        "event_types": ["TOP_GAINER", "PRICE_SHOCKER"],
+                        "market_action_score": 94,
+                        "strategy": "market_action_momentum",
+                        "trade_window": "wait_for_pullback",
+                        "reason": "moved fast; wait for VWAP pullback",
+                        "pct_change": 5.5,
+                        "volume_multiplier": 2.4,
+                    },
+                }
+            ],
+            {
+                "PULLWAIT": Quote(
+                    symbol="PULLWAIT",
+                    price=111.5,
+                    source="upstox-live",
+                    asof=utc_now(),
+                    open=105.7,
+                    high=112.0,
+                    low=105.2,
+                    volume=2_200_000,
+                )
+            },
+            {"PULLWAIT": {"daily": candles, "analysis": candles}},
+        )
+
+        self.assertEqual(result.candidates[0]["trade_window"], "wait_for_pullback")
+        self.assertEqual(result.candidates[0]["bucket"], "ACTIONABLE_WATCH")
+        self.assertEqual(result.candidates[0]["label"], "ACTIONABLE_WATCH")
+
     def test_circuit_demand_lock_is_visible_but_waits_for_pullback(self) -> None:
         scanner = OpportunityScanner(_scanner_settings())
         candles = _flat_candles_with_old_high()
@@ -868,6 +908,7 @@ class StrategySafetyTests(unittest.TestCase):
 
         self.assertEqual(result.candidates[0]["setup"], "circuit_demand_lock")
         self.assertEqual(result.candidates[0]["trade_window"], "watch_for_pullback")
+        self.assertEqual(result.candidates[0]["bucket"], "LATE_CHASE_AVOID")
         self.assertIn("demand locked", " ".join(result.candidates[0]["reasons"]))
 
     def test_market_action_with_results_news_becomes_earnings_gap_and_go(self) -> None:
@@ -1320,6 +1361,44 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(action, "BUY")
         self.assertTrue(context["decision_gate_context"]["opportunity_probe"]["ready"])
         self.assertFalse(context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"])
+
+    def test_opportunity_probe_wait_for_pullback_never_becomes_buy(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 5.2,
+                "day_range_position": 0.84,
+                "day_high_distance_pct": 0.4,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["opportunity_scan"] = {
+            "setup": "52_week_high_volume_breakout",
+            "bucket": "Actionable",
+            "trade_window": "wait_for_pullback",
+            "score": 0.88,
+            "day_gain_pct": 5.2,
+            "day_range_position": 0.84,
+            "day_high_distance_pct": 0.4,
+            "volume_ratio": 2.6,
+            "turnover": 260_000_000,
+            "components": {"live_momentum": 0.82},
+            "data_quality": {"actionable_data_ready": True},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("PULLWAIT", 0.42, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(context["decision_gate_context"]["opportunity_probe"]["ready"])
+        self.assertIn("opportunity_scan_entry_window", {gate["gate"] for gate in context["decision_gate_context"]["blocking_failed_gates"]})
 
     def test_top_gainers_playbook_late_low_score_stays_hold(self) -> None:
         engine = StrategyEngine(
