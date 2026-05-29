@@ -271,7 +271,7 @@ def build_pre_catalyst_watchlist(
         "missing_history_symbols": missing_history,
         "candidate_limit": candidate_limit,
         "candidate_pool_count": len(all_candidate_dicts),
-        "candidate_pool": [_compact_candidate_for_pool(item) for item in all_candidate_dicts[: max(candidate_limit, 120)]],
+        "candidate_pool": [_compact_candidate_for_pool(item) for item in all_candidate_dicts],
         "min_score": min_score,
         "candidates": candidate_dicts,
         "live_confirmations": live_confirmations,
@@ -1354,6 +1354,22 @@ def _pre_catalyst_score(
         score = max(score, expansion_score)
     if setup.get("pre_rally_compression") and rs_score >= 0.58 and liquidity >= 0.22 and extension_score >= 0.55:
         score = max(score, 0.54 + min(pre_rally_score, 1.0) * 0.12 + min(rs_score, 1.0) * 0.07)
+    event_dryup_near_pivot = (
+        catalyst.get("catalyst_type") == "earnings"
+        and catalyst_score >= 0.60
+        and bool(setup.get("volume_dryup"))
+        and bool(setup.get("near_pivot") or setup.get("near_prior_high"))
+        and extension_score >= 0.62
+        and liquidity >= 0.15
+    )
+    if event_dryup_near_pivot:
+        score = max(
+            score,
+            0.79
+            + (0.04 if setup.get("pre_rally_compression") else 0.0)
+            + (0.03 if setup.get("quiet_range_contraction") else 0.0)
+            + (0.02 if rs_score >= 0.45 else 0.0),
+        )
     reasons = []
     if setup.get("pre_rally_compression"):
         reasons.append("pre-rally compression near breakout zone")
@@ -1377,6 +1393,8 @@ def _pre_catalyst_score(
         reasons.append("news/catalyst quality support")
     if catalyst_score >= 0.75:
         reasons.append("near known catalyst window")
+    elif event_dryup_near_pivot:
+        reasons.append("earnings/news dry-up precursor")
     if uc_pre_breakout.get("status") == "already_locked_no_chase":
         reasons.append("already in only-buyers/upper-circuit; no chase")
     elif uc_pre_breakout.get("detected"):
