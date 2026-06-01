@@ -159,6 +159,12 @@ def assess_phase2_data_readiness(
     else:
         live_quote_ok = _source_has(quote_source, ("upstox", "kite", "nubra", "indstocks-live"))
         intraday_ok = len(intraday) >= 20 and _source_has(intraday_source, ("upstox", "kite", "nubra", "indstocks-live"))
+        intraday_severity = SOFT if live_quote_ok else HARD
+        intraday_note = (
+            "Live broker quote is current; intraday candles are setup evidence, not a universal hard blocker."
+            if live_quote_ok and not intraday_ok
+            else f"{len(intraday)} candles"
+        )
         delivery_ok = bool(delivery_data.get("available")) or _first_float(delivery_data.get("delivery_pct"), delivery_data.get("delivery_score")) is not None
         feeds = institutional_context.get("feeds") if isinstance(institutional_context.get("feeds"), dict) else {}
         flags = _symbol_flags(institutional_context, row)
@@ -172,7 +178,7 @@ def assess_phase2_data_readiness(
         option_ok = fno_not_applicable or option_status == "ok" or bool(options_data.get("available"))
 
         check("in_live_quote", "India live quote from Upstox/Kite/Nubra", live_quote_ok, HARD, quote_source)
-        check("in_intraday_candles", "India intraday candles", intraday_ok, HARD, intraday_source, f"{len(intraday)} candles")
+        check("in_intraday_candles", "India intraday candles", intraday_ok, intraday_severity, intraday_source, intraday_note)
         check("in_delivery_pct", "Delivery percentage / delivery trend", delivery_ok, SOFT, delivery_data.get("source"))
         check("in_corporate_announcements", "NSE/BSE corporate announcements", announcements_ok, SOFT, "nse_bse_corporate_announcements")
         check("in_bulk_block_deals", "Bulk/block deal feed", bulk_block_ok, SOFT, "nse_bse_bulk_block_deals")
@@ -274,6 +280,27 @@ def _fresh_market_data_gate(market: str, quote: Quote, intraday: list[Candle]) -
             "policy": "watch_only_until_current_session_data_confirms",
         }
 
+    def passed(reason: str = "current_session_data", message: str | None = None, *, intraday_warning: str = "") -> dict[str, Any]:
+        return {
+            "passed": True,
+            "reason": reason,
+            "message": message or "Quote and intraday timestamps are acceptable for the current live session.",
+            "label": "LIVE_DATA_READY",
+            "market_region": market,
+            "is_market_open": True,
+            "session": session,
+            "quote_source": quote.source,
+            "quote_asof": quote.asof,
+            "quote_age_minutes": round(quote_age, 2) if quote_age is not None else None,
+            "max_quote_age_minutes": max_age,
+            "latest_intraday_ts": intraday[-1].ts if intraday else None,
+            "intraday_warning": intraday_warning,
+            "checked_at": now.isoformat(),
+            "policy": "fresh_live_quote_can_drive_quote_based_india_setups; stale candles remain blockers only for candle-dependent setup checks"
+            if market == "IN"
+            else "fresh_buy_allowed_to_reach_quality_gates",
+        }
+
     if "moneycontrol" in source:
         return blocked(
             "moneycontrol_not_live_trade_feed",
@@ -289,29 +316,27 @@ def _fresh_market_data_gate(market: str, quote: Quote, intraday: list[Candle]) -
         return blocked("quote_stale_for_current_session", "Quote is too old for a fresh BUY decision.")
     if not _timestamp_in_current_session_date(quote_dt, session):
         return blocked("quote_not_current_session", "Quote timestamp is not from the current valid market session.")
+    india_live_quote_source = market == "IN" and _source_has(source, ("upstox", "kite", "nubra", "indstocks-live"))
     if latest_intraday_dt is not None and not _timestamp_in_current_session_date(latest_intraday_dt, session):
+        if india_live_quote_source:
+            return passed(
+                "live_quote_ready_intraday_reference_stale",
+                "Live India quote is current; stale intraday candles are kept as setup evidence gaps instead of a universal BUY blocker.",
+                intraday_warning="intraday_not_current_session",
+            )
         return blocked("intraday_not_current_session", "Latest intraday candle is not from the current valid market session.")
     if latest_intraday_dt is not None:
         intraday_age = (now - latest_intraday_dt.astimezone(timezone.utc)).total_seconds() / 60.0
         if intraday_age > max(max_age * 2, 20.0):
+            if india_live_quote_source:
+                return passed(
+                    "live_quote_ready_intraday_reference_stale",
+                    "Live India quote is current; stale intraday candles are kept as setup evidence gaps instead of a universal BUY blocker.",
+                    intraday_warning="intraday_stale_for_current_session",
+                )
             return blocked("intraday_stale_for_current_session", "Latest intraday candle is too old for live confirmation.")
 
-    return {
-        "passed": True,
-        "reason": "current_session_data",
-        "message": "Quote and intraday timestamps are acceptable for the current live session.",
-        "label": "LIVE_DATA_READY",
-        "market_region": market,
-        "is_market_open": True,
-        "session": session,
-        "quote_source": quote.source,
-        "quote_asof": quote.asof,
-        "quote_age_minutes": round(quote_age, 2) if quote_age is not None else None,
-        "max_quote_age_minutes": max_age,
-        "latest_intraday_ts": intraday[-1].ts if intraday else None,
-        "checked_at": now.isoformat(),
-        "policy": "fresh_buy_allowed_to_reach_quality_gates",
-    }
+    return passed()
 
 
 def _parse_ts(value: Any) -> datetime | None:

@@ -149,6 +149,27 @@ def _scan_trade_window(scan: dict[str, Any]) -> str:
     return ""
 
 
+def _primary_decision_gate(failed_gates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not failed_gates:
+        return {}
+    priority = {
+        "invalid_price": 0,
+        "phase2_data_readiness": 10,
+        "fresh_market_data_gate": 20,
+        "technical_score_gate": 30,
+        "actionable_strategy_gate": 40,
+        "opportunity_scan_entry_window": 50,
+        "overall_quality_gate": 60,
+        "entry_grade_gate": 70,
+    }
+    indexed = [
+        (priority.get(str(gate.get("gate") or ""), 500), index, gate)
+        for index, gate in enumerate(failed_gates)
+        if isinstance(gate, dict)
+    ]
+    return min(indexed, key=lambda item: (item[0], item[1]))[2] if indexed else {}
+
+
 def _signal_confidence(signal: dict[str, Any]) -> float:
     try:
         return max(min(float(signal.get("confidence") or 0.0), 1.0), 0.0)
@@ -990,6 +1011,13 @@ class StrategyEngine:
                     opportunity_probe,
                     context["decision_gate_context"]["opportunity_probe"]["absorbed_gates"],
                 )
+        primary_blocker = _primary_decision_gate(blocking_failed_gates)
+        context["decision_gate_context"]["primary_blocker"] = primary_blocker
+        context["decision_gate_context"]["secondary_blockers"] = [
+            gate
+            for gate in blocking_failed_gates
+            if not primary_blocker or gate is not primary_blocker
+        ]
         if failed_gates and not has_position:
             if blocking_failed_gates:
                 return "HOLD"

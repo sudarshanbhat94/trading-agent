@@ -240,6 +240,30 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertIn("in_corporate_announcements", [item["key"] for item in readiness["soft_gaps"]])
         self.assertEqual(readiness["hard_gaps"], [])
 
+    def test_india_live_quote_keeps_stale_intraday_as_soft_setup_gap(self) -> None:
+        readiness = assess_phase2_data_readiness(
+            row={"symbol": "RELIANCE", "exchange": "NSE", "name": "Reliance"},
+            quote=Quote(symbol="RELIANCE", price=2800, source="upstox-live", asof="2026-05-20T04:30:00+00:00", volume=2_000_000),
+            timeframe_candles={
+                "daily": _candles("RELIANCE", "upstox-live:day", 80),
+                "intraday": [],
+            },
+            sentiment={"status": "AVAILABLE", "score": 0.1, "source": "news", "headlines": ["Reliance result update"]},
+            delivery_data={"available": True, "delivery_pct": 52.0},
+            options_data={"status": "ok", "source": "nse_option_chain_stock_level"},
+            sector_context={},
+            market_breadth={"breadth_regime": "bull_confirmed"},
+            macro_event_context={},
+            institutional_context={"feeds": {"fii_dii": {"status": "ok"}, "indices": {"status": "ok", "items": {"INDIA VIX": {"last": 13}}}}},
+            full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.3}},
+            execution_mode="paper",
+        )
+
+        self.assertTrue(readiness["trade_decision_ready"])
+        self.assertIn("in_intraday_candles", readiness["missing_data"])
+        self.assertIn("in_intraday_candles", [item["key"] for item in readiness["soft_gaps"]])
+        self.assertNotIn("in_intraday_candles", [item["key"] for item in readiness["hard_gaps"]])
+
     def test_phase2_hard_gaps_block_new_buy_rule_audit(self) -> None:
         context = {
             "quote": {"price": 100, "source": "yahoo-delayed"},

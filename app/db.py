@@ -4842,6 +4842,46 @@ class Database:
                 (key, encoded),
             )
 
+    def insert_missed_move_review(
+        self,
+        *,
+        market_region: str,
+        review_date: str,
+        details: dict[str, Any],
+        ts: str | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                insert into missed_move_reviews (ts, market_region, review_date, details_json)
+                values (?, ?, ?, ?)
+                """,
+                (
+                    ts or utc_now(),
+                    str(market_region or "BOTH").upper(),
+                    str(review_date or ""),
+                    json.dumps(details or {}, default=str, separators=(",", ":")),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def latest_missed_move_reviews(self, limit: int = 20, market_region: str | None = None) -> list[dict[str, Any]]:
+        sql = "select * from missed_move_reviews"
+        params: list[Any] = []
+        if market_region:
+            sql += " where market_region = ?"
+            params.append(str(market_region).upper())
+        sql += " order by ts desc, id desc limit ?"
+        params.append(max(1, int(limit or 20)))
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["details"] = self._decode_json(item.get("details_json"))
+            output.append(item)
+        return output
+
     def upsert_tomorrow_plan(self, plan: dict[str, Any]) -> None:
         market_region = str(plan.get("market_region") or "IN").upper()
         plan_date = str(plan.get("plan_date") or "")[:32]

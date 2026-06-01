@@ -247,6 +247,7 @@ def build_pre_catalyst_watchlist(
         previous_state=previous_state,
         current_candidates=all_candidate_dicts,
         now=now,
+        min_move_pct=float(getattr(settings, "missed_move_min_move_pct_in", 5.0) if settings is not None else 5.0),
     )
 
     current_symbols = {candidate.symbol for candidate in candidates}

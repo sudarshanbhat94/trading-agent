@@ -77,6 +77,15 @@ class OpportunityScanner:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
         self.candidate_limit = max(1, int(getattr(settings, "dynamic_scan_candidate_limit", 60) or 60))
+        self.india_full_decision_target = max(1, int(getattr(settings, "india_full_decision_target", 200) or 200))
+        self.india_slot_budgets = _parse_slot_budgets(
+            getattr(
+                settings,
+                "india_scanner_slot_budgets",
+                "live_rally=45,volume_price=40,breakout=35,delivery_btst=35,sector_rs=25,diverse=20",
+            ),
+            self.india_full_decision_target,
+        )
         self.min_score = _clamp(
             float(getattr(settings, "dynamic_scan_min_score", 0.58) or 0.0),
             0.0,
@@ -140,22 +149,28 @@ class OpportunityScanner:
             if playbook.get("available"):
                 top_gainers_playbook_records.append(playbook)
             if item["rejected"] and not in_position:
-                self._count(rejected_counts, item["reject_reason"])
-                continue
+                if self._hard_predecision_reject_reason(item):
+                    self._count(rejected_counts, item["reject_reason"])
+                    continue
+                self._soften_predecision_reject(item, item["reject_reason"])
             if in_position and item["rejected"]:
                 item["forced_inclusion"] = True
                 item["reasons"].append("open position included for exit/risk management")
             if not in_position:
                 quality_reject_reason = self._quality_reject_reason(item)
                 if quality_reject_reason:
-                    self._count(rejected_counts, quality_reject_reason)
-                    continue
+                    if self._soft_predecision_reject_allowed(item, quality_reject_reason):
+                        self._soften_predecision_reject(item, quality_reject_reason)
+                    else:
+                        self._count(rejected_counts, quality_reject_reason)
+                        continue
             scored.append(item)
 
         scored.sort(key=lambda item: item["score"], reverse=True)
-        selected_items = self._select_rally_radar_then_diverse(scored, self.candidate_limit)
+        selection_limit = self._selection_limit_for_universe(universe)
+        selected_items, slot_summary = self._select_items(scored, selection_limit, universe)
         selected_symbols = {item["symbol"] for item in selected_items}
-        for item in scored[self.candidate_limit :]:
+        for item in scored[selection_limit:]:
             if item.get("forced_inclusion") and item["symbol"] not in selected_symbols:
                 selected_items.append(item)
                 selected_symbols.add(item["symbol"])
@@ -198,8 +213,20 @@ class OpportunityScanner:
             "scanned_at": utc_now(),
             "raw_symbols": len(universe),
             "quoted_symbols": len(quotes),
-            "candidate_limit": self.candidate_limit,
+            "candidate_limit": selection_limit,
+            "configured_candidate_limit": self.candidate_limit,
+            "target_decision_symbols": selection_limit,
+            "india_full_decision_target": self.india_full_decision_target,
+            "slot_budget_target": slot_summary.get("target"),
+            "slot_budgets": slot_summary.get("budgets", {}),
+            "slot_fill_counts": slot_summary.get("fills", {}),
+            "slot_shortfalls": slot_summary.get("shortfalls", {}),
             "selected_symbols": len(selected_universe),
+            "soft_predecision_reject_counts": self._counts(
+                reason
+                for item in scored
+                for reason in item.get("soft_predecision_reject_reasons", [])
+            ),
             "tradeable_screening_symbols": sum(
                 1 for item in scored if (item.get("data_quality") or {}).get("tradeable_screening")
             ),
@@ -1462,6 +1489,38 @@ class OpportunityScanner:
             return "no_active_opportunity_setup"
         return ""
 
+    def _hard_predecision_reject_reason(self, item: dict[str, Any]) -> str:
+        reason = str(item.get("reject_reason") or "").strip()
+        if not reason:
+            return ""
+        if self._soft_predecision_reject_allowed(item, reason):
+            return ""
+        return reason
+
+    def _soft_predecision_reject_allowed(self, item: dict[str, Any], reason: str) -> bool:
+        if str(item.get("market_region") or "").upper() != "IN":
+            return False
+        hard_reasons = {
+            "invalid_price",
+            "below_min_price",
+            "below_adaptive_liquidity",
+            "stale_quote",
+        }
+        return str(reason or "").strip() not in hard_reasons
+
+    def _soften_predecision_reject(self, item: dict[str, Any], reason: str) -> None:
+        reason = str(reason or "").strip()
+        if not reason:
+            return
+        item["rejected"] = False
+        item["reject_reason"] = ""
+        soft = item.setdefault("soft_predecision_reject_reasons", [])
+        if reason not in soft:
+            soft.append(reason)
+        item.setdefault("reasons", []).append(f"full decision retained despite scanner soft gate: {reason}")
+        if item.get("bucket") == "Avoid":
+            item["bucket"] = "Watch"
+
     def _late_chase(self, metrics: dict[str, Any], market_action_review: dict[str, Any]) -> bool:
         day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
         dist_sma20 = _float_or_none(metrics.get("distance_to_sma20_pct"))
@@ -1513,6 +1572,7 @@ class OpportunityScanner:
             "actionable_watch": bool(item.get("actionable_watch")),
             "late_chase": bool(item.get("late_chase")),
             "forced_inclusion": item.get("forced_inclusion", False),
+            "soft_predecision_reject_reasons": item.get("soft_predecision_reject_reasons", []),
             "reasons": item.get("reasons", [])[:4],
             "components": item.get("components", {}),
             "data_quality": {
@@ -1630,6 +1690,139 @@ class OpportunityScanner:
             for item in scored:
                 try_add(item, enforce_caps=False)
         return selected
+
+    def _selection_limit_for_universe(self, universe: list[dict[str, Any]]) -> int:
+        regions = [market_region_for_row(row) for row in universe if row.get("symbol")]
+        india_symbols = sum(1 for region in regions if region == "IN")
+        if india_symbols and india_symbols >= max(1, len(regions) * 0.80):
+            return max(self.candidate_limit, min(self.india_full_decision_target, len(universe)))
+        return min(self.candidate_limit, len(universe)) if universe else self.candidate_limit
+
+    def _select_items(
+        self,
+        scored: list[dict[str, Any]],
+        limit: int,
+        universe: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if limit <= 0:
+            return [], {"mode": "disabled", "target": 0, "budgets": {}, "fills": {}, "shortfalls": {}}
+        regions = [market_region_for_row(row) for row in universe if row.get("symbol")]
+        india_symbols = sum(1 for region in regions if region == "IN")
+        if india_symbols and india_symbols >= max(1, len(regions) * 0.80):
+            selected, summary = self._select_india_slot_budgeted(scored, limit)
+            return selected, summary
+        selected = self._select_rally_radar_then_diverse(scored, limit)
+        return selected, {
+            "mode": "legacy_rally_radar_then_diverse",
+            "target": limit,
+            "budgets": {"legacy": limit},
+            "fills": {"legacy": len(selected)},
+            "shortfalls": {"legacy": max(limit - len(selected), 0)},
+        }
+
+    def _select_india_slot_budgeted(
+        self,
+        scored: list[dict[str, Any]],
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        fills: dict[str, int] = {slot: 0 for slot in self.india_slot_budgets}
+
+        def add_from(slot: str, items: list[dict[str, Any]], budget: int) -> None:
+            nonlocal selected
+            if budget <= 0:
+                return
+            for item in items:
+                if len(selected) >= limit or fills.get(slot, 0) >= budget:
+                    break
+                symbol = str(item.get("symbol") or "")
+                if not symbol or symbol in selected_symbols:
+                    continue
+                selected.append(item)
+                selected_symbols.add(symbol)
+                fills[slot] = fills.get(slot, 0) + 1
+
+        buckets: dict[str, list[dict[str, Any]]] = {slot: [] for slot in self.india_slot_budgets}
+        for item in scored:
+            slot = self._india_slot_for_item(item)
+            buckets.setdefault(slot, []).append(item)
+
+        for slot, items in buckets.items():
+            items.sort(key=self._india_slot_rank_key, reverse=True)
+
+        for slot, budget in self.india_slot_budgets.items():
+            add_from(slot, buckets.get(slot, []), int(budget or 0))
+
+        if len(selected) < limit:
+            remainder = [item for item in scored if str(item.get("symbol") or "") not in selected_symbols]
+            for item in self._select_diverse(remainder, limit - len(selected)):
+                symbol = str(item.get("symbol") or "")
+                if symbol and symbol not in selected_symbols:
+                    selected.append(item)
+                    selected_symbols.add(symbol)
+                    fills["refill"] = fills.get("refill", 0) + 1
+
+        shortfalls = {
+            slot: max(int(budget or 0) - int(fills.get(slot, 0) or 0), 0)
+            for slot, budget in self.india_slot_budgets.items()
+        }
+        return selected[:limit], {
+            "mode": "india_slot_budgeted",
+            "target": limit,
+            "budgets": dict(self.india_slot_budgets),
+            "fills": fills,
+            "shortfalls": shortfalls,
+        }
+
+    def _india_slot_for_item(self, item: dict[str, Any]) -> str:
+        setup = str(item.get("setup") or "").strip()
+        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+        market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
+        event_types = {str(value or "").upper() for value in market_action.get("event_types") or []}
+        components = item.get("components") if isinstance(item.get("components"), dict) else {}
+        btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
+        if (
+            setup in {*_LIVE_RALLY_SETUPS, "top_gainer_momentum", "market_action_momentum"}
+            or "TOP_GAINER" in event_types
+            or float(components.get("live_momentum") or 0.0) >= 0.70
+            or self._top_gainers_playbook_buy_priority(item) > 0
+        ):
+            return "live_rally"
+        if (
+            event_types & {"VOLUME_SHOCKER", "PRICE_SHOCKER", "ONLY_BUYERS"}
+            or float(metrics.get("volume_ratio") or metrics.get("projected_volume_ratio") or 0.0) >= 1.75
+            or float(metrics.get("day_gain_pct") or 0.0) >= 3.0
+        ):
+            return "volume_price"
+        if (
+            setup in {"52_week_high_volume_breakout", "breakout_continuation", "near_breakout", "donchian_momentum_breakout"}
+            or event_types & {"52_WEEK_HIGH", "ALL_TIME_HIGH"}
+            or _float_or_none(metrics.get("distance_to_55d_high_pct")) is not None
+            and float(metrics.get("distance_to_55d_high_pct") or 99.0) <= self.breakout_distance_pct
+        ):
+            return "breakout"
+        if (
+            setup in {"btst_buy_candidate", "pre_rally_fuel", "volume_price_accumulation", "pullback_buy"}
+            or bool(btst.get("detected"))
+        ):
+            return "delivery_btst"
+        if (
+            setup in {"trend_momentum", "time_series_momentum_trend", "normalized_momentum_factor", "minervini_trend_template"}
+            or float(metrics.get("return_60d_pct") or 0.0) >= 15.0
+            or float((item.get("components") or {}).get("trend") or 0.0) >= 0.70
+        ):
+            return "sector_rs"
+        return "diverse"
+
+    def _india_slot_rank_key(self, item: dict[str, Any]) -> tuple[float, float, float, float]:
+        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+        return (
+            self._rally_discovery_score(item),
+            float(item.get("score") or 0.0),
+            float(metrics.get("projected_turnover") or metrics.get("turnover") or 0.0),
+            float(metrics.get("volume_ratio") or metrics.get("projected_volume_ratio") or 0.0),
+        )
 
     def _select_rally_radar_then_diverse(self, scored: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
@@ -1980,6 +2173,49 @@ def _round(value: float | None, digits: int = 4) -> float | None:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _parse_slot_budgets(raw: Any, target: int) -> dict[str, int]:
+    defaults = {
+        "live_rally": 45,
+        "volume_price": 40,
+        "breakout": 35,
+        "delivery_btst": 35,
+        "sector_rs": 25,
+        "diverse": 20,
+    }
+    if isinstance(raw, dict):
+        items = raw.items()
+    else:
+        items = []
+        for chunk in str(raw or "").split(","):
+            if "=" not in chunk:
+                continue
+            key, value = chunk.split("=", 1)
+            items.append((key, value))
+    parsed = dict(defaults)
+    for key, value in items:
+        normalized = str(key or "").strip().lower()
+        if normalized not in parsed:
+            continue
+        try:
+            parsed[normalized] = max(0, int(float(value)))
+        except (TypeError, ValueError):
+            continue
+    total = sum(parsed.values())
+    if total <= 0:
+        return defaults
+    if total == target:
+        return parsed
+    scale = max(int(target or 0), 1) / total
+    scaled = {key: max(0, int(round(value * scale))) for key, value in parsed.items()}
+    delta = max(int(target or 0), 1) - sum(scaled.values())
+    for key in defaults:
+        if delta == 0:
+            break
+        scaled[key] = max(0, scaled.get(key, 0) + (1 if delta > 0 else -1))
+        delta += -1 if delta > 0 else 1
+    return scaled
 
 
 def _session_progress_pct(quote: Quote, market_region: str) -> float | None:

@@ -105,6 +105,43 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["auto_follow_user_conversion_pct"], 85.71)
         self.assertEqual(diagnostics["funnel"]["auto_follows_per_buy_symbol"], 6.0)
 
+    def test_india_diagnostics_require_target_decisions_and_missed_move_row(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 2657,
+                "quoted_symbols": 2650,
+                "selected_symbols": 139,
+                "target_decision_symbols": 200,
+                "slot_fill_counts": {"live_rally": 45, "refill": 20},
+                "slot_budgets": {"live_rally": 45, "diverse": 20},
+            },
+            [_decision(f"SYM{index}", "HOLD") for index in range(139)],
+            shared_auto_trade={"users_checked": 1, "followed": 0, "skipped": []},
+            market_region="IN",
+        )
+
+        codes = {flag["code"] for flag in diagnostics["health_flags"]}
+        self.assertEqual(diagnostics["funnel"]["target_decision_symbols"], 200)
+        self.assertEqual(diagnostics["funnel"]["decision_target_shortfall"], 61)
+        self.assertEqual(diagnostics["slot_fill_counts"]["live_rally"], 45)
+        self.assertIn("nse_full_decision_target_missed", codes)
+        self.assertIn("missed_move_review_not_persisted", codes)
+
+    def test_diagnostics_separates_user_paper_follows_from_central_orders(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 2500, "quoted_symbols": 2500, "selected_symbols": 200, "target_decision_symbols": 200},
+            [_decision("RELIANCE", "BUY")],
+            shared_auto_trade={"users_checked": 1, "followed": 1, "skipped": []},
+            executed_orders=0,
+            market_region="IN",
+            missed_move_review_row_id=12,
+        )
+
+        self.assertEqual(diagnostics["funnel"]["paper_trade_source"], "user_idea_follows")
+        self.assertEqual(diagnostics["funnel"]["paper_followed_user_actions"], 1)
+        self.assertEqual(diagnostics["funnel"]["central_broker_orders"], 0)
+
 
 def _decision(
     symbol: str,

@@ -118,7 +118,26 @@ class TradingAgentService:
             self._task = None
 
     async def run_once(self) -> dict[str, Any]:
-        return await self._run_once_inner()
+        try:
+            return await asyncio.wait_for(self._run_once_inner(), timeout=self.cycle_timeout_seconds)
+        except asyncio.TimeoutError:
+            return await self._handle_cycle_timeout()
+
+    async def _handle_cycle_timeout(self) -> dict[str, Any]:
+        self._last_error = f"Cycle timed out after {self.cycle_timeout_seconds}s during {self._cycle_phase}"
+        self._log(
+            "ERROR",
+            "cycle",
+            "cycle_timeout",
+            self._last_error,
+            {"phase": self._cycle_phase, "timeout_seconds": self.cycle_timeout_seconds},
+        )
+        self._cycle_started_at = None
+        self._cycle_phase = "idle"
+        snapshot = self.snapshot()
+        if self.on_update:
+            await self.on_update(snapshot)
+        return snapshot
 
     async def _run_once_inner(self) -> dict[str, Any]:
         started = datetime.now(timezone.utc)
@@ -575,24 +594,20 @@ class TradingAgentService:
         shared_scope_token = current_llm_usage_scope.set(shared_usage_scope)
         shared_user_token = current_user_id.set(None)
         try:
-            decisions = await asyncio.to_thread(
-                lambda: asyncio.run(
-                    self.strategy.evaluate(
-                        universe,
-                        quotes,
-                        positions,
-                        candles,
-                        macro_context,
-                        institutional_context,
-                        options_context,
-                        self.delivery_service,
-                        market_breadth_context,
-                        sector_rotation_context,
-                        self.macro_calendar,
-                        candle_sets,
-                        portfolio.get("equity"),
-                    )
-                )
+            decisions = await self.strategy.evaluate(
+                universe,
+                quotes,
+                positions,
+                candles,
+                macro_context,
+                institutional_context,
+                options_context,
+                self.delivery_service,
+                market_breadth_context,
+                sector_rotation_context,
+                self.macro_calendar,
+                candle_sets,
+                portfolio.get("equity"),
             )
         finally:
             current_user_id.reset(shared_user_token)
@@ -675,6 +690,7 @@ class TradingAgentService:
             market_region=self.market_region,
             generated_at=utc_now(),
             cycle_duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3),
+            missed_move_review_row_id=int(pre_catalyst_summary.get("missed_move_review_row_id") or 0),
         )
         self.db.set_state("decision_diagnostics", decision_diagnostics)
         self._log(
@@ -1105,6 +1121,7 @@ class TradingAgentService:
             }
 
     def _store_pre_catalyst_discovery(self, summary: dict[str, Any]) -> None:
+        self._persist_missed_move_review(summary)
         self.db.set_state("pre_catalyst_discovery", summary)
         if isinstance(summary.get("calendar_enrichment"), dict):
             self.db.set_state("pre_catalyst_calendar_enrichment", summary["calendar_enrichment"])
@@ -1123,6 +1140,37 @@ class TradingAgentService:
                 "events": (summary.get("log_events") or [])[-20:],
             },
         )
+
+    def _persist_missed_move_review(self, summary: dict[str, Any]) -> None:
+        settings = self.strategy.settings
+        if not bool(getattr(settings, "missed_move_review_enabled", True)):
+            return
+        review = summary.get("missed_move_review") if isinstance(summary, dict) else {}
+        if not isinstance(review, dict) or not review.get("enabled"):
+            return
+        configured_market = str(getattr(settings, "missed_move_review_market", "IN") or "IN").upper()
+        market_region = normalize_market_region(self.market_region, default="IN")
+        if configured_market not in {"BOTH", market_region}:
+            return
+        generated_at = str(review.get("generated_at") or summary.get("generated_at") or utc_now())
+        review_date = generated_at[:10]
+        details = {
+            "source": "pre_catalyst_missed_move_review",
+            "market_region": market_region,
+            "review_date": review_date,
+            "review": review,
+            "candidate_count": len(summary.get("candidates") or []),
+            "candidate_pool_count": int(summary.get("candidate_pool_count") or 0),
+            "live_confirmations": len(summary.get("live_confirmations") or []),
+            "label_counts": summary.get("label_counts") if isinstance(summary.get("label_counts"), dict) else {},
+        }
+        row_id = self.db.insert_missed_move_review(
+            market_region=market_region,
+            review_date=review_date,
+            details=details,
+            ts=generated_at,
+        )
+        summary["missed_move_review_row_id"] = row_id
 
     def _post_market_news_rows(
         self,

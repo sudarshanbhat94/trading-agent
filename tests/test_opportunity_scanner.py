@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app.models import Candle, Quote
 from app.opportunity_scanner import OpportunityScanner
@@ -12,7 +13,7 @@ class OpportunityScannerTests(unittest.TestCase):
     def test_stale_intraday_candles_are_visible_and_not_actionable(self) -> None:
         scanner = OpportunityScanner(_settings())
         row = {"symbol": "HFCL", "exchange": "NSE", "sector": "Telecom"}
-        quote = Quote("HFCL", 103.0, "upstox-live", "2026-05-26T10:30:00+05:30", open=100.0, high=104.0, low=99.5, volume=2_000_000)
+        quote = Quote("HFCL", 103.0, "upstox-live", _india_session_iso(10, 30), open=100.0, high=104.0, low=99.5, volume=2_000_000)
         daily = _candles("HFCL", "upstox-live:day", 70, datetime(2026, 2, 1, tzinfo=timezone.utc))
         intraday = _candles("HFCL", "upstox-live:30minute", 24, datetime(2026, 5, 23, 9, 15, tzinfo=timezone.utc))
 
@@ -32,9 +33,9 @@ class OpportunityScannerTests(unittest.TestCase):
     def test_current_session_intraday_candles_pass_actionable_freshness(self) -> None:
         scanner = OpportunityScanner(_settings())
         row = {"symbol": "HFCL", "exchange": "NSE", "sector": "Telecom"}
-        quote = Quote("HFCL", 103.0, "upstox-live", "2026-05-26T10:30:00+05:30", open=100.0, high=104.0, low=99.5, volume=2_000_000)
+        quote = Quote("HFCL", 103.0, "upstox-live", _india_session_iso(10, 30), open=100.0, high=104.0, low=99.5, volume=2_000_000)
         daily = _candles("HFCL", "upstox-live:day", 70, datetime(2026, 2, 1, tzinfo=timezone.utc))
-        intraday = _candles("HFCL", "upstox-live:30minute", 24, datetime(2026, 5, 26, 3, 45, tzinfo=timezone.utc))
+        intraday = _candles("HFCL", "upstox-live:30minute", 24, _india_intraday_start_utc())
 
         item = scanner._score_row(
             row,
@@ -92,12 +93,12 @@ class OpportunityScannerTests(unittest.TestCase):
         scanner = OpportunityScanner(_settings())
         row = {"symbol": "BTSTWIN", "exchange": "NSE", "sector": "Industrials"}
         daily = _candles("BTSTWIN", "upstox-live:day", 90, datetime(2026, 2, 1, tzinfo=timezone.utc))
-        intraday = _candles("BTSTWIN", "upstox-live:30minute", 24, datetime(2026, 5, 26, 3, 45, tzinfo=timezone.utc))
+        intraday = _candles("BTSTWIN", "upstox-live:30minute", 24, _india_intraday_start_utc())
         quote = Quote(
             "BTSTWIN",
             114.0,
             "upstox-live",
-            "2026-05-26T15:10:00+05:30",
+            _india_session_iso(15, 10),
             open=111.0,
             high=114.4,
             low=110.6,
@@ -128,12 +129,12 @@ class OpportunityScannerTests(unittest.TestCase):
         scanner = OpportunityScanner(_settings())
         row = {"symbol": "BTSTLATE", "exchange": "NSE", "sector": "Industrials"}
         daily = _candles("BTSTLATE", "upstox-live:day", 90, datetime(2026, 2, 1, tzinfo=timezone.utc))
-        intraday = _candles("BTSTLATE", "upstox-live:30minute", 24, datetime(2026, 5, 26, 3, 45, tzinfo=timezone.utc))
+        intraday = _candles("BTSTLATE", "upstox-live:30minute", 24, _india_intraday_start_utc())
         quote = Quote(
             "BTSTLATE",
             122.0,
             "upstox-live",
-            "2026-05-26T15:10:00+05:30",
+            _india_session_iso(15, 10),
             open=112.0,
             high=122.5,
             low=111.8,
@@ -153,6 +154,93 @@ class OpportunityScannerTests(unittest.TestCase):
         self.assertFalse(item["btst"]["checks"]["day_move_ok"])
         self.assertNotEqual(item["setup"], "btst_buy_candidate")
 
+    def test_india_slot_budgeting_refills_to_full_decision_target(self) -> None:
+        scanner = OpportunityScanner(
+            SimpleNamespace(
+                **_settings().__dict__,
+                india_full_decision_target=200,
+                india_scanner_slot_budgets="live_rally=45,volume_price=40,breakout=35,delivery_btst=35,sector_rs=25,diverse=20",
+            )
+        )
+        scored = []
+        for index in range(250):
+            if index < 20:
+                setup = "opening_ignition"
+                components = {"live_momentum": 0.78}
+            elif index < 45:
+                setup = "near_breakout"
+                components = {"trend": 0.6}
+            elif index < 70:
+                setup = "btst_buy_candidate"
+                components = {"btst": 0.75}
+            else:
+                setup = "trend_momentum"
+                components = {"trend": 0.75}
+            scored.append(
+                {
+                    "symbol": f"NSE{index}",
+                    "market_region": "IN",
+                    "score": 0.95 - index * 0.001,
+                    "setup": setup,
+                    "sector": f"Sector{index % 12}",
+                    "metrics": {
+                        "projected_turnover": 100_000_000 + index,
+                        "volume_ratio": 1.0 + (index % 4) * 0.4,
+                        "distance_to_55d_high_pct": 2.0 if setup == "near_breakout" else 8.0,
+                    },
+                    "components": components,
+                    "market_action": {},
+                    "btst": {"detected": setup == "btst_buy_candidate"},
+                    "top_gainers_playbook": {},
+                }
+            )
+        universe = [{"symbol": item["symbol"], "exchange": "NSE"} for item in scored]
+
+        selected, summary = scanner._select_items(scored, 200, universe)
+
+        self.assertEqual(len(selected), 200)
+        self.assertEqual(len({item["symbol"] for item in selected}), 200)
+        self.assertEqual(summary["mode"], "india_slot_budgeted")
+        self.assertEqual(summary["target"], 200)
+        self.assertGreater(summary["fills"].get("refill", 0), 0)
+        self.assertLess(summary["fills"]["live_rally"], summary["budgets"]["live_rally"])
+
+    def test_india_scan_keeps_soft_quality_rejects_for_full_decisioning(self) -> None:
+        base_settings = _settings().__dict__.copy()
+        base_settings.update(
+            {
+                "dynamic_scan_min_score": 0.99,
+                "dynamic_scan_require_active_setup": True,
+                "dynamic_scan_sentiment_enabled": False,
+                "dynamic_scan_min_turnover_inr": 1_000_000.0,
+                "india_full_decision_target": 200,
+            }
+        )
+        settings = SimpleNamespace(**base_settings)
+        scanner = OpportunityScanner(settings)
+        daily = _candles("SOFT", "upstox-live:day", 70, datetime(2026, 2, 1, tzinfo=timezone.utc))
+        universe = [{"symbol": f"SOFT{index}", "exchange": "NSE", "sector": f"Sector{index % 10}"} for index in range(220)]
+        quotes = {
+            row["symbol"]: Quote(
+                row["symbol"],
+                100.0,
+                "upstox-live",
+                _india_session_iso(11, 0),
+                open=100.0,
+                high=101.0,
+                low=99.5,
+                volume=50_000,
+            )
+            for row in universe
+        }
+        candle_sets = {row["symbol"]: {"daily": daily, "analysis": daily} for row in universe}
+
+        result = scanner.rank(universe, quotes, candle_sets)
+
+        self.assertEqual(len(result.selected_universe), 200)
+        self.assertIn("below_opportunity_score", result.summary["soft_predecision_reject_counts"])
+        self.assertEqual(result.summary["target_decision_symbols"], 200)
+
 
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
@@ -166,6 +254,16 @@ def _settings() -> SimpleNamespace:
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,
     )
+
+
+def _india_session_iso(hour: int, minute: int) -> str:
+    local = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return local.isoformat()
+
+
+def _india_intraday_start_utc() -> datetime:
+    local = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=9, minute=15, second=0, microsecond=0)
+    return local.astimezone(timezone.utc)
 
 
 def _candles(symbol: str, source: str, count: int, start: datetime) -> list[Candle]:

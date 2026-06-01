@@ -67,6 +67,11 @@ class Settings:
     dynamic_opportunity_scan_enabled: bool = _bool("DYNAMIC_OPPORTUNITY_SCAN_ENABLED", True)
     dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 0)
     dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 120)
+    india_full_decision_target: int = _int("INDIA_FULL_DECISION_TARGET", 200)
+    india_scanner_slot_budgets: str = os.getenv(
+        "INDIA_SCANNER_SLOT_BUDGETS",
+        "live_rally=45,volume_price=40,breakout=35,delivery_btst=35,sector_rs=25,diverse=20",
+    ).strip()
     dynamic_scan_min_score: float = _float("DYNAMIC_SCAN_MIN_SCORE", 0.58)
     dynamic_scan_require_active_setup: bool = _bool("DYNAMIC_SCAN_REQUIRE_ACTIVE_SETUP", True)
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
@@ -91,6 +96,9 @@ class Settings:
     pre_catalyst_engine_enabled: bool = _bool("PRE_CATALYST_ENGINE_ENABLED", True)
     pre_catalyst_candidate_limit: int = _int("PRE_CATALYST_CANDIDATE_LIMIT", 120)
     pre_catalyst_min_score: float = _float("PRE_CATALYST_MIN_SCORE", 0.56)
+    missed_move_review_enabled: bool = _bool("MISSED_MOVE_REVIEW_ENABLED", True)
+    missed_move_min_move_pct_in: float = _float("MISSED_MOVE_MIN_MOVE_PCT_IN", 3.0)
+    missed_move_review_market: str = os.getenv("MISSED_MOVE_REVIEW_MARKET", "IN").strip().upper()
     candle_backfill_enabled: bool = _bool("CANDLE_BACKFILL_ENABLED", True)
     candle_backfill_symbols_per_cycle: int = _int("CANDLE_BACKFILL_SYMBOLS_PER_CYCLE", 40)
     candle_backfill_min_daily_candles: int = _int("CANDLE_BACKFILL_MIN_DAILY_CANDLES", 55)
@@ -366,6 +374,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_opportunity_scan_enabled", "label": "Dynamic Opportunity Scan", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_raw_limit", "label": "Full Scan Cap (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
     {"key": "dynamic_scan_candidate_limit", "label": "Dynamic Candidates/Cycle", "type": "number", "category": "Market Data", "min": 1, "step": 10},
+    {"key": "india_full_decision_target", "label": "India Full Decisions", "type": "number", "category": "Market Data", "min": 1, "step": 10},
+    {"key": "india_scanner_slot_budgets", "label": "India Scanner Slots", "type": "text", "category": "Market Data"},
     {"key": "dynamic_scan_min_score", "label": "Dynamic Min Opportunity Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
     {"key": "dynamic_scan_require_active_setup", "label": "Require Active Setup", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
@@ -386,6 +396,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "pre_catalyst_engine_enabled", "label": "Pre-Catalyst Engine", "type": "boolean", "category": "Market Data"},
     {"key": "pre_catalyst_candidate_limit", "label": "Pre-Catalyst Candidates", "type": "number", "category": "Market Data", "min": 1, "step": 5},
     {"key": "pre_catalyst_min_score", "label": "Pre-Catalyst Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
+    {"key": "missed_move_review_enabled", "label": "Missed-Move Review", "type": "boolean", "category": "Market Data"},
+    {"key": "missed_move_min_move_pct_in", "label": "IN Missed Move %", "type": "number", "category": "Market Data", "min": 0, "step": 0.25},
+    {"key": "missed_move_review_market", "label": "Missed-Move Market", "type": "select", "category": "Market Data", "choices": ["IN", "US", "BOTH"]},
     {"key": "candle_backfill_enabled", "label": "Candle Backfill", "type": "boolean", "category": "Market Data"},
     {"key": "candle_backfill_symbols_per_cycle", "label": "Backfill Symbols/Cycle", "type": "number", "category": "Market Data", "min": 0, "step": 10},
     {"key": "candle_backfill_min_daily_candles", "label": "Backfill Min Daily Candles", "type": "number", "category": "Market Data", "min": 20, "step": 5},
