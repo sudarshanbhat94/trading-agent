@@ -118,6 +118,32 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(result["phase"], "idle")
         self.assertTrue(any(args[2] == "cycle_timeout" for args in logs))
 
+    def test_optional_phase_timeout_logs_and_continues_with_empty_context(self) -> None:
+        async def slow_context() -> dict:
+            await asyncio.sleep(1.05)
+            return {"status": "late"}
+
+        logs = []
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.strategy = SimpleNamespace(settings=SimpleNamespace(optional_phase_timeout_seconds=0.01))
+        agent.cycle_timeout_seconds = 120
+        agent._cycle_phase = "global_intelligence"
+        agent._log = lambda *args, **kwargs: logs.append(args)
+
+        result = asyncio.run(
+            agent._run_optional_phase(
+                component="macro",
+                event="global_context",
+                description="Global intelligence",
+                awaitable=slow_context(),
+                default={},
+            )
+        )
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["timeout_seconds"], 1.0)
+        self.assertTrue(any(args[2] == "global_context_timeout" for args in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

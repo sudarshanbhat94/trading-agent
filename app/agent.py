@@ -471,7 +471,17 @@ class TradingAgentService:
             {"cash": portfolio.get("cash"), "equity": portfolio.get("equity"), "open_positions": len(positions)},
         )
         self._cycle_phase = "global_intelligence"
-        macro_context = await self.macro.context_for_cycle() if self.macro else {}
+        macro_context = (
+            await self._run_optional_phase(
+                component="macro",
+                event="global_context",
+                description="Global intelligence",
+                awaitable=self.macro.context_for_cycle(),
+                default={},
+            )
+            if self.macro
+            else {}
+        )
         self.db.set_state("macro_context", macro_context)
         self._log(
             "INFO",
@@ -486,7 +496,13 @@ class TradingAgentService:
         )
         self._cycle_phase = "institutional_feeds"
         institutional_context = (
-            await self.institutional_feeds.context_for_cycle(universe)
+            await self._run_optional_phase(
+                component="feeds",
+                event="institutional_context",
+                description="Free institutional context",
+                awaitable=self.institutional_feeds.context_for_cycle(universe),
+                default={},
+            )
             if self.institutional_feeds
             else {}
         )
@@ -504,31 +520,65 @@ class TradingAgentService:
         )
         self._cycle_phase = "options_intelligence"
         options_context = (
-            await self.options_intelligence.context_for_cycle(universe, quotes)
+            await self._run_optional_phase(
+                component="options",
+                event="options_intelligence",
+                description="Options intelligence",
+                awaitable=self.options_intelligence.context_for_cycle(universe, quotes),
+                default={},
+            )
             if self.options_intelligence
             else {}
         )
         self.db.set_state("options_intelligence_context", options_context)
         self._cycle_phase = "delivery_data"
-        delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else {}
+        delivery_status = (
+            await self._run_optional_phase(
+                component="delivery",
+                event="delivery_data",
+                description="Delivery data refresh",
+                awaitable=self.delivery_service.ensure_data_current(),
+                default={},
+            )
+            if self.delivery_service
+            else {}
+        )
         self.db.set_state("delivery_data_status", delivery_status)
         self._cycle_phase = "market_breadth"
         market_breadth_context = (
-            await self._market_breadth_by_region(universe, quotes, candles)
+            await self._run_optional_phase(
+                component="market_breadth",
+                event="market_breadth_context",
+                description="Market breadth",
+                awaitable=self._market_breadth_by_region(universe, quotes, candles),
+                default={},
+            )
             if self.market_breadth
             else {}
         )
         self.db.set_state("market_breadth_context", market_breadth_context)
         self._cycle_phase = "sector_rotation"
         sector_rotation_context = (
-            await self._sector_rotation_by_region(universe, quotes, candles)
+            await self._run_optional_phase(
+                component="sector_rotation",
+                event="sector_rotation_context",
+                description="Sector rotation",
+                awaitable=self._sector_rotation_by_region(universe, quotes, candles),
+                default={},
+            )
             if self.sector_rotation
             else {}
         )
         self.db.set_state("sector_rotation_context", sector_rotation_context)
         self._cycle_phase = "macro_calendar"
         macro_calendar_context = (
-            await self.macro_calendar.event_context_for_cycle()
+            await self._run_optional_phase(
+                component="macro_calendar",
+                event="macro_calendar",
+                description="Macro calendar",
+                awaitable=self.macro_calendar.event_context_for_cycle(),
+                default={},
+            )
             if self.macro_calendar
             else {}
         )
@@ -738,6 +788,46 @@ class TradingAgentService:
             await self.on_update(snapshot)
         return snapshot
 
+    async def _run_optional_phase(
+        self,
+        *,
+        component: str,
+        event: str,
+        description: str,
+        awaitable: Awaitable[dict[str, Any]],
+        default: dict[str, Any],
+    ) -> dict[str, Any]:
+        timeout = self._optional_phase_timeout_seconds()
+        try:
+            result = await asyncio.wait_for(awaitable, timeout=timeout)
+            return result if isinstance(result, dict) else dict(default)
+        except asyncio.TimeoutError:
+            self._log(
+                "WARN",
+                component,
+                f"{event}_timeout",
+                f"{description} timed out after {timeout:g}s; continuing with empty context.",
+                {"phase": self._cycle_phase, "timeout_seconds": timeout},
+            )
+            return {**default, "status": "timeout", "timeout_seconds": timeout}
+        except Exception as exc:
+            self._log(
+                "WARN",
+                component,
+                f"{event}_failed",
+                f"{description} failed; continuing with empty context.",
+                {"phase": self._cycle_phase, "error": f"{exc.__class__.__name__}: {str(exc)[:220]}"},
+            )
+            return {**default, "status": "error", "error": f"{exc.__class__.__name__}: {str(exc)[:220]}"}
+
+    def _optional_phase_timeout_seconds(self) -> float:
+        raw = getattr(self.strategy.settings, "optional_phase_timeout_seconds", 8.0)
+        try:
+            value = float(raw or 8.0)
+        except (TypeError, ValueError):
+            value = 8.0
+        return max(1.0, min(value, max(float(self.cycle_timeout_seconds) - 1.0, 1.0)))
+
     async def _run_market_closed_prep(
         self,
         started: datetime,
@@ -816,16 +906,42 @@ class TradingAgentService:
                 reason="post_market_tomorrow_prep",
             )
             self._cycle_phase = "macro_calendar"
-            macro_context = await self.macro.context_for_cycle() if self.macro else macro_context
+            macro_context = (
+                await self._run_optional_phase(
+                    component="macro",
+                    event="global_context",
+                    description="Global intelligence",
+                    awaitable=self.macro.context_for_cycle(),
+                    default=macro_context if isinstance(macro_context, dict) else {},
+                )
+                if self.macro
+                else macro_context
+            )
             self.db.set_state("macro_context", macro_context)
             macro_calendar_context = (
-                await self.macro_calendar.event_context_for_cycle()
+                await self._run_optional_phase(
+                    component="macro_calendar",
+                    event="macro_calendar",
+                    description="Macro calendar",
+                    awaitable=self.macro_calendar.event_context_for_cycle(),
+                    default=macro_calendar_context if isinstance(macro_calendar_context, dict) else {},
+                )
                 if self.macro_calendar
                 else macro_calendar_context
             )
             self.db.set_state("macro_calendar_context", macro_calendar_context)
             self._cycle_phase = "delivery_data"
-            delivery_status = await self.delivery_service.ensure_data_current() if self.delivery_service else delivery_status
+            delivery_status = (
+                await self._run_optional_phase(
+                    component="delivery",
+                    event="delivery_data",
+                    description="Delivery data refresh",
+                    awaitable=self.delivery_service.ensure_data_current(),
+                    default=delivery_status if isinstance(delivery_status, dict) else {},
+                )
+                if self.delivery_service
+                else delivery_status
+            )
             self.db.set_state("delivery_data_status", delivery_status)
             self._cycle_phase = "post_market_candle_backfill"
             backfill_rows, backfill_plan = self._candle_backfill_universe(full_universe, set())
