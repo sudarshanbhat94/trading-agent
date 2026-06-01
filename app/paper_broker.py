@@ -10,7 +10,12 @@ from .llm_policy import LLM_HARD_DISABLED
 from .market_regions import market_region_for_row, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .order_router import OrderRouter
-from .trade_economics import exit_economics, minimum_auto_follow_notional, should_block_low_value_profit_exit
+from .trade_economics import (
+    exit_economics,
+    minimum_auto_follow_notional,
+    round_trip_cost_breakdown,
+    should_block_low_value_profit_exit,
+)
 from .trading_readiness import live_order_gate
 from .trading_rules import capital_position_limit
 
@@ -327,11 +332,8 @@ class PaperBroker:
             )
             return False
         gross_notional = qty * fill_price
-        if (
-            bool(economic_floor.get("allowed"))
-            and not bool(economic_floor.get("applied"))
-            and gross_notional < float(economic_floor.get("minimum_notional") or 0.0)
-        ):
+        minimum_notional = float(economic_floor.get("minimum_notional") or 0.0)
+        if minimum_notional > 0 and gross_notional < minimum_notional:
             self.db.insert_order(
                 decision.symbol,
                 "BUY",
@@ -356,7 +358,7 @@ class PaperBroker:
                 ),
             )
             return False
-        estimated_costs = _trade_cost(gross_notional, self.settings)
+        estimated_costs = _trade_cost(gross_notional, self.settings, market_region, side="BUY")
         cash_after = cash_before - gross_notional - estimated_costs
 
         cash_by_market = self.cash_by_market()
@@ -482,7 +484,7 @@ class PaperBroker:
             strategy = row["strategy"] or decision.strategy
             fill_price = _paper_fill_price(decision.price, "SELL", self.settings)
             proceeds = qty * fill_price
-            estimated_costs = _trade_cost(proceeds, self.settings)
+            estimated_costs = _trade_cost(proceeds, self.settings, market_region, side="SELL")
             net_proceeds = proceeds - estimated_costs
             economics = exit_economics(float(row["avg_price"]), fill_price, qty, market_region, self.settings)
             action_key = _exit_action_key_from_decision(decision, full=True)
@@ -603,7 +605,7 @@ class PaperBroker:
             qty = min(qty, int(row["qty"]))
             remaining = int(row["qty"]) - qty
             proceeds = qty * fill_price
-            estimated_costs = _trade_cost(proceeds, self.settings)
+            estimated_costs = _trade_cost(proceeds, self.settings, market_region, side="SELL")
             net_proceeds = proceeds - estimated_costs
             economics = exit_economics(float(row["avg_price"]), fill_price, qty, market_region, self.settings)
             action_key = _exit_action_key_from_decision(decision, full=False)
@@ -1122,16 +1124,34 @@ def _fee_bps(settings: Settings) -> float:
     )
 
 
-def _trade_cost(notional: float, settings: Settings) -> float:
-    return max(float(notional), 0.0) * (_fee_bps(settings) / 10_000)
+def _trade_cost(
+    notional: float,
+    settings: Settings,
+    market_region: str | None = "IN",
+    *,
+    side: str = "BUY",
+) -> float:
+    amount = max(float(notional), 0.0)
+    market = str(market_region or "IN").upper()
+    if market == "IN":
+        side_key = str(side or "BUY").upper()
+        buy_notional = amount if side_key == "BUY" else 0.0
+        sell_notional = amount if side_key == "SELL" else 0.0
+        return float(round_trip_cost_breakdown(buy_notional, sell_notional, "IN", settings).get("total") or 0.0)
+    return amount * (_fee_bps(settings) / 10_000)
 
 
 def _cost_model(settings: Settings) -> dict[str, float]:
     return {
-        "brokerage_bps": float(settings.brokerage_bps or 0.0),
-        "slippage_bps": float(settings.slippage_bps or 0.0),
-        "taxes_bps": float(settings.taxes_bps or 0.0),
-        "stt_bps": float(settings.stt_bps or 0.0),
+        "brokerage_bps": float(getattr(settings, "brokerage_bps", 0.0) or 0.0),
+        "slippage_bps": float(getattr(settings, "slippage_bps", 0.0) or 0.0),
+        "taxes_bps": float(getattr(settings, "taxes_bps", 0.0) or 0.0),
+        "stt_bps": float(getattr(settings, "stt_bps", 0.0) or 0.0),
+        "india_brokerage_flat_per_order": float(getattr(settings, "india_brokerage_flat_per_order", 20.0) or 0.0),
+        "india_exchange_charges_bps": float(getattr(settings, "india_exchange_charges_bps", 0.345) or 0.0),
+        "india_sebi_charges_bps": float(getattr(settings, "india_sebi_charges_bps", 0.01) or 0.0),
+        "india_gst_pct": float(getattr(settings, "india_gst_pct", 18.0) or 0.0),
+        "india_stamp_duty_bps": float(getattr(settings, "india_stamp_duty_bps", 1.5) or 0.0),
         "fee_bps_charged_on_notional": round(_fee_bps(settings), 4),
     }
 

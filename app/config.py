@@ -234,6 +234,12 @@ class Settings:
     slippage_bps: float = _float("SLIPPAGE_BPS", 5.0)
     taxes_bps: float = _float("TAXES_BPS", 1.0)
     stt_bps: float = _float("STT_BPS", 10.0)
+    india_brokerage_flat_per_order: float = _float("INDIA_BROKERAGE_FLAT_PER_ORDER", 20.0)
+    india_exchange_charges_bps: float = _float("INDIA_EXCHANGE_CHARGES_BPS", 0.345)
+    india_sebi_charges_bps: float = _float("INDIA_SEBI_CHARGES_BPS", 0.01)
+    india_gst_pct: float = _float("INDIA_GST_PCT", 18.0)
+    india_stamp_duty_bps: float = _float("INDIA_STAMP_DUTY_BPS", 1.5)
+    paper_risk_per_trade_pct: float = _float("PAPER_RISK_PER_TRADE_PCT", 0.01)
     paper_min_auto_follow_notional_inr: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_INR", 7500.0)
     paper_min_auto_follow_notional_usd: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_USD", 250.0)
     paper_min_exit_net_profit_inr: float = _float("PAPER_MIN_EXIT_NET_PROFIT_INR", 75.0)
@@ -453,6 +459,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "slippage_bps", "label": "Slippage Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
     {"key": "taxes_bps", "label": "Taxes/Fees Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
     {"key": "stt_bps", "label": "STT Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
+    {"key": "india_brokerage_flat_per_order", "label": "India Brokerage/Order", "type": "number", "category": "Risk", "min": 0, "step": 1},
+    {"key": "india_exchange_charges_bps", "label": "India Exchange Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.001},
+    {"key": "india_sebi_charges_bps", "label": "India SEBI Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.001},
+    {"key": "india_gst_pct", "label": "India GST %", "type": "number", "category": "Risk", "min": 0, "step": 0.1},
+    {"key": "india_stamp_duty_bps", "label": "India Stamp Duty Bps", "type": "number", "category": "Risk", "min": 0, "step": 0.01},
+    {"key": "paper_risk_per_trade_pct", "label": "Paper Risk/Trade %", "type": "number", "category": "Risk", "min": 0.001, "max": 0.05, "step": 0.001},
     {"key": "paper_min_auto_follow_notional_inr", "label": "Min Paper Trade INR", "type": "number", "category": "Risk", "min": 0, "step": 500},
     {"key": "paper_min_auto_follow_notional_usd", "label": "Min Paper Trade USD", "type": "number", "category": "Risk", "min": 0, "step": 25},
     {"key": "paper_min_exit_net_profit_inr", "label": "Min Exit Net Profit INR", "type": "number", "category": "Risk", "min": 0, "step": 5},

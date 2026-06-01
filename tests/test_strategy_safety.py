@@ -2951,7 +2951,7 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(order["status"], "VETOED")
         self.assertEqual(order["reason"], "position_size_below_minimum_trade_economics")
 
-    def test_paper_broker_does_not_upsize_reduced_quality_probe(self) -> None:
+    def test_paper_broker_vetoes_reduced_quality_probe_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -2966,16 +2966,16 @@ class StrategySafetyTests(unittest.TestCase):
             )
 
             filled = broker.execute(decision, portfolio_equity=25_000.0)
-            [position] = db.positions()
+            positions = db.positions()
             with db.connect() as conn:
                 order = conn.execute("select * from orders where symbol = 'PROBESIZE'").fetchone()
 
-        self.assertTrue(filled)
-        self.assertLess(position["qty"], 75)
+        self.assertFalse(filled)
+        self.assertEqual(positions, [])
+        self.assertEqual(order["status"], "VETOED")
+        self.assertEqual(order["reason"], "position_size_below_minimum_trade_economics")
         details = json.loads(order["details_json"])
-        economics = details["execution"]["sizing"]["trade_economics"]
-        self.assertFalse(economics["applied"])
-        self.assertEqual(economics["reason"], "reduced_allocation_cap")
+        self.assertEqual(details["execution"]["veto_gate"], "trade_economics_min_notional")
 
     def test_paper_broker_blocks_tiny_profit_partial_exit_after_costs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
