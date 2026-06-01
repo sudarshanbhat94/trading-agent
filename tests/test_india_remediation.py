@@ -8,6 +8,7 @@ from types import MethodType, SimpleNamespace
 
 from app.agent import TradingAgentService
 from app.db import Database
+from app.pre_catalyst_engine import _missed_move_min_pct_for_universe
 
 
 class IndiaRemediationTests(unittest.TestCase):
@@ -42,6 +43,57 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(summary["missed_move_review_row_id"], rows[0]["id"])
         self.assertEqual(rows[0]["review_date"], "2026-06-01")
         self.assertEqual(rows[0]["details"]["review"]["items"][0]["symbol"], "MISSED")
+
+    def test_agent_persists_us_missed_move_review_when_running_both_markets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            agent = TradingAgentService.__new__(TradingAgentService)
+            agent.db = db
+            agent.market_region = "BOTH"
+            agent.strategy = SimpleNamespace(
+                settings=SimpleNamespace(missed_move_review_enabled=True, missed_move_review_market="BOTH")
+            )
+            summary = {
+                "generated_at": "2026-06-01T14:30:00+00:00",
+                "candidates": [{"symbol": "NVDA", "market_region": "US"}],
+                "candidate_pool": [{"symbol": "NVDA", "market_region": "US"}],
+                "candidate_pool_count": 1,
+                "live_confirmations": [],
+                "label_counts": {"READY_AT_OPEN": 1},
+                "missed_move_review": {
+                    "enabled": True,
+                    "generated_at": "2026-06-01T14:30:00+00:00",
+                    "reviewed_movers": 1,
+                    "items": [{"symbol": "NVDA", "status": "absent_from_prior_watchlist", "move_pct": 3.4}],
+                },
+            }
+
+            agent._persist_missed_move_review(summary)
+            rows = db.latest_missed_move_reviews(5, market_region="US")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["market_region"], "US")
+        self.assertEqual(rows[0]["details"]["market_region"], "US")
+
+    def test_missed_move_threshold_uses_market_specific_setting(self) -> None:
+        settings = SimpleNamespace(missed_move_min_move_pct_in=3.0, missed_move_min_move_pct_us=2.5)
+
+        self.assertEqual(
+            _missed_move_min_pct_for_universe(settings, [{"symbol": "NVDA", "exchange": "NASDAQ"}]),
+            2.5,
+        )
+        self.assertEqual(
+            _missed_move_min_pct_for_universe(settings, [{"symbol": "RELIANCE", "exchange": "NSE"}]),
+            3.0,
+        )
+        self.assertEqual(
+            _missed_move_min_pct_for_universe(
+                settings,
+                [{"symbol": "RELIANCE", "exchange": "NSE"}, {"symbol": "NVDA", "exchange": "NASDAQ"}],
+            ),
+            2.5,
+        )
 
     def test_manual_run_once_is_wrapped_by_cycle_timeout(self) -> None:
         async def slow_inner(self: TradingAgentService) -> dict:

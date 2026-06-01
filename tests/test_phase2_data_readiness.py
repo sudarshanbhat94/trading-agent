@@ -168,6 +168,30 @@ class Phase2DataReadinessTests(unittest.TestCase):
         self.assertNotIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
         self.assertIn("us_consolidated_tape", [item["key"] for item in readiness["soft_gaps"]])
 
+    def test_us_paper_fresh_quote_keeps_missing_minute_bars_as_soft_gap(self) -> None:
+        readiness = assess_phase2_data_readiness(
+            row={"symbol": "MSFT", "exchange": "NASDAQ", "name": "Microsoft", "cik": "789019"},
+            quote=Quote(symbol="MSFT", price=430, source="alpaca-sip-live", asof="2026-05-20T14:30:00+00:00", volume=8_000_000),
+            timeframe_candles={
+                "daily": _candles("MSFT", "alpaca-sip-live:day", 80),
+                "intraday": [],
+            },
+            sentiment={"status": "AVAILABLE", "score": 0.2, "source": "news", "headlines": ["Microsoft files 10-Q", "analyst upgrade"]},
+            delivery_data={},
+            options_data={"source": "alpaca_options", "flow_available": True},
+            sector_context={},
+            market_breadth={},
+            macro_event_context={"source": "earnings_calendar"},
+            institutional_context={},
+            full_spectrum={"liquidity_profile": {"volume_ratio_20": 1.4}},
+            execution_mode="paper",
+        )
+
+        self.assertTrue(readiness["trade_decision_ready"])
+        self.assertIn("us_minute_bars", readiness["missing_data"])
+        self.assertIn("us_minute_bars", [item["key"] for item in readiness["soft_gaps"]])
+        self.assertNotIn("us_minute_bars", [item["key"] for item in readiness["hard_gaps"]])
+
     def test_us_alpaca_iex_is_not_live_execution_grade(self) -> None:
         readiness = assess_phase2_data_readiness(
             row={"symbol": "MSFT", "exchange": "NASDAQ", "name": "Microsoft", "cik": "789019"},

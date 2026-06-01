@@ -99,6 +99,7 @@ def assess_phase2_data_readiness(
         paper_iex_minute_ok = mode == "paper" and iex_minute_ok and (paper_iex_reference_ok or yahoo_quote_ok)
         realtime_source_ok = consolidated_source_ok or yahoo_quote_ok or paper_iex_reference_ok
         minute_source_ok = sip_minute_ok or yahoo_daily_confirmation_ok or paper_iex_minute_ok
+        minute_severity = SOFT if mode == "paper" and realtime_source_ok and not minute_source_ok else HARD
         quote_note = (
             f"Yahoo reference quote age {quote_age_minutes:.1f}m"
             if yahoo_quote_ok and quote_age_minutes is not None
@@ -111,6 +112,8 @@ def assess_phase2_data_readiness(
             if yahoo_daily_confirmation_ok and not sip_minute_ok
             else "Alpaca IEX bars are venue-limited; paper validation uses reduced size and separate freshness/live-confirmation gates"
             if paper_iex_minute_ok and not sip_minute_ok
+            else "Fresh US quote is current; missing minute bars stay visible as setup evidence gaps for paper decisions."
+            if minute_severity == SOFT and not minute_source_ok
             else f"{len(intraday)} candles"
         )
         earnings_checked = not _has_gap(macro_event_context, "earnings_calendar_empty")
@@ -139,7 +142,7 @@ def assess_phase2_data_readiness(
             "us_minute_bars",
             "US minute bars or Yahoo swing-confirmation bars",
             minute_source_ok,
-            HARD,
+            minute_severity,
             intraday_source or daily_source,
             minute_note,
         )
@@ -280,7 +283,13 @@ def _fresh_market_data_gate(market: str, quote: Quote, intraday: list[Candle]) -
             "policy": "watch_only_until_current_session_data_confirms",
         }
 
-    def passed(reason: str = "current_session_data", message: str | None = None, *, intraday_warning: str = "") -> dict[str, Any]:
+    def passed(
+        reason: str = "current_session_data",
+        message: str | None = None,
+        *,
+        intraday_warning: str = "",
+        policy: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "passed": True,
             "reason": reason,
@@ -296,9 +305,12 @@ def _fresh_market_data_gate(market: str, quote: Quote, intraday: list[Candle]) -
             "latest_intraday_ts": intraday[-1].ts if intraday else None,
             "intraday_warning": intraday_warning,
             "checked_at": now.isoformat(),
-            "policy": "fresh_live_quote_can_drive_quote_based_india_setups; stale candles remain blockers only for candle-dependent setup checks"
-            if market == "IN"
-            else "fresh_buy_allowed_to_reach_quality_gates",
+            "policy": policy
+            or (
+                "fresh_live_quote_can_drive_quote_based_india_setups; stale candles remain blockers only for candle-dependent setup checks"
+                if market == "IN"
+                else "fresh_buy_allowed_to_reach_quality_gates"
+            ),
         }
 
     if "moneycontrol" in source:
@@ -316,23 +328,41 @@ def _fresh_market_data_gate(market: str, quote: Quote, intraday: list[Candle]) -
         return blocked("quote_stale_for_current_session", "Quote is too old for a fresh BUY decision.")
     if not _timestamp_in_current_session_date(quote_dt, session):
         return blocked("quote_not_current_session", "Quote timestamp is not from the current valid market session.")
-    india_live_quote_source = market == "IN" and _source_has(source, ("upstox", "kite", "nubra", "indstocks-live"))
+    current_quote_can_carry_reference_setups = (
+        market == "IN"
+        and _source_has(source, ("upstox", "kite", "nubra", "indstocks-live"))
+    ) or (
+        market == "US"
+        and _source_has(source, ("alpaca-sip", "alpaca-iex", "polygon", "iex", "yahoo"))
+    )
+    stale_intraday_policy = (
+        "fresh_live_quote_can_drive_quote_based_india_setups; stale candles remain blockers only for candle-dependent setup checks"
+        if market == "IN"
+        else "fresh_us_quote_can_drive_reference_or_swing_setups; stale minute bars remain blockers only for candle-dependent live-momentum setup checks"
+    )
+    stale_intraday_message = (
+        "Live India quote is current; stale intraday candles are kept as setup evidence gaps instead of a universal BUY blocker."
+        if market == "IN"
+        else "Fresh US quote is current; stale minute bars are kept as setup evidence gaps instead of a universal paper BUY blocker."
+    )
     if latest_intraday_dt is not None and not _timestamp_in_current_session_date(latest_intraday_dt, session):
-        if india_live_quote_source:
+        if current_quote_can_carry_reference_setups:
             return passed(
                 "live_quote_ready_intraday_reference_stale",
-                "Live India quote is current; stale intraday candles are kept as setup evidence gaps instead of a universal BUY blocker.",
+                stale_intraday_message,
                 intraday_warning="intraday_not_current_session",
+                policy=stale_intraday_policy,
             )
         return blocked("intraday_not_current_session", "Latest intraday candle is not from the current valid market session.")
     if latest_intraday_dt is not None:
         intraday_age = (now - latest_intraday_dt.astimezone(timezone.utc)).total_seconds() / 60.0
         if intraday_age > max(max_age * 2, 20.0):
-            if india_live_quote_source:
+            if current_quote_can_carry_reference_setups:
                 return passed(
                     "live_quote_ready_intraday_reference_stale",
-                    "Live India quote is current; stale intraday candles are kept as setup evidence gaps instead of a universal BUY blocker.",
+                    stale_intraday_message,
                     intraday_warning="intraday_stale_for_current_session",
+                    policy=stale_intraday_policy,
                 )
             return blocked("intraday_stale_for_current_session", "Latest intraday candle is too old for live confirmation.")
 

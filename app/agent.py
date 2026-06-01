@@ -1148,8 +1148,8 @@ class TradingAgentService:
         review = summary.get("missed_move_review") if isinstance(summary, dict) else {}
         if not isinstance(review, dict) or not review.get("enabled"):
             return
-        configured_market = str(getattr(settings, "missed_move_review_market", "IN") or "IN").upper()
-        market_region = normalize_market_region(self.market_region, default="IN")
+        configured_market = normalize_market_region(getattr(settings, "missed_move_review_market", "BOTH") or "BOTH", default="BOTH")
+        market_region = self._missed_move_review_market_region(summary)
         if configured_market not in {"BOTH", market_region}:
             return
         generated_at = str(review.get("generated_at") or summary.get("generated_at") or utc_now())
@@ -1171,6 +1171,30 @@ class TradingAgentService:
             ts=generated_at,
         )
         summary["missed_move_review_row_id"] = row_id
+
+    def _missed_move_review_market_region(self, summary: dict[str, Any]) -> str:
+        configured_region = normalize_market_region(self.market_region or "BOTH", default="BOTH")
+        if configured_region != "BOTH":
+            return configured_region
+        markets: set[str] = set()
+        for key in ("candidates", "candidate_pool", "live_confirmations"):
+            values = summary.get(key) if isinstance(summary, dict) else []
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                if not isinstance(item, dict):
+                    continue
+                raw_market = item.get("market_region")
+                if raw_market:
+                    markets.add(normalize_market_region(raw_market, default="BOTH"))
+                    continue
+                symbol = str(item.get("symbol") or "")
+                if symbol:
+                    markets.add(market_region_for_row(item))
+        markets.discard("BOTH")
+        if len(markets) == 1:
+            return next(iter(markets))
+        return "BOTH"
 
     def _post_market_news_rows(
         self,

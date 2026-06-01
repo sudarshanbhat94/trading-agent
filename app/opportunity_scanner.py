@@ -70,6 +70,24 @@ _WAIT_ONLY_TRADE_WINDOWS = {
     "watch_only",
 }
 
+_INDIA_SLOT_BUDGETS = {
+    "live_rally": 45,
+    "volume_price": 40,
+    "breakout": 35,
+    "delivery_btst": 35,
+    "sector_rs": 25,
+    "diverse": 20,
+}
+
+_US_SLOT_BUDGETS = {
+    "live_rally": 45,
+    "volume_price": 40,
+    "breakout": 40,
+    "earnings_news": 30,
+    "sector_rs": 25,
+    "diverse": 20,
+}
+
 
 class OpportunityScanner:
     """Ranks a broad quote universe before the expensive strategy/LLM pass."""
@@ -85,7 +103,26 @@ class OpportunityScanner:
                 "live_rally=45,volume_price=40,breakout=35,delivery_btst=35,sector_rs=25,diverse=20",
             ),
             self.india_full_decision_target,
+            _INDIA_SLOT_BUDGETS,
         )
+        self.us_full_decision_target = max(1, int(getattr(settings, "us_full_decision_target", 200) or 200))
+        self.us_slot_budgets = _parse_slot_budgets(
+            getattr(
+                settings,
+                "us_scanner_slot_budgets",
+                "live_rally=45,volume_price=40,breakout=40,earnings_news=30,sector_rs=25,diverse=20",
+            ),
+            self.us_full_decision_target,
+            _US_SLOT_BUDGETS,
+        )
+        self.market_full_decision_targets = {
+            "IN": self.india_full_decision_target,
+            "US": self.us_full_decision_target,
+        }
+        self.market_slot_budgets = {
+            "IN": self.india_slot_budgets,
+            "US": self.us_slot_budgets,
+        }
         self.min_score = _clamp(
             float(getattr(settings, "dynamic_scan_min_score", 0.58) or 0.0),
             0.0,
@@ -217,10 +254,17 @@ class OpportunityScanner:
             "configured_candidate_limit": self.candidate_limit,
             "target_decision_symbols": selection_limit,
             "india_full_decision_target": self.india_full_decision_target,
+            "us_full_decision_target": self.us_full_decision_target,
+            "market_full_decision_targets": dict(self.market_full_decision_targets),
+            "target_decision_symbols_by_market": slot_summary.get("targets_by_market", {}),
             "slot_budget_target": slot_summary.get("target"),
             "slot_budgets": slot_summary.get("budgets", {}),
             "slot_fill_counts": slot_summary.get("fills", {}),
             "slot_shortfalls": slot_summary.get("shortfalls", {}),
+            "slot_budgets_by_market": slot_summary.get("budgets_by_market", {}),
+            "slot_fill_counts_by_market": slot_summary.get("fills_by_market", {}),
+            "slot_shortfalls_by_market": slot_summary.get("shortfalls_by_market", {}),
+            "scanner_selection_mode": slot_summary.get("mode"),
             "selected_symbols": len(selected_universe),
             "soft_predecision_reject_counts": self._counts(
                 reason
@@ -1498,7 +1542,7 @@ class OpportunityScanner:
         return reason
 
     def _soft_predecision_reject_allowed(self, item: dict[str, Any], reason: str) -> bool:
-        if str(item.get("market_region") or "").upper() != "IN":
+        if str(item.get("market_region") or "").upper() not in {"IN", "US"}:
             return False
         hard_reasons = {
             "invalid_price",
@@ -1692,11 +1736,25 @@ class OpportunityScanner:
         return selected
 
     def _selection_limit_for_universe(self, universe: list[dict[str, Any]]) -> int:
-        regions = [market_region_for_row(row) for row in universe if row.get("symbol")]
-        india_symbols = sum(1 for region in regions if region == "IN")
-        if india_symbols and india_symbols >= max(1, len(regions) * 0.80):
-            return max(self.candidate_limit, min(self.india_full_decision_target, len(universe)))
+        counts = self._market_counts_for_universe(universe)
+        supported_total = sum(count for market, count in counts.items() if market in self.market_full_decision_targets)
+        if supported_total:
+            target_total = sum(
+                min(self.market_full_decision_targets[market], count)
+                for market, count in counts.items()
+                if market in self.market_full_decision_targets
+            )
+            return min(len(universe), max(self.candidate_limit, target_total))
         return min(self.candidate_limit, len(universe)) if universe else self.candidate_limit
+
+    def _market_counts_for_universe(self, universe: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in universe:
+            if not row.get("symbol"):
+                continue
+            market = market_region_for_row(row)
+            counts[market] = counts.get(market, 0) + 1
+        return counts
 
     def _select_items(
         self,
@@ -1705,12 +1763,90 @@ class OpportunityScanner:
         universe: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if limit <= 0:
-            return [], {"mode": "disabled", "target": 0, "budgets": {}, "fills": {}, "shortfalls": {}}
-        regions = [market_region_for_row(row) for row in universe if row.get("symbol")]
-        india_symbols = sum(1 for region in regions if region == "IN")
-        if india_symbols and india_symbols >= max(1, len(regions) * 0.80):
-            selected, summary = self._select_india_slot_budgeted(scored, limit)
-            return selected, summary
+            return [], {
+                "mode": "disabled",
+                "target": 0,
+                "budgets": {},
+                "fills": {},
+                "shortfalls": {},
+                "targets_by_market": {},
+                "budgets_by_market": {},
+                "fills_by_market": {},
+                "shortfalls_by_market": {},
+            }
+        counts = self._market_counts_for_universe(universe)
+        target_by_market = {
+            market: min(self.market_full_decision_targets[market], counts.get(market, 0))
+            for market in ("IN", "US")
+            if counts.get(market, 0) > 0
+        }
+        if target_by_market:
+            selected: list[dict[str, Any]] = []
+            selected_symbols: set[str] = set()
+            summaries: dict[str, dict[str, Any]] = {}
+            scored_by_market: dict[str, list[dict[str, Any]]] = {}
+            for item in scored:
+                market = str(item.get("market_region") or "").upper()
+                scored_by_market.setdefault(market, []).append(item)
+            for market in ("IN", "US"):
+                market_limit = target_by_market.get(market, 0)
+                if market_limit <= 0:
+                    continue
+                market_selected, market_summary = self._select_market_slot_budgeted(
+                    market,
+                    scored_by_market.get(market, []),
+                    market_limit,
+                )
+                summaries[market] = market_summary
+                for item in market_selected:
+                    symbol = str(item.get("symbol") or "")
+                    if not symbol or symbol in selected_symbols:
+                        continue
+                    selected.append(item)
+                    selected_symbols.add(symbol)
+            if len(selected) < limit:
+                remainder = [item for item in scored if str(item.get("symbol") or "") not in selected_symbols]
+                for item in self._select_diverse(remainder, limit - len(selected)):
+                    symbol = str(item.get("symbol") or "")
+                    if not symbol or symbol in selected_symbols:
+                        continue
+                    selected.append(item)
+                    selected_symbols.add(symbol)
+                    market = str(item.get("market_region") or "").upper()
+                    summaries.setdefault(
+                        market,
+                        {"budgets": {}, "fills": {}, "shortfalls": {}, "target": 0},
+                    )
+                    summaries[market]["fills"]["cross_market_refill"] = (
+                        summaries[market]["fills"].get("cross_market_refill", 0) + 1
+                    )
+            selected.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+            fills_by_market = {market: summary.get("fills", {}) for market, summary in summaries.items()}
+            budgets_by_market = {market: summary.get("budgets", {}) for market, summary in summaries.items()}
+            shortfalls_by_market = {market: summary.get("shortfalls", {}) for market, summary in summaries.items()}
+            combined_fills: dict[str, int] = {}
+            combined_budgets: dict[str, int] = {}
+            combined_shortfalls: dict[str, int] = {}
+            for market, fills in fills_by_market.items():
+                for slot, count in fills.items():
+                    combined_fills[f"{market}:{slot}"] = int(count or 0)
+            for market, budgets in budgets_by_market.items():
+                for slot, count in budgets.items():
+                    combined_budgets[f"{market}:{slot}"] = int(count or 0)
+            for market, shortfalls in shortfalls_by_market.items():
+                for slot, count in shortfalls.items():
+                    combined_shortfalls[f"{market}:{slot}"] = int(count or 0)
+            return selected[:limit], {
+                "mode": "market_slot_budgeted",
+                "target": limit,
+                "targets_by_market": target_by_market,
+                "budgets": combined_budgets,
+                "fills": combined_fills,
+                "shortfalls": combined_shortfalls,
+                "budgets_by_market": budgets_by_market,
+                "fills_by_market": fills_by_market,
+                "shortfalls_by_market": shortfalls_by_market,
+            }
         selected = self._select_rally_radar_then_diverse(scored, limit)
         return selected, {
             "mode": "legacy_rally_radar_then_diverse",
@@ -1718,6 +1854,10 @@ class OpportunityScanner:
             "budgets": {"legacy": limit},
             "fills": {"legacy": len(selected)},
             "shortfalls": {"legacy": max(limit - len(selected), 0)},
+            "targets_by_market": {},
+            "budgets_by_market": {},
+            "fills_by_market": {},
+            "shortfalls_by_market": {},
         }
 
     def _select_india_slot_budgeted(
@@ -1725,9 +1865,19 @@ class OpportunityScanner:
         scored: list[dict[str, Any]],
         limit: int,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return self._select_market_slot_budgeted("IN", scored, limit)
+
+    def _select_market_slot_budgeted(
+        self,
+        market: str,
+        scored: list[dict[str, Any]],
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        market = str(market or "").upper()
+        slot_budgets = self.market_slot_budgets.get(market, self.india_slot_budgets)
         selected: list[dict[str, Any]] = []
         selected_symbols: set[str] = set()
-        fills: dict[str, int] = {slot: 0 for slot in self.india_slot_budgets}
+        fills: dict[str, int] = {slot: 0 for slot in slot_budgets}
 
         def add_from(slot: str, items: list[dict[str, Any]], budget: int) -> None:
             nonlocal selected
@@ -1743,15 +1893,15 @@ class OpportunityScanner:
                 selected_symbols.add(symbol)
                 fills[slot] = fills.get(slot, 0) + 1
 
-        buckets: dict[str, list[dict[str, Any]]] = {slot: [] for slot in self.india_slot_budgets}
+        buckets: dict[str, list[dict[str, Any]]] = {slot: [] for slot in slot_budgets}
         for item in scored:
-            slot = self._india_slot_for_item(item)
+            slot = self._market_slot_for_item(market, item)
             buckets.setdefault(slot, []).append(item)
 
         for slot, items in buckets.items():
-            items.sort(key=self._india_slot_rank_key, reverse=True)
+            items.sort(key=self._market_slot_rank_key, reverse=True)
 
-        for slot, budget in self.india_slot_budgets.items():
+        for slot, budget in slot_budgets.items():
             add_from(slot, buckets.get(slot, []), int(budget or 0))
 
         if len(selected) < limit:
@@ -1765,23 +1915,34 @@ class OpportunityScanner:
 
         shortfalls = {
             slot: max(int(budget or 0) - int(fills.get(slot, 0) or 0), 0)
-            for slot, budget in self.india_slot_budgets.items()
+            for slot, budget in slot_budgets.items()
         }
         return selected[:limit], {
-            "mode": "india_slot_budgeted",
+            "mode": f"{market.lower()}_slot_budgeted",
             "target": limit,
-            "budgets": dict(self.india_slot_budgets),
+            "market_region": market,
+            "budgets": dict(slot_budgets),
             "fills": fills,
             "shortfalls": shortfalls,
         }
 
     def _india_slot_for_item(self, item: dict[str, Any]) -> str:
+        return self._market_slot_for_item("IN", item)
+
+    def _market_slot_for_item(self, market: str, item: dict[str, Any]) -> str:
+        market = str(market or item.get("market_region") or "").upper()
         setup = str(item.get("setup") or "").strip()
         metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
         event_types = {str(value or "").upper() for value in market_action.get("event_types") or []}
         components = item.get("components") if isinstance(item.get("components"), dict) else {}
         btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
+        sentiment = item.get("sentiment") if isinstance(item.get("sentiment"), dict) else {}
+        sentiment_event_types = {
+            str(event.get("event_type") or event.get("label") or event.get("category") or "").lower()
+            for event in sentiment.get("events") or []
+            if isinstance(event, dict)
+        }
         if (
             setup in {*_LIVE_RALLY_SETUPS, "top_gainer_momentum", "market_action_momentum"}
             or "TOP_GAINER" in event_types
@@ -1802,11 +1963,17 @@ class OpportunityScanner:
             and float(metrics.get("distance_to_55d_high_pct") or 99.0) <= self.breakout_distance_pct
         ):
             return "breakout"
+        if market == "US" and (
+            setup in {"earnings_beat_gap_and_go", "broker_re_rating_breakout", "news_catalyst"}
+            or bool(sentiment.get("positive_catalyst"))
+            or sentiment_event_types & {"earnings", "earnings_beat", "guidance_raise", "analyst_upgrade", "order_win"}
+        ):
+            return "earnings_news"
         if (
             setup in {"btst_buy_candidate", "pre_rally_fuel", "volume_price_accumulation", "pullback_buy"}
             or bool(btst.get("detected"))
         ):
-            return "delivery_btst"
+            return "delivery_btst" if market == "IN" else "diverse"
         if (
             setup in {"trend_momentum", "time_series_momentum_trend", "normalized_momentum_factor", "minervini_trend_template"}
             or float(metrics.get("return_60d_pct") or 0.0) >= 15.0
@@ -1816,6 +1983,9 @@ class OpportunityScanner:
         return "diverse"
 
     def _india_slot_rank_key(self, item: dict[str, Any]) -> tuple[float, float, float, float]:
+        return self._market_slot_rank_key(item)
+
+    def _market_slot_rank_key(self, item: dict[str, Any]) -> tuple[float, float, float, float]:
         metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         return (
             self._rally_discovery_score(item),
@@ -2175,15 +2345,8 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-def _parse_slot_budgets(raw: Any, target: int) -> dict[str, int]:
-    defaults = {
-        "live_rally": 45,
-        "volume_price": 40,
-        "breakout": 35,
-        "delivery_btst": 35,
-        "sector_rs": 25,
-        "diverse": 20,
-    }
+def _parse_slot_budgets(raw: Any, target: int, defaults: dict[str, int] | None = None) -> dict[str, int]:
+    defaults = dict(defaults or _INDIA_SLOT_BUDGETS)
     if isinstance(raw, dict):
         items = raw.items()
     else:

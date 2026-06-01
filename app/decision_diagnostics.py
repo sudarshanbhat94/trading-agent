@@ -126,6 +126,18 @@ def build_cycle_decision_diagnostics(
         "slot_fill_counts": scan.get("slot_fill_counts") if isinstance(scan.get("slot_fill_counts"), dict) else {},
         "slot_budgets": scan.get("slot_budgets") if isinstance(scan.get("slot_budgets"), dict) else {},
         "slot_shortfalls": scan.get("slot_shortfalls") if isinstance(scan.get("slot_shortfalls"), dict) else {},
+        "target_decision_symbols_by_market": scan.get("target_decision_symbols_by_market")
+        if isinstance(scan.get("target_decision_symbols_by_market"), dict)
+        else {},
+        "slot_fill_counts_by_market": scan.get("slot_fill_counts_by_market")
+        if isinstance(scan.get("slot_fill_counts_by_market"), dict)
+        else {},
+        "slot_budgets_by_market": scan.get("slot_budgets_by_market")
+        if isinstance(scan.get("slot_budgets_by_market"), dict)
+        else {},
+        "slot_shortfalls_by_market": scan.get("slot_shortfalls_by_market")
+        if isinstance(scan.get("slot_shortfalls_by_market"), dict)
+        else {},
         "missed_move_review_row_id": missed_move_review_row_id or _int(scan.get("missed_move_review_row_id")),
         "live_quote_stale_intraday": {
             "blocked_decision_symbols": len(live_quote_stale_intraday_symbols),
@@ -229,7 +241,7 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     decisions = _int(funnel.get("decisions_created"))
     target = _int(funnel.get("target_decision_symbols"))
     buys = _int(funnel.get("buy_decisions"))
-    if raw >= 500 and selected > 0 and selected / raw < 0.05:
+    if raw >= 500 and selected > 0 and selected / raw < 0.05 and (target <= 0 or selected < target):
         flags.append(
             {
                 "severity": "warning",
@@ -237,22 +249,30 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "message": "Less than 5% of raw symbols reached full strategy decisions.",
             }
         )
-    if market_region == "IN" and target >= 100 and decisions < target:
+    if market_region in {"IN", "US", "BOTH"} and target >= 100 and decisions < target:
+        code = (
+            "nse_full_decision_target_missed"
+            if market_region == "IN"
+            else "us_full_decision_target_missed"
+            if market_region == "US"
+            else "market_full_decision_target_missed"
+        )
+        label = "India" if market_region == "IN" else "US" if market_region == "US" else "Configured market"
         flags.append(
             {
                 "severity": "critical",
-                "code": "nse_full_decision_target_missed",
-                "message": f"India cycle produced {decisions} full decisions below the configured target of {target}.",
+                "code": code,
+                "message": f"{label} cycle produced {decisions} full decisions below the configured target of {target}.",
             }
         )
-    if market_region == "IN" and diagnostics.get("mode") == "dynamic_opportunity_scan" and not _int(
+    if market_region in {"IN", "US", "BOTH"} and target >= 100 and diagnostics.get("mode") == "dynamic_opportunity_scan" and not _int(
         diagnostics.get("missed_move_review_row_id")
     ):
         flags.append(
             {
                 "severity": "critical",
                 "code": "missed_move_review_not_persisted",
-                "message": "India cycle did not persist a missed-move review row.",
+                "message": "Open-market cycle did not persist a missed-move review row.",
             }
         )
     if decisions >= 100 and buys == 0:

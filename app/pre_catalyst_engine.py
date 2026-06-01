@@ -247,7 +247,7 @@ def build_pre_catalyst_watchlist(
         previous_state=previous_state,
         current_candidates=all_candidate_dicts,
         now=now,
-        min_move_pct=float(getattr(settings, "missed_move_min_move_pct_in", 5.0) if settings is not None else 5.0),
+        min_move_pct=_missed_move_min_pct_for_universe(settings, universe),
     )
 
     current_symbols = {candidate.symbol for candidate in candidates}
@@ -286,6 +286,18 @@ def build_pre_catalyst_watchlist(
         "log_events": log_events[-80:],
     }
     return payload
+
+
+def _missed_move_min_pct_for_universe(settings: Any, universe: list[dict[str, Any]]) -> float:
+    if settings is None:
+        return 5.0
+    markets = {market_region_for_row(row) for row in universe if row.get("symbol")}
+    values: list[float] = []
+    if not markets or "IN" in markets:
+        values.append(float(getattr(settings, "missed_move_min_move_pct_in", 5.0) or 5.0))
+    if "US" in markets:
+        values.append(float(getattr(settings, "missed_move_min_move_pct_us", 3.0) or 3.0))
+    return min(values) if values else float(getattr(settings, "missed_move_min_move_pct_in", 5.0) or 5.0)
 
 
 def enrich_catalyst_calendar(

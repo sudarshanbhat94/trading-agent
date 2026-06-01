@@ -200,10 +200,11 @@ class OpportunityScannerTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 200)
         self.assertEqual(len({item["symbol"] for item in selected}), 200)
-        self.assertEqual(summary["mode"], "india_slot_budgeted")
+        self.assertEqual(summary["mode"], "market_slot_budgeted")
         self.assertEqual(summary["target"], 200)
-        self.assertGreater(summary["fills"].get("refill", 0), 0)
-        self.assertLess(summary["fills"]["live_rally"], summary["budgets"]["live_rally"])
+        self.assertEqual(summary["targets_by_market"]["IN"], 200)
+        self.assertGreater(summary["fills_by_market"]["IN"].get("refill", 0), 0)
+        self.assertLess(summary["fills_by_market"]["IN"]["live_rally"], summary["budgets_by_market"]["IN"]["live_rally"])
 
     def test_india_scan_keeps_soft_quality_rejects_for_full_decisioning(self) -> None:
         base_settings = _settings().__dict__.copy()
@@ -240,6 +241,112 @@ class OpportunityScannerTests(unittest.TestCase):
         self.assertEqual(len(result.selected_universe), 200)
         self.assertIn("below_opportunity_score", result.summary["soft_predecision_reject_counts"])
         self.assertEqual(result.summary["target_decision_symbols"], 200)
+
+    def test_us_slot_budgeting_refills_to_full_decision_target(self) -> None:
+        base_settings = _settings().__dict__.copy()
+        base_settings.update(
+            {
+                "us_full_decision_target": 200,
+                "us_scanner_slot_budgets": "live_rally=45,volume_price=40,breakout=40,earnings_news=30,sector_rs=25,diverse=20",
+            }
+        )
+        scanner = OpportunityScanner(SimpleNamespace(**base_settings))
+        scored = []
+        for index in range(260):
+            if index < 35:
+                setup = "earnings_beat_gap_and_go"
+                sentiment = {"positive_catalyst": True, "events": [{"event_type": "earnings_beat"}]}
+                components = {"live_momentum": 0.55}
+            elif index < 70:
+                setup = "near_breakout"
+                sentiment = {}
+                components = {"trend": 0.6}
+            elif index < 105:
+                setup = "market_action_momentum"
+                sentiment = {}
+                components = {"live_momentum": 0.78}
+            else:
+                setup = "trend_momentum"
+                sentiment = {}
+                components = {"trend": 0.76}
+            scored.append(
+                {
+                    "symbol": f"US{index}",
+                    "market_region": "US",
+                    "score": 0.96 - index * 0.001,
+                    "setup": setup,
+                    "sector": f"Sector{index % 15}",
+                    "metrics": {
+                        "projected_turnover": 20_000_000 + index,
+                        "volume_ratio": 1.0 + (index % 5) * 0.35,
+                        "distance_to_55d_high_pct": 1.5 if setup == "near_breakout" else 6.0,
+                        "return_60d_pct": 18.0 if setup == "trend_momentum" else 4.0,
+                    },
+                    "components": components,
+                    "market_action": {"event_types": ["TOP_GAINER"]} if setup == "market_action_momentum" else {},
+                    "sentiment": sentiment,
+                    "btst": {},
+                    "top_gainers_playbook": {},
+                }
+            )
+        universe = [{"symbol": item["symbol"], "exchange": "NASDAQ"} for item in scored]
+
+        selected, summary = scanner._select_items(scored, 200, universe)
+
+        self.assertEqual(len(selected), 200)
+        self.assertEqual(len({item["symbol"] for item in selected}), 200)
+        self.assertEqual(summary["targets_by_market"]["US"], 200)
+        self.assertEqual(summary["budgets_by_market"]["US"]["earnings_news"], 30)
+        self.assertGreater(summary["fills_by_market"]["US"].get("refill", 0), 0)
+        self.assertGreater(summary["fills_by_market"]["US"].get("earnings_news", 0), 0)
+
+    def test_mixed_india_us_scan_targets_both_markets(self) -> None:
+        base_settings = _settings().__dict__.copy()
+        base_settings.update(
+            {
+                "india_full_decision_target": 200,
+                "us_full_decision_target": 200,
+                "dynamic_scan_min_score": 0.99,
+                "dynamic_scan_require_active_setup": True,
+                "dynamic_scan_sentiment_enabled": False,
+                "dynamic_scan_min_turnover_inr": 1_000_000.0,
+                "dynamic_scan_min_turnover_usd": 100_000.0,
+            }
+        )
+        scanner = OpportunityScanner(SimpleNamespace(**base_settings))
+        india_rows = [{"symbol": f"INMIX{index}", "exchange": "NSE", "sector": f"IN{index % 8}"} for index in range(220)]
+        us_rows = [{"symbol": f"USMIX{index}", "exchange": "NASDAQ", "sector": f"US{index % 8}"} for index in range(220)]
+        universe = [*india_rows, *us_rows]
+        daily_in = _candles("INMIX", "upstox-live:day", 70, datetime(2026, 2, 1, tzinfo=timezone.utc))
+        daily_us = _candles("USMIX", "yahoo-delayed", 70, datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quotes = {
+            row["symbol"]: Quote(
+                row["symbol"],
+                100.0,
+                "upstox-live" if row["exchange"] == "NSE" else "yahoo-delayed",
+                _india_session_iso(11, 0),
+                open=100.0,
+                high=101.0,
+                low=99.5,
+                volume=1_000_000,
+            )
+            for row in universe
+        }
+        candle_sets = {
+            row["symbol"]: {"daily": daily_in if row["exchange"] == "NSE" else daily_us, "analysis": daily_in if row["exchange"] == "NSE" else daily_us}
+            for row in universe
+        }
+
+        result = scanner.rank(universe, quotes, candle_sets)
+
+        self.assertEqual(len(result.selected_universe), 400)
+        self.assertEqual(result.summary["target_decision_symbols"], 400)
+        self.assertEqual(result.summary["target_decision_symbols_by_market"], {"IN": 200, "US": 200})
+        selected_by_market = {
+            "IN": sum(1 for row in result.selected_universe if row["exchange"] == "NSE"),
+            "US": sum(1 for row in result.selected_universe if row["exchange"] == "NASDAQ"),
+        }
+        self.assertEqual(selected_by_market, {"IN": 200, "US": 200})
 
 
 def _settings() -> SimpleNamespace:

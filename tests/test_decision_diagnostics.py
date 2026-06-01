@@ -16,6 +16,7 @@ class DecisionDiagnosticsTests(unittest.TestCase):
                 "quoted_symbols": 2657,
                 "tradeable_screening_symbols": 900,
                 "selected_symbols": 90,
+                "target_decision_symbols": 200,
                 "candidate_limit": 60,
                 "rejected_counts": {"below_adaptive_liquidity": 1400, "below_opportunity_score": 300},
                 "setup_counts": {"top_gainer_momentum": 12},
@@ -126,6 +127,30 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["decision_target_shortfall"], 61)
         self.assertEqual(diagnostics["slot_fill_counts"]["live_rally"], 45)
         self.assertIn("nse_full_decision_target_missed", codes)
+        self.assertIn("missed_move_review_not_persisted", codes)
+
+    def test_us_diagnostics_require_target_decisions_and_missed_move_row(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 3100,
+                "quoted_symbols": 3050,
+                "selected_symbols": 160,
+                "target_decision_symbols": 200,
+                "target_decision_symbols_by_market": {"US": 200},
+                "slot_fill_counts_by_market": {"US": {"live_rally": 45, "earnings_news": 20}},
+                "slot_budgets_by_market": {"US": {"live_rally": 45, "earnings_news": 30}},
+            },
+            [_decision(f"US{index}", "HOLD") for index in range(160)],
+            shared_auto_trade={"users_checked": 1, "followed": 0, "skipped": []},
+            market_region="US",
+        )
+
+        codes = {flag["code"] for flag in diagnostics["health_flags"]}
+        self.assertEqual(diagnostics["funnel"]["decision_target_shortfall"], 40)
+        self.assertEqual(diagnostics["target_decision_symbols_by_market"], {"US": 200})
+        self.assertEqual(diagnostics["slot_fill_counts_by_market"]["US"]["earnings_news"], 20)
+        self.assertIn("us_full_decision_target_missed", codes)
         self.assertIn("missed_move_review_not_persisted", codes)
 
     def test_diagnostics_separates_user_paper_follows_from_central_orders(self) -> None:
