@@ -304,27 +304,33 @@ class TradingAgentService:
                 scan_result.selected_universe,
                 scan_universe,
             )
-            prefetch_rows = [
+            eligible_prefetch_rows = [
                 row
                 for row in universe
                 if _analysis_history_count(raw_cached_sets.get(str(row.get("symbol") or "").upper()) or {}) < 20
             ]
+            prefetch_limit = self._opportunity_history_prefetch_limit()
+            prefetch_rows = eligible_prefetch_rows[:prefetch_limit] if prefetch_limit > 0 else []
             history_prefetch_summary: dict[str, Any] = {
+                "eligible_symbols": len(eligible_prefetch_rows),
                 "requested_symbols": 0,
                 "symbols_with_candles": 0,
                 "reranked": False,
+                "limit": prefetch_limit,
+                "truncated": len(eligible_prefetch_rows) > len(prefetch_rows),
             }
             if prefetch_rows:
                 self._cycle_phase = "opportunity_history_prefetch"
                 prefetch_error = None
+                prefetch_timeout = self._opportunity_history_prefetch_timeout_seconds()
                 try:
                     prefetch_candles = await asyncio.wait_for(
                         self.market_data.get_candles(prefetch_rows),
-                        timeout=self._candle_fetch_timeout_seconds(),
+                        timeout=prefetch_timeout,
                     )
                 except asyncio.TimeoutError:
                     prefetch_candles = {}
-                    prefetch_error = f"TimeoutError: history prefetch exceeded {self._candle_fetch_timeout_seconds():g}s"
+                    prefetch_error = f"TimeoutError: history prefetch exceeded {prefetch_timeout:g}s"
                 except Exception as exc:
                     prefetch_candles = {}
                     prefetch_error = f"{exc.__class__.__name__}: {str(exc)[:220]}"
@@ -344,9 +350,13 @@ class TradingAgentService:
                         scan_universe,
                     )
                 history_prefetch_summary = {
+                    "eligible_symbols": len(eligible_prefetch_rows),
                     "requested_symbols": len(prefetch_rows),
                     "symbols_with_candles": len(prefetch_candles),
                     "reranked": bool(prefetch_candles),
+                    "limit": prefetch_limit,
+                    "truncated": len(eligible_prefetch_rows) > len(prefetch_rows),
+                    "timeout_seconds": prefetch_timeout,
                     "sample_symbols": [row.get("symbol") for row in prefetch_rows[:12]],
                     "error": prefetch_error,
                 }
@@ -482,6 +492,15 @@ class TradingAgentService:
         candle_fetch_plan["relative_strength_benchmark_fetch"] = benchmark_fetch_plan
         candle_fetch_plan["coverage_backfill"] = backfill_plan
         self.db.set_state("candle_backfill_plan", backfill_plan)
+        planned_candle_fetch_count = len(candle_fetch_universe)
+        if not self._pre_strategy_candle_fetch_enabled():
+            candle_fetch_plan["deferred"] = True
+            candle_fetch_plan["planned_fetch_symbols"] = planned_candle_fetch_count
+            candle_fetch_plan["defer_reason"] = "preserve_cycle_budget_for_full_decision_pass"
+            candle_fetch_universe = []
+        else:
+            candle_fetch_plan["deferred"] = False
+            candle_fetch_plan["planned_fetch_symbols"] = planned_candle_fetch_count
         fresh_candles: dict[str, list[Any]] = {}
         candle_fetch_error = None
         if candle_fetch_universe:
@@ -511,6 +530,7 @@ class TradingAgentService:
                 "provider": self.market_data.source_name,
                 "fetch_plan": candle_fetch_plan,
                 "requested_fetch_symbols": len(candle_fetch_universe),
+                "planned_fetch_symbols": planned_candle_fetch_count,
                 "cached_symbols_reused": candle_fetch_plan.get("cache_ready", 0) + candle_fetch_plan.get("recently_attempted", 0),
                 "symbols_with_candles": len(fresh_candles),
                 "total_candles": sum(candle_counts.values()),
@@ -712,7 +732,7 @@ class TradingAgentService:
         shared_scope_token = current_llm_usage_scope.set(shared_usage_scope)
         shared_user_token = current_user_id.set(None)
         try:
-            decisions = await self.strategy.evaluate(
+            decisions = await self._run_strategy_evaluation(
                 universe,
                 quotes,
                 positions,
@@ -888,25 +908,193 @@ class TradingAgentService:
             )
             return {**default, "status": "error", "error": f"{exc.__class__.__name__}: {str(exc)[:220]}"}
 
-    def _optional_phase_timeout_seconds(self) -> float:
-        raw = getattr(self.strategy.settings, "optional_phase_timeout_seconds", 5.0)
+    async def _run_strategy_evaluation(
+        self,
+        universe: list[dict[str, Any]],
+        quotes: dict[str, Quote],
+        positions: dict[str, dict[str, Any]],
+        candles: dict[str, list[Any]],
+        macro_context: dict[str, Any],
+        institutional_context: dict[str, Any],
+        options_context: dict[str, Any],
+        delivery_service: Any | None,
+        market_breadth_context: dict[str, Any],
+        sector_rotation_context: dict[str, Any],
+        macro_calendar: Any | None,
+        candle_sets: dict[str, dict[str, list[Any]]],
+        portfolio_equity: float | None,
+    ) -> list[Decision]:
+        timeout = self._strategy_eval_timeout_seconds()
         try:
-            value = float(raw or 5.0)
+            return await asyncio.wait_for(
+                self.strategy.evaluate(
+                    universe,
+                    quotes,
+                    positions,
+                    candles,
+                    macro_context,
+                    institutional_context,
+                    options_context,
+                    delivery_service,
+                    market_breadth_context,
+                    sector_rotation_context,
+                    macro_calendar,
+                    candle_sets,
+                    portfolio_equity,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            self._log(
+                "ERROR",
+                "strategy",
+                "strategy_eval_timeout",
+                f"Strategy evaluation exceeded {timeout:g}s; writing safe HOLD decisions for this cycle.",
+                {
+                    "timeout_seconds": timeout,
+                    "symbols": len(universe),
+                    "quoted_symbols": len(quotes),
+                    "remaining_cycle_seconds": self._remaining_cycle_seconds(),
+                },
+            )
+            return self._strategy_timeout_fallback_decisions(universe, quotes, positions, reason="strategy_eval_timeout", timeout=timeout)
+        except Exception as exc:
+            error = f"{exc.__class__.__name__}: {str(exc)[:220]}"
+            self._log(
+                "ERROR",
+                "strategy",
+                "strategy_eval_failed",
+                "Strategy evaluation failed; writing safe HOLD decisions for this cycle.",
+                {"symbols": len(universe), "quoted_symbols": len(quotes), "error": error},
+            )
+            return self._strategy_timeout_fallback_decisions(universe, quotes, positions, reason="strategy_eval_failed", error=error)
+
+    def _strategy_timeout_fallback_decisions(
+        self,
+        universe: list[dict[str, Any]],
+        quotes: dict[str, Quote],
+        positions: dict[str, dict[str, Any]],
+        *,
+        reason: str,
+        timeout: float | None = None,
+        error: str | None = None,
+    ) -> list[Decision]:
+        decisions: list[Decision] = []
+        asof = utc_now()
+        for row in universe:
+            symbol = str(row.get("symbol") or "").upper()
+            quote = quotes.get(symbol)
+            if not symbol or quote is None:
+                continue
+            market_region = market_region_for_row(row)
+            primary_blocker = {
+                "gate": reason,
+                "reason": reason,
+                "value": {
+                    "timeout_seconds": timeout,
+                    "error": error,
+                    "selected_for_decision": True,
+                    "has_position": bool(positions.get(symbol, {}).get("qty", 0) > 0),
+                },
+            }
+            details = {
+                "decision_path": "strategy_budget_safe_hold",
+                "market_region": market_region,
+                "currency": "USD" if market_region == "US" else "INR",
+                "opportunity_scan": row.get("_opportunity_scan") or {},
+                "data_readiness": {
+                    "trade_decision_ready": False,
+                    "primary_blocker": reason,
+                    "secondary_diagnostics": ["cycle_budget_protected"],
+                },
+                "decision_gate_context": {
+                    "primary_blocker": primary_blocker,
+                    "secondary_blockers": [],
+                    "blocking_failed_gates": [primary_blocker],
+                    "failed_gates": [primary_blocker],
+                },
+                "system_gate_audit": {
+                    "hard_blocked": True,
+                    "hard_blocks": [
+                        {
+                            "flag": reason.upper(),
+                            "reason": reason,
+                            "value": primary_blocker["value"],
+                        }
+                    ],
+                },
+            }
+            decisions.append(
+                Decision(
+                    symbol=symbol,
+                    action="HOLD",
+                    confidence=0.0,
+                    price=quote.price,
+                    technical_score=0.0,
+                    sentiment_score=0.0,
+                    reason=f"safe hold: {reason}; selected for cycle but rich strategy evaluation did not finish within budget",
+                    asof=asof,
+                    strategy="strategy_budget_safe_hold",
+                    details_json=json.dumps(details, default=str),
+                )
+            )
+        return decisions
+
+    def _optional_phase_timeout_seconds(self) -> float:
+        raw = getattr(self.strategy.settings, "optional_phase_timeout_seconds", 3.0)
+        try:
+            value = float(raw or 3.0)
         except (TypeError, ValueError):
-            value = 5.0
+            value = 3.0
         return max(1.0, min(value, max(float(self.cycle_timeout_seconds) - 1.0, 1.0)))
+
+    def _strategy_eval_timeout_seconds(self) -> float:
+        configured = self._bounded_positive_seconds(
+            getattr(self.strategy.settings, "strategy_eval_timeout_seconds", 75.0),
+            default=75.0,
+        )
+        remaining = self._remaining_cycle_seconds()
+        if remaining is None:
+            return configured
+        reserve = min(12.0, max(5.0, remaining * 0.12))
+        return max(1.0, min(configured, max(remaining - reserve, 1.0)))
+
+    def _remaining_cycle_seconds(self) -> float | None:
+        started_raw = getattr(self, "_cycle_started_at", None)
+        if not started_raw:
+            return None
+        try:
+            started = datetime.fromisoformat(str(started_raw))
+        except ValueError:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        return max(float(self.cycle_timeout_seconds) - elapsed, 0.0)
+
+    def _pre_strategy_candle_fetch_enabled(self) -> bool:
+        return bool(getattr(self.strategy.settings, "pre_strategy_candle_fetch_enabled", False))
+
+    def _opportunity_history_prefetch_limit(self) -> int:
+        try:
+            return max(0, int(getattr(self.strategy.settings, "opportunity_history_prefetch_symbols", 20) or 0))
+        except (TypeError, ValueError):
+            return 20
+
+    def _opportunity_history_prefetch_timeout_seconds(self) -> float:
+        return min(self._candle_fetch_timeout_seconds(), self._optional_phase_timeout_seconds())
 
     def _market_action_timeout_seconds(self) -> float:
         raw = getattr(self.strategy.settings, "market_action_radar_timeout_seconds", self._optional_phase_timeout_seconds())
         return self._bounded_positive_seconds(raw, default=self._optional_phase_timeout_seconds())
 
     def _news_probe_timeout_seconds(self) -> float:
-        raw = getattr(self.strategy.settings, "dynamic_scan_news_timeout_seconds", 8.0)
-        return self._bounded_positive_seconds(raw, default=8.0)
+        raw = getattr(self.strategy.settings, "dynamic_scan_news_timeout_seconds", 3.0)
+        return self._bounded_positive_seconds(raw, default=3.0)
 
     def _candle_fetch_timeout_seconds(self) -> float:
-        raw = getattr(self.strategy.settings, "candle_fetch_timeout_seconds", 20.0)
-        return self._bounded_positive_seconds(raw, default=20.0)
+        raw = getattr(self.strategy.settings, "candle_fetch_timeout_seconds", 10.0)
+        return self._bounded_positive_seconds(raw, default=10.0)
 
     def _bounded_positive_seconds(self, raw: Any, *, default: float) -> float:
         try:

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 from app.agent import TradingAgentService
 from app.db import Database
+from app.models import Quote
 from app.pre_catalyst_engine import _missed_move_min_pct_for_universe
 
 
@@ -143,6 +145,52 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(result["status"], "timeout")
         self.assertEqual(result["timeout_seconds"], 1.0)
         self.assertTrue(any(args[2] == "global_context_timeout" for args in logs))
+
+    def test_strategy_timeout_writes_safe_hold_decisions(self) -> None:
+        async def slow_evaluate(*args, **kwargs) -> list:
+            await asyncio.sleep(1.05)
+            return []
+
+        logs = []
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.strategy = SimpleNamespace(
+            settings=SimpleNamespace(strategy_eval_timeout_seconds=0.01),
+            evaluate=slow_evaluate,
+        )
+        agent.cycle_timeout_seconds = 120
+        agent._cycle_started_at = datetime.now(timezone.utc).isoformat()
+        agent._log = lambda *args, **kwargs: logs.append(args)
+        universe = [{"symbol": "AAPL", "exchange": "NASDAQ"}]
+        quotes = {"AAPL": Quote(symbol="AAPL", price=200.0, source="unit-test", asof="2026-06-01T14:30:00+00:00")}
+
+        decisions = asyncio.run(
+            agent._run_strategy_evaluation(
+                universe,
+                quotes,
+                {},
+                {},
+                {},
+                {},
+                {},
+                None,
+                {},
+                {},
+                None,
+                {},
+                100_000.0,
+            )
+        )
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0].action, "HOLD")
+        self.assertIn("strategy_eval_timeout", decisions[0].details_json)
+        self.assertTrue(any(args[2] == "strategy_eval_timeout" for args in logs))
+
+    def test_pre_strategy_candle_fetch_defaults_to_deferred(self) -> None:
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.strategy = SimpleNamespace(settings=SimpleNamespace())
+
+        self.assertFalse(agent._pre_strategy_candle_fetch_enabled())
 
 
 if __name__ == "__main__":

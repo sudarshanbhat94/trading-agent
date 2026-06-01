@@ -90,7 +90,7 @@ class Settings:
     dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
     market_action_radar_enabled: bool = _bool("MARKET_ACTION_RADAR_ENABLED", True)
     market_action_radar_limit: int = _int("MARKET_ACTION_RADAR_LIMIT", 40)
-    market_action_radar_timeout_seconds: float = _float("MARKET_ACTION_RADAR_TIMEOUT_SECONDS", 6.0)
+    market_action_radar_timeout_seconds: float = _float("MARKET_ACTION_RADAR_TIMEOUT_SECONDS", 4.0)
     market_action_priority_news_limit: int = _int("MARKET_ACTION_PRIORITY_NEWS_LIMIT", 40)
     market_action_moneycontrol_categories: str = os.getenv(
         "MARKET_ACTION_MONEYCONTROL_CATEGORIES",
@@ -124,10 +124,13 @@ class Settings:
     position_quote_refresh_enabled: bool = _bool("POSITION_QUOTE_REFRESH_ENABLED", True)
     position_quote_refresh_seconds: float = _float("POSITION_QUOTE_REFRESH_SECONDS", 1.0)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
-    optional_phase_timeout_seconds: float = _float("OPTIONAL_PHASE_TIMEOUT_SECONDS", 5.0)
+    optional_phase_timeout_seconds: float = _float("OPTIONAL_PHASE_TIMEOUT_SECONDS", 3.0)
+    strategy_eval_timeout_seconds: float = _float("STRATEGY_EVAL_TIMEOUT_SECONDS", 75.0)
+    pre_strategy_candle_fetch_enabled: bool = _bool("PRE_STRATEGY_CANDLE_FETCH_ENABLED", False)
+    opportunity_history_prefetch_symbols: int = _int("OPPORTUNITY_HISTORY_PREFETCH_SYMBOLS", 20)
     candle_fetch_symbols_per_cycle: int = _int("CANDLE_FETCH_SYMBOLS_PER_CYCLE", 80)
-    candle_fetch_timeout_seconds: float = _float("CANDLE_FETCH_TIMEOUT_SECONDS", 20.0)
-    dynamic_scan_news_timeout_seconds: float = _float("DYNAMIC_SCAN_NEWS_TIMEOUT_SECONDS", 8.0)
+    candle_fetch_timeout_seconds: float = _float("CANDLE_FETCH_TIMEOUT_SECONDS", 10.0)
+    dynamic_scan_news_timeout_seconds: float = _float("DYNAMIC_SCAN_NEWS_TIMEOUT_SECONDS", 3.0)
     skip_market_data_when_closed: bool = _bool("SKIP_MARKET_DATA_WHEN_CLOSED", True)
     post_market_prep_enabled: bool = _bool("POST_MARKET_PREP_ENABLED", True)
     post_market_news_symbols: int = _int("POST_MARKET_NEWS_SYMBOLS", 20)
@@ -346,6 +349,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "position_quote_refresh_seconds", "label": "Position Quote Seconds", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
     {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
     {"key": "optional_phase_timeout_seconds", "label": "Optional Phase Timeout", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
+    {"key": "strategy_eval_timeout_seconds", "label": "Strategy Eval Timeout", "type": "number", "category": "Agent Cycle", "min": 10, "step": 5},
+    {"key": "pre_strategy_candle_fetch_enabled", "label": "Fetch Candles Before Strategy", "type": "boolean", "category": "Agent Cycle"},
+    {"key": "opportunity_history_prefetch_symbols", "label": "History Prefetch Symbols", "type": "number", "category": "Agent Cycle", "min": 0, "step": 5},
     {"key": "candle_fetch_symbols_per_cycle", "label": "Active Candle Fetch Cap", "type": "number", "category": "Agent Cycle", "min": 0, "step": 10},
     {"key": "candle_fetch_timeout_seconds", "label": "Candle Fetch Timeout", "type": "number", "category": "Agent Cycle", "min": 5, "step": 5},
     {"key": "dynamic_scan_news_timeout_seconds", "label": "News Probe Timeout", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
