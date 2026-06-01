@@ -1379,6 +1379,8 @@ class StrategyEngine:
             return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
         if gate_name == "system_rule_GRADE_VIOLATION":
             return self._opportunity_probe_can_absorb_entry_grade(gate.get("value"), reason, profile)
+        if gate_name == "fresh_market_data_gate":
+            return self._opportunity_probe_can_absorb_fresh_market_data_gate(gate.get("value"), reason, profile)
         if gate_name in {"system_rule_MTF_HARD_BLOCK", "timeframe_alignment_gate"}:
             return self._top_gainers_playbook_stage_can_override_alignment(profile)
         if gate_name == "session_momentum_gate":
@@ -1456,6 +1458,65 @@ class StrategyEngine:
             if isinstance(parsed, dict):
                 return bool(parsed.get(key))
         return False
+
+    def _opportunity_probe_can_absorb_fresh_market_data_gate(
+        self, value: Any, reason: str, profile: dict[str, Any]
+    ) -> bool:
+        override = str(profile.get("data_quality_override") or "")
+        if override not in {"live_quote_ohlcv_used_for_probe", "live_momentum_review_with_trade_ready_data"}:
+            return False
+        if reason not in {"stale_market_data", "data_stale_watch"}:
+            return False
+        missing = {
+            str(item or "").strip().lower()
+            for item in profile.get("data_quality_missing") or []
+            if str(item or "").strip()
+        }
+        if missing and missing - {"stale_intraday_candles"}:
+            return False
+        labels = self._fresh_market_gate_labels(value)
+        if labels and not self._labels_only_stale_intraday_candles(labels):
+            return False
+        if isinstance(value, dict):
+            gate = value.get("fresh_market_data_gate") if isinstance(value.get("fresh_market_data_gate"), dict) else {}
+            if gate.get("passed") is False and not labels:
+                return False
+        return True
+
+    def _fresh_market_gate_labels(self, value: Any) -> set[str]:
+        labels: set[str] = set()
+        if not isinstance(value, dict):
+            return labels
+        for field in ("key", "label", "reason"):
+            label = str(value.get(field) or "").strip().lower()
+            if label:
+                labels.add(label)
+        for field in ("missing_data", "hard_gaps", "soft_gaps"):
+            for item in value.get(field) or []:
+                if isinstance(item, dict):
+                    for nested_field in ("key", "label", "reason"):
+                        label = str(item.get(nested_field) or "").strip().lower()
+                        if label:
+                            labels.add(label)
+                else:
+                    label = str(item or "").strip().lower()
+                    if label:
+                        labels.add(label)
+        data_quality = value.get("data_quality") if isinstance(value.get("data_quality"), dict) else {}
+        labels.update(str(item or "").strip().lower() for item in data_quality.get("missing") or [] if str(item or "").strip())
+        return labels
+
+    def _labels_only_stale_intraday_candles(self, labels: set[str]) -> bool:
+        stale_quote_tokens = ("stale_quote", "quote_stale", "prior_session", "previous_session", "moneycontrol_prior")
+        if any(token in label for label in labels for token in stale_quote_tokens):
+            return False
+        for label in labels:
+            if "intraday" in label and ("candle" in label or "ohlcv" in label):
+                continue
+            if label in {"in_intraday_candles", "stale_intraday", "stale_intraday_candles"}:
+                continue
+            return False
+        return True
 
     def _live_quote_probe_data_ok(self, context: dict[str, Any], scan: dict[str, Any], setup: str) -> bool:
         data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}

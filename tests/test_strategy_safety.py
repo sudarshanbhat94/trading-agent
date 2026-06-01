@@ -1783,7 +1783,7 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertEqual(gate["reason"], "overall_score_below_70")
 
-    def test_live_confirmed_probe_blocks_stale_intraday_marker(self) -> None:
+    def test_live_confirmed_probe_absorbs_stale_intraday_marker(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
             SimpleNamespace(),
@@ -1820,13 +1820,15 @@ class StrategySafetyTests(unittest.TestCase):
         action = engine._action_from_context("LIVEPROBE", 0.24, {}, context, {})
 
         probe = context["decision_gate_context"]["opportunity_probe"]
-        self.assertEqual(action, "HOLD")
+        self.assertEqual(action, "BUY")
         self.assertTrue(probe["ready"])
         self.assertEqual(probe["source"], "live_momentum_review")
         self.assertEqual(probe["data_quality_override"], "live_momentum_review_with_trade_ready_data")
         self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in context["decision_gate_context"]["failed_gates"]})
+        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in probe["absorbed_gates"]})
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
 
-    def test_scan_probe_blocks_when_only_intraday_candles_are_stale(self) -> None:
+    def test_scan_probe_uses_live_quote_ohlcv_when_only_intraday_candles_are_stale(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
             SimpleNamespace(),
@@ -1871,11 +1873,12 @@ class StrategySafetyTests(unittest.TestCase):
         action = engine._action_from_context("LIVEQUOTE", 0.24, {}, context, {})
 
         probe = context["decision_gate_context"]["opportunity_probe"]
-        self.assertEqual(action, "HOLD")
+        self.assertEqual(action, "BUY")
         self.assertTrue(probe["ready"])
         self.assertEqual(probe["source"], "live_quote_opportunity_scan")
         self.assertEqual(probe["data_quality_override"], "live_quote_ohlcv_used_for_probe")
-        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in context["decision_gate_context"]["blocking_failed_gates"]})
+        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in probe["absorbed_gates"]})
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
 
     def test_high_score_scan_probe_absorbs_watch_grade_without_hiding_hard_risks(self) -> None:
         engine = StrategyEngine(
