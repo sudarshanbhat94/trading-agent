@@ -169,7 +169,25 @@ class TradingAgentService:
         if dynamic_scan_enabled:
             self._cycle_phase = "market_action_radar"
             try:
-                market_action_summary = await self.market_action_radar.scan(scan_universe)
+                market_action_summary = await asyncio.wait_for(
+                    self.market_action_radar.scan(scan_universe),
+                    timeout=self._market_action_timeout_seconds(),
+                )
+            except asyncio.TimeoutError:
+                market_action_summary = {
+                    "enabled": True,
+                    "source": "market_action_radar",
+                    "events": [],
+                    "events_by_symbol": {},
+                    "errors": [f"market_action_radar_timeout_after_{self._market_action_timeout_seconds():g}s"],
+                }
+                self._log(
+                    "WARN",
+                    "scanner",
+                    "market_action_radar_timeout",
+                    "Market-action radar timed out; continuing with configured raw scan universe.",
+                    {"timeout_seconds": self._market_action_timeout_seconds(), "phase": self._cycle_phase},
+                )
             except Exception as exc:
                 market_action_summary = {
                     "enabled": True,
@@ -243,12 +261,33 @@ class TradingAgentService:
                     market_action_summary,
                 )
                 if news_probe_rows:
-                    news_probe_summary = await self.strategy.sentiment.refresh_watchlist_news(
-                        news_probe_rows,
-                        limit=len(news_probe_rows),
-                        allow_llm=False,
-                        reason="dynamic_opportunity_scan",
-                    )
+                    try:
+                        news_probe_summary = await asyncio.wait_for(
+                            self.strategy.sentiment.refresh_watchlist_news(
+                                news_probe_rows,
+                                limit=len(news_probe_rows),
+                                allow_llm=False,
+                                reason="dynamic_opportunity_scan",
+                            ),
+                            timeout=self._news_probe_timeout_seconds(),
+                        )
+                    except asyncio.TimeoutError:
+                        news_probe_summary = {
+                            "enabled": True,
+                            "reason": "dynamic_opportunity_scan_timeout",
+                            "symbols_requested": len(news_probe_rows),
+                            "symbols_refreshed": 0,
+                            "events_found": 0,
+                            "headlines_found": 0,
+                            "timeout_seconds": self._news_probe_timeout_seconds(),
+                        }
+                        self._log(
+                            "WARN",
+                            "sentiment",
+                            "news_probe_timeout",
+                            "Dynamic scan news probe timed out; continuing with cached sentiment.",
+                            {"timeout_seconds": self._news_probe_timeout_seconds(), "symbols_requested": len(news_probe_rows)},
+                        )
                 sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
                     [row["symbol"] for row in raw_universe],
                     max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
@@ -279,7 +318,13 @@ class TradingAgentService:
                 self._cycle_phase = "opportunity_history_prefetch"
                 prefetch_error = None
                 try:
-                    prefetch_candles = await self.market_data.get_candles(prefetch_rows)
+                    prefetch_candles = await asyncio.wait_for(
+                        self.market_data.get_candles(prefetch_rows),
+                        timeout=self._candle_fetch_timeout_seconds(),
+                    )
+                except asyncio.TimeoutError:
+                    prefetch_candles = {}
+                    prefetch_error = f"TimeoutError: history prefetch exceeded {self._candle_fetch_timeout_seconds():g}s"
                 except Exception as exc:
                     prefetch_candles = {}
                     prefetch_error = f"{exc.__class__.__name__}: {str(exc)[:220]}"
@@ -427,7 +472,18 @@ class TradingAgentService:
         candle_fetch_plan["relative_strength_benchmark_fetch"] = benchmark_fetch_plan
         candle_fetch_plan["coverage_backfill"] = backfill_plan
         self.db.set_state("candle_backfill_plan", backfill_plan)
-        fresh_candles = await self.market_data.get_candles(candle_fetch_universe) if candle_fetch_universe else {}
+        fresh_candles: dict[str, list[Any]] = {}
+        candle_fetch_error = None
+        if candle_fetch_universe:
+            try:
+                fresh_candles = await asyncio.wait_for(
+                    self.market_data.get_candles(candle_fetch_universe),
+                    timeout=self._candle_fetch_timeout_seconds(),
+                )
+            except asyncio.TimeoutError:
+                candle_fetch_error = f"TimeoutError: candle fetch exceeded {self._candle_fetch_timeout_seconds():g}s"
+            except Exception as exc:
+                candle_fetch_error = f"{exc.__class__.__name__}: {str(exc)[:220]}"
         fetched_at = datetime.now(timezone.utc)
         for row in candle_fetch_universe:
             self._last_candle_fetch_at[row["symbol"]] = fetched_at
@@ -451,6 +507,7 @@ class TradingAgentService:
                 "source_counts": candle_sources,
                 "sample_counts": dict(list(candle_counts.items())[:10]),
                 "provider_diagnostics": _market_data_diagnostics(self.market_data),
+                "error": candle_fetch_error,
             },
         )
         self._cycle_phase = "persist_market_data"
@@ -821,11 +878,30 @@ class TradingAgentService:
             return {**default, "status": "error", "error": f"{exc.__class__.__name__}: {str(exc)[:220]}"}
 
     def _optional_phase_timeout_seconds(self) -> float:
-        raw = getattr(self.strategy.settings, "optional_phase_timeout_seconds", 8.0)
+        raw = getattr(self.strategy.settings, "optional_phase_timeout_seconds", 5.0)
         try:
-            value = float(raw or 8.0)
+            value = float(raw or 5.0)
         except (TypeError, ValueError):
-            value = 8.0
+            value = 5.0
+        return max(1.0, min(value, max(float(self.cycle_timeout_seconds) - 1.0, 1.0)))
+
+    def _market_action_timeout_seconds(self) -> float:
+        raw = getattr(self.strategy.settings, "market_action_radar_timeout_seconds", self._optional_phase_timeout_seconds())
+        return self._bounded_positive_seconds(raw, default=self._optional_phase_timeout_seconds())
+
+    def _news_probe_timeout_seconds(self) -> float:
+        raw = getattr(self.strategy.settings, "dynamic_scan_news_timeout_seconds", 8.0)
+        return self._bounded_positive_seconds(raw, default=8.0)
+
+    def _candle_fetch_timeout_seconds(self) -> float:
+        raw = getattr(self.strategy.settings, "candle_fetch_timeout_seconds", 20.0)
+        return self._bounded_positive_seconds(raw, default=20.0)
+
+    def _bounded_positive_seconds(self, raw: Any, *, default: float) -> float:
+        try:
+            value = float(raw or default)
+        except (TypeError, ValueError):
+            value = default
         return max(1.0, min(value, max(float(self.cycle_timeout_seconds) - 1.0, 1.0)))
 
     async def _run_market_closed_prep(
@@ -1900,6 +1976,14 @@ class TradingAgentService:
                 selected.append(row)
                 continue
             stats["cache_ready"] += 1
+        fetch_limit = max(0, int(getattr(self.strategy.settings, "candle_fetch_symbols_per_cycle", 80) or 0))
+        stats["fetch_symbols_before_limit"] = len(selected)
+        stats["fetch_symbol_limit"] = fetch_limit
+        if fetch_limit > 0 and len(selected) > fetch_limit:
+            selected = selected[:fetch_limit]
+            stats["fetch_symbols_truncated"] = True
+        else:
+            stats["fetch_symbols_truncated"] = False
         stats["fetch_symbols"] = len(selected)
         return selected, stats
 

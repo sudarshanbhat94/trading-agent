@@ -124,7 +124,10 @@ class Settings:
     position_quote_refresh_enabled: bool = _bool("POSITION_QUOTE_REFRESH_ENABLED", True)
     position_quote_refresh_seconds: float = _float("POSITION_QUOTE_REFRESH_SECONDS", 1.0)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
-    optional_phase_timeout_seconds: float = _float("OPTIONAL_PHASE_TIMEOUT_SECONDS", 8.0)
+    optional_phase_timeout_seconds: float = _float("OPTIONAL_PHASE_TIMEOUT_SECONDS", 5.0)
+    candle_fetch_symbols_per_cycle: int = _int("CANDLE_FETCH_SYMBOLS_PER_CYCLE", 80)
+    candle_fetch_timeout_seconds: float = _float("CANDLE_FETCH_TIMEOUT_SECONDS", 20.0)
+    dynamic_scan_news_timeout_seconds: float = _float("DYNAMIC_SCAN_NEWS_TIMEOUT_SECONDS", 8.0)
     skip_market_data_when_closed: bool = _bool("SKIP_MARKET_DATA_WHEN_CLOSED", True)
     post_market_prep_enabled: bool = _bool("POST_MARKET_PREP_ENABLED", True)
     post_market_news_symbols: int = _int("POST_MARKET_NEWS_SYMBOLS", 20)
@@ -343,6 +346,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "position_quote_refresh_seconds", "label": "Position Quote Seconds", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
     {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
     {"key": "optional_phase_timeout_seconds", "label": "Optional Phase Timeout", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
+    {"key": "candle_fetch_symbols_per_cycle", "label": "Active Candle Fetch Cap", "type": "number", "category": "Agent Cycle", "min": 0, "step": 10},
+    {"key": "candle_fetch_timeout_seconds", "label": "Candle Fetch Timeout", "type": "number", "category": "Agent Cycle", "min": 5, "step": 5},
+    {"key": "dynamic_scan_news_timeout_seconds", "label": "News Probe Timeout", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
     {"key": "skip_market_data_when_closed", "label": "Skip Closed Markets", "type": "boolean", "category": "Agent Cycle"},
     {"key": "post_market_prep_enabled", "label": "Post-Market Prep", "type": "boolean", "category": "Agent Cycle"},
     {"key": "post_market_news_symbols", "label": "Post-Market News Symbols", "type": "number", "category": "Agent Cycle", "min": 0, "step": 1},

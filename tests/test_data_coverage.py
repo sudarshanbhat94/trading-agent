@@ -305,6 +305,19 @@ class DataCoverageTests(unittest.TestCase):
         self.assertEqual(policy["market_open_symbols"], {"IN": 2600, "US": 5000})
         self.assertEqual(policy["market_quote_sweep_symbols"], {"IN": 2600, "US": 1200})
 
+    def test_active_candle_fetch_is_capped_per_cycle(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="region-router", backfill_limit=2)
+        agent.strategy.settings.candle_fetch_symbols_per_cycle = 3
+        universe = [{"symbol": f"US{index}", "exchange": "NASDAQ"} for index in range(8)]
+
+        selected, plan = agent._candle_fetch_universe(universe, {})
+
+        self.assertEqual([row["symbol"] for row in selected], ["US0", "US1", "US2"])
+        self.assertEqual(plan["fetch_symbols_before_limit"], 8)
+        self.assertEqual(plan["fetch_symbols"], 3)
+        self.assertTrue(plan["fetch_symbols_truncated"])
+
     def test_market_action_symbols_are_forced_into_raw_scan_universe(self) -> None:
         db = _FakeCoverageDb({})
         agent = _agent(db, provider="upstox-live", backfill_limit=2)
@@ -378,6 +391,10 @@ def _agent(db: _FakeCoverageDb, provider: str, backfill_limit: int) -> TradingAg
         dynamic_scan_candidate_limit=60,
         dynamic_scan_max_open_symbols_in=0,
         dynamic_scan_max_open_symbols_us=1200,
+        dynamic_scan_news_timeout_seconds=8.0,
+        candle_fetch_symbols_per_cycle=80,
+        candle_fetch_timeout_seconds=20.0,
+        optional_phase_timeout_seconds=5.0,
         dynamic_scan_min_score=0.58,
         dynamic_scan_require_active_setup=True,
         dynamic_scan_min_price=10.0,
