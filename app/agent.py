@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from .decision_contract import normalize_trade_targets
+from .decision_diagnostics import build_cycle_decision_diagnostics
 from .db import Database
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_policy import LLM_HARD_DISABLED
@@ -385,6 +386,7 @@ class TradingAgentService:
                 "opportunity_scan",
                 static_summary,
             )
+            scan_summary = static_summary
         self._cycle_phase = "candles"
         benchmark_rows = self._relative_strength_benchmark_rows()
         benchmark_symbols = [row["symbol"] for row in benchmark_rows]
@@ -665,6 +667,27 @@ class TradingAgentService:
                 "Global admin cycle is analysis-only; users own signal execution.",
                 {"decisions": len(decisions)},
             )
+        decision_diagnostics = build_cycle_decision_diagnostics(
+            scan_summary,
+            decisions,
+            shared_auto_trade=shared_auto_trade,
+            executed_orders=executed_count,
+            market_region=self.market_region,
+            generated_at=utc_now(),
+            cycle_duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3),
+        )
+        self.db.set_state("decision_diagnostics", decision_diagnostics)
+        self._log(
+            "INFO",
+            "diagnostics",
+            "decision_funnel_built",
+            decision_diagnostics.get("summary") or "Decision funnel diagnostics built.",
+            {
+                "funnel": decision_diagnostics.get("funnel"),
+                "health_flags": decision_diagnostics.get("health_flags"),
+                "top_blockers": decision_diagnostics.get("top_blockers", [])[:5],
+            },
+        )
         portfolio = self.broker.snapshot()
         self._last_cycle_at = utc_now()
         self._last_cycle_duration_seconds = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
@@ -2280,6 +2303,7 @@ class TradingAgentService:
             "options_intelligence": _options_intelligence_summary(options_context),
             "market_action_radar": self.db.get_state("market_action_radar", {}),
             "opportunity_scan": opportunity_scan,
+            "decision_diagnostics": self.db.get_state("decision_diagnostics", {}),
             "pre_catalyst_discovery": self.db.get_state("pre_catalyst_discovery", {}),
             "upcoming_macro_events": (macro_calendar_context or {}).get("next_10", []),
             "self_audit": self.db.get_state("self_audit", {}),

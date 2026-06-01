@@ -3324,6 +3324,12 @@ async def opportunity_scan_snapshot(request: Request) -> dict[str, Any]:
     return db.get_state("opportunity_scan", {})
 
 
+@app.get("/api/decision-diagnostics")
+async def decision_diagnostics_snapshot(request: Request) -> dict[str, Any]:
+    require_user(request, settings, db)
+    return db.get_state("decision_diagnostics", {})
+
+
 @app.get("/api/sector-rotation")
 async def sector_rotation_snapshot(request: Request) -> dict[str, Any]:
     require_user(request, settings, db)
