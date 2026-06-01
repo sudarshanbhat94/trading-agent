@@ -284,7 +284,7 @@ class DataCoverageTests(unittest.TestCase):
     def test_dynamic_scan_caps_large_us_open_universe_but_keeps_india_uncapped(self) -> None:
         db = _FakeCoverageDb({})
         agent = _agent(db, provider="region-router", backfill_limit=2)
-        agent.strategy.settings.dynamic_scan_max_open_symbols_us = 1200
+        agent.strategy.settings.dynamic_scan_max_open_symbols_us = 1000
         agent.strategy.settings.dynamic_scan_max_open_symbols_in = 0
         universe = [
             *({"symbol": f"NSE{index}", "exchange": "NSE"} for index in range(2600)),
@@ -298,12 +298,12 @@ class DataCoverageTests(unittest.TestCase):
             raw_scan_limit=0,
         )
 
-        self.assertEqual(len(selected), 3800)
+        self.assertEqual(len(selected), 3600)
         self.assertEqual(policy["reason"], "market_open_symbol_cap")
         self.assertFalse(policy["full_live_quote_sweep"])
         self.assertTrue(policy["rotation_enabled"])
         self.assertEqual(policy["market_open_symbols"], {"IN": 2600, "US": 5000})
-        self.assertEqual(policy["market_quote_sweep_symbols"], {"IN": 2600, "US": 1200})
+        self.assertEqual(policy["market_quote_sweep_symbols"], {"IN": 2600, "US": 1000})
 
     def test_active_candle_fetch_is_capped_per_cycle(self) -> None:
         db = _FakeCoverageDb({})
@@ -317,6 +317,26 @@ class DataCoverageTests(unittest.TestCase):
         self.assertEqual(plan["fetch_symbols_before_limit"], 8)
         self.assertEqual(plan["fetch_symbols"], 3)
         self.assertTrue(plan["fetch_symbols_truncated"])
+
+    def test_decision_universe_is_trimmed_to_target_but_keeps_positions(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="region-router", backfill_limit=2)
+        universe = [
+            {"symbol": f"US{index}", "exchange": "NASDAQ", "_opportunity_rank": index + 1, "_opportunity_score": 1 - index * 0.01}
+            for index in range(5)
+        ]
+        universe.append({"symbol": "HELD", "exchange": "NASDAQ", "_opportunity_rank": 999, "_opportunity_score": 0.01})
+
+        selected, policy = agent._trim_universe_to_decision_target(
+            universe,
+            {"HELD": {"qty": 1}},
+            {"target_decision_symbols": 3},
+        )
+
+        self.assertEqual([row["symbol"] for row in selected], ["HELD", "US0", "US1"])
+        self.assertEqual(policy["before"], 6)
+        self.assertEqual(policy["after"], 3)
+        self.assertTrue(policy["trimmed"])
 
     def test_market_action_symbols_are_forced_into_raw_scan_universe(self) -> None:
         db = _FakeCoverageDb({})
@@ -390,7 +410,7 @@ def _agent(db: _FakeCoverageDb, provider: str, backfill_limit: int) -> TradingAg
     settings = SimpleNamespace(
         dynamic_scan_candidate_limit=60,
         dynamic_scan_max_open_symbols_in=0,
-        dynamic_scan_max_open_symbols_us=1200,
+        dynamic_scan_max_open_symbols_us=1000,
         dynamic_scan_news_timeout_seconds=8.0,
         candle_fetch_symbols_per_cycle=80,
         candle_fetch_timeout_seconds=20.0,

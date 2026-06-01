@@ -67,7 +67,7 @@ class Settings:
     dynamic_opportunity_scan_enabled: bool = _bool("DYNAMIC_OPPORTUNITY_SCAN_ENABLED", True)
     dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 0)
     dynamic_scan_max_open_symbols_in: int = _int("DYNAMIC_SCAN_MAX_OPEN_SYMBOLS_IN", 0)
-    dynamic_scan_max_open_symbols_us: int = _int("DYNAMIC_SCAN_MAX_OPEN_SYMBOLS_US", 1200)
+    dynamic_scan_max_open_symbols_us: int = _int("DYNAMIC_SCAN_MAX_OPEN_SYMBOLS_US", 1000)
     dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 120)
     india_full_decision_target: int = _int("INDIA_FULL_DECISION_TARGET", 200)
     india_scanner_slot_budgets: str = os.getenv(

@@ -397,6 +397,16 @@ class TradingAgentService:
                         for row in universe[:25]
                     ],
                 }
+            universe, trim_policy = self._trim_universe_to_decision_target(universe, pre_positions, scan_summary)
+            if trim_policy.get("trimmed"):
+                scan_summary["selected_symbols"] = len(universe)
+                scan_summary["decision_target_trim"] = trim_policy
+                kept_symbols = {str(row.get("symbol") or "").upper() for row in universe}
+                scan_summary["top_candidates"] = [
+                    item
+                    for item in scan_summary.get("top_candidates", [])
+                    if str(item.get("symbol") or "").upper() in kept_symbols
+                ]
             scan_summary["by_market"] = _opportunity_scan_by_market(
                 scan_summary,
                 full_universe,
@@ -641,14 +651,15 @@ class TradingAgentService:
         )
         self.db.set_state("macro_calendar_context", macro_calendar_context)
         self._cycle_phase = "pre_catalyst_discovery"
-        discovery_candle_sets = self.db.recent_candle_sets_by_symbol([row["symbol"] for row in raw_universe])
+        discovery_symbols = [row["symbol"] for row in universe]
+        discovery_candle_sets = self.db.recent_candle_sets_by_symbol(discovery_symbols)
         if not sentiment_by_symbol:
             sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
-                [row["symbol"] for row in raw_universe],
+                discovery_symbols,
                 max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
             )
         pre_catalyst_summary = self._build_pre_catalyst_discovery(
-            raw_universe,
+            universe,
             quotes,
             discovery_candle_sets,
             sentiment_by_symbol,
@@ -2262,7 +2273,7 @@ class TradingAgentService:
                 selected.append(row)
                 selected_symbols.add(normalized)
                 market = market_region_for_row(row)
-                market_selected[market] = market_selected.get(market, 0) + 1
+            market_selected[market] = market_selected.get(market, 0) + 1
         return selected, {
             "cap_applied": cap_applied,
             "market_caps": market_caps,
@@ -2270,10 +2281,44 @@ class TradingAgentService:
             "market_quote_sweep_symbols": market_selected,
         }
 
+    def _trim_universe_to_decision_target(
+        self,
+        universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+        scan_summary: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        target = _int_or_none(scan_summary.get("target_decision_symbols") or scan_summary.get("candidate_limit"))
+        if not target or target <= 0 or len(universe) <= target:
+            return universe, {"trimmed": False, "target": target or 0, "before": len(universe), "after": len(universe)}
+        position_symbols = {str(symbol or "").upper() for symbol in positions}
+        sorted_rows = sorted(
+            universe,
+            key=lambda row: (
+                0 if str(row.get("symbol") or "").upper() in position_symbols else 1,
+                int(row.get("_opportunity_rank") or 999999),
+                -float(row.get("_opportunity_score") or 0.0),
+                str(row.get("symbol") or ""),
+            ),
+        )
+        trimmed = sorted_rows[:target]
+        trimmed_symbols = {str(row.get("symbol") or "").upper() for row in trimmed}
+        for row in sorted_rows[target:]:
+            symbol = str(row.get("symbol") or "").upper()
+            if symbol in position_symbols and symbol not in trimmed_symbols:
+                trimmed.append(row)
+                trimmed_symbols.add(symbol)
+        return trimmed, {
+            "trimmed": True,
+            "target": target,
+            "before": len(universe),
+            "after": len(trimmed),
+            "kept_position_symbols": sorted(position_symbols & trimmed_symbols),
+        }
+
     def _market_open_symbol_cap(self, market: str) -> int:
         settings = self.strategy.settings
         if str(market or "").upper() == "US":
-            return max(0, int(getattr(settings, "dynamic_scan_max_open_symbols_us", 1200) or 0))
+            return max(0, int(getattr(settings, "dynamic_scan_max_open_symbols_us", 1000) or 0))
         return max(0, int(getattr(settings, "dynamic_scan_max_open_symbols_in", 0) or 0))
 
     def _cycle_rows(self, rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
