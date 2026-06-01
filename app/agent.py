@@ -374,24 +374,7 @@ class TradingAgentService:
             scan_summary["news_screened_symbols"] = int(news_probe_summary.get("symbols_requested") or 0)
             scan_summary["news_events_found"] = int(news_probe_summary.get("events_found") or 0)
             scan_summary["news_headlines_found"] = int(news_probe_summary.get("headlines_found") or 0)
-            thin_history_symbols = {
-                str(row.get("symbol") or "").upper()
-                for row in universe
-                if str(row.get("symbol") or "").upper() not in pre_positions
-                and _analysis_history_count(raw_cached_sets.get(str(row.get("symbol") or "").upper()) or {}) < 20
-            }
-            if thin_history_symbols:
-                universe = [row for row in universe if str(row.get("symbol") or "").upper() not in thin_history_symbols]
-                scan_summary["selected_symbols"] = len(universe)
-                scan_summary["top_candidates"] = [
-                    item
-                    for item in scan_summary.get("top_candidates", [])
-                    if str(item.get("symbol") or "").upper() not in thin_history_symbols
-                ]
-                rejected = dict(scan_summary.get("rejected_counts") or {})
-                rejected["insufficient_history_after_prefetch"] = rejected.get("insufficient_history_after_prefetch", 0) + len(thin_history_symbols)
-                scan_summary["rejected_counts"] = rejected
-                scan_summary["history_filtered_symbols"] = sorted(thin_history_symbols)[:25]
+            self._annotate_thin_history_diagnostics(universe, pre_positions, raw_cached_sets, scan_summary)
             if not universe:
                 fallback_limit = min(
                     12,
@@ -2526,6 +2509,33 @@ class TradingAgentService:
             "market_open_symbols": market_counts,
             "market_quote_sweep_symbols": market_selected,
         }
+
+    def _annotate_thin_history_diagnostics(
+        self,
+        universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+        raw_cached_sets: dict[str, dict[str, Any]],
+        scan_summary: dict[str, Any],
+    ) -> None:
+        thin_history_symbols = {
+            str(row.get("symbol") or "").upper()
+            for row in universe
+            if str(row.get("symbol") or "").upper() not in positions
+            and _analysis_history_count(raw_cached_sets.get(str(row.get("symbol") or "").upper()) or {}) < 20
+        }
+        if not thin_history_symbols:
+            scan_summary["thin_history_after_prefetch_count"] = 0
+            return
+        secondary = dict(scan_summary.get("secondary_diagnostic_counts") or {})
+        secondary["thin_history_after_prefetch"] = (
+            secondary.get("thin_history_after_prefetch", 0) + len(thin_history_symbols)
+        )
+        scan_summary["secondary_diagnostic_counts"] = secondary
+        scan_summary["thin_history_after_prefetch_count"] = len(thin_history_symbols)
+        scan_summary["history_diagnostic_symbols"] = sorted(thin_history_symbols)[:25]
+        scan_summary["history_diagnostic_policy"] = (
+            "diagnostic_only_full_decision_preserved; stale or missing candles may block candle-dependent setups later"
+        )
 
     def _trim_universe_to_decision_target(
         self,

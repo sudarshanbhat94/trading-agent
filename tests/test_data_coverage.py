@@ -338,6 +338,29 @@ class DataCoverageTests(unittest.TestCase):
         self.assertEqual(policy["after"], 3)
         self.assertTrue(policy["trimmed"])
 
+    def test_thin_history_is_diagnostic_not_post_scan_rejection(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="region-router", backfill_limit=2)
+        universe = [{"symbol": f"US{index}", "exchange": "NASDAQ"} for index in range(200)]
+        cached_sets = {
+            "US0": {"analysis": [object()] * 12},
+            "US1": {"analysis": [object()] * 55},
+        }
+        scan_summary = {"selected_symbols": 200, "rejected_counts": {}}
+
+        agent._annotate_thin_history_diagnostics(
+            universe,
+            {"US0": {"qty": 1}},
+            cached_sets,
+            scan_summary,
+        )
+
+        self.assertEqual(len(universe), 200)
+        self.assertEqual(scan_summary["selected_symbols"], 200)
+        self.assertEqual(scan_summary["thin_history_after_prefetch_count"], 198)
+        self.assertEqual(scan_summary["secondary_diagnostic_counts"]["thin_history_after_prefetch"], 198)
+        self.assertNotIn("insufficient_history_after_prefetch", scan_summary["rejected_counts"])
+
     def test_market_action_symbols_are_forced_into_raw_scan_universe(self) -> None:
         db = _FakeCoverageDb({})
         agent = _agent(db, provider="upstox-live", backfill_limit=2)
