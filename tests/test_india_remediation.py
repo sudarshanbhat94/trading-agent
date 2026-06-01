@@ -192,6 +192,25 @@ class IndiaRemediationTests(unittest.TestCase):
 
         self.assertFalse(agent._pre_strategy_candle_fetch_enabled())
 
+    def test_market_closed_cycle_state_clears_stale_open_diagnostics(self) -> None:
+        states = {}
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.db = SimpleNamespace(set_state=lambda key, value: states.__setitem__(key, value))
+        agent.market_region = "BOTH"
+
+        agent._write_market_closed_cycle_state(
+            [
+                {"symbol": "RELIANCE", "exchange": "NSE"},
+                {"symbol": "AAPL", "exchange": "NASDAQ"},
+            ],
+            {"open_regions": [], "closed_regions": ["IN", "US"], "data_policy": {"IN": "closed", "US": "closed"}},
+        )
+
+        self.assertEqual(states["opportunity_scan"]["mode"], "market_closed")
+        self.assertEqual(states["opportunity_scan"]["selected_symbols"], 0)
+        self.assertEqual(states["decision_diagnostics"]["mode"], "market_closed")
+        self.assertEqual(states["decision_diagnostics"]["health_flags"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

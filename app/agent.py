@@ -1103,6 +1103,63 @@ class TradingAgentService:
             value = default
         return max(1.0, min(value, max(float(self.cycle_timeout_seconds) - 1.0, 1.0)))
 
+    def _write_market_closed_cycle_state(
+        self,
+        full_universe: list[dict[str, Any]],
+        session_context: dict[str, Any],
+    ) -> None:
+        now = utc_now()
+        scan_summary = {
+            "enabled": True,
+            "mode": "market_closed",
+            "scan_paused": True,
+            "scanned_at": now,
+            "market_region": self.market_region,
+            "open_regions": session_context.get("open_regions"),
+            "closed_regions": session_context.get("closed_regions"),
+            "market_data_policy": session_context.get("data_policy"),
+            "enabled_universe_symbols": len(full_universe),
+            "open_universe_symbols": 0,
+            "raw_symbols": 0,
+            "quoted_symbols": 0,
+            "selected_symbols": 0,
+            "target_decision_symbols": 0,
+            "target_decision_symbols_by_market": {},
+            "slot_fill_counts": {},
+            "slot_fill_counts_by_market": {},
+            "primary_blocker_counts": {},
+            "skip_reason": "all_selected_markets_closed",
+            "top_candidates": [],
+        }
+        scan_summary["by_market"] = _opportunity_scan_by_market(
+            scan_summary,
+            full_universe,
+            [],
+            [],
+            [],
+            {},
+        )
+        self.db.set_state("opportunity_scan", scan_summary)
+        self.db.set_state(
+            "decision_diagnostics",
+            {
+                "generated_at": now,
+                "mode": "market_closed",
+                "scan_paused": True,
+                "market_region": self.market_region,
+                "raw_nse_count": 0,
+                "scanner_shortlist_count": 0,
+                "full_decision_count": 0,
+                "target_decision_count": 0,
+                "slot_fill_counts": {},
+                "primary_blocker_counts": {},
+                "paper_follow_conversion_count": 0,
+                "missed_move_review_row_id": 0,
+                "health_flags": [],
+                "summary": "Markets are closed; live scanner and execution checks are paused.",
+            },
+        )
+
     async def _run_market_closed_prep(
         self,
         started: datetime,
@@ -1124,6 +1181,7 @@ class TradingAgentService:
                 "post_market_prep_enabled": getattr(self.strategy.settings, "post_market_prep_enabled", True),
             },
         )
+        self._write_market_closed_cycle_state(full_universe, session_context)
         now_dt = datetime.now(timezone.utc)
         previous_prep = self.db.get_state("tomorrow_prep_context", {})
         previous_prepared_at = (
