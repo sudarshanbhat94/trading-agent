@@ -281,6 +281,30 @@ class DataCoverageTests(unittest.TestCase):
         self.assertFalse(policy["rotation_enabled"])
         self.assertEqual(policy["reason"], "live_rally_radar_requires_all_open_symbols")
 
+    def test_dynamic_scan_caps_large_us_open_universe_but_keeps_india_uncapped(self) -> None:
+        db = _FakeCoverageDb({})
+        agent = _agent(db, provider="region-router", backfill_limit=2)
+        agent.strategy.settings.dynamic_scan_max_open_symbols_us = 1200
+        agent.strategy.settings.dynamic_scan_max_open_symbols_in = 0
+        universe = [
+            *({"symbol": f"NSE{index}", "exchange": "NSE"} for index in range(2600)),
+            *({"symbol": f"US{index}", "exchange": "NASDAQ"} for index in range(5000)),
+        ]
+
+        selected, policy = agent._raw_scan_universe_for_cycle(
+            universe,
+            {},
+            dynamic_scan_enabled=True,
+            raw_scan_limit=0,
+        )
+
+        self.assertEqual(len(selected), 3800)
+        self.assertEqual(policy["reason"], "market_open_symbol_cap")
+        self.assertFalse(policy["full_live_quote_sweep"])
+        self.assertTrue(policy["rotation_enabled"])
+        self.assertEqual(policy["market_open_symbols"], {"IN": 2600, "US": 5000})
+        self.assertEqual(policy["market_quote_sweep_symbols"], {"IN": 2600, "US": 1200})
+
     def test_market_action_symbols_are_forced_into_raw_scan_universe(self) -> None:
         db = _FakeCoverageDb({})
         agent = _agent(db, provider="upstox-live", backfill_limit=2)
@@ -352,6 +376,8 @@ class _FakeCoverageDb:
 def _agent(db: _FakeCoverageDb, provider: str, backfill_limit: int) -> TradingAgentService:
     settings = SimpleNamespace(
         dynamic_scan_candidate_limit=60,
+        dynamic_scan_max_open_symbols_in=0,
+        dynamic_scan_max_open_symbols_us=1200,
         dynamic_scan_min_score=0.58,
         dynamic_scan_require_active_setup=True,
         dynamic_scan_min_price=10.0,

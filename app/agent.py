@@ -1994,6 +1994,17 @@ class TradingAgentService:
                 "quote_sweep_symbols": len(scan_universe),
                 "reason": "live_rally_radar_requires_all_open_symbols",
             }
+        if dynamic_scan_enabled and not configured_limit and scan_universe:
+            selected, cap_policy = self._market_capped_scan_universe(scan_universe, positions)
+            if cap_policy.get("cap_applied"):
+                return selected, {
+                    "configured_raw_limit": configured_limit,
+                    "full_live_quote_sweep": False,
+                    "rotation_enabled": True,
+                    "quote_sweep_symbols": len(selected),
+                    "reason": "market_open_symbol_cap",
+                    **cap_policy,
+                }
 
         selected = self._cycle_universe(scan_universe, positions, limit_override=configured_limit)
         return selected, {
@@ -2007,6 +2018,72 @@ class TradingAgentService:
             "quote_sweep_symbols": len(selected),
             "reason": "configured_all_symbols" if dynamic_scan_enabled else "static_cycle_universe",
         }
+
+    def _market_capped_scan_universe(
+        self,
+        scan_universe: list[dict[str, Any]],
+        positions: dict[str, dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        by_market: dict[str, list[dict[str, Any]]] = {}
+        for row in scan_universe:
+            by_market.setdefault(market_region_for_row(row), []).append(row)
+        selected: list[dict[str, Any]] = []
+        selected_symbols: set[str] = set()
+        market_caps: dict[str, int] = {}
+        market_counts: dict[str, int] = {}
+        market_selected: dict[str, int] = {}
+        cap_applied = False
+        for market in sorted(by_market):
+            rows = by_market[market]
+            market_counts[market] = len(rows)
+            cap = self._market_open_symbol_cap(market)
+            market_caps[market] = cap
+            if cap > 0 and cap < len(rows):
+                cap_applied = True
+                chosen = self._cycle_rows(rows, cap)
+            else:
+                chosen = rows
+            for row in chosen:
+                symbol = str(row.get("symbol") or "").upper()
+                if not symbol or symbol in selected_symbols:
+                    continue
+                selected.append(row)
+                selected_symbols.add(symbol)
+            market_selected[market] = len(chosen)
+        if positions:
+            rows_by_symbol = {str(row.get("symbol") or "").upper(): row for row in scan_universe}
+            for symbol in positions:
+                normalized = str(symbol or "").upper()
+                if normalized in selected_symbols:
+                    continue
+                row = rows_by_symbol.get(normalized)
+                if not row:
+                    continue
+                selected.append(row)
+                selected_symbols.add(normalized)
+                market = market_region_for_row(row)
+                market_selected[market] = market_selected.get(market, 0) + 1
+        return selected, {
+            "cap_applied": cap_applied,
+            "market_caps": market_caps,
+            "market_open_symbols": market_counts,
+            "market_quote_sweep_symbols": market_selected,
+        }
+
+    def _market_open_symbol_cap(self, market: str) -> int:
+        settings = self.strategy.settings
+        if str(market or "").upper() == "US":
+            return max(0, int(getattr(settings, "dynamic_scan_max_open_symbols_us", 1200) or 0))
+        return max(0, int(getattr(settings, "dynamic_scan_max_open_symbols_in", 0) or 0))
+
+    def _cycle_rows(self, rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        limit = max(0, int(limit or 0))
+        if limit <= 0 or limit >= len(rows):
+            return list(rows)
+        start = self._universe_cursor % len(rows)
+        selected = [rows[(start + index) % len(rows)] for index in range(limit)]
+        self._universe_cursor = (start + limit) % len(rows)
+        return selected
 
     def _cycle_universe(
         self,

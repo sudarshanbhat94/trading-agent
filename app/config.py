@@ -66,6 +66,8 @@ class Settings:
     universe_symbols_per_cycle: int = _int("UNIVERSE_SYMBOLS_PER_CYCLE", 0)
     dynamic_opportunity_scan_enabled: bool = _bool("DYNAMIC_OPPORTUNITY_SCAN_ENABLED", True)
     dynamic_scan_raw_limit: int = _int("DYNAMIC_SCAN_RAW_LIMIT", 0)
+    dynamic_scan_max_open_symbols_in: int = _int("DYNAMIC_SCAN_MAX_OPEN_SYMBOLS_IN", 0)
+    dynamic_scan_max_open_symbols_us: int = _int("DYNAMIC_SCAN_MAX_OPEN_SYMBOLS_US", 1200)
     dynamic_scan_candidate_limit: int = _int("DYNAMIC_SCAN_CANDIDATE_LIMIT", 120)
     india_full_decision_target: int = _int("INDIA_FULL_DECISION_TARGET", 200)
     india_scanner_slot_budgets: str = os.getenv(
@@ -379,6 +381,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "universe_symbols_per_cycle", "label": "Symbols/Cycle (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
     {"key": "dynamic_opportunity_scan_enabled", "label": "Dynamic Opportunity Scan", "type": "boolean", "category": "Market Data"},
     {"key": "dynamic_scan_raw_limit", "label": "Full Scan Cap (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
+    {"key": "dynamic_scan_max_open_symbols_in", "label": "IN Open Scan Cap (0=All)", "type": "number", "category": "Market Data", "min": 0, "step": 50},
+    {"key": "dynamic_scan_max_open_symbols_us", "label": "US Open Scan Cap", "type": "number", "category": "Market Data", "min": 200, "step": 50},
     {"key": "dynamic_scan_candidate_limit", "label": "Dynamic Candidates/Cycle", "type": "number", "category": "Market Data", "min": 1, "step": 10},
     {"key": "india_full_decision_target", "label": "India Full Decisions", "type": "number", "category": "Market Data", "min": 1, "step": 10},
     {"key": "india_scanner_slot_budgets", "label": "India Scanner Slots", "type": "text", "category": "Market Data"},
