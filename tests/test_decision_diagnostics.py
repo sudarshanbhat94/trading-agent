@@ -84,12 +84,26 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(diagnostics["funnel"]["buy_decisions"], 1)
-        self.assertEqual(diagnostics["funnel"]["auto_followed"], 0)
+        self.assertEqual(diagnostics["funnel"]["buy_symbols"], 1)
+        self.assertEqual(diagnostics["funnel"]["auto_followed_user_actions"], 0)
+        self.assertEqual(diagnostics["funnel"]["auto_follow_user_conversion_pct"], 0.0)
         self.assertEqual(
             diagnostics["auto_follow"]["skip_reasons"]["position_size_below_minimum_trade_economics"],
             2,
         )
         self.assertIn("buy_decisions_not_followed", {flag["code"] for flag in diagnostics["health_flags"]})
+
+    def test_cycle_diagnostics_does_not_report_multi_user_follows_as_over_100_percent(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 100, "quoted_symbols": 100, "selected_symbols": 40},
+            [_decision("GTES", "BUY")],
+            shared_auto_trade={"users_checked": 7, "followed": 6, "skipped": []},
+            market_region="US",
+        )
+
+        self.assertEqual(diagnostics["funnel"]["auto_followed_user_actions"], 6)
+        self.assertEqual(diagnostics["funnel"]["auto_follow_user_conversion_pct"], 85.71)
+        self.assertEqual(diagnostics["funnel"]["auto_follows_per_buy_symbol"], 6.0)
 
 
 def _decision(

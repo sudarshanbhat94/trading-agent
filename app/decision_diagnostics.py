@@ -62,8 +62,15 @@ def build_cycle_decision_diagnostics(
     selected_symbols = _int(scan.get("selected_symbols"))
     decisions_created = len(decision_rows)
     buy_decisions = action_counts.get("BUY", 0)
+    buy_symbols = {
+        str(decision.symbol or "").upper()
+        for decision in decision_rows
+        if str(decision.action or "").upper() == "BUY" and str(decision.symbol or "").strip()
+    }
     followed = _int(auto_trade.get("followed"))
+    users_checked = _int(auto_trade.get("users_checked"))
     skipped = auto_trade.get("skipped") if isinstance(auto_trade.get("skipped"), list) else []
+    follow_opportunities = users_checked * len(buy_symbols)
     funnel = {
         "raw_symbols": raw_symbols,
         "quoted_symbols": quoted_symbols,
@@ -71,15 +78,17 @@ def build_cycle_decision_diagnostics(
         "scanner_selected_symbols": selected_symbols,
         "decisions_created": decisions_created,
         "buy_decisions": buy_decisions,
+        "buy_symbols": len(buy_symbols),
         "sell_decisions": action_counts.get("SELL", 0),
         "hold_decisions": action_counts.get("HOLD", 0),
-        "auto_followed": followed,
+        "auto_followed_user_actions": followed,
         "auto_follow_skipped": len(skipped),
         "executed_orders": max(int(executed_orders or 0), 0),
         "quote_coverage_pct": _pct(quoted_symbols, raw_symbols),
         "scanner_selection_pct": _pct(selected_symbols, raw_symbols),
         "decision_buy_rate_pct": _pct(buy_decisions, decisions_created),
-        "auto_follow_rate_pct": _pct(followed, buy_decisions),
+        "auto_follow_user_conversion_pct": _pct(followed, follow_opportunities),
+        "auto_follows_per_buy_symbol": round(followed / len(buy_symbols), 2) if buy_symbols else None,
     }
     top_blockers = [
         {
@@ -196,7 +205,7 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "message": "Live quote probes were blocked only because cached intraday candles were stale.",
             }
         )
-    if buys > 0 and _int(funnel.get("auto_followed")) == 0:
+    if buys > 0 and _int(funnel.get("auto_followed_user_actions")) == 0:
         flags.append(
             {
                 "severity": "warning",
@@ -213,7 +222,7 @@ def _summary(diagnostics: dict[str, Any]) -> str:
     selected = _int(funnel.get("scanner_selected_symbols"))
     decisions = _int(funnel.get("decisions_created"))
     buys = _int(funnel.get("buy_decisions"))
-    followed = _int(funnel.get("auto_followed"))
+    followed = _int(funnel.get("auto_followed_user_actions"))
     top_blockers = diagnostics.get("top_blockers") if isinstance(diagnostics.get("top_blockers"), list) else []
     blocker = top_blockers[0]["gate"] if top_blockers and isinstance(top_blockers[0], dict) else "none"
     return (
