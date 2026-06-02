@@ -1746,7 +1746,11 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         }
         snapshot["follow_history"] = follow_history
         snapshot["follow_history_by_market"] = _rows_by_market(follow_history)
-        snapshot["orders"] = _follow_history_order_events(follow_history)
+        broker_orders: list[dict[str, Any]] = []
+        paper_orders = _follow_history_order_events(follow_history)
+        snapshot["orders"] = broker_orders
+        snapshot["broker_orders"] = broker_orders
+        snapshot["paper_orders"] = paper_orders
         user_portfolio = _user_follow_portfolio(
             tracked_ideas,
             snapshot.get("portfolio", {}),
@@ -1807,13 +1811,18 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
         mode = str(row.get("mode_label") or row.get("mode") or "Paper").strip()
         mode_code = str(row.get("mode") or "").strip().upper()
         status = str(row.get("status") or row.get("state") or "").upper()
+        simulated = mode_code != "LIVE"
         entry_qty = int(row.get("entry_qty") or row.get("qty") or 0)
         entry_price = float(row.get("entry_price") or 0.0)
         if symbol and entry_qty > 0 and entry_price > 0:
-            entry_status = "REQUESTED" if mode_code == "LIVE" and status == "LIVE_REQUESTED" else "FILLED"
+            entry_status = "LIVE_REQUESTED" if mode_code == "LIVE" and status == "LIVE_REQUESTED" else "PAPER_OPENED"
             events.append(
                 {
                     "id": f"follow-{row.get('follow_id')}-entry",
+                    "record_type": "paper_follow_event" if simulated else "live_follow_request",
+                    "execution_source": "user_idea_follows",
+                    "is_broker_order": False,
+                    "is_paper": simulated,
                     "ts": row.get("opened_at") or row.get("updated_at"),
                     "symbol": symbol,
                     "side": "BUY",
@@ -1822,9 +1831,12 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "price": entry_price,
                     "notional": round(entry_qty * entry_price, 2),
                     "status": entry_status,
-                    "reason": f"{mode} follow opened from signal idea",
+                    "status_label": "PAPER ENTRY" if simulated else "LIVE REQUEST",
+                    "reason": f"{'Simulated paper' if simulated else mode} follow opened from signal idea",
                     "market_region": market,
                     "exchange": row.get("exchange"),
+                    "product": "PAPER FOLLOW" if simulated else "LIVE FOLLOW REQUEST",
+                    "order_type": "SIMULATED" if simulated else "REQUEST",
                     "details": row,
                 }
             )
@@ -1846,6 +1858,10 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
             events.append(
                 {
                     "id": f"follow-{row.get('follow_id')}-exit",
+                    "record_type": "paper_follow_event" if simulated else "live_follow_request",
+                    "execution_source": "user_idea_follows",
+                    "is_broker_order": False,
+                    "is_paper": simulated,
                     "ts": row.get("closed_at") or row.get("updated_at"),
                     "symbol": symbol,
                     "side": side,
@@ -1853,10 +1869,13 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "qty": closed_qty,
                     "price": exit_price,
                     "notional": round(closed_qty * exit_price, 2),
-                    "status": exit_status,
-                    "reason": row.get("exit_reason") or f"{mode} follow exit",
+                    "status": "PAPER_REDUCED" if simulated and partial_reduce else "PAPER_EXITED" if simulated else exit_status,
+                    "status_label": "PAPER REDUCE" if simulated and partial_reduce else "PAPER EXIT" if simulated else "LIVE EXIT REQUEST",
+                    "reason": row.get("exit_reason") or f"{'Simulated paper' if simulated else mode} follow exit",
                     "market_region": market,
                     "exchange": row.get("exchange"),
+                    "product": "PAPER FOLLOW" if simulated else "LIVE FOLLOW REQUEST",
+                    "order_type": "SIMULATED" if simulated else "REQUEST",
                     "details": row,
                 }
             )
@@ -4169,6 +4188,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     monitor_symbols = db.user_monitor_symbols(int(user["id"]))
     tracked_ideas = _followed_signal_ideas_for_user(int(user["id"]), 100, monitor_symbols=monitor_symbols)
     follow_history = _follow_history_for_user(int(user["id"]), 500, monitor_symbols=monitor_symbols)
+    paper_orders = _follow_history_order_events(follow_history)
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     user_portfolio = _user_follow_portfolio(
@@ -4185,7 +4205,9 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
         "tracked_ideas": tracked_ideas,
         "follow_history": follow_history,
         "follow_history_by_market": _rows_by_market(follow_history),
-        "orders": _follow_history_order_events(follow_history),
+        "orders": [],
+        "broker_orders": [],
+        "paper_orders": paper_orders,
         "tracked_ideas_by_market": {
             "IN": _followed_signal_ideas_for_user(int(user["id"]), 100, market_region="IN", monitor_symbols=monitor_symbols),
             "US": _followed_signal_ideas_for_user(int(user["id"]), 100, market_region="US", monitor_symbols=monitor_symbols),

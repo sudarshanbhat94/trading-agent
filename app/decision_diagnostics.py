@@ -126,6 +126,12 @@ def build_cycle_decision_diagnostics(
     followed = _int(auto_trade.get("followed"))
     users_checked = _int(auto_trade.get("users_checked"))
     skipped = auto_trade.get("skipped") if isinstance(auto_trade.get("skipped"), list) else []
+    safety_exited = auto_trade.get("safety_exited") if isinstance(auto_trade.get("safety_exited"), list) else []
+    legacy_economics_exited = (
+        auto_trade.get("legacy_economics_exited")
+        if isinstance(auto_trade.get("legacy_economics_exited"), list)
+        else []
+    )
     follow_opportunities = users_checked * len(buy_intent_symbols)
     funnel = {
         "raw_symbols": raw_symbols,
@@ -147,6 +153,8 @@ def build_cycle_decision_diagnostics(
         "auto_followed_user_actions": followed,
         "paper_followed_user_actions": followed,
         "auto_follow_skipped": len(skipped),
+        "paper_safety_exited_user_actions": len(safety_exited),
+        "legacy_economics_exited_user_actions": len(legacy_economics_exited),
         "central_broker_orders": max(int(executed_orders or 0), 0),
         "executed_orders": max(int(executed_orders or 0), 0),
         "paper_trade_source": "user_idea_follows",
@@ -220,6 +228,8 @@ def build_cycle_decision_diagnostics(
             "active_buy_ideas_checked": _int(auto_trade.get("active_buy_ideas_checked")),
             "followed": followed,
             "exited": _int(auto_trade.get("exited")),
+            "safety_exited": len(safety_exited),
+            "legacy_economics_exited": len(legacy_economics_exited),
             "skip_reasons": _skip_reason_counts(skipped),
         },
         "top_hold_candidates": top_holds[:20],
@@ -398,8 +408,16 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "message": "Live quote probes were blocked only because cached intraday candles were stale.",
             }
         )
+    auto_follow = diagnostics.get("auto_follow") if isinstance(diagnostics.get("auto_follow"), dict) else {}
+    if _int(auto_follow.get("safety_exited")) > 0:
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "paper_follow_safety_exits",
+                "message": "One or more active paper follows were safety-exited in this cycle; inspect entry and safety gate alignment.",
+            }
+        )
     if buys > 0 and _int(funnel.get("auto_followed_user_actions")) == 0 and _int(funnel.get("auto_follow_user_conversion_pct")) == 0:
-        auto_follow = diagnostics.get("auto_follow") if isinstance(diagnostics.get("auto_follow"), dict) else {}
         users_checked = _int(auto_follow.get("users_checked"))
         active_checked = _int(auto_follow.get("active_buy_ideas_checked"))
         skip_reasons = auto_follow.get("skip_reasons") if isinstance(auto_follow.get("skip_reasons"), dict) else {}

@@ -59,6 +59,9 @@ const SETTINGS_TAB_CATEGORIES = {
   advanced: new Set(["Global Intelligence", "Institutional Feeds"]),
 };
 
+const POSITION_MARK_IDLE_REFRESH_MS = 10000;
+const POSITION_MARK_ACTIVE_REFRESH_MS = 3000;
+
 const money = new Intl.NumberFormat("en-IN", {
   style: "currency",
   currency: "INR",
@@ -1367,8 +1370,28 @@ function applyOrderFilter(rows = []) {
   return (rows || []).filter((row) => orderStatusBucket(row) === filter);
 }
 
+function tradeJournalRows(payload = {}) {
+  const brokerRows = (payload.orders || []).map((row) => ({
+    ...(row || {}),
+    record_type: row?.record_type || "broker_order",
+    is_broker_order: row?.is_broker_order !== false,
+  }));
+  const paperRows = (payload.paper_orders || []).map((row) => ({
+    ...(row || {}),
+    record_type: row?.record_type || "paper_follow_event",
+    is_broker_order: false,
+    is_paper: row?.is_paper !== false,
+  }));
+  return [...paperRows, ...brokerRows].sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+}
+
+function orderIsPaper(row = {}) {
+  return Boolean(row.is_paper || row.record_type === "paper_follow_event" || row.execution_source === "user_idea_follows");
+}
+
 function orderStatusBucket(row = {}) {
   const status = String(row.status || "").trim().toUpperCase();
+  if (["PAPER_OPENED", "PAPER_FILLED", "PAPER_EXITED", "PAPER_REDUCED"].includes(status)) return "filled";
   if (["OPEN", "PENDING", "SUBMITTED", "WORKING", "REQUESTED", "ACCEPTED", "PARTIALLY_FILLED", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"].includes(status)) return "open";
   if (["FILLED", "EXECUTED", "COMPLETE", "COMPLETED", "EXITED", "CLOSED", "PARTIAL", "REDUCED"].includes(status)) return "filled";
   if (["REJECTED", "VETOED", "CANCELLED", "CANCELED", "FAILED", "EXPIRED"].includes(status)) return "rejected";
@@ -1376,6 +1399,13 @@ function orderStatusBucket(row = {}) {
 }
 
 function orderStatusLabel(row = {}) {
+  if (row.status_label) return String(row.status_label).toUpperCase();
+  if (orderIsPaper(row)) {
+    const status = String(row.status || "").toUpperCase();
+    if (status.includes("EXIT")) return "PAPER EXIT";
+    if (status.includes("REDUCE")) return "PAPER REDUCE";
+    return "PAPER ENTRY";
+  }
   const bucket = orderStatusBucket(row);
   if (bucket === "filled") return "EXECUTED";
   if (bucket === "rejected") return String(row.status || "REJECTED").toUpperCase();
@@ -1392,6 +1422,7 @@ function orderFilledText(row = {}) {
 function orderMetaText(row = {}) {
   const market = rowMarket(row);
   const exchange = row.exchange || (market === "IN" ? "NSE" : "US");
+  if (orderIsPaper(row)) return `${exchange}  PAPER FOLLOW  SIMULATED`;
   const audit = parseJsonObject(row.details_json);
   const route = audit.route || {};
   const product = row.product || route.product || (market === "IN" ? "CNC" : "EQ");
@@ -1406,7 +1437,7 @@ function updateOrderFilterCounts(rows = []) {
     rejected: (rows || []).filter((row) => orderStatusBucket(row) === "rejected").length,
     all: (rows || []).length,
   };
-  const labels = { open: "Open", filled: "Executed", rejected: "Rejected", all: "All" };
+  const labels = { open: "Open", filled: "Completed", rejected: "Rejected", all: "All" };
   document.querySelectorAll('[data-filter-group="orders"] [data-filter-value]').forEach((button) => {
     const key = button.dataset.filterValue || "all";
     if (!(key in counts)) return;
@@ -1880,6 +1911,15 @@ function decisionReasonHighlights(row = {}) {
 
 function readableOrderReason(row = {}) {
   const raw = String(row.reason || "").trim();
+  if (orderIsPaper(row)) {
+    if (/active_follow_severe_risk_flags/i.test(raw)) {
+      return "Simulated paper follow closed by the safety gate: severe risk flags.";
+    }
+    if (/opened from signal idea/i.test(raw)) {
+      return "Simulated paper follow opened from a signal idea. No broker order was placed.";
+    }
+    if (raw) return `Simulated paper journal: ${humanizeReasonText(raw, row.side)}`;
+  }
   const stop = raw.match(/risk exit: price ([0-9.]+) <= stop ([0-9.]+)/i);
   const market = rowMarket(row);
   if (stop) return `Sold for risk control: price ${fmtMarketMoney(stop[1], market)} reached the stop level ${fmtMarketMoney(stop[2], market)}.`;
@@ -1902,7 +1942,7 @@ function render(payload) {
   const allPositions = payload.positions || [];
   const allQuotes = payload.quotes || [];
   const allDecisions = payload.decisions || [];
-  const allOrders = payload.orders || [];
+  const allOrders = tradeJournalRows(payload);
   const allSentiment = payload.sentiment || [];
   const openPositions = filterRowsByMarket(allPositions, activeMarket);
   const positions = positionRowsForMarket(payload, activeMarket);
@@ -1996,7 +2036,7 @@ function render(payload) {
     : suggestions.length
       ? `0/${suggestions.length} ideas`
       : "0 ideas";
-  byId("order-count").textContent = `${filteredCountLabel(visibleOrders.length, dayOrders.length, "order")} today`;
+  byId("order-count").textContent = `${filteredCountLabel(visibleOrders.length, dayOrders.length, "journal event")} today`;
   byId("strategy-count").textContent = `${strategies.length} strategies`;
   const planCount = byId("strategy-plan-count");
   if (planCount) planCount.textContent = `${filteredCountLabel(visibleStrategyPlans.length, strategyPlans.length, "plan")}`;
@@ -2160,7 +2200,10 @@ function applyPositionMarks(payload = {}) {
 async function refreshPositionMarks() {
   if (!state.auth?.authenticated || state.auth?.admin) return;
   const now = Date.now();
-  if (now - Number(state.positionMarksLastFetchAt || 0) < 850) return;
+  const openPositionCount = (state.latest?.positions || []).filter((row) => positionQuantity(row) > 0 && !positionIsClosed(row)).length;
+  const minInterval = openPositionCount ? POSITION_MARK_ACTIVE_REFRESH_MS : POSITION_MARK_IDLE_REFRESH_MS;
+  const elapsed = now - Number(state.positionMarksLastFetchAt || 0);
+  if (elapsed < minInterval) return;
   if (state.positionMarksInFlight) {
     state.positionMarksPending = true;
     return;
@@ -2183,14 +2226,14 @@ async function refreshPositionMarks() {
     state.positionMarksInFlight = false;
     if (state.positionMarksPending && state.auth?.authenticated && !state.auth?.admin) {
       state.positionMarksPending = false;
-      window.setTimeout(refreshPositionMarks, 0);
+      window.setTimeout(refreshPositionMarks, minInterval);
     }
   }
 }
 
 function startPositionMarkPolling() {
   if (!state.auth?.authenticated || state.auth?.admin || state.positionMarksTimer) return;
-  state.positionMarksTimer = window.setInterval(refreshPositionMarks, 10000);
+  state.positionMarksTimer = window.setInterval(refreshPositionMarks, POSITION_MARK_IDLE_REFRESH_MS);
   refreshPositionMarks();
 }
 
@@ -2782,7 +2825,7 @@ function renderAgentConsole(payload) {
   const health = payload.market_health || {};
   const settings = currentSettings();
   const positions = filterRowsByMarket(payload.positions || [], state.activeMarket);
-  const orders = payload.orders || [];
+  const orders = tradeJournalRows(payload);
   const decisions = payload.decisions || [];
   const universe = payload.universe || {};
   const latestAction = decisions.find((row) => row.action && row.action !== "HOLD");
@@ -2820,7 +2863,7 @@ function renderAgentConsole(payload) {
     {
       label: "Latest action",
       value: latestAction ? `${latestAction.action} ${latestAction.symbol}` : "No trade action",
-      note: `${orders.length} orders tracked`,
+      note: `${orders.length} journal events tracked`,
       onClick: () => (latestAction ? showDetails("Decision", latestAction) : setView("decisions")),
     },
   ];
@@ -6088,6 +6131,8 @@ function applyIdeaFollowPayload(payload = {}) {
     follow_history: payload.follow_history || state.latest?.follow_history || [],
     follow_history_by_market: payload.follow_history_by_market || state.latest?.follow_history_by_market || {},
     orders: payload.orders || state.latest?.orders || [],
+    broker_orders: payload.broker_orders || state.latest?.broker_orders || [],
+    paper_orders: payload.paper_orders || state.latest?.paper_orders || [],
     positions: payload.positions || state.latest?.positions || [],
     portfolio: payload.portfolio || state.latest?.portfolio || {},
     portfolio_by_market: payload.portfolio_by_market || state.latest?.portfolio_by_market || {},
@@ -6620,7 +6665,7 @@ function renderOrders(rows) {
       </tr>`;
     })
     .join("");
-  bindRowDetails(body, rows, "Order");
+  bindRowDetails(body, rows, "Journal Event");
 }
 
 function renderMobileOrders(rows = [], allRows = rows) {
@@ -6634,14 +6679,14 @@ function renderMobileOrders(rows = [], allRows = rows) {
     all: (allRows || []).length,
   };
   const filter = pageFilter("orders");
-  const activeLabel = filter === "filled" ? "Executed" : humanLabel(filter || "all");
+  const activeLabel = filter === "filled" ? "Completed" : humanLabel(filter || "all");
   summary.innerHTML = `<div>
-      <strong>${escapeHtml(filteredCountLabel(rows.length, counts.all, "order"))}</strong>
+      <strong>${escapeHtml(filteredCountLabel(rows.length, counts.all, "journal event"))}</strong>
       <span>${escapeHtml(activeLabel)} · ${escapeHtml(activeMarketLabel())}</span>
     </div>
-    <div class="mobile-orders-summary-counts" aria-label="Order status counts">
+    <div class="mobile-orders-summary-counts" aria-label="Journal status counts">
       <span>Open ${fmtNumber(counts.open)}</span>
-      <span>Executed ${fmtNumber(counts.filled)}</span>
+      <span>Completed ${fmtNumber(counts.filled)}</span>
       <span>Rejected ${fmtNumber(counts.rejected)}</span>
     </div>`;
   if (!rows.length) {
@@ -6657,7 +6702,7 @@ function renderMobileOrders(rows = [], allRows = rows) {
   [...body.querySelectorAll(".mobile-order-card")].forEach((card) => {
     const row = rows[Number(card.dataset.index)];
     if (!row) return;
-    const openDetails = () => showDetails("Order", row);
+    const openDetails = () => showDetails("Journal Event", row);
     card.addEventListener("click", (event) => {
       if (event.target.closest("button, a, input, select, textarea")) return;
       openDetails();
@@ -6676,16 +6721,16 @@ function ordersEmptyState(prefix = "") {
   const mode = String(readiness.execution_mode || state.latest?.runtime?.execution_mode || "paper").toLowerCase();
   const liveAllowed = Boolean(readiness.live_order_allowed);
   const filtered = prefix ? `${prefix} ` : "";
-  let message = "No paper/live buys, exits, target actions, or rejected requests were created today.";
+  let message = "No simulated paper follows, exits, broker orders, or rejected requests were created today.";
   if (mode === "paper") {
-    message = "Paper-only mode is active. Orders appear after a paper follow or paper exit is created.";
+    message = "Paper-only mode is active. Journal rows appear after a simulated paper follow or paper exit is created.";
   } else if (!liveAllowed) {
     message = `Live routing is blocked: ${shortValue((readiness.blocking_reasons || [])[0] || broker.reason || "readiness has not passed", 140)}.`;
   } else if (!broker.connected) {
     message = "No broker connection is synced, so there are no submitted broker orders to show.";
   }
   return {
-    title: `No ${activeMarketLabel()} ${filtered}orders today`,
+    title: `No ${activeMarketLabel()} ${filtered}journal events today`,
     message,
     actionLabel: "Open Watchlist",
     actionView: "suggestions",
@@ -7291,17 +7336,10 @@ function orderDetailHtml(row) {
   const ltp = firstFinite(quote.price, quote.last_price, quote.latest_price);
   const dayPct = quote.symbol ? quoteDayPct(quote) : null;
   const bucket = orderStatusBucket(row);
-  const cancellable = bucket === "open" && Number.isFinite(Number(row.id));
+  const paper = orderIsPaper(row);
+  const cancellable = !paper && bucket === "open" && Number.isFinite(Number(row.id));
   const avgPrice = firstFinite(audit.execution?.avg_price, row.avg_price, row.average_price, bucket === "filled" ? row.price : null);
-  return `<section class="trade-sheet order-sheet">
-    <header class="trade-sheet-head">
-      <div>
-        <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
-        <p>${escapeHtml(orderMetaText(row))} <span class="${pnlClass(dayPct)}">${fmtTradeMoney(ltp, market)} ${fmtSignedPct(dayPct)}</span></p>
-      </div>
-      <span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(orderStatusLabel(row))}</span>
-    </header>
-    <div class="trade-sheet-actions primary-actions">
+  const actionHtml = paper ? "" : `<div class="trade-sheet-actions primary-actions">
       <button class="modify-action" type="button" ${cancellable ? "" : "disabled"} data-order-modify="${escapeHtml(row.id || "")}">MODIFY</button>
       <button class="cancel-action" type="button" ${cancellable ? "" : "disabled"} data-order-cancel="${escapeHtml(row.id || "")}">CANCEL</button>
     </div>
@@ -7310,19 +7348,28 @@ function orderDetailHtml(row) {
       <button type="button" data-view-jump="analyze">Option chain</button>
       <button type="button" data-view-jump="suggestions">Set alert</button>
       <button type="button" data-view-jump="orders">Create GTT</button>
-    </div>
+    </div>`;
+  return `<section class="trade-sheet order-sheet">
+    <header class="trade-sheet-head">
+      <div>
+        <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
+        <p>${escapeHtml(orderMetaText(row))} <span class="${pnlClass(dayPct)}">${fmtTradeMoney(ltp, market)} ${fmtSignedPct(dayPct)}</span></p>
+      </div>
+      <span class="order-status-pill ${escapeHtml(bucket)}">${escapeHtml(orderStatusLabel(row))}</span>
+    </header>
+    ${actionHtml}
     <section class="trade-sheet-section order-summary-grid">
-      <div><span>Type</span><strong>${escapeHtml(orderMetaText(row).split("  ").pop() || "LIMIT")}</strong></div>
+      <div><span>Type</span><strong>${escapeHtml(paper ? "Simulated" : orderMetaText(row).split("  ").pop() || "LIMIT")}</strong></div>
       <div><span>Price</span><strong>${fmtTradeMoney(row.price, market)}</strong></div>
       <div><span>Avg. price</span><strong>${fmtTradeMoney(avgPrice, market)}</strong></div>
-      <div><span>Filled qty.</span><strong>${escapeHtml(orderFilledText(row))}</strong></div>
+      <div><span>Qty.</span><strong>${escapeHtml(orderFilledText(row))}</strong></div>
       <div><span>Value</span><strong>${fmtTradeMoney(row.notional, market)}</strong></div>
       <div><span>Placed at</span><strong>${escapeHtml(fmtDateTime(row.ts))}</strong></div>
     </section>
     <section class="trade-sheet-section">
-      <h4>Order note</h4>
+      <h4>${paper ? "Journal note" : "Order note"}</h4>
       <p>${escapeHtml(readableOrderReason(row))}</p>
-      ${bucket === "open" && !cancellable ? `<p class="muted">This request is tracked from the portfolio workflow. Manage or exit it from Portfolio.</p>` : ""}
+      ${!paper && bucket === "open" && !cancellable ? `<p class="muted">This request is tracked from the portfolio workflow. Manage or exit it from Portfolio.</p>` : ""}
     </section>
     ${dayRangeHtml({ ...quote, price: ltp }, market)}
   </section>`;

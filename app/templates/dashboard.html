@@ -134,7 +134,7 @@
           <button class="nav-item" type="button" data-view="suggestions"><span class="nav-icon" aria-hidden="true" data-icon="ID"><svg><use href="#icon-ideas"></use></svg></span><span>Watchlist</span><strong id="nav-suggestions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="analyze"><span class="nav-icon" aria-hidden="true" data-icon="AN"><svg><use href="#icon-analyze"></use></svg></span><span>Analyze</span><strong>symbol</strong></button>
           <button class="nav-item" type="button" data-view="positions"><span class="nav-icon" aria-hidden="true" data-icon="PO"><svg><use href="#icon-positions"></use></svg></span><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
-          <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true" data-icon="OR"><svg><use href="#icon-orders"></use></svg></span><span>Orders</span><strong id="nav-orders-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true" data-icon="OR"><svg><use href="#icon-orders"></use></svg></span><span>Journal</span><strong id="nav-orders-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon" aria-hidden="true" data-icon="SG"><svg><use href="#icon-decisions"></use></svg></span><span>Signals</span><strong id="nav-decisions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="sentiment"><span class="nav-icon" aria-hidden="true" data-icon="NW"><svg><use href="#icon-sentiment"></use></svg></span><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="account"><span class="nav-icon" aria-hidden="true" data-icon="AC"><svg><use href="#icon-account"></use></svg></span><span>Account</span><strong>paper</strong></button>
@@ -150,9 +150,9 @@
           <span aria-hidden="true"><svg><use href="#icon-ideas"></use></svg></span>
           <strong>Watchlist</strong>
         </button>
-        <button class="mobile-bottom-nav-item" type="button" data-mobile-view="orders" aria-label="Orders">
+        <button class="mobile-bottom-nav-item" type="button" data-mobile-view="orders" aria-label="Trade journal">
           <span aria-hidden="true"><svg><use href="#icon-orders"></use></svg></span>
-          <strong>Orders</strong>
+          <strong>Journal</strong>
         </button>
         <button class="mobile-bottom-nav-item" type="button" data-mobile-view="positions" aria-label="Portfolio">
           <span aria-hidden="true"><svg><use href="#icon-positions"></use></svg></span>
@@ -270,7 +270,7 @@
               <button class="kpi" type="button" data-detail-type="pnl"><span>Holdings P&amp;L</span><strong id="kpi-unrealized">-</strong><small id="kpi-unrealized-pct">-</small></button>
               <button class="kpi" type="button" data-detail-type="total-pnl"><span>Net P&amp;L</span><strong id="kpi-total-pnl">-</strong><small id="kpi-total-pnl-note">realized + holdings</small></button>
               <button class="kpi" type="button" data-detail-type="positions-summary"><span>Open positions</span><strong id="kpi-positions">-</strong><small>active holdings</small></button>
-              <button class="kpi" type="button" data-detail-type="orders-summary"><span>Orders today</span><strong id="kpi-orders">-</strong><small>paper/live actions</small></button>
+              <button class="kpi" type="button" data-detail-type="orders-summary"><span>Journal today</span><strong id="kpi-orders">-</strong><small>paper journal + broker orders</small></button>
               <button class="kpi" type="button" data-detail-type="cash"><span>Cash available</span><strong id="kpi-cash">-</strong><small id="kpi-currency">INR</small></button>
             </section>
 
@@ -532,14 +532,14 @@
 
           <section id="orders-view" class="view">
             <div class="panel full">
-                <div class="panel-head"><div class="panel-title-stack"><h3>Orders</h3><p>Execution history, partial exits, target hits, stop exits, and broker status.</p></div><div class="panel-actions"><div class="order-filter-tabs" aria-label="Order filters" data-filter-group="orders"><button type="button" data-filter-value="open">Open</button><button type="button" data-filter-value="filled">Executed</button><button type="button" data-filter-value="rejected">Rejected</button><button type="button" class="active" data-filter-value="all">All</button></div><span id="order-count">0 orders</span></div></div>
+                <div class="panel-head"><div class="panel-title-stack"><h3>Trade Journal</h3><p>Simulated paper follows and broker orders are separated; paper rows are not live executions.</p></div><div class="panel-actions"><div class="order-filter-tabs" aria-label="Journal filters" data-filter-group="orders"><button type="button" data-filter-value="open">Open</button><button type="button" data-filter-value="filled">Completed</button><button type="button" data-filter-value="rejected">Rejected</button><button type="button" class="active" data-filter-value="all">All</button></div><span id="order-count">0 journal events</span></div></div>
               <div class="table-wrap page-table">
                 <table>
-                  <thead><tr><th>Side</th><th>Filled</th><th>Symbol</th><th>Product</th><th>Time</th><th>Status</th><th>Price</th><th>LTP</th><th>Reason</th></tr></thead>
+                  <thead><tr><th>Side</th><th>Qty</th><th>Symbol</th><th>Source</th><th>Time</th><th>Status</th><th>Price</th><th>LTP</th><th>Reason</th></tr></thead>
                   <tbody id="orders-body"></tbody>
                 </table>
               </div>
-              <section class="mobile-orders-app" aria-label="Mobile orders">
+              <section class="mobile-orders-app" aria-label="Mobile trade journal">
                 <div class="mobile-orders-summary" id="mobile-orders-summary"></div>
                 <div class="mobile-orders-list" id="mobile-orders-body"></div>
               </section>
@@ -882,6 +882,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=performance-fast-path-1"></script>
+    <script src="/static/dashboard.js?v=paper-journal-contract-1"></script>
   </body>
 </html>

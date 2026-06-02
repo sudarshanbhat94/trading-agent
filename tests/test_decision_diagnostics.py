@@ -300,6 +300,25 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["paper_followed_user_actions"], 1)
         self.assertEqual(diagnostics["funnel"]["central_broker_orders"], 0)
 
+    def test_diagnostics_flags_paper_follow_safety_exits(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 2500, "quoted_symbols": 2500, "selected_symbols": 200, "target_decision_symbols": 200},
+            [_decision(f"HOLD{index}", "HOLD") for index in range(200)],
+            shared_auto_trade={
+                "users_checked": 1,
+                "followed": 0,
+                "skipped": [],
+                "safety_exited": [{"symbol": "AEROFLEX", "quality_reason": "active_follow_severe_risk_flags"}],
+            },
+            market_region="IN",
+            missed_move_review_row_id=13,
+        )
+
+        codes = {flag["code"] for flag in diagnostics["health_flags"]}
+        self.assertEqual(diagnostics["auto_follow"]["safety_exited"], 1)
+        self.assertEqual(diagnostics["funnel"]["paper_safety_exited_user_actions"], 1)
+        self.assertIn("paper_follow_safety_exits", codes)
+
     def test_diagnostics_reports_canonical_trade_blockers(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {"raw_symbols": 2500, "quoted_symbols": 2500, "selected_symbols": 200, "target_decision_symbols": 200},
