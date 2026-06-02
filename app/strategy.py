@@ -225,6 +225,7 @@ class StrategyEngine:
             performance_feedback = self.sentiment.db.strategy_performance_feedback()
         except Exception:
             performance_feedback = {}
+        pattern_states = self._pattern_states_for_cycle([str(row.get("symbol") or "") for row in universe])
 
         scan_items: list[dict[str, Any]] = []
         breadth_regime = (market_breadth or {}).get("breadth_regime")
@@ -270,7 +271,8 @@ class StrategyEngine:
             )
             options_data = ((options_context or {}).get("symbols") or {}).get(symbol, {})
             sector_context = ((symbol_sector_rotation or {}).get("symbols") or {}).get(symbol, {})
-            pattern_state = self._pattern_state(symbol)
+            pattern_state = pattern_states.get(symbol) or self._pattern_state(symbol)
+            sentiment_detail = self.sentiment.latest_for_symbol(symbol)
             pre_filter = self._pre_filter_context(
                 symbol=symbol,
                 row=row,
@@ -291,7 +293,7 @@ class StrategyEngine:
                 risk_limits=risk_limits,
                 global_context=global_context,
                 institutional_context=institutional_context,
-                sentiment_detail=self.sentiment.latest_for_symbol(symbol),
+                sentiment_detail=sentiment_detail,
                 delivery_data=delivery_data,
                 options_data=options_data,
                 sector_context=sector_context,
@@ -317,7 +319,7 @@ class StrategyEngine:
                     "quote": quote,
                     "technical": technical,
                     "sentiment_score": sentiment_score,
-                    "sentiment_detail": self.sentiment.latest_for_symbol(symbol),
+                    "sentiment_detail": sentiment_detail,
                     "candles": candles,
                     "timeframe_candles": timeframe_candles,
                     "delivery_data": delivery_data,
@@ -2008,6 +2010,22 @@ class StrategyEngine:
             return {}
         state = db.get_pattern_state(symbol, "darvas_box", {}) or {}
         return {"darvas_box": state if isinstance(state, dict) else {}}
+
+    def _pattern_states_for_cycle(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        db = getattr(self.sentiment, "db", None)
+        if db is None or not hasattr(db, "pattern_states_for_symbols"):
+            return {}
+        try:
+            states = db.pattern_states_for_symbols(symbols, "darvas_box")
+        except Exception:
+            return {}
+        if not isinstance(states, dict):
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for symbol, state in states.items():
+            normalized = str(symbol or "").upper()
+            result[normalized] = {"darvas_box": state if isinstance(state, dict) else {}}
+        return result
 
     def _persist_pattern_state_updates(self, symbol: str, context: dict[str, Any]) -> None:
         db = getattr(self.sentiment, "db", None)

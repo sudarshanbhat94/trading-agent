@@ -93,7 +93,7 @@ class DeliveryDataService:
         cached = self._cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < self.settings.delivery_cache_seconds:
             return cached[1]
-        rows = self.db.delivery_rows(symbol, max(days + 1, 16))
+        rows = self._delivery_rows(symbol, max(days + 1, 16))
         if len(rows) < 2:
             result = {
                 "available": False,
@@ -149,9 +149,15 @@ class DeliveryDataService:
         return result
 
     def institutional_accumulation_fingerprint(self, symbol: str) -> bool:
-        rows = self.db.delivery_rows(symbol, 16)
+        cache_key = f"fingerprint:{symbol}"
+        cached = self._cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < self.settings.delivery_cache_seconds:
+            return bool(cached[1])
+        rows = self._delivery_rows(symbol, 16)
+        result = False
         if len(rows) < 6:
-            return False
+            self._cache[cache_key] = (time.monotonic(), result)
+            return result
         consecutive = 0
         for previous, current in zip(rows[:-1], rows[1:]):
             prev_close = _float(previous.get("close"))
@@ -160,7 +166,9 @@ class DeliveryDataService:
             if prev_close is not None and close is not None and delivery_pct is not None and close > prev_close and delivery_pct > 60:
                 consecutive += 1
                 if consecutive >= 3:
-                    return True
+                    result = True
+                    self._cache[cache_key] = (time.monotonic(), result)
+                    return result
             else:
                 consecutive = 0
         last_10 = rows[-10:]
@@ -172,24 +180,30 @@ class DeliveryDataService:
             if prev_close is not None and close is not None and delivery_pct is not None and close > prev_close and delivery_pct > 58:
                 high_delivery_up_days += 1
         if high_delivery_up_days >= 5 and _float(last_10[-1].get("close"), 0) > _float(last_10[0].get("close"), 0):
-            return True
+            result = True
+            self._cache[cache_key] = (time.monotonic(), result)
+            return result
         if len(rows) >= 15:
             last_5 = [_float(row.get("delivery_pct")) for row in rows[-5:]]
             prior_10 = [_float(row.get("delivery_pct")) for row in rows[-15:-5]]
             last_5 = [value for value in last_5 if value is not None]
             prior_10 = [value for value in prior_10 if value is not None]
             if last_5 and prior_10 and (sum(last_5) / len(last_5)) > (sum(prior_10) / len(prior_10)) + 8:
-                return True
-        return False
+                result = True
+                self._cache[cache_key] = (time.monotonic(), result)
+                return result
+        self._cache[cache_key] = (time.monotonic(), result)
+        return result
 
     def delivery_score(self, symbol: str) -> float:
         return float(self.delivery_score_payload(symbol).get("score", 0.0))
 
     def delivery_score_payload(self, symbol: str) -> dict[str, Any]:
-        rows = self.db.delivery_rows(symbol, 16)
+        rows = self._delivery_rows(symbol, 16)
         if not rows:
             return {"score": 0.0, "data_gap": "delivery_data_unavailable", "source": "delivery_data"}
         trend = self.rolling_delivery_trend(symbol, 15)
+        fingerprint = self.institutional_accumulation_fingerprint(symbol)
         score = 0.0
         distribution_streak = 0
         for previous, current in zip(rows[:-1], rows[1:]):
@@ -202,7 +216,7 @@ class DeliveryDataService:
                 distribution_streak = 0
         if distribution_streak >= 5:
             score = -0.8
-        elif self.institutional_accumulation_fingerprint(symbol):
+        elif fingerprint:
             score = 0.8
         elif trend.get("net_bias") == "accumulation" and int(trend.get("accumulation_days") or 0) >= 3:
             score = 0.4
@@ -212,10 +226,20 @@ class DeliveryDataService:
             "score": score,
             "data_gap": trend.get("data_gap"),
             "source": "nse_delivery_bhavcopy",
-            "fingerprint": self.institutional_accumulation_fingerprint(symbol),
+            "fingerprint": fingerprint,
             "trend": trend,
             "distribution_streak": distribution_streak,
         }
+
+    def _delivery_rows(self, symbol: str, limit: int) -> list[dict[str, Any]]:
+        normalized = str(symbol or "").upper()
+        cache_key = f"rows:{normalized}:{limit}"
+        cached = self._cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < self.settings.delivery_cache_seconds:
+            return list(cached[1])
+        rows = self.db.delivery_rows(normalized, limit)
+        self._cache[cache_key] = (time.monotonic(), rows)
+        return list(rows)
 
     async def _fetch_recent_bhavcopies(self) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []

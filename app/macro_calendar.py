@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -14,14 +15,20 @@ class MacroCalendarService:
         self.settings = settings
         self.db = db
         self.earnings_calendar = {str(k).upper(): v for k, v in (earnings_calendar or {}).items()}
+        self._persistent_earnings_cache: tuple[float, dict[str, str]] | None = None
 
     def _persistent_earnings_calendar(self) -> dict[str, str]:
+        cached = self._persistent_earnings_cache
+        if cached and time.monotonic() - cached[0] < 300:
+            return dict(cached[1])
         stored = self.db.get_state("earnings_calendar", {})
         if not isinstance(stored, dict):
             fallback = self.db.get_state("pre_catalyst_calendar_enrichment", {})
             stored = fallback.get("earnings_by_symbol", {}) if isinstance(fallback, dict) else {}
         if not isinstance(stored, dict):
-            return dict(self.earnings_calendar)
+            result = dict(self.earnings_calendar)
+            self._persistent_earnings_cache = (time.monotonic(), result)
+            return dict(result)
         merged = dict(self.earnings_calendar)
         for symbol, value in stored.items():
             normalized = str(symbol or "").upper()
@@ -33,6 +40,7 @@ class MacroCalendarService:
                 date_value = value
             if date_value:
                 merged[normalized] = str(date_value)
+        self._persistent_earnings_cache = (time.monotonic(), merged)
         return merged
 
     async def event_context_for_cycle(self) -> dict[str, Any]:

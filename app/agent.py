@@ -124,6 +124,16 @@ class TradingAgentService:
             return await self._handle_cycle_timeout()
 
     async def _handle_cycle_timeout(self) -> dict[str, Any]:
+        if self._cycle_phase == "idle" and self._last_cycle_at:
+            self._log(
+                "WARN",
+                "cycle",
+                "post_cycle_timeout_after_complete",
+                "Cycle work completed, but post-cycle callbacks exceeded the run_once timeout.",
+                {"last_cycle_at": self._last_cycle_at, "timeout_seconds": self.cycle_timeout_seconds},
+            )
+            self._cycle_started_at = None
+            return self.snapshot()
         self._last_error = f"Cycle timed out after {self.cycle_timeout_seconds}s during {self._cycle_phase}"
         self._log(
             "ERROR",
@@ -845,19 +855,56 @@ class TradingAgentService:
             },
         )
         snapshot = self.snapshot()
-        if self.openclaw_notifier:
-            notify_result = await self.openclaw_notifier.notify_cycle_events()
-            if notify_result.get("enabled"):
-                self._log(
-                    "INFO",
-                    "openclaw",
-                    "notifications_checked",
-                    "OpenClaw notification bridge checked cycle events",
-                    notify_result,
-                )
-        if self.on_update:
-            await self.on_update(snapshot)
+        await self._run_post_cycle_callbacks(snapshot)
         return snapshot
+
+    async def _run_post_cycle_callbacks(self, snapshot: dict[str, Any]) -> None:
+        callbacks: list[tuple[str, Awaitable[Any]]] = []
+        if self.openclaw_notifier:
+            callbacks.append(("openclaw_notifications", self.openclaw_notifier.notify_cycle_events()))
+        if self.on_update:
+            callbacks.append(("dashboard_update", self.on_update(snapshot)))
+        if not callbacks:
+            return
+
+        previous_phase = self._cycle_phase
+        self._cycle_phase = "post_cycle_callbacks"
+        try:
+            for name, awaitable in callbacks:
+                remaining = self._remaining_cycle_seconds()
+                if remaining is not None and remaining <= 0.5:
+                    self._log(
+                        "WARN",
+                        "cycle",
+                        f"{name}_skipped_no_cycle_budget",
+                        "Post-cycle callback skipped because the cycle budget was already exhausted.",
+                        {"remaining_cycle_seconds": remaining},
+                    )
+                    if hasattr(awaitable, "close"):
+                        awaitable.close()
+                    continue
+                timeout = 1.0 if remaining is None else max(0.1, min(1.0, remaining - 0.25))
+                try:
+                    result = await asyncio.wait_for(awaitable, timeout=timeout)
+                except asyncio.TimeoutError:
+                    self._log(
+                        "WARN",
+                        "cycle",
+                        f"{name}_timeout",
+                        "Post-cycle callback timed out after the trading work had already completed.",
+                        {"timeout_seconds": timeout, "remaining_cycle_seconds": self._remaining_cycle_seconds()},
+                    )
+                    continue
+                if name == "openclaw_notifications" and isinstance(result, dict) and result.get("enabled"):
+                    self._log(
+                        "INFO",
+                        "openclaw",
+                        "notifications_checked",
+                        "OpenClaw notification bridge checked cycle events",
+                        result,
+                    )
+        finally:
+            self._cycle_phase = previous_phase
 
     async def _run_optional_phase(
         self,

@@ -9,6 +9,8 @@ from types import MethodType, SimpleNamespace
 
 from app.agent import TradingAgentService
 from app.db import Database
+from app.delivery_data import DeliveryDataService
+from app.macro_calendar import MacroCalendarService
 from app.models import Quote
 from app.pre_catalyst_engine import _missed_move_min_pct_for_universe
 
@@ -120,6 +122,24 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(result["phase"], "idle")
         self.assertTrue(any(args[2] == "cycle_timeout" for args in logs))
 
+    def test_completed_cycle_timeout_is_reported_as_post_cycle_callback_warning(self) -> None:
+        logs = []
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.cycle_timeout_seconds = 120
+        agent._cycle_phase = "idle"
+        agent._cycle_started_at = "2026-06-01T10:00:00+00:00"
+        agent._last_cycle_at = "2026-06-01T10:01:59+00:00"
+        agent._last_error = None
+        agent.on_update = None
+        agent._log = lambda *args, **kwargs: logs.append(args)
+        agent.snapshot = MethodType(lambda self: {"last_error": self._last_error, "phase": self._cycle_phase}, agent)
+
+        result = asyncio.run(agent._handle_cycle_timeout())
+
+        self.assertIsNone(result["last_error"])
+        self.assertEqual(result["phase"], "idle")
+        self.assertTrue(any(args[2] == "post_cycle_timeout_after_complete" for args in logs))
+
     def test_optional_phase_timeout_logs_and_continues_with_empty_context(self) -> None:
         async def slow_context() -> dict:
             await asyncio.sleep(1.05)
@@ -185,6 +205,45 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(decisions[0].action, "HOLD")
         self.assertIn("strategy_eval_timeout", decisions[0].details_json)
         self.assertTrue(any(args[2] == "strategy_eval_timeout" for args in logs))
+
+    def test_macro_calendar_caches_persistent_earnings_for_symbol_decisions(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_state(self, key: str, default: object = None) -> object:
+                self.calls += 1
+                return {"RELIANCE": "2026-06-04"}
+
+        db = FakeDb()
+        service = MacroCalendarService(SimpleNamespace(enable_macro_calendar=True), db)  # type: ignore[arg-type]
+
+        service.event_context_for_date(symbol="RELIANCE", market_region="IN")
+        service.event_context_for_date(symbol="TCS", market_region="IN")
+
+        self.assertEqual(db.calls, 1)
+
+    def test_delivery_score_reuses_one_delivery_row_fetch_per_symbol(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def delivery_rows(self, symbol: str, limit: int = 20) -> list[dict]:
+                self.calls += 1
+                return [
+                    {"date": f"2026-05-{day:02d}", "close": 100 + day, "delivery_pct": 61.0}
+                    for day in range(1, 17)
+                ]
+
+        db = FakeDb()
+        service = DeliveryDataService(SimpleNamespace(delivery_cache_seconds=60), db)  # type: ignore[arg-type]
+
+        payload = service.delivery_score_payload("RELIANCE")
+        fingerprint = service.institutional_accumulation_fingerprint("RELIANCE")
+
+        self.assertEqual(db.calls, 1)
+        self.assertTrue(payload["fingerprint"])
+        self.assertTrue(fingerprint)
 
     def test_pre_strategy_candle_fetch_defaults_to_deferred(self) -> None:
         agent = TradingAgentService.__new__(TradingAgentService)

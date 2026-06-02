@@ -5041,6 +5041,23 @@ class Database:
             return default
         return self._decode_json(row["state_json"])
 
+    def pattern_states_for_symbols(self, symbols: list[str], pattern: str) -> dict[str, Any]:
+        normalized = list(dict.fromkeys(str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()))
+        if not normalized or not pattern:
+            return {}
+        states: dict[str, Any] = {}
+        with self.connect() as conn:
+            for index in range(0, len(normalized), 800):
+                chunk = normalized[index : index + 800]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"select symbol, state_json from pattern_states where pattern = ? and symbol in ({placeholders})",
+                    (pattern, *chunk),
+                ).fetchall()
+                for row in rows:
+                    states[str(row["symbol"] or "").upper()] = self._decode_json(row["state_json"])
+        return states
+
     def upsert_pattern_state(self, symbol: str, pattern: str, state: dict[str, Any]) -> None:
         if not symbol or not pattern:
             return
