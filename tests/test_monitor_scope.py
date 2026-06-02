@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -221,6 +222,50 @@ class MonitorScopeTests(unittest.TestCase):
         self.assertEqual(followed[0]["mode"], "PAPER")
         self.assertEqual(followed[0]["follow_status"], "ACTIVE")
         self.assertGreaterEqual(float(followed[0]["invested_amount"]), 7_500.0)
+
+    def test_shared_auto_trade_explains_stale_active_buy_monitor_without_follow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            user = db.create_user(
+                "sudarshan",
+                "hash",
+                role="user",
+                active=True,
+                signal_execution_mode="AUTO_PAPER",
+            )
+            db.update_user_paper_cash(int(user["id"]), cash_in=100_000)
+            idea_id = self._insert_idea(db, "OLDMONITOR")
+            stale = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set last_seen_at = ? where id = ?", (stale, idea_id))
+            service = TradingAgentService(
+                db=db,
+                market_data=SimpleNamespace(),
+                broker=SimpleNamespace(),
+                strategy=SimpleNamespace(settings=SimpleNamespace()),
+                macro=None,
+                institutional_feeds=None,
+                delivery_service=None,
+                market_breadth=None,
+                sector_rotation=None,
+                macro_calendar=None,
+                options_intelligence=None,
+                interval_seconds=60,
+                cycle_timeout_seconds=60,
+            )
+
+            summary = service._auto_follow_buy_ideas_for_signal_users([])
+
+        self.assertEqual(summary["followed"], 0)
+        self.assertTrue(
+            any(
+                item.get("symbol") == "OLDMONITOR"
+                and item.get("reason") == "active_buy_not_fresh_enough_for_auto_follow"
+                for item in summary["skipped"]
+            ),
+            summary,
+        )
 
     @staticmethod
     def _insert_idea(db: Database, symbol: str) -> int:

@@ -197,6 +197,48 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("all_buy_intents_already_active", codes)
         self.assertEqual(diagnostics["funnel"]["paper_followed_user_actions"], 6)
 
+    def test_explained_stale_active_buy_monitor_skips_clear_warning(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 2658,
+                "quoted_symbols": 2658,
+                "selected_symbols": 200,
+                "target_decision_symbols": 200,
+            },
+            [
+                _decision(
+                    "SHYAMMETL",
+                    "HOLD",
+                    details={
+                        "duplicate_buy_suppression": {"suppressed": True},
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "blocking_failed_gates": [],
+                                "opportunity_probe": {"ready": True, "source": "live_quote_opportunity_scan"},
+                            }
+                        },
+                    },
+                )
+            ]
+            + [_decision(f"HOLD{i}", "HOLD", technical_score=0.1) for i in range(199)],
+            shared_auto_trade={
+                "users_checked": 1,
+                "followed": 0,
+                "active_buy_ideas_checked": 1,
+                "skipped": [{"symbol": "SHYAMMETL", "reason": "active_buy_not_fresh_enough_for_auto_follow"}],
+            },
+            market_region="IN",
+            missed_move_review_row_id=78,
+        )
+
+        codes = {flag["code"] for flag in diagnostics["health_flags"]}
+        self.assertNotIn("all_buy_intents_already_active", codes)
+        self.assertEqual(
+            diagnostics["auto_follow"]["skip_reasons"]["active_buy_not_fresh_enough_for_auto_follow"],
+            1,
+        )
+
     def test_india_diagnostics_require_target_decisions_and_missed_move_row(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {

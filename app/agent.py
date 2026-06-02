@@ -1859,11 +1859,35 @@ class TradingAgentService:
                 and str(idea.get("lifecycle_status") or "active").lower() not in {"stopped", "target_3_hit", "expired", "exit_signal"}
             ]
             summary["active_buy_ideas_checked"] += len(active_buy_ideas)
+            active_follow_symbols = {
+                str(item.get("symbol") or "").upper()
+                for item in self.db.user_followed_signal_ideas(user_id, 200)
+                if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
+                and str(item.get("follow_status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}
+                and int(item.get("qty") or 0) > 0
+            }
             candidate_buy_symbols = scoped_buy_symbols | {
                 str(idea.get("symbol") or "").upper()
                 for idea in active_buy_ideas
                 if _auto_follow_idea_fresh_enough(idea, scoped_buy_symbols)
             }
+            for idea in active_buy_ideas:
+                symbol = str(idea.get("symbol") or "").upper()
+                if not symbol or symbol in candidate_buy_symbols:
+                    continue
+                if symbol in active_follow_symbols:
+                    summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, "reason": "already_followed_symbol"})
+                    continue
+                summary["skipped"].append(
+                    {
+                        "user_id": user.get("id"),
+                        "symbol": symbol,
+                        "reason": "active_buy_not_fresh_enough_for_auto_follow",
+                        "current_return_pct": round(float(idea.get("current_return_pct") or 0.0), 4),
+                        "fresh_action": idea.get("fresh_action"),
+                        "setup_bucket": idea.get("setup_bucket"),
+                    }
+                )
             if mode == "AUTO_LIVE":
                 if candidate_buy_symbols:
                     summary["skipped"].append(
@@ -1881,13 +1905,6 @@ class TradingAgentService:
                 for idea in active_buy_ideas
                 if str(idea.get("symbol") or "").upper() in candidate_buy_symbols
             ]
-            active_follow_symbols = {
-                str(item.get("symbol") or "").upper()
-                for item in self.db.user_followed_signal_ideas(user_id, 200)
-                if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"}
-                and str(item.get("follow_status") or "").upper() in {"ACTIVE", "LIVE_REQUESTED"}
-                and int(item.get("qty") or 0) > 0
-            }
             seen_symbols: set[str] = set()
             for idea in ideas:
                 symbol = str(idea.get("symbol") or "").upper()

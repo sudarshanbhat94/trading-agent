@@ -371,7 +371,9 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
         )
     if decisions >= 100 and buys == 0:
         if buy_intents > 0:
-            if followed_actions <= 0:
+            auto_follow = diagnostics.get("auto_follow") if isinstance(diagnostics.get("auto_follow"), dict) else {}
+            skip_reasons = auto_follow.get("skip_reasons") if isinstance(auto_follow.get("skip_reasons"), dict) else {}
+            if followed_actions <= 0 and not _all_auto_follow_skips_explained(skip_reasons):
                 flags.append(
                     {
                         "severity": "warning",
@@ -450,6 +452,7 @@ def _all_auto_follow_skips_explained(skip_reasons: dict[str, Any]) -> bool:
     allowed = {
         "already_followed",
         "already_followed_symbol",
+        "active_buy_not_fresh_enough_for_auto_follow",
         "outside_custom_monitor_list",
         "phase1_quality_gate",
         "position_size_below_minimum_trade_economics",
