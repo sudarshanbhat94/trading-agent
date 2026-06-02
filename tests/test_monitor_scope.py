@@ -161,6 +161,67 @@ class MonitorScopeTests(unittest.TestCase):
             summary,
         )
 
+    def test_shared_auto_paper_follows_dynamic_india_buy_with_fresh_live_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            user = db.create_user(
+                "sudarshan",
+                "hash",
+                role="user",
+                active=True,
+                signal_execution_mode="AUTO_PAPER",
+            )
+            user_id = int(user["id"])
+            db.update_user_paper_cash(user_id, cash_in=100_000)
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into universe (symbol, name, exchange, sector, enabled)
+                    values ('IFCI', 'IFCI Ltd', 'NSE', 'Financial Services', 1)
+                    """
+                )
+            decision = self._fresh_live_quote_india_buy("IFCI")
+            db.insert_decisions([decision])
+            db.upsert_signal_ideas_from_decisions([decision])
+            service = TradingAgentService(
+                db=db,
+                market_data=SimpleNamespace(),
+                broker=SimpleNamespace(),
+                strategy=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        initial_cash_inr=100_000,
+                        max_position_pct=0.25,
+                        paper_min_auto_follow_notional_inr=7_500.0,
+                        paper_min_auto_follow_notional_usd=250.0,
+                    )
+                ),
+                macro=None,
+                institutional_feeds=None,
+                delivery_service=None,
+                market_breadth=None,
+                sector_rotation=None,
+                macro_calendar=None,
+                options_intelligence=None,
+                interval_seconds=60,
+                cycle_timeout_seconds=60,
+            )
+
+            [idea] = db.latest_signal_ideas(10, user_id=user_id, market_region="IN")
+            summary = service._auto_follow_buy_ideas_for_signal_users([decision])
+            followed = db.user_followed_signal_ideas(user_id, 20, market_region="IN")
+
+        self.assertEqual(idea["symbol"], "IFCI")
+        self.assertEqual(idea["signal_type"], "BUY")
+        self.assertEqual(idea["status"], "ACTIVE")
+        self.assertEqual(idea["fresh_action"], "BUY_NOW")
+        self.assertEqual(summary["followed"], 1, summary)
+        self.assertEqual(len(followed), 1)
+        self.assertEqual(followed[0]["symbol"], "IFCI")
+        self.assertEqual(followed[0]["mode"], "PAPER")
+        self.assertEqual(followed[0]["follow_status"], "ACTIVE")
+        self.assertGreaterEqual(float(followed[0]["invested_amount"]), 7_500.0)
+
     @staticmethod
     def _insert_idea(db: Database, symbol: str) -> int:
         now = utc_now()
@@ -188,6 +249,93 @@ class MonitorScopeTests(unittest.TestCase):
             )
             row = conn.execute("select last_insert_rowid() as id").fetchone()
             return int(row["id"])
+
+    @staticmethod
+    def _fresh_live_quote_india_buy(symbol: str) -> Decision:
+        details = {
+            "action_reason": "fresh live India quote buy",
+            "score_breakdown": {"combined": 0.38, "score_percent": 68.8},
+            "system_gate_audit": {
+                "hard_blocked": False,
+                "hard_blocks": [],
+                "overall_score_pct": 88.44,
+                "overall_grade": "A",
+                "data_readiness": {
+                    "market_region": "IN",
+                    "trade_decision_ready": True,
+                    "fresh_market_data_gate": {
+                        "passed": True,
+                        "reason": "live_quote_ready_intraday_reference_stale",
+                    },
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+            },
+            "context": {
+                "quote": {
+                    "price": 69.45,
+                    "open": 67.0,
+                    "high": 72.0,
+                    "low": 66.61,
+                    "volume": 47_546_371,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "market_region": "IN",
+                    "trade_decision_ready": True,
+                    "fresh_market_data_gate": {
+                        "passed": True,
+                        "reason": "live_quote_ready_intraday_reference_stale",
+                    },
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+                "decision_gate_context": {
+                    "failed_gates": [
+                        {"gate": "session_momentum_gate", "reason": "broad_momentum_entry_needs_current_session_confirmation"},
+                        {"gate": "overall_quality_gate", "reason": "overall_score_below_70_no_new_longs"},
+                    ]
+                },
+                "opportunity_scan": {
+                    "bucket": "Actionable",
+                    "setup": "52_week_high_volume_breakout",
+                    "score": 0.8844,
+                    "turnover": 3_302_095_465,
+                    "avg20_turnover": 1_990_521_527,
+                    "data_quality": {
+                        "actionable_data_ready": False,
+                        "missing": ["stale_intraday_candles"],
+                    },
+                },
+                "full_spectrum_analysis": {
+                    "confluence_score": {"total": 16, "tier": "TRADE_SIGNAL"},
+                    "signal_plan": {"direction": "BUY", "decision_readiness": "actionable"},
+                    "trade_plan": {
+                        "entry_zone": [68.5, 70.0],
+                        "stop_loss": 68.5,
+                        "targets": [{"price": 73.0, "distance_pct": 5.0}],
+                    },
+                    "risk_overrides": {"flags": []},
+                    "strategy_logic_filters": {"passed": True, "hard_blocks": []},
+                    "breakout_quality": {"breakout_quality": "not_breakout", "volume_confirmation": True},
+                    "entry_quality": {"entry_grade": "A"},
+                },
+            },
+        }
+        return Decision(
+            symbol=symbol,
+            action="BUY",
+            confidence=0.91,
+            price=69.45,
+            technical_score=0.81,
+            sentiment_score=0.0,
+            reason="fresh live India quote buy",
+            asof=utc_now(),
+            strategy="aggressive_relative_strength_breakout",
+            details_json=json.dumps(details),
+        )
 
 
 if __name__ == "__main__":

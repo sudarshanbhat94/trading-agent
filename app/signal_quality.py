@@ -569,11 +569,10 @@ def _stale_data_reason(item: dict[str, Any], details: dict[str, Any], scan: dict
         for value in (item.get("missing_data") or details.get("missing_data") or [])
         if str(value or "").strip()
     )
-    if any(
-        token in label
-        for label in labels
-        for token in ("stale_quote", "prior_session", "previous_session", "moneycontrol_prior", "stale_intraday")
-    ):
+    hard_stale_tokens = ("stale_quote", "prior_session", "previous_session", "moneycontrol_prior")
+    if any(token in label for label in labels for token in hard_stale_tokens):
+        return "stale_market_data"
+    if any("stale_intraday" in label for label in labels) and not freshness_gate.get("passed"):
         return "stale_market_data"
     quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote")
     quote = quote if isinstance(quote, dict) else {}

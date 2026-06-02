@@ -425,6 +425,55 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertEqual(gate["reason"], "stale_market_data")
 
+    def test_freshness_gate_pass_allows_live_quote_setup_with_stale_intraday_marker(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "overall_score_pct": 88,
+                "overall_grade": "A",
+                "confluence": 18,
+                "quote": {
+                    "price": 69.45,
+                    "open": 67.0,
+                    "high": 72.0,
+                    "low": 66.61,
+                    "volume": 47_546_371,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "trade_decision_ready": True,
+                    "fresh_market_data_gate": {
+                        "passed": True,
+                        "reason": "live_quote_ready_intraday_reference_stale",
+                    },
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+                "details": {
+                    "action": "BUY",
+                    "latest_price": 69.45,
+                    "entry_zone": [68.5, 70.0],
+                    "stop_loss": 66.0,
+                    "targets": [{"price": 73.0, "distance_pct": 5.0}],
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "52_week_high_volume_breakout",
+                        "score": 0.88,
+                        "turnover": 3_302_095_465,
+                        "data_quality": {
+                            "actionable_data_ready": False,
+                            "missing": ["stale_intraday_candles"],
+                        },
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"], gate)
+        self.assertTrue(gate["opportunity_probe"])
+
     def test_fresh_buy_gate_rejects_probe_when_quote_is_stale(self) -> None:
         gate = fresh_buy_quality_gate(
             {
