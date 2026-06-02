@@ -81,6 +81,33 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(rows[0]["market_region"], "US")
         self.assertEqual(rows[0]["details"]["market_region"], "US")
 
+    def test_agent_persists_shared_auto_trade_skip_details(self) -> None:
+        states = {}
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.db = SimpleNamespace(set_state=lambda key, value: states.__setitem__(key, value))
+
+        agent._store_shared_auto_trade_summary(
+            {
+                "users_checked": 1,
+                "active_buy_ideas_checked": 1,
+                "followed": 0,
+                "skipped": [
+                    {
+                        "user_id": 2,
+                        "symbol": "SHYAMMETL",
+                        "reason": "position_size_below_minimum_trade_economics",
+                        "sizing": {"minimum_notional": 7500, "risk_qty": 2},
+                    }
+                ],
+            }
+        )
+
+        stored = states["shared_auto_trade"]
+        self.assertEqual(stored["followed"], 0)
+        self.assertEqual(stored["skipped"][0]["symbol"], "SHYAMMETL")
+        self.assertEqual(stored["skipped"][0]["sizing"]["minimum_notional"], 7500)
+        self.assertIn("stored_at", stored)
+
     def test_missed_move_threshold_uses_market_specific_setting(self) -> None:
         settings = SimpleNamespace(missed_move_min_move_pct_in=3.0, missed_move_min_move_pct_us=2.5)
 

@@ -824,6 +824,7 @@ class TradingAgentService:
                 for item in downgraded_buy_ideas[:20]
             ]
         self._last_shared_auto_trade = shared_auto_trade
+        self._store_shared_auto_trade_summary(shared_auto_trade)
         executed_count = self._execute_top_decisions(decisions, portfolio["equity"]) if self.execute_trades else 0
         if not self.execute_trades:
             self._log(
@@ -1668,6 +1669,11 @@ class TradingAgentService:
                 "events": (summary.get("log_events") or [])[-20:],
             },
         )
+
+    def _store_shared_auto_trade_summary(self, summary: dict[str, Any]) -> None:
+        if not isinstance(summary, dict):
+            summary = {}
+        self.db.set_state("shared_auto_trade", {**summary, "stored_at": utc_now()})
 
     def _persist_missed_move_review(self, summary: dict[str, Any]) -> None:
         settings = self.strategy.settings
