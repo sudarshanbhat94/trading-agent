@@ -1513,24 +1513,10 @@ class OpportunityScanner:
         return "Avoid"
 
     def _quality_reject_reason(self, item: dict[str, Any]) -> str:
-        if item.get("bucket") == DATA_STALE_WATCH:
-            return "stale_quote"
-        if item.get("bucket") == LATE_CHASE_AVOID:
-            return ""
-        if item.get("bucket") == "Avoid":
-            return "avoid_bucket_quality_gate"
         data_quality = item.get("data_quality") if isinstance(item.get("data_quality"), dict) else {}
-        if data_quality.get("reject_reason"):
-            return str(data_quality["reject_reason"])
-        score = _float_or_none(item.get("score")) or 0.0
-        if score < self.min_score:
-            return "below_opportunity_score"
-        if self.require_active_setup and item.get("setup") not in _ACTIVE_OPPORTUNITY_SETUPS:
-            if self._good_mover_watchable(item.get("market_action") or {}, item.get("rally_radar") or {}, item.get("metrics") or {}):
-                item["bucket"] = ACTIONABLE_WATCH
-                item["actionable_watch"] = True
-                return ""
-            return "no_active_opportunity_setup"
+        reject_reason = str(data_quality.get("reject_reason") or "").strip()
+        if reject_reason in {"invalid_price", "below_min_price", "below_adaptive_liquidity", "stale_quote"}:
+            return reject_reason
         return ""
 
     def _hard_predecision_reject_reason(self, item: dict[str, Any]) -> str:

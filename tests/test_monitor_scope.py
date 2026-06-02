@@ -216,17 +216,9 @@ class MonitorScopeTests(unittest.TestCase):
         self.assertEqual(idea["signal_type"], "BUY")
         self.assertEqual(idea["status"], "ACTIVE")
         self.assertEqual(idea["fresh_action"], "BUY_NOW")
-        self.assertEqual(summary["followed"], 0, summary)
-        self.assertEqual(followed, [])
-        self.assertTrue(
-            any(
-                item.get("symbol") == "IFCI"
-                and item.get("reason") == "phase1_quality_gate"
-                and item.get("quality_reason") == "auto_follow_confluence_below_strict_minimum"
-                for item in summary["skipped"]
-            ),
-            summary,
-        )
+        self.assertEqual(summary["followed"], 1, summary)
+        self.assertEqual(len(followed), 1)
+        self.assertEqual(followed[0]["symbol"], "IFCI")
 
     def test_shared_auto_paper_follows_clean_india_buy_with_trade_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

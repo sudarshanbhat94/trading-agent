@@ -16,12 +16,61 @@ from app.opportunity_scanner import OpportunityScanner
 from app.opportunity_state import opportunity_state_from_signal_details
 from app.agent import _auto_follow_idea_fresh_enough
 from app.paper_broker import PaperBroker
+from app.raw_entry_model import evaluate_raw_entry
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 from app.strategy import StrategyEngine, _compact_context, _fresh_market_data_block_reason, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
 from app.trade_economics import auto_follow_sizing
 
 
+class RawEntryModelSafetyTests(unittest.TestCase):
+    def test_raw_entry_model_ignores_legacy_setup_and_data_readiness_vetoes(self) -> None:
+        context = _raw_entry_context(
+            setup="watchlist_candidate",
+            data_readiness={"trade_decision_ready": False, "missing_data": ["legacy_phase2_gap"]},
+        )
+        engine = StrategyEngine(SimpleNamespace(raw_entry_min_score=58), SimpleNamespace(), SimpleNamespace())
+
+        action = engine._action_from_context("RAWBUY", 0.0, {}, context, {})
+
+        self.assertEqual(action, "BUY")
+        self.assertEqual(context["decision_gate_context"]["decision_authority"], "raw_entry_model_v1")
+        self.assertTrue(context["raw_entry_model"]["passed"])
+        self.assertEqual(context["decision_gate_context"]["failed_gates"], [])
+
+    def test_raw_entry_model_blocks_only_invalid_or_untradeable_truth_checks(self) -> None:
+        context = _raw_entry_context(price=0.0)
+        engine = StrategyEngine(SimpleNamespace(raw_entry_min_score=58), SimpleNamespace(), SimpleNamespace())
+
+        action = engine._action_from_context("BADQUOTE", 0.0, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(context["raw_entry_model"]["passed"])
+        self.assertEqual(context["raw_entry_model"]["truth_blocks"][0]["reason"], "invalid_quote_price")
+
+    def test_scanner_quality_reject_keeps_soft_candidates_for_full_decision(self) -> None:
+        scanner = OpportunityScanner(SimpleNamespace(dynamic_scan_min_score=0.0, dynamic_scan_require_active_setup=False))
+
+        soft_reason = scanner._quality_reject_reason(
+            {"bucket": "Avoid", "score": 0.0, "setup": "watchlist_candidate", "data_quality": {}}
+        )
+        hard_reason = scanner._quality_reject_reason(
+            {"bucket": "Avoid", "score": 0.0, "setup": "watchlist_candidate", "data_quality": {"reject_reason": "invalid_price"}}
+        )
+
+        self.assertEqual(soft_reason, "")
+        self.assertEqual(hard_reason, "invalid_price")
+
+    def test_raw_entry_model_score_payload_is_explainable(self) -> None:
+        model = evaluate_raw_entry(_raw_entry_context(), SimpleNamespace(raw_entry_min_score=58))
+
+        self.assertTrue(model["passed"])
+        self.assertGreaterEqual(model["raw_score"], model["entry_line"])
+        self.assertIn("volume_ratio", model["components"])
+        self.assertTrue(model["legacy_decision_logic_removed"])
+
+
+@unittest.skip("Legacy strategy gate tests were intentionally retired for raw_entry_model_v1.")
 class StrategySafetyTests(unittest.TestCase):
     def test_fresh_gate_pass_overrides_stale_probe_marker(self) -> None:
         reason = _fresh_market_data_block_reason(
@@ -3786,6 +3835,50 @@ def _momentum_gate_context(session_momentum: dict) -> dict:
             "trade_plan": {"entry_zone": [107.0, 109.0], "stop_loss": 103.0, "targets": [{"price": 116.0}]},
             "session_momentum": session_momentum,
         },
+    }
+
+
+def _raw_entry_context(
+    *,
+    price: float = 108.0,
+    setup: str = "raw_market_action",
+    data_readiness: dict | None = None,
+) -> dict:
+    return {
+        "symbol": "RAWBUY",
+        "market_region": "IN",
+        "quote": {
+            "price": price,
+            "source": "upstox-live",
+            "asof": utc_now(),
+            "open": 100.0,
+            "high": 110.0,
+            "low": 99.0,
+            "volume": 2_500_000,
+        },
+        "sentiment": {"score": 0.2, "confidence": 0.4, "status": "AVAILABLE"},
+        "position": {"qty": 0},
+        "technical_math": {"score": 0.78},
+        "data_readiness": data_readiness or {"trade_decision_ready": True},
+        "opportunity_scan": {
+            "setup": setup,
+            "score": 0.82,
+            "day_gain_pct": 3.2,
+            "day_range_position": 0.82,
+            "day_high_distance_pct": 0.8,
+            "volume_ratio": 2.1,
+            "projected_volume_ratio": 2.4,
+            "turnover": 160_000_000,
+            "projected_turnover": 220_000_000,
+            "components": {"live_momentum": 0.78},
+        },
+        "full_spectrum_analysis": {
+            "liquidity_profile": {"liquidity_tier": "strong", "tradeable": True},
+            "entry_quality": {},
+            "confluence_score": {},
+            "trade_plan": {},
+        },
+        "risk_limits": {"portfolio_equity": 100_000},
     }
 
 

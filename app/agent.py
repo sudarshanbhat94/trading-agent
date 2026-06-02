@@ -795,12 +795,12 @@ class TradingAgentService:
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
-        unsafe_follow_exits = self.db.exit_unsafe_active_follows(reason="cycle_quality_gate_safety_exit")
+        unsafe_follow_exits: list[dict[str, Any]] = []
         legacy_economics_exits = self.db.exit_subfloor_paper_follows(
             reason="legacy_position_below_minimum_trade_economics",
             cost_settings=self.strategy.settings,
         )
-        downgraded_buy_ideas = self.db.downgrade_non_tradeable_buy_ideas(reason="cycle_tradeability_cleanup")
+        downgraded_buy_ideas: list[dict[str, Any]] = []
         shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
         shared_auto_trade["credit_billing"] = self._charge_shared_ai_cycle_to_users(
             shared_llm_usage,
@@ -3599,10 +3599,6 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
         return False
     current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
     if current_return < -1.5:
-        return False
-    score = _float_or_none(idea.get("overall_score_pct") or details.get("overall_score_pct")) or 0.0
-    grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
-    if score < 70 or grade not in {"A", "B"}:
         return False
     if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
         return False

@@ -47,17 +47,57 @@ _BREAKOUT_OPPORTUNITY_SETUPS = {
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
-    """Strict Phase-1 gate for a fresh tradeable BUY idea."""
+    """Compatibility wrapper after legacy entry gates were removed."""
 
     return trade_readiness_gate(item)
 
 
 def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
-    """Canonical gate for anything that wants to present or execute a BUY."""
+    """Minimal truth check for presenting or following a BUY."""
 
-    from .canonical_trade import canonical_trade_readiness_gate
-
-    return canonical_trade_readiness_gate(item)
+    details = _details(item)
+    signal_type = _upper(item.get("signal_type") or item.get("suggestion"))
+    status = _upper(item.get("status"))
+    action = _upper(item.get("action") or details.get("action") or signal_type)
+    if signal_type in {"WATCH", "NO_TRADE", "EXIT"} or status == "WATCH":
+        return _blocked("not_fresh_buy_signal", "Only an active BUY idea can be followed.")
+    if action != "BUY" and signal_type != "BUY":
+        return _blocked("not_buy_action", "Latest engine action is not BUY.")
+    if bool(item.get("hard_blocked") or details.get("hard_blocked")):
+        return _blocked("truth_check_hard_blocked", "The idea has an invalid quote or is explicitly untradeable.")
+    quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote") if isinstance(details.get("quote"), dict) else {}
+    price = _number(
+        item.get("latest_price"),
+        item.get("price"),
+        item.get("entry_price"),
+        details.get("latest_price"),
+        quote.get("price") if isinstance(quote, dict) else None,
+    )
+    if price is None or price <= 0:
+        return _blocked("price_missing", "A valid current price is required before following.")
+    raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
+    raw_score = _number(raw.get("raw_score"), item.get("overall_score_pct"), details.get("overall_score_pct"))
+    grade = _upper(raw.get("grade") or item.get("overall_grade") or details.get("overall_grade")) or "B"
+    return {
+        "passed": True,
+        "fresh_buy_allowed": True,
+        "reason": "legacy_entry_gates_removed",
+        "message": "Legacy score, confluence, setup, and strategy gates were removed; BUY is actionable after truth checks.",
+        "overall_score_pct": raw_score,
+        "tradeability_score_pct": raw_score,
+        "setup_score_pct": raw_score,
+        "overall_grade": grade,
+        "min_score": None,
+        "min_confluence": None,
+        "allowed_grades": [],
+        "risk_flags": [],
+        "risk_warnings": [],
+        "missing_data": [],
+        "opportunity_probe": False,
+        "size_multiplier": 1.0,
+        "data_readiness": item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness"),
+        "legacy_entry_gates_removed": True,
+    }
 
 
 def _legacy_trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -280,9 +320,16 @@ def _legacy_trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
-    from .canonical_trade import canonical_auto_follow_quality_gate
-
-    return canonical_auto_follow_quality_gate(item)
+    gate = trade_readiness_gate(item)
+    if not gate.get("passed"):
+        return gate
+    return {
+        **gate,
+        "reason": "legacy_auto_follow_gates_removed",
+        "message": "Auto-paper follows the active raw BUY after truth checks; sizing economics still decide quantity.",
+        "auto_follow_contract": "raw_entry_truth_checks_only",
+        "auto_follow_min_reward_risk": None,
+    }
 
 
 def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:

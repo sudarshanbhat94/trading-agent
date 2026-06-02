@@ -319,7 +319,8 @@ class OpportunityScannerTests(unittest.TestCase):
         result = scanner.rank(universe, quotes, candle_sets)
 
         self.assertEqual(len(result.selected_universe), 200)
-        self.assertIn("below_opportunity_score", result.summary["soft_predecision_reject_counts"])
+        self.assertNotIn("below_opportunity_score", result.summary["rejected_counts"])
+        self.assertEqual(result.summary["soft_predecision_reject_counts"], {})
         self.assertEqual(result.summary["target_decision_symbols"], 200)
 
     def test_us_slot_budgeting_refills_to_full_decision_target(self) -> None:

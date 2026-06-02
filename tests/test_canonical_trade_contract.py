@@ -331,7 +331,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(row["fresh_action"], "NO_FRESH_ADD")
         self.assertIn("Already active", row["display_reason"])
 
-    def test_unfollowed_active_buy_monitor_does_not_auto_follow(self) -> None:
+    def test_unfollowed_active_buy_monitor_can_auto_follow_after_legacy_gate_removal(self) -> None:
         gate = auto_follow_quality_gate(
             {
                 "symbol": "MONITORBUY",
@@ -356,8 +356,8 @@ class CanonicalTradeContractTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(gate["passed"], gate)
-        self.assertEqual(gate["reason"], "not_actionable_fresh_state")
+        self.assertTrue(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "legacy_auto_follow_gates_removed")
 
 
 if __name__ == "__main__":

@@ -75,7 +75,7 @@ class DecisionContractTests(unittest.TestCase):
         self.assertEqual(targets[1]["structure_reference"], 98)
         self.assertEqual(targets[2]["structure_reference"], 97)
 
-    def test_decision_contract_uses_probe_quality_gate_for_opportunity_state(self) -> None:
+    def test_decision_contract_uses_raw_entry_model_for_opportunity_state(self) -> None:
         audit = {
             "final_action": "BUY",
             "overall_score_pct": 88,
@@ -90,16 +90,25 @@ class DecisionContractTests(unittest.TestCase):
             },
             "risk_gates": {
                 "decision_gate_context": {
-                    "opportunity_probe": {
-                        "ready": True,
-                        "source": "live_momentum_review",
+                    "raw_entry_model": {
+                        "passed": True,
+                        "legacy_decision_logic_removed": True,
+                        "version": "raw_entry_model_v1",
+                        "raw_score": 88,
+                        "grade": "A",
                         "setup": "intraday_momentum",
-                        "scan_score": 0.96,
-                        "min_confluence": 6.0,
                     }
                 },
             },
             "context": {
+                "raw_entry_model": {
+                    "passed": True,
+                    "legacy_decision_logic_removed": True,
+                    "version": "raw_entry_model_v1",
+                    "raw_score": 88,
+                    "grade": "A",
+                    "setup": "intraday_momentum",
+                },
                 "quote": {
                     "price": 834.35,
                     "open": 816.0,

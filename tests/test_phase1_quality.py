@@ -12,6 +12,44 @@ from app.models import Decision, utc_now
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 
 
+class RawSignalQualityTests(unittest.TestCase):
+    def test_active_buy_passes_without_legacy_score_grade_or_confluence_gates(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "latest_price": 101.25,
+            "overall_score_pct": 42,
+            "overall_grade": "C",
+            "details": {
+                "raw_entry_model": {
+                    "legacy_decision_logic_removed": True,
+                    "raw_score": 42,
+                    "grade": "C",
+                },
+                "risk_flags": ["old_soft_risk_flag_no_longer_vetoes_entry"],
+                "data_readiness": {"trade_decision_ready": False},
+            },
+        }
+
+        gate = fresh_buy_quality_gate(item)
+        auto = auto_follow_quality_gate(item)
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reason"], "legacy_entry_gates_removed")
+        self.assertTrue(auto["passed"])
+        self.assertEqual(auto["reason"], "legacy_auto_follow_gates_removed")
+
+    def test_truth_checks_still_reject_missing_price_or_non_buy(self) -> None:
+        missing_price = fresh_buy_quality_gate({"signal_type": "BUY", "status": "ACTIVE"})
+        watch = fresh_buy_quality_gate({"signal_type": "WATCH", "status": "WATCH", "latest_price": 100})
+
+        self.assertFalse(missing_price["passed"])
+        self.assertEqual(missing_price["reason"], "price_missing")
+        self.assertFalse(watch["passed"])
+        self.assertEqual(watch["reason"], "not_fresh_buy_signal")
+
+
+@unittest.skip("Legacy score/confluence/setup quality gates were intentionally removed.")
 class Phase1QualityGateTests(unittest.TestCase):
     def test_fresh_buy_gate_blocks_non_tradeable_ideas(self) -> None:
         cases = [
@@ -776,7 +814,7 @@ class Phase1QualityGateTests(unittest.TestCase):
 
 
 class Phase1FollowSafetyTests(unittest.TestCase):
-    def test_weak_buy_decisions_are_downgraded_to_watch_ideas(self) -> None:
+    def test_raw_buy_decisions_are_not_downgraded_by_legacy_quality_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -787,11 +825,11 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 price=100,
                 technical_score=0.4,
                 sentiment_score=0.2,
-                reason="weak buy should only be watched",
+                reason="raw buy should stay active",
                 asof=utc_now(),
                 details_json=json.dumps(
                     {
-                        "action_reason": "weak buy should only be watched",
+                        "action_reason": "raw buy should stay active",
                         "score_breakdown": {"combined": 0.32},
                         "system_gate_audit": {"overall_score_pct": 52, "overall_grade": "D", "hard_blocked": False},
                         "context": {
@@ -811,11 +849,11 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 row = conn.execute("select * from signal_ideas where symbol = 'WEAKBUY'").fetchone()
 
         self.assertIsNotNone(row)
-        self.assertEqual(row["signal_type"], "WATCH")
-        self.assertEqual(row["status"], "WATCH")
+        self.assertEqual(row["signal_type"], "BUY")
+        self.assertEqual(row["status"], "ACTIVE")
         details = json.loads(row["details_json"])
-        self.assertEqual(details["quality_downgrade"]["from"], "BUY")
-        self.assertEqual(details["quality_gate"]["reason"], "overall_score_below_70")
+        self.assertNotIn("quality_downgrade", details)
+        self.assertEqual(details["quality_gate"]["reason"], "legacy_entry_gates_removed")
 
     def test_hold_refresh_preserves_old_buy_as_monitor_not_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

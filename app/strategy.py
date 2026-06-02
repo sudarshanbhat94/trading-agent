@@ -15,9 +15,9 @@ from .llm_brain import LLMBrain
 from .llm_policy import LLM_HARD_DISABLED
 from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
+from .raw_entry_model import RAW_ENTRY_MODEL_VERSION, evaluate_raw_entry
 from .sentiment import SentimentService
 from .signal_quality import FRESH_BUY_MIN_SCORE, OPPORTUNITY_PROBE_MIN_SCORE
-from .trading_rules import evaluate_rules_for_context
 
 _WAIT_ONLY_TRADE_WINDOWS = {
     "confirm_before_entry",
@@ -283,17 +283,6 @@ class StrategyEngine:
             sector_context = ((symbol_sector_rotation or {}).get("symbols") or {}).get(symbol, {})
             pattern_state = pattern_states.get(symbol) or self._pattern_state(symbol)
             sentiment_detail = self.sentiment.latest_for_symbol(symbol)
-            pre_filter = self._pre_filter_context(
-                symbol=symbol,
-                row=row,
-                quote=quote,
-                candles=candles,
-                positions=positions,
-                delivery_data=delivery_data,
-                market_breadth=symbol_breadth or {},
-                sector_context=sector_context,
-                macro_event_context=macro_event_context,
-            )
             context = build_symbol_tool_context(
                 row=row,
                 quote=quote,
@@ -315,9 +304,6 @@ class StrategyEngine:
                 execution_mode=self.settings.execution_mode,
             )
             self._persist_pattern_state_updates(symbol, context)
-            context["pre_filter"] = pre_filter
-            self._apply_btst_strategy(context)
-            self._apply_live_momentum_strategy(context)
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
             action = self._action_from_context(symbol, combined, positions, context, candles_by_symbol)
@@ -366,8 +352,8 @@ class StrategyEngine:
                 "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
                 "priority_score": round(self._scan_priority_score(item), 4),
                 "selection_basis": (
-                    "LLM primary reviews open positions first for exit risk, then non-HOLD candidates, "
-                    "then highest-ranked symbols by combined score, universe relative strength, full-spectrum layers, strategy confidence, technical score, and sentiment"
+                    "LLM primary reviews open positions first for exit risk, then raw-entry BUY candidates, "
+                    "then highest-ranked symbols by scanner rank, raw score, combined score, technical score, and sentiment"
                 ),
             }
 
@@ -511,7 +497,8 @@ class StrategyEngine:
                 )
 
             candle_summary = context["candlestick_analysis"]
-            best_strategy = context["best_strategy"]
+            raw_entry = context.get("raw_entry_model") if isinstance(context.get("raw_entry_model"), dict) else {}
+            entry_strategy = str(raw_entry.get("setup") or RAW_ENTRY_MODEL_VERSION)
             global_risk = context.get("global_market_context", {})
             institutional = context.get("institutional_context", {})
             confluence = context.get("full_spectrum_analysis", {}).get("confluence_score", {})
@@ -521,7 +508,8 @@ class StrategyEngine:
             reason = (
                 f"tools technical={item['technical'].score:.2f} ({item['technical'].trend}), "
                 f"candles={candle_summary['score']:.2f} {candle_summary['patterns']}, "
-                f"best_strategy={best_strategy['name']}:{best_strategy['score']:.2f}, "
+                f"entry_model={RAW_ENTRY_MODEL_VERSION}:{float(raw_entry.get('raw_score') or 0.0):.2f}, "
+                f"entry_reason={raw_entry.get('reason')}, "
                 f"sentiment={item['sentiment_score']:.2f}, "
                 f"global={float(global_risk.get('risk_score', 0.0) or 0.0):.2f} ({global_risk.get('regime', 'unknown')}), "
                 f"free_inst={float(institutional_bias or 0.0):.2f} ({institutional.get('source_quality', 'unknown')}), "
@@ -529,12 +517,6 @@ class StrategyEngine:
                 f"liquidity={liquidity.get('liquidity_tier', 'unknown')}, conflicts={conflicts.get('severity', 'none')}, "
                 f"combined={item['combined']:.2f}, universe_rank={context['universe_scan']['rank']}/{len(scan_items)}"
             )
-            failed_gate_names = [
-                str(gate.get("gate"))
-                for gate in (context.get("decision_gate_context") or {}).get("failed_gates", [])
-            ]
-            if failed_gate_names:
-                reason = f"{reason}, failed_gates={failed_gate_names}"
             tomorrow_plan_decision = context.get("tomorrow_plan_decision") if isinstance(context.get("tomorrow_plan_decision"), dict) else {}
             if tomorrow_plan_decision.get("active"):
                 plan_bits = [str(tomorrow_plan_decision.get("section") or "planned")]
@@ -552,7 +534,7 @@ class StrategyEngine:
                 reason = f"{reason}, {context['llm_primary_gate'].get('reason', 'llm_primary_required_no_unreviewed_trade')}"
             action = item["action"]
             confidence = item["confidence"]
-            decision_path = "deterministic_after_full_universe_scan"
+            decision_path = RAW_ENTRY_MODEL_VERSION
             if context.get("llm_primary_fallback"):
                 decision_path = "llm_primary_failed_safe_hold"
             elif context.get("llm_primary_gate", {}).get("effect") == "forced_hold_no_trade":
@@ -571,7 +553,7 @@ class StrategyEngine:
                 sentiment_score=round(item["sentiment_score"], 3),
                 reason=reason,
                 asof=utc_now(),
-                strategy=best_strategy["name"],
+                strategy=entry_strategy,
                 details_json=self._decision_details_json(
                     context=context,
                     action=action,
@@ -672,6 +654,7 @@ class StrategyEngine:
         candles_by_symbol: dict[str, list[Candle]] | None = None,
     ) -> str:
         has_position = symbol in positions and positions[symbol]["qty"] > 0
+        return self._raw_entry_action_from_context(symbol, positions, context, has_position=has_position)
         reset_authority = _decision_authority_reset_enabled(self.settings)
         if reset_authority:
             return self._fresh_only_action_from_context(symbol, positions, context)
@@ -1141,6 +1124,101 @@ class StrategyEngine:
         if exit_pressure and has_position:
             return "SELL"
         return "HOLD"
+
+    def _raw_entry_action_from_context(
+        self,
+        symbol: str,
+        positions: dict[str, dict[str, Any]],
+        context: dict[str, Any],
+        *,
+        has_position: bool,
+    ) -> str:
+        if has_position:
+            raw = {
+                "version": RAW_ENTRY_MODEL_VERSION,
+                "passed": False,
+                "action": "HOLD",
+                "reason": "existing_position_managed_by_position_rules",
+                "raw_score": None,
+                "grade": None,
+                "truth_blocks": [],
+                "trade_plan": {},
+                "legacy_decision_logic_removed": True,
+            }
+        else:
+            raw = evaluate_raw_entry(context, self.settings)
+
+        truth_blocks = raw.get("truth_blocks") if isinstance(raw.get("truth_blocks"), list) else []
+        compatibility_blocks = [
+            {"gate": "truth_check", "reason": item.get("reason"), "value": item.get("value")}
+            for item in truth_blocks
+            if isinstance(item, dict)
+        ]
+        context["raw_entry_model"] = raw
+        context["fresh_trade_authority"] = raw
+        context["decision_gate_context"] = {
+            "decision_authority": RAW_ENTRY_MODEL_VERSION,
+            "raw_entry_model": raw,
+            "fresh_trade_authority": raw,
+            "failed_gates": compatibility_blocks,
+            "blocking_failed_gates": compatibility_blocks,
+            "primary_blocker": compatibility_blocks[0] if compatibility_blocks else {},
+            "secondary_blockers": compatibility_blocks[1:],
+            "evaluated_gates": [],
+            "legacy_logic_deleted": True,
+            "legacy_logic_removed_components": [
+                "pre_filter_context",
+                "btst_strategy_mutation",
+                "live_momentum_strategy_mutation",
+                "opportunity_probe_absorption",
+                "phase2_phase3_entry_gates",
+                "canonical_trade_entry_contract",
+                "institutional_scorecard_entry_veto",
+            ],
+            "policy": "Entry authority is raw quote/scan scoring plus invalid/untradeable truth checks only.",
+        }
+        context["system_gate_audit"] = {
+            "hard_blocked": bool(truth_blocks),
+            "hard_blocks": [
+                {"flag": str(item.get("reason") or "").upper(), "reason": item.get("reason"), "value": item.get("value")}
+                for item in truth_blocks
+                if isinstance(item, dict)
+            ],
+            "soft_flags": [],
+            "active_flags": [str(item.get("reason") or "").upper() for item in truth_blocks if isinstance(item, dict)],
+            "overall_score_pct": raw.get("raw_score"),
+            "overall_grade": raw.get("grade"),
+            "classification": "RAW_ENTRY_BUY" if raw.get("passed") else "RAW_ENTRY_HOLD",
+            "allocation_cap_multiplier": 1.0,
+            "legacy_decision_logic_removed": True,
+        }
+
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        trade_plan = raw.get("trade_plan") if isinstance(raw.get("trade_plan"), dict) else {}
+        if trade_plan:
+            full["trade_plan"] = trade_plan
+        entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+        entry["entry_grade"] = raw.get("grade")
+        entry["setup_type"] = raw.get("setup")
+        entry["quality_score"] = raw.get("raw_score")
+        entry["source"] = RAW_ENTRY_MODEL_VERSION
+        full["entry_quality"] = entry
+        confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
+        confluence["total"] = round(max(float(raw.get("raw_score") or 0.0) / 4.0, 0.0), 4)
+        confluence["tier"] = "RAW_ENTRY_MODEL"
+        full["confluence_score"] = confluence
+        context["full_spectrum_analysis"] = full
+        context["best_strategy"] = {
+            "name": str(raw.get("setup") or RAW_ENTRY_MODEL_VERSION),
+            "score": round(float(raw.get("raw_score") or 0.0) / 100.0, 4),
+            "direction": raw.get("action"),
+            "confidence": raw.get("confidence"),
+            "notes": [raw.get("reason")],
+            "metadata": {"source": RAW_ENTRY_MODEL_VERSION},
+        }
+        context["strategy_signals"] = [context["best_strategy"]]
+        context["tomorrow_plan_decision"] = {"active": False, "reason": "legacy_tomorrow_plan_entry_boost_removed"}
+        return "BUY" if raw.get("passed") else "HOLD"
 
     def _fresh_only_action_from_context(
         self,
@@ -2319,9 +2397,6 @@ class StrategyEngine:
                 execution_mode=self.settings.execution_mode,
             )
             self._persist_pattern_state_updates(item["symbol"], context)
-            context["pre_filter"] = (item.get("context") or {}).get("pre_filter") or {}
-            self._apply_btst_strategy(context)
-            self._apply_live_momentum_strategy(context)
             combined = deterministic_score(context)
             item["sentiment_score"] = sentiment_score
             item["sentiment_detail"] = result
@@ -3464,23 +3539,14 @@ class StrategyEngine:
         full_spectrum = context.get("full_spectrum_analysis") or {}
         scorecard = full_spectrum.get("institutional_scorecard") or {}
         gates = {
+            "legacy_entry_gates_removed": True,
+            "entry_model": context.get("raw_entry_model"),
             "has_existing_position": has_position,
             "current_open_positions": len([row for row in positions.values() if row.get("qty", 0) > 0]),
             "max_positions": risk_limits.get("max_positions"),
-            "buy_combined_threshold": (context.get("decision_gate_context") or {}).get("buy_threshold", 0.35),
-            "buy_confluence_threshold": 16,
-            "buy_requires_accumulation_proxy_ready": True,
-            "accumulation_proxy_scorecard": {
-                "buy_ready": scorecard.get("buy_ready"),
-                "score": scorecard.get("total_score"),
-                "grade": scorecard.get("grade"),
-                "failed": scorecard.get("must_pass_failed", []),
-                "hard_veto": (scorecard.get("hard_veto") or {}).get("failed", []),
-            },
-            "score_weakness_review_threshold": -0.38,
+            "buy_entry_line": (context.get("raw_entry_model") or {}).get("entry_line"),
             "buy_requires_no_existing_position": True,
-            "buy_requires_no_new_longs_clear": True,
-            "sell_requires_existing_position": True,
+            "truth_checks": (context.get("raw_entry_model") or {}).get("truth_blocks", []),
             "broker_checks_after_decision": [
                 "daily_loss_limit",
                 "max_positions",
@@ -3490,10 +3556,7 @@ class StrategyEngine:
             ],
             "llm_deep_review_selected": llm_selected,
                 "llm_candidate_limit": risk_limits.get("llm_candidate_limit"),
-            "pre_filter": context.get("pre_filter"),
             "decision_gate_context": context.get("decision_gate_context"),
-            "portfolio_correlation_gate": context.get("portfolio_correlation_gate"),
-            "sizing_grade": context.get("sizing_grade"),
             "system_gate_audit": context.get("system_gate_audit"),
             "data_readiness": context.get("data_readiness"),
             "llm_primary_fallback": context.get("llm_primary_fallback"),
@@ -3510,8 +3573,7 @@ class StrategyEngine:
                 "unrealized_pnl_pct": round(pnl_pct, 4),
                 "hard_stop_price": round(avg_price * (1 - self.settings.stop_loss_pct), 4) if avg_price else None,
                 "take_profit_price": round(avg_price * (1 + self.settings.take_profit_pct), 4) if avg_price else None,
-                "deterministic_exit": "SELL on hard stop, take-profit, persistent distribution, or explicit invalidation; composite weakness only triggers risk review",
-                "scorecard_exit": "SELL if a hard veto, severe negative sentiment, or high-conflict condition appears",
+                "deterministic_exit": "SELL on hard stop, take-profit, or time stop from position rules only",
                 "llm_exit_review": "primary mode reviews open positions before new entries when within LLM Symbols/Cycle limit",
             }
         return _json_dumps(
@@ -3521,14 +3583,14 @@ class StrategyEngine:
                 "final_action": action,
                 "action_reason": action_reason,
                 "action_policy": {
-                    "BUY": "combined score >= 0.35, confluence >= 16/26, scorecard ready=true, overall quality >=70 with grade A/B before publication/follow, no existing long position, and no no-new-longs override",
-                    "SELL": "existing long position plus LLM exit call, hard stop, take-profit, persistent distribution, or explicit invalidation trigger",
-                    "HOLD": "score/action gates did not permit a trade",
+                    "BUY": "raw_entry_model_v1 score meets the entry line, with only invalid quote and explicitly untradeable truth checks able to stop entry",
+                    "SELL": "existing long position plus hard stop, take-profit, or time stop from position rules",
+                    "HOLD": "raw entry score is below the entry line, an existing position is already open, or a truth check failed",
                 },
                 "score_breakdown": score_breakdown,
                 "overall_score_pct": (context.get("system_gate_audit") or {}).get("overall_score_pct"),
                 "overall_grade": (context.get("system_gate_audit") or {}).get("overall_grade"),
-                "pre_filter": context.get("pre_filter"),
+                "raw_entry_model": context.get("raw_entry_model"),
                 "system_gate_audit": context.get("system_gate_audit"),
                 "data_readiness": context.get("data_readiness"),
                 "sizing_grade": context.get("sizing_grade"),
@@ -3597,6 +3659,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "candlestick_analysis": context.get("candlestick_analysis"),
         "best_strategy": context.get("best_strategy"),
         "strategy_signals": context.get("strategy_signals"),
+        "raw_entry_model": context.get("raw_entry_model"),
         "sentiment": context.get("sentiment"),
         "global_market_context": context.get("global_market_context"),
         "institutional_context": context.get("institutional_context"),
@@ -3609,9 +3672,8 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "data_readiness": context.get("data_readiness"),
         "performance_feedback": context.get("performance_feedback"),
         "system_gate_audit": context.get("system_gate_audit"),
-        "pre_filter": context.get("pre_filter"),
         "decision_gate_context": context.get("decision_gate_context"),
-        "sizing_grade": context.get("sizing_grade"),
+        "fresh_trade_authority": context.get("fresh_trade_authority"),
         "llm_primary_selection": context.get("llm_primary_selection"),
         "llm_primary_fallback": context.get("llm_primary_fallback"),
         "llm_primary_rule_blocked": context.get("llm_primary_rule_blocked"),

@@ -79,9 +79,10 @@ class Settings:
         "US_SCANNER_SLOT_BUDGETS",
         "live_rally=45,volume_price=40,breakout=40,earnings_news=30,sector_rs=25,diverse=20",
     ).strip()
-    dynamic_scan_min_score: float = _float("DYNAMIC_SCAN_MIN_SCORE", 0.58)
-    dynamic_scan_require_active_setup: bool = _bool("DYNAMIC_SCAN_REQUIRE_ACTIVE_SETUP", True)
-    decision_authority_mode: str = "fresh_v1"
+    dynamic_scan_min_score: float = _float("DYNAMIC_SCAN_MIN_SCORE", 0.0)
+    dynamic_scan_require_active_setup: bool = _bool("DYNAMIC_SCAN_REQUIRE_ACTIVE_SETUP", False)
+    decision_authority_mode: str = "raw_entry_model_v1"
+    raw_entry_min_score: float = _float("RAW_ENTRY_MIN_SCORE", 58.0)
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
     dynamic_scan_min_turnover_inr: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_INR", 50_000_000.0)
     dynamic_scan_min_turnover_usd: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_USD", 2_000_000.0)
@@ -405,7 +406,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "us_scanner_slot_budgets", "label": "US Scanner Slots", "type": "text", "category": "Market Data"},
     {"key": "dynamic_scan_min_score", "label": "Dynamic Min Opportunity Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
     {"key": "dynamic_scan_require_active_setup", "label": "Require Active Setup", "type": "boolean", "category": "Market Data"},
-    {"key": "decision_authority_mode", "label": "Decision Authority", "type": "select", "category": "Market Data", "choices": ["fresh_v1"]},
+    {"key": "decision_authority_mode", "label": "Decision Authority", "type": "select", "category": "Market Data", "choices": ["raw_entry_model_v1"]},
+    {"key": "raw_entry_min_score", "label": "Raw Entry Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 100, "step": 1},
     {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_min_turnover_inr", "label": "Dynamic Min Turnover INR", "type": "number", "category": "Market Data", "min": 0, "step": 1000000},
     {"key": "dynamic_scan_min_turnover_usd", "label": "Dynamic Min Turnover USD", "type": "number", "category": "Market Data", "min": 0, "step": 100000},
@@ -584,7 +586,7 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         mode = str(value).strip().lower()
         return mode if mode in {"paper", "upstox_sandbox", "upstox_live"} else "paper"
     if key == "decision_authority_mode":
-        return "fresh_v1"
+        return "raw_entry_model_v1"
     if key == "yahoo_candle_interval":
         interval = str(value).strip()
         return interval if interval in {"5m", "15m", "30m", "60m", "1d", "1wk"} else "1d"

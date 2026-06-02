@@ -113,10 +113,11 @@ class RealMoneyReadinessTests(unittest.TestCase):
         self.assertEqual(_sector_for_row({"symbol": "JPPOWER", "sector": "NSE Listed Equity"}), "Power Generation")
         self.assertEqual(_sector_for_row({"symbol": "FINCABLES", "sector": "Equity"}), "Electrical Equipment")
 
-    def test_buy_gate_blocks_uc_late_chase_low_quality_and_pivot_extension(self) -> None:
+    def test_buy_truth_check_no_longer_blocks_old_soft_gate_cases(self) -> None:
         base = {
             "signal_type": "BUY",
             "status": "ACTIVE",
+            "latest_price": 100,
             "overall_score_pct": 90,
             "overall_grade": "A",
             "confluence": 24,
@@ -129,10 +130,11 @@ class RealMoneyReadinessTests(unittest.TestCase):
         pivot = fresh_buy_quality_gate({**base, "details": {**base["details"], "opportunity_scan": {"pivot_extension_pct": 6}}})
         squeeze = fresh_buy_quality_gate({**base, "details": {**base["details"], "opportunity_scan": {"setup": "short_covering_squeeze"}}})
 
-        self.assertEqual(uc["reason"], "upper_circuit_only_buyers_watch")
-        self.assertEqual(late["reason"], "late_chase_avoid")
-        self.assertEqual(pivot["reason"], "late_chase_avoid")
-        self.assertEqual(squeeze["reason"], "low_quality_short_covering")
+        self.assertTrue(uc["passed"])
+        self.assertTrue(late["passed"])
+        self.assertTrue(pivot["passed"])
+        self.assertTrue(squeeze["passed"])
+        self.assertEqual(uc["reason"], "legacy_entry_gates_removed")
 
     def test_replay_validation_records_named_symbols_without_llm(self) -> None:
         tmp, db, _settings = self._db()

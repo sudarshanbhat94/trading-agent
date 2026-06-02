@@ -6947,7 +6947,7 @@ def _signal_state_payload(item: dict[str, Any], details: dict[str, Any] | None =
         elif latest_action == "BUY" and not continuity and readiness.get("passed") and fresh_buy_recent:
             display_signal = "Actionable"
             fresh_action = "BUY_NOW"
-            reason = "Fresh BUY passed the current entry and risk gates."
+            reason = "Fresh BUY is actionable under the raw entry model."
         elif latest_action == "BUY" and not continuity and readiness.get("passed"):
             display_signal = "No Fresh Add"
             fresh_action = "NO_FRESH_ADD"
@@ -7034,12 +7034,14 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     opportunity = details.get("opportunity_state") if isinstance(details.get("opportunity_state"), dict) else {}
     if not opportunity:
         opportunity = opportunity_state_from_signal_details(details)
-    contract = canonical_trade_contract({**item, "details": details})
-    state = contract["signal_state"]
+    raw_entry = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
+    raw_entry_item = bool(details.get("legacy_decision_logic_removed") or raw_entry.get("legacy_decision_logic_removed"))
+    contract = None if raw_entry_item else canonical_trade_contract({**item, "details": details})
+    state = _signal_state_payload(item, details) if raw_entry_item else contract["signal_state"]
     execution = _execution_state_payload(item)
-    setup_bucket = contract["setup_bucket"]
-    quality_gate = contract["quality_gate"]
-    auto_follow_gate = contract["auto_follow_gate"]
+    setup_bucket = _setup_bucket_payload(item, details, state) if raw_entry_item else contract["setup_bucket"]
+    quality_gate = trade_readiness_gate({**item, "details": details}) if raw_entry_item else contract["quality_gate"]
+    auto_follow_gate = quality_gate if raw_entry_item else contract["auto_follow_gate"]
     item["signal_state"] = state
     item["display_signal"] = state["display_signal"]
     item["fresh_action"] = state["fresh_action"]
@@ -7058,16 +7060,17 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["why_changed"] = state["why_changed"]
     item["risk_review"] = state["risk_review"]
     item["canonical_trade"] = {
-        "version": contract["version"],
-        "primary_blocker": contract.get("primary_blocker"),
-        "secondary_blockers": contract.get("secondary_blockers") or [],
-        "paper_follow_eligible": contract.get("paper_follow_eligible"),
+        "version": "raw_entry_model_v1" if raw_entry_item else contract["version"],
+        "primary_blocker": None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker"),
+        "secondary_blockers": [] if raw_entry_item else contract.get("secondary_blockers") or [],
+        "paper_follow_eligible": bool(quality_gate.get("passed")) if raw_entry_item else contract.get("paper_follow_eligible"),
         "quality_reason": quality_gate.get("reason"),
         "auto_follow_reason": auto_follow_gate.get("reason"),
+        "legacy_decision_logic_removed": raw_entry_item,
     }
-    item["primary_blocker"] = contract.get("primary_blocker")
-    item["secondary_blockers"] = contract.get("secondary_blockers") or []
-    item["paper_follow_eligible"] = bool(contract.get("paper_follow_eligible"))
+    item["primary_blocker"] = None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker")
+    item["secondary_blockers"] = [] if raw_entry_item else contract.get("secondary_blockers") or []
+    item["paper_follow_eligible"] = bool(quality_gate.get("passed")) if raw_entry_item else bool(contract.get("paper_follow_eligible"))
     item["paper_follow_quality_reason"] = auto_follow_gate.get("reason")
     item["opportunity_state"] = opportunity.get("state")
     item["opportunity_label"] = opportunity.get("label")
@@ -7113,7 +7116,7 @@ def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: 
     readiness_warnings = readiness.get("risk_warnings") if isinstance(readiness.get("risk_warnings"), list) else []
     full_size_ready = readiness_size >= 0.75 and not readiness_warnings
     if signal_type == "BUY" and state.get("fresh_action") == "BUY_NOW" and readiness.get("passed") and full_size_ready and not risk_flags and classification != "SPECULATIVE":
-        return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "Fresh BUY with strong score, confluence, and no active risk flags."}
+        return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "Fresh BUY from the raw entry model."}
     if signal_type == "BUY":
         if not readiness.get("passed"):
             return {
@@ -7122,7 +7125,7 @@ def _setup_bucket_payload(item: dict[str, Any], details: dict[str, Any], state: 
                 "reason": readiness.get("message") or "BUY thesis is present, but it is not trade-ready.",
             }
         if readiness.get("passed") and full_size_ready and classification != "SPECULATIVE" and not risk_flags and not (cap is not None and cap <= 0.3):
-            return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "BUY thesis is active and risk checks are acceptable."}
+            return {"bucket": "ACTIONABLE", "label": "Actionable", "reason": "BUY thesis is active under the raw entry model."}
         return {
             "bucket": "SMALL_SIZE_ONLY",
             "label": "Small Size Only",
@@ -7235,9 +7238,33 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(decision_gate.get("fresh_trade_authority"), dict)
         else {}
     )
+    raw_entry_model = (
+        decision_gate.get("raw_entry_model")
+        if isinstance(decision_gate.get("raw_entry_model"), dict)
+        else context.get("raw_entry_model")
+        if isinstance(context.get("raw_entry_model"), dict)
+        else {}
+    )
     fresh_authority_passed = action == "BUY" and fresh_authority.get("passed") is True
+    raw_entry_passed = action == "BUY" and raw_entry_model.get("passed") is True
     details_risk_flags = risk.get("flags", [])
     details_hard_blocks = system_audit.get("hard_blocks", [])
+    if raw_entry_passed:
+        raw_score = _optional_float(raw_entry_model.get("raw_score"))
+        raw_grade = str(raw_entry_model.get("grade") or "").strip() or "B"
+        if raw_score is not None:
+            post_gate_score = raw_score
+            display_score = raw_score
+            confluence_total = max(confluence_total, round(raw_score / 4.0, 4))
+        overall_grade = raw_grade
+        display_grade = raw_grade
+        hard_blocked = False
+        details_risk_flags = []
+        details_hard_blocks = []
+        raw_plan = raw_entry_model.get("trade_plan") if isinstance(raw_entry_model.get("trade_plan"), dict) else {}
+        if raw_plan:
+            trade_plan = raw_plan
+            targets = raw_plan.get("targets") if isinstance(raw_plan.get("targets"), list) else []
     if fresh_authority_passed:
         fresh_score = _optional_float(fresh_authority.get("fresh_score"))
         fresh_confluence = _optional_float(fresh_authority.get("fresh_confluence"))
@@ -7280,6 +7307,8 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "soft_flags": system_audit.get("soft_flags", []),
         "failed_gates": decision_gate.get("failed_gates", []),
         "fresh_trade_authority": fresh_authority,
+        "raw_entry_model": raw_entry_model,
+        "legacy_decision_logic_removed": bool(raw_entry_model.get("legacy_decision_logic_removed")),
         "data_readiness": data_readiness,
         "macro_event_context": macro_event_context,
         "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
@@ -7292,7 +7321,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "classification": system_audit.get("classification"),
         "allocation_cap_multiplier": system_audit.get("allocation_cap_multiplier"),
     }
-    if action == "BUY":
+    if action == "BUY" and not raw_entry_passed:
         _apply_top_gainers_playbook_signal_details(details, price)
         _apply_btst_signal_details(details, price)
         display_score = details.get("overall_score_pct", display_score)
