@@ -220,6 +220,9 @@ class StrategyEngine:
             "llm_candidate_limit": self.settings.llm_max_symbols_per_cycle,
             "portfolio_equity": portfolio_equity or 0.0,
             "execution_cost_bps": _execution_cost_bps(self.settings),
+            "decision_symbols": len(universe),
+            "skip_symbol_backtest": len(universe) >= 100,
+            "backtest_skip_reason": "broad_open_market_decision_cycle" if len(universe) >= 100 else "",
         }
         try:
             performance_feedback = self.sentiment.db.strategy_performance_feedback()

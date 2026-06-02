@@ -10,8 +10,9 @@ from types import MethodType, SimpleNamespace
 from app.agent import TradingAgentService
 from app.db import Database
 from app.delivery_data import DeliveryDataService
+from app.full_spectrum import _backtest_snapshot
 from app.macro_calendar import MacroCalendarService
-from app.models import Quote
+from app.models import Candle, Quote
 from app.pre_catalyst_engine import _missed_move_min_pct_for_universe
 
 
@@ -244,6 +245,34 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(db.calls, 1)
         self.assertTrue(payload["fingerprint"])
         self.assertTrue(fingerprint)
+
+    def test_broad_live_cycle_defers_per_symbol_backtest(self) -> None:
+        candles = [
+            Candle(
+                symbol="RELIANCE",
+                ts=f"2026-05-{(index % 28) + 1:02d}",
+                open=100.0 + index,
+                high=101.0 + index,
+                low=99.0 + index,
+                close=100.5 + index,
+                volume=100_000 + index,
+                source="unit-test",
+            )
+            for index in range(80)
+        ]
+
+        result = _backtest_snapshot(
+            candles,
+            risk_limits={
+                "skip_symbol_backtest": True,
+                "decision_symbols": 200,
+                "backtest_skip_reason": "broad_open_market_decision_cycle",
+            },
+        )
+
+        self.assertFalse(result["available"])
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["engine"], "deferred_for_broad_cycle")
 
     def test_pre_strategy_candle_fetch_defaults_to_deferred(self) -> None:
         agent = TradingAgentService.__new__(TradingAgentService)

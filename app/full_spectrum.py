@@ -2260,6 +2260,15 @@ def _backtest_snapshot(
     strategy_signals: list[dict[str, Any]] | None = None,
     risk_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if bool((risk_limits or {}).get("skip_symbol_backtest")):
+        return {
+            "available": False,
+            "engine": "deferred_for_broad_cycle",
+            "reason": (risk_limits or {}).get("backtest_skip_reason") or "deferred_to_preserve_cycle_budget",
+            "deferred": True,
+            "decision_symbols": int((risk_limits or {}).get("decision_symbols") or 0),
+            "backtest_note": "Per-symbol walk-forward validation is deferred during broad open-market scans so all selected symbols receive live strategy decisions within the cycle budget.",
+        }
     if len(candles) < 60:
         return {"available": False, "reason": "need at least 60 candles for setup-wise validation"}
     cost_bps = float((risk_limits or {}).get("execution_cost_bps") or 0.0)
