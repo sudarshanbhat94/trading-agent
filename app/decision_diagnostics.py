@@ -334,6 +334,7 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     target = _int(funnel.get("target_decision_symbols"))
     buys = _int(funnel.get("buy_decisions"))
     buy_intents = _int(funnel.get("buy_intent_decisions")) or buys
+    followed_actions = _int(funnel.get("auto_followed_user_actions"))
     if raw >= 500 and selected > 0 and selected / raw < 0.05 and (target <= 0 or selected < target):
         flags.append(
             {
@@ -370,13 +371,14 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
         )
     if decisions >= 100 and buys == 0:
         if buy_intents > 0:
-            flags.append(
-                {
-                    "severity": "warning",
-                    "code": "all_buy_intents_already_active",
-                    "message": "The cycle found BUY-grade ideas, but all were already active monitors rather than fresh entries.",
-                }
-            )
+            if followed_actions <= 0:
+                flags.append(
+                    {
+                        "severity": "warning",
+                        "code": "all_buy_intents_already_active",
+                        "message": "The cycle found BUY-grade ideas, but all were already active monitors rather than fresh entries.",
+                    }
+                )
         else:
             flags.append(
                 {
