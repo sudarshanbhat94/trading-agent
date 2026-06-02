@@ -853,6 +853,14 @@ class TradingAgentService:
                 "funnel": decision_diagnostics.get("funnel"),
                 "health_flags": decision_diagnostics.get("health_flags"),
                 "top_blockers": decision_diagnostics.get("top_blockers", [])[:5],
+                "slot_fill_counts": decision_diagnostics.get("slot_fill_counts"),
+                "slot_shortfalls": decision_diagnostics.get("slot_shortfalls"),
+                "slot_fill_counts_by_market": decision_diagnostics.get("slot_fill_counts_by_market"),
+                "missed_move_review_row_id": decision_diagnostics.get("missed_move_review_row_id"),
+                "live_quote_stale_intraday": decision_diagnostics.get("live_quote_stale_intraday"),
+                "auto_follow": decision_diagnostics.get("auto_follow"),
+                "scanner_rejections": decision_diagnostics.get("scanner_rejections"),
+                "scanner_setups": decision_diagnostics.get("scanner_setups"),
             },
         )
         portfolio = self.broker.snapshot()

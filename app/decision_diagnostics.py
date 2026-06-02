@@ -293,7 +293,12 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     if buys > 0 and _int(funnel.get("auto_followed_user_actions")) == 0 and _int(funnel.get("auto_follow_user_conversion_pct")) == 0:
-        users_checked = _int((diagnostics.get("auto_follow") or {}).get("users_checked")) if isinstance(diagnostics.get("auto_follow"), dict) else 0
+        auto_follow = diagnostics.get("auto_follow") if isinstance(diagnostics.get("auto_follow"), dict) else {}
+        users_checked = _int(auto_follow.get("users_checked"))
+        active_checked = _int(auto_follow.get("active_buy_ideas_checked"))
+        skip_reasons = auto_follow.get("skip_reasons") if isinstance(auto_follow.get("skip_reasons"), dict) else {}
+        if users_checked > 0 and active_checked > 0 and _all_auto_follow_skips_explained(skip_reasons):
+            return flags
         code = "buy_decisions_not_followed" if users_checked > 0 else "buy_decisions_no_eligible_auto_follow_users"
         flags.append(
             {
@@ -329,6 +334,20 @@ def _skip_reason_counts(skipped: Any) -> dict[str, int]:
         for item in skipped
     )
     return dict(counts.most_common(12))
+
+
+def _all_auto_follow_skips_explained(skip_reasons: dict[str, Any]) -> bool:
+    if not skip_reasons:
+        return False
+    allowed = {
+        "already_followed",
+        "already_followed_symbol",
+        "outside_custom_monitor_list",
+        "phase1_quality_gate",
+        "position_size_below_minimum_trade_economics",
+        "recent_risk_exit_cooldown",
+    }
+    return all(str(reason or "").strip() in allowed for reason in skip_reasons)
 
 
 def _top_mapping(value: Any, limit: int) -> dict[str, int]:

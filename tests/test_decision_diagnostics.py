@@ -69,13 +69,14 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertIn("live_quote_blocked_by_stale_intraday_only", {flag["code"] for flag in diagnostics["health_flags"]})
         json.dumps(diagnostics)
 
-    def test_cycle_diagnostics_surfaces_buy_decisions_not_auto_followed(self) -> None:
+    def test_cycle_diagnostics_does_not_flag_explained_economic_auto_follow_skips(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {"raw_symbols": 100, "quoted_symbols": 100, "selected_symbols": 40},
             [_decision("ACMESOLAR", "BUY")],
             shared_auto_trade={
                 "users_checked": 2,
                 "followed": 0,
+                "active_buy_ideas_checked": 2,
                 "skipped": [
                     {"symbol": "ACMESOLAR", "reason": "position_size_below_minimum_trade_economics"},
                     {"symbol": "ACMESOLAR", "reason": "position_size_below_minimum_trade_economics"},
@@ -92,6 +93,21 @@ class DecisionDiagnosticsTests(unittest.TestCase):
             diagnostics["auto_follow"]["skip_reasons"]["position_size_below_minimum_trade_economics"],
             2,
         )
+        self.assertNotIn("buy_decisions_not_followed", {flag["code"] for flag in diagnostics["health_flags"]})
+
+    def test_cycle_diagnostics_surfaces_buy_decisions_not_mapped_to_active_ideas(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 100, "quoted_symbols": 100, "selected_symbols": 40},
+            [_decision("ACMESOLAR", "BUY")],
+            shared_auto_trade={
+                "users_checked": 2,
+                "followed": 0,
+                "active_buy_ideas_checked": 0,
+                "skipped": [{"symbol": "ACMESOLAR", "reason": "outside_custom_monitor_list"}],
+            },
+            market_region="IN",
+        )
+
         self.assertIn("buy_decisions_not_followed", {flag["code"] for flag in diagnostics["health_flags"]})
 
     def test_cycle_diagnostics_does_not_report_multi_user_follows_as_over_100_percent(self) -> None:
