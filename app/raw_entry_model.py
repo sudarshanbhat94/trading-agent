@@ -127,6 +127,28 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         blockers.append({"reason": "stale_quote_not_entry_ready", "missing_data": missing})
     if any(item in {"fresh_intraday_candles", "stale_intraday_candles"} for item in missing):
         warnings.append("intraday_candle_freshness_gap")
+    setup_family = str(best_setup.get("family") or "none")
+    if setup_family == "market_action_event":
+        blockers.append(
+            {
+                "reason": "market_action_event_manual_review",
+                "message": "Market-action-only events were net-negative in the last completed cost-adjusted replay; require another setup family before auto-entry.",
+            }
+        )
+    if market == "IN" and not truth_blocks:
+        india_breakout_ok = setup_family == "breakout" and authority_score >= 97.0
+        india_live_ok = setup_family == "live_momentum" and authority_score >= 90.0 and (price or 0.0) >= 3000.0
+        if not (india_breakout_ok or india_live_ok):
+            blockers.append(
+                {
+                    "reason": "india_cost_adjusted_selectivity_filter",
+                    "message": "India entries require stronger cost-adjusted evidence after one-week replay showed broad India signals were net-negative.",
+                    "score": authority_score,
+                    "setup_family": setup_family,
+                    "min_breakout_score": 97.0,
+                    "live_momentum_min_price": 3000.0,
+                }
+            )
 
     if truth_blocks:
         decision_label = NO_TRADE
@@ -166,7 +188,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         "trade_plan": trade_plan,
         "market_region": market,
         "setup": setup,
-        "setup_family": str(best_setup.get("family") or "none"),
+        "setup_family": setup_family,
         "setup_evidence": best_setup,
         "setup_reviews": setup_reviews,
         "components": {

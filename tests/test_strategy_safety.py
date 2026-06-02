@@ -39,6 +39,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
     def test_entry_authority_buys_only_entry_ready_setup(self) -> None:
         context = _raw_entry_context(
             setup="opening_ignition",
+            market_region="US",
             data_readiness={"trade_decision_ready": False, "missing_data": ["legacy_phase2_gap"]},
         )
         engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
@@ -75,7 +76,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(hard_reason, "invalid_price")
 
     def test_raw_entry_model_score_payload_is_explainable(self) -> None:
-        model = evaluate_raw_entry(_raw_entry_context(setup="opening_ignition"), _entry_authority_settings())
+        model = evaluate_raw_entry(_raw_entry_context(setup="opening_ignition", market_region="US"), _entry_authority_settings())
 
         self.assertTrue(model["passed"])
         self.assertGreaterEqual(model["raw_score"], model["entry_line"])
@@ -3857,11 +3858,12 @@ def _raw_entry_context(
     *,
     price: float = 108.0,
     setup: str = "opening_ignition",
+    market_region: str = "IN",
     data_readiness: dict | None = None,
 ) -> dict:
     return {
         "symbol": "RAWBUY",
-        "market_region": "IN",
+        "market_region": market_region,
         "quote": {
             "price": price,
             "source": "upstox-live",
@@ -3878,6 +3880,7 @@ def _raw_entry_context(
         "opportunity_scan": {
             "setup": setup,
             "bucket": "Actionable",
+            "market_region": market_region,
             "score": 0.82,
             "day_gain_pct": 3.2,
             "day_range_position": 0.82,
