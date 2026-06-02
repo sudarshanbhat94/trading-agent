@@ -276,17 +276,28 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     details = _details(item)
     if not isinstance(risk_flags, list):
         risk_flags = _risk_flags(item, details)
+    playbook_probe = _top_gainers_playbook_probe(item, details)
     severe_flags = _severe_risk_flags(
         risk_flags,
-        playbook_entry_ok=bool(_top_gainers_playbook_probe(item, details)),
-        playbook_market_region=_upper((_top_gainers_playbook_probe(item, details) or {}).get("market_region")),
+        opportunity_probe=bool(gate.get("opportunity_probe")),
+        playbook_entry_ok=bool(playbook_probe),
+        playbook_market_region=_upper((playbook_probe or {}).get("market_region")),
     )
     if severe_flags:
         return _blocked(
             "auto_follow_severe_risk_flags",
             "Auto-paper will not enter ideas that the safety manager would immediately exit.",
+            overall_score_pct=gate.get("overall_score_pct"),
+            overall_grade=gate.get("overall_grade"),
+            min_score=gate.get("min_score", FRESH_BUY_MIN_SCORE),
+            min_confluence=gate.get("min_confluence", ACTIONABLE_MIN_CONFLUENCE),
+            allowed_grades=gate.get("allowed_grades", sorted(FRESH_BUY_ALLOWED_GRADES)),
             risk_flags=risk_flags,
             severe_risk_flags=severe_flags,
+            risk_warnings=gate.get("risk_warnings", []),
+            missing_data=gate.get("missing_data", []),
+            size_multiplier=gate.get("size_multiplier"),
+            opportunity_probe=gate.get("opportunity_probe"),
         )
     fresh_action = _upper(item.get("fresh_action"))
     if fresh_action and fresh_action != "BUY_NOW":

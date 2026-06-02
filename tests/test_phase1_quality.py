@@ -529,6 +529,67 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["min_confluence"], 6.0)
         self.assertEqual(gate["size_multiplier"], 0.35)
 
+    def test_auto_follow_reuses_opportunity_probe_risk_policy(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 100,
+                "overall_grade": "A",
+                "confluence": 6,
+                "quote": {
+                    "price": 4501.8,
+                    "open": 4440.0,
+                    "high": 4520.0,
+                    "low": 4410.0,
+                    "volume": 1_200_000,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "trade_decision_ready": True,
+                    "fresh_market_data_gate": {
+                        "passed": True,
+                        "reason": "live_quote_ready_intraday_reference_stale",
+                    },
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+                "details": {
+                    "action": "BUY",
+                    "latest_price": 4501.8,
+                    "entry_zone": [4485.0, 4520.0],
+                    "stop_loss": 4346.35,
+                    "targets": [{"price": 4727.0, "distance_pct": 5.0}],
+                    "risk_flags": [
+                        "institutional_scorecard_below_entry_threshold",
+                        "false_breakout_risk_no_new_longs",
+                        "phase3_weak_volume_ratio_reduce_size",
+                    ],
+                    "live_momentum_review": {
+                        "strategy_ready": True,
+                        "setup": "intraday_momentum",
+                    },
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "intraday_momentum",
+                        "score": 1.0,
+                        "turnover": 320_000_000,
+                        "data_quality": {
+                            "actionable_data_ready": False,
+                            "missing": ["stale_intraday_candles"],
+                        },
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"], gate)
+        self.assertTrue(gate["opportunity_probe"])
+        self.assertEqual(gate["min_confluence"], 6.0)
+        self.assertEqual(gate["size_multiplier"], 0.35)
+
     def test_stored_opportunity_probe_min_confluence_is_reused(self) -> None:
         gate = fresh_buy_quality_gate(
             {
