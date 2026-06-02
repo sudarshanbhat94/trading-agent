@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .canonical_trade import canonical_trade_contract
 from .decision_contract import current_decision_rows, normalize_trade_targets, ranked_decision_rows
 from .llm_usage import DEFAULT_SIGNAL_TOKEN_ESTIMATE, DEFAULT_TOKENS_PER_CREDIT
 from .models import Candle, Decision, Quote, utc_now
@@ -6908,9 +6909,12 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     opportunity = details.get("opportunity_state") if isinstance(details.get("opportunity_state"), dict) else {}
     if not opportunity:
         opportunity = opportunity_state_from_signal_details(details)
-    state = _signal_state_payload(item, details)
+    contract = canonical_trade_contract({**item, "details": details})
+    state = contract["signal_state"]
     execution = _execution_state_payload(item)
-    setup_bucket = _setup_bucket_payload(item, details, state)
+    setup_bucket = contract["setup_bucket"]
+    quality_gate = contract["quality_gate"]
+    auto_follow_gate = contract["auto_follow_gate"]
     item["signal_state"] = state
     item["display_signal"] = state["display_signal"]
     item["fresh_action"] = state["fresh_action"]
@@ -6928,6 +6932,18 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["execution_state_note"] = execution["note"]
     item["why_changed"] = state["why_changed"]
     item["risk_review"] = state["risk_review"]
+    item["canonical_trade"] = {
+        "version": contract["version"],
+        "primary_blocker": contract.get("primary_blocker"),
+        "secondary_blockers": contract.get("secondary_blockers") or [],
+        "paper_follow_eligible": contract.get("paper_follow_eligible"),
+        "quality_reason": quality_gate.get("reason"),
+        "auto_follow_reason": auto_follow_gate.get("reason"),
+    }
+    item["primary_blocker"] = contract.get("primary_blocker")
+    item["secondary_blockers"] = contract.get("secondary_blockers") or []
+    item["paper_follow_eligible"] = bool(contract.get("paper_follow_eligible"))
+    item["paper_follow_quality_reason"] = auto_follow_gate.get("reason")
     item["opportunity_state"] = opportunity.get("state")
     item["opportunity_label"] = opportunity.get("label")
     item["opportunity_summary"] = opportunity.get("summary")

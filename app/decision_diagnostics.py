@@ -30,11 +30,17 @@ def build_cycle_decision_diagnostics(
     action_counts = Counter(str(decision.action or "UNKNOWN").upper() for decision in decision_rows)
     blocker_counts: Counter[str] = Counter()
     primary_blocker_counts: Counter[str] = Counter()
+    canonical_primary_blocker_counts: Counter[str] = Counter()
+    canonical_version_counts: Counter[str] = Counter()
     absorbed_counts: Counter[str] = Counter()
     blocker_symbols: dict[str, set[str]] = defaultdict(set)
     primary_blocker_symbols: dict[str, set[str]] = defaultdict(set)
+    canonical_primary_blocker_symbols: dict[str, set[str]] = defaultdict(set)
     live_quote_stale_intraday_symbols: set[str] = set()
     live_quote_stale_intraday_only_symbols: set[str] = set()
+    canonical_gate_seen = 0
+    canonical_gate_passed = 0
+    canonical_gate_blocked = 0
     duplicate_active_buy_monitors = 0
     duplicate_active_buy_symbols: set[str] = set()
     top_holds: list[dict[str, Any]] = []
@@ -53,9 +59,24 @@ def build_cycle_decision_diagnostics(
                 duplicate_active_buy_symbols.add(symbol)
         gate_context = _decision_gate_context(audit)
         probe = gate_context.get("opportunity_probe") if isinstance(gate_context.get("opportunity_probe"), dict) else {}
+        canonical_gate = gate_context.get("canonical_trade_gate") if isinstance(gate_context.get("canonical_trade_gate"), dict) else {}
         blocking_gates = _gate_names(gate_context.get("blocking_failed_gates") or gate_context.get("failed_gates"))
         absorbed_gates = _gate_names(probe.get("absorbed_gates"))
         primary_gate = _primary_gate_name(gate_context, blocking_gates)
+        if canonical_gate:
+            canonical_gate_seen += 1
+            version = str(canonical_gate.get("canonical_version") or "unknown").strip() or "unknown"
+            canonical_version_counts.update([version])
+            if canonical_gate.get("passed"):
+                canonical_gate_passed += 1
+            else:
+                canonical_gate_blocked += 1
+                canonical_primary = str(
+                    canonical_gate.get("primary_blocker") or canonical_gate.get("reason") or "canonical_trade_not_ready"
+                ).strip()
+                if canonical_primary:
+                    canonical_primary_blocker_counts.update([canonical_primary])
+                    canonical_primary_blocker_symbols[canonical_primary].add(symbol)
         blocker_counts.update(blocking_gates)
         absorbed_counts.update(absorbed_gates)
         for gate in blocking_gates:
@@ -69,9 +90,17 @@ def build_cycle_decision_diagnostics(
             live_quote_stale_intraday_symbols.add(symbol)
             if set(blocking_gates) == {"fresh_market_data_gate"}:
                 live_quote_stale_intraday_only_symbols.add(symbol)
+        if (
+            canonical_gate
+            and canonical_gate.get("primary_blocker") == "stale_market_data"
+            and override in LIVE_QUOTE_STALE_INTRADAY_OVERRIDES
+        ):
+            live_quote_stale_intraday_symbols.add(symbol)
+            if not blocking_gates or set(blocking_gates) == {"canonical_trade_contract"}:
+                live_quote_stale_intraday_only_symbols.add(symbol)
 
         if str(decision.action or "").upper() == "HOLD":
-            top_holds.append(_hold_summary(decision, audit, blocking_gates, probe, primary_gate))
+            top_holds.append(_hold_summary(decision, audit, blocking_gates, probe, primary_gate, canonical_gate))
 
     top_holds.sort(key=lambda item: (item["technical_score"], item["confidence"], item["combined_score"]), reverse=True)
     raw_symbols = _int(scan.get("raw_symbols") or scan.get("scanned_symbols_this_cycle"))
@@ -140,6 +169,22 @@ def build_cycle_decision_diagnostics(
         "primary_blocker_counts": dict(primary_blocker_counts.most_common(15)),
         "all_blocking_gate_counts": dict(blocker_counts.most_common(15)),
         "absorbed_gate_counts": dict(absorbed_counts.most_common(12)),
+        "canonical_trade": {
+            "gate_seen": canonical_gate_seen,
+            "gate_passed": canonical_gate_passed,
+            "gate_blocked": canonical_gate_blocked,
+            "version_counts": dict(canonical_version_counts.most_common(5)),
+            "primary_blocker_counts": dict(canonical_primary_blocker_counts.most_common(15)),
+            "top_blockers": [
+                {
+                    "blocker": blocker,
+                    "count": count,
+                    "unique_symbols": len(canonical_primary_blocker_symbols.get(blocker, set())),
+                    "sample_symbols": sorted(canonical_primary_blocker_symbols.get(blocker, set()))[:12],
+                }
+                for blocker, count in canonical_primary_blocker_counts.most_common(15)
+            ],
+        },
         "slot_fill_counts": scan.get("slot_fill_counts") if isinstance(scan.get("slot_fill_counts"), dict) else {},
         "slot_budgets": scan.get("slot_budgets") if isinstance(scan.get("slot_budgets"), dict) else {},
         "slot_shortfalls": scan.get("slot_shortfalls") if isinstance(scan.get("slot_shortfalls"), dict) else {},
@@ -226,8 +271,10 @@ def _hold_summary(
     blocking_gates: list[str],
     probe: dict[str, Any],
     primary_gate: str,
+    canonical_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     score_breakdown = audit.get("score_breakdown") if isinstance(audit.get("score_breakdown"), dict) else {}
+    canonical_gate = canonical_gate if isinstance(canonical_gate, dict) else {}
     return {
         "symbol": decision.symbol,
         "strategy": decision.strategy,
@@ -239,6 +286,15 @@ def _hold_summary(
         "primary_blocker": primary_gate,
         "blocking_gates": blocking_gates[:8],
         "secondary_blockers": [gate for gate in blocking_gates if gate != primary_gate][:8],
+        "canonical_trade": {
+            "version": canonical_gate.get("canonical_version"),
+            "passed": canonical_gate.get("passed"),
+            "primary_blocker": canonical_gate.get("primary_blocker"),
+            "reason": canonical_gate.get("reason"),
+            "secondary_blockers": canonical_gate.get("secondary_blockers") or [],
+        }
+        if canonical_gate
+        else {},
         "opportunity_probe": {
             "ready": bool(probe.get("ready")),
             "source": probe.get("source"),

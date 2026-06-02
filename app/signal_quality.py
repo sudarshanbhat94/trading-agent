@@ -50,6 +50,14 @@ def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
+    """Canonical gate for anything that wants to present or execute a BUY."""
+
+    from .canonical_trade import canonical_trade_readiness_gate
+
+    return canonical_trade_readiness_gate(item)
+
+
+def _legacy_trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     """Canonical gate for anything that wants to present or execute a fresh BUY.
 
     Strategy, UI, manual follow, and auto-follow paths should all use this
@@ -269,6 +277,12 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
+    from .canonical_trade import canonical_auto_follow_quality_gate
+
+    return canonical_auto_follow_quality_gate(item)
+
+
+def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     gate = fresh_buy_quality_gate(item)
     if not gate.get("passed"):
         return gate

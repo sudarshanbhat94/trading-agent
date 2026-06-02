@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
+from app.canonical_trade import CANONICAL_TRADE_CONTRACT_VERSION
 from app.decision_diagnostics import build_cycle_decision_diagnostics
 from app.models import Decision, utc_now
 
@@ -222,6 +223,45 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["paper_trade_source"], "user_idea_follows")
         self.assertEqual(diagnostics["funnel"]["paper_followed_user_actions"], 1)
         self.assertEqual(diagnostics["funnel"]["central_broker_orders"], 0)
+
+    def test_diagnostics_reports_canonical_trade_blockers(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 2500, "quoted_symbols": 2500, "selected_symbols": 200, "target_decision_symbols": 200},
+            [
+                _decision(
+                    "STALELIVE",
+                    "HOLD",
+                    details={
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "blocking_failed_gates": [{"gate": "canonical_trade_contract"}],
+                                "canonical_trade_gate": {
+                                    "passed": False,
+                                    "canonical_version": CANONICAL_TRADE_CONTRACT_VERSION,
+                                    "primary_blocker": "stale_market_data",
+                                    "reason": "stale_market_data",
+                                    "secondary_blockers": ["in_intraday_candles"],
+                                },
+                                "opportunity_probe": {
+                                    "ready": True,
+                                    "source": "live_quote_opportunity_scan",
+                                    "data_quality_override": "live_quote_ohlcv_used_for_probe",
+                                },
+                            }
+                        }
+                    },
+                )
+            ],
+            market_region="IN",
+            missed_move_review_row_id=99,
+        )
+
+        self.assertEqual(diagnostics["canonical_trade"]["gate_seen"], 1)
+        self.assertEqual(diagnostics["canonical_trade"]["gate_blocked"], 1)
+        self.assertEqual(diagnostics["canonical_trade"]["version_counts"][CANONICAL_TRADE_CONTRACT_VERSION], 1)
+        self.assertEqual(diagnostics["canonical_trade"]["primary_blocker_counts"]["stale_market_data"], 1)
+        self.assertEqual(diagnostics["top_hold_candidates"][0]["canonical_trade"]["primary_blocker"], "stale_market_data")
+        self.assertEqual(diagnostics["live_quote_stale_intraday"]["only_blocker_symbols"], 1)
 
 
 def _decision(

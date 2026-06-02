@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .analysis_tools import build_symbol_tool_context, deterministic_score, deterministic_score_breakdown
+from .canonical_trade import canonical_trade_readiness_gate
 from .config import Settings
 from .indicators import technical_snapshot
 from .llm_brain import LLMBrain
@@ -1033,7 +1034,61 @@ class StrategyEngine:
         probe_min_confluence = _float_or_none(opportunity_probe.get("min_confluence"))
         buy_confluence_floor = probe_min_confluence if opportunity_probe.get("ready") and probe_min_confluence is not None else 16.0
         if buy_threshold_met and confluence_total >= buy_confluence_floor and buy_ready and not has_position:
-            return "BUY"
+            canonical_rule_audit = (
+                context.get("system_gate_audit") if isinstance(context.get("system_gate_audit"), dict) else rule_audit
+            )
+            canonical_details = {
+                "action": "BUY",
+                "overall_score_pct": canonical_rule_audit.get("overall_score_pct"),
+                "overall_grade": canonical_rule_audit.get("overall_grade"),
+                "confluence": confluence_total,
+                "hard_blocked": bool(canonical_rule_audit.get("hard_blocked")),
+                "hard_blocks": canonical_rule_audit.get("hard_blocks") if isinstance(canonical_rule_audit.get("hard_blocks"), list) else [],
+                "active_flags": canonical_rule_audit.get("active_flags") if isinstance(canonical_rule_audit.get("active_flags"), list) else [],
+                "risk_flags": risk_overrides.get("flags") if isinstance(risk_overrides.get("flags"), list) else [],
+                "failed_gates": context["decision_gate_context"].get("failed_gates") or [],
+                "data_readiness": data_ready,
+                "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
+                "entry_quality": entry,
+                "breakout_quality": breakout,
+                "strategy_logic_filters": strategy_logic,
+                "opportunity_scan": context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {},
+                "live_momentum_review": live_momentum_review,
+                "risk_gates": {"decision_gate_context": context["decision_gate_context"]},
+                "entry_zone": (full_spectrum.get("trade_plan") or {}).get("entry_zone") if isinstance(full_spectrum.get("trade_plan"), dict) else None,
+                "stop_loss": (full_spectrum.get("trade_plan") or {}).get("stop_loss") if isinstance(full_spectrum.get("trade_plan"), dict) else None,
+                "targets": (full_spectrum.get("trade_plan") or {}).get("targets") if isinstance(full_spectrum.get("trade_plan"), dict) else [],
+                "market_region": context.get("market_region"),
+            }
+            canonical_gate = canonical_trade_readiness_gate(
+                {
+                    "symbol": symbol,
+                    "action": "BUY",
+                    "signal_type": "BUY",
+                    "status": "ACTIVE",
+                    "overall_score_pct": canonical_rule_audit.get("overall_score_pct"),
+                    "overall_grade": canonical_rule_audit.get("overall_grade"),
+                    "confluence": confluence_total,
+                    "hard_blocked": bool(canonical_rule_audit.get("hard_blocked")),
+                    "data_readiness": data_ready,
+                    "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
+                    "market_region": context.get("market_region"),
+                    "details": canonical_details,
+                }
+            )
+            context["canonical_trade_gate"] = canonical_gate
+            context["decision_gate_context"]["canonical_trade_gate"] = canonical_gate
+            if canonical_gate.get("passed"):
+                return "BUY"
+            canonical_block = {
+                "gate": "canonical_trade_contract",
+                "value": canonical_gate,
+                "reason": canonical_gate.get("primary_blocker") or canonical_gate.get("reason") or "canonical_trade_not_ready",
+            }
+            context["decision_gate_context"]["blocking_failed_gates"] = [canonical_block]
+            context["decision_gate_context"]["primary_blocker"] = canonical_block
+            context["decision_gate_context"]["secondary_blockers"] = canonical_gate.get("secondary_blockers") or []
+            return "HOLD"
         if has_position and combined <= -0.38:
             context["score_weakness_exit_review"] = {
                 "combined": round(combined, 4),
