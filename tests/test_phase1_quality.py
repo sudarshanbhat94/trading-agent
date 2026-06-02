@@ -562,7 +562,7 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["reason"], "auto_follow_severe_risk_flags")
         self.assertIn("false_breakout_risk_no_new_longs", gate["severe_risk_flags"])
 
-    def test_auto_follow_reuses_opportunity_probe_risk_policy(self) -> None:
+    def test_auto_follow_blocks_opportunity_probe_risk_flags(self) -> None:
         gate = auto_follow_quality_gate(
             {
                 "signal_type": "BUY",
@@ -617,10 +617,84 @@ class Phase1QualityGateTests(unittest.TestCase):
             }
         )
 
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "auto_follow_risk_flags_present")
+        self.assertIn("institutional_scorecard_below_entry_threshold", gate["risk_flags"])
+        self.assertIn("phase3_weak_volume_ratio_reduce_size", gate["risk_flags"])
+
+    def test_auto_follow_allows_only_clean_strong_trade_plan(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 88,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100.0,
+                "data_readiness": {"trade_decision_ready": True},
+                "details": {
+                    "action": "BUY",
+                    "stop_loss": 95.0,
+                    "targets": [{"price": 108.0, "distance_pct": 8.0}],
+                },
+            }
+        )
+
         self.assertTrue(gate["passed"], gate)
-        self.assertTrue(gate["opportunity_probe"])
-        self.assertEqual(gate["min_confluence"], 6.0)
-        self.assertEqual(gate["size_multiplier"], 0.35)
+        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
+        self.assertEqual(gate["auto_follow_contract"], "strict_clean_execution_v1")
+        self.assertEqual(gate["min_score"], 85.0)
+
+    def test_auto_follow_blocks_low_confluence_even_when_fresh_buy_passes(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 88,
+                "overall_grade": "A",
+                "confluence": 12,
+                "latest_price": 100.0,
+                "data_readiness": {"trade_decision_ready": True},
+                "details": {
+                    "action": "BUY",
+                    "stop_loss": 95.0,
+                    "targets": [{"price": 108.0, "distance_pct": 8.0}],
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "intraday_momentum",
+                        "score": 0.96,
+                        "data_quality": {"actionable_data_ready": True},
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "auto_follow_confluence_below_strict_minimum")
+
+    def test_auto_follow_blocks_weak_reward_risk(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 88,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100.0,
+                "data_readiness": {"trade_decision_ready": True},
+                "details": {
+                    "action": "BUY",
+                    "stop_loss": 96.0,
+                    "targets": [{"price": 104.0, "distance_pct": 4.0}],
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "auto_follow_reward_risk_below_minimum")
 
     def test_stored_opportunity_probe_min_confluence_is_reused(self) -> None:
         gate = fresh_buy_quality_gate(

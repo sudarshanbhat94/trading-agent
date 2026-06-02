@@ -22,7 +22,6 @@ from .signal_quality import (
     DUPLICATE_BUY_COOLDOWN_HOURS,
     FRESH_BUY_WINDOW_MINUTES,
     active_follow_safety_gate,
-    auto_follow_quality_gate,
     fresh_buy_quality_gate,
     trade_readiness_gate,
 )
@@ -3639,11 +3638,12 @@ class Database:
                         "recent_risk_exit_cooldown:"
                         f"{reentry_block.get('exit_reason') or reentry_block.get('exit_key') or 'risk_exit'}"
                     )
-                quality_gate = auto_follow_quality_gate(
+                quality_gate = fresh_buy_quality_gate(
                     {
                         "action": idea_details.get("action") or idea["signal_type"],
                         "signal_type": idea["signal_type"],
                         "status": idea["status"],
+                        "latest_price": latest_price,
                         "overall_score_pct": idea["overall_score_pct"],
                         "overall_grade": idea["overall_grade"],
                         "confluence": idea["confluence"],

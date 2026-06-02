@@ -162,7 +162,7 @@ class MonitorScopeTests(unittest.TestCase):
             summary,
         )
 
-    def test_shared_auto_paper_follows_dynamic_india_buy_with_fresh_live_quote(self) -> None:
+    def test_shared_auto_paper_blocks_dynamic_india_probe_below_strict_follow_quality(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -216,9 +216,70 @@ class MonitorScopeTests(unittest.TestCase):
         self.assertEqual(idea["signal_type"], "BUY")
         self.assertEqual(idea["status"], "ACTIVE")
         self.assertEqual(idea["fresh_action"], "BUY_NOW")
+        self.assertEqual(summary["followed"], 0, summary)
+        self.assertEqual(followed, [])
+        self.assertTrue(
+            any(
+                item.get("symbol") == "IFCI"
+                and item.get("reason") == "phase1_quality_gate"
+                and item.get("quality_reason") == "auto_follow_confluence_below_strict_minimum"
+                for item in summary["skipped"]
+            ),
+            summary,
+        )
+
+    def test_shared_auto_paper_follows_clean_india_buy_with_trade_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            user = db.create_user(
+                "sudarshan",
+                "hash",
+                role="user",
+                active=True,
+                signal_execution_mode="AUTO_PAPER",
+            )
+            user_id = int(user["id"])
+            db.update_user_paper_cash(user_id, cash_in=100_000)
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into universe (symbol, name, exchange, sector, enabled)
+                    values ('CLEANIN', 'Clean India Ltd', 'NSE', 'Industrials', 1)
+                    """
+                )
+            decision = self._clean_india_auto_follow_buy("CLEANIN")
+            db.insert_decisions([decision])
+            db.upsert_signal_ideas_from_decisions([decision])
+            service = TradingAgentService(
+                db=db,
+                market_data=SimpleNamespace(),
+                broker=SimpleNamespace(),
+                strategy=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        initial_cash_inr=100_000,
+                        max_position_pct=0.25,
+                        paper_min_auto_follow_notional_inr=7_500.0,
+                        paper_min_auto_follow_notional_usd=250.0,
+                    )
+                ),
+                macro=None,
+                institutional_feeds=None,
+                delivery_service=None,
+                market_breadth=None,
+                sector_rotation=None,
+                macro_calendar=None,
+                options_intelligence=None,
+                interval_seconds=60,
+                cycle_timeout_seconds=60,
+            )
+
+            summary = service._auto_follow_buy_ideas_for_signal_users([decision])
+            followed = db.user_followed_signal_ideas(user_id, 20, market_region="IN")
+
         self.assertEqual(summary["followed"], 1, summary)
         self.assertEqual(len(followed), 1)
-        self.assertEqual(followed[0]["symbol"], "IFCI")
+        self.assertEqual(followed[0]["symbol"], "CLEANIN")
         self.assertEqual(followed[0]["mode"], "PAPER")
         self.assertEqual(followed[0]["follow_status"], "ACTIVE")
         self.assertGreaterEqual(float(followed[0]["invested_amount"]), 7_500.0)
@@ -379,6 +440,69 @@ class MonitorScopeTests(unittest.TestCase):
             reason="fresh live India quote buy",
             asof=utc_now(),
             strategy="aggressive_relative_strength_breakout",
+            details_json=json.dumps(details),
+        )
+
+    @staticmethod
+    def _clean_india_auto_follow_buy(symbol: str) -> Decision:
+        details = {
+            "action_reason": "clean India auto-follow buy",
+            "score_breakdown": {"combined": 0.50, "score_percent": 90.0},
+            "system_gate_audit": {
+                "hard_blocked": False,
+                "hard_blocks": [],
+                "overall_score_pct": 90.0,
+                "overall_grade": "A",
+                "data_readiness": {
+                    "market_region": "IN",
+                    "trade_decision_ready": True,
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+            },
+            "context": {
+                "quote": {
+                    "price": 100.0,
+                    "open": 98.0,
+                    "high": 101.0,
+                    "low": 97.5,
+                    "volume": 5_000_000,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "market_region": "IN",
+                    "trade_decision_ready": True,
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+                "decision_gate_context": {"failed_gates": []},
+                "full_spectrum_analysis": {
+                    "confluence_score": {"total": 24, "tier": "TRADE_SIGNAL"},
+                    "signal_plan": {"direction": "BUY", "decision_readiness": "actionable"},
+                    "trade_plan": {
+                        "entry_zone": [99.0, 101.0],
+                        "stop_loss": 96.0,
+                        "targets": [{"price": 108.0, "distance_pct": 8.0}],
+                    },
+                    "risk_overrides": {"flags": []},
+                    "strategy_logic_filters": {"passed": True, "hard_blocks": []},
+                    "breakout_quality": {"breakout_quality": "not_breakout", "volume_confirmation": True},
+                    "entry_quality": {"entry_grade": "A"},
+                },
+            },
+        }
+        return Decision(
+            symbol=symbol,
+            action="BUY",
+            confidence=0.92,
+            price=100.0,
+            technical_score=0.90,
+            sentiment_score=0.0,
+            reason="clean India auto-follow buy",
+            asof=utc_now(),
+            strategy="strict_auto_follow_contract",
             details_json=json.dumps(details),
         )
 

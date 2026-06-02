@@ -1007,12 +1007,22 @@ function marketDataLabel(payload = state.latest || {}, market = state.activeMark
 }
 
 function autoFollowReasonText(item = {}) {
-  const reason = String(item.reason || "").trim();
+  const reason = String(item.quality_reason || item.reason || "").trim();
   const mapped = {
+    phase1_quality_gate: "quality gate blocked",
     already_followed_symbol: "already paper-followed",
     already_followed: "already followed",
     recent_risk_exit_cooldown: "cooling down after a risk exit",
     active_buy_not_fresh_enough_for_auto_follow: "not fresh enough or outside the entry zone",
+    auto_follow_score_below_strict_minimum: "score is below the auto-paper threshold",
+    auto_follow_confluence_missing: "confluence evidence is missing",
+    auto_follow_confluence_below_strict_minimum: "confluence is below the auto-paper threshold",
+    auto_follow_risk_flags_present: "risk flags require manual review",
+    auto_follow_reduced_size_or_probe: "probe/reduced-size idea needs manual review",
+    auto_follow_price_missing: "current price is missing",
+    auto_follow_stop_missing_or_invalid: "valid stop is missing",
+    auto_follow_target_missing: "valid target is missing",
+    auto_follow_reward_risk_below_minimum: "reward/risk is too weak",
     insufficient_paper_cash_for_position_size: "paper cash/position cap is too small for one share",
     live_unavailable_shared_engine_needs_user_broker_session: "live needs the user's own broker session",
     market_closed: "market is closed",

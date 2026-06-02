@@ -4974,7 +4974,7 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
     if score < 70 or grade not in {"A", "B"}:
         return False
-    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW" and not _active_monitor_follow_allowed(idea):
+    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
         return False
     if symbol in fresh_buy_symbols:
         return True

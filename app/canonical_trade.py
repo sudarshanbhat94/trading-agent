@@ -34,18 +34,6 @@ def canonical_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
 
     normalized = _normalized_item(item)
     gate = _legacy_auto_follow_quality_gate(normalized)
-    if not gate.get("passed") and _active_monitor_follow_allowed(normalized, gate):
-        gate = canonical_trade_readiness_gate({**normalized, "fresh_action": "BUY_NOW"})
-        if gate.get("passed"):
-            gate = {
-                **gate,
-                "reason": "fresh_buy_quality_passed",
-                "active_monitor_follow_allowed": True,
-                "risk_warnings": [
-                    *list(gate.get("risk_warnings") or []),
-                    "active BUY monitor is still trade-ready for users without an existing follow",
-                ],
-            }
     return _canonicalize_gate(gate, normalized, auto_follow=True)
 
 

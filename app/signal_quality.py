@@ -13,6 +13,9 @@ DUPLICATE_BUY_COOLDOWN_HOURS = 48
 AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS = 48
 FRESH_BUY_WINDOW_MINUTES = 20
 ACTIONABLE_MIN_CONFLUENCE = 18.0
+AUTO_FOLLOW_MIN_SCORE = 85.0
+AUTO_FOLLOW_MIN_CONFLUENCE = ACTIONABLE_MIN_CONFLUENCE
+AUTO_FOLLOW_MIN_REWARD_RISK = 1.5
 CAUTION_STOP_RISK_PCT = 5.5
 HARD_STOP_RISK_PCT = 9.0
 CAUTION_T1_DISTANCE_PCT = 10.0
@@ -321,7 +324,140 @@ def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
             "BUY is already active; do not auto-follow repeated refreshes.",
             duplicate_active_buy=True,
         )
-    return gate
+    contract_block = _auto_follow_execution_contract(item, details, gate, risk_flags)
+    if contract_block:
+        return contract_block
+    return {
+        **gate,
+        "min_score": AUTO_FOLLOW_MIN_SCORE,
+        "min_confluence": AUTO_FOLLOW_MIN_CONFLUENCE,
+        "auto_follow_min_reward_risk": AUTO_FOLLOW_MIN_REWARD_RISK,
+        "auto_follow_contract": "strict_clean_execution_v1",
+    }
+
+
+def _auto_follow_execution_contract(
+    item: dict[str, Any],
+    details: dict[str, Any],
+    gate: dict[str, Any],
+    risk_flags: list[str],
+) -> dict[str, Any] | None:
+    """Auto-paper requires a clean execution plan, not merely a tradable idea."""
+
+    base_payload = {
+        "overall_score_pct": gate.get("overall_score_pct"),
+        "overall_grade": gate.get("overall_grade"),
+        "min_score": AUTO_FOLLOW_MIN_SCORE,
+        "min_confluence": AUTO_FOLLOW_MIN_CONFLUENCE,
+        "allowed_grades": gate.get("allowed_grades", sorted(FRESH_BUY_ALLOWED_GRADES)),
+        "risk_flags": risk_flags,
+        "risk_warnings": gate.get("risk_warnings", []),
+        "missing_data": gate.get("missing_data", []),
+        "size_multiplier": gate.get("size_multiplier"),
+        "opportunity_probe": gate.get("opportunity_probe"),
+        "auto_follow_min_reward_risk": AUTO_FOLLOW_MIN_REWARD_RISK,
+        "auto_follow_contract": "strict_clean_execution_v1",
+    }
+
+    score = _number(gate.get("overall_score_pct"), item.get("overall_score_pct"), details.get("overall_score_pct"))
+    if score is None or score < AUTO_FOLLOW_MIN_SCORE:
+        return _blocked(
+            "auto_follow_score_below_strict_minimum",
+            f"Auto-paper requires score of at least {AUTO_FOLLOW_MIN_SCORE:.0f}; lower scores stay manual/watch only.",
+            **base_payload,
+        )
+
+    if risk_flags:
+        return _blocked(
+            "auto_follow_risk_flags_present",
+            "Auto-paper only follows clean BUY ideas; risk-flagged ideas stay manual/watch only.",
+            **base_payload,
+        )
+
+    confluence = _number(item.get("confluence"), details.get("confluence"))
+    if confluence is None:
+        return _blocked(
+            "auto_follow_confluence_missing",
+            "Auto-paper requires explicit confluence evidence before entry.",
+            confluence=confluence,
+            **base_payload,
+        )
+    if confluence < AUTO_FOLLOW_MIN_CONFLUENCE:
+        return _blocked(
+            "auto_follow_confluence_below_strict_minimum",
+            f"Auto-paper requires confluence of at least {AUTO_FOLLOW_MIN_CONFLUENCE:.0f}; starter probes stay manual/watch only.",
+            confluence=confluence,
+            **base_payload,
+        )
+
+    risk_warnings = [str(item or "").strip() for item in gate.get("risk_warnings") or [] if str(item or "").strip()]
+    missing_data = [str(item or "").strip() for item in gate.get("missing_data") or [] if str(item or "").strip()]
+    size_multiplier = _number(gate.get("size_multiplier")) or 1.0
+    if gate.get("opportunity_probe") or risk_warnings or missing_data or size_multiplier < 0.75:
+        return _blocked(
+            "auto_follow_reduced_size_or_probe",
+            "Auto-paper does not enter probe, reduced-size, or incomplete-data ideas without manual review.",
+            **base_payload,
+        )
+
+    price = _number(item.get("latest_price"), item.get("price"), item.get("entry_price"), details.get("latest_price"))
+    if price is None or price <= 0:
+        return _blocked(
+            "auto_follow_price_missing",
+            "Auto-paper requires a valid current price before entry.",
+            price=price,
+            **base_payload,
+        )
+
+    stop_status = details.get("stop_status") if isinstance(details.get("stop_status"), dict) else {}
+    stop = _number(item.get("stop_loss"), details.get("stop_loss"), stop_status.get("price"))
+    if stop is None or stop <= 0 or stop >= price:
+        return _blocked(
+            "auto_follow_stop_missing_or_invalid",
+            "Auto-paper requires a valid stop below entry before opening a position.",
+            price=price,
+            stop_loss=stop,
+            **base_payload,
+        )
+
+    t1 = _target_one(item.get("target_status"), details.get("target_status"), details.get("targets"))
+    if not t1:
+        return _blocked(
+            "auto_follow_target_missing",
+            "Auto-paper requires at least one target before opening a position.",
+            price=price,
+            stop_loss=stop,
+            **base_payload,
+        )
+    target_price = _number(t1.get("price"), t1.get("target"), t1.get("target_price"))
+    distance_pct = _number(t1.get("distance_pct"))
+    if target_price is None and distance_pct is not None:
+        target_price = price * (1.0 + (distance_pct / 100.0))
+    if target_price is None or target_price <= price:
+        return _blocked(
+            "auto_follow_target_missing",
+            "Auto-paper target must be above the current entry price.",
+            price=price,
+            stop_loss=stop,
+            target_1=t1,
+            **base_payload,
+        )
+
+    reward = target_price - price
+    risk = price - stop
+    reward_risk = reward / risk if risk > 0 else 0.0
+    if reward_risk < AUTO_FOLLOW_MIN_REWARD_RISK:
+        return _blocked(
+            "auto_follow_reward_risk_below_minimum",
+            f"Auto-paper requires reward/risk of at least {AUTO_FOLLOW_MIN_REWARD_RISK:.1f}.",
+            price=price,
+            stop_loss=stop,
+            target_1=t1,
+            reward_risk=round(reward_risk, 4),
+            **base_payload,
+        )
+
+    return None
 
 
 def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:

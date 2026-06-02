@@ -75,8 +75,8 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(contract["fresh_action"], "BUY_NOW")
         self.assertEqual(contract["trade_state"], "ACTIONABLE")
         self.assertEqual(contract["setup_bucket"]["bucket"], "SMALL_SIZE_ONLY")
-        self.assertTrue(contract["paper_follow_eligible"], contract)
-        self.assertIsNone(contract["primary_blocker"])
+        self.assertFalse(contract["paper_follow_eligible"], contract)
+        self.assertEqual(contract["primary_blocker"], "auto_follow_confluence_below_strict_minimum")
 
     def test_us_yahoo_reference_playbook_is_reduced_size_not_full_size(self) -> None:
         contract = canonical_trade_contract(
@@ -174,6 +174,9 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 "overall_score_pct": 86,
                 "overall_grade": "A",
                 "confluence": 22,
+                "latest_price": 100,
+                "stop_loss": 95,
+                "targets": [{"price": 108}],
                 "hard_blocked": False,
                 "hard_blocks": [],
                 "data_readiness": {"trade_decision_ready": True},
@@ -328,7 +331,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(row["fresh_action"], "NO_FRESH_ADD")
         self.assertIn("Already active", row["display_reason"])
 
-    def test_unfollowed_active_buy_monitor_can_still_auto_follow(self) -> None:
+    def test_unfollowed_active_buy_monitor_does_not_auto_follow(self) -> None:
         gate = auto_follow_quality_gate(
             {
                 "symbol": "MONITORBUY",
@@ -339,9 +342,12 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 "overall_score_pct": 86,
                 "overall_grade": "A",
                 "confluence": 22,
+                "latest_price": 100,
                 "details": {
                     "action": "BUY",
                     "data_readiness": {"trade_decision_ready": True},
+                    "stop_loss": 95,
+                    "targets": [{"price": 108}],
                     "signal_continuity": {
                         "duplicate_active_buy": True,
                         "already_active_buy": True,
@@ -350,8 +356,8 @@ class CanonicalTradeContractTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(gate["passed"], gate)
-        self.assertTrue(gate["active_monitor_follow_allowed"])
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "not_actionable_fresh_state")
 
 
 if __name__ == "__main__":
