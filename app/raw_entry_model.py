@@ -135,6 +135,26 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
                 "message": "Market-action-only events were net-negative in the last completed cost-adjusted replay; require another setup family before auto-entry.",
             }
         )
+    if market == "US" and setup_family == "live_momentum" and not truth_blocks:
+        us_live_momentum_confirmed = day_gain >= 2.0 and (
+            technical_score >= 60.0
+            or (day_gain >= 3.0 and volume_ratio >= 2.0 and technical_score >= 45.0)
+        )
+        if not us_live_momentum_confirmed:
+            blockers.append(
+                {
+                    "reason": "us_live_momentum_confirmation_filter",
+                    "message": "US live-momentum entries require either technical confirmation or a stronger price move with volume.",
+                    "day_gain_pct": round(day_gain, 4),
+                    "technical_score_pct": round(technical_score, 4),
+                    "volume_ratio": round(volume_ratio, 4),
+                    "min_day_gain_pct": 2.0,
+                    "min_technical_score_pct": 60.0,
+                    "strong_move_min_day_gain_pct": 3.0,
+                    "strong_move_min_volume_ratio": 2.0,
+                    "strong_move_min_technical_score_pct": 45.0,
+                }
+            )
     if market == "IN" and not truth_blocks:
         india_breakout_ok = setup_family == "breakout" and authority_score >= 97.0
         india_live_ok = setup_family == "live_momentum" and authority_score >= 90.0 and (price or 0.0) >= 3000.0

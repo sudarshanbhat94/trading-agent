@@ -85,6 +85,49 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_family"], "live_momentum")
         self.assertTrue(model["legacy_decision_logic_removed"])
 
+    def test_us_live_momentum_rejects_weak_technical_confirmation(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                setup="opening_ignition",
+                market_region="US",
+                technical_score=0.57,
+                day_gain_pct=2.1,
+                volume_ratio=11.0,
+                projected_volume_ratio=11.0,
+            ),
+            _entry_authority_settings(),
+        )
+
+        self.assertFalse(model["passed"])
+        self.assertEqual(model["action"], "HOLD")
+        self.assertEqual(model["decision_label"], "MANUAL_ONLY")
+        self.assertEqual(model["setup_family"], "live_momentum")
+        self.assertIn(
+            "us_live_momentum_confirmation_filter",
+            {blocker["reason"] for blocker in model["entry_blockers"]},
+        )
+
+    def test_us_live_momentum_accepts_strong_move_volume_confirmation(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                setup="intraday_momentum",
+                market_region="US",
+                technical_score=0.50,
+                day_gain_pct=5.5,
+                volume_ratio=2.6,
+                projected_volume_ratio=2.6,
+            ),
+            _entry_authority_settings(),
+        )
+
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "live_momentum")
+        self.assertNotIn(
+            "us_live_momentum_confirmation_filter",
+            {blocker["reason"] for blocker in model["entry_blockers"]},
+        )
+
 
 @unittest.skip("Legacy strategy gate tests were intentionally retired for entry_authority_v2.")
 class StrategySafetyTests(unittest.TestCase):
@@ -3860,6 +3903,10 @@ def _raw_entry_context(
     setup: str = "opening_ignition",
     market_region: str = "IN",
     data_readiness: dict | None = None,
+    technical_score: float = 0.78,
+    day_gain_pct: float = 3.2,
+    volume_ratio: float = 2.1,
+    projected_volume_ratio: float = 2.4,
 ) -> dict:
     return {
         "symbol": "RAWBUY",
@@ -3875,18 +3922,18 @@ def _raw_entry_context(
         },
         "sentiment": {"score": 0.2, "confidence": 0.4, "status": "AVAILABLE"},
         "position": {"qty": 0},
-        "technical_math": {"score": 0.78},
+        "technical_math": {"score": technical_score},
         "data_readiness": data_readiness or {"trade_decision_ready": True},
         "opportunity_scan": {
             "setup": setup,
             "bucket": "Actionable",
             "market_region": market_region,
             "score": 0.82,
-            "day_gain_pct": 3.2,
+            "day_gain_pct": day_gain_pct,
             "day_range_position": 0.82,
             "day_high_distance_pct": 0.8,
-            "volume_ratio": 2.1,
-            "projected_volume_ratio": 2.4,
+            "volume_ratio": volume_ratio,
+            "projected_volume_ratio": projected_volume_ratio,
             "turnover": 160_000_000,
             "projected_turnover": 220_000_000,
             "components": {"live_momentum": 0.78},
