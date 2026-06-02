@@ -34,6 +34,18 @@ def canonical_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
 
     normalized = _normalized_item(item)
     gate = _legacy_auto_follow_quality_gate(normalized)
+    if not gate.get("passed") and _active_monitor_follow_allowed(normalized, gate):
+        gate = canonical_trade_readiness_gate({**normalized, "fresh_action": "BUY_NOW"})
+        if gate.get("passed"):
+            gate = {
+                **gate,
+                "reason": "fresh_buy_quality_passed",
+                "active_monitor_follow_allowed": True,
+                "risk_warnings": [
+                    *list(gate.get("risk_warnings") or []),
+                    "active BUY monitor is still trade-ready for users without an existing follow",
+                ],
+            }
     return _canonicalize_gate(gate, normalized, auto_follow=True)
 
 
@@ -300,6 +312,24 @@ def _normalized_item(item: dict[str, Any]) -> dict[str, Any]:
         normalized["action"] = details.get("action")
     _apply_live_probe_freshness_override(normalized)
     return normalized
+
+
+def _active_monitor_follow_allowed(item: dict[str, Any], gate: dict[str, Any]) -> bool:
+    if str(gate.get("reason") or "") not in {"not_actionable_fresh_state", "duplicate_active_buy_cooldown"}:
+        return False
+    signal_type = _upper(item.get("signal_type") or item.get("suggestion"))
+    status = _upper(item.get("status"))
+    if signal_type != "BUY" or status not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
+        return False
+    follow = item.get("user_follow") if isinstance(item.get("user_follow"), dict) else {}
+    follow_status = _upper(follow.get("status"))
+    if follow_status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} and (_int(follow.get("qty")) or 0) > 0:
+        return False
+    details = _details(item)
+    continuity = details.get("signal_continuity") if isinstance(details.get("signal_continuity"), dict) else {}
+    if not (continuity.get("duplicate_active_buy") or continuity.get("already_active_buy")):
+        return False
+    return _recent_dt(item.get("last_seen_at"))
 
 
 def _apply_live_probe_freshness_override(item: dict[str, Any]) -> None:

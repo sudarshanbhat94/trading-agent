@@ -8,6 +8,7 @@ from pathlib import Path
 from app.canonical_trade import CANONICAL_TRADE_CONTRACT_VERSION, canonical_trade_contract
 from app.db import Database
 from app.models import Decision, utc_now
+from app.signal_quality import auto_follow_quality_gate
 
 
 class CanonicalTradeContractTests(unittest.TestCase):
@@ -326,6 +327,31 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(row["status"], "ACTIVE")
         self.assertEqual(row["fresh_action"], "NO_FRESH_ADD")
         self.assertIn("Already active", row["display_reason"])
+
+    def test_unfollowed_active_buy_monitor_can_still_auto_follow(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "symbol": "MONITORBUY",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "NO_FRESH_ADD",
+                "last_seen_at": utc_now(),
+                "overall_score_pct": 86,
+                "overall_grade": "A",
+                "confluence": 22,
+                "details": {
+                    "action": "BUY",
+                    "data_readiness": {"trade_decision_ready": True},
+                    "signal_continuity": {
+                        "duplicate_active_buy": True,
+                        "already_active_buy": True,
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"], gate)
+        self.assertTrue(gate["active_monitor_follow_allowed"])
 
 
 if __name__ == "__main__":

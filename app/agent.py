@@ -3564,7 +3564,7 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
     if score < 70 or grade not in {"A", "B"}:
         return False
-    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
+    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW" and not _active_monitor_follow_allowed(idea):
         return False
     if symbol in fresh_buy_symbols:
         return True
@@ -3587,6 +3587,18 @@ def _decision_has_buy_intent(decision: Decision) -> bool:
     gate_context = risk_gates.get("decision_gate_context") if isinstance(risk_gates.get("decision_gate_context"), dict) else {}
     canonical_gate = gate_context.get("canonical_trade_gate") if isinstance(gate_context.get("canonical_trade_gate"), dict) else {}
     return canonical_gate.get("passed") is True
+
+
+def _active_monitor_follow_allowed(idea: dict[str, Any]) -> bool:
+    follow = idea.get("user_follow") if isinstance(idea.get("user_follow"), dict) else {}
+    follow_status = str(follow.get("status") or "").upper()
+    if follow_status in {"ACTIVE", "LIVE_REQUESTED", "LIVE_EXIT_REQUESTED"} and int(follow.get("qty") or 0) > 0:
+        return False
+    details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+    continuity = details.get("signal_continuity") if isinstance(details.get("signal_continuity"), dict) else {}
+    if not (continuity.get("duplicate_active_buy") or continuity.get("already_active_buy")):
+        return False
+    return _idea_seen_recently(idea)
 
 
 def _idea_seen_recently(idea: dict[str, Any], *, minutes: int = FRESH_BUY_WINDOW_MINUTES) -> bool:
