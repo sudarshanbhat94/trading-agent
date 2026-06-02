@@ -345,6 +345,15 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     buys = _int(funnel.get("buy_decisions"))
     buy_intents = _int(funnel.get("buy_intent_decisions")) or buys
     followed_actions = _int(funnel.get("auto_followed_user_actions"))
+    buy_rate = (buys / decisions) if decisions > 0 else 0.0
+    if _float(diagnostics.get("cycle_duration_seconds")) > 120.0:
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "cycle_timeout_budget_exceeded",
+                "message": "Cycle duration exceeded the configured 120 second budget; slow phases should be bounded.",
+            }
+        )
     if raw >= 500 and selected > 0 and selected / raw < 0.05 and (target <= 0 or selected < target):
         flags.append(
             {
@@ -399,6 +408,24 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                     "message": "A large decision set produced zero BUYs; inspect top blockers and missed movers.",
                 }
             )
+    if decisions >= 100 and buy_rate > 0.35:
+        flags.append(
+            {
+                "severity": "critical",
+                "code": "buy_rate_too_high_from_large_decision_set",
+                "message": f"{buys}/{decisions} decisions became BUYs; entry authority is too permissive.",
+                "buy_rate": round(buy_rate, 4),
+            }
+        )
+    elif decisions >= 100 and buy_rate > 0.20:
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "buy_rate_elevated_from_large_decision_set",
+                "message": f"{buys}/{decisions} decisions became BUYs; review selectivity before trusting auto-follow.",
+                "buy_rate": round(buy_rate, 4),
+            }
+        )
     fresh = diagnostics.get("live_quote_stale_intraday") if isinstance(diagnostics.get("live_quote_stale_intraday"), dict) else {}
     if _int(fresh.get("only_blocker_symbols")) > 0:
         flags.append(
@@ -409,6 +436,15 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     auto_follow = diagnostics.get("auto_follow") if isinstance(diagnostics.get("auto_follow"), dict) else {}
+    if decisions >= 100 and _int(auto_follow.get("followed")) > max(20, int(decisions * 0.15)):
+        flags.append(
+            {
+                "severity": "critical",
+                "code": "auto_follow_count_too_high",
+                "message": "Auto-follow opened too many paper positions for one cycle; entry authority or sizing selectivity is too loose.",
+                "followed": _int(auto_follow.get("followed")),
+            }
+        )
     if _int(auto_follow.get("safety_exited")) > 0:
         flags.append(
             {
@@ -497,6 +533,13 @@ def _int(value: Any) -> int:
         return max(int(float(value or 0)), 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _float(value: Any) -> float:
+    try:
+        return max(float(value or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _json_object(value: Any) -> dict[str, Any]:

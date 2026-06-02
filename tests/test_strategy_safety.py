@@ -24,23 +24,36 @@ from app.trade_economics import auto_follow_sizing
 
 
 class RawEntryModelSafetyTests(unittest.TestCase):
-    def test_raw_entry_model_ignores_legacy_setup_and_data_readiness_vetoes(self) -> None:
+    def test_entry_authority_requires_positive_setup_family(self) -> None:
+        context = _raw_entry_context(setup="watchlist_candidate")
+        engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
+
+        action = engine._action_from_context("RAWBUY", 0.0, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertEqual(context["decision_gate_context"]["decision_authority"], "entry_authority_v2")
+        self.assertFalse(context["raw_entry_model"]["passed"])
+        self.assertEqual(context["raw_entry_model"]["decision_label"], "WATCH")
+        self.assertEqual(context["raw_entry_model"]["entry_blockers"][0]["reason"], "no_positive_setup_family")
+
+    def test_entry_authority_buys_only_entry_ready_setup(self) -> None:
         context = _raw_entry_context(
-            setup="watchlist_candidate",
+            setup="opening_ignition",
             data_readiness={"trade_decision_ready": False, "missing_data": ["legacy_phase2_gap"]},
         )
-        engine = StrategyEngine(SimpleNamespace(raw_entry_min_score=58), SimpleNamespace(), SimpleNamespace())
+        engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
 
         action = engine._action_from_context("RAWBUY", 0.0, {}, context, {})
 
         self.assertEqual(action, "BUY")
-        self.assertEqual(context["decision_gate_context"]["decision_authority"], "raw_entry_model_v1")
+        self.assertEqual(context["decision_gate_context"]["decision_authority"], "entry_authority_v2")
         self.assertTrue(context["raw_entry_model"]["passed"])
-        self.assertEqual(context["decision_gate_context"]["failed_gates"], [])
+        self.assertEqual(context["raw_entry_model"]["decision_label"], "ENTRY_READY")
+        self.assertEqual(context["raw_entry_model"]["setup_family"], "live_momentum")
 
     def test_raw_entry_model_blocks_only_invalid_or_untradeable_truth_checks(self) -> None:
         context = _raw_entry_context(price=0.0)
-        engine = StrategyEngine(SimpleNamespace(raw_entry_min_score=58), SimpleNamespace(), SimpleNamespace())
+        engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
 
         action = engine._action_from_context("BADQUOTE", 0.0, {}, context, {})
 
@@ -62,15 +75,17 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(hard_reason, "invalid_price")
 
     def test_raw_entry_model_score_payload_is_explainable(self) -> None:
-        model = evaluate_raw_entry(_raw_entry_context(), SimpleNamespace(raw_entry_min_score=58))
+        model = evaluate_raw_entry(_raw_entry_context(setup="opening_ignition"), _entry_authority_settings())
 
         self.assertTrue(model["passed"])
         self.assertGreaterEqual(model["raw_score"], model["entry_line"])
         self.assertIn("volume_ratio", model["components"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "live_momentum")
         self.assertTrue(model["legacy_decision_logic_removed"])
 
 
-@unittest.skip("Legacy strategy gate tests were intentionally retired for raw_entry_model_v1.")
+@unittest.skip("Legacy strategy gate tests were intentionally retired for entry_authority_v2.")
 class StrategySafetyTests(unittest.TestCase):
     def test_fresh_gate_pass_overrides_stale_probe_marker(self) -> None:
         reason = _fresh_market_data_block_reason(
@@ -3841,7 +3856,7 @@ def _momentum_gate_context(session_momentum: dict) -> dict:
 def _raw_entry_context(
     *,
     price: float = 108.0,
-    setup: str = "raw_market_action",
+    setup: str = "opening_ignition",
     data_readiness: dict | None = None,
 ) -> dict:
     return {
@@ -3862,6 +3877,7 @@ def _raw_entry_context(
         "data_readiness": data_readiness or {"trade_decision_ready": True},
         "opportunity_scan": {
             "setup": setup,
+            "bucket": "Actionable",
             "score": 0.82,
             "day_gain_pct": 3.2,
             "day_range_position": 0.82,
@@ -3880,6 +3896,10 @@ def _raw_entry_context(
         },
         "risk_limits": {"portfolio_equity": 100_000},
     }
+
+
+def _entry_authority_settings() -> SimpleNamespace:
+    return SimpleNamespace(entry_authority_min_score=72, entry_authority_watch_score=58, raw_entry_min_score=72)
 
 
 if __name__ == "__main__":

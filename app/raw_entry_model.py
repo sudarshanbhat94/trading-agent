@@ -4,7 +4,13 @@ from math import log1p
 from typing import Any
 
 
-RAW_ENTRY_MODEL_VERSION = "raw_entry_model_v1"
+RAW_ENTRY_MODEL_VERSION = "entry_authority_v2"
+ENTRY_AUTHORITY_VERSION = RAW_ENTRY_MODEL_VERSION
+
+ENTRY_READY = "ENTRY_READY"
+MANUAL_ONLY = "MANUAL_ONLY"
+WATCH = "WATCH"
+NO_TRADE = "NO_TRADE"
 
 
 def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[str, Any]:
@@ -16,6 +22,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     liquidity = full.get("liquidity_profile") if isinstance(full.get("liquidity_profile"), dict) else {}
     data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
     market = str(context.get("market_region") or scan.get("market_region") or data_ready.get("market_region") or "").upper() or "IN"
+    data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
 
     price = _num(quote.get("price"))
     truth_blocks: list[dict[str, Any]] = []
@@ -37,6 +44,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     sentiment_score = _num(sentiment.get("score")) or 0.0
     rs = context.get("universe_relative_strength") if isinstance(context.get("universe_relative_strength"), dict) else {}
     rs_percentile = _num(rs.get("percentile_63"))
+    setup = str(scan.get("setup") or "raw_market_action").strip() or "raw_market_action"
+    bucket = str(scan.get("bucket") or "").strip()
+    late_chase = bool(scan.get("late_chase") or bucket.upper() == "LATE_CHASE_AVOID")
 
     gain_component = _clamp((day_gain + 1.0) / 8.0, 0.0, 1.0) * 14.0
     range_component = range_position * 10.0
@@ -60,27 +70,105 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         + sentiment_component
         + rs_component
     )
-    raw_score = round(_clamp(raw_score, 0.0, 99.0), 4)
-    entry_line = float(getattr(settings, "raw_entry_min_score", 58.0) or 58.0) if settings is not None else 58.0
-    confidence = round(_clamp(raw_score / 100.0, 0.05, 0.99), 4)
-    grade = "A" if raw_score >= 78.0 else "B" if raw_score >= entry_line else "WATCH"
+    base_score = round(_clamp(raw_score, 0.0, 99.0), 4)
+    setup_reviews = _setup_reviews(
+        setup=setup,
+        market=market,
+        scan=scan,
+        technical_score=technical_score,
+        scan_score=scan_score,
+        live_score=live_score,
+        day_gain=day_gain,
+        range_position=range_position,
+        high_distance=high_distance,
+        volume_ratio=volume_ratio,
+        rs_percentile=rs_percentile,
+    )
+    passed_setups = [item for item in setup_reviews if item.get("passed")]
+    best_setup = max(passed_setups or setup_reviews, key=lambda item: float(item.get("score") or 0.0), default={})
+    setup_score = float(best_setup.get("score") or 0.0)
+    authority_score = round(_clamp(base_score * 0.68 + setup_score * 0.32, 0.0, 99.0), 4)
+    entry_line = (
+        float(getattr(settings, "entry_authority_min_score", 72.0) or 72.0)
+        if settings is not None
+        else 72.0
+    )
+    watch_line = (
+        float(getattr(settings, "entry_authority_watch_score", 58.0) or 58.0)
+        if settings is not None
+        else 58.0
+    )
+    confidence = round(_clamp(authority_score / 100.0, 0.05, 0.99), 4)
+    grade = "A" if authority_score >= 82.0 else "B" if authority_score >= entry_line else "WATCH"
     trade_plan = _trade_plan(price) if price and price > 0 else {}
-    passed = not truth_blocks and raw_score >= entry_line
-    reason = "raw_entry_score_passed" if passed else truth_blocks[0]["reason"] if truth_blocks else "raw_entry_score_below_entry_line"
+    blockers: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if not bool(best_setup.get("passed")):
+        blockers.append(
+            {
+                "reason": "no_positive_setup_family",
+                "message": "Reviewed symbol did not meet live momentum, breakout, pullback, BTST/delivery, or reversal evidence.",
+            }
+        )
+    if authority_score < entry_line:
+        blockers.append(
+            {
+                "reason": "entry_authority_score_below_minimum",
+                "score": authority_score,
+                "minimum": entry_line,
+            }
+        )
+    if bucket.upper() in {"AVOID", "LATE_CHASE_AVOID"}:
+        blockers.append({"reason": "scanner_bucket_not_entry_ready", "bucket": bucket})
+    if late_chase:
+        blockers.append({"reason": "late_chase_not_entry_ready", "bucket": bucket})
+    missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
+    if "stale_quote" in missing:
+        blockers.append({"reason": "stale_quote_not_entry_ready", "missing_data": missing})
+    if any(item in {"fresh_intraday_candles", "stale_intraday_candles"} for item in missing):
+        warnings.append("intraday_candle_freshness_gap")
+
+    if truth_blocks:
+        decision_label = NO_TRADE
+        reason = truth_blocks[0]["reason"]
+    elif not blockers and authority_score >= entry_line:
+        decision_label = ENTRY_READY
+        reason = "entry_authority_setup_passed"
+    elif bool(best_setup.get("passed")) and authority_score >= watch_line:
+        decision_label = MANUAL_ONLY
+        reason = blockers[0]["reason"] if blockers else "entry_authority_manual_review"
+    elif authority_score >= watch_line or setup_score >= 45.0:
+        decision_label = WATCH
+        reason = blockers[0]["reason"] if blockers else "entry_authority_watch"
+    else:
+        decision_label = NO_TRADE
+        reason = blockers[0]["reason"] if blockers else "entry_authority_no_trade"
+
+    passed = decision_label == ENTRY_READY
 
     return {
         "version": RAW_ENTRY_MODEL_VERSION,
         "passed": passed,
         "action": "BUY" if passed else "HOLD",
         "reason": reason,
+        "decision_label": decision_label,
+        "auto_follow_ready": passed,
         "entry_line": entry_line,
-        "raw_score": raw_score,
+        "watch_line": watch_line,
+        "raw_score": authority_score,
+        "base_score": base_score,
+        "setup_score": round(setup_score, 4),
         "grade": grade,
         "confidence": confidence,
         "truth_blocks": truth_blocks,
+        "entry_blockers": blockers,
+        "warnings": warnings,
         "trade_plan": trade_plan,
         "market_region": market,
-        "setup": str(scan.get("setup") or "raw_market_action").strip() or "raw_market_action",
+        "setup": setup,
+        "setup_family": str(best_setup.get("family") or "none"),
+        "setup_evidence": best_setup,
+        "setup_reviews": setup_reviews,
         "components": {
             "scan_score_pct": round(scan_score, 4),
             "live_score_pct": round(live_score, 4),
@@ -100,6 +188,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "opportunity_scan": scan,
         },
         "legacy_decision_logic_removed": True,
+        "entry_authority_v2": True,
     }
 
 
@@ -122,6 +211,117 @@ def _trade_plan(price: float | None) -> dict[str, Any]:
         "holding_period": "intraday_to_swing",
         "source": RAW_ENTRY_MODEL_VERSION,
     }
+
+
+def _setup_reviews(
+    *,
+    setup: str,
+    market: str,
+    scan: dict[str, Any],
+    technical_score: float,
+    scan_score: float,
+    live_score: float,
+    day_gain: float,
+    range_position: float,
+    high_distance: float | None,
+    volume_ratio: float,
+    rs_percentile: float | None,
+) -> list[dict[str, Any]]:
+    setup_key = setup.lower()
+    rally = scan.get("rally_evidence") if isinstance(scan.get("rally_evidence"), dict) else {}
+    market_action = scan.get("market_action") if isinstance(scan.get("market_action"), dict) else {}
+    btst = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+    distance_to_near_high = _num(rally.get("distance_to_near_high_pct"))
+    near_high = (
+        high_distance is not None
+        and high_distance <= 3.0
+        or distance_to_near_high is not None
+        and distance_to_near_high <= 5.0
+    )
+    rs_value = rs_percentile if rs_percentile is not None else _num((btst.get("evidence") or {}).get("rs_rank")) or 50.0
+    reviews = [
+        _review(
+            "live_momentum",
+            setup_key in {"opening_ignition", "intraday_momentum", "top_gainer_momentum", "market_action_momentum", "price_shocker_reversal_breakout"}
+            and day_gain >= 1.5
+            and range_position >= 0.65
+            and volume_ratio >= 1.4
+            and near_high
+            and max(live_score, scan_score) >= 55.0,
+            score=_avg(max(live_score, scan_score), _norm(day_gain, 0.0, 6.0) * 100, range_position * 100, _norm(volume_ratio, 1.0, 3.0) * 100),
+            reasons=["fresh momentum setup", "price near session/high breakout area", "volume expansion required"],
+        ),
+        _review(
+            "breakout",
+            setup_key in {"52_week_high_volume_breakout", "breakout_continuation", "near_breakout", "broker_re_rating_breakout", "earnings_beat_gap_and_go"}
+            and near_high
+            and volume_ratio >= 1.15
+            and technical_score >= 55.0
+            and scan_score >= 50.0,
+            score=_avg(scan_score, technical_score, _norm(volume_ratio, 1.0, 2.5) * 100, 95.0 if near_high else 35.0),
+            reasons=["breakout setup", "near resistance or high", "trend and volume confirmation"],
+        ),
+        _review(
+            "pullback_continuation",
+            setup_key in {"pullback_buy", "ema_pullback_continuation", "vwap_reclaim_pullback"}
+            and technical_score >= 60.0
+            and rs_value >= 50.0
+            and volume_ratio >= 0.8
+            and day_gain >= -1.5,
+            score=_avg(scan_score, technical_score, rs_value, _norm(volume_ratio, 0.7, 1.8) * 100),
+            reasons=["uptrend pullback or reclaim setup", "relative strength confirmation", "volume not weak"],
+        ),
+        _review(
+            "delivery_btst",
+            market == "IN"
+            and setup_key in {"btst_buy_candidate", "delivery_accumulation", "accumulation_breakout"}
+            and (_num(btst.get("score")) or 0.0) >= 0.70
+            and volume_ratio >= 1.1
+            and range_position >= 0.55,
+            score=_avg(scan_score, (_num(btst.get("score")) or 0.0) * 100, range_position * 100, _norm(volume_ratio, 1.0, 2.5) * 100),
+            reasons=["India BTST/delivery setup", "close strength", "volume participation"],
+        ),
+        _review(
+            "reversal_reclaim",
+            ("reversal" in setup_key or "reclaim" in setup_key or "failed_breakdown" in setup_key or "price_shocker" in setup_key)
+            and day_gain >= 1.0
+            and volume_ratio >= 1.8
+            and range_position >= 0.55
+            and technical_score >= 40.0,
+            score=_avg(scan_score, technical_score, _norm(day_gain, 0.0, 5.0) * 100, _norm(volume_ratio, 1.0, 3.5) * 100),
+            reasons=["reversal/reclaim setup", "strong volume", "price recovered into upper range"],
+        ),
+        _review(
+            "market_action_event",
+            bool(market_action.get("available"))
+            and (_score_pct(market_action.get("score")) >= 65.0 or day_gain >= 3.0)
+            and volume_ratio >= 1.4
+            and range_position >= 0.55,
+            score=_avg(_score_pct(market_action.get("score")), scan_score, _norm(volume_ratio, 1.0, 3.0) * 100, _norm(day_gain, 0.0, 6.0) * 100),
+            reasons=["market-action event", "volume shock", "price response"],
+        ),
+    ]
+    return reviews
+
+
+def _review(family: str, passed: bool, *, score: float, reasons: list[str]) -> dict[str, Any]:
+    return {
+        "family": family,
+        "passed": bool(passed),
+        "score": round(_clamp(score, 0.0, 100.0), 4),
+        "reasons": reasons,
+    }
+
+
+def _avg(*values: float) -> float:
+    nums = [float(value) for value in values if value is not None]
+    return sum(nums) / len(nums) if nums else 0.0
+
+
+def _norm(value: float, low: float, high: float) -> float:
+    if high <= low:
+        return 0.0
+    return _clamp((float(value) - low) / (high - low), 0.0, 1.0)
 
 
 def _num(value: Any) -> float | None:

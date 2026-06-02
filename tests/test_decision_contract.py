@@ -93,10 +93,13 @@ class DecisionContractTests(unittest.TestCase):
                     "raw_entry_model": {
                         "passed": True,
                         "legacy_decision_logic_removed": True,
-                        "version": "raw_entry_model_v1",
+                        "version": "entry_authority_v2",
                         "raw_score": 88,
                         "grade": "A",
                         "setup": "intraday_momentum",
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "setup_family": "live_momentum",
                     }
                 },
             },
@@ -104,10 +107,13 @@ class DecisionContractTests(unittest.TestCase):
                 "raw_entry_model": {
                     "passed": True,
                     "legacy_decision_logic_removed": True,
-                    "version": "raw_entry_model_v1",
+                    "version": "entry_authority_v2",
                     "raw_score": 88,
                     "grade": "A",
                     "setup": "intraday_momentum",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "setup_family": "live_momentum",
                 },
                 "quote": {
                     "price": 834.35,

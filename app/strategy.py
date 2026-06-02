@@ -1139,11 +1139,17 @@ class StrategyEngine:
                 "passed": False,
                 "action": "HOLD",
                 "reason": "existing_position_managed_by_position_rules",
+                "decision_label": "NO_FRESH_ADD",
+                "auto_follow_ready": False,
                 "raw_score": None,
+                "base_score": None,
+                "setup_score": None,
                 "grade": None,
                 "truth_blocks": [],
+                "entry_blockers": [],
                 "trade_plan": {},
                 "legacy_decision_logic_removed": True,
+                "entry_authority_v2": True,
             }
         else:
             raw = evaluate_raw_entry(context, self.settings)
@@ -1175,7 +1181,7 @@ class StrategyEngine:
                 "canonical_trade_entry_contract",
                 "institutional_scorecard_entry_veto",
             ],
-            "policy": "Entry authority is raw quote/scan scoring plus invalid/untradeable truth checks only.",
+            "policy": "Entry authority requires a positive setup family, selectivity score, and invalid/untradeable truth checks.",
         }
         context["system_gate_audit"] = {
             "hard_blocked": bool(truth_blocks),
@@ -1188,7 +1194,7 @@ class StrategyEngine:
             "active_flags": [str(item.get("reason") or "").upper() for item in truth_blocks if isinstance(item, dict)],
             "overall_score_pct": raw.get("raw_score"),
             "overall_grade": raw.get("grade"),
-            "classification": "RAW_ENTRY_BUY" if raw.get("passed") else "RAW_ENTRY_HOLD",
+            "classification": str(raw.get("decision_label") or ("ENTRY_READY" if raw.get("passed") else "NO_TRADE")),
             "allocation_cap_multiplier": 1.0,
             "legacy_decision_logic_removed": True,
         }
@@ -1205,7 +1211,7 @@ class StrategyEngine:
         full["entry_quality"] = entry
         confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
         confluence["total"] = round(max(float(raw.get("raw_score") or 0.0) / 4.0, 0.0), 4)
-        confluence["tier"] = "RAW_ENTRY_MODEL"
+        confluence["tier"] = "ENTRY_AUTHORITY_V2"
         full["confluence_score"] = confluence
         context["full_spectrum_analysis"] = full
         context["best_strategy"] = {
@@ -1217,7 +1223,7 @@ class StrategyEngine:
             "metadata": {"source": RAW_ENTRY_MODEL_VERSION},
         }
         context["strategy_signals"] = [context["best_strategy"]]
-        context["tomorrow_plan_decision"] = {"active": False, "reason": "legacy_tomorrow_plan_entry_boost_removed"}
+        context["tomorrow_plan_decision"] = {"active": False, "reason": "entry_authority_v2_controls_fresh_entries"}
         return "BUY" if raw.get("passed") else "HOLD"
 
     def _fresh_only_action_from_context(
@@ -3545,6 +3551,9 @@ class StrategyEngine:
             "current_open_positions": len([row for row in positions.values() if row.get("qty", 0) > 0]),
             "max_positions": risk_limits.get("max_positions"),
             "buy_entry_line": (context.get("raw_entry_model") or {}).get("entry_line"),
+            "entry_decision_label": (context.get("raw_entry_model") or {}).get("decision_label"),
+            "entry_setup_family": (context.get("raw_entry_model") or {}).get("setup_family"),
+            "entry_blockers": (context.get("raw_entry_model") or {}).get("entry_blockers", []),
             "buy_requires_no_existing_position": True,
             "truth_checks": (context.get("raw_entry_model") or {}).get("truth_blocks", []),
             "broker_checks_after_decision": [
@@ -3583,9 +3592,9 @@ class StrategyEngine:
                 "final_action": action,
                 "action_reason": action_reason,
                 "action_policy": {
-                    "BUY": "raw_entry_model_v1 score meets the entry line, with only invalid quote and explicitly untradeable truth checks able to stop entry",
+                    "BUY": "entry_authority_v2 marked the symbol ENTRY_READY after positive setup evidence, selectivity score, and truth checks",
                     "SELL": "existing long position plus hard stop, take-profit, or time stop from position rules",
-                    "HOLD": "raw entry score is below the entry line, an existing position is already open, or a truth check failed",
+                    "HOLD": "entry authority returned WATCH, MANUAL_ONLY, NO_TRADE, an existing position is already open, or a truth check failed",
                 },
                 "score_breakdown": score_breakdown,
                 "overall_score_pct": (context.get("system_gate_audit") or {}).get("overall_score_pct"),

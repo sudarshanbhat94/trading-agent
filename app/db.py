@@ -7060,13 +7060,15 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["why_changed"] = state["why_changed"]
     item["risk_review"] = state["risk_review"]
     item["canonical_trade"] = {
-        "version": "raw_entry_model_v1" if raw_entry_item else contract["version"],
+        "version": str(raw_entry.get("version") or "entry_authority_v2") if raw_entry_item else contract["version"],
         "primary_blocker": None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker"),
         "secondary_blockers": [] if raw_entry_item else contract.get("secondary_blockers") or [],
         "paper_follow_eligible": bool(quality_gate.get("passed")) if raw_entry_item else contract.get("paper_follow_eligible"),
         "quality_reason": quality_gate.get("reason"),
         "auto_follow_reason": auto_follow_gate.get("reason"),
         "legacy_decision_logic_removed": raw_entry_item,
+        "decision_label": raw_entry.get("decision_label") if raw_entry_item else None,
+        "setup_family": raw_entry.get("setup_family") if raw_entry_item else None,
     }
     item["primary_blocker"] = None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker")
     item["secondary_blockers"] = [] if raw_entry_item else contract.get("secondary_blockers") or []
@@ -7309,6 +7311,10 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "fresh_trade_authority": fresh_authority,
         "raw_entry_model": raw_entry_model,
         "legacy_decision_logic_removed": bool(raw_entry_model.get("legacy_decision_logic_removed")),
+        "entry_authority_version": raw_entry_model.get("version"),
+        "entry_decision_label": raw_entry_model.get("decision_label"),
+        "entry_setup_family": raw_entry_model.get("setup_family"),
+        "entry_blockers": raw_entry_model.get("entry_blockers") if isinstance(raw_entry_model.get("entry_blockers"), list) else [],
         "data_readiness": data_readiness,
         "macro_event_context": macro_event_context,
         "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},

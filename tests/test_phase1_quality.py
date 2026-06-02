@@ -13,7 +13,7 @@ from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 
 
 class RawSignalQualityTests(unittest.TestCase):
-    def test_active_buy_passes_without_legacy_score_grade_or_confluence_gates(self) -> None:
+    def test_active_buy_without_entry_ready_label_does_not_auto_follow(self) -> None:
         item = {
             "signal_type": "BUY",
             "status": "ACTIVE",
@@ -22,9 +22,13 @@ class RawSignalQualityTests(unittest.TestCase):
             "overall_grade": "C",
             "details": {
                 "raw_entry_model": {
+                    "version": "entry_authority_v2",
                     "legacy_decision_logic_removed": True,
                     "raw_score": 42,
                     "grade": "C",
+                    "decision_label": "WATCH",
+                    "auto_follow_ready": False,
+                    "entry_blockers": [{"reason": "no_positive_setup_family"}],
                 },
                 "risk_flags": ["old_soft_risk_flag_no_longer_vetoes_entry"],
                 "data_readiness": {"trade_decision_ready": False},
@@ -34,10 +38,45 @@ class RawSignalQualityTests(unittest.TestCase):
         gate = fresh_buy_quality_gate(item)
         auto = auto_follow_quality_gate(item)
 
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "entry_authority_not_entry_ready")
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "entry_authority_not_entry_ready")
+
+    def test_entry_ready_buy_passes_with_target_economics(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "latest_price": 100.0,
+            "overall_score_pct": 78,
+            "overall_grade": "B",
+            "details": {
+                "market_region": "IN",
+                "stop_loss": 96.5,
+                "targets": [{"label": "T1", "price": 106.3, "distance_pct": 6.3}],
+                "raw_entry_model": {
+                    "version": "entry_authority_v2",
+                    "legacy_decision_logic_removed": True,
+                    "raw_score": 78,
+                    "grade": "B",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "setup_family": "live_momentum",
+                    "trade_plan": {
+                        "stop_loss": 96.5,
+                        "targets": [{"label": "T1", "price": 106.3, "distance_pct": 6.3}],
+                    },
+                },
+            },
+        }
+
+        gate = fresh_buy_quality_gate(item)
+        auto = auto_follow_quality_gate(item)
+
         self.assertTrue(gate["passed"])
-        self.assertEqual(gate["reason"], "legacy_entry_gates_removed")
+        self.assertEqual(gate["reason"], "entry_authority_ready")
         self.assertTrue(auto["passed"])
-        self.assertEqual(auto["reason"], "legacy_auto_follow_gates_removed")
+        self.assertEqual(auto["reason"], "entry_authority_auto_follow_ready")
 
     def test_truth_checks_still_reject_missing_price_or_non_buy(self) -> None:
         missing_price = fresh_buy_quality_gate({"signal_type": "BUY", "status": "ACTIVE"})
