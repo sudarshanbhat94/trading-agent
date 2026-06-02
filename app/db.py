@@ -7230,6 +7230,32 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(targets, list):
         targets = []
     opportunity_scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+    fresh_authority = (
+        decision_gate.get("fresh_trade_authority")
+        if isinstance(decision_gate.get("fresh_trade_authority"), dict)
+        else {}
+    )
+    fresh_authority_passed = action == "BUY" and fresh_authority.get("passed") is True
+    details_risk_flags = risk.get("flags", [])
+    details_hard_blocks = system_audit.get("hard_blocks", [])
+    if fresh_authority_passed:
+        fresh_score = _optional_float(fresh_authority.get("fresh_score"))
+        fresh_confluence = _optional_float(fresh_authority.get("fresh_confluence"))
+        fresh_grade = str(fresh_authority.get("fresh_grade") or "").strip() or "B"
+        if fresh_score is not None:
+            post_gate_score = fresh_score
+            display_score = fresh_score
+        if fresh_confluence is not None:
+            confluence_total = max(confluence_total, fresh_confluence)
+        overall_grade = fresh_grade
+        display_grade = fresh_grade
+        hard_blocked = False
+        details_risk_flags = fresh_authority.get("risk_flags") if isinstance(fresh_authority.get("risk_flags"), list) else []
+        details_hard_blocks = []
+        fresh_plan = fresh_authority.get("trade_plan") if isinstance(fresh_authority.get("trade_plan"), dict) else {}
+        if fresh_plan:
+            trade_plan = fresh_plan
+            targets = fresh_plan.get("targets") if isinstance(fresh_plan.get("targets"), list) else []
     details = {
         "action": action,
         "latest_system_action": action,
@@ -7240,7 +7266,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "stop_loss": trade_plan.get("stop_loss"),
         "targets": targets,
         "latest_price": price,
-        "risk_flags": risk.get("flags", []),
+        "risk_flags": details_risk_flags,
         "active_flags": system_audit.get("active_flags", []),
         "overall_score_pct": display_score,
         "overall_grade": display_grade,
@@ -7250,9 +7276,10 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "setup_grade": _score_grade(pre_gate_score) if pre_gate_score is not None else None,
         "confluence": confluence_total,
         "hard_blocked": hard_blocked,
-        "hard_blocks": system_audit.get("hard_blocks", []),
+        "hard_blocks": details_hard_blocks,
         "soft_flags": system_audit.get("soft_flags", []),
         "failed_gates": decision_gate.get("failed_gates", []),
+        "fresh_trade_authority": fresh_authority,
         "data_readiness": data_readiness,
         "macro_event_context": macro_event_context,
         "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},

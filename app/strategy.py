@@ -32,8 +32,7 @@ _WAIT_ONLY_TRADE_WINDOWS = {
 def _decision_authority_reset_enabled(settings: Any) -> bool:
     if not hasattr(settings, "decision_authority_mode"):
         return False
-    mode = str(getattr(settings, "decision_authority_mode", "reset_v2") or "reset_v2").strip().lower()
-    return mode not in {"legacy", "legacy_v1", "off", "false", "0"}
+    return True
 
 
 def should_call_llm(signal: dict[str, Any]) -> bool:
@@ -674,6 +673,8 @@ class StrategyEngine:
     ) -> str:
         has_position = symbol in positions and positions[symbol]["qty"] > 0
         reset_authority = _decision_authority_reset_enabled(self.settings)
+        if reset_authority:
+            return self._fresh_only_action_from_context(symbol, positions, context)
         full_spectrum = context.get("full_spectrum_analysis", {})
         confluence = full_spectrum.get("confluence_score", {})
         risk_overrides = full_spectrum.get("risk_overrides", {})
@@ -1141,64 +1142,134 @@ class StrategyEngine:
             return "SELL"
         return "HOLD"
 
-    def _reset_trade_authority_gate(
+    def _fresh_only_action_from_context(
         self,
-        *,
+        symbol: str,
+        positions: dict[str, dict[str, Any]],
         context: dict[str, Any],
-        rule_audit: dict[str, Any],
-        failed_gates: list[dict[str, Any]],
-        combined: float,
-        threshold: float,
-        confluence_total: float,
-        effective_entry_grade: Any,
-    ) -> dict[str, Any]:
+    ) -> str:
+        has_position = symbol in positions and positions[symbol].get("qty", 0) > 0
+        if has_position:
+            gate = {
+                "passed": False,
+                "mode": "fresh_authority_v1",
+                "reason": "existing_position_managed_by_risk_exit_only",
+                "primary_blocker": "existing_position",
+                "blockers": [{"reason": "existing_position", "value": positions.get(symbol)}],
+                "checks": {},
+            }
+            context["decision_gate_context"] = {
+                "decision_authority": "fresh_authority_v1",
+                "fresh_trade_authority": gate,
+                "failed_gates": [],
+                "blocking_failed_gates": [],
+                "primary_blocker": {},
+                "secondary_blockers": [],
+                "evaluated_gates": [],
+                "legacy_logic_deleted": True,
+                "legacy_logic_policy": "No legacy strategy score, old soft gate, opportunity probe, scorecard, or canonical legacy gate can approve or veto reset-mode entries.",
+            }
+            context["system_gate_audit"] = {
+                "hard_blocked": False,
+                "hard_blocks": [],
+                "soft_flags": [],
+                "active_flags": [],
+                "overall_score_pct": None,
+                "overall_grade": None,
+                "classification": "POSITION_MONITOR",
+            }
+            return "HOLD"
+
+        gate = self._fresh_trade_authority_gate(context)
+        blockers = [
+            {"gate": "fresh_trade_authority", "value": item.get("value"), "reason": item.get("reason")}
+            for item in gate.get("blockers", [])
+        ]
+        primary = blockers[0] if blockers else {}
+        context["decision_gate_context"] = {
+            "decision_authority": "fresh_authority_v1",
+            "fresh_trade_authority": gate,
+            "failed_gates": blockers,
+            "blocking_failed_gates": blockers,
+            "primary_blocker": primary,
+            "secondary_blockers": blockers[1:],
+            "evaluated_gates": gate.get("evaluated_gates", []),
+            "legacy_logic_deleted": True,
+            "legacy_logic_policy": "No legacy strategy score, old soft gate, opportunity probe, scorecard, or canonical legacy gate can approve or veto reset-mode entries.",
+        }
+        audit = gate.get("system_gate_audit") if isinstance(gate.get("system_gate_audit"), dict) else {}
+        context["system_gate_audit"] = audit
+        context["fresh_trade_authority"] = gate
+        full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        if gate.get("passed"):
+            plan = gate.get("trade_plan") if isinstance(gate.get("trade_plan"), dict) else {}
+            if plan:
+                full["trade_plan"] = plan
+            entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
+            entry["entry_grade"] = gate.get("fresh_grade")
+            entry["setup_type"] = gate.get("setup")
+            entry["quality_score"] = gate.get("fresh_score")
+            entry["volume_confirmation"] = True
+            full["entry_quality"] = entry
+            breakout = full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {}
+            breakout["volume_confirmation"] = True
+            full["breakout_quality"] = breakout
+            confluence = full.get("confluence_score") if isinstance(full.get("confluence_score"), dict) else {}
+            confluence["total"] = max(float(confluence.get("total") or 0.0), float(gate.get("fresh_confluence") or 0.0))
+            confluence["tier"] = "FRESH_AUTHORITY"
+            full["confluence_score"] = confluence
+            context["full_spectrum_analysis"] = full
+            return "BUY"
+        return "HOLD"
+
+    def _fresh_trade_authority_gate(self, context: dict[str, Any]) -> dict[str, Any]:
         full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
         scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
-        review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
         data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
         quote = context.get("quote") if isinstance(context.get("quote"), dict) else {}
-        entry = full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {}
-        breakout = full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {}
-        trade_plan = full.get("trade_plan") if isinstance(full.get("trade_plan"), dict) else {}
-        market_region = str(context.get("market_region") or data_ready.get("market_region") or scan.get("market_region") or "").upper()
+        risk = full.get("risk_overrides") if isinstance(full.get("risk_overrides"), dict) else {}
         blockers: list[dict[str, Any]] = []
+        evaluated: list[dict[str, Any]] = []
 
         def block(reason: str, value: Any = None) -> None:
             blockers.append({"reason": reason, "value": value})
 
-        if failed_gates:
-            block(
-                "upstream_trade_gates_failed",
-                [
-                    {"gate": gate.get("gate"), "reason": gate.get("reason")}
-                    for gate in failed_gates
-                    if isinstance(gate, dict)
-                ],
-            )
-        if data_ready.get("trade_decision_ready") is not True:
-            block("trade_data_not_ready", data_ready or None)
+        def evaluated_gate(name: str, passed: bool, value: Any = None) -> None:
+            evaluated.append({"gate": name, "passed": passed, "value": value})
+
+        price = _float_or_none(quote.get("price"))
+        quote_source = str(quote.get("source") or "").lower()
+        market_region = str(context.get("market_region") or data_ready.get("market_region") or scan.get("market_region") or "").upper()
+        broker_quote = any(token in quote_source for token in ("upstox", "kite", "nubra", "alpaca", "polygon"))
+        quote_has_ohlcv = all((_float_or_none(quote.get(key)) or 0.0) > 0 for key in ("price", "open", "high", "low", "volume"))
+        live_quote_ok = bool(price and price > 0 and broker_quote and quote_has_ohlcv)
+        if not price or price <= 0:
+            block("invalid_quote_price", quote)
+        evaluated_gate("live_quote", live_quote_ok, {"source": quote_source, "has_ohlcv": quote_has_ohlcv})
+
         freshness = data_ready.get("fresh_market_data_gate") if isinstance(data_ready.get("fresh_market_data_gate"), dict) else {}
-        if freshness and freshness.get("passed") is not True:
-            block(str(freshness.get("reason") or "fresh_market_data_gate_failed"), freshness)
-        if rule_audit.get("hard_blocked"):
-            block("system_rules_hard_blocked", rule_audit.get("hard_blocks") or [])
+        freshness_reason = str(freshness.get("reason") or "").lower()
+        freshness_failed = freshness and freshness.get("passed") is False
+        if freshness_failed and any(token in freshness_reason for token in ("stale_quote", "prior_session", "previous_session", "quote")):
+            block("stale_or_delayed_quote", freshness)
+        if data_ready.get("trade_decision_ready") is not True and not live_quote_ok:
+            block("fresh_trade_data_missing", data_ready or None)
+        evaluated_gate(
+            "freshness",
+            not any(item["reason"] in {"stale_or_delayed_quote", "fresh_trade_data_missing"} for item in blockers),
+            {"data_readiness": data_ready, "live_quote_ok": live_quote_ok},
+        )
 
-        overall_score = _float_or_none(rule_audit.get("overall_score_pct")) or 0.0
-        overall_grade = str(rule_audit.get("overall_grade") or _score_grade(overall_score)).strip().upper()
-        if overall_score < 85.0:
-            block("overall_score_below_reset_floor_85", {"overall_score_pct": overall_score, "overall_grade": overall_grade})
-        if overall_grade not in {"A", "B"}:
-            block("overall_grade_not_reset_buyable", overall_grade)
-        normalized_entry_grade = str(effective_entry_grade or "").strip().upper()
-        if normalized_entry_grade not in {"A", "B"}:
-            block("entry_grade_not_reset_buyable", normalized_entry_grade or None)
-        if confluence_total < 18.0:
-            block("confluence_below_reset_floor_18", confluence_total)
-        combined_floor = max(float(threshold or 0.0), 0.30)
-        if combined < combined_floor:
-            block("combined_score_below_reset_floor", {"combined": round(combined, 4), "floor": round(combined_floor, 4)})
+        data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        missing = {
+            str(item or "").strip().lower()
+            for item in data_quality.get("missing") or []
+            if str(item or "").strip()
+        }
+        if any(token in label for label in missing for token in ("stale_quote", "prior_session", "previous_session")):
+            block("opportunity_scan_quote_stale", sorted(missing))
 
-        setup = str(review.get("setup") or scan.get("setup") or "").strip().lower()
+        setup = str(scan.get("setup") or "").strip().lower()
         allowed_setups = {
             "opening_ignition",
             "intraday_momentum",
@@ -1211,77 +1282,185 @@ class StrategyEngine:
             "top_gainer_momentum",
             "price_shocker_reversal_breakout",
         }
+        wait_reason = _opportunity_scan_wait_reason(scan)
         if setup not in allowed_setups:
-            block("fresh_setup_not_allowed_reset_authority", setup or None)
-        if review.get("strategy_ready") is not True:
-            block("live_setup_not_strategy_ready", review or scan or None)
-        if review.get("late_chase"):
-            block("late_chase_blocked", review)
+            block("setup_not_fresh_authority_allowed", setup or None)
+        if wait_reason:
+            block("setup_wait_only", wait_reason)
+        evaluated_gate("setup", setup in allowed_setups and not wait_reason, {"setup": setup, "wait_reason": wait_reason})
 
-        volume_confirmed = bool(
-            review.get("volume_confirmed")
-            or entry.get("volume_confirmation")
-            or breakout.get("volume_confirmation")
-            or breakout.get("volume_expansion")
+        components = scan.get("components") if isinstance(scan.get("components"), dict) else {}
+        scan_score = _float_or_none(scan.get("score")) or 0.0
+        live_score = _float_or_none(components.get("live_momentum")) or scan_score
+        day_gain = _float_or_none(scan.get("day_gain_pct")) or 0.0
+        range_position = _float_or_none(scan.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(scan.get("day_high_distance_pct"))
+        volume_ratio = _float_or_none(scan.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(scan.get("projected_volume_ratio")) or volume_ratio
+        turnover = _float_or_none(scan.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(scan.get("projected_turnover")) or turnover
+        min_gain, max_gain = (1.0, 7.5) if market_region == "US" else (1.2, 6.8)
+        if day_gain < min_gain or day_gain >= max_gain:
+            block("day_gain_outside_fresh_range", {"day_gain_pct": day_gain, "min": min_gain, "max_exclusive": max_gain})
+        if range_position < 0.62:
+            block("not_holding_upper_day_range", range_position)
+        if high_distance is not None and high_distance > 3.0:
+            block("too_far_from_day_high", high_distance)
+        min_turnover = max(
+            float(
+                getattr(
+                    self.settings,
+                    "dynamic_scan_min_turnover_usd" if market_region == "US" else "dynamic_scan_min_turnover_inr",
+                    2_000_000 if market_region == "US" else 50_000_000,
+                )
+                or (2_000_000 if market_region == "US" else 50_000_000)
+            ),
+            1.0,
+        )
+        turnover_floor = max(min_turnover * 3.0, 8_000_000.0) if market_region == "US" else max(min_turnover * 2.0, 100_000_000.0)
+        volume_confirmed = (
+            volume_ratio >= 1.15
+            or projected_volume_ratio >= 1.8
+            or turnover >= turnover_floor
+            or projected_turnover >= turnover_floor * 1.2
         )
         if not volume_confirmed:
-            block("volume_confirmation_missing", {"live_momentum_review": review, "entry_quality": entry, "breakout_quality": breakout})
-        if review.get("near_day_high") is False:
-            block("not_near_day_high", review)
-        day_gain = _float_or_none(review.get("day_gain_pct")) or _float_or_none(scan.get("day_gain_pct")) or 0.0
-        min_gain, max_gain = (1.0, 7.0) if market_region == "US" else (1.5, 6.5)
-        if day_gain < min_gain or day_gain >= max_gain:
             block(
-                "day_gain_outside_reset_entry_range",
-                {"day_gain_pct": round(day_gain, 4), "min": min_gain, "max_exclusive": max_gain},
+                "volume_or_turnover_not_confirmed",
+                {
+                    "volume_ratio": volume_ratio,
+                    "projected_volume_ratio": projected_volume_ratio,
+                    "turnover": turnover,
+                    "projected_turnover": projected_turnover,
+                    "turnover_floor": turnover_floor,
+                },
             )
-        range_position = _float_or_none(review.get("day_range_position")) or _float_or_none(scan.get("day_range_position")) or 0.0
-        if range_position < 0.68:
-            block("day_range_position_below_reset_floor", round(range_position, 4))
+        evaluated_gate(
+            "live_price_volume",
+            day_gain >= min_gain
+            and day_gain < max_gain
+            and range_position >= 0.62
+            and (high_distance is None or high_distance <= 3.0)
+            and volume_confirmed,
+            {
+                "day_gain_pct": day_gain,
+                "day_range_position": range_position,
+                "day_high_distance_pct": high_distance,
+                "volume_ratio": volume_ratio,
+                "projected_volume_ratio": projected_volume_ratio,
+                "turnover": turnover,
+            },
+        )
 
-        price = _float_or_none(quote.get("price"))
-        stop = _float_or_none(trade_plan.get("stop_loss"))
-        targets = trade_plan.get("targets") if isinstance(trade_plan.get("targets"), list) else []
-        first_target = targets[0] if targets and isinstance(targets[0], dict) else {}
-        target_price = _float_or_none(first_target.get("price") or first_target.get("target") or first_target.get("target_price"))
-        distance_pct = _float_or_none(first_target.get("distance_pct"))
-        if target_price is None and price is not None and distance_pct is not None:
-            target_price = price * (1.0 + distance_pct / 100.0)
-        if price is None or price <= 0:
-            block("valid_quote_price_missing", quote or None)
-        if price is not None and (stop is None or stop <= 0 or stop >= price):
-            block("stop_loss_missing_or_invalid", {"price": price, "stop_loss": stop})
-        if price is not None and (target_price is None or target_price <= price):
-            block("target_missing_or_invalid", {"price": price, "target_1": first_target or None})
-        if price is not None and stop is not None and target_price is not None and stop < price < target_price:
-            reward_risk = (target_price - price) / (price - stop)
-            if reward_risk < 1.5:
-                block("reward_risk_below_reset_floor_1_5", {"reward_risk": round(reward_risk, 4)})
+        severe_risk_flags = self._fresh_authority_severe_risk_flags(risk.get("flags") if isinstance(risk.get("flags"), list) else [])
+        if severe_risk_flags:
+            block("severe_risk_flags", severe_risk_flags)
+        evaluated_gate("severe_risk_flags", not severe_risk_flags, severe_risk_flags)
 
+        if price and price > 0:
+            quote_low = _float_or_none(quote.get("low"))
+            raw_stop = price * 0.965
+            if quote_low and quote_low > 0 and quote_low < price:
+                raw_stop = max(min(quote_low * 0.995, price * 0.985), price * 0.94)
+            risk_per_share = price - raw_stop
+            target = price + risk_per_share * 1.8
+            trade_plan = {
+                "entry_zone": [round(price * 0.995, 4), round(price * 1.005, 4)],
+                "stop_loss": round(raw_stop, 4),
+                "targets": [{"label": "FRESH-T1", "price": round(target, 4), "distance_pct": round(((target - price) / price) * 100.0, 4)}],
+                "holding_period": "fresh_intraday_to_swing",
+                "source": "fresh_authority_v1",
+            }
+        else:
+            trade_plan = {}
+        if not trade_plan:
+            block("trade_plan_missing", None)
+
+        fresh_score = min(
+            99.0,
+            60.0
+            + max(min(scan_score, 1.0), 0.0) * 20.0
+            + max(min(live_score, 1.0), 0.0) * 8.0
+            + min(max(volume_ratio, projected_volume_ratio), 3.0) * 2.0
+            + max(min(range_position, 1.0), 0.0) * 5.0
+            + (3.0 if high_distance is None or high_distance <= 1.5 else 1.0),
+        )
+        if fresh_score < 84.0:
+            block("fresh_score_below_84", round(fresh_score, 4))
+        fresh_grade = "A" if fresh_score >= 90.0 else "B" if fresh_score >= 84.0 else "WATCH"
+        fresh_confluence = min(26.0, 12.0 + max(min(scan_score, 1.0), 0.0) * 4.0 + max(min(live_score, 1.0), 0.0) * 4.0 + (3.0 if volume_confirmed else 0.0) + max(min(range_position, 1.0), 0.0))
+        if fresh_confluence < 18.0:
+            block("fresh_confluence_below_18", round(fresh_confluence, 4))
+        evaluated_gate("fresh_score", fresh_score >= 84.0 and fresh_confluence >= 18.0, {"fresh_score": fresh_score, "fresh_confluence": fresh_confluence, "fresh_grade": fresh_grade})
+
+        system_gate_audit = {
+            "hard_blocked": bool(severe_risk_flags or any(item["reason"] in {"invalid_quote_price", "stale_or_delayed_quote", "fresh_trade_data_missing", "opportunity_scan_quote_stale"} for item in blockers)),
+            "hard_blocks": [
+                {"flag": str(item["reason"]).upper(), "reason": item["reason"], "value": item.get("value")}
+                for item in blockers
+                if item["reason"] in {"invalid_quote_price", "stale_or_delayed_quote", "fresh_trade_data_missing", "opportunity_scan_quote_stale", "severe_risk_flags"}
+            ],
+            "soft_flags": [],
+            "active_flags": [str(item["reason"]).upper() for item in blockers],
+            "overall_score_pct": round(fresh_score, 4),
+            "overall_grade": fresh_grade,
+            "classification": "FRESH_AUTHORITY_BUY" if not blockers else "FRESH_AUTHORITY_HOLD",
+            "allocation_cap_multiplier": 1.0,
+        }
         return {
             "passed": not blockers,
-            "mode": "reset_v2",
-            "reason": "reset_trade_authority_ready" if not blockers else blockers[0]["reason"],
+            "mode": "fresh_authority_v1",
+            "reason": "fresh_authority_ready" if not blockers else blockers[0]["reason"],
             "primary_blocker": blockers[0]["reason"] if blockers else None,
             "secondary_blockers": blockers[1:],
+            "setup": setup,
+            "market_region": market_region or None,
+            "fresh_score": round(fresh_score, 4),
+            "fresh_grade": fresh_grade,
+            "fresh_confluence": round(fresh_confluence, 4),
+            "risk_flags": severe_risk_flags,
+            "trade_plan": trade_plan,
+            "system_gate_audit": system_gate_audit,
+            "evaluated_gates": evaluated,
             "checks": {
+                "source": "fresh_authority_v1",
                 "setup": setup,
-                "market_region": market_region or None,
-                "overall_score_pct": round(overall_score, 4),
-                "overall_grade": overall_grade,
-                "entry_grade": normalized_entry_grade or None,
-                "confluence": round(confluence_total, 4),
-                "combined": round(combined, 4),
-                "combined_floor": round(combined_floor, 4),
+                "scan_score": round(scan_score, 4),
+                "live_momentum_score": round(live_score, 4),
                 "day_gain_pct": round(day_gain, 4),
                 "day_range_position": round(range_position, 4),
-                "volume_confirmed": volume_confirmed,
-                "price": price,
-                "stop_loss": stop,
-                "target_1": round(target_price, 4) if target_price is not None else None,
+                "day_high_distance_pct": round(high_distance, 4) if high_distance is not None else None,
+                "volume_ratio": round(volume_ratio, 4),
+                "projected_volume_ratio": round(projected_volume_ratio, 4),
+                "turnover": round(turnover, 2),
+                "projected_turnover": round(projected_turnover, 2),
+                "live_quote_ok": live_quote_ok,
+                "trade_decision_ready": data_ready.get("trade_decision_ready"),
             },
             "blockers": blockers,
         }
+
+    def _fresh_authority_severe_risk_flags(self, flags: list[Any]) -> list[str]:
+        severe_tokens = (
+            "asm",
+            "gsm",
+            "fno_ban",
+            "illiquid",
+            "operator",
+            "surveillance",
+            "price_mismatch",
+            "negative_catalyst",
+            "corporate_event_risk",
+            "climax_top",
+            "delivery_distribution",
+            "untradeable",
+        )
+        severe: list[str] = []
+        for flag in flags:
+            normalized = str(flag or "").strip().lower()
+            if normalized and any(token in normalized for token in severe_tokens):
+                severe.append(normalized)
+        return list(dict.fromkeys(severe))
 
     def _opportunity_probe_profile(self, context: dict[str, Any]) -> dict[str, Any]:
         if _decision_authority_reset_enabled(self.settings):

@@ -1114,7 +1114,7 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(full["entry_quality"]["entry_grade"], "WATCH")
         self.assertEqual(full["decision_authority_reset"]["live_momentum"]["status"], "diagnostic_only")
 
-    def test_reset_mode_disables_opportunity_probe_absorption(self) -> None:
+    def test_fresh_authority_uses_live_quote_without_opportunity_probe(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(
                 decision_authority_mode="reset_v2",
@@ -1154,13 +1154,56 @@ class StrategySafetyTests(unittest.TestCase):
         action = engine._action_from_context("LIVEPROBE", 0.24, {}, context, {})
 
         gates = context["decision_gate_context"]
-        self.assertEqual(action, "HOLD")
-        self.assertFalse(gates["opportunity_probe"]["ready"])
-        self.assertEqual(gates["opportunity_probe"]["reason"], "decision_authority_reset_disables_opportunity_probe")
-        self.assertFalse(gates["reset_trade_authority_gate"]["passed"])
-        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in gates["blocking_failed_gates"]})
+        self.assertEqual(action, "BUY")
+        self.assertEqual(gates["decision_authority"], "fresh_authority_v1")
+        self.assertTrue(gates["legacy_logic_deleted"])
+        self.assertTrue(gates["fresh_trade_authority"]["passed"])
+        self.assertNotIn("opportunity_probe", gates)
+        self.assertEqual(gates["blocking_failed_gates"], [])
 
-    def test_reset_trade_authority_gate_requires_clean_trade_contract(self) -> None:
+    def test_fresh_authority_blocks_stale_quote(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(
+                decision_authority_mode="reset_v2",
+                max_position_pct=0.1,
+                dynamic_scan_min_turnover_inr=50_000_000,
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.5,
+                "day_range_position": 0.92,
+                "day_high_distance_pct": 0.3,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["quote"]["source"] = "yahoo-delayed"
+        context["data_readiness"]["trade_decision_ready"] = False
+        context["data_readiness"]["fresh_market_data_gate"] = {"passed": False, "reason": "stale_quote_prior_session"}
+        context["opportunity_scan"] = {
+            "setup": "opening_ignition",
+            "bucket": "Actionable",
+            "score": 0.92,
+            "day_gain_pct": 3.5,
+            "day_range_position": 0.92,
+            "day_high_distance_pct": 0.3,
+            "volume_ratio": 2.5,
+            "components": {"live_momentum": 0.88},
+            "data_quality": {"actionable_data_ready": False, "missing": ["stale_quote"]},
+        }
+
+        action = engine._action_from_context("STALEQUOTE", 0.5, {}, context, {})
+
+        gates = context["decision_gate_context"]
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(gates["fresh_trade_authority"]["passed"])
+        self.assertIn("stale_or_delayed_quote", {gate["reason"] for gate in gates["fresh_trade_authority"]["blockers"]})
+
+    def test_fresh_authority_generates_clean_trade_contract(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(
                 decision_authority_mode="reset_v2",
@@ -1195,32 +1238,23 @@ class StrategySafetyTests(unittest.TestCase):
         }
 
         engine._apply_live_momentum_strategy(context)
-        gate = engine._reset_trade_authority_gate(
-            context=context,
-            rule_audit={"hard_blocked": False, "overall_score_pct": 88, "overall_grade": "A"},
-            failed_gates=[],
-            combined=0.46,
-            threshold=0.30,
-            confluence_total=24,
-            effective_entry_grade="A",
-        )
+        gate = engine._fresh_trade_authority_gate(context)
 
         self.assertTrue(gate["passed"])
+        self.assertEqual(gate["mode"], "fresh_authority_v1")
+        self.assertEqual(gate["fresh_grade"], "A")
+        self.assertGreaterEqual(gate["fresh_score"], 84)
+        self.assertGreaterEqual(gate["fresh_confluence"], 18)
+        self.assertGreater(gate["trade_plan"]["stop_loss"], 0)
+        self.assertGreater(gate["trade_plan"]["targets"][0]["price"], context["quote"]["price"])
 
-        context["full_spectrum_analysis"]["trade_plan"] = {}
-        blocked = engine._reset_trade_authority_gate(
-            context=context,
-            rule_audit={"hard_blocked": False, "overall_score_pct": 88, "overall_grade": "A"},
-            failed_gates=[],
-            combined=0.46,
-            threshold=0.30,
-            confluence_total=24,
-            effective_entry_grade="A",
-        )
+        context["opportunity_scan"]["volume_ratio"] = 0.2
+        context["opportunity_scan"]["turnover"] = 10_000
+        context["opportunity_scan"]["projected_turnover"] = 10_000
+        blocked = engine._fresh_trade_authority_gate(context)
 
         self.assertFalse(blocked["passed"])
-        self.assertIn("stop_loss_missing_or_invalid", {item["reason"] for item in blocked["blockers"]})
-        self.assertIn("target_missing_or_invalid", {item["reason"] for item in blocked["blockers"]})
+        self.assertIn("volume_or_turnover_not_confirmed", {item["reason"] for item in blocked["blockers"]})
 
     def test_broad_momentum_buy_requires_current_session_confirmation(self) -> None:
         engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
