@@ -1390,8 +1390,11 @@ class Database:
             details = self._decode_json(row["details_json"])
             action = str(details.get("action") or details.get("latest_system_action") or "").upper()
             quality_gate = details.get("quality_gate") if isinstance(details.get("quality_gate"), dict) else {}
+            continuity = details.get("signal_continuity") if isinstance(details.get("signal_continuity"), dict) else {}
             quality_passed = quality_gate.get("passed") is True
             if action == "BUY" and quality_passed:
+                continue
+            if continuity.get("preserved") and str(continuity.get("latest_engine_action") or "").upper() in {"HOLD", "NO_TRADE", "UNKNOWN"}:
                 continue
             reason = (
                 str(quality_gate.get("message") or quality_gate.get("reason") or "").strip()
@@ -7387,11 +7390,17 @@ def _should_preserve_active_buy(existing: sqlite3.Row, idea: dict[str, Any], row
         return False
     incoming_signal = str(idea.get("signal_type") or "").upper()
     incoming_status = str(idea.get("status") or "").upper()
-    if action in {"SELL", "EXIT", "HOLD", "NO_TRADE"} or incoming_signal == "EXIT" or incoming_status == "EXIT_SIGNAL":
+    if action in {"SELL", "EXIT"} or incoming_signal == "EXIT" or incoming_status == "EXIT_SIGNAL":
+        return False
+    details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+    hard_blocks = details.get("hard_blocks") if isinstance(details.get("hard_blocks"), list) else []
+    if bool(details.get("hard_blocked")) or hard_blocks:
         return False
     quality_gate = (idea.get("details") or {}).get("quality_gate") if isinstance(idea.get("details"), dict) else {}
     if action == "BUY" and isinstance(quality_gate, dict) and quality_gate.get("passed") is False:
         return False
+    if action in {"HOLD", "NO_TRADE", ""} or incoming_signal in {"WATCH", "NO_TRADE"} or incoming_status in {"WATCH", "MONITORING"}:
+        return True
     return False
 
 

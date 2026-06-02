@@ -711,7 +711,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(details["quality_downgrade"]["from"], "BUY")
         self.assertEqual(details["quality_gate"]["reason"], "overall_score_below_70")
 
-    def test_hold_refresh_does_not_preserve_old_buy_as_actionable(self) -> None:
+    def test_hold_refresh_preserves_old_buy_as_monitor_not_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -754,12 +754,17 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             db.upsert_signal_ideas_from_decisions([decision])
             with db.connect() as conn:
                 row = conn.execute("select * from signal_ideas where symbol = 'OLDFAST'").fetchone()
+            latest = db.latest_signal_ideas(5)[0]
 
-        self.assertEqual(row["signal_type"], "WATCH")
-        self.assertEqual(row["status"], "WATCH")
+        self.assertEqual(row["signal_type"], "BUY")
+        self.assertEqual(row["status"], "ACTIVE")
         details = json.loads(row["details_json"])
         self.assertEqual(details["action"], "HOLD")
+        self.assertTrue(details["signal_continuity"]["preserved"])
         self.assertFalse(details["quality_gate"]["passed"])
+        self.assertEqual(latest["display_signal"], "Watch")
+        self.assertEqual(latest["fresh_action"], "WATCH")
+        self.assertEqual(latest["why_changed"]["latest_engine_action"], "HOLD")
 
     def test_startup_demotes_non_actionable_active_buy_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -784,6 +789,38 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(row["status"], "WATCH")
         details = json.loads(row["details_json"])
         self.assertEqual(details["quality_downgrade"]["reason"], "latest_state_not_fresh_buy")
+
+    def test_startup_keeps_preserved_active_buy_monitor_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+                details_extra={
+                    "action": "HOLD",
+                    "latest_system_action": "HOLD",
+                    "quality_gate": {"passed": False, "reason": "not_buy_action", "message": "Latest engine action is not BUY."},
+                    "signal_continuity": {
+                        "preserved": True,
+                        "previous_signal_type": "BUY",
+                        "previous_status": "ACTIVE",
+                        "latest_engine_action": "HOLD",
+                        "reason": "A live BUY idea remains active until explicit exit.",
+                    },
+                },
+            )
+            db.init()
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where id = ?", (idea_id,)).fetchone()
+
+        self.assertEqual(row["signal_type"], "BUY")
+        self.assertEqual(row["status"], "ACTIVE")
+        details = json.loads(row["details_json"])
+        self.assertNotIn("quality_downgrade", details)
 
     def test_manual_paper_follow_rejects_watch_or_weak_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
