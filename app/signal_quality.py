@@ -471,12 +471,19 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
     details = _details(item)
     signal_type = _upper(item.get("signal_type") or item.get("suggestion"))
     status = _upper(item.get("status"))
+    mode = _upper(item.get("mode"))
     action = _upper(item.get("action") or details.get("action") or signal_type)
     if action in {"SELL", "EXIT"} or signal_type in {"EXIT", "NO_TRADE"}:
         return _blocked("active_follow_exit_signal", "Latest engine action is an exit/no-trade signal.")
     if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT", "REJECTED"}:
         return _blocked("active_follow_not_tradeable_state", "Followed position moved into a closed/exit lifecycle state.")
     if status == "WATCH" or signal_type == "WATCH":
+        if mode == "PAPER":
+            return _blocked(
+                "active_follow_watch_state_exit",
+                "Latest idea is watch-only; close the active paper follow and wait for a fresh clean BUY.",
+                risk_flags=_risk_flags(item, details),
+            )
         return {
             "passed": True,
             "fresh_buy_allowed": False,
@@ -503,7 +510,6 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
             risk_flags=risk_flags,
             severe_risk_flags=severe_flags,
         )
-    mode = _upper(item.get("mode"))
     if mode == "PAPER":
         score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
         confluence = _number(item.get("confluence"), details.get("confluence"))

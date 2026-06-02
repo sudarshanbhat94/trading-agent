@@ -972,7 +972,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["trade_state"], "WATCH")
         self.assertEqual(latest["execution_state"], "WATCH")
 
-    def test_safety_cleanup_holds_watch_but_exits_invalid_or_weak_paper_follows(self) -> None:
+    def test_safety_cleanup_exits_watch_invalid_or_weak_paper_follows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -1019,12 +1019,12 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
             ]
 
-        self.assertEqual(len(exited), 2)
-        self.assertEqual({item["symbol"] for item in active}, {"WATCHA"})
+        self.assertEqual(len(exited), 3)
+        self.assertEqual(active, [])
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
         self.assertEqual(
             {item["quality_gate"]["reason"] for item in exited},
-            {"active_follow_hard_blocked", "active_follow_strict_auto_contract_failed"},
+            {"active_follow_watch_state_exit", "active_follow_hard_blocked", "active_follow_strict_auto_contract_failed"},
         )
 
     def test_legacy_subfloor_paper_follows_are_archived(self) -> None:
@@ -1137,8 +1137,8 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
             ]
 
-        self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER"})
-        self.assertEqual({item["symbol"] for item in active}, {"CURWATCH"})
+        self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER", "CURWATCH"})
+        self.assertEqual(active, [])
 
     def test_safety_cleanup_marks_exit_pending_after_market_close(self) -> None:
         closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
