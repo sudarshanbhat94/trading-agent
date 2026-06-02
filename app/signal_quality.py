@@ -503,6 +503,29 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
             risk_flags=risk_flags,
             severe_risk_flags=severe_flags,
         )
+    mode = _upper(item.get("mode"))
+    if mode == "PAPER":
+        score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
+        confluence = _number(item.get("confluence"), details.get("confluence"))
+        strict_failures: list[str] = []
+        if score is None or score < AUTO_FOLLOW_MIN_SCORE:
+            strict_failures.append("score_below_strict_auto_follow_minimum")
+        if confluence is None or confluence < AUTO_FOLLOW_MIN_CONFLUENCE:
+            strict_failures.append("confluence_below_strict_auto_follow_minimum")
+        if risk_flags:
+            strict_failures.append("risk_flags_present")
+        if strict_failures:
+            return _blocked(
+                "active_follow_strict_auto_contract_failed",
+                "Active paper follow no longer meets the strict auto-paper contract; exit and wait for a fresh clean BUY.",
+                overall_score_pct=score,
+                overall_grade=_upper(item.get("overall_grade") or details.get("overall_grade")) or None,
+                confluence=confluence,
+                strict_failures=strict_failures,
+                min_score=AUTO_FOLLOW_MIN_SCORE,
+                min_confluence=AUTO_FOLLOW_MIN_CONFLUENCE,
+                risk_flags=risk_flags,
+            )
     return {
         "passed": True,
         "fresh_buy_allowed": False,

@@ -972,7 +972,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["trade_state"], "WATCH")
         self.assertEqual(latest["execution_state"], "WATCH")
 
-    def test_safety_cleanup_holds_watch_but_exits_hard_invalidated_paper_follows(self) -> None:
+    def test_safety_cleanup_holds_watch_but_exits_invalid_or_weak_paper_follows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -1019,9 +1019,13 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
             ]
 
-        self.assertEqual(len(exited), 1)
-        self.assertEqual({item["symbol"] for item in active}, {"WATCHA", "BUYD"})
+        self.assertEqual(len(exited), 2)
+        self.assertEqual({item["symbol"] for item in active}, {"WATCHA"})
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
+        self.assertEqual(
+            {item["quality_gate"]["reason"] for item in exited},
+            {"active_follow_hard_blocked", "active_follow_strict_auto_contract_failed"},
+        )
 
     def test_legacy_subfloor_paper_follows_are_archived(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -3889,8 +3889,12 @@ class Database:
                 quality_gate = _active_follow_stale_signal_gate(item, now_dt) or active_follow_safety_gate(
                     {
                         "action": idea_details.get("action") or item.get("signal_type"),
+                        "mode": item.get("mode"),
                         "signal_type": item.get("signal_type"),
                         "status": item.get("idea_status"),
+                        "latest_price": item.get("idea_latest_price") or item.get("latest_price"),
+                        "entry_price": item.get("entry_price"),
+                        "current_return_pct": item.get("return_pct"),
                         "overall_score_pct": item.get("overall_score_pct"),
                         "overall_grade": item.get("overall_grade"),
                         "confluence": item.get("confluence"),
