@@ -3916,6 +3916,8 @@ class Database:
                     token in safety_reason
                     for token in ("stop", "severe", "hard_block", "exit_signal", "not_tradeable_state", "stale_signal")
                 )
+                if safety_reason in {"active_follow_strict_auto_contract_failed", "active_follow_watch_state_exit"}:
+                    hard_exit = True
                 economics = exit_economics(entry_price, latest_price, qty, item.get("market_region"), None)
                 session_block = _market_session_exit_block(conn, item.get("market_region"), now_utc)
                 if session_block:

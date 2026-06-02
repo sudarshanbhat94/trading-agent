@@ -1140,6 +1140,39 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER", "CURWATCH"})
         self.assertEqual(active, [])
 
+    def test_strict_contract_failure_exits_even_when_profit_is_below_minimum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+            )
+            now = utc_now()
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set symbol = 'STRICTEXIT', latest_price = 101 where id = ?", (idea_id,))
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 100, 1000, 0, 0, ?, ?, '{}')
+                    """,
+                    (idea_id, now, now),
+                )
+
+            exited = db.exit_unsafe_active_follows()
+            [history] = db.user_follow_history(1, 10)
+
+        self.assertEqual(len(exited), 1)
+        self.assertEqual(exited[0]["symbol"], "STRICTEXIT")
+        self.assertEqual(exited[0]["quality_gate"]["reason"], "active_follow_strict_auto_contract_failed")
+        self.assertEqual(history["exit_reason"], "active_follow_strict_auto_contract_failed")
+
     def test_safety_cleanup_marks_exit_pending_after_market_close(self) -> None:
         closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as tmpdir:
