@@ -26,6 +26,21 @@ _WAIT_ONLY_TRADE_WINDOWS = {
     "watch_for_pullback",
     "watch_only",
 }
+_LIVE_OPPORTUNITY_SOURCES = {"live_momentum_review", "live_quote_opportunity_scan"}
+_LIVE_OPPORTUNITY_SETUPS = {
+    "opening_ignition",
+    "intraday_momentum",
+    "top_gainer_momentum",
+    "market_action_momentum",
+    "price_shocker_reversal_breakout",
+}
+_BREAKOUT_OPPORTUNITY_SETUPS = {
+    "52_week_high_volume_breakout",
+    "breakout_continuation",
+    "near_breakout",
+    "broker_re_rating_breakout",
+    "earnings_beat_gap_and_go",
+}
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -81,7 +96,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     min_confluence = (
         0.0
         if playbook_probe
-        else OPPORTUNITY_PROBE_MIN_CONFLUENCE
+        else _opportunity_probe_min_confluence(item, details)
         if opportunity_probe
         else ACTIONABLE_MIN_CONFLUENCE
     )
@@ -678,6 +693,8 @@ def _breakout_payload(details: dict[str, Any]) -> dict[str, Any]:
 
 
 def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> bool:
+    if _explicit_opportunity_probe_ready(item, details):
+        return True
     scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
     if not isinstance(scan, dict):
         scan = {}
@@ -719,6 +736,114 @@ def _opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> b
     }:
         return score >= 0.60 or bool(data_quality.get("actionable_data_ready")) or live_quote_probe_ok
     return False
+
+
+def _opportunity_probe_min_confluence(item: dict[str, Any], details: dict[str, Any]) -> float:
+    explicit = _explicit_opportunity_probe_min_confluence(item, details)
+    if explicit is not None:
+        return explicit
+    source, setup, scan_score = _opportunity_probe_profile_hint(item, details)
+    return _opportunity_probe_min_confluence_from_profile(source, setup, scan_score)
+
+
+def _explicit_opportunity_probe_ready(item: dict[str, Any], details: dict[str, Any]) -> bool:
+    for payload in _opportunity_probe_payloads(item, details):
+        if payload.get("ready") is True:
+            return True
+    return False
+
+
+def _explicit_opportunity_probe_min_confluence(item: dict[str, Any], details: dict[str, Any]) -> float | None:
+    for payload in _opportunity_probe_payloads(item, details):
+        value = _number(payload.get("min_confluence"))
+        if value is not None:
+            return value
+    return None
+
+
+def _opportunity_probe_payloads(item: dict[str, Any], details: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def collect(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        marker = id(value)
+        if marker in seen:
+            return
+        seen.add(marker)
+        payloads.append(value)
+
+    for container in (item, details):
+        collect(container.get("opportunity_probe"))
+        gate_context = container.get("decision_gate_context")
+        if isinstance(gate_context, dict):
+            collect(gate_context.get("opportunity_probe"))
+        risk_gates = container.get("risk_gates")
+        if isinstance(risk_gates, dict):
+            collect(risk_gates.get("opportunity_probe"))
+            nested_gate_context = risk_gates.get("decision_gate_context")
+            if isinstance(nested_gate_context, dict):
+                collect(nested_gate_context.get("opportunity_probe"))
+        context = container.get("context")
+        if isinstance(context, dict):
+            nested_gate_context = context.get("decision_gate_context")
+            if isinstance(nested_gate_context, dict):
+                collect(nested_gate_context.get("opportunity_probe"))
+    return payloads
+
+
+def _opportunity_probe_profile_hint(item: dict[str, Any], details: dict[str, Any]) -> tuple[str, str, float]:
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    scan = scan if isinstance(scan, dict) else {}
+    review = details.get("live_momentum_review")
+    if not isinstance(review, dict):
+        review = scan.get("live_momentum_review") if isinstance(scan.get("live_momentum_review"), dict) else {}
+
+    source = ""
+    setup = str(scan.get("setup") or review.get("setup") or details.get("setup") or item.get("setup") or "").strip().lower()
+    scan_score = _number(scan.get("score"), review.get("scan_score"), review.get("score")) or 0.0
+    for payload in _opportunity_probe_payloads(item, details):
+        payload_source = str(payload.get("source") or "").strip().lower()
+        payload_setup = str(payload.get("setup") or "").strip().lower()
+        payload_score = _number(payload.get("scan_score"), payload.get("score"))
+        if payload_source:
+            source = payload_source
+        if payload_setup:
+            setup = payload_setup
+        if payload_score is not None:
+            scan_score = payload_score
+        if source or setup:
+            break
+
+    if not source:
+        if bool(
+            review.get("strategy_ready")
+            or review.get("early_ignition_ready")
+            or review.get("live_momentum_ready")
+            or review.get("market_action_breakout_ready")
+        ):
+            source = "live_momentum_review"
+        elif scan and _live_quote_probe_data_ok(item, details, scan, setup):
+            source = "live_quote_opportunity_scan"
+        elif scan:
+            source = "opportunity_scan"
+    return source, setup, scan_score
+
+
+def _opportunity_probe_min_confluence_from_profile(source: Any, setup: str, scan_score: float) -> float:
+    normalized_source = str(source or "").strip().lower()
+    normalized_setup = str(setup or "").strip().lower()
+    score = float(scan_score or 0.0)
+    if normalized_source in _LIVE_OPPORTUNITY_SOURCES:
+        if normalized_setup in _LIVE_OPPORTUNITY_SETUPS:
+            return 6.0 if score >= 0.85 else 10.0
+        if normalized_setup in _BREAKOUT_OPPORTUNITY_SETUPS:
+            return 10.0 if score >= 0.82 else 12.0
+        return 12.0
+    if normalized_source == "opportunity_scan":
+        return 12.0
+    return OPPORTUNITY_PROBE_MIN_CONFLUENCE
 
 
 def _top_gainers_playbook_probe(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:

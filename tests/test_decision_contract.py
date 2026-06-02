@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from app.db import Database
-from app.decision_contract import normalize_trade_targets
+from app.decision_contract import annotate_decision_row, normalize_trade_targets
 from app.models import Decision
 
 
@@ -74,6 +74,89 @@ class DecisionContractTests(unittest.TestCase):
         self.assertGreater(targets[2]["price"], targets[1]["price"])
         self.assertEqual(targets[1]["structure_reference"], 98)
         self.assertEqual(targets[2]["structure_reference"], 97)
+
+    def test_decision_contract_uses_probe_quality_gate_for_opportunity_state(self) -> None:
+        audit = {
+            "final_action": "BUY",
+            "overall_score_pct": 88,
+            "overall_grade": "A",
+            "score_breakdown": {"combined": 0.25, "score_percent": 88},
+            "system_gate_audit": {
+                "overall_score_pct": 88,
+                "overall_grade": "A",
+                "hard_blocked": False,
+                "hard_blocks": [],
+                "active_flags": [],
+            },
+            "risk_gates": {
+                "decision_gate_context": {
+                    "opportunity_probe": {
+                        "ready": True,
+                        "source": "live_momentum_review",
+                        "setup": "intraday_momentum",
+                        "scan_score": 0.96,
+                        "min_confluence": 6.0,
+                    }
+                },
+            },
+            "context": {
+                "quote": {
+                    "price": 834.35,
+                    "open": 816.0,
+                    "high": 839.0,
+                    "low": 812.5,
+                    "volume": 4_200_000,
+                    "source": "upstox-live",
+                },
+                "data_readiness": {
+                    "trade_decision_ready": True,
+                    "fresh_market_data_gate": {
+                        "passed": True,
+                        "reason": "live_quote_ready_intraday_reference_stale",
+                    },
+                    "hard_gaps": [],
+                    "soft_gaps": [],
+                    "sources": {"quote": "upstox-live"},
+                },
+                "opportunity_scan": {
+                    "bucket": "Actionable",
+                    "setup": "intraday_momentum",
+                    "score": 0.96,
+                    "turnover": 350_000_000,
+                    "data_quality": {
+                        "actionable_data_ready": False,
+                        "missing": ["stale_intraday_candles"],
+                    },
+                },
+                "full_spectrum_analysis": {
+                    "confluence_score": {"total": 6.0, "tier": "NO_SIGNAL"},
+                    "trade_plan": {
+                        "entry_zone": [828.0, 838.0],
+                        "stop_loss": 806.0,
+                        "targets": [{"price": 876.0, "distance_pct": 5.0}],
+                    },
+                    "risk_overrides": {"flags": []},
+                    "live_momentum_review": {
+                        "strategy_ready": True,
+                        "setup": "intraday_momentum",
+                    },
+                },
+            },
+        }
+
+        row = annotate_decision_row(
+            {
+                "id": 1,
+                "symbol": "PROBE",
+                "action": "BUY",
+                "confidence": 0.34,
+                "price": 834.35,
+                "details_json": json.dumps(audit),
+            }
+        )
+
+        self.assertEqual(row["opportunity_state"], "BUY_NOW")
+        self.assertEqual(row["opportunity_label"], "Ready to buy")
 
 
 if __name__ == "__main__":

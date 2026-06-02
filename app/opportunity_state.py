@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .signal_quality import trade_readiness_gate
+
 
 ACTIONABLE_OPPORTUNITY_STATES = {
     "BUY_NOW",
@@ -70,13 +72,52 @@ def opportunity_state_from_decision_audit(audit: dict[str, Any], row: dict[str, 
         score_breakdown.get("score_percent"),
     )
     action = str(row.get("action") or audit.get("final_action") or "").upper()
+    data_readiness = _first_dict(
+        context.get("data_readiness"),
+        audit.get("data_readiness"),
+        system_audit.get("data_readiness"),
+        risk_gates.get("data_readiness"),
+    )
+    opportunity_scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
+    live_momentum_review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
+    quality_details = {
+        "action": action,
+        "overall_score_pct": overall_score,
+        "overall_grade": system_audit.get("overall_grade") or audit.get("overall_grade"),
+        "confluence": _number(confluence.get("total")),
+        "hard_blocked": bool(system_audit.get("hard_blocked")),
+        "hard_blocks": system_audit.get("hard_blocks") if isinstance(system_audit.get("hard_blocks"), list) else [],
+        "active_flags": system_audit.get("active_flags") if isinstance(system_audit.get("active_flags"), list) else [],
+        "risk_flags": risk.get("flags") if isinstance(risk.get("flags"), list) else [],
+        "failed_gates": decision_gate.get("failed_gates") if isinstance(decision_gate.get("failed_gates"), list) else [],
+        "data_readiness": data_readiness,
+        "quote": context.get("quote") if isinstance(context.get("quote"), dict) else {},
+        "entry_quality": full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {},
+        "breakout_quality": full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {},
+        "strategy_logic_filters": full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {},
+        "opportunity_scan": opportunity_scan,
+        "live_momentum_review": live_momentum_review,
+        "risk_gates": risk_gates,
+        "entry_zone": trade_plan.get("entry_zone"),
+        "stop_loss": trade_plan.get("stop_loss"),
+        "targets": trade_plan.get("targets") if isinstance(trade_plan.get("targets"), list) else [],
+    }
+    readiness = trade_readiness_gate(
+        {
+            "action": action,
+            "signal_type": "BUY" if action == "BUY" else action,
+            "status": "ACTIVE" if action == "BUY" else action,
+            "overall_score_pct": overall_score,
+            "overall_grade": system_audit.get("overall_grade") or audit.get("overall_grade"),
+            "confluence": _number(confluence.get("total")),
+            "hard_blocked": bool(system_audit.get("hard_blocked")),
+            "details": quality_details,
+        }
+    )
     quality_passed = (
         action == "BUY"
         and not bool(system_audit.get("hard_blocked"))
-        and overall_score is not None
-        and overall_score >= 70
-        and str(system_audit.get("overall_grade") or audit.get("overall_grade") or "").upper() in {"A", "B"}
-        and (_number(confluence.get("total")) or 0.0) >= 18
+        and readiness.get("passed") is True
     )
 
     return _build_opportunity_state(
@@ -85,12 +126,7 @@ def opportunity_state_from_decision_audit(audit: dict[str, Any], row: dict[str, 
         overall_score=overall_score,
         overall_grade=str(system_audit.get("overall_grade") or audit.get("overall_grade") or "").upper(),
         confluence=_number(confluence.get("total")),
-        data_readiness=_first_dict(
-            context.get("data_readiness"),
-            audit.get("data_readiness"),
-            system_audit.get("data_readiness"),
-            risk_gates.get("data_readiness"),
-        ),
+        data_readiness=data_readiness,
         entry=full.get("entry_quality") if isinstance(full.get("entry_quality"), dict) else {},
         breakout=full.get("breakout_quality") if isinstance(full.get("breakout_quality"), dict) else {},
         strategy_logic=full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {},
