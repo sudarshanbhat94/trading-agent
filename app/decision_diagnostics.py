@@ -35,11 +35,22 @@ def build_cycle_decision_diagnostics(
     primary_blocker_symbols: dict[str, set[str]] = defaultdict(set)
     live_quote_stale_intraday_symbols: set[str] = set()
     live_quote_stale_intraday_only_symbols: set[str] = set()
+    duplicate_active_buy_monitors = 0
+    duplicate_active_buy_symbols: set[str] = set()
     top_holds: list[dict[str, Any]] = []
 
     for decision in decision_rows:
         symbol = str(decision.symbol or "").upper()
         audit = _json_object(decision.details_json)
+        duplicate_suppression = (
+            audit.get("duplicate_buy_suppression")
+            if isinstance(audit.get("duplicate_buy_suppression"), dict)
+            else {}
+        )
+        if duplicate_suppression.get("suppressed"):
+            duplicate_active_buy_monitors += 1
+            if symbol:
+                duplicate_active_buy_symbols.add(symbol)
         gate_context = _decision_gate_context(audit)
         probe = gate_context.get("opportunity_probe") if isinstance(gate_context.get("opportunity_probe"), dict) else {}
         blocking_gates = _gate_names(gate_context.get("blocking_failed_gates") or gate_context.get("failed_gates"))
@@ -75,10 +86,12 @@ def build_cycle_decision_diagnostics(
         for decision in decision_rows
         if str(decision.action or "").upper() == "BUY" and str(decision.symbol or "").strip()
     }
+    buy_intent_symbols = set(buy_symbols) | duplicate_active_buy_symbols
+    buy_intent_decisions = buy_decisions + duplicate_active_buy_monitors
     followed = _int(auto_trade.get("followed"))
     users_checked = _int(auto_trade.get("users_checked"))
     skipped = auto_trade.get("skipped") if isinstance(auto_trade.get("skipped"), list) else []
-    follow_opportunities = users_checked * len(buy_symbols)
+    follow_opportunities = users_checked * len(buy_intent_symbols)
     funnel = {
         "raw_symbols": raw_symbols,
         "quoted_symbols": quoted_symbols,
@@ -89,6 +102,10 @@ def build_cycle_decision_diagnostics(
         "decision_target_shortfall": max(target_decision_symbols - decisions_created, 0) if target_decision_symbols else 0,
         "buy_decisions": buy_decisions,
         "buy_symbols": len(buy_symbols),
+        "buy_intent_decisions": buy_intent_decisions,
+        "buy_intent_symbols": len(buy_intent_symbols),
+        "duplicate_active_buy_monitors": duplicate_active_buy_monitors,
+        "duplicate_active_buy_symbols": len(duplicate_active_buy_symbols),
         "sell_decisions": action_counts.get("SELL", 0),
         "hold_decisions": action_counts.get("HOLD", 0),
         "auto_followed_user_actions": followed,
@@ -241,6 +258,7 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     decisions = _int(funnel.get("decisions_created"))
     target = _int(funnel.get("target_decision_symbols"))
     buys = _int(funnel.get("buy_decisions"))
+    buy_intents = _int(funnel.get("buy_intent_decisions")) or buys
     if raw >= 500 and selected > 0 and selected / raw < 0.05 and (target <= 0 or selected < target):
         flags.append(
             {
@@ -276,13 +294,22 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     if decisions >= 100 and buys == 0:
-        flags.append(
-            {
-                "severity": "critical",
-                "code": "no_buys_from_large_decision_set",
-                "message": "A large decision set produced zero BUYs; inspect top blockers and missed movers.",
-            }
-        )
+        if buy_intents > 0:
+            flags.append(
+                {
+                    "severity": "warning",
+                    "code": "all_buy_intents_already_active",
+                    "message": "The cycle found BUY-grade ideas, but all were already active monitors rather than fresh entries.",
+                }
+            )
+        else:
+            flags.append(
+                {
+                    "severity": "critical",
+                    "code": "no_buys_from_large_decision_set",
+                    "message": "A large decision set produced zero BUYs; inspect top blockers and missed movers.",
+                }
+            )
     fresh = diagnostics.get("live_quote_stale_intraday") if isinstance(diagnostics.get("live_quote_stale_intraday"), dict) else {}
     if _int(fresh.get("only_blocker_symbols")) > 0:
         flags.append(
@@ -317,12 +344,16 @@ def _summary(diagnostics: dict[str, Any]) -> str:
     decisions = _int(funnel.get("decisions_created"))
     target = _int(funnel.get("target_decision_symbols"))
     buys = _int(funnel.get("buy_decisions"))
+    duplicate_monitors = _int(funnel.get("duplicate_active_buy_monitors"))
     followed = _int(funnel.get("auto_followed_user_actions"))
     top_blockers = diagnostics.get("top_blockers") if isinstance(diagnostics.get("top_blockers"), list) else []
     blocker = top_blockers[0]["gate"] if top_blockers and isinstance(top_blockers[0], dict) else "none"
+    buy_text = f"{buys} BUYs"
+    if duplicate_monitors:
+        buy_text = f"{buy_text} (+{duplicate_monitors} already-active BUY monitors)"
     return (
         f"{raw} raw symbols -> {selected} scanner selections -> {decisions}/{target or decisions} decisions -> "
-        f"{buys} BUYs -> {followed} auto-follows. Top blocker: {blocker}."
+        f"{buy_text} -> {followed} auto-follows. Top blocker: {blocker}."
     )
 
 

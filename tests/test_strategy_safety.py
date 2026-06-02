@@ -1828,6 +1828,53 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in probe["absorbed_gates"]})
         self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
 
+    def test_live_intraday_probe_uses_starter_confluence_floor(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.0,
+                "day_range_position": 0.86,
+                "day_high_distance_pct": 0.5,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["confluence_score"] = {"total": 6.0, "tier": "NO_SIGNAL"}
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 48
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 48
+        context["full_spectrum_analysis"]["risk_overrides"] = {
+            "flags": ["confluence_below_watch_threshold", "institutional_scorecard_below_entry_threshold"],
+            "no_new_longs": True,
+        }
+        context["best_strategy"] = {"name": "live_intraday_momentum", "score": 0.84}
+        context["opportunity_scan"] = {
+            "setup": "intraday_momentum",
+            "bucket": "Actionable",
+            "score": 0.96,
+            "day_gain_pct": 3.0,
+            "day_range_position": 0.86,
+            "day_high_distance_pct": 0.5,
+            "volume_ratio": 1.8,
+            "turnover": 220_000_000,
+            "components": {"live_momentum": 0.82},
+            "data_quality": {"actionable_data_ready": False, "missing": ["stale_intraday_candles"]},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("STARTER", 0.24, {}, context, {})
+
+        probe = context["decision_gate_context"]["opportunity_probe"]
+        self.assertEqual(action, "BUY")
+        self.assertTrue(probe["ready"])
+        self.assertEqual(probe["min_confluence"], 6.0)
+        self.assertEqual(context["decision_gate_context"]["blocking_failed_gates"], [])
+
     def test_scan_probe_uses_live_quote_ohlcv_when_only_intraday_candles_are_stale(self) -> None:
         engine = StrategyEngine(
             SimpleNamespace(max_position_pct=0.1, dynamic_scan_min_turnover_inr=50_000_000),

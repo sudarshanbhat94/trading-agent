@@ -1129,22 +1129,24 @@ class StrategyEngine:
             scan_score >= 0.60 or bool(data_quality.get("actionable_data_ready")) or live_quote_probe_ok
         )
         ready = review_ready or scan_ready
+        source = (
+            "live_momentum_review"
+            if review_ready
+            else "live_quote_opportunity_scan"
+            if scan_ready and live_quote_probe_ok
+            else "opportunity_scan"
+            if scan_ready
+            else None
+        )
         return {
             "ready": ready,
             "reason": "opportunity_price_volume_probe_ready" if ready else "no_opportunity_probe",
             "setup": setup,
-            "source": (
-                "live_momentum_review"
-                if review_ready
-                else "live_quote_opportunity_scan"
-                if scan_ready and live_quote_probe_ok
-                else "opportunity_scan"
-                if scan_ready
-                else None
-            ),
+            "source": source,
             "scan_score": round(scan_score, 4),
             "combined_floor": 0.20,
             "min_quality_score": OPPORTUNITY_PROBE_MIN_SCORE,
+            "min_confluence": self._opportunity_probe_min_confluence(source, setup, scan_score),
             "size_policy": "probe_size_only",
             "data_quality_override": (
                 "live_momentum_review_with_trade_ready_data"
@@ -1383,6 +1385,34 @@ class StrategyEngine:
         if score is None:
             return None
         return score * 100.0 if score <= 1.0 else score
+
+    def _opportunity_probe_min_confluence(self, source: Any, setup: str, scan_score: float) -> float:
+        normalized_source = str(source or "").strip()
+        normalized_setup = str(setup or "").strip().lower()
+        score = float(scan_score or 0.0)
+        if normalized_source in {"live_momentum_review", "live_quote_opportunity_scan"}:
+            live_setups = {
+                "opening_ignition",
+                "intraday_momentum",
+                "top_gainer_momentum",
+                "market_action_momentum",
+                "price_shocker_reversal_breakout",
+            }
+            breakout_setups = {
+                "52_week_high_volume_breakout",
+                "breakout_continuation",
+                "near_breakout",
+                "broker_re_rating_breakout",
+                "earnings_beat_gap_and_go",
+            }
+            if normalized_setup in live_setups:
+                return 6.0 if score >= 0.85 else 10.0
+            if normalized_setup in breakout_setups:
+                return 10.0 if score >= 0.82 else 12.0
+            return 12.0
+        if normalized_source == "opportunity_scan":
+            return 12.0
+        return 16.0
 
     def _opportunity_probe_can_absorb_gate(self, gate: dict[str, Any], profile: dict[str, Any]) -> bool:
         if not profile.get("ready"):

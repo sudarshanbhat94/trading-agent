@@ -122,6 +122,46 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["auto_follow_user_conversion_pct"], 85.71)
         self.assertEqual(diagnostics["funnel"]["auto_follows_per_buy_symbol"], 6.0)
 
+    def test_diagnostics_separates_duplicate_active_buy_monitors_from_fresh_buys(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 2658,
+                "quoted_symbols": 2658,
+                "selected_symbols": 200,
+                "target_decision_symbols": 200,
+            },
+            [
+                _decision(
+                    "IFCI",
+                    "HOLD",
+                    details={
+                        "duplicate_buy_suppression": {
+                            "suppressed": True,
+                            "reason": "already_active_buy_cooldown",
+                        },
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "blocking_failed_gates": [],
+                                "opportunity_probe": {"ready": True, "source": "live_quote_opportunity_scan"},
+                            }
+                        },
+                    },
+                )
+            ]
+            + [_decision(f"HOLD{i}", "HOLD", technical_score=0.1) for i in range(199)],
+            market_region="IN",
+            missed_move_review_row_id=47,
+        )
+
+        self.assertEqual(diagnostics["funnel"]["buy_decisions"], 0)
+        self.assertEqual(diagnostics["funnel"]["buy_intent_decisions"], 1)
+        self.assertEqual(diagnostics["funnel"]["duplicate_active_buy_monitors"], 1)
+        codes = {flag["code"] for flag in diagnostics["health_flags"]}
+        self.assertIn("all_buy_intents_already_active", codes)
+        self.assertNotIn("no_buys_from_large_decision_set", codes)
+        self.assertIn("already-active BUY monitors", diagnostics["summary"])
+
     def test_india_diagnostics_require_target_decisions_and_missed_move_row(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {

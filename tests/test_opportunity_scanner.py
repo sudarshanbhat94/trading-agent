@@ -206,6 +206,86 @@ class OpportunityScannerTests(unittest.TestCase):
         self.assertGreater(summary["fills_by_market"]["IN"].get("refill", 0), 0)
         self.assertLess(summary["fills_by_market"]["IN"]["live_rally"], summary["budgets_by_market"]["IN"]["live_rally"])
 
+    def test_slot_budget_prioritizes_actionable_entries_over_watch_states(self) -> None:
+        scanner = OpportunityScanner(
+            SimpleNamespace(
+                **_settings().__dict__,
+                india_full_decision_target=200,
+                india_scanner_slot_budgets="live_rally=45,volume_price=40,breakout=35,delivery_btst=35,sector_rs=25,diverse=20",
+            )
+        )
+        scored = []
+        for index in range(60):
+            actionable = index < 15
+            scored.append(
+                {
+                    "symbol": f"LIVE{index}",
+                    "market_region": "IN",
+                    "score": 0.70 if actionable else 0.95 - index * 0.001,
+                    "setup": "intraday_momentum" if actionable else "extended_momentum_watch",
+                    "bucket": "Actionable" if actionable else "Watch",
+                    "sector": "Momentum",
+                    "metrics": {"projected_turnover": 150_000_000 + index, "volume_ratio": 2.0},
+                    "components": {"live_momentum": 0.82},
+                    "market_action": {},
+                    "rally_radar": {
+                        "phase": "intraday_momentum" if actionable else "extended_momentum_watch",
+                        "trade_window": "actionable_momentum" if actionable else "wait_for_pullback",
+                    },
+                    "btst": {"detected": False},
+                    "top_gainers_playbook": {},
+                }
+            )
+
+        selected, summary = scanner._select_market_slot_budgeted("IN", scored, 45)
+
+        selected_symbols = {item["symbol"] for item in selected}
+        self.assertEqual(summary["fills"]["live_rally"], 45)
+        self.assertEqual(
+            {f"LIVE{index}" for index in range(15)} & selected_symbols,
+            {f"LIVE{index}" for index in range(15)},
+        )
+
+    def test_delivery_slot_prioritizes_btst_entries_over_pre_rally_watch(self) -> None:
+        scanner = OpportunityScanner(
+            SimpleNamespace(
+                **_settings().__dict__,
+                india_full_decision_target=200,
+                india_scanner_slot_budgets="live_rally=45,volume_price=40,breakout=35,delivery_btst=35,sector_rs=25,diverse=20",
+            )
+        )
+        scored = []
+        for index in range(55):
+            btst = index < 10
+            scored.append(
+                {
+                    "symbol": f"BTST{index}",
+                    "market_region": "IN",
+                    "score": 0.72 if btst else 0.96 - index * 0.001,
+                    "setup": "btst_buy_candidate" if btst else "pre_rally_fuel",
+                    "bucket": "Actionable" if btst else "Watch",
+                    "sector": "Delivery",
+                    "metrics": {"projected_turnover": 120_000_000 + index, "volume_ratio": 1.4},
+                    "components": {"btst": 0.75 if btst else 0.0},
+                    "market_action": {},
+                    "rally_radar": {
+                        "phase": "none" if btst else "pre_rally_fuel",
+                        "trade_window": "not_ready" if btst else "watch_for_ignition",
+                    },
+                    "btst": {"detected": btst},
+                    "top_gainers_playbook": {},
+                }
+            )
+
+        selected, summary = scanner._select_market_slot_budgeted("IN", scored, 35)
+
+        selected_symbols = {item["symbol"] for item in selected}
+        self.assertEqual(summary["fills"]["delivery_btst"], 35)
+        self.assertEqual(
+            {f"BTST{index}" for index in range(10)} & selected_symbols,
+            {f"BTST{index}" for index in range(10)},
+        )
+
     def test_india_scan_keeps_soft_quality_rejects_for_full_decisioning(self) -> None:
         base_settings = _settings().__dict__.copy()
         base_settings.update(

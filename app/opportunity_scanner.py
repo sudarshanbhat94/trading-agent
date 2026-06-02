@@ -1988,11 +1988,50 @@ class OpportunityScanner:
     def _market_slot_rank_key(self, item: dict[str, Any]) -> tuple[float, float, float, float]:
         metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         return (
+            self._entry_candidate_priority(item),
             self._rally_discovery_score(item),
             float(item.get("score") or 0.0),
             float(metrics.get("projected_turnover") or metrics.get("turnover") or 0.0),
-            float(metrics.get("volume_ratio") or metrics.get("projected_volume_ratio") or 0.0),
         )
+
+    def _entry_candidate_priority(self, item: dict[str, Any]) -> float:
+        setup = str(item.get("setup") or "").strip()
+        bucket = str(item.get("bucket") or "").strip()
+        if bucket in {DATA_STALE_WATCH, LATE_CHASE_AVOID, "Avoid"}:
+            return 0.0
+        market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
+        rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
+        btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
+        trade_window = _resolved_trade_window(market_action, rally, btst)
+        if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"} or _is_wait_only_trade_window(trade_window):
+            return 0.25 if bucket == ACTIONABLE_WATCH else 0.0
+        if bool(btst.get("detected")) and setup == "btst_buy_candidate":
+            return 3.8
+        actionable_setups = {
+            "opening_ignition",
+            "intraday_momentum",
+            "52_week_high_volume_breakout",
+            "breakout_continuation",
+            "near_breakout",
+            "top_gainer_momentum",
+            "market_action_momentum",
+            "price_shocker_reversal_breakout",
+            "broker_re_rating_breakout",
+            "earnings_beat_gap_and_go",
+        }
+        if setup in actionable_setups and bucket == "Actionable":
+            return 3.5
+        if setup in actionable_setups and bucket == "Small Size Only":
+            return 2.7
+        if bucket == "Actionable":
+            return 2.2
+        if bucket == "Small Size Only":
+            return 1.5
+        if bucket == ACTIONABLE_WATCH:
+            return 0.7
+        if bucket == "Watch":
+            return 0.3
+        return 0.0
 
     def _select_rally_radar_then_diverse(self, scored: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
