@@ -250,6 +250,83 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(row["status"], "ACTIVE")
         self.assertEqual(row["fresh_action"], "BUY_NOW")
 
+    def test_duplicate_suppressed_canonical_refresh_preserves_active_buy_idea(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            now = utc_now()
+            details = {
+                "action": "BUY",
+                "overall_score_pct": 86,
+                "overall_grade": "A",
+                "confluence": 22,
+                "hard_blocked": False,
+                "hard_blocks": [],
+                "data_readiness": {"trade_decision_ready": True},
+            }
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into signal_ideas (
+                        first_seen_at, last_seen_at, symbol, strategy, plan_code, signal_type, status,
+                        entry_price, latest_price, current_return_pct, peak_return_pct, worst_return_pct,
+                        confidence, combined_score, confluence, overall_score_pct, overall_grade,
+                        decision_id, latest_decision_id, reason, details_json
+                    )
+                    values (?, ?, 'DUPEBUY', 'canonical_contract', 'contract_test', 'BUY', 'ACTIVE',
+                        100, 100, 0, 0, 0, 0.8, 0.4, 22, 86, 'A',
+                        null, null, 'original buy', ?)
+                    """,
+                    (now, now, json.dumps(details)),
+                )
+            decision = Decision(
+                symbol="DUPEBUY",
+                action="HOLD",
+                confidence=0.5,
+                price=101,
+                technical_score=0.7,
+                sentiment_score=0.1,
+                reason="Already active; repeated BUY is position monitoring, not a new entry.",
+                asof=now,
+                strategy="canonical_contract",
+                details_json=json.dumps(
+                    {
+                        "action_reason": "Already active; repeated BUY is position monitoring, not a new entry.",
+                        "duplicate_buy_suppression": {"suppressed": True, "reason": "already_active_buy_cooldown"},
+                        "score_breakdown": {"combined": 0.24, "score_percent": 88},
+                        "system_gate_audit": {"overall_score_pct": 88, "overall_grade": "A", "hard_blocked": False},
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "canonical_trade_gate": {
+                                    "passed": True,
+                                    "canonical_version": CANONICAL_TRADE_CONTRACT_VERSION,
+                                    "primary_blocker": None,
+                                    "reason": "fresh_buy_quality_passed",
+                                }
+                            }
+                        },
+                        "context": {
+                            "data_readiness": {"trade_decision_ready": True},
+                            "full_spectrum_analysis": {
+                                "confluence_score": {"total": 18},
+                                "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
+                                "risk_overrides": {"flags": []},
+                            },
+                        },
+                    }
+                ),
+            )
+
+            db.insert_decisions([decision])
+            db.upsert_signal_ideas_from_decisions([decision])
+            row = db.latest_signal_ideas(1)[0]
+
+        self.assertEqual(row["symbol"], "DUPEBUY")
+        self.assertEqual(row["signal_type"], "BUY")
+        self.assertEqual(row["status"], "ACTIVE")
+        self.assertEqual(row["fresh_action"], "NO_FRESH_ADD")
+        self.assertIn("Already active", row["display_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7400,9 +7400,10 @@ def _is_duplicate_active_buy_refresh(existing: sqlite3.Row, idea: dict[str, Any]
         return False
     if str(existing["status"] or "").upper() not in {"ACTIVE", "TARGET_1_HIT", "TARGET_2_HIT"}:
         return False
-    if str(row.get("action") or "").upper() != "BUY":
+    row_buy_refresh = _row_has_buy_refresh_intent(row)
+    if not row_buy_refresh:
         return False
-    if str(idea.get("signal_type") or "").upper() != "BUY":
+    if str(idea.get("signal_type") or "").upper() != "BUY" and not row_buy_refresh:
         return False
     first_seen = _parse_dt(existing["first_seen_at"])
     now_dt = _parse_dt(now_iso)
@@ -7410,6 +7411,20 @@ def _is_duplicate_active_buy_refresh(existing: sqlite3.Row, idea: dict[str, Any]
         return True
     age_hours = (now_dt - first_seen).total_seconds() / 3600
     return age_hours < DUPLICATE_BUY_COOLDOWN_HOURS
+
+
+def _row_has_buy_refresh_intent(row: dict[str, Any]) -> bool:
+    if str(row.get("action") or "").upper() == "BUY":
+        return True
+    try:
+        audit = json.loads(row.get("details_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    duplicate = audit.get("duplicate_buy_suppression") if isinstance(audit.get("duplicate_buy_suppression"), dict) else {}
+    if duplicate.get("suppressed"):
+        return True
+    canonical_gate = _canonical_trade_gate_from_audit(audit)
+    return canonical_gate.get("passed") is True
 
 
 def _strategy_plan_code(
