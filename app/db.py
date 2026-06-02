@@ -4011,6 +4011,114 @@ class Database:
                 exited.append(item)
         return exited
 
+    def exit_subfloor_paper_follows(
+        self,
+        reason: str = "legacy_position_below_minimum_trade_economics",
+        cost_settings: Any = None,
+        now_utc: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Archive legacy paper follows that are too small for current trade economics."""
+
+        exited: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            self._refresh_user_follow_marks(conn)
+            rows = conn.execute(
+                f"""
+                select
+                    f.*,
+                    i.symbol,
+                    i.latest_price as idea_latest_price,
+                    {_market_region_case("u")} as market_region
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                left join universe u on u.symbol = i.symbol
+                where f.status = 'ACTIVE'
+                  and upper(f.mode) = 'PAPER'
+                  and f.qty > 0
+                order by f.id desc
+                """
+            ).fetchall()
+            now_dt = now_utc or datetime.now(timezone.utc)
+            now = now_dt.isoformat()
+            for row in rows:
+                item = _row_dict(row)
+                qty = int(item.get("qty") or 0)
+                entry_price = float(item.get("entry_price") or 0.0)
+                economics = entry_size_economics(entry_price, qty, item.get("market_region"), cost_settings)
+                if economics.get("passed"):
+                    continue
+                latest_price = float(item.get("idea_latest_price") or item.get("latest_price") or entry_price or 0.0)
+                realized_pnl = round((latest_price - entry_price) * qty, 2)
+                return_pct = _return_pct(entry_price, latest_price)
+                follow_details = self._decode_json(item.get("details_json"))
+                follow_details["legacy_economics_exit"] = {
+                    "reason": reason,
+                    "exited_at": now,
+                    "exit_price": latest_price,
+                    "qty": qty,
+                    "realized_pnl": realized_pnl,
+                    "return_pct": return_pct,
+                    "entry_economics": economics,
+                    "policy": "paper follows below the current economic floor are closed instead of kept as active trades",
+                }
+                conn.execute(
+                    """
+                    update user_idea_follows
+                    set status = 'EXITED', latest_price = ?, unrealized_pnl = ?, return_pct = ?,
+                        updated_at = ?, details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        latest_price,
+                        realized_pnl,
+                        return_pct,
+                        now,
+                        json.dumps(follow_details, default=str, separators=(",", ":")),
+                        item["id"],
+                    ),
+                )
+                conn.execute(
+                    """
+                    insert into trade_audit_events
+                        (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now,
+                        item.get("symbol"),
+                        "paper_follow_legacy_economics_exit",
+                        "SELL",
+                        qty,
+                        latest_price,
+                        "EXITED",
+                        reason,
+                        json.dumps(
+                            _bounded_for_storage(
+                                {
+                                    "user_id": item.get("user_id"),
+                                    "idea_id": item.get("idea_id"),
+                                    "market_region": item.get("market_region"),
+                                    "entry_economics": economics,
+                                },
+                                dict_limit=24,
+                            ),
+                            default=str,
+                            separators=(",", ":"),
+                        ),
+                    ),
+                )
+                item.update(
+                    {
+                        "status": "EXITED",
+                        "latest_price": latest_price,
+                        "unrealized_pnl": realized_pnl,
+                        "return_pct": return_pct,
+                        "quality_gate": {"reason": reason},
+                    }
+                )
+                exited.append(item)
+        return exited
+
     def downgrade_non_tradeable_buy_ideas(self, reason: str = "tradeability_gate_cleanup") -> list[dict[str, Any]]:
         """Move stale or weak BUY rows back to WATCH when they cannot be traded.
 

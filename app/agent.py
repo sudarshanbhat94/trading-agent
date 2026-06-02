@@ -796,6 +796,10 @@ class TradingAgentService:
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
         unsafe_follow_exits = self.db.exit_unsafe_active_follows(reason="cycle_quality_gate_safety_exit")
+        legacy_economics_exits = self.db.exit_subfloor_paper_follows(
+            reason="legacy_position_below_minimum_trade_economics",
+            cost_settings=self.strategy.settings,
+        )
         downgraded_buy_ideas = self.db.downgrade_non_tradeable_buy_ideas(reason="cycle_tradeability_cleanup")
         shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
         shared_auto_trade["credit_billing"] = self._charge_shared_ai_cycle_to_users(
@@ -805,7 +809,20 @@ class TradingAgentService:
             shared_usage_scope,
         )
         shared_auto_trade["credit_billing"]["funding_precheck"] = funding_precheck
-        if unsafe_follow_exits:
+        if legacy_economics_exits:
+            shared_auto_trade["legacy_economics_exited"] = [
+                {
+                    "user_id": item.get("user_id"),
+                    "symbol": item.get("symbol"),
+                    "mode": item.get("mode"),
+                    "market_region": item.get("market_region"),
+                    "qty": item.get("qty"),
+                    "invested_amount": item.get("invested_amount"),
+                    "reason": "legacy_position_below_minimum_trade_economics",
+                }
+                for item in legacy_economics_exits[:20]
+            ]
+        if unsafe_follow_exits or legacy_economics_exits:
             shared_auto_trade["safety_exited"] = [
                 {
                     "user_id": item.get("user_id"),
@@ -813,7 +830,7 @@ class TradingAgentService:
                     "mode": item.get("mode"),
                     "quality_reason": (item.get("quality_gate") or {}).get("reason"),
                 }
-                for item in unsafe_follow_exits[:20]
+                for item in (unsafe_follow_exits + legacy_economics_exits)[:20]
             ]
         if downgraded_buy_ideas:
             shared_auto_trade["downgraded_buy_ideas"] = [

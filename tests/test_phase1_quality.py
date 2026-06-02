@@ -949,6 +949,66 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual({item["symbol"] for item in active}, {"WATCHA", "BUYD"})
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
 
+    def test_legacy_subfloor_paper_follows_are_archived(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            tiny_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+            )
+            valid_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="B",
+            )
+            now = utc_now()
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set symbol = 'TINYPAPER' where id = ?", (tiny_id,))
+                conn.execute("update signal_ideas set symbol = 'VALIDPAPER' where id = ?", (valid_id,))
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 101, 1000, 10, 1, ?, ?, '{}')
+                    """,
+                    (tiny_id, now, now),
+                )
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 80, 100, 101, 8000, 80, 1, ?, ?, '{}')
+                    """,
+                    (valid_id, now, now),
+                )
+
+            exited = db.exit_subfloor_paper_follows()
+            active = [
+                item
+                for item in db.user_followed_signal_ideas(1, 20)
+                if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
+            ]
+            with db.connect() as conn:
+                [audit] = conn.execute(
+                    "select symbol, event_type, reason from trade_audit_events order by id desc limit 1"
+                ).fetchall()
+
+        self.assertEqual({item["symbol"] for item in exited}, {"TINYPAPER"})
+        self.assertEqual({item["symbol"] for item in active}, {"VALIDPAPER"})
+        self.assertEqual(audit["symbol"], "TINYPAPER")
+        self.assertEqual(audit["event_type"], "paper_follow_legacy_economics_exit")
+        self.assertEqual(audit["reason"], "legacy_position_below_minimum_trade_economics")
+
     def test_safety_cleanup_exits_stale_or_rejected_paper_follows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
