@@ -3655,11 +3655,19 @@ class Database:
                 if not quality_gate.get("passed") and not (manual_override and mode == "PAPER"):
                     raise ValueError(f"phase1_quality_gate:{quality_gate.get('reason')}")
             if qty <= 0 and amount > 0 and latest_price > 0:
-                qty = int(float(amount) // latest_price)
+                qty = _follow_qty_from_amount(amount, latest_price)
             if mode in {"PAPER", "LIVE"} and qty <= 0:
                 raise ValueError("amount is too small for one share at the current idea price")
             if mode in {"PAPER", "LIVE"}:
                 entry_economics = entry_size_economics(latest_price, qty, market_region, cost_settings)
+                if not entry_economics.get("passed") and amount > 0 and latest_price > 0:
+                    retry_qty = qty + 1
+                    tolerance = max(latest_price * 1e-9, 0.01)
+                    if retry_qty * latest_price <= float(amount) + tolerance:
+                        retry_economics = entry_size_economics(latest_price, retry_qty, market_region, cost_settings)
+                        if retry_economics.get("passed"):
+                            qty = retry_qty
+                            entry_economics = retry_economics
                 if not entry_economics.get("passed"):
                     raise ValueError(
                         "trade_economics_min_notional:"
@@ -7334,6 +7342,18 @@ def _canonical_trade_gate_from_audit(audit: dict[str, Any]) -> dict[str, Any]:
     context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
     nested_gate_context = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
     return nested_gate_context.get("canonical_trade_gate") if isinstance(nested_gate_context.get("canonical_trade_gate"), dict) else {}
+
+
+def _follow_qty_from_amount(amount: float, price: float) -> int:
+    amount = max(float(amount or 0.0), 0.0)
+    price = max(float(price or 0.0), 0.0)
+    if amount <= 0 or price <= 0:
+        return 0
+    ratio = amount / price
+    nearest = round(ratio)
+    if abs(ratio - nearest) <= 1e-9:
+        return max(int(nearest), 0)
+    return max(int(ratio + 1e-9), 0)
 
 
 def _empty_candle_coverage() -> dict[str, Any]:

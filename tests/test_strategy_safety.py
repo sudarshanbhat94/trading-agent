@@ -2935,6 +2935,34 @@ class StrategySafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "trade_economics_min_notional"):
                 db.follow_signal_idea(1, idea_id, mode="PAPER", amount=5_000, cost_settings=_economics_settings())
 
+    def test_paper_follow_amount_does_not_round_floor_qty_down_one_share(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="FLOORQTY",
+                entry_price=454.70,
+                latest_price=454.70,
+                details={
+                    "action": "BUY",
+                    "overall_score_pct": 88,
+                    "overall_grade": "A",
+                    "data_readiness": {"trade_decision_ready": True},
+                },
+            )
+
+            follow = db.follow_signal_idea(
+                1,
+                idea_id,
+                mode="PAPER",
+                amount=17 * 454.70,
+                cost_settings=_economics_settings(),
+            )
+
+        self.assertEqual(follow["qty"], 17)
+        self.assertGreaterEqual(follow["invested_amount"], 7_500.0)
+
     def test_auto_follow_sizing_uses_minimum_economic_size_when_cash_allows(self) -> None:
         sizing = auto_follow_sizing(
             25_000.0,
