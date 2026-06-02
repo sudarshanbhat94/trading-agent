@@ -291,12 +291,7 @@ def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(risk_flags, list):
         risk_flags = _risk_flags(item, details)
     playbook_probe = _top_gainers_playbook_probe(item, details)
-    severe_flags = _severe_risk_flags(
-        risk_flags,
-        opportunity_probe=bool(gate.get("opportunity_probe")),
-        playbook_entry_ok=bool(playbook_probe),
-        playbook_market_region=_upper((playbook_probe or {}).get("market_region")),
-    )
+    severe_flags = _severe_risk_flags(risk_flags)
     if severe_flags:
         return _blocked(
             "auto_follow_severe_risk_flags",

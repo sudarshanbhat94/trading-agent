@@ -402,7 +402,6 @@ class Phase1QualityGateTests(unittest.TestCase):
                 "details": {
                     "risk_flags": [
                         "institutional_scorecard_below_entry_threshold",
-                        "false_breakout_risk_no_new_longs",
                         "phase3_weak_volume_ratio_reduce_size",
                     ],
                     "data_readiness": {
@@ -529,6 +528,40 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["min_confluence"], 6.0)
         self.assertEqual(gate["size_multiplier"], 0.35)
 
+    def test_auto_follow_blocks_probe_risk_flags_safety_manager_would_exit(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 100,
+                "overall_grade": "A",
+                "confluence": 6,
+                "data_readiness": {"trade_decision_ready": True},
+                "details": {
+                    "action": "BUY",
+                    "risk_flags": [
+                        "institutional_scorecard_below_entry_threshold",
+                        "false_breakout_risk_no_new_longs",
+                    ],
+                    "live_momentum_review": {
+                        "strategy_ready": True,
+                        "setup": "intraday_momentum",
+                    },
+                    "opportunity_scan": {
+                        "bucket": "Actionable",
+                        "setup": "intraday_momentum",
+                        "score": 1.0,
+                        "turnover": 320_000_000,
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "auto_follow_severe_risk_flags")
+        self.assertIn("false_breakout_risk_no_new_longs", gate["severe_risk_flags"])
+
     def test_auto_follow_reuses_opportunity_probe_risk_policy(self) -> None:
         gate = auto_follow_quality_gate(
             {
@@ -564,7 +597,6 @@ class Phase1QualityGateTests(unittest.TestCase):
                     "targets": [{"price": 4727.0, "distance_pct": 5.0}],
                     "risk_flags": [
                         "institutional_scorecard_below_entry_threshold",
-                        "false_breakout_risk_no_new_longs",
                         "phase3_weak_volume_ratio_reduce_size",
                     ],
                     "live_momentum_review": {
