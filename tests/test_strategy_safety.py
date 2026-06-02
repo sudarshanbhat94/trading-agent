@@ -128,6 +128,98 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             {blocker["reason"] for blocker in model["entry_blockers"]},
         )
 
+    def test_india_breakout_requires_positive_news_catalyst(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                price=4900.0,
+                setup="breakout_continuation",
+                market_region="IN",
+                technical_score=0.94,
+                day_gain_pct=5.0,
+                volume_ratio=8.0,
+                projected_volume_ratio=8.0,
+                day_high_distance_pct=0.4,
+            ),
+            _entry_authority_settings(),
+        )
+
+        self.assertFalse(model["passed"])
+        self.assertEqual(model["decision_label"], "MANUAL_ONLY")
+        self.assertIn(
+            "india_cost_adjusted_selectivity_filter",
+            {blocker["reason"] for blocker in model["entry_blockers"]},
+        )
+        self.assertFalse(model["components"]["positive_news_catalyst"])
+
+    def test_india_breakout_accepts_positive_news_catalyst(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                price=4900.0,
+                setup="breakout_continuation",
+                market_region="IN",
+                technical_score=0.94,
+                day_gain_pct=5.0,
+                volume_ratio=8.0,
+                projected_volume_ratio=8.0,
+                day_high_distance_pct=0.4,
+                sentiment={
+                    "score": 0.35,
+                    "headline_count": 1,
+                    "positive_catalyst": True,
+                    "events": [{"type": "order_win"}],
+                },
+            ),
+            _entry_authority_settings(),
+        )
+
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "breakout")
+        self.assertTrue(model["components"]["positive_news_catalyst"])
+
+    def test_india_live_momentum_rejects_weak_cost_adjusted_shape(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                price=3030.0,
+                setup="opening_ignition",
+                market_region="IN",
+                technical_score=0.88,
+                day_gain_pct=3.6,
+                volume_ratio=3.1,
+                projected_volume_ratio=3.1,
+                day_range_position=0.94,
+                day_high_distance_pct=0.23,
+            ),
+            _entry_authority_settings(),
+        )
+
+        self.assertFalse(model["passed"])
+        self.assertEqual(model["decision_label"], "MANUAL_ONLY")
+        self.assertIn(
+            "india_cost_adjusted_selectivity_filter",
+            {blocker["reason"] for blocker in model["entry_blockers"]},
+        )
+
+    def test_india_live_momentum_accepts_strong_cost_adjusted_shape(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                price=4408.0,
+                setup="intraday_momentum",
+                market_region="IN",
+                technical_score=0.61,
+                day_gain_pct=6.4,
+                volume_ratio=79.0,
+                projected_volume_ratio=79.0,
+                day_range_position=0.98,
+                day_high_distance_pct=0.11,
+            ),
+            _entry_authority_settings(),
+        )
+
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "live_momentum")
+
 
 @unittest.skip("Legacy strategy gate tests were intentionally retired for entry_authority_v2.")
 class StrategySafetyTests(unittest.TestCase):
@@ -3907,6 +3999,9 @@ def _raw_entry_context(
     day_gain_pct: float = 3.2,
     volume_ratio: float = 2.1,
     projected_volume_ratio: float = 2.4,
+    day_range_position: float = 0.82,
+    day_high_distance_pct: float = 0.8,
+    sentiment: dict | None = None,
 ) -> dict:
     return {
         "symbol": "RAWBUY",
@@ -3920,7 +4015,7 @@ def _raw_entry_context(
             "low": 99.0,
             "volume": 2_500_000,
         },
-        "sentiment": {"score": 0.2, "confidence": 0.4, "status": "AVAILABLE"},
+        "sentiment": sentiment or {"score": 0.2, "confidence": 0.4, "status": "AVAILABLE"},
         "position": {"qty": 0},
         "technical_math": {"score": technical_score},
         "data_readiness": data_readiness or {"trade_decision_ready": True},
@@ -3930,8 +4025,8 @@ def _raw_entry_context(
             "market_region": market_region,
             "score": 0.82,
             "day_gain_pct": day_gain_pct,
-            "day_range_position": 0.82,
-            "day_high_distance_pct": 0.8,
+            "day_range_position": day_range_position,
+            "day_high_distance_pct": day_high_distance_pct,
             "volume_ratio": volume_ratio,
             "projected_volume_ratio": projected_volume_ratio,
             "turnover": 160_000_000,

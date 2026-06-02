@@ -42,6 +42,45 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     turnover = max(_num(scan.get("turnover")) or 0.0, _num(scan.get("projected_turnover")) or 0.0)
     technical_score = _score_pct(technical.get("score"))
     sentiment_score = _num(sentiment.get("score")) or 0.0
+    sentiment_event_types = {
+        str((item or {}).get("type") or (item or {}).get("event_type") or "").strip().lower()
+        for item in (sentiment.get("events") or [])
+        if isinstance(item, dict)
+    }
+    positive_news_catalyst = bool(sentiment.get("positive_catalyst")) or (
+        sentiment_score >= 0.22
+        and int(sentiment.get("headline_count") or 0) > 0
+        and bool(
+            sentiment_event_types
+            & {
+                "analyst_upgrade",
+                "broker_re_rating",
+                "contract_win",
+                "earnings",
+                "earnings_beat",
+                "guidance",
+                "guidance_raise",
+                "order_win",
+            }
+        )
+    )
+    negative_news_catalyst = bool(sentiment.get("negative_catalyst")) or (
+        sentiment_score <= -0.30
+        and int(sentiment.get("headline_count") or 0) > 0
+        and bool(
+            sentiment_event_types
+            & {
+                "analyst_downgrade",
+                "debt",
+                "downgrade",
+                "fraud",
+                "lawsuit",
+                "probe",
+                "regulatory_action",
+                "resignation",
+            }
+        )
+    )
     rs = context.get("universe_relative_strength") if isinstance(context.get("universe_relative_strength"), dict) else {}
     rs_percentile = _num(rs.get("percentile_63"))
     setup = str(scan.get("setup") or "raw_market_action").strip() or "raw_market_action"
@@ -155,18 +194,57 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
                     "strong_move_min_technical_score_pct": 45.0,
                 }
             )
+    if market == "IN" and negative_news_catalyst and not truth_blocks:
+        blockers.append(
+            {
+                "reason": "india_negative_news_catalyst",
+                "message": "India auto-entry is blocked when timestamped news sentiment shows a negative catalyst.",
+                "sentiment_score": round(sentiment_score, 4),
+                "event_types": sorted(sentiment_event_types),
+            }
+        )
     if market == "IN" and not truth_blocks:
-        india_breakout_ok = setup_family == "breakout" and authority_score >= 97.0
-        india_live_ok = setup_family == "live_momentum" and authority_score >= 90.0 and (price or 0.0) >= 3000.0
+        price_value = price or 0.0
+        india_breakout_ok = (
+            setup_family == "breakout"
+            and authority_score >= 97.0
+            and price_value >= 3000.0
+            and positive_news_catalyst
+        )
+        india_live_ok = setup_family == "live_momentum" and price_value >= 3000.0 and (
+            (
+                authority_score >= 92.0
+                and technical_score >= 85.0
+                and day_gain >= 2.5
+                and volume_ratio >= 4.5
+                and range_position >= 0.85
+                and (high_distance is None or high_distance <= 0.8)
+            )
+            or (
+                authority_score >= 96.0
+                and technical_score >= 55.0
+                and day_gain >= 6.0
+                and volume_ratio >= 10.0
+                and range_position >= 0.85
+                and (high_distance is None or high_distance <= 0.5)
+            )
+        )
         if not (india_breakout_ok or india_live_ok):
             blockers.append(
                 {
                     "reason": "india_cost_adjusted_selectivity_filter",
-                    "message": "India entries require stronger cost-adjusted evidence after one-week replay showed broad India signals were net-negative.",
+                    "message": "India entries require stricter cost-adjusted candle evidence; breakouts also require a positive timestamped news/catalyst.",
                     "score": authority_score,
                     "setup_family": setup_family,
                     "min_breakout_score": 97.0,
+                    "breakout_requires_positive_news_catalyst": True,
                     "live_momentum_min_price": 3000.0,
+                    "positive_news_catalyst": positive_news_catalyst,
+                    "day_gain_pct": round(day_gain, 4),
+                    "technical_score_pct": round(technical_score, 4),
+                    "volume_ratio": round(volume_ratio, 4),
+                    "day_range_position": round(range_position, 4),
+                    "day_high_distance_pct": round(high_distance, 4) if high_distance is not None else None,
                 }
             )
 
@@ -221,6 +299,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "volume_ratio": round(volume_ratio, 4),
             "turnover": round(turnover, 2),
             "sentiment_score": round(sentiment_score, 4),
+            "positive_news_catalyst": positive_news_catalyst,
+            "negative_news_catalyst": negative_news_catalyst,
             "relative_strength_percentile": round(rs_percentile, 4) if rs_percentile is not None else None,
         },
         "inputs": {
