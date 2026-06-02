@@ -128,6 +128,76 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             {blocker["reason"] for blocker in model["entry_blockers"]},
         )
 
+    def test_us_smallcap_reclaim_accepts_nuvl_style_volume_rs_setup(self) -> None:
+        context = _raw_entry_context(
+            price=91.37,
+            setup="smallcap_momentum",
+            market_region="US",
+            technical_score=0.684,
+            day_gain_pct=0.0,
+            volume_ratio=2.4241,
+            projected_volume_ratio=30.301,
+            day_range_position=0.0,
+            day_high_distance_pct=None,
+        )
+        context["opportunity_scan"].update(
+            {
+                "score": 0.4639,
+                "bucket": "Watch",
+                "turnover": 6_607_787.03,
+                "projected_turnover": 82_597_337.88,
+                "components": {"live_momentum": 0.0},
+                "rally_evidence": {
+                    "distance_to_sma20_pct": -11.3764,
+                    "distance_to_near_high_pct": 20.1379,
+                    "volume_support": True,
+                    "return_5d_pct": 6.7931,
+                },
+                "btst": {"evidence": {"rs_rank": 75.78}},
+            }
+        )
+
+        model = evaluate_raw_entry(context, _entry_authority_settings())
+
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "us_smallcap_reclaim")
+        self.assertGreaterEqual(model["raw_score"], model["entry_line"])
+
+    def test_us_smallcap_reclaim_rejects_without_volume_and_traded_value(self) -> None:
+        context = _raw_entry_context(
+            price=91.37,
+            setup="smallcap_momentum",
+            market_region="US",
+            technical_score=0.684,
+            day_gain_pct=0.0,
+            volume_ratio=1.2,
+            projected_volume_ratio=1.3,
+            day_range_position=0.0,
+            day_high_distance_pct=None,
+        )
+        context["opportunity_scan"].update(
+            {
+                "score": 0.4639,
+                "bucket": "Watch",
+                "turnover": 1_200_000.0,
+                "projected_turnover": 1_500_000.0,
+                "components": {"live_momentum": 0.0},
+                "rally_evidence": {
+                    "distance_to_sma20_pct": -11.3764,
+                    "distance_to_near_high_pct": 20.1379,
+                    "volume_support": False,
+                    "return_5d_pct": 6.7931,
+                },
+                "btst": {"evidence": {"rs_rank": 75.78}},
+            }
+        )
+
+        model = evaluate_raw_entry(context, _entry_authority_settings())
+
+        self.assertFalse(model["passed"])
+        self.assertIn("no_positive_setup_family", {blocker["reason"] for blocker in model["entry_blockers"]})
+
     def test_india_breakout_requires_positive_news_catalyst(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(

@@ -122,6 +122,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         high_distance=high_distance,
         volume_ratio=volume_ratio,
         rs_percentile=rs_percentile,
+        turnover=turnover,
     )
     passed_setups = [item for item in setup_reviews if item.get("passed")]
     best_setup = max(passed_setups or setup_reviews, key=lambda item: float(item.get("score") or 0.0), default={})
@@ -348,19 +349,42 @@ def _setup_reviews(
     high_distance: float | None,
     volume_ratio: float,
     rs_percentile: float | None,
+    turnover: float,
 ) -> list[dict[str, Any]]:
     setup_key = setup.lower()
     rally = scan.get("rally_evidence") if isinstance(scan.get("rally_evidence"), dict) else {}
     market_action = scan.get("market_action") if isinstance(scan.get("market_action"), dict) else {}
     btst = scan.get("btst") if isinstance(scan.get("btst"), dict) else {}
+    btst_evidence = btst.get("evidence") if isinstance(btst.get("evidence"), dict) else {}
     distance_to_near_high = _num(rally.get("distance_to_near_high_pct"))
+    distance_to_sma20 = _num(rally.get("distance_to_sma20_pct"))
+    if distance_to_sma20 is None:
+        distance_to_sma20 = _num(btst_evidence.get("distance_to_sma20_pct"))
+    return_5d = _num(rally.get("return_5d_pct"))
+    if return_5d is None:
+        return_5d = _num(btst_evidence.get("return_5d_pct"))
     near_high = (
         high_distance is not None
         and high_distance <= 3.0
         or distance_to_near_high is not None
         and distance_to_near_high <= 5.0
     )
-    rs_value = rs_percentile if rs_percentile is not None else _num((btst.get("evidence") or {}).get("rs_rank")) or 50.0
+    rs_value = rs_percentile if rs_percentile is not None else _num(btst_evidence.get("rs_rank")) or 50.0
+    volume_supported = bool(rally.get("volume_support")) or volume_ratio >= 2.0
+    us_smallcap_reclaim_shape = (
+        market == "US"
+        and setup_key in {"smallcap_momentum", "volume_price_accumulation", "us_smallcap_reclaim"}
+        and technical_score >= 62.0
+        and scan_score >= 45.0
+        and rs_value >= 70.0
+        and volume_ratio >= 2.0
+        and turnover >= 5_000_000.0
+        and volume_supported
+        and (distance_to_sma20 is None or -13.0 <= distance_to_sma20 <= 4.0)
+        and (distance_to_near_high is None or distance_to_near_high <= 25.0)
+        and (return_5d is None or return_5d >= 4.0)
+        and day_gain < 8.0
+    )
     reviews = [
         _review(
             "live_momentum",
@@ -392,6 +416,23 @@ def _setup_reviews(
             and day_gain >= -1.5,
             score=_avg(scan_score, technical_score, rs_value, _norm(volume_ratio, 0.7, 1.8) * 100),
             reasons=["uptrend pullback or reclaim setup", "relative strength confirmation", "volume not weak"],
+        ),
+        _review(
+            "us_smallcap_reclaim",
+            us_smallcap_reclaim_shape,
+            score=_avg(
+                technical_score,
+                rs_value,
+                _norm(volume_ratio, 1.6, 3.0) * 100,
+                _norm(turnover, 2_000_000.0, 8_000_000.0) * 100,
+                90.0,
+            ),
+            reasons=[
+                "US smallcap reclaim setup",
+                "relative strength above 70",
+                "volume participation and traded value confirm liquidity",
+                "deep pullback is reclaiming toward the 20-day/pivot area",
+            ],
         ),
         _review(
             "delivery_btst",
