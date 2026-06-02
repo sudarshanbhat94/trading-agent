@@ -115,8 +115,14 @@ def build_cycle_decision_diagnostics(
         for decision in decision_rows
         if str(decision.action or "").upper() == "BUY" and str(decision.symbol or "").strip()
     }
+    canonical_buy_symbols = {
+        str(decision.symbol or "").upper()
+        for decision in decision_rows
+        if _decision_has_canonical_buy_intent(decision) and str(decision.symbol or "").strip()
+    }
     buy_intent_symbols = set(buy_symbols) | duplicate_active_buy_symbols
-    buy_intent_decisions = buy_decisions + duplicate_active_buy_monitors
+    buy_intent_symbols.update(canonical_buy_symbols)
+    buy_intent_decisions = buy_decisions + duplicate_active_buy_monitors + len(canonical_buy_symbols - set(buy_symbols) - duplicate_active_buy_symbols)
     followed = _int(auto_trade.get("followed"))
     users_checked = _int(auto_trade.get("users_checked"))
     skipped = auto_trade.get("skipped") if isinstance(auto_trade.get("skipped"), list) else []
@@ -133,6 +139,7 @@ def build_cycle_decision_diagnostics(
         "buy_symbols": len(buy_symbols),
         "buy_intent_decisions": buy_intent_decisions,
         "buy_intent_symbols": len(buy_intent_symbols),
+        "canonical_buy_intent_symbols": len(canonical_buy_symbols),
         "duplicate_active_buy_monitors": duplicate_active_buy_monitors,
         "duplicate_active_buy_symbols": len(duplicate_active_buy_symbols),
         "sell_decisions": action_counts.get("SELL", 0),
@@ -229,6 +236,18 @@ def _decision_gate_context(audit: dict[str, Any]) -> dict[str, Any]:
         return gate_context
     context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
     return context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
+
+
+def _decision_has_canonical_buy_intent(decision: Decision) -> bool:
+    if str(decision.action or "").upper() == "BUY":
+        return False
+    audit = _json_object(decision.details_json)
+    duplicate = audit.get("duplicate_buy_suppression") if isinstance(audit.get("duplicate_buy_suppression"), dict) else {}
+    if duplicate.get("suppressed"):
+        return False
+    gate_context = _decision_gate_context(audit)
+    canonical_gate = gate_context.get("canonical_trade_gate") if isinstance(gate_context.get("canonical_trade_gate"), dict) else {}
+    return canonical_gate.get("passed") is True
 
 
 def _gate_names(value: Any) -> list[str]:

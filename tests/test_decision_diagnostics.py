@@ -263,6 +263,36 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["top_hold_candidates"][0]["canonical_trade"]["primary_blocker"], "stale_market_data")
         self.assertEqual(diagnostics["live_quote_stale_intraday"]["only_blocker_symbols"], 1)
 
+    def test_diagnostics_counts_canonical_passed_hold_as_buy_intent(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 2500, "quoted_symbols": 2500, "selected_symbols": 200, "target_decision_symbols": 200},
+            [
+                _decision(
+                    "CANONBUY",
+                    "HOLD",
+                    details={
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "canonical_trade_gate": {
+                                    "passed": True,
+                                    "canonical_version": CANONICAL_TRADE_CONTRACT_VERSION,
+                                    "primary_blocker": None,
+                                    "reason": "fresh_buy_quality_passed",
+                                }
+                            }
+                        }
+                    },
+                )
+            ],
+            market_region="IN",
+            missed_move_review_row_id=100,
+        )
+
+        self.assertEqual(diagnostics["funnel"]["buy_decisions"], 0)
+        self.assertEqual(diagnostics["funnel"]["buy_intent_decisions"], 1)
+        self.assertEqual(diagnostics["funnel"]["buy_intent_symbols"], 1)
+        self.assertEqual(diagnostics["funnel"]["canonical_buy_intent_symbols"], 1)
+
 
 def _decision(
     symbol: str,

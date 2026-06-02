@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.canonical_trade import CANONICAL_TRADE_CONTRACT_VERSION, canonical_trade_contract
 from app.db import Database
-from app.models import utc_now
+from app.models import Decision, utc_now
 
 
 class CanonicalTradeContractTests(unittest.TestCase):
@@ -199,6 +199,56 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(row["fresh_action"], "BUY_NOW")
         self.assertEqual(row["setup_bucket"], "ACTIONABLE")
         self.assertTrue(row["paper_follow_eligible"])
+
+    def test_canonical_passed_hold_decision_persists_as_buy_idea(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            decision = Decision(
+                symbol="CANONBUY",
+                action="HOLD",
+                confidence=0.72,
+                price=100,
+                technical_score=0.7,
+                sentiment_score=0.1,
+                reason="canonical contract passed",
+                asof=utc_now(),
+                strategy="canonical_contract",
+                details_json=json.dumps(
+                    {
+                        "score_breakdown": {"combined": 0.24, "score_percent": 88},
+                        "system_gate_audit": {"overall_score_pct": 88, "overall_grade": "A", "hard_blocked": False},
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "canonical_trade_gate": {
+                                    "passed": True,
+                                    "canonical_version": CANONICAL_TRADE_CONTRACT_VERSION,
+                                    "primary_blocker": None,
+                                    "reason": "fresh_buy_quality_passed",
+                                    "size_multiplier": 0.35,
+                                }
+                            }
+                        },
+                        "context": {
+                            "data_readiness": {"trade_decision_ready": True},
+                            "full_spectrum_analysis": {
+                                "confluence_score": {"total": 18},
+                                "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
+                                "risk_overrides": {"flags": []},
+                            },
+                        },
+                    }
+                ),
+            )
+
+            db.insert_decisions([decision])
+            db.upsert_signal_ideas_from_decisions([decision])
+            row = db.latest_signal_ideas(1)[0]
+
+        self.assertEqual(row["symbol"], "CANONBUY")
+        self.assertEqual(row["signal_type"], "BUY")
+        self.assertEqual(row["status"], "ACTIVE")
+        self.assertEqual(row["fresh_action"], "BUY_NOW")
 
 
 if __name__ == "__main__":

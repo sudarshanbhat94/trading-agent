@@ -7072,7 +7072,17 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         context.get("macro_event_context"),
         context_summary.get("macro_event_context"),
     )
-    action = str(row.get("action") or "HOLD").upper()
+    raw_action = str(row.get("action") or "HOLD").upper()
+    action = raw_action
+    duplicate_suppression = audit.get("duplicate_buy_suppression") if isinstance(audit.get("duplicate_buy_suppression"), dict) else {}
+    canonical_gate = _canonical_trade_gate_from_audit(audit)
+    canonical_buy_intent = (
+        raw_action == "HOLD"
+        and canonical_gate.get("passed") is True
+        and not bool(duplicate_suppression.get("suppressed"))
+    )
+    if canonical_buy_intent:
+        action = "BUY"
     combined = float(score_breakdown.get("combined") or 0.0)
     confluence_total = float(confluence.get("total") or 0.0)
     hard_blocked = bool(system_audit.get("hard_blocked"))
@@ -7097,6 +7107,8 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     opportunity_scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
     details = {
         "action": action,
+        "latest_system_action": action,
+        "raw_decision_action": raw_action,
         "tier": confluence.get("tier"),
         "decision_readiness": signal_plan.get("decision_readiness", "monitor_only"),
         "entry_zone": trade_plan.get("entry_zone"),
@@ -7308,6 +7320,17 @@ def _apply_btst_signal_details(details: dict[str, Any], price: float) -> None:
         "checks": btst.get("checks"),
         "evidence": btst.get("evidence"),
     }
+
+
+def _canonical_trade_gate_from_audit(audit: dict[str, Any]) -> dict[str, Any]:
+    risk_gates = audit.get("risk_gates") if isinstance(audit.get("risk_gates"), dict) else {}
+    gate_context = risk_gates.get("decision_gate_context") if isinstance(risk_gates.get("decision_gate_context"), dict) else {}
+    gate = gate_context.get("canonical_trade_gate") if isinstance(gate_context.get("canonical_trade_gate"), dict) else {}
+    if gate:
+        return gate
+    context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
+    nested_gate_context = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
+    return nested_gate_context.get("canonical_trade_gate") if isinstance(nested_gate_context.get("canonical_trade_gate"), dict) else {}
 
 
 def _empty_candle_coverage() -> dict[str, Any]:

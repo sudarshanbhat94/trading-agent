@@ -4744,7 +4744,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
     if mode == "SIGNAL_ONLY":
         return summary
 
-    decision_buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if getattr(decision, "action", "") == "BUY"}
+    decision_buy_symbols = {str(getattr(decision, "symbol", "") or "").upper() for decision in decisions if _decision_has_buy_intent(decision)}
     if monitor_allowed:
         blocked = sorted(symbol for symbol in decision_buy_symbols if symbol and symbol not in monitor_allowed)
         if blocked:
@@ -4959,6 +4959,22 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     if not _idea_seen_recently(idea):
         return False
     return _price_inside_entry_zone(idea, cushion_pct=0.003)
+
+
+def _decision_has_buy_intent(decision: Decision) -> bool:
+    if str(getattr(decision, "action", "") or "").upper() == "BUY":
+        return True
+    try:
+        audit = json.loads(getattr(decision, "details_json", "") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    duplicate = audit.get("duplicate_buy_suppression") if isinstance(audit.get("duplicate_buy_suppression"), dict) else {}
+    if duplicate.get("suppressed"):
+        return False
+    risk_gates = audit.get("risk_gates") if isinstance(audit.get("risk_gates"), dict) else {}
+    gate_context = risk_gates.get("decision_gate_context") if isinstance(risk_gates.get("decision_gate_context"), dict) else {}
+    canonical_gate = gate_context.get("canonical_trade_gate") if isinstance(gate_context.get("canonical_trade_gate"), dict) else {}
+    return canonical_gate.get("passed") is True
 
 
 def _idea_seen_recently(idea: dict[str, Any], *, minutes: int = FRESH_BUY_WINDOW_MINUTES) -> bool:
