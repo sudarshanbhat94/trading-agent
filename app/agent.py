@@ -184,19 +184,39 @@ class TradingAgentService:
                     timeout=self._market_action_timeout_seconds(),
                 )
             except asyncio.TimeoutError:
-                market_action_summary = {
-                    "enabled": True,
-                    "source": "market_action_radar",
-                    "events": [],
-                    "events_by_symbol": {},
-                    "errors": [f"market_action_radar_timeout_after_{self._market_action_timeout_seconds():g}s"],
-                }
+                timeout_error = f"market_action_radar_timeout_after_{self._market_action_timeout_seconds():g}s"
+                cached_market_action = self._recent_market_action_summary()
+                if cached_market_action:
+                    market_action_summary = {
+                        **cached_market_action,
+                        "enabled": True,
+                        "source": cached_market_action.get("source") or "market_action_radar",
+                        "reused_due_to_timeout": True,
+                        "errors": [*(cached_market_action.get("errors") or []), timeout_error],
+                    }
+                    timeout_event = "market_action_radar_timeout_reused_cache"
+                    timeout_message = "Market-action radar timed out; reusing recent non-empty radar snapshot."
+                else:
+                    market_action_summary = {
+                        "enabled": True,
+                        "source": "market_action_radar",
+                        "events": [],
+                        "events_by_symbol": {},
+                        "errors": [timeout_error],
+                    }
+                    timeout_event = "market_action_radar_timeout"
+                    timeout_message = "Market-action radar timed out; continuing with configured raw scan universe."
                 self._log(
                     "WARN",
                     "scanner",
-                    "market_action_radar_timeout",
-                    "Market-action radar timed out; continuing with configured raw scan universe.",
-                    {"timeout_seconds": self._market_action_timeout_seconds(), "phase": self._cycle_phase},
+                    timeout_event,
+                    timeout_message,
+                    {
+                        "timeout_seconds": self._market_action_timeout_seconds(),
+                        "phase": self._cycle_phase,
+                        "reused_cached_events": int(len((market_action_summary.get("events_by_symbol") or {}))),
+                        "cache_age_seconds": market_action_summary.get("cache_age_seconds"),
+                    },
                 )
             except Exception as exc:
                 market_action_summary = {
@@ -1117,6 +1137,27 @@ class TradingAgentService:
     def _market_action_timeout_seconds(self) -> float:
         raw = getattr(self.strategy.settings, "market_action_radar_timeout_seconds", self._optional_phase_timeout_seconds())
         return self._bounded_positive_seconds(raw, default=self._optional_phase_timeout_seconds())
+
+    def _recent_market_action_summary(self, max_age_seconds: float = 900.0) -> dict[str, Any]:
+        cached = self.db.get_state("market_action_radar", {})
+        if not isinstance(cached, dict):
+            return {}
+        events_by_symbol = cached.get("events_by_symbol") if isinstance(cached.get("events_by_symbol"), dict) else {}
+        if not events_by_symbol:
+            return {}
+        scanned_at = cached.get("scanned_at")
+        cache_age_seconds: float | None = None
+        if scanned_at:
+            try:
+                parsed = datetime.fromisoformat(str(scanned_at).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                cache_age_seconds = max((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds(), 0.0)
+            except ValueError:
+                cache_age_seconds = None
+        if cache_age_seconds is not None and cache_age_seconds > max_age_seconds:
+            return {}
+        return {**cached, "cache_age_seconds": round(cache_age_seconds, 3) if cache_age_seconds is not None else None}
 
     def _news_probe_timeout_seconds(self) -> float:
         raw = getattr(self.strategy.settings, "dynamic_scan_news_timeout_seconds", 3.0)

@@ -90,7 +90,7 @@ class Settings:
     dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
     market_action_radar_enabled: bool = _bool("MARKET_ACTION_RADAR_ENABLED", True)
     market_action_radar_limit: int = _int("MARKET_ACTION_RADAR_LIMIT", 40)
-    market_action_radar_timeout_seconds: float = _float("MARKET_ACTION_RADAR_TIMEOUT_SECONDS", 4.0)
+    market_action_radar_timeout_seconds: float = _float("MARKET_ACTION_RADAR_TIMEOUT_SECONDS", 8.0)
     market_action_priority_news_limit: int = _int("MARKET_ACTION_PRIORITY_NEWS_LIMIT", 40)
     market_action_moneycontrol_categories: str = os.getenv(
         "MARKET_ACTION_MONEYCONTROL_CATEGORIES",

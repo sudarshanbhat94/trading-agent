@@ -274,6 +274,31 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertTrue(result["deferred"])
         self.assertEqual(result["engine"], "deferred_for_broad_cycle")
 
+    def test_market_action_timeout_can_reuse_recent_non_empty_snapshot(self) -> None:
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.db = SimpleNamespace(
+            get_state=lambda key, default=None: {
+                "enabled": True,
+                "source": "market_action_radar",
+                "scanned_at": datetime.now(timezone.utc).isoformat(),
+                "events_by_symbol": {
+                    "READY": {
+                        "symbol": "READY",
+                        "strategy": "market_action_momentum",
+                        "market_action_score": 94,
+                    }
+                },
+                "events": [{"symbol": "READY"}],
+            }
+            if key == "market_action_radar"
+            else default
+        )
+
+        cached = agent._recent_market_action_summary()
+
+        self.assertEqual(set(cached["events_by_symbol"]), {"READY"})
+        self.assertLess(cached["cache_age_seconds"], 5)
+
     def test_pre_strategy_candle_fetch_defaults_to_deferred(self) -> None:
         agent = TradingAgentService.__new__(TradingAgentService)
         agent.strategy = SimpleNamespace(settings=SimpleNamespace())
