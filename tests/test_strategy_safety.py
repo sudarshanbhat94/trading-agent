@@ -2965,6 +2965,25 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(sizing["amount"], 7_500.0)
         self.assertTrue(sizing["economics_floor_applied"])
 
+    def test_auto_follow_sizing_uses_normal_risk_budget_for_fundable_floor(self) -> None:
+        sizing = auto_follow_sizing(
+            92_457.0,
+            454.70,
+            max_position_pct=0.25,
+            size_multiplier=0.35,
+            market_region="IN",
+            settings=_economics_settings(),
+            stop_loss=429.70,
+            confidence=0.35,
+            avg_daily_turnover=160_000_000.0,
+        )
+
+        self.assertTrue(sizing["passed"], sizing)
+        self.assertEqual(sizing["qty"], 17)
+        self.assertGreaterEqual(sizing["amount"], 7_500.0)
+        self.assertEqual(sizing["risk_qty"], 12)
+        self.assertGreaterEqual(sizing["floor_risk_qty"], sizing["minimum_qty"])
+
     def test_auto_follow_sizing_rejects_floor_when_risk_qty_cannot_fund_minimum(self) -> None:
         sizing = auto_follow_sizing(
             25_000.0,

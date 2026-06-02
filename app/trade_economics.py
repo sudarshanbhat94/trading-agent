@@ -51,12 +51,15 @@ def auto_follow_sizing(
         liquidity_cap = max(float(avg_daily_turnover or 0.0) * 0.01, min_notional)
         cap = min(cap, liquidity_cap)
     risk_qty = None
+    floor_risk_qty = None
     stop = max(float(stop_loss or 0.0), 0.0)
     if stop > 0 and stop < price:
         risk_budget_pct = _setting(settings, "paper_risk_per_trade_pct", 0.01)
-        risk_budget = cash * max(min(float(risk_budget_pct or 0.01), 0.05), 0.001) * max(size_multiplier, 0.10)
+        base_risk_budget = cash * max(min(float(risk_budget_pct or 0.01), 0.05), 0.001)
+        risk_budget = base_risk_budget * max(size_multiplier, 0.10)
         per_share_risk = max(price - stop, price * 0.005)
         risk_qty = max(int(risk_budget // per_share_risk), 0)
+        floor_risk_qty = max(int(base_risk_budget // per_share_risk), 0)
     min_qty = max(1, int(math.ceil(min_notional / price))) if min_notional > 0 else 1
     economics_floor_notional = min_qty * price
     economics_floor_applied = False
@@ -66,7 +69,8 @@ def auto_follow_sizing(
     max_qty_by_cap = int(min(cash, cap) // price)
     target_qty = int(min(cash, target) // price)
     if risk_qty is not None:
-        max_qty_by_cap = min(max_qty_by_cap, risk_qty)
+        floor_risk_allowed_qty = min_qty if floor_risk_qty is not None and floor_risk_qty >= min_qty else risk_qty
+        max_qty_by_cap = min(max_qty_by_cap, max(int(risk_qty or 0), int(floor_risk_allowed_qty or 0)))
         target_qty = min(target_qty, risk_qty)
 
     qty = target_qty
@@ -88,6 +92,7 @@ def auto_follow_sizing(
             "base_cap_pct": round(base_cap_pct, 4),
             "confidence_multiplier": round(confidence_multiplier, 4),
             "risk_qty": risk_qty,
+            "floor_risk_qty": floor_risk_qty,
             "liquidity_cap_notional": round(liquidity_cap, 2) if liquidity_cap is not None else None,
             "economics_floor_applied": economics_floor_applied,
             "minimum_notional": round(min_notional, 2),
@@ -110,6 +115,7 @@ def auto_follow_sizing(
         "base_cap_pct": round(base_cap_pct, 4),
         "confidence_multiplier": round(confidence_multiplier, 4),
         "risk_qty": risk_qty,
+        "floor_risk_qty": floor_risk_qty,
         "liquidity_cap_notional": round(liquidity_cap, 2) if liquidity_cap is not None else None,
         "economics_floor_applied": economics_floor_applied,
         "minimum_notional": round(min_notional, 2),
