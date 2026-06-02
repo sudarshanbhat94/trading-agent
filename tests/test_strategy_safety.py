@@ -1038,6 +1038,190 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(review["turnover_floor"], 10_000_000)
         self.assertEqual(context["best_strategy"]["name"], "live_intraday_momentum")
 
+    def test_reset_mode_keeps_btst_diagnostic_only(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(
+                decision_authority_mode="reset_v2",
+                max_position_pct=0.1,
+                dynamic_scan_min_turnover_inr=50_000_000,
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(session_momentum={"available": True, "confirmed": False})
+        context["best_strategy"] = {"name": "no_actionable_strategy", "score": 0.0}
+        context["full_spectrum_analysis"]["entry_quality"] = {
+            "entry_grade": "WATCH",
+            "volume_confirmation": False,
+        }
+        context["full_spectrum_analysis"]["trade_plan"] = {}
+        context["opportunity_scan"] = _btst_scan_payload()
+
+        engine._apply_btst_strategy(context)
+
+        full = context["full_spectrum_analysis"]
+        self.assertEqual(context["best_strategy"]["name"], "no_actionable_strategy")
+        self.assertEqual(full["entry_quality"]["entry_grade"], "WATCH")
+        self.assertEqual(full["trade_plan"], {})
+        self.assertIn("btst_review", full)
+        self.assertEqual(full["decision_authority_reset"]["btst_buy_candidate"]["status"], "diagnostic_only")
+
+    def test_reset_mode_keeps_live_momentum_diagnostic_only(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(
+                decision_authority_mode="reset_v2",
+                max_position_pct=0.1,
+                dynamic_scan_min_turnover_inr=50_000_000,
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.4,
+                "day_range_position": 0.88,
+                "day_high_distance_pct": 0.3,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["best_strategy"] = {"name": "no_actionable_strategy", "score": 0.0}
+        context["strategy_signals"] = []
+        context["full_spectrum_analysis"]["entry_quality"] = {
+            "entry_grade": "WATCH",
+            "volume_confirmation": False,
+        }
+        context["opportunity_scan"] = {
+            "setup": "opening_ignition",
+            "bucket": "Actionable",
+            "score": 0.88,
+            "day_gain_pct": 3.4,
+            "day_range_position": 0.88,
+            "day_high_distance_pct": 0.3,
+            "volume_ratio": 2.3,
+            "turnover": 260_000_000,
+            "components": {"live_momentum": 0.86},
+            "data_quality": {"actionable_data_ready": True},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+
+        full = context["full_spectrum_analysis"]
+        self.assertTrue(full["live_momentum_review"]["strategy_ready"])
+        self.assertEqual(context["best_strategy"]["name"], "no_actionable_strategy")
+        self.assertEqual(context["strategy_signals"], [])
+        self.assertEqual(full["entry_quality"]["entry_grade"], "WATCH")
+        self.assertEqual(full["decision_authority_reset"]["live_momentum"]["status"], "diagnostic_only")
+
+    def test_reset_mode_disables_opportunity_probe_absorption(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(
+                decision_authority_mode="reset_v2",
+                max_position_pct=0.1,
+                dynamic_scan_min_turnover_inr=50_000_000,
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.5,
+                "day_range_position": 0.92,
+                "day_high_distance_pct": 0.3,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["institutional_scorecard"]["buy_ready"] = False
+        context["full_spectrum_analysis"]["institutional_scorecard"]["total_score"] = 54
+        context["full_spectrum_analysis"]["institutional_scorecard"]["score"] = 54
+        context["opportunity_scan"] = {
+            "setup": "opening_ignition",
+            "bucket": "Actionable",
+            "score": 0.84,
+            "day_gain_pct": 3.5,
+            "day_range_position": 0.92,
+            "day_high_distance_pct": 0.3,
+            "volume_ratio": 0.45,
+            "projected_volume_ratio": 2.5,
+            "components": {"live_momentum": 0.66},
+            "data_quality": {"actionable_data_ready": False, "missing": ["stale_intraday_candles"]},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        action = engine._action_from_context("LIVEPROBE", 0.24, {}, context, {})
+
+        gates = context["decision_gate_context"]
+        self.assertEqual(action, "HOLD")
+        self.assertFalse(gates["opportunity_probe"]["ready"])
+        self.assertEqual(gates["opportunity_probe"]["reason"], "decision_authority_reset_disables_opportunity_probe")
+        self.assertFalse(gates["reset_trade_authority_gate"]["passed"])
+        self.assertIn("fresh_market_data_gate", {gate["gate"] for gate in gates["blocking_failed_gates"]})
+
+    def test_reset_trade_authority_gate_requires_clean_trade_contract(self) -> None:
+        engine = StrategyEngine(
+            SimpleNamespace(
+                decision_authority_mode="reset_v2",
+                max_position_pct=0.1,
+                dynamic_scan_min_turnover_inr=50_000_000,
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        context = _momentum_gate_context(
+            session_momentum={
+                "available": True,
+                "day_gain_pct": 3.2,
+                "day_range_position": 0.86,
+                "day_high_distance_pct": 0.2,
+                "confirmed": True,
+                "fast_mover": True,
+            }
+        )
+        context["full_spectrum_analysis"]["entry_quality"]["entry_grade"] = "A"
+        context["opportunity_scan"] = {
+            "setup": "opening_ignition",
+            "bucket": "Actionable",
+            "score": 0.91,
+            "day_gain_pct": 3.2,
+            "day_range_position": 0.86,
+            "day_high_distance_pct": 0.2,
+            "volume_ratio": 2.4,
+            "turnover": 280_000_000,
+            "components": {"live_momentum": 0.88},
+            "data_quality": {"actionable_data_ready": True},
+        }
+
+        engine._apply_live_momentum_strategy(context)
+        gate = engine._reset_trade_authority_gate(
+            context=context,
+            rule_audit={"hard_blocked": False, "overall_score_pct": 88, "overall_grade": "A"},
+            failed_gates=[],
+            combined=0.46,
+            threshold=0.30,
+            confluence_total=24,
+            effective_entry_grade="A",
+        )
+
+        self.assertTrue(gate["passed"])
+
+        context["full_spectrum_analysis"]["trade_plan"] = {}
+        blocked = engine._reset_trade_authority_gate(
+            context=context,
+            rule_audit={"hard_blocked": False, "overall_score_pct": 88, "overall_grade": "A"},
+            failed_gates=[],
+            combined=0.46,
+            threshold=0.30,
+            confluence_total=24,
+            effective_entry_grade="A",
+        )
+
+        self.assertFalse(blocked["passed"])
+        self.assertIn("stop_loss_missing_or_invalid", {item["reason"] for item in blocked["blockers"]})
+        self.assertIn("target_missing_or_invalid", {item["reason"] for item in blocked["blockers"]})
+
     def test_broad_momentum_buy_requires_current_session_confirmation(self) -> None:
         engine = StrategyEngine(SimpleNamespace(max_position_pct=0.1), SimpleNamespace(), SimpleNamespace())
         context = _momentum_gate_context(
