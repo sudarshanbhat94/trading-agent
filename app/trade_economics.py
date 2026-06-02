@@ -57,11 +57,12 @@ def auto_follow_sizing(
         risk_budget = cash * max(min(float(risk_budget_pct or 0.01), 0.05), 0.001) * max(size_multiplier, 0.10)
         per_share_risk = max(price - stop, price * 0.005)
         risk_qty = max(int(risk_budget // per_share_risk), 0)
-    economics_floor_applied = False
-    if min_notional > cap and size_multiplier >= 0.75 and min_notional <= cash * 0.60:
-        cap = min_notional
-        economics_floor_applied = True
     min_qty = max(1, int(math.ceil(min_notional / price))) if min_notional > 0 else 1
+    economics_floor_notional = min_qty * price
+    economics_floor_applied = False
+    if economics_floor_notional > cap and economics_floor_notional <= cash * 0.60:
+        cap = economics_floor_notional
+        economics_floor_applied = True
     max_qty_by_cap = int(min(cash, cap) // price)
     target_qty = int(min(cash, target) // price)
     if risk_qty is not None:

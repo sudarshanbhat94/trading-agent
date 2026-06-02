@@ -2950,7 +2950,7 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(sizing["amount"], 7_500.0)
         self.assertTrue(sizing["economics_floor_applied"])
 
-    def test_auto_follow_sizing_does_not_upsize_reduced_quality_probe(self) -> None:
+    def test_auto_follow_sizing_upsizes_reduced_quality_probe_to_floor_when_fundable(self) -> None:
         sizing = auto_follow_sizing(
             25_000.0,
             100.0,
@@ -2960,8 +2960,24 @@ class StrategySafetyTests(unittest.TestCase):
             settings=_economics_settings(),
         )
 
+        self.assertTrue(sizing["passed"])
+        self.assertEqual(sizing["qty"], 75)
+        self.assertEqual(sizing["amount"], 7_500.0)
+        self.assertTrue(sizing["economics_floor_applied"])
+
+    def test_auto_follow_sizing_rejects_floor_when_risk_qty_cannot_fund_minimum(self) -> None:
+        sizing = auto_follow_sizing(
+            25_000.0,
+            100.0,
+            max_position_pct=0.15,
+            size_multiplier=0.35,
+            market_region="IN",
+            settings=_economics_settings(),
+            stop_loss=80.0,
+        )
+
         self.assertFalse(sizing["passed"])
-        self.assertFalse(sizing["economics_floor_applied"])
+        self.assertEqual(sizing["reason"], "position_size_below_minimum_trade_economics")
 
     def test_paper_broker_uses_minimum_economic_size_for_conviction_buy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
