@@ -2082,17 +2082,17 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
         tracked_ideas = _followed_signal_ideas_for_user(user_id, 100, monitor_symbols=monitor_symbols)
-        follow_history = _follow_history_for_user(user_id, 80, monitor_symbols=monitor_symbols)
+        follow_history = _follow_history_for_user(user_id, 50, monitor_symbols=monitor_symbols)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
         snapshot["decisions"] = []
         snapshot["decisions_by_market"] = {
             "IN": _with_detail_urls(
-                _latest_decision_summaries_for_user(user_id, 50, market_region="IN", monitor_symbols=monitor_symbols),
+                _latest_decision_summaries_for_user(user_id, 20, market_region="IN", monitor_symbols=monitor_symbols),
                 "decisions",
             ),
             "US": _with_detail_urls(
-                _latest_decision_summaries_for_user(user_id, 50, market_region="US", monitor_symbols=monitor_symbols),
+                _latest_decision_summaries_for_user(user_id, 20, market_region="US", monitor_symbols=monitor_symbols),
                 "decisions",
             ),
         }
@@ -2130,8 +2130,8 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["portfolio_by_market"] = user_portfolio.get("portfolio_by_market", {})
         snapshot["paper_cash_pool_by_market"] = paper_cash_by_market
         snapshot["paper_realized_pnl_by_market"] = realized_pnl_by_market
-        snapshot["strategy_plans"] = _filter_strategy_plans_for_symbols(db.strategy_plans(), monitor_symbols)
-        snapshot["performance"] = db.performance_summary(user_id=user_id)
+        snapshot["strategy_plans"] = []
+        snapshot["performance"] = {}
         snapshot["paper_exit_manager"] = paper_exit_manager
         snapshot["equity_curve_by_market"] = _user_equity_curve_by_market(
             tracked_ideas,
@@ -2247,7 +2247,7 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "details": _compact_follow_event_details(row),
                 }
             )
-    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:120]
+    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:60]
 
 
 def _compact_follow_event_details(row: dict[str, Any]) -> dict[str, Any]:
