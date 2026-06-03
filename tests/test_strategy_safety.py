@@ -175,6 +175,45 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertTrue(allowed["passed"], allowed)
         self.assertEqual(allowed["decision_label"], "ENTRY_READY")
 
+    def test_big_runner_ignition_uses_regime_gate_and_catalyst_evidence(self) -> None:
+        context = _raw_entry_context(
+            price=123.2,
+            setup="big_runner_ignition",
+            market_region="IN",
+            technical_score=0.91,
+            day_gain_pct=3.6,
+            volume_ratio=2.8,
+            projected_volume_ratio=3.1,
+            day_range_position=0.92,
+            day_high_distance_pct=0.3,
+        )
+        context["sector"] = "Technology"
+        context["opportunity_scan"]["sector"] = "Technology"
+        context["opportunity_scan"]["components"] = {"live_momentum": 0.84, "big_runner": 0.82}
+        context["opportunity_scan"]["big_runner"] = {
+            "available": True,
+            "stage": "live_momentum",
+            "setup": "big_runner_ignition",
+            "action": "BUY CHECK",
+            "score": 0.82,
+            "evidence": {"catalyst_score": 0.65, "rs_rank": 94.0},
+        }
+        context["market_day_regime"] = {"state": REGIME_RISK_OFF, "score": -45.0, "sector_participation": {}}
+
+        blocked = evaluate_raw_entry(context, _raw_opportunity_settings())
+        context["market_day_regime"] = {
+            "state": REGIME_SELECTIVE_RALLY,
+            "score": 28.0,
+            "sector_participation": {"Technology": {"advancer_pct": 0.72}},
+        }
+        allowed = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(blocked["passed"], blocked)
+        self.assertEqual(blocked["reason"], "market_day_regime_not_supportive_for_live_momentum")
+        self.assertTrue(allowed["passed"], allowed)
+        self.assertEqual(allowed["decision_label"], "ENTRY_READY")
+        self.assertTrue(allowed["components"]["big_runner_catalyst"])
+
     def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN"),

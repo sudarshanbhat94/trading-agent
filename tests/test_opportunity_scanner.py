@@ -154,6 +154,123 @@ class OpportunityScannerTests(unittest.TestCase):
         self.assertFalse(item["btst"]["checks"]["day_move_ok"])
         self.assertNotEqual(item["setup"], "btst_buy_candidate")
 
+    def test_big_runner_watch_detects_tight_base_before_ignition(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "PRERUN", "exchange": "NSE", "sector": "Industrials"}
+        daily = _big_runner_base_candles("PRERUN", datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "PRERUN",
+            119.4,
+            "upstox-live",
+            _india_session_iso(10, 5),
+            open=119.0,
+            high=119.9,
+            low=118.7,
+            volume=2_600_000,
+        )
+
+        result = scanner.rank(
+            [row],
+            {"PRERUN": quote},
+            {"PRERUN": {"analysis": daily, "daily": daily}},
+            sentiment_by_symbol={"PRERUN": {"score": 0.35, "confidence": 0.6, "headline_count": 1}},
+        )
+
+        item = result.candidates[0]
+        self.assertEqual(item["setup"], "big_runner_watch")
+        self.assertEqual(item["big_runner"]["action"], "WATCH")
+        self.assertEqual(item["big_runner"]["stage"], "t1_pressure")
+        self.assertIn("tight base", item["big_runner"]["why"])
+        self.assertEqual(result.summary["top_big_runner_candidates"][0]["symbol"], "PRERUN")
+
+    def test_big_runner_ignition_promotes_near_open_confirmation(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "IGNITE", "exchange": "NSE", "sector": "Technology"}
+        daily = _big_runner_base_candles("IGNITE", datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "IGNITE",
+            123.2,
+            "upstox-live",
+            _india_session_iso(9, 50),
+            open=119.0,
+            high=123.4,
+            low=118.6,
+            volume=4_400_000,
+        )
+
+        item = scanner._score_row(
+            row,
+            quote,
+            {"analysis": daily, "daily": daily},
+            False,
+            {"score": 0.45, "confidence": 0.7, "headline_count": 1, "events": [{"event_type": "order_win", "confidence": 0.7}]},
+            {"rs_rank": 95, "improving": True},
+        )
+
+        self.assertEqual(item["setup"], "big_runner_ignition")
+        self.assertEqual(item["big_runner"]["stage"], "live_momentum")
+        self.assertEqual(item["big_runner"]["action"], "BUY CHECK")
+        self.assertGreaterEqual(item["components"]["big_runner"], 0.72)
+        self.assertTrue(item["big_runner"]["trigger_price"])
+        self.assertTrue(item["big_runner"]["max_entry"])
+
+    def test_big_runner_midday_large_move_is_not_fresh_ignition(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "MIDCHASE", "exchange": "NSE", "sector": "Technology"}
+        daily = _big_runner_base_candles("MIDCHASE", datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "MIDCHASE",
+            128.0,
+            "upstox-live",
+            _india_session_iso(13, 45),
+            open=119.0,
+            high=128.4,
+            low=118.7,
+            volume=5_800_000,
+        )
+
+        item = scanner._score_row(
+            row,
+            quote,
+            {"analysis": daily, "daily": daily},
+            False,
+            {"score": 0.35, "confidence": 0.7, "headline_count": 1},
+            {"rs_rank": 95, "improving": True},
+        )
+
+        self.assertEqual(item["setup"], "extended_momentum_watch")
+        self.assertEqual(item["bucket"], "LATE_CHASE_AVOID")
+        self.assertEqual(item["big_runner"]["action"], "AVOID")
+
+    def test_big_runner_detector_avoids_extended_chase(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "TOOLATE", "exchange": "NSE", "sector": "Industrials"}
+        daily = _big_runner_base_candles("TOOLATE", datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "TOOLATE",
+            132.0,
+            "upstox-live",
+            _india_session_iso(13, 15),
+            open=119.0,
+            high=132.5,
+            low=118.8,
+            volume=7_500_000,
+        )
+
+        item = scanner._score_row(
+            row,
+            quote,
+            {"analysis": daily, "daily": daily},
+            False,
+            {"score": 0.35, "confidence": 0.7, "headline_count": 1},
+            {"rs_rank": 96, "improving": True},
+        )
+
+        self.assertEqual(item["bucket"], "LATE_CHASE_AVOID")
+        self.assertEqual(item["setup"], "extended_momentum_watch")
+        self.assertEqual(item["big_runner"]["action"], "AVOID")
+        self.assertEqual(item["big_runner"]["blockers"][0]["reason"], "do_not_chase_extended_big_runner")
+
     def test_india_slot_budgeting_refills_to_full_decision_target(self) -> None:
         scanner = OpportunityScanner(
             SimpleNamespace(
@@ -441,6 +558,8 @@ def _settings() -> SimpleNamespace:
         dynamic_scan_breakout_distance_pct=3.0,
         dynamic_scan_sentiment_enabled=True,
         dynamic_scan_sentiment_weight=0.12,
+        big_runner_detector_enabled=True,
+        big_runner_min_score=0.62,
     )
 
 
@@ -452,6 +571,34 @@ def _india_session_iso(hour: int, minute: int) -> str:
 def _india_intraday_start_utc() -> datetime:
     local = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=9, minute=15, second=0, microsecond=0)
     return local.astimezone(timezone.utc)
+
+
+def _big_runner_base_candles(symbol: str, start: datetime) -> list[Candle]:
+    output: list[Candle] = []
+    for index in range(70):
+        ts = start + timedelta(days=index)
+        if index < 45:
+            close = 84.0 + index * 0.72
+            volume = 1_350_000
+        elif index < 62:
+            close = 116.0 + (index % 5) * 0.7
+            volume = 1_450_000
+        else:
+            close = 118.2 + (index - 62) * 0.18
+            volume = 720_000
+        output.append(
+            Candle(
+                symbol=symbol,
+                ts=ts.isoformat(),
+                open=close * 0.997,
+                high=max(close * 1.009, 121.0 if index in {58, 59} else close * 1.006),
+                low=close * 0.991,
+                close=close,
+                volume=volume,
+                source="upstox-live:day",
+            )
+        )
+    return output
 
 
 def _candles(symbol: str, source: str, count: int, start: datetime) -> list[Candle]:

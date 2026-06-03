@@ -93,6 +93,90 @@ class RallyPlanBuilderTests(unittest.TestCase):
         self.assertEqual(item["action"], "AVOID")
         self.assertEqual(item["blockers"][0]["reason"], "do_not_chase_extended_market_action")
 
+    def test_big_runner_candidate_includes_why_what_how_and_levels(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_BROAD_RALLY, "score": 72.0},
+            opportunity_scan={
+                "market_region": "IN",
+                "top_big_runner_candidates": [
+                    {
+                        "symbol": "PRERUN",
+                        "name": "Pre Runner",
+                        "market_region": "IN",
+                        "score": 0.78,
+                        "setup": "big_runner_watch",
+                        "big_runner": {
+                            "available": True,
+                            "stage": "t1_pressure",
+                            "setup": "big_runner_watch",
+                            "action": "WATCH",
+                            "score": 0.74,
+                            "why": "tight base near breakout; relative strength leadership",
+                            "what": "Prepare levels and wait for pre-open or first-hour ignition.",
+                            "how": "No buy from pressure alone; act only after confirmation and supportive regime.",
+                            "trigger_price": 121.0,
+                            "max_entry": 122.21,
+                            "stop_loss": 116.3,
+                            "target1": 126.2,
+                            "invalidation": "Invalid below 116.3 or if volume/regime confirmation fails.",
+                            "evidence": {"rs_rank": 93.0},
+                            "blockers": [],
+                        },
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["t1_pressure"]
+
+        self.assertEqual(item["symbol"], "PRERUN")
+        self.assertEqual(item["strategy"], "big_runner_watch")
+        self.assertIn("tight base", item["why"])
+        self.assertIn("wait", item["what"])
+        self.assertIn("confirmation", item["how"])
+        self.assertEqual(item["trigger_price"], 121.0)
+        self.assertEqual(item["blockers"], [])
+        self.assertIn("big_runner", item["evidence"])
+
+    def test_big_runner_live_momentum_is_watch_when_regime_blocks(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_FADE_RISK, "score": -12.0},
+            opportunity_scan={
+                "market_region": "IN",
+                "top_big_runner_candidates": [
+                    {
+                        "symbol": "IGNITE",
+                        "market_region": "IN",
+                        "score": 0.83,
+                        "setup": "big_runner_ignition",
+                        "big_runner": {
+                            "available": True,
+                            "stage": "live_momentum",
+                            "setup": "big_runner_ignition",
+                            "action": "BUY CHECK",
+                            "score": 0.82,
+                            "why": "volume participation is starting",
+                            "what": "Confirm broad/selective rally regime, VWAP hold, opening-range hold, and volume pace.",
+                            "how": "Entry authority may promote only while price holds trigger and stays below max entry.",
+                            "trigger_price": 123.4,
+                            "max_entry": 124.14,
+                            "stop_loss": 119.1,
+                            "target1": 128.2,
+                            "blockers": [],
+                        },
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["live_momentum"]
+
+        self.assertEqual(item["symbol"], "IGNITE")
+        self.assertEqual(item["action"], "WATCH")
+        self.assertEqual(item["blockers"][0]["reason"], "market_day_regime_not_supportive_for_live_momentum")
+
     def test_by_market_respects_explicit_us_market_region(self) -> None:
         plan = build_rally_plan_by_market(
             market_day_regime={"by_market": {"IN": {"state": REGIME_BROAD_RALLY}, "US": {"state": REGIME_BROAD_RALLY}}},

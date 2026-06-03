@@ -36,6 +36,7 @@ def build_rally_plan(
     items: list[dict[str, Any]] = []
     items.extend(_pre_catalyst_items(pre_catalyst, region))
     items.extend(_tomorrow_plan_items(tomorrow_plan, region))
+    items.extend(_big_runner_items(opportunity_scan, region, regime))
     items.extend(_opportunity_scan_items(opportunity_scan, region, regime))
     items.extend(_market_action_items(market_action_radar, region, regime))
     items.extend(_signal_avoid_items(signal_ideas or [], region))
@@ -186,6 +187,66 @@ def _tomorrow_plan_items(plan: dict[str, Any], region: str) -> list[dict[str, An
                 invalidation="Invalid if pre-open or first live candle breaks the setup level.",
                 evidence={"tomorrow_plan": raw},
                 blockers=raw.get("failed_gates") if isinstance(raw.get("failed_gates"), list) else [],
+            )
+        )
+    return rows
+
+
+def _big_runner_items(scan: dict[str, Any], region: str, regime: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    candidates = scan.get("top_big_runner_candidates") or []
+    if not candidates:
+        candidates = [
+            item
+            for item in (scan.get("top_candidates") or [])
+            if isinstance(item, dict) and (item.get("big_runner") or {}).get("available")
+        ]
+    for raw in candidates[:40]:
+        if not isinstance(raw, dict) or _row_market(raw) != region:
+            continue
+        symbol = _symbol(raw)
+        if not symbol:
+            continue
+        big_runner = raw.get("big_runner") if isinstance(raw.get("big_runner"), dict) else {}
+        if not big_runner.get("available"):
+            continue
+        stage = str(big_runner.get("stage") or "")
+        action = str(big_runner.get("action") or "WATCH").upper()
+        if stage == "avoid" or action == "AVOID":
+            section = "avoid"
+        elif stage == "live_momentum":
+            section = "live_momentum"
+        elif stage == "opening_ignition":
+            section = "opening_ignition"
+        elif stage == "preopen_confirm":
+            section = "preopen_confirm"
+        else:
+            section = "t1_pressure"
+        blockers = big_runner.get("blockers") if isinstance(big_runner.get("blockers"), list) else []
+        if section == "live_momentum" and not _regime_allows_momentum(regime):
+            blockers = [*blockers, {"reason": "market_day_regime_not_supportive_for_live_momentum", "regime": regime.get("state")}]
+            if action == "BUY CHECK":
+                action = "WATCH"
+        rows.append(
+            _item(
+                symbol=symbol,
+                name=raw.get("name"),
+                market_region=region,
+                section=section,
+                stage=RALLY_PLAN_SECTIONS[section],
+                action=action,
+                strategy=big_runner.get("setup") or raw.get("setup") or "big_runner_detector",
+                score=_score(big_runner.get("score") or raw.get("score")),
+                why=big_runner.get("why") or _join_reasons(big_runner.get("reasons")) or "Big-runner fuel is visible.",
+                what=big_runner.get("what") or "Wait for confirmation before acting.",
+                how=big_runner.get("how") or "Use trigger, max entry, stop, and regime confirmation before entry.",
+                trigger_price=_num(big_runner.get("trigger_price") or raw.get("price")),
+                max_entry=_num(big_runner.get("max_entry") or raw.get("max_entry")),
+                stop_loss=_num(big_runner.get("stop_loss") or raw.get("stop_loss")),
+                target1=_num(big_runner.get("target1") or raw.get("target1")),
+                invalidation=big_runner.get("invalidation") or "Invalid if trigger fails, volume fades, or market regime weakens.",
+                evidence={"big_runner": big_runner, "opportunity_scan": raw, "regime": regime},
+                blockers=blockers,
             )
         )
     return rows

@@ -32,6 +32,8 @@ _ACTIVE_OPPORTUNITY_SETUPS = {
     "opening_ignition",
     "price_shocker_reversal_breakout",
     "pre_rally_fuel",
+    "big_runner_watch",
+    "big_runner_ignition",
     "top_gainer_momentum",
     "intraday_momentum",
     "intraday_momentum_probe",
@@ -44,6 +46,7 @@ _ACTIVE_OPPORTUNITY_SETUPS = {
 _LIVE_RALLY_SETUPS = {
     "opening_ignition",
     "intraday_momentum",
+    "big_runner_ignition",
     "extended_momentum_watch",
 }
 
@@ -142,6 +145,12 @@ class OpportunityScanner:
             float(getattr(settings, "dynamic_scan_sentiment_weight", 0.12) or 0.0),
             0.0,
             0.3,
+        )
+        self.big_runner_enabled = bool(getattr(settings, "big_runner_detector_enabled", True))
+        self.big_runner_min_score = _clamp(
+            float(getattr(settings, "big_runner_min_score", 0.62) or 0.62),
+            0.0,
+            1.0,
         )
 
     def rank(
@@ -290,6 +299,11 @@ class OpportunityScanner:
                 for item in candidates
                 if item.get("rally_phase") and item.get("rally_phase") != "none"
             ][:25],
+            "top_big_runner_candidates": [
+                item
+                for item in candidates
+                if (item.get("big_runner") or {}).get("available")
+            ][:30],
             "top_market_action": [
                 item
                 for item in candidates
@@ -387,6 +401,21 @@ class OpportunityScanner:
             rs_context or {},
             min_turnover,
         )
+        big_runner = self._big_runner_review(
+            row,
+            quote,
+            candles,
+            metrics,
+            trend,
+            breakout,
+            momentum,
+            live_momentum,
+            volume,
+            sentiment,
+            rs_context or {},
+            min_turnover,
+            market_action_review,
+        )
         top_gainers_playbook = (
             evaluate_us_top_mover_playbook(
                 row=row,
@@ -437,6 +466,7 @@ class OpportunityScanner:
             + rally["score_boost"]
             + market_action_review["score_boost"]
             + btst["score_boost"]
+            + big_runner["score_boost"]
             + self._live_momentum_boost(metrics, live_momentum, min_turnover),
             0.0,
             1.0,
@@ -447,12 +477,16 @@ class OpportunityScanner:
         market_action_floor = self._market_action_score_floor(market_action_review, liquidity_profile, metrics)
         if market_action_floor > score:
             score = market_action_floor
+        big_runner_floor = self._big_runner_score_floor(big_runner, liquidity_profile, metrics)
+        if big_runner_floor > score:
+            score = big_runner_floor
         if btst.get("detected"):
             score = max(score, float(btst.get("score") or 0.0))
 
         reasons.extend(rally.get("reasons", []))
         reasons.extend(market_action_review.get("reasons", []))
         reasons.extend(btst.get("reasons", []))
+        reasons.extend(big_runner.get("reasons", []))
         if top_gainers_playbook.get("available"):
             reasons.append(
                 f"top gainers playbook: {top_gainers_playbook.get('final_signal')} "
@@ -495,12 +529,12 @@ class OpportunityScanner:
         if risk < 0.35:
             reasons.append("risk/reward needs caution")
 
-        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment, rally, min_turnover, market_action_review)
+        setup = self._setup(metrics, trend, breakout, momentum, volume, sentiment, rally, min_turnover, market_action_review, big_runner)
         playbook_strategy = top_gainers_playbook.get("strategy_match") if isinstance(top_gainers_playbook.get("strategy_match"), dict) else {}
         playbook_signal = str(top_gainers_playbook.get("final_signal") or "")
         if playbook_signal in {"STRONG BUY", "MODERATE BUY"} and playbook_strategy.get("code"):
             setup = str(playbook_strategy["code"])
-        elif btst.get("detected"):
+        elif btst.get("detected") and setup != "big_runner_ignition":
             setup = "btst_buy_candidate"
         late_chase = self._late_chase(metrics, market_action_review)
         bucket = self._bucket(score, risk, reject_reason, metrics)
@@ -511,6 +545,16 @@ class OpportunityScanner:
             if setup != "circuit_demand_lock":
                 setup = "extended_momentum_watch"
             reasons.append("late chase avoid: move is already too extended for a fresh entry")
+        elif not reject_reason and big_runner.get("action") == "AVOID":
+            bucket = LATE_CHASE_AVOID
+            setup = "extended_momentum_watch"
+            reasons.append("big-runner detector says do not chase this extension")
+        elif not reject_reason and big_runner.get("setup") == "big_runner_ignition" and bucket in {"Avoid", "Watch"}:
+            bucket = ACTIONABLE_WATCH
+            reasons.append("big-runner ignition is visible; wait for entry authority and regime confirmation")
+        elif not reject_reason and big_runner.get("setup") == "big_runner_watch" and bucket == "Avoid":
+            bucket = ACTIONABLE_WATCH
+            reasons.append("big-runner pressure retained as watch; not a buy yet")
         elif not reject_reason and playbook_signal == "STRONG BUY":
             bucket = "Actionable"
         elif not reject_reason and playbook_signal == "MODERATE BUY":
@@ -520,7 +564,7 @@ class OpportunityScanner:
         if bucket == "Avoid" and not reject_reason and self._good_mover_watchable(market_action_review, rally, metrics):
             bucket = ACTIONABLE_WATCH
             reasons.append("good mover visible as actionable watch; entry gates still need confirmation")
-        trade_window = _resolved_trade_window(market_action_review, rally, btst)
+        trade_window = _resolved_trade_window(market_action_review, rally, btst, big_runner)
         if not reject_reason and _is_wait_only_trade_window(trade_window):
             if (
                 setup == "circuit_demand_lock"
@@ -551,6 +595,7 @@ class OpportunityScanner:
             "rally_radar": rally,
             "market_action": market_action_review,
             "btst": btst,
+            "big_runner": big_runner,
             "top_gainers_playbook": top_gainers_playbook,
             "data_quality": data_quality,
             "liquidity_profile": liquidity_profile,
@@ -563,6 +608,7 @@ class OpportunityScanner:
                 "momentum": round(momentum, 4),
                 "live_momentum": round(live_momentum, 4),
                 "rally_radar": round(rally["score"], 4),
+                "big_runner": round(float(big_runner.get("score") or 0.0), 4),
                 "btst": round(float(btst.get("score") or 0.0), 4),
                 "volume": round(volume, 4),
                 "risk": round(risk, 4),
@@ -1099,6 +1145,302 @@ class OpportunityScanner:
             },
         }
 
+    def _big_runner_review(
+        self,
+        row: dict[str, Any],
+        quote: Quote,
+        candles: list[Candle],
+        metrics: dict[str, Any],
+        trend: float,
+        breakout: float,
+        momentum: float,
+        live_momentum: float,
+        volume: float,
+        sentiment: dict[str, Any],
+        rs_context: dict[str, Any],
+        min_turnover: float,
+        market_action_review: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.big_runner_enabled:
+            return _empty_big_runner("big_runner_detector_disabled")
+        price = _float_or_none(metrics.get("price")) or float(quote.price or 0.0)
+        if price <= 0:
+            return _empty_big_runner("invalid_price")
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        range_position = _float_or_none(metrics.get("day_range_position")) or 0.0
+        high_distance = _float_or_none(metrics.get("day_high_distance_pct"))
+        dist55 = _float_or_none(metrics.get("distance_to_55d_high_pct"))
+        dist252 = _float_or_none(metrics.get("distance_to_252d_high_pct"))
+        dist_sma20 = _float_or_none(metrics.get("distance_to_sma20_pct"))
+        return_5d = _float_or_none(metrics.get("return_5d_pct")) or 0.0
+        return_20d = _float_or_none(metrics.get("return_20d_pct")) or 0.0
+        return_60d = _float_or_none(metrics.get("return_60d_pct")) or 0.0
+        volume_ratio = _float_or_none(metrics.get("volume_ratio")) or 0.0
+        projected_volume_ratio = _float_or_none(metrics.get("projected_volume_ratio")) or volume_ratio
+        turnover = _float_or_none(metrics.get("turnover")) or 0.0
+        projected_turnover = _float_or_none(metrics.get("projected_turnover")) or turnover
+        participation = max(volume_ratio, projected_volume_ratio * 0.75)
+        session_progress = _float_or_none(metrics.get("session_progress_pct"))
+        late_session = session_progress is not None and session_progress >= 0.82
+        rs_rank = _float_or_none(rs_context.get("rs_rank") or rs_context.get("percentile_63"))
+        rs_score = _clamp((rs_rank or 50.0) / 100.0, 0.0, 1.0)
+        compression = self._big_runner_compression(candles, price)
+        near_high_distance = min(
+            [value for value in (dist55, dist252, compression.get("distance_to_pivot_pct")) if value is not None],
+            default=None,
+        )
+        near_breakout = near_high_distance is not None and near_high_distance <= 6.0
+        liquidity_score = max(
+            _clamp(turnover / max(min_turnover * 2.0, 1.0), 0.0, 1.0),
+            _clamp(projected_turnover / max(min_turnover * 3.0, 1.0), 0.0, 1.0),
+        )
+        volume_thrust = _clamp((participation - 0.9) / 2.1, 0.0, 1.0)
+        price_thrust = _clamp((day_gain + 0.25) / 4.25, 0.0, 1.0) * 0.45 + _clamp(range_position, 0.0, 1.0) * 0.55
+        catalyst_score = 0.0
+        if sentiment.get("positive_catalyst"):
+            catalyst_score = max(catalyst_score, 0.75)
+        if int(sentiment.get("headline_count") or 0) > 0:
+            catalyst_score = max(catalyst_score, 0.35)
+        if market_action_review.get("available"):
+            catalyst_score = max(catalyst_score, 0.65)
+        structural_score = max(
+            float(compression.get("score") or 0.0),
+            breakout * 0.45 + trend * 0.25 + momentum * 0.30,
+        )
+        extension_risk = bool(
+            day_gain >= 8.0
+            or (day_gain >= 7.5 and (session_progress is None or session_progress >= 0.55))
+            or (dist_sma20 is not None and dist_sma20 > 14.0)
+            or return_5d >= 16.0
+            or "ONLY_BUYERS" in {str(item).upper() for item in market_action_review.get("event_types") or []}
+        )
+        not_extended_score = 0.0 if extension_risk else 1.0 if (dist_sma20 is None or dist_sma20 <= 9.5) and return_5d <= 12.0 else 0.55
+        leadership_score = max(rs_score, _clamp(return_60d / 35.0, 0.0, 1.0) * 0.70 + _clamp(return_20d / 15.0, 0.0, 1.0) * 0.30)
+        score = _clamp(
+            structural_score * 0.24
+            + leadership_score * 0.18
+            + volume_thrust * 0.16
+            + price_thrust * 0.15
+            + liquidity_score * 0.10
+            + catalyst_score * 0.09
+            + not_extended_score * 0.08,
+            0.0,
+            1.0,
+        )
+        stage = ""
+        setup = ""
+        action = "WATCH"
+        trade_window = "watch_for_ignition"
+        blockers: list[dict[str, Any]] = []
+        if extension_risk:
+            stage = "avoid"
+            setup = "extended_momentum_watch"
+            action = "AVOID"
+            trade_window = "wait_for_pullback"
+            blockers.append({"reason": "do_not_chase_extended_big_runner", "day_gain_pct": _round(day_gain), "distance_to_sma20_pct": _round(dist_sma20)})
+        elif (
+            not late_session
+            and score >= max(self.big_runner_min_score + 0.10, 0.72)
+            and day_gain >= 3.0
+            and range_position >= 0.82
+            and (high_distance is None or high_distance <= 1.25)
+            and participation >= 1.60
+            and liquidity_score >= 0.45
+        ):
+            stage = "live_momentum"
+            setup = "big_runner_ignition"
+            action = "BUY CHECK"
+            trade_window = "actionable_if_regime_and_vwap_hold"
+        elif (
+            not late_session
+            and score >= max(self.big_runner_min_score + 0.04, 0.66)
+            and -0.25 <= day_gain <= 4.5
+            and range_position >= 0.68
+            and (high_distance is None or high_distance <= 2.0)
+            and (near_breakout or structural_score >= 0.62)
+            and (participation >= 1.15 or catalyst_score >= 0.55)
+        ):
+            stage = "opening_ignition"
+            setup = "big_runner_ignition"
+            action = "CONFIRM"
+            trade_window = "confirm_vwap_opening_range"
+        elif (
+            score >= self.big_runner_min_score
+            and near_breakout
+            and structural_score >= 0.56
+            and leadership_score >= 0.58
+            and not_extended_score >= 0.55
+        ):
+            stage = "t1_pressure" if day_gain < 0.75 else "preopen_confirm"
+            setup = "big_runner_watch"
+            action = "WATCH"
+            trade_window = "watch_for_ignition"
+        else:
+            return _empty_big_runner("insufficient_big_runner_fuel", score=score)
+
+        trigger_price = _big_runner_trigger_price(price, compression.get("pivot"), high_distance, stage)
+        max_entry = trigger_price * (1.010 if action == "WATCH" else 1.006) if trigger_price else price * 1.006
+        atr_pct = _float_or_none(metrics.get("atr_pct")) or 3.0
+        stop_pct = _clamp(max(2.2, min(4.2, atr_pct * 0.82)), 2.0, 4.5)
+        target_pct = _clamp(max(2.4, min(6.0, atr_pct * 1.20)), 2.2, 6.5)
+        stop_loss = price * (1 - stop_pct / 100.0)
+        target1 = price * (1 + target_pct / 100.0)
+        invalidation = min(
+            [value for value in (compression.get("invalidation_level"), stop_loss) if value is not None],
+            default=stop_loss,
+        )
+        reasons = []
+        if compression.get("tight_base"):
+            reasons.append("tight base near breakout")
+        if compression.get("volume_dryup"):
+            reasons.append("volume dry-up before expansion")
+        if near_breakout:
+            reasons.append("close to prior high/pivot")
+        if participation >= 1.15:
+            reasons.append("volume participation is starting")
+        if rs_rank is not None and rs_rank >= 70.0:
+            reasons.append("relative strength leadership")
+        if catalyst_score >= 0.55:
+            reasons.append("catalyst or market-action evidence")
+        if action == "AVOID":
+            reasons.append("already extended; wait for pullback")
+        why = "; ".join(reasons[:5]) or "Big-runner fuel is visible."
+        if action == "BUY CHECK":
+            what = "Confirm broad/selective rally regime, VWAP hold, opening-range hold, and volume pace."
+            how = "Entry authority may promote only while price holds trigger and stays below max entry."
+        elif action == "CONFIRM":
+            what = "Wait for opening ignition to hold above trigger with expanding volume."
+            how = "Promote only after VWAP/opening range confirmation; otherwise keep as watch."
+        elif action == "AVOID":
+            what = "Do not chase the current move."
+            how = "Wait for a controlled pullback/reclaim or a fresh base."
+        else:
+            what = "Prepare levels and wait for pre-open or first-hour ignition."
+            how = "No buy from pressure alone; act only after confirmation and supportive regime."
+        return {
+            "available": True,
+            "detected": action != "AVOID",
+            "stage": stage,
+            "setup": setup,
+            "action": action,
+            "score": round(score, 4),
+            "score_boost": 0.08 if action == "BUY CHECK" else 0.05 if action == "CONFIRM" else 0.03 if action == "WATCH" else 0.0,
+            "trade_window": trade_window,
+            "why": why,
+            "what": what,
+            "how": how,
+            "trigger_price": _round(trigger_price),
+            "max_entry": _round(max_entry),
+            "stop_loss": _round(stop_loss),
+            "target1": _round(target1),
+            "invalidation": f"Invalid below {_round(invalidation)} or if volume/regime confirmation fails.",
+            "blockers": blockers,
+            "reasons": reasons[:6],
+            "evidence": {
+                "day_gain_pct": _round(day_gain),
+                "day_range_position": _round(range_position),
+                "day_high_distance_pct": _round(high_distance),
+                "session_progress_pct": _round(session_progress),
+                "volume_ratio": _round(volume_ratio),
+                "projected_volume_ratio": _round(projected_volume_ratio),
+                "turnover": round(turnover, 2),
+                "projected_turnover": round(projected_turnover, 2),
+                "liquidity_score": round(liquidity_score, 4),
+                "rs_rank": _round(rs_rank),
+                "return_5d_pct": _round(return_5d),
+                "return_20d_pct": _round(return_20d),
+                "return_60d_pct": _round(return_60d),
+                "distance_to_near_high_pct": _round(near_high_distance),
+                "distance_to_sma20_pct": _round(dist_sma20),
+                "structural_score": round(structural_score, 4),
+                "leadership_score": round(leadership_score, 4),
+                "volume_thrust": round(volume_thrust, 4),
+                "price_thrust": round(price_thrust, 4),
+                "catalyst_score": round(catalyst_score, 4),
+                "not_extended_score": round(not_extended_score, 4),
+                "compression": compression,
+                "sector": row.get("sector") or "",
+                "market_action": market_action_review.get("raw") or {},
+            },
+        }
+
+    def _big_runner_compression(self, candles: list[Candle], price: float) -> dict[str, Any]:
+        closes = [float(candle.close) for candle in candles if candle.close is not None and float(candle.close) > 0]
+        highs = [float(candle.high) for candle in candles if candle.high is not None and float(candle.high) > 0]
+        lows = [float(candle.low) for candle in candles if candle.low is not None and float(candle.low) > 0]
+        volumes = [float(candle.volume or 0.0) for candle in candles if candle.volume is not None]
+        if len(closes) < 30 or not highs or not lows:
+            return {"available": False, "score": 0.0}
+        high20 = max(highs[-20:])
+        high55 = max(highs[-55:]) if len(highs) >= 55 else high20
+        low20 = min(lows[-20:])
+        low55 = min(lows[-55:]) if len(lows) >= 55 else low20
+        pivot = max(high20, high55)
+        base_low = min(low20, low55)
+        range20 = ((high20 - low20) / low20) * 100.0 if low20 else 100.0
+        recent_high = max(highs[-8:])
+        recent_low = min(lows[-8:])
+        range8 = ((recent_high - recent_low) / recent_low) * 100.0 if recent_low else 100.0
+        avg20_volume = _mean(volumes[-20:]) if volumes else 0.0
+        avg8_volume = _mean(volumes[-8:]) if volumes else 0.0
+        distance_to_pivot = ((pivot - price) / pivot) * 100.0 if pivot else None
+        close_near_top = closes[-1] >= pivot * 0.90 if pivot else False
+        tight_base = range20 <= 18.0 or (range20 <= 28.0 and range8 <= range20 * 0.55)
+        quiet_range = range8 <= max(3.0, min(9.0, range20 * 0.45))
+        volume_dryup = bool(avg20_volume) and avg8_volume <= avg20_volume * 0.82
+        near_pivot = distance_to_pivot is not None and -1.5 <= distance_to_pivot <= 6.0
+        score = _clamp(
+            (0.26 if tight_base else 0.0)
+            + (0.18 if quiet_range else 0.0)
+            + (0.18 if volume_dryup else 0.0)
+            + (0.18 if near_pivot else 0.0)
+            + (0.14 if close_near_top else 0.0)
+            + (0.06 if range20 <= 24.0 else 0.0),
+            0.0,
+            1.0,
+        )
+        invalidation = max(base_low, pivot * 0.92) if pivot else base_low
+        return {
+            "available": True,
+            "score": round(score, 4),
+            "pivot": _round(pivot),
+            "base_low": _round(base_low),
+            "range20_pct": _round(range20),
+            "range8_pct": _round(range8),
+            "distance_to_pivot_pct": _round(distance_to_pivot),
+            "tight_base": tight_base,
+            "quiet_range": quiet_range,
+            "volume_dryup": volume_dryup,
+            "near_pivot": near_pivot,
+            "close_near_top": close_near_top,
+            "avg20_volume": _round(avg20_volume),
+            "avg8_volume": _round(avg8_volume),
+            "invalidation_level": _round(invalidation),
+        }
+
+    def _big_runner_score_floor(
+        self,
+        big_runner: dict[str, Any],
+        liquidity_profile: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> float:
+        if not big_runner.get("available") or big_runner.get("action") == "AVOID":
+            return 0.0
+        if not liquidity_profile.get("screening_pass"):
+            return 0.0
+        score = _float_or_none(big_runner.get("score")) or 0.0
+        if score < self.big_runner_min_score:
+            return 0.0
+        day_gain = _float_or_none(metrics.get("day_gain_pct")) or 0.0
+        stage = str(big_runner.get("stage") or "")
+        if stage == "live_momentum" and day_gain >= 3.0:
+            return max(self.min_score + 0.08, min(0.80, score * 0.90))
+        if stage == "opening_ignition":
+            return max(self.min_score + 0.05, min(0.74, score * 0.86))
+        if stage in {"t1_pressure", "preopen_confirm"}:
+            return max(self.min_score + 0.02, min(0.68, score * 0.80))
+        return 0.0
+
     def _rally_radar(
         self,
         metrics: dict[str, Any],
@@ -1436,13 +1778,20 @@ class OpportunityScanner:
         rally: dict[str, Any] | None = None,
         min_turnover: float | None = None,
         market_action_review: dict[str, Any] | None = None,
+        big_runner: dict[str, Any] | None = None,
     ) -> str:
         rally = rally or {}
         market_action_review = market_action_review or {}
+        big_runner = big_runner or {}
         min_turnover = self.min_turnover if min_turnover is None else min_turnover
         market_action_setup = str(market_action_review.get("setup") or "")
         if market_action_setup in {"circuit_demand_lock", "52_week_high_volume_breakout", "earnings_beat_gap_and_go", "broker_re_rating_breakout"}:
             return market_action_setup
+        big_runner_setup = str(big_runner.get("setup") or "")
+        if big_runner_setup == "big_runner_ignition":
+            return big_runner_setup
+        if big_runner_setup == "big_runner_watch":
+            return big_runner_setup
         if rally.get("setup"):
             return str(rally["setup"])
         if market_action_setup in _MARKET_ACTION_SETUPS:
@@ -1582,8 +1931,9 @@ class OpportunityScanner:
         rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
         btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
+        big_runner = item.get("big_runner") if isinstance(item.get("big_runner"), dict) else {}
         top_gainers_playbook = item.get("top_gainers_playbook") if isinstance(item.get("top_gainers_playbook"), dict) else {}
-        trade_window = _resolved_trade_window(market_action, rally, btst)
+        trade_window = _resolved_trade_window(market_action, rally, btst, big_runner)
         return {
             "symbol": item.get("symbol"),
             "name": item.get("name"),
@@ -1598,6 +1948,7 @@ class OpportunityScanner:
             "rally_evidence": rally.get("evidence", {}),
             "market_action": market_action,
             "btst": btst,
+            "big_runner": big_runner,
             "top_gainers_playbook": top_gainers_playbook,
             "actionable_watch": bool(item.get("actionable_watch")),
             "late_chase": bool(item.get("late_chase")),
@@ -1921,6 +2272,7 @@ class OpportunityScanner:
         metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
         event_types = {str(value or "").upper() for value in market_action.get("event_types") or []}
+        big_runner = item.get("big_runner") if isinstance(item.get("big_runner"), dict) else {}
         components = item.get("components") if isinstance(item.get("components"), dict) else {}
         btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
         sentiment = item.get("sentiment") if isinstance(item.get("sentiment"), dict) else {}
@@ -1931,6 +2283,7 @@ class OpportunityScanner:
         }
         if (
             setup in {*_LIVE_RALLY_SETUPS, "top_gainer_momentum", "market_action_momentum"}
+            or big_runner.get("setup") == "big_runner_ignition"
             or "TOP_GAINER" in event_types
             or float(components.get("live_momentum") or 0.0) >= 0.70
             or self._top_gainers_playbook_buy_priority(item) > 0
@@ -1944,6 +2297,7 @@ class OpportunityScanner:
             return "volume_price"
         if (
             setup in {"52_week_high_volume_breakout", "breakout_continuation", "near_breakout", "donchian_momentum_breakout"}
+            or big_runner.get("stage") in {"t1_pressure", "preopen_confirm", "opening_ignition"}
             or event_types & {"52_WEEK_HIGH", "ALL_TIME_HIGH"}
             or _float_or_none(metrics.get("distance_to_55d_high_pct")) is not None
             and float(metrics.get("distance_to_55d_high_pct") or 99.0) <= self.breakout_distance_pct
@@ -1988,9 +2342,10 @@ class OpportunityScanner:
         market_action = item.get("market_action") if isinstance(item.get("market_action"), dict) else {}
         rally = item.get("rally_radar") if isinstance(item.get("rally_radar"), dict) else {}
         btst = item.get("btst") if isinstance(item.get("btst"), dict) else {}
-        trade_window = _resolved_trade_window(market_action, rally, btst)
+        big_runner = item.get("big_runner") if isinstance(item.get("big_runner"), dict) else {}
+        trade_window = _resolved_trade_window(market_action, rally, btst, big_runner)
         if setup in {"extended_momentum_watch", "pre_rally_fuel", "circuit_demand_lock"} or _is_wait_only_trade_window(trade_window):
-            return 0.25 if bucket == ACTIONABLE_WATCH else 0.0
+            return 0.45 if bool(big_runner.get("available")) and bucket == ACTIONABLE_WATCH else 0.25 if bucket == ACTIONABLE_WATCH else 0.0
         if bool(btst.get("detected")) and setup == "btst_buy_candidate":
             return 3.8
         actionable_setups = {
@@ -2004,6 +2359,7 @@ class OpportunityScanner:
             "price_shocker_reversal_breakout",
             "broker_re_rating_breakout",
             "earnings_beat_gap_and_go",
+            "big_runner_ignition",
         }
         if setup in actionable_setups and bucket == "Actionable":
             return 3.5
@@ -2048,9 +2404,10 @@ class OpportunityScanner:
             item
             for item in scored
             if str(item.get("setup") or "")
-            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel", "btst_buy_candidate", *_MARKET_ACTION_SETUPS}
+            in {*_LIVE_RALLY_SETUPS, "pre_rally_fuel", "big_runner_watch", "btst_buy_candidate", *_MARKET_ACTION_SETUPS}
             or float(((item.get("components") or {}).get("live_momentum")) or 0.0) >= 0.70
             or float(((item.get("components") or {}).get("rally_radar")) or 0.0) >= 0.60
+            or float(((item.get("components") or {}).get("big_runner")) or 0.0) >= self.big_runner_min_score
             or float(((item.get("components") or {}).get("btst")) or 0.0) >= 0.70
             or bool((item.get("market_action") or {}).get("available"))
         ]
@@ -2072,7 +2429,7 @@ class OpportunityScanner:
         pre_fuel = [
             item
             for item in rally_items
-            if item.get("setup") == "pre_rally_fuel" and str(item.get("symbol") or "") not in selected_symbols
+            if item.get("setup") in {"pre_rally_fuel", "big_runner_watch"} and str(item.get("symbol") or "") not in selected_symbols
         ]
         pre_fuel.sort(key=self._rally_discovery_score, reverse=True)
         for item in pre_fuel[:pre_fuel_min]:
@@ -2113,6 +2470,7 @@ class OpportunityScanner:
         metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
         components = item.get("components") if isinstance(item.get("components"), dict) else {}
         setup = str(item.get("setup") or "")
+        big_runner = item.get("big_runner") if isinstance(item.get("big_runner"), dict) else {}
         playbook_boost = self._top_gainers_playbook_buy_priority(item) * 0.25
         phase_boost = {
             "52_week_high_volume_breakout": 0.13,
@@ -2123,12 +2481,15 @@ class OpportunityScanner:
             "intraday_momentum": 0.10,
             "market_action_momentum": 0.08,
             "pre_rally_fuel": 0.06,
+            "big_runner_watch": 0.10,
+            "big_runner_ignition": 0.14,
             "btst_buy_candidate": 0.11,
             "extended_momentum_watch": 0.02,
             "top_gainer_momentum": 0.05,
         }.get(setup, 0.0)
         live = float(components.get("live_momentum") or 0.0)
         rally = float(components.get("rally_radar") or 0.0)
+        big_runner_score = float(components.get("big_runner") or big_runner.get("score") or 0.0)
         btst = float(components.get("btst") or 0.0)
         gain = _clamp((float(metrics.get("day_gain_pct") or 0.0) - 3.0) / 7.0, 0.0, 1.0)
         volume = _clamp((float(metrics.get("volume_ratio") or 0.0) - 1.0) / 4.0, 0.0, 1.0)
@@ -2140,6 +2501,7 @@ class OpportunityScanner:
             playbook_boost
             + phase_boost
             + rally * 0.30
+            + big_runner_score * 0.24
             + btst * 0.16
             + live * 0.22
             + gain * 0.18
@@ -2302,10 +2664,41 @@ def _resolved_trade_window(
     market_action: dict[str, Any],
     rally: dict[str, Any],
     btst: dict[str, Any],
+    big_runner: dict[str, Any] | None = None,
 ) -> str:
     if btst.get("detected"):
         return "buy_before_close_sell_tomorrow"
-    return str(market_action.get("trade_window") or rally.get("trade_window") or "").strip()
+    big_runner = big_runner or {}
+    return str(market_action.get("trade_window") or big_runner.get("trade_window") or rally.get("trade_window") or "").strip()
+
+
+def _empty_big_runner(reason: str, *, score: float = 0.0) -> dict[str, Any]:
+    return {
+        "available": False,
+        "detected": False,
+        "reason": reason,
+        "stage": "",
+        "setup": "",
+        "action": "WATCH",
+        "score": round(_clamp(score, 0.0, 1.0), 4),
+        "score_boost": 0.0,
+        "trade_window": "",
+        "why": "",
+        "what": "",
+        "how": "",
+        "blockers": [],
+        "reasons": [],
+        "evidence": {},
+    }
+
+
+def _big_runner_trigger_price(price: float, pivot: Any, high_distance: float | None, stage: str) -> float:
+    pivot_value = _float_or_none(pivot)
+    if stage in {"t1_pressure", "preopen_confirm"} and pivot_value and pivot_value > price:
+        return pivot_value * 1.002
+    if high_distance is not None and high_distance <= 1.5:
+        return price * 1.002
+    return price * 1.005
 
 
 def _is_wait_only_trade_window(value: Any) -> bool:
