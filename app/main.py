@@ -1669,6 +1669,10 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
         }
         payload.pop("suggestions", None)
         payload.pop("signal_ideas", None)
+    if isinstance(payload.get("decisions_by_market"), dict):
+        payload.pop("decisions", None)
+    if isinstance(payload.get("follow_history_by_market"), dict):
+        payload.pop("follow_history", None)
     if isinstance(payload.get("tracked_ideas"), list):
         payload["tracked_ideas"] = [_compact_tracked_idea(row) for row in payload["tracked_ideas"] if isinstance(row, dict)]
     if isinstance(payload.get("tracked_ideas_by_market"), dict):
@@ -2078,20 +2082,17 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
         tracked_ideas = _followed_signal_ideas_for_user(user_id, 100, monitor_symbols=monitor_symbols)
-        follow_history = _follow_history_for_user(user_id, 200, monitor_symbols=monitor_symbols)
+        follow_history = _follow_history_for_user(user_id, 80, monitor_symbols=monitor_symbols)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
-        snapshot["decisions"] = _with_detail_urls(
-            _latest_decision_summaries_for_user(user_id, 80, monitor_symbols=monitor_symbols),
-            "decisions",
-        )
+        snapshot["decisions"] = []
         snapshot["decisions_by_market"] = {
             "IN": _with_detail_urls(
-                _latest_decision_summaries_for_user(user_id, 80, market_region="IN", monitor_symbols=monitor_symbols),
+                _latest_decision_summaries_for_user(user_id, 50, market_region="IN", monitor_symbols=monitor_symbols),
                 "decisions",
             ),
             "US": _with_detail_urls(
-                _latest_decision_summaries_for_user(user_id, 80, market_region="US", monitor_symbols=monitor_symbols),
+                _latest_decision_summaries_for_user(user_id, 50, market_region="US", monitor_symbols=monitor_symbols),
                 "decisions",
             ),
         }
@@ -2204,7 +2205,7 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "exchange": row.get("exchange"),
                     "product": "PAPER FOLLOW" if simulated else "LIVE FOLLOW REQUEST",
                     "order_type": "SIMULATED" if simulated else "REQUEST",
-                    "details": row,
+                    "details": _compact_follow_event_details(row),
                 }
             )
         closed_qty = int(row.get("closed_qty") or 0)
@@ -2243,10 +2244,37 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "exchange": row.get("exchange"),
                     "product": "PAPER FOLLOW" if simulated else "LIVE FOLLOW REQUEST",
                     "order_type": "SIMULATED" if simulated else "REQUEST",
-                    "details": row,
+                    "details": _compact_follow_event_details(row),
                 }
             )
-    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:500]
+    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:120]
+
+
+def _compact_follow_event_details(row: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "follow_id",
+        "idea_id",
+        "symbol",
+        "market_region",
+        "mode",
+        "state",
+        "status",
+        "entry_qty",
+        "closed_qty",
+        "entry_price",
+        "exit_price",
+        "latest_price",
+        "return_pct",
+        "unrealized_pnl",
+        "realized_pnl",
+        "opened_at",
+        "closed_at",
+        "updated_at",
+        "exit_reason",
+        "exit_action",
+        "strategy",
+    )
+    return {key: row.get(key) for key in keys if key in row}
 
 
 def _with_detail_urls(rows: list[dict[str, Any]], collection: str) -> list[dict[str, Any]]:

@@ -1970,7 +1970,6 @@ function render(payload) {
   const portfolio = payload.portfolio || {};
   const allPositions = payload.positions || [];
   const allQuotes = payload.quotes || [];
-  const allDecisions = payload.decisions || [];
   const allOrders = tradeJournalRows(payload);
   const allSentiment = payload.sentiment || [];
   const openPositions = filterRowsByMarket(allPositions, activeMarket);
@@ -2867,7 +2866,7 @@ function renderAgentConsole(payload) {
   const settings = currentSettings();
   const positions = filterRowsByMarket(payload.positions || [], state.activeMarket);
   const orders = tradeJournalRows(payload);
-  const decisions = payload.decisions || [];
+  const decisions = payloadRowsForMarket(payload, "decisions", state.activeMarket);
   const universe = payload.universe || {};
   const latestAction = decisions.find((row) => row.action && row.action !== "HOLD");
   const rows = [
