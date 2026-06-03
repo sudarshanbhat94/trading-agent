@@ -107,7 +107,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     watch_line = _watch_line(settings)
     confidence = round(_clamp(raw_score / 100.0, 0.05, 0.99), 4)
     grade = "A" if raw_score >= 82.0 else "B" if raw_score >= entry_line else "WATCH"
-    trade_plan = _trade_plan(price) if price and price > 0 else {}
+    trade_plan = _trade_plan(price, market) if price and price > 0 else {}
 
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
     warnings: list[str] = []
@@ -310,7 +310,7 @@ def _opportunity_ready(
             return (
                 price_value >= 50.0
                 and raw_score >= max(base_line, 92.0)
-                and setup_score >= 90.0
+                and setup_score >= 87.0
                 and day_gain >= 3.0
                 and range_position >= 0.85
                 and volume_ratio >= 2.0
@@ -321,9 +321,9 @@ def _opportunity_ready(
             return (
                 price_value >= 50.0
                 and raw_score >= max(base_line, 94.0)
-                and setup_score >= 92.0
+                and setup_score >= 90.0
                 and day_gain >= 2.0
-                and range_position >= 0.85
+                and range_position >= 0.80
                 and volume_ratio >= 2.0
                 and high_ok
                 and max(technical_score, scan_score) >= 70.0
@@ -370,23 +370,33 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
-def _trade_plan(price: float | None) -> dict[str, Any]:
+def _trade_plan(price: float | None, market: str | None = "IN") -> dict[str, Any]:
     if price is None or price <= 0:
         return {}
-    stop = price * 0.965
-    risk = price - stop
-    target = price + risk * 1.8
+    market_key = str(market or "IN").upper()
+    if market_key == "IN":
+        stop_pct = 0.025
+        target_pct = 0.025
+        label = "RAW-IN-T1"
+        holding_period = "intraday_or_next_session"
+    else:
+        stop_pct = 0.035
+        target_pct = stop_pct * 1.8
+        label = "RAW-T1"
+        holding_period = "intraday_to_swing"
+    stop = price * (1.0 - stop_pct)
+    target = price * (1.0 + target_pct)
     return {
         "entry_zone": [round(price * 0.995, 4), round(price * 1.005, 4)],
         "stop_loss": round(stop, 4),
         "targets": [
             {
-                "label": "RAW-T1",
+                "label": label,
                 "price": round(target, 4),
                 "distance_pct": round(((target - price) / price) * 100.0, 4),
             }
         ],
-        "holding_period": "intraday_to_swing",
+        "holding_period": holding_period,
         "source": RAW_ENTRY_MODEL_VERSION,
     }
 

@@ -267,7 +267,7 @@ class Settings:
     india_gst_pct: float = _float("INDIA_GST_PCT", 18.0)
     india_stamp_duty_bps: float = _float("INDIA_STAMP_DUTY_BPS", 1.5)
     paper_risk_per_trade_pct: float = _float("PAPER_RISK_PER_TRADE_PCT", 0.01)
-    paper_min_auto_follow_notional_inr: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_INR", 7500.0)
+    paper_min_auto_follow_notional_inr: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_INR", 20_000.0)
     paper_min_auto_follow_notional_usd: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_USD", 250.0)
     paper_min_exit_net_profit_inr: float = _float("PAPER_MIN_EXIT_NET_PROFIT_INR", 75.0)
     paper_min_exit_net_profit_usd: float = _float("PAPER_MIN_EXIT_NET_PROFIT_USD", 2.0)

@@ -59,6 +59,34 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(context["raw_entry_model"]["setup_family"], "live_momentum")
         self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
 
+    def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN"),
+            _raw_opportunity_settings(),
+        )
+
+        plan = model["trade_plan"]
+
+        self.assertEqual(plan["stop_loss"], 97.5)
+        self.assertEqual(plan["targets"][0]["label"], "RAW-IN-T1")
+        self.assertEqual(plan["targets"][0]["price"], 102.5)
+        self.assertEqual(plan["targets"][0]["distance_pct"], 2.5)
+        self.assertEqual(plan["holding_period"], "intraday_or_next_session")
+
+    def test_raw_opportunity_us_trade_plan_keeps_wider_swing_target(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(price=100.0, setup="opening_ignition", market_region="US"),
+            _raw_opportunity_settings(),
+        )
+
+        plan = model["trade_plan"]
+
+        self.assertEqual(plan["stop_loss"], 96.5)
+        self.assertEqual(plan["targets"][0]["label"], "RAW-T1")
+        self.assertEqual(plan["targets"][0]["price"], 106.3)
+        self.assertEqual(plan["targets"][0]["distance_pct"], 6.3)
+        self.assertEqual(plan["holding_period"], "intraday_to_swing")
+
     def test_raw_entry_model_blocks_only_invalid_or_untradeable_truth_checks(self) -> None:
         context = _raw_entry_context(price=0.0)
         engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
@@ -4079,7 +4107,7 @@ def _raw_entry_context(
         "quote": {
             "price": price,
             "source": "upstox-live",
-            "asof": utc_now(),
+            "asof": datetime(2026, 6, 1, 10, 30, tzinfo=ZoneInfo("Asia/Kolkata")).isoformat(),
             "open": 100.0,
             "high": 110.0,
             "low": 99.0,
