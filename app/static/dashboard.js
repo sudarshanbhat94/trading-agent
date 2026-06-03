@@ -68,6 +68,7 @@ const SETTINGS_TAB_CATEGORIES = {
 
 const POSITION_MARK_IDLE_REFRESH_MS = 20000;
 const POSITION_MARK_ACTIVE_REFRESH_MS = 8000;
+const POSITION_MARK_CROSS_TAB_KEY = "openstocks-position-marks-last-fetch";
 const STATUS_REFRESH_MIN_INTERVAL_MS = 4000;
 const IDEAS_REFRESH_MIN_INTERVAL_MS = 15000;
 
@@ -2282,6 +2283,13 @@ async function refreshPositionMarks() {
   if (state.positionMarksInFlight) {
     state.positionMarksPending = true;
     return;
+  }
+  try {
+    const sharedLastFetchAt = Number(window.localStorage.getItem(POSITION_MARK_CROSS_TAB_KEY) || 0);
+    if (sharedLastFetchAt && now - sharedLastFetchAt < minInterval) return;
+    window.localStorage.setItem(POSITION_MARK_CROSS_TAB_KEY, String(now));
+  } catch {
+    /* localStorage may be unavailable; per-tab throttling still applies. */
   }
   state.positionMarksLastFetchAt = now;
   state.positionMarksInFlight = true;
