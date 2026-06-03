@@ -2080,7 +2080,9 @@ function render(payload) {
   renderStrategyPlans(visibleStrategyPlans);
   renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
   renderTomorrowPlan(payload.tomorrow_plan || {});
-  renderRallyPlan(payload.rally_plan || {});
+  if (currentViewName() === "rally") {
+    renderRallyPlan(payload.rally_plan || {});
+  }
   renderMobileNativeHeader(payload, quotes, activeMarket);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderSentiment(visibleSentiment);
