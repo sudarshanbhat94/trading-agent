@@ -10,6 +10,10 @@ const state = {
   socket: null,
   socketReconnectTimer: null,
   statusRefreshInFlight: false,
+  statusRefreshLastStartedAt: 0,
+  statusRefreshTimer: null,
+  ideasInFlight: false,
+  ideasLastFetchAt: 0,
   positionMarksInFlight: false,
   positionMarksPending: false,
   positionMarksTimer: null,
@@ -64,6 +68,8 @@ const SETTINGS_TAB_CATEGORIES = {
 
 const POSITION_MARK_IDLE_REFRESH_MS = 10000;
 const POSITION_MARK_ACTIVE_REFRESH_MS = 3000;
+const STATUS_REFRESH_MIN_INTERVAL_MS = 4000;
+const IDEAS_REFRESH_MIN_INTERVAL_MS = 15000;
 
 const money = new Intl.NumberFormat("en-IN", {
   style: "currency",
@@ -1957,6 +1963,8 @@ function render(payload) {
   }
   state.latest = payload;
   const activeMarket = normalizeUiMarket(state.activeMarket);
+  const activeView = currentViewName();
+  const isOverview = activeView === "overview";
   const userSession = payload.user_signal_session || {};
   const controlRunning = state.auth?.admin ? Boolean(payload.running) : Boolean(userSession.running);
   const portfolio = payload.portfolio || {};
@@ -2074,36 +2082,44 @@ function render(payload) {
   byId("nav-overview-badge").textContent = controlRunning ? "on" : "off";
   updateMarketWorkspaceLabels(payload);
 
-  renderPositions(positions);
-  renderStrategies(strategies);
+  if (isOverview || activeView === "positions") renderPositions(positions);
+  if (isOverview) renderStrategies(strategies);
   updatePageFilterButtons();
-  renderStrategyPlans(visibleStrategyPlans);
-  renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
-  renderTomorrowPlan(payload.tomorrow_plan || {});
-  if (currentViewName() === "rally") {
+  if (activeView === "suggestions") {
+    renderStrategyPlans(visibleStrategyPlans);
+    renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
+    renderTomorrowPlan(payload.tomorrow_plan || {});
+    renderTrackedIdeas(visibleTrackedIdeas);
+    renderSuggestions(visibleSuggestions);
+  }
+  if (activeView === "rally") {
     renderRallyPlan(payload.rally_plan || {});
   }
   renderMobileNativeHeader(payload, quotes, activeMarket);
-  renderTrackedIdeas(visibleTrackedIdeas);
-  renderSentiment(visibleSentiment);
-  renderQuotes(quotes);
-  renderMarketTape(quotes, activeMarket);
+  if (activeView === "sentiment") renderSentiment(visibleSentiment);
+  if (isOverview || activeView === "analyze") {
+    renderQuotes(quotes);
+    renderMarketTape(quotes, activeMarket);
+  }
   renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
   renderProductTrackingPanel(trackedIdeas, positions, suggestions);
-  renderSuggestions(visibleSuggestions);
-  renderDecisions(visibleDecisions, { controlRunning });
+  if (activeView === "decisions") renderDecisions(visibleDecisions, { controlRunning });
   renderOverviewDecisions(latestDecisions, { controlRunning });
   renderOverviewPositions(positions);
   renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
-  renderOrders(visibleOrders);
-  renderMobileOrders(visibleOrders, dayOrders);
-  renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
-  renderSectorRotation(scopedMarketContext(payload.sector_rotation_context || {}, activeMarket));
-  renderPerformance(payload.performance || {});
-  renderMacroEvents(payload.upcoming_macro_events || []);
-  renderAgentConsole(payload);
-  renderSelfAudit(payload.self_audit || {});
-  renderTradingReadiness(payload.trading_readiness || {});
+  if (activeView === "orders") {
+    renderOrders(visibleOrders);
+    renderMobileOrders(visibleOrders, dayOrders);
+  }
+  if (isOverview) {
+    renderMarketBreadth(scopedMarketContext(payload.market_breadth || {}, activeMarket));
+    renderSectorRotation(scopedMarketContext(payload.sector_rotation_context || {}, activeMarket));
+    renderPerformance(payload.performance || {});
+    renderMacroEvents(payload.upcoming_macro_events || []);
+    renderAgentConsole(payload);
+    renderSelfAudit(payload.self_audit || {});
+    renderTradingReadiness(payload.trading_readiness || {});
+  }
   renderShell(payload);
 }
 
@@ -2943,7 +2959,9 @@ function renderAuth(auth) {
 
 function handleUnauthorized(message = "Session expired. Sign in again.") {
   if (state.socketReconnectTimer) clearTimeout(state.socketReconnectTimer);
+  if (state.statusRefreshTimer) clearTimeout(state.statusRefreshTimer);
   state.socketReconnectTimer = null;
+  state.statusRefreshTimer = null;
   if (state.socket) state.socket.close();
   state.socket = null;
   stopPositionMarkPolling();
@@ -6295,6 +6313,28 @@ function applyIdeaFollowPayload(payload = {}) {
   return true;
 }
 
+async function refreshIdeas(force = false) {
+  const now = Date.now();
+  if (state.ideasInFlight) return;
+  if (!force && now - state.ideasLastFetchAt < IDEAS_REFRESH_MIN_INTERVAL_MS) return;
+  state.ideasInFlight = true;
+  try {
+    const response = await fetch(`/api/ideas?market=${encodeURIComponent(state.activeMarket)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (response.status === 401) {
+      handleUnauthorized(payload.detail || "Session expired. Sign in again.");
+      return;
+    }
+    if (!response.ok || payload.ok === false) throw new Error(payload.detail || "Could not refresh ideas");
+    state.ideasLastFetchAt = Date.now();
+    applyIdeaFollowPayload(payload);
+  } catch (error) {
+    console.warn("ideas refresh failed", error);
+  } finally {
+    state.ideasInFlight = false;
+  }
+}
+
 async function followIdea(rowOrId, action, button = null, options = {}) {
   const row = typeof rowOrId === "object" && rowOrId ? rowOrId : {};
   const ideaId = Number(row.id || rowOrId || 0);
@@ -8096,6 +8136,9 @@ function setActiveMarket(market, options = {}) {
   if (currentViewName() === "rally") {
     refreshRallyPlan(true);
   }
+  if (currentViewName() === "suggestions") {
+    refreshIdeas(true);
+  }
   refreshMarketIndices();
 }
 
@@ -8734,6 +8777,8 @@ function setView(view) {
   const marketScoped = ["overview", "suggestions", "rally", "analyze", "positions", "orders", "decisions", "sentiment"].includes(view);
   byId("view-title").textContent = marketScoped ? `${activeMarketLabel()} ${label}` : label;
   updateMarketWorkspaceLabels();
+  if (state.latest) render(state.latest);
+  if (view === "suggestions") refreshIdeas();
   if (view === "rally") refreshRallyPlan(true);
 }
 
@@ -8800,6 +8845,7 @@ async function loadAuthenticatedData() {
 
 async function refreshStatusOnly() {
   if (state.statusRefreshInFlight) return;
+  state.statusRefreshLastStartedAt = Date.now();
   state.statusRefreshInFlight = true;
   try {
     const response = await fetch("/api/status");
@@ -8814,6 +8860,21 @@ async function refreshStatusOnly() {
   } finally {
     state.statusRefreshInFlight = false;
   }
+}
+
+function scheduleStatusRefresh() {
+  if (!state.auth?.authenticated) return;
+  const elapsed = Date.now() - (state.statusRefreshLastStartedAt || 0);
+  const delay = Math.max(0, STATUS_REFRESH_MIN_INTERVAL_MS - elapsed);
+  if (delay <= 0) {
+    refreshStatusOnly();
+    return;
+  }
+  if (state.statusRefreshTimer) return;
+  state.statusRefreshTimer = window.setTimeout(() => {
+    state.statusRefreshTimer = null;
+    refreshStatusOnly();
+  }, delay);
 }
 
 function openSocket() {
@@ -8834,7 +8895,7 @@ function openSocket() {
       render(payload);
       return;
     }
-    refreshStatusOnly();
+    scheduleStatusRefresh();
   });
   socket.addEventListener("close", (event) => {
     state.socket = null;

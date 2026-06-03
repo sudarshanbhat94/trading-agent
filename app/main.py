@@ -1067,6 +1067,76 @@ def _compact_signal_ideas(rows: Any) -> list[dict[str, Any]]:
     return [_compact_signal_idea(row) for row in (rows or []) if isinstance(row, dict)]
 
 
+def _compact_strategy_plan_constituent(row: Any) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    keys = (
+        "id",
+        "idea_id",
+        "symbol",
+        "company_name",
+        "name",
+        "market_region",
+        "plan_code",
+        "signal_type",
+        "status",
+        "latest_price",
+        "price",
+        "current_return_pct",
+        "peak_return_pct",
+        "overall_score_pct",
+        "overall_grade",
+        "confluence",
+        "lifecycle_status",
+        "entry_zone",
+        "stop_loss",
+        "expires_at",
+        "days_to_expiry",
+    )
+    return {key: row.get(key) for key in keys if key in row}
+
+
+def _compact_strategy_plan(row: Any) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    keys = (
+        "id",
+        "code",
+        "name",
+        "description",
+        "risk_level",
+        "holding_period",
+        "capital_rule",
+        "enabled",
+        "market_stats",
+        "top_symbols",
+        "active_idea_count",
+        "timeline",
+        "avg_return_pct",
+        "best_return_pct",
+        "worst_return_pct",
+    )
+    output = {key: row.get(key) for key in keys if key in row}
+    if output.get("description") not in (None, ""):
+        text = str(output["description"]).strip()
+        output["description"] = text if len(text) <= 220 else f"{text[:217].rstrip()}..."
+    output["constituents"] = [
+        _compact_strategy_plan_constituent(item)
+        for item in (row.get("constituents") or [])[:4]
+        if isinstance(item, dict)
+    ]
+    if isinstance(row.get("constituents_by_market"), dict):
+        output["constituents_by_market"] = {
+            str(market): [
+                _compact_strategy_plan_constituent(item)
+                for item in (items or [])[:4]
+                if isinstance(item, dict)
+            ]
+            for market, items in row["constituents_by_market"].items()
+        }
+    return output
+
+
 def _compact_market_action_event(item: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "symbol",
@@ -1155,13 +1225,13 @@ def _compact_playbook(playbook: Any) -> dict[str, Any]:
     for key in ("signal_summary", "tier_summary"):
         if isinstance(playbook.get(key), dict):
             output[key] = dict(playbook[key])
-    output["records"] = [_compact_playbook_record(row) for row in (playbook.get("records") or [])[:30] if isinstance(row, dict)]
+    output["records"] = [_compact_playbook_record(row) for row in (playbook.get("records") or [])[:8] if isinstance(row, dict)]
     output["tomorrow_watchlist"] = [
-        _compact_playbook_record(row) for row in (playbook.get("tomorrow_watchlist") or [])[:20] if isinstance(row, dict)
+        _compact_playbook_record(row) for row in (playbook.get("tomorrow_watchlist") or [])[:8] if isinstance(row, dict)
     ]
     output["do_not_chase"] = [
         {"symbol": row.get("symbol"), "reason": row.get("reason"), "market_region": row.get("market_region")}
-        for row in (playbook.get("do_not_chase") or [])[:20]
+        for row in (playbook.get("do_not_chase") or [])[:8]
         if isinstance(row, dict)
     ]
     return output
@@ -1254,12 +1324,12 @@ def _compact_pre_catalyst_discovery(discovery: Any) -> dict[str, Any]:
         }
     output["candidates"] = [
         _compact_pre_catalyst_candidate(row)
-        for row in (discovery.get("candidates") or [])[:60]
+        for row in (discovery.get("candidates") or [])[:15]
         if isinstance(row, dict)
     ]
     output["live_confirmations"] = [
         _compact_pre_catalyst_candidate(row)
-        for row in (discovery.get("live_confirmations") or [])[:40]
+        for row in (discovery.get("live_confirmations") or [])[:10]
         if isinstance(row, dict)
     ]
     output["candidate_count"] = len(output["candidates"])
@@ -1556,13 +1626,13 @@ def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
         if isinstance(scan.get(key), dict):
             output[key] = dict(scan[key])
     for key, limit in (
-        ("top_candidates", 40),
-        ("top_rally_radar", 25),
-        ("top_big_runner_candidates", 25),
-        ("top_early_alpha_candidates", 30),
-        ("top_fast_movers", 20),
-        ("top_market_action", 20),
-        ("btst_buy_candidates", 12),
+        ("top_candidates", 12),
+        ("top_rally_radar", 10),
+        ("top_big_runner_candidates", 10),
+        ("top_early_alpha_candidates", 10),
+        ("top_fast_movers", 10),
+        ("top_market_action", 10),
+        ("btst_buy_candidates", 8),
     ):
         output[key] = [
             _compact_pre_catalyst_candidate(row) | _compact_market_action_event(row)
@@ -1597,6 +1667,8 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
             market: _compact_signal_ideas(rows)
             for market, rows in payload["suggestions_by_market"].items()
         }
+        payload.pop("suggestions", None)
+        payload.pop("signal_ideas", None)
     if isinstance(payload.get("tracked_ideas"), list):
         payload["tracked_ideas"] = [_compact_tracked_idea(row) for row in payload["tracked_ideas"] if isinstance(row, dict)]
     if isinstance(payload.get("tracked_ideas_by_market"), dict):
@@ -1604,6 +1676,13 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
             market: [_compact_tracked_idea(row) for row in (rows or []) if isinstance(row, dict)]
             for market, rows in payload["tracked_ideas_by_market"].items()
         }
+        payload.pop("tracked_ideas", None)
+    if isinstance(payload.get("strategy_plans"), list):
+        payload["strategy_plans"] = [
+            _compact_strategy_plan(row)
+            for row in payload["strategy_plans"]
+            if isinstance(row, dict)
+        ]
     if isinstance(payload.get("opportunity_scan"), dict):
         payload["opportunity_scan"] = _compact_opportunity_scan(payload["opportunity_scan"])
     if isinstance(payload.get("market_action_radar"), dict):
@@ -1999,7 +2078,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         paper_cash_by_market = _user_paper_cash_by_market(user)
         paper_exit_manager = db.manage_user_follow_exits(user_id, cost_settings=settings)
         tracked_ideas = _followed_signal_ideas_for_user(user_id, 100, monitor_symbols=monitor_symbols)
-        follow_history = _follow_history_for_user(user_id, 500, monitor_symbols=monitor_symbols)
+        follow_history = _follow_history_for_user(user_id, 200, monitor_symbols=monitor_symbols)
         realized_pnl_by_market = db.user_follow_realized_pnl_by_market(user_id)
         user_positions = _user_follow_positions(tracked_ideas)
         snapshot["decisions"] = _with_detail_urls(
@@ -2016,12 +2095,12 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
                 "decisions",
             ),
         }
-        snapshot["suggestions"] = _latest_signal_ideas_for_user(user_id, 50, monitor_symbols=monitor_symbols)
-        snapshot["signal_ideas"] = snapshot["suggestions"]
         snapshot["suggestions_by_market"] = {
-            "IN": _latest_signal_ideas_for_user(user_id, 30, market_region="IN", monitor_symbols=monitor_symbols),
-            "US": _latest_signal_ideas_for_user(user_id, 30, market_region="US", monitor_symbols=monitor_symbols),
+            "IN": _latest_signal_ideas_for_user(user_id, 12, market_region="IN", monitor_symbols=monitor_symbols),
+            "US": _latest_signal_ideas_for_user(user_id, 12, market_region="US", monitor_symbols=monitor_symbols),
         }
+        snapshot["suggestions"] = []
+        snapshot["signal_ideas"] = []
         snapshot["monitor_watchlist"] = _monitor_watchlist_for_user(user_id, monitor_symbols=monitor_symbols)
         snapshot["monitor_watchlist_by_market"] = {
             "IN": _monitor_watchlist_for_user(user_id, market_region="IN", monitor_symbols=monitor_symbols),
@@ -2078,12 +2157,12 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
             )
         snapshot["user_signal_session"] = _sanitize_private_llm_metadata(shared_status)
     else:
-        snapshot["suggestions"] = db.latest_signal_ideas(50)
-        snapshot["signal_ideas"] = snapshot["suggestions"]
         snapshot["suggestions_by_market"] = {
-            "IN": db.latest_signal_ideas(30, market_region="IN"),
-            "US": db.latest_signal_ideas(30, market_region="US"),
+            "IN": db.latest_signal_ideas(12, market_region="IN"),
+            "US": db.latest_signal_ideas(12, market_region="US"),
         }
+        snapshot["suggestions"] = []
+        snapshot["signal_ideas"] = []
         snapshot["tracked_ideas"] = []
         snapshot["tracked_ideas_by_market"] = {"IN": [], "US": []}
         snapshot["strategy_plans"] = db.strategy_plans()
