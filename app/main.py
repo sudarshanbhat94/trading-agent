@@ -560,6 +560,8 @@ maintenance_task: asyncio.Task | None = None
 position_mark_task: asyncio.Task | None = None
 _STATUS_PAYLOAD_CACHE_TTL_SECONDS = 3.0
 _status_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_POSITION_MARKS_CACHE_TTL_SECONDS = 5.0
+_position_marks_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 app = FastAPI(title="OpenStocks")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -1830,11 +1832,25 @@ def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cached_position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
+    if user.get("role") == "admin":
+        return _position_marks_payload(user)
+    key = f"user:{int(user['id'])}:{user.get('updated_at') or ''}"
+    now = time.monotonic()
+    cached = _position_marks_payload_cache.get(key)
+    if cached and now - cached[0] <= _POSITION_MARKS_CACHE_TTL_SECONDS:
+        return cached[1]
+    payload = _position_marks_payload(user)
+    _position_marks_payload_cache.clear()
+    _position_marks_payload_cache[key] = (now, payload)
+    return payload
+
+
 @app.get("/api/position-marks")
 async def position_marks(request: Request, response: Response) -> dict[str, Any]:
     user = require_user(request, settings, db)
     response.headers["Cache-Control"] = "no-store, max-age=0"
-    return await asyncio.to_thread(_position_marks_payload, user)
+    return await asyncio.to_thread(_cached_position_marks_payload, user)
 
 
 def _monitor_symbols_for_user(user: dict[str, Any] | None) -> list[str]:
