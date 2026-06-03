@@ -558,7 +558,7 @@ agent = stack["agent"]
 user_signal_sessions = UserSignalSessionManager()
 maintenance_task: asyncio.Task | None = None
 position_mark_task: asyncio.Task | None = None
-_STATUS_PAYLOAD_CACHE_TTL_SECONDS = 3.0
+_STATUS_PAYLOAD_CACHE_TTL_SECONDS = 8.0
 _status_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _POSITION_MARKS_CACHE_TTL_SECONDS = 5.0
 _position_marks_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -1836,13 +1836,12 @@ def _cached_position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
     if user.get("role") == "admin":
         return _position_marks_payload(user)
     key = f"user:{int(user['id'])}:{user.get('updated_at') or ''}"
-    now = time.monotonic()
     cached = _position_marks_payload_cache.get(key)
-    if cached and now - cached[0] <= _POSITION_MARKS_CACHE_TTL_SECONDS:
+    if cached and time.monotonic() - cached[0] <= _POSITION_MARKS_CACHE_TTL_SECONDS:
         return cached[1]
     payload = _position_marks_payload(user)
     _position_marks_payload_cache.clear()
-    _position_marks_payload_cache[key] = (now, payload)
+    _position_marks_payload_cache[key] = (time.monotonic(), payload)
     return payload
 
 
@@ -2141,13 +2140,12 @@ def _cached_status_payload(
     if not user or user.get("role") == "admin" or force_refresh:
         return _status_payload(user)
     key = f"user:{int(user['id'])}:{user.get('role') or ''}:{user.get('updated_at') or ''}"
-    now = time.monotonic()
     cached = _status_payload_cache.get(key)
-    if cached and now - cached[0] <= _STATUS_PAYLOAD_CACHE_TTL_SECONDS:
+    if cached and time.monotonic() - cached[0] <= _STATUS_PAYLOAD_CACHE_TTL_SECONDS:
         return cached[1]
     payload = _status_payload(user)
     _status_payload_cache.clear()
-    _status_payload_cache[key] = (now, payload)
+    _status_payload_cache[key] = (time.monotonic(), payload)
     return payload
 
 
