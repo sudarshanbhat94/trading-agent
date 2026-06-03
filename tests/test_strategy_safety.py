@@ -87,6 +87,43 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(plan["targets"][0]["distance_pct"], 6.3)
         self.assertEqual(plan["holding_period"], "intraday_to_swing")
 
+    def test_raw_opportunity_btst_requires_late_non_friday_session(self) -> None:
+        context = _btst_raw_entry_context(
+            datetime(2026, 6, 2, 10, 30, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"])
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["setup_family"], "delivery_btst")
+        self.assertIn("btst_requires_late_non_friday_session", model["warnings"])
+
+    def test_raw_opportunity_btst_late_session_uses_next_session_plan(self) -> None:
+        context = _btst_raw_entry_context(
+            datetime(2026, 6, 2, 14, 45, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertTrue(model["passed"], model)
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "delivery_btst")
+        self.assertEqual(model["trade_plan"]["holding_period"], "BTST_next_session")
+        self.assertEqual(model["trade_plan"]["targets"][0]["label"], "BTST-T1")
+        self.assertEqual(model["trade_plan"]["targets"][0]["distance_pct"], 1.8)
+
+    def test_raw_opportunity_btst_rejects_friday_weekend_carry(self) -> None:
+        context = _btst_raw_entry_context(
+            datetime(2026, 5, 29, 14, 45, tzinfo=ZoneInfo("Asia/Kolkata")),
+        )
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"])
+        self.assertEqual(model["setup_family"], "delivery_btst")
+        self.assertIn("btst_requires_late_non_friday_session", model["warnings"])
+
     def test_raw_entry_model_blocks_only_invalid_or_untradeable_truth_checks(self) -> None:
         context = _raw_entry_context(price=0.0)
         engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
@@ -4160,6 +4197,36 @@ def _raw_entry_context(
         },
         "risk_limits": {"portfolio_equity": 100_000},
     }
+
+
+def _btst_raw_entry_context(asof: datetime) -> dict:
+    context = _raw_entry_context(
+        price=1000.0,
+        setup="btst_buy_candidate",
+        market_region="IN",
+        technical_score=0.82,
+        day_gain_pct=2.1,
+        volume_ratio=2.2,
+        projected_volume_ratio=2.4,
+        day_range_position=0.84,
+        day_high_distance_pct=0.35,
+    )
+    context["quote"]["asof"] = asof.isoformat()
+    context["opportunity_scan"].update(
+        {
+            "score": 0.90,
+            "btst": {
+                "detected": True,
+                "score": 0.90,
+                "evidence": {
+                    "rs_rank": 78.0,
+                    "return_5d_pct": 4.0,
+                    "distance_to_sma20_pct": 2.0,
+                },
+            },
+        }
+    )
+    return context
 
 
 def _raw_opportunity_settings() -> SimpleNamespace:

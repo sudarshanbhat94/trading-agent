@@ -609,6 +609,11 @@ def _simulate_trade(
     target = _num((targets[0] or {}).get("price")) if isinstance(targets, list) and targets else None
     stop = stop if stop and stop < entry else entry * 0.965
     target = target if target and target > entry else entry * 1.063
+    setup_family = str(model.get("setup_family") or "").strip().lower()
+    holding_period = str(plan.get("holding_period") or "").strip().lower() if isinstance(plan, dict) else ""
+    btst_mode = setup_family == "delivery_btst" or holding_period.startswith("btst")
+    entry_day = _market_day(entry_ts)
+    next_market_day: date | None = None
     exit_price = entry
     exit_reason = "no_future_candles"
     exit_ts = ""
@@ -616,6 +621,12 @@ def _simulate_trade(
         bar_ts = _parse_ts(bar.ts)
         if bar_ts <= entry_ts:
             continue
+        bar_day = _market_day(bar_ts)
+        if btst_mode:
+            if bar_day != entry_day and next_market_day is None:
+                next_market_day = bar_day
+            if next_market_day is not None and bar_day > next_market_day:
+                break
         if bar_ts > entry_ts + timedelta(days=7):
             break
         exit_price = float(bar.close)

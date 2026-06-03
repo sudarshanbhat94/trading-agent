@@ -47,6 +47,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     late_chase = bool(scan.get("late_chase") or bucket.upper() == "LATE_CHASE_AVOID")
     quote_ts = _parse_ts(str(quote.get("asof") or ""))
     late_session_entry = _late_session_entry(market, quote_ts)
+    btst_session_entry = _btst_session_entry(market, quote_ts)
 
     gain_component = _clamp((day_gain + 1.0) / 8.0, 0.0, 1.0) * 13.0
     range_component = range_position * 10.0
@@ -107,7 +108,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     watch_line = _watch_line(settings)
     confidence = round(_clamp(raw_score / 100.0, 0.05, 0.99), 4)
     grade = "A" if raw_score >= 82.0 else "B" if raw_score >= entry_line else "WATCH"
-    trade_plan = _trade_plan(price, market) if price and price > 0 else {}
+    setup_family = str(best_setup.get("family") or "none")
+    trade_plan = _trade_plan(price, market, setup_family) if price and price > 0 else {}
 
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
     warnings: list[str] = []
@@ -119,12 +121,13 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         warnings.append("negative_news_catalyst_score_penalty")
     if late_chase:
         warnings.append("late_chase_score_penalty")
-    if late_session_entry:
+    if late_session_entry and setup_family != "delivery_btst":
         warnings.append("late_session_no_fresh_entry")
+    if setup_family == "delivery_btst" and not btst_session_entry:
+        warnings.append("btst_requires_late_non_friday_session")
     if market == "IN" and volume_ratio > 6.0:
         warnings.append("india_live_momentum_blowoff_volume_watch")
 
-    setup_family = str(best_setup.get("family") or "none")
     opportunity_ready = _opportunity_ready(
         market=market,
         setup_family=setup_family,
@@ -138,6 +141,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         technical_score=technical_score,
         scan_score=scan_score,
         late_session_entry=late_session_entry,
+        btst_session_entry=btst_session_entry,
         price=price,
     )
     if truth_blocks:
@@ -202,6 +206,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "bucket": bucket,
             "late_chase": late_chase,
             "late_session_entry": late_session_entry,
+            "btst_session_entry": btst_session_entry,
             "missing_data": missing,
             "sentiment_event_types": sorted(sentiment_event_types),
             "soft_penalty": round(soft_penalty, 4),
@@ -297,9 +302,10 @@ def _opportunity_ready(
     technical_score: float,
     scan_score: float,
     late_session_entry: bool,
+    btst_session_entry: bool = False,
     price: float | None = None,
 ) -> bool:
-    if not bool(best_setup.get("passed")) or late_session_entry:
+    if not bool(best_setup.get("passed")):
         return False
     if setup_family == "relative_strength_accumulation":
         return False
@@ -308,6 +314,8 @@ def _opportunity_ready(
     if market == "IN":
         price_value = float(price or 0.0)
         high_ok = high_distance is None or high_distance <= 1.2
+        if setup_family != "delivery_btst" and late_session_entry:
+            return False
         if setup_family == "live_momentum":
             return (
                 price_value >= 50.0
@@ -333,11 +341,13 @@ def _opportunity_ready(
             )
         if setup_family == "delivery_btst":
             return (
-                raw_score >= max(base_line, 84.0)
-                and setup_score >= 78.0
-                and day_gain >= 0.8
-                and range_position >= 0.68
-                and volume_ratio >= 1.1
+                btst_session_entry
+                and raw_score >= max(base_line, 86.0)
+                and setup_score >= 82.0
+                and 1.0 <= day_gain <= 3.8
+                and range_position >= 0.76
+                and (high_distance is None or high_distance <= 0.8)
+                and 1.1 <= volume_ratio <= 4.5
             )
         if setup_family == "reversal_reclaim":
             return raw_score >= max(base_line, 88.0) and setup_score >= 76.0 and day_gain >= 1.5
@@ -362,6 +372,15 @@ def _late_session_entry(market: str, quote_ts: datetime | None) -> bool:
     return False
 
 
+def _btst_session_entry(market: str, quote_ts: datetime | None) -> bool:
+    if market != "IN" or quote_ts is None:
+        return False
+    local = quote_ts.astimezone(IST)
+    if local.weekday() >= 4:
+        return False
+    return time(14, 15) <= local.time() <= time(15, 20)
+
+
 def _parse_ts(value: str) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -373,11 +392,17 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
-def _trade_plan(price: float | None, market: str | None = "IN") -> dict[str, Any]:
+def _trade_plan(price: float | None, market: str | None = "IN", setup_family: str | None = None) -> dict[str, Any]:
     if price is None or price <= 0:
         return {}
     market_key = str(market or "IN").upper()
-    if market_key == "IN":
+    setup_key = str(setup_family or "").strip().lower()
+    if market_key == "IN" and setup_key == "delivery_btst":
+        stop_pct = 0.022
+        target_pct = 0.018
+        label = "BTST-T1"
+        holding_period = "BTST_next_session"
+    elif market_key == "IN":
         stop_pct = 0.025
         target_pct = 0.025
         label = "RAW-IN-T1"
