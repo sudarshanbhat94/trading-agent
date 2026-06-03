@@ -77,7 +77,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     if args.fetch_only:
         return {
-            "engine": "upstox_history_entry_authority_v2",
+            "engine": "upstox_history_raw_opportunity_v1",
             "mode": "fetch_only",
             "window": {"start": start.isoformat(), "end": end.isoformat(), "interval": args.interval},
             "universe_symbols": len(rows),
@@ -196,7 +196,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 trades.append(trade)
 
     return {
-        "engine": "upstox_history_entry_authority_v2",
+        "engine": "upstox_history_raw_opportunity_v1",
         "window": {"start": start.isoformat(), "end": end.isoformat(), "interval": args.interval},
         "include_sentiment": bool(args.include_sentiment),
         "sentiment_symbols": len(sentiment_history),
@@ -223,7 +223,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Read-only entry_authority_v2 replay using Upstox historical candles.")
+    parser = argparse.ArgumentParser(description="Read-only raw_opportunity_v1 replay using Upstox historical candles.")
     parser.add_argument("--universe", default="data/universe.csv")
     parser.add_argument("--start", required=True, help="Inclusive YYYY-MM-DD market date.")
     parser.add_argument("--end", required=True, help="Exclusive YYYY-MM-DD market date.")

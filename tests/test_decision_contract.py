@@ -93,7 +93,7 @@ class DecisionContractTests(unittest.TestCase):
                     "raw_entry_model": {
                         "passed": True,
                         "legacy_decision_logic_removed": True,
-                        "version": "entry_authority_v2",
+                        "version": "raw_opportunity_v1",
                         "raw_score": 88,
                         "grade": "A",
                         "setup": "intraday_momentum",
@@ -107,7 +107,7 @@ class DecisionContractTests(unittest.TestCase):
                 "raw_entry_model": {
                     "passed": True,
                     "legacy_decision_logic_removed": True,
-                    "version": "entry_authority_v2",
+                    "version": "raw_opportunity_v1",
                     "raw_score": 88,
                     "grade": "A",
                     "setup": "intraday_momentum",

@@ -7060,7 +7060,7 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["why_changed"] = state["why_changed"]
     item["risk_review"] = state["risk_review"]
     item["canonical_trade"] = {
-        "version": str(raw_entry.get("version") or "entry_authority_v2") if raw_entry_item else contract["version"],
+        "version": str(raw_entry.get("version") or "raw_opportunity_v1") if raw_entry_item else contract["version"],
         "primary_blocker": None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker"),
         "secondary_blockers": [] if raw_entry_item else contract.get("secondary_blockers") or [],
         "paper_follow_eligible": bool(quality_gate.get("passed")) if raw_entry_item else contract.get("paper_follow_eligible"),
@@ -7312,6 +7312,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         "raw_entry_model": raw_entry_model,
         "legacy_decision_logic_removed": bool(raw_entry_model.get("legacy_decision_logic_removed")),
         "entry_authority_version": raw_entry_model.get("version"),
+        "raw_opportunity_version": raw_entry_model.get("version") if raw_entry_model.get("version") == "raw_opportunity_v1" else None,
         "entry_decision_label": raw_entry_model.get("decision_label"),
         "entry_setup_family": raw_entry_model.get("setup_family"),
         "entry_blockers": raw_entry_model.get("entry_blockers") if isinstance(raw_entry_model.get("entry_blockers"), list) else [],

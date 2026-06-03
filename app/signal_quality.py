@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
-from .trade_economics import exit_economics, minimum_auto_follow_notional
+from .trade_economics import minimum_auto_follow_notional
 
 
 FRESH_BUY_MIN_SCORE = 70.0
@@ -47,6 +46,7 @@ _BREAKOUT_OPPORTUNITY_SETUPS = {
     "broker_re_rating_breakout",
     "earnings_beat_gap_and_go",
 }
+_RAW_OPPORTUNITY_VERSIONS = {"raw_opportunity_v1"}
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -79,15 +79,15 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     if price is None or price <= 0:
         return _blocked("price_missing", "A valid current price is required before following.")
     raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
-    if raw.get("version") == "entry_authority_v2":
+    if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS:
         decision_label = _upper(raw.get("decision_label"))
         if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
             return _blocked(
-                "entry_authority_not_entry_ready",
-                "The new entry authority reviewed this symbol but did not mark it ENTRY_READY.",
-                entry_authority_version=raw.get("version"),
+                "raw_opportunity_not_entry_ready",
+                "The raw opportunity model did not mark this symbol ENTRY_READY.",
+                raw_opportunity_version=raw.get("version"),
                 decision_label=decision_label or raw.get("decision_label"),
-                entry_blockers=raw.get("entry_blockers") if isinstance(raw.get("entry_blockers"), list) else [],
+                truth_blocks=raw.get("truth_blocks") if isinstance(raw.get("truth_blocks"), list) else [],
                 setup_family=raw.get("setup_family"),
                 setup_evidence=raw.get("setup_evidence"),
                 overall_score_pct=raw.get("raw_score"),
@@ -99,10 +99,10 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "passed": True,
         "fresh_buy_allowed": True,
-        "reason": "entry_authority_ready" if raw.get("version") == "entry_authority_v2" else "legacy_entry_gates_removed",
+        "reason": "raw_opportunity_ready" if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS else "legacy_entry_gates_removed",
         "message": (
-            "Entry authority marked this idea ENTRY_READY after setup evidence and truth checks."
-            if raw.get("version") == "entry_authority_v2"
+            "Raw opportunity model marked this idea ENTRY_READY after quote, tradeability, liquidity, and live opportunity evidence."
+            if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS
             else "Legacy score, confluence, setup, and strategy gates were removed; BUY is actionable after truth checks."
         ),
         "overall_score_pct": raw_score,
@@ -119,7 +119,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         "size_multiplier": 1.0,
         "data_readiness": item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness"),
         "legacy_entry_gates_removed": True,
-        "entry_authority_version": raw.get("version"),
+        "raw_opportunity_version": raw.get("version") if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS else None,
         "decision_label": raw.get("decision_label"),
         "setup_family": raw.get("setup_family"),
     }
@@ -350,18 +350,15 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
         return gate
     details = _details(item)
     raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
-    if raw.get("version") == "entry_authority_v2":
-        economics_block = _entry_authority_target_economics_block(item, details, raw, gate)
-        if economics_block:
-            return economics_block
+    if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS:
         score = _number(raw.get("raw_score"), gate.get("overall_score_pct")) or 0.0
-        size_multiplier = 1.0 if score >= 82.0 else 0.75 if score >= 76.0 else 0.5
+        size_multiplier = 1.0 if score >= 82.0 else 0.8 if score >= 72.0 else 0.6
         return {
             **gate,
-            "reason": "entry_authority_auto_follow_ready",
-            "message": "Auto-paper follows only ENTRY_READY ideas with a valid stop, target, and cost-aware target economics.",
-            "auto_follow_contract": "entry_authority_v2",
-            "auto_follow_min_reward_risk": AUTO_FOLLOW_MIN_REWARD_RISK,
+            "reason": "raw_opportunity_auto_follow_ready",
+            "message": "Auto-paper follows raw ENTRY_READY ideas after truth checks; sizing economics still decides quantity.",
+            "auto_follow_contract": raw.get("version"),
+            "auto_follow_min_reward_risk": None,
             "size_multiplier": size_multiplier,
         }
     return {
@@ -371,63 +368,6 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
         "auto_follow_contract": "raw_entry_truth_checks_only",
         "auto_follow_min_reward_risk": None,
     }
-
-
-def _entry_authority_target_economics_block(
-    item: dict[str, Any],
-    details: dict[str, Any],
-    raw: dict[str, Any],
-    gate: dict[str, Any],
-) -> dict[str, Any] | None:
-    gate_context = {
-        key: value
-        for key, value in gate.items()
-        if key not in {"passed", "fresh_buy_allowed", "reason", "message"}
-    }
-    price = _number(item.get("latest_price"), item.get("price"), item.get("entry_price"), details.get("latest_price"))
-    if price is None or price <= 0:
-        return _blocked("auto_follow_price_missing", "Auto-paper requires a valid current price before entry.", **gate_context)
-    stop = _number(item.get("stop_loss"), details.get("stop_loss"), (raw.get("trade_plan") or {}).get("stop_loss") if isinstance(raw.get("trade_plan"), dict) else None)
-    if stop is None or stop <= 0 or stop >= price:
-        return _blocked("auto_follow_stop_missing_or_invalid", "ENTRY_READY auto-follow requires a valid stop below entry.", price=price, stop_loss=stop, **gate_context)
-    targets = details.get("targets")
-    raw_plan = raw.get("trade_plan") if isinstance(raw.get("trade_plan"), dict) else {}
-    if not targets and isinstance(raw_plan.get("targets"), list):
-        targets = raw_plan.get("targets")
-    t1 = _target_one(details.get("target_status"), details.get("target_status"), targets)
-    target_price = _number(t1.get("price"), t1.get("target"), t1.get("target_price")) if isinstance(t1, dict) else None
-    if target_price is None or target_price <= price:
-        return _blocked("auto_follow_target_missing", "ENTRY_READY auto-follow requires a target above entry.", price=price, stop_loss=stop, **gate_context)
-    reward = target_price - price
-    risk = price - stop
-    reward_risk = reward / risk if risk > 0 else 0.0
-    if reward_risk < AUTO_FOLLOW_MIN_REWARD_RISK:
-        return _blocked(
-            "auto_follow_reward_risk_below_minimum",
-            f"Auto-paper requires reward/risk of at least {AUTO_FOLLOW_MIN_REWARD_RISK:.1f}.",
-            price=price,
-            stop_loss=stop,
-            target_1=t1,
-            reward_risk=round(reward_risk, 4),
-            **gate_context,
-        )
-    market = _upper(details.get("market_region") or raw.get("market_region") or item.get("market_region")) or "IN"
-    min_notional = minimum_auto_follow_notional(None, market)
-    qty = max(1, int(math.ceil(min_notional / price))) if min_notional > 0 else 1
-    economics = exit_economics(price, target_price, qty, market, None)
-    if not economics.get("passed"):
-        return _blocked(
-            "auto_follow_target_net_economics_below_minimum",
-            "Target does not clear round-trip charges and minimum net-profit economics at the minimum paper-follow notional.",
-            price=price,
-            stop_loss=stop,
-            target_1=t1,
-            market_region=market,
-            minimum_notional=round(min_notional, 2),
-            economics=economics,
-            **gate_context,
-        )
-    return None
 
 
 def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:

@@ -24,37 +24,44 @@ from app.trade_economics import auto_follow_sizing
 
 
 class RawEntryModelSafetyTests(unittest.TestCase):
-    def test_entry_authority_requires_positive_setup_family(self) -> None:
+    def test_raw_opportunity_does_not_use_old_positive_setup_blocker(self) -> None:
         context = _raw_entry_context(setup="watchlist_candidate")
-        engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
+        engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
 
         action = engine._action_from_context("RAWBUY", 0.0, {}, context, {})
 
-        self.assertEqual(action, "HOLD")
-        self.assertEqual(context["decision_gate_context"]["decision_authority"], "entry_authority_v2")
-        self.assertFalse(context["raw_entry_model"]["passed"])
-        self.assertEqual(context["raw_entry_model"]["decision_label"], "WATCH")
-        self.assertEqual(context["raw_entry_model"]["entry_blockers"][0]["reason"], "no_positive_setup_family")
+        self.assertIn(action, {"BUY", "HOLD"})
+        self.assertEqual(context["decision_gate_context"]["decision_authority"], "raw_opportunity_v1")
+        self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
+        self.assertEqual(context["raw_entry_model"]["diagnostics"]["hard_block_policy"], "invalid_quote_untradeable_or_hard_liquidity_only")
 
-    def test_entry_authority_buys_only_entry_ready_setup(self) -> None:
+    def test_raw_opportunity_buys_live_india_momentum_without_price_3000_or_news_gate(self) -> None:
         context = _raw_entry_context(
+            price=108.0,
             setup="opening_ignition",
-            market_region="US",
+            market_region="IN",
             data_readiness={"trade_decision_ready": False, "missing_data": ["legacy_phase2_gap"]},
+            technical_score=0.66,
+            day_gain_pct=2.4,
+            volume_ratio=1.8,
+            projected_volume_ratio=2.2,
+            day_range_position=0.74,
+            day_high_distance_pct=1.2,
         )
-        engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
+        engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
 
         action = engine._action_from_context("RAWBUY", 0.0, {}, context, {})
 
         self.assertEqual(action, "BUY")
-        self.assertEqual(context["decision_gate_context"]["decision_authority"], "entry_authority_v2")
+        self.assertEqual(context["decision_gate_context"]["decision_authority"], "raw_opportunity_v1")
         self.assertTrue(context["raw_entry_model"]["passed"])
         self.assertEqual(context["raw_entry_model"]["decision_label"], "ENTRY_READY")
         self.assertEqual(context["raw_entry_model"]["setup_family"], "live_momentum")
+        self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
 
     def test_raw_entry_model_blocks_only_invalid_or_untradeable_truth_checks(self) -> None:
         context = _raw_entry_context(price=0.0)
-        engine = StrategyEngine(_entry_authority_settings(), SimpleNamespace(), SimpleNamespace())
+        engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
 
         action = engine._action_from_context("BADQUOTE", 0.0, {}, context, {})
 
@@ -76,7 +83,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(hard_reason, "invalid_price")
 
     def test_raw_entry_model_score_payload_is_explainable(self) -> None:
-        model = evaluate_raw_entry(_raw_entry_context(setup="opening_ignition", market_region="US"), _entry_authority_settings())
+        model = evaluate_raw_entry(_raw_entry_context(setup="opening_ignition", market_region="US"), _raw_opportunity_settings())
 
         self.assertTrue(model["passed"])
         self.assertGreaterEqual(model["raw_score"], model["entry_line"])
@@ -85,7 +92,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_family"], "live_momentum")
         self.assertTrue(model["legacy_decision_logic_removed"])
 
-    def test_us_live_momentum_rejects_weak_technical_confirmation(self) -> None:
+    def test_us_live_momentum_accepts_volume_price_confirmation_without_old_filter(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(
                 setup="opening_ignition",
@@ -95,17 +102,14 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                 volume_ratio=11.0,
                 projected_volume_ratio=11.0,
             ),
-            _entry_authority_settings(),
+            _raw_opportunity_settings(),
         )
 
-        self.assertFalse(model["passed"])
-        self.assertEqual(model["action"], "HOLD")
-        self.assertEqual(model["decision_label"], "MANUAL_ONLY")
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["action"], "BUY")
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
         self.assertEqual(model["setup_family"], "live_momentum")
-        self.assertIn(
-            "us_live_momentum_confirmation_filter",
-            {blocker["reason"] for blocker in model["entry_blockers"]},
-        )
+        self.assertEqual(model["entry_blockers"], [])
 
     def test_us_live_momentum_accepts_strong_move_volume_confirmation(self) -> None:
         model = evaluate_raw_entry(
@@ -117,7 +121,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                 volume_ratio=2.6,
                 projected_volume_ratio=2.6,
             ),
-            _entry_authority_settings(),
+            _raw_opportunity_settings(),
         )
 
         self.assertTrue(model["passed"])
@@ -157,14 +161,14 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             }
         )
 
-        model = evaluate_raw_entry(context, _entry_authority_settings())
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
 
         self.assertTrue(model["passed"])
         self.assertEqual(model["decision_label"], "ENTRY_READY")
-        self.assertEqual(model["setup_family"], "us_smallcap_reclaim")
+        self.assertEqual(model["setup_family"], "smallcap_reclaim")
         self.assertGreaterEqual(model["raw_score"], model["entry_line"])
 
-    def test_us_smallcap_reclaim_rejects_without_volume_and_traded_value(self) -> None:
+    def test_us_smallcap_reclaim_without_volume_stays_watch_not_truth_blocked(self) -> None:
         context = _raw_entry_context(
             price=91.37,
             setup="smallcap_momentum",
@@ -193,15 +197,16 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             }
         )
 
-        model = evaluate_raw_entry(context, _entry_authority_settings())
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
 
         self.assertFalse(model["passed"])
-        self.assertIn("no_positive_setup_family", {blocker["reason"] for blocker in model["entry_blockers"]})
+        self.assertEqual(model["entry_blockers"], [])
+        self.assertIn(model["decision_label"], {"WATCH", "NO_TRADE"})
 
-    def test_india_breakout_requires_positive_news_catalyst(self) -> None:
+    def test_india_breakout_does_not_require_positive_news_catalyst(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(
-                price=4900.0,
+                price=490.0,
                 setup="breakout_continuation",
                 market_region="IN",
                 technical_score=0.94,
@@ -210,15 +215,13 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                 projected_volume_ratio=8.0,
                 day_high_distance_pct=0.4,
             ),
-            _entry_authority_settings(),
+            _raw_opportunity_settings(),
         )
 
-        self.assertFalse(model["passed"])
-        self.assertEqual(model["decision_label"], "MANUAL_ONLY")
-        self.assertIn(
-            "india_cost_adjusted_selectivity_filter",
-            {blocker["reason"] for blocker in model["entry_blockers"]},
-        )
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "breakout")
+        self.assertEqual(model["entry_blockers"], [])
         self.assertFalse(model["components"]["positive_news_catalyst"])
 
     def test_india_breakout_accepts_positive_news_catalyst(self) -> None:
@@ -239,7 +242,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                     "events": [{"type": "order_win"}],
                 },
             ),
-            _entry_authority_settings(),
+            _raw_opportunity_settings(),
         )
 
         self.assertTrue(model["passed"])
@@ -247,10 +250,10 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_family"], "breakout")
         self.assertTrue(model["components"]["positive_news_catalyst"])
 
-    def test_india_live_momentum_rejects_weak_cost_adjusted_shape(self) -> None:
+    def test_india_live_momentum_no_longer_has_cost_adjusted_veto(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(
-                price=3030.0,
+                price=303.0,
                 setup="opening_ignition",
                 market_region="IN",
                 technical_score=0.88,
@@ -260,15 +263,12 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                 day_range_position=0.94,
                 day_high_distance_pct=0.23,
             ),
-            _entry_authority_settings(),
+            _raw_opportunity_settings(),
         )
 
-        self.assertFalse(model["passed"])
-        self.assertEqual(model["decision_label"], "MANUAL_ONLY")
-        self.assertIn(
-            "india_cost_adjusted_selectivity_filter",
-            {blocker["reason"] for blocker in model["entry_blockers"]},
-        )
+        self.assertTrue(model["passed"])
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["entry_blockers"], [])
 
     def test_india_live_momentum_accepts_strong_cost_adjusted_shape(self) -> None:
         model = evaluate_raw_entry(
@@ -283,7 +283,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                 day_range_position=0.98,
                 day_high_distance_pct=0.11,
             ),
-            _entry_authority_settings(),
+            _raw_opportunity_settings(),
         )
 
         self.assertTrue(model["passed"])
@@ -291,7 +291,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_family"], "live_momentum")
 
 
-@unittest.skip("Legacy strategy gate tests were intentionally retired for entry_authority_v2.")
+@unittest.skip("Legacy strategy gate tests were intentionally retired for the raw opportunity model.")
 class StrategySafetyTests(unittest.TestCase):
     def test_fresh_gate_pass_overrides_stale_probe_marker(self) -> None:
         reason = _fresh_market_data_block_reason(
@@ -4113,8 +4113,8 @@ def _raw_entry_context(
     }
 
 
-def _entry_authority_settings() -> SimpleNamespace:
-    return SimpleNamespace(entry_authority_min_score=72, entry_authority_watch_score=58, raw_entry_min_score=72)
+def _raw_opportunity_settings() -> SimpleNamespace:
+    return SimpleNamespace(entry_authority_min_score=64, entry_authority_watch_score=52, raw_entry_min_score=64)
 
 
 if __name__ == "__main__":

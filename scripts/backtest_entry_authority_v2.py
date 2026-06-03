@@ -21,7 +21,7 @@ from app.trade_economics import exit_economics, minimum_auto_follow_notional
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only entry_authority_v2 backtest over stored decision contexts.")
+    parser = argparse.ArgumentParser(description="Read-only raw_opportunity_v1 backtest over stored decision contexts.")
     parser.add_argument("--database", default="./var/trading_agent.db")
     parser.add_argument("--start", default="")
     parser.add_argument("--end", default="")

@@ -4,7 +4,7 @@ from math import log1p
 from typing import Any
 
 
-RAW_ENTRY_MODEL_VERSION = "entry_authority_v2"
+RAW_ENTRY_MODEL_VERSION = "raw_opportunity_v1"
 ENTRY_AUTHORITY_VERSION = RAW_ENTRY_MODEL_VERSION
 
 ENTRY_READY = "ENTRY_READY"
@@ -25,13 +25,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
 
     price = _num(quote.get("price"))
-    truth_blocks: list[dict[str, Any]] = []
-    if price is None or price <= 0:
-        truth_blocks.append({"reason": "invalid_quote_price", "value": quote})
-    if quote.get("tradeable") is False or quote.get("tradable") is False:
-        truth_blocks.append({"reason": "quote_marked_untradeable", "value": quote})
-    if liquidity.get("tradeable") is False and liquidity.get("liquidity_tier") == "untradeable":
-        truth_blocks.append({"reason": "liquidity_marked_untradeable", "value": liquidity})
+    truth_blocks = _truth_blocks(price=price, quote=quote, liquidity=liquidity)
 
     scan_score = _score_pct(scan.get("score"))
     live_score = _score_pct((scan.get("components") or {}).get("live_momentum") if isinstance(scan.get("components"), dict) else None)
@@ -42,75 +36,49 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     turnover = max(_num(scan.get("turnover")) or 0.0, _num(scan.get("projected_turnover")) or 0.0)
     technical_score = _score_pct(technical.get("score"))
     sentiment_score = _num(sentiment.get("score")) or 0.0
-    sentiment_event_types = {
-        str((item or {}).get("type") or (item or {}).get("event_type") or "").strip().lower()
-        for item in (sentiment.get("events") or [])
-        if isinstance(item, dict)
-    }
-    positive_news_catalyst = bool(sentiment.get("positive_catalyst")) or (
-        sentiment_score >= 0.22
-        and int(sentiment.get("headline_count") or 0) > 0
-        and bool(
-            sentiment_event_types
-            & {
-                "analyst_upgrade",
-                "broker_re_rating",
-                "contract_win",
-                "earnings",
-                "earnings_beat",
-                "guidance",
-                "guidance_raise",
-                "order_win",
-            }
-        )
-    )
-    negative_news_catalyst = bool(sentiment.get("negative_catalyst")) or (
-        sentiment_score <= -0.30
-        and int(sentiment.get("headline_count") or 0) > 0
-        and bool(
-            sentiment_event_types
-            & {
-                "analyst_downgrade",
-                "debt",
-                "downgrade",
-                "fraud",
-                "lawsuit",
-                "probe",
-                "regulatory_action",
-                "resignation",
-            }
-        )
-    )
+    positive_news_catalyst, negative_news_catalyst, sentiment_event_types = _sentiment_catalysts(sentiment, sentiment_score)
     rs = context.get("universe_relative_strength") if isinstance(context.get("universe_relative_strength"), dict) else {}
     rs_percentile = _num(rs.get("percentile_63"))
     setup = str(scan.get("setup") or "raw_market_action").strip() or "raw_market_action"
     bucket = str(scan.get("bucket") or "").strip()
     late_chase = bool(scan.get("late_chase") or bucket.upper() == "LATE_CHASE_AVOID")
 
-    gain_component = _clamp((day_gain + 1.0) / 8.0, 0.0, 1.0) * 14.0
+    gain_component = _clamp((day_gain + 1.0) / 8.0, 0.0, 1.0) * 13.0
     range_component = range_position * 10.0
-    high_component = 6.0 if high_distance is None else _clamp((4.0 - high_distance) / 4.0, 0.0, 1.0) * 6.0
+    high_component = 6.0 if high_distance is None else _clamp((5.0 - high_distance) / 5.0, 0.0, 1.0) * 7.0
     volume_component = _clamp(log1p(max(volume_ratio, 0.0)) / log1p(4.0), 0.0, 1.0) * 10.0
-    turnover_floor = 2_000_000.0 if market == "US" else 50_000_000.0
-    turnover_component = _clamp(turnover / max(turnover_floor, 1.0), 0.0, 2.0) * 3.0
+    turnover_floor = 2_000_000.0 if market == "US" else 40_000_000.0
+    turnover_component = _clamp(turnover / max(turnover_floor, 1.0), 0.0, 2.0) * 4.0
     sentiment_component = _clamp((sentiment_score + 1.0) / 2.0, 0.0, 1.0) * 4.0
-    rs_component = _clamp(((rs_percentile if rs_percentile is not None else 50.0) - 40.0) / 60.0, 0.0, 1.0) * 5.0
+    rs_component = _clamp(((rs_percentile if rs_percentile is not None else 50.0) - 35.0) / 65.0, 0.0, 1.0) * 5.0
+    soft_penalty = 0.0
+    if late_chase:
+        soft_penalty += 8.0
+    if bucket.upper() == "AVOID":
+        soft_penalty += 10.0
+    if negative_news_catalyst:
+        soft_penalty += 10.0
 
-    raw_score = (
-        18.0
-        + scan_score * 0.32
-        + live_score * 0.12
-        + technical_score * 0.12
-        + gain_component
-        + range_component
-        + high_component
-        + volume_component
-        + turnover_component
-        + sentiment_component
-        + rs_component
+    base_score = round(
+        _clamp(
+            18.0
+            + scan_score * 0.30
+            + live_score * 0.14
+            + technical_score * 0.12
+            + gain_component
+            + range_component
+            + high_component
+            + volume_component
+            + turnover_component
+            + sentiment_component
+            + rs_component
+            - soft_penalty,
+            0.0,
+            99.0,
+        ),
+        4,
     )
-    base_score = round(_clamp(raw_score, 0.0, 99.0), 4)
-    setup_reviews = _setup_reviews(
+    setup_reviews = _opportunity_reviews(
         setup=setup,
         market=market,
         scan=scan,
@@ -127,143 +95,38 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     passed_setups = [item for item in setup_reviews if item.get("passed")]
     best_setup = max(passed_setups or setup_reviews, key=lambda item: float(item.get("score") or 0.0), default={})
     setup_score = float(best_setup.get("score") or 0.0)
-    authority_score = round(_clamp(base_score * 0.68 + setup_score * 0.32, 0.0, 99.0), 4)
-    entry_line = (
-        float(getattr(settings, "entry_authority_min_score", 72.0) or 72.0)
-        if settings is not None
-        else 72.0
-    )
-    watch_line = (
-        float(getattr(settings, "entry_authority_watch_score", 58.0) or 58.0)
-        if settings is not None
-        else 58.0
-    )
-    confidence = round(_clamp(authority_score / 100.0, 0.05, 0.99), 4)
-    grade = "A" if authority_score >= 82.0 else "B" if authority_score >= entry_line else "WATCH"
+    raw_score = round(_clamp(base_score * 0.72 + setup_score * 0.28, 0.0, 99.0), 4)
+    entry_line = _entry_line(settings)
+    watch_line = _watch_line(settings)
+    confidence = round(_clamp(raw_score / 100.0, 0.05, 0.99), 4)
+    grade = "A" if raw_score >= 82.0 else "B" if raw_score >= entry_line else "WATCH"
     trade_plan = _trade_plan(price) if price and price > 0 else {}
-    blockers: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    if not bool(best_setup.get("passed")):
-        blockers.append(
-            {
-                "reason": "no_positive_setup_family",
-                "message": "Reviewed symbol did not meet live momentum, breakout, pullback, BTST/delivery, or reversal evidence.",
-            }
-        )
-    if authority_score < entry_line:
-        blockers.append(
-            {
-                "reason": "entry_authority_score_below_minimum",
-                "score": authority_score,
-                "minimum": entry_line,
-            }
-        )
-    if bucket.upper() in {"AVOID", "LATE_CHASE_AVOID"}:
-        blockers.append({"reason": "scanner_bucket_not_entry_ready", "bucket": bucket})
-    if late_chase:
-        blockers.append({"reason": "late_chase_not_entry_ready", "bucket": bucket})
+
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
+    warnings: list[str] = []
     if "stale_quote" in missing:
-        blockers.append({"reason": "stale_quote_not_entry_ready", "missing_data": missing})
+        warnings.append("stale_quote_seen_in_scan_quality")
     if any(item in {"fresh_intraday_candles", "stale_intraday_candles"} for item in missing):
         warnings.append("intraday_candle_freshness_gap")
-    setup_family = str(best_setup.get("family") or "none")
-    if setup_family == "market_action_event":
-        blockers.append(
-            {
-                "reason": "market_action_event_manual_review",
-                "message": "Market-action-only events were net-negative in the last completed cost-adjusted replay; require another setup family before auto-entry.",
-            }
-        )
-    if market == "US" and setup_family == "live_momentum" and not truth_blocks:
-        us_live_momentum_confirmed = day_gain >= 2.0 and (
-            technical_score >= 60.0
-            or (day_gain >= 3.0 and volume_ratio >= 2.0 and technical_score >= 45.0)
-        )
-        if not us_live_momentum_confirmed:
-            blockers.append(
-                {
-                    "reason": "us_live_momentum_confirmation_filter",
-                    "message": "US live-momentum entries require either technical confirmation or a stronger price move with volume.",
-                    "day_gain_pct": round(day_gain, 4),
-                    "technical_score_pct": round(technical_score, 4),
-                    "volume_ratio": round(volume_ratio, 4),
-                    "min_day_gain_pct": 2.0,
-                    "min_technical_score_pct": 60.0,
-                    "strong_move_min_day_gain_pct": 3.0,
-                    "strong_move_min_volume_ratio": 2.0,
-                    "strong_move_min_technical_score_pct": 45.0,
-                }
-            )
-    if market == "IN" and negative_news_catalyst and not truth_blocks:
-        blockers.append(
-            {
-                "reason": "india_negative_news_catalyst",
-                "message": "India auto-entry is blocked when timestamped news sentiment shows a negative catalyst.",
-                "sentiment_score": round(sentiment_score, 4),
-                "event_types": sorted(sentiment_event_types),
-            }
-        )
-    if market == "IN" and not truth_blocks:
-        price_value = price or 0.0
-        india_breakout_ok = (
-            setup_family == "breakout"
-            and authority_score >= 97.0
-            and price_value >= 3000.0
-            and positive_news_catalyst
-        )
-        india_live_ok = setup_family == "live_momentum" and price_value >= 3000.0 and (
-            (
-                authority_score >= 92.0
-                and technical_score >= 85.0
-                and day_gain >= 2.5
-                and volume_ratio >= 4.5
-                and range_position >= 0.85
-                and (high_distance is None or high_distance <= 0.8)
-            )
-            or (
-                authority_score >= 96.0
-                and technical_score >= 55.0
-                and day_gain >= 6.0
-                and volume_ratio >= 10.0
-                and range_position >= 0.85
-                and (high_distance is None or high_distance <= 0.5)
-            )
-        )
-        if not (india_breakout_ok or india_live_ok):
-            blockers.append(
-                {
-                    "reason": "india_cost_adjusted_selectivity_filter",
-                    "message": "India entries require stricter cost-adjusted candle evidence; breakouts also require a positive timestamped news/catalyst.",
-                    "score": authority_score,
-                    "setup_family": setup_family,
-                    "min_breakout_score": 97.0,
-                    "breakout_requires_positive_news_catalyst": True,
-                    "live_momentum_min_price": 3000.0,
-                    "positive_news_catalyst": positive_news_catalyst,
-                    "day_gain_pct": round(day_gain, 4),
-                    "technical_score_pct": round(technical_score, 4),
-                    "volume_ratio": round(volume_ratio, 4),
-                    "day_range_position": round(range_position, 4),
-                    "day_high_distance_pct": round(high_distance, 4) if high_distance is not None else None,
-                }
-            )
+    if negative_news_catalyst:
+        warnings.append("negative_news_catalyst_score_penalty")
+    if late_chase:
+        warnings.append("late_chase_score_penalty")
 
+    setup_family = str(best_setup.get("family") or "none")
+    opportunity_ready = bool(best_setup.get("passed")) and raw_score >= entry_line
     if truth_blocks:
         decision_label = NO_TRADE
         reason = truth_blocks[0]["reason"]
-    elif not blockers and authority_score >= entry_line:
+    elif opportunity_ready:
         decision_label = ENTRY_READY
-        reason = "entry_authority_setup_passed"
-    elif bool(best_setup.get("passed")) and authority_score >= watch_line:
-        decision_label = MANUAL_ONLY
-        reason = blockers[0]["reason"] if blockers else "entry_authority_manual_review"
-    elif authority_score >= watch_line or setup_score >= 45.0:
+        reason = "raw_opportunity_ready"
+    elif raw_score >= watch_line or setup_score >= 42.0:
         decision_label = WATCH
-        reason = blockers[0]["reason"] if blockers else "entry_authority_watch"
+        reason = "raw_opportunity_watch"
     else:
         decision_label = NO_TRADE
-        reason = blockers[0]["reason"] if blockers else "entry_authority_no_trade"
+        reason = "raw_opportunity_not_enough_evidence"
 
     passed = decision_label == ENTRY_READY
 
@@ -276,13 +139,13 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         "auto_follow_ready": passed,
         "entry_line": entry_line,
         "watch_line": watch_line,
-        "raw_score": authority_score,
+        "raw_score": raw_score,
         "base_score": base_score,
         "setup_score": round(setup_score, 4),
         "grade": grade,
         "confidence": confidence,
         "truth_blocks": truth_blocks,
-        "entry_blockers": blockers,
+        "entry_blockers": truth_blocks,
         "warnings": warnings,
         "trade_plan": trade_plan,
         "market_region": market,
@@ -310,9 +173,88 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "liquidity": liquidity,
             "opportunity_scan": scan,
         },
+        "diagnostics": {
+            "bucket": bucket,
+            "late_chase": late_chase,
+            "missing_data": missing,
+            "sentiment_event_types": sorted(sentiment_event_types),
+            "soft_penalty": round(soft_penalty, 4),
+            "hard_block_policy": "invalid_quote_untradeable_or_hard_liquidity_only",
+            "removed_vetoes": "legacy_strategy_and_india_specific_entry_vetoes_removed",
+        },
         "legacy_decision_logic_removed": True,
-        "entry_authority_v2": True,
+        "raw_opportunity_v1": True,
     }
+
+
+def _truth_blocks(*, price: float | None, quote: dict[str, Any], liquidity: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    if price is None or price <= 0:
+        blocks.append({"reason": "invalid_quote_price", "value": quote})
+    if quote.get("tradeable") is False or quote.get("tradable") is False:
+        blocks.append({"reason": "quote_marked_untradeable", "value": quote})
+    if liquidity.get("tradeable") is False and liquidity.get("liquidity_tier") == "untradeable":
+        blocks.append({"reason": "liquidity_marked_untradeable", "value": liquidity})
+    return blocks
+
+
+def _entry_line(settings: Any = None) -> float:
+    if settings is None:
+        return 64.0
+    return float(
+        getattr(settings, "raw_entry_min_score", None)
+        or getattr(settings, "entry_authority_min_score", None)
+        or 64.0
+    )
+
+
+def _watch_line(settings: Any = None) -> float:
+    if settings is None:
+        return 52.0
+    return float(getattr(settings, "entry_authority_watch_score", None) or 52.0)
+
+
+def _sentiment_catalysts(sentiment: dict[str, Any], sentiment_score: float) -> tuple[bool, bool, set[str]]:
+    event_types = {
+        str((item or {}).get("type") or (item or {}).get("event_type") or "").strip().lower()
+        for item in (sentiment.get("events") or [])
+        if isinstance(item, dict)
+    }
+    positive = bool(sentiment.get("positive_catalyst")) or (
+        sentiment_score >= 0.22
+        and int(sentiment.get("headline_count") or 0) > 0
+        and bool(
+            event_types
+            & {
+                "analyst_upgrade",
+                "broker_re_rating",
+                "contract_win",
+                "earnings",
+                "earnings_beat",
+                "guidance",
+                "guidance_raise",
+                "order_win",
+            }
+        )
+    )
+    negative = bool(sentiment.get("negative_catalyst")) or (
+        sentiment_score <= -0.30
+        and int(sentiment.get("headline_count") or 0) > 0
+        and bool(
+            event_types
+            & {
+                "analyst_downgrade",
+                "debt",
+                "downgrade",
+                "fraud",
+                "lawsuit",
+                "probe",
+                "regulatory_action",
+                "resignation",
+            }
+        )
+    )
+    return positive, negative, event_types
 
 
 def _trade_plan(price: float | None) -> dict[str, Any]:
@@ -336,7 +278,7 @@ def _trade_plan(price: float | None) -> dict[str, Any]:
     }
 
 
-def _setup_reviews(
+def _opportunity_reviews(
     *,
     setup: str,
     market: str,
@@ -365,103 +307,113 @@ def _setup_reviews(
         return_5d = _num(btst_evidence.get("return_5d_pct"))
     near_high = (
         high_distance is not None
-        and high_distance <= 3.0
+        and high_distance <= 5.0
         or distance_to_near_high is not None
-        and distance_to_near_high <= 5.0
+        and distance_to_near_high <= 8.0
     )
     rs_value = rs_percentile if rs_percentile is not None else _num(btst_evidence.get("rs_rank")) or 50.0
-    volume_supported = bool(rally.get("volume_support")) or volume_ratio >= 2.0
-    us_smallcap_reclaim_shape = (
+    volume_supported = bool(rally.get("volume_support")) or volume_ratio >= 1.2
+    traded_value_floor = 2_000_000.0 if market == "US" else 30_000_000.0
+    smallcap_reclaim_shape = (
         market == "US"
         and setup_key in {"smallcap_momentum", "volume_price_accumulation", "us_smallcap_reclaim"}
-        and technical_score >= 62.0
-        and scan_score >= 45.0
-        and rs_value >= 70.0
-        and volume_ratio >= 2.0
-        and turnover >= 5_000_000.0
+        and technical_score >= 45.0
+        and scan_score >= 35.0
+        and rs_value >= 60.0
+        and volume_ratio >= 1.4
+        and turnover >= 2_000_000.0
         and volume_supported
-        and (distance_to_sma20 is None or -13.0 <= distance_to_sma20 <= 4.0)
-        and (distance_to_near_high is None or distance_to_near_high <= 25.0)
-        and (return_5d is None or return_5d >= 4.0)
-        and day_gain < 8.0
+        and (distance_to_sma20 is None or -18.0 <= distance_to_sma20 <= 6.0)
+        and (distance_to_near_high is None or distance_to_near_high <= 30.0)
+        and (return_5d is None or return_5d >= 2.0)
+        and day_gain < 10.0
     )
+    market_action_available = bool(market_action.get("available")) or setup_key in {
+        "market_action_momentum",
+        "price_shocker_reversal_breakout",
+        "top_gainer_momentum",
+        "circuit_demand_lock",
+    }
     reviews = [
         _review(
             "live_momentum",
             setup_key in {"opening_ignition", "intraday_momentum", "top_gainer_momentum", "market_action_momentum", "price_shocker_reversal_breakout"}
-            and day_gain >= 1.5
-            and range_position >= 0.65
-            and volume_ratio >= 1.4
-            and near_high
-            and max(live_score, scan_score) >= 55.0,
-            score=_avg(max(live_score, scan_score), _norm(day_gain, 0.0, 6.0) * 100, range_position * 100, _norm(volume_ratio, 1.0, 3.0) * 100),
-            reasons=["fresh momentum setup", "price near session/high breakout area", "volume expansion required"],
+            and day_gain >= 1.2
+            and range_position >= 0.55
+            and volume_ratio >= 1.15
+            and max(live_score, scan_score) >= 42.0,
+            score=_avg(max(live_score, scan_score), _norm(day_gain, 0.0, 5.0) * 100, range_position * 100, _norm(volume_ratio, 0.9, 2.5) * 100),
+            reasons=["live price momentum", "upper-range trading", "volume participation"],
         ),
         _review(
             "breakout",
             setup_key in {"52_week_high_volume_breakout", "breakout_continuation", "near_breakout", "broker_re_rating_breakout", "earnings_beat_gap_and_go"}
             and near_high
-            and volume_ratio >= 1.15
-            and technical_score >= 55.0
-            and scan_score >= 50.0,
-            score=_avg(scan_score, technical_score, _norm(volume_ratio, 1.0, 2.5) * 100, 95.0 if near_high else 35.0),
-            reasons=["breakout setup", "near resistance or high", "trend and volume confirmation"],
+            and volume_ratio >= 1.0
+            and max(technical_score, scan_score) >= 42.0,
+            score=_avg(scan_score, technical_score, _norm(volume_ratio, 0.9, 2.2) * 100, 90.0 if near_high else 35.0),
+            reasons=["breakout or near-breakout", "price near high", "volume not weak"],
         ),
         _review(
             "pullback_continuation",
             setup_key in {"pullback_buy", "ema_pullback_continuation", "vwap_reclaim_pullback"}
-            and technical_score >= 60.0
-            and rs_value >= 50.0
-            and volume_ratio >= 0.8
+            and technical_score >= 42.0
+            and rs_value >= 45.0
+            and volume_ratio >= 0.75
             and day_gain >= -1.5,
-            score=_avg(scan_score, technical_score, rs_value, _norm(volume_ratio, 0.7, 1.8) * 100),
-            reasons=["uptrend pullback or reclaim setup", "relative strength confirmation", "volume not weak"],
+            score=_avg(scan_score, technical_score, rs_value, _norm(volume_ratio, 0.7, 1.6) * 100),
+            reasons=["pullback/reclaim", "relative strength", "participation not weak"],
         ),
         _review(
-            "us_smallcap_reclaim",
-            us_smallcap_reclaim_shape,
+            "smallcap_reclaim",
+            smallcap_reclaim_shape,
             score=_avg(
                 technical_score,
                 rs_value,
-                _norm(volume_ratio, 1.6, 3.0) * 100,
-                _norm(turnover, 2_000_000.0, 8_000_000.0) * 100,
-                90.0,
+                _norm(volume_ratio, 1.2, 2.6) * 100,
+                _norm(turnover, 1_500_000.0, 7_000_000.0) * 100,
+                86.0,
             ),
-            reasons=[
-                "US smallcap reclaim setup",
-                "relative strength above 70",
-                "volume participation and traded value confirm liquidity",
-                "deep pullback is reclaiming toward the 20-day/pivot area",
-            ],
+            reasons=["smallcap reclaim", "relative strength", "volume and traded value"],
         ),
         _review(
             "delivery_btst",
             market == "IN"
             and setup_key in {"btst_buy_candidate", "delivery_accumulation", "accumulation_breakout"}
-            and (_num(btst.get("score")) or 0.0) >= 0.70
-            and volume_ratio >= 1.1
-            and range_position >= 0.55,
-            score=_avg(scan_score, (_num(btst.get("score")) or 0.0) * 100, range_position * 100, _norm(volume_ratio, 1.0, 2.5) * 100),
-            reasons=["India BTST/delivery setup", "close strength", "volume participation"],
+            and (_num(btst.get("score")) or 0.0) >= 0.55
+            and volume_ratio >= 0.8
+            and range_position >= 0.45,
+            score=_avg(scan_score, (_num(btst.get("score")) or 0.0) * 100, range_position * 100, _norm(volume_ratio, 0.8, 2.0) * 100),
+            reasons=["delivery/BTST accumulation", "close strength", "volume participation"],
         ),
         _review(
             "reversal_reclaim",
             ("reversal" in setup_key or "reclaim" in setup_key or "failed_breakdown" in setup_key or "price_shocker" in setup_key)
-            and day_gain >= 1.0
-            and volume_ratio >= 1.8
-            and range_position >= 0.55
-            and technical_score >= 40.0,
-            score=_avg(scan_score, technical_score, _norm(day_gain, 0.0, 5.0) * 100, _norm(volume_ratio, 1.0, 3.5) * 100),
-            reasons=["reversal/reclaim setup", "strong volume", "price recovered into upper range"],
+            and day_gain >= 0.8
+            and volume_ratio >= 1.25
+            and range_position >= 0.45
+            and technical_score >= 35.0,
+            score=_avg(scan_score, technical_score, _norm(day_gain, 0.0, 4.0) * 100, _norm(volume_ratio, 0.9, 2.8) * 100),
+            reasons=["reversal/reclaim", "volume expansion", "price recovered"],
         ),
         _review(
             "market_action_event",
-            bool(market_action.get("available"))
-            and (_score_pct(market_action.get("score")) >= 65.0 or day_gain >= 3.0)
-            and volume_ratio >= 1.4
-            and range_position >= 0.55,
-            score=_avg(_score_pct(market_action.get("score")), scan_score, _norm(volume_ratio, 1.0, 3.0) * 100, _norm(day_gain, 0.0, 6.0) * 100),
-            reasons=["market-action event", "volume shock", "price response"],
+            market_action_available
+            and (day_gain >= 2.0 or _score_pct(market_action.get("score")) >= 58.0)
+            and volume_ratio >= 1.1
+            and range_position >= 0.45,
+            score=_avg(_score_pct(market_action.get("score")), scan_score, _norm(volume_ratio, 0.9, 2.5) * 100, _norm(day_gain, 0.0, 5.0) * 100),
+            reasons=["market-action event", "price response", "volume participation"],
+        ),
+        _review(
+            "relative_strength_accumulation",
+            rs_value >= 70.0
+            and turnover >= traded_value_floor
+            and volume_ratio >= 0.8
+            and technical_score >= 40.0
+            and day_gain >= -0.8,
+            score=_avg(scan_score, technical_score, rs_value, _norm(volume_ratio, 0.8, 1.8) * 100),
+            reasons=["relative strength", "adequate traded value", "accumulation candidate"],
         ),
     ]
     return reviews
