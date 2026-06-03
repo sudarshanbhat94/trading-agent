@@ -5459,6 +5459,13 @@ function rallyPlanSectionRows(plan = {}, sectionKey = "") {
   return (plan.items || []).filter((item) => String(item.section || "") === sectionKey);
 }
 
+function readableRallyLabel(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/[_-]/.test(text) || /^[A-Z0-9_ -]+$/.test(text)) return humanLabel(text);
+  return text;
+}
+
 function rallyPlanLevelsHtml(item = {}) {
   const market = rowMarket(item);
   const parts = [
@@ -5467,34 +5474,48 @@ function rallyPlanLevelsHtml(item = {}) {
     ["Stop", item.stop_loss],
     ["T1", item.target1],
   ].filter(([, value]) => numericValue(value) !== null);
-  if (!parts.length) return `<span><small>Action</small><strong>${escapeHtml(item.action || "WATCH")}</strong></span>`;
+  if (!parts.length) return `<span class="rally-level"><small>Action</small><strong>${escapeHtml(item.action || "WATCH")}</strong></span>`;
   return parts
-    .map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong class="${label === "Stop" ? "negative" : label === "T1" ? "positive" : ""}">${fmtTradeMoney(value, market)}</strong></span>`)
+    .map(([label, value]) => `<span class="rally-level"><small>${escapeHtml(label)}</small><strong class="${label === "Stop" ? "negative" : label === "T1" ? "positive" : ""}">${fmtTradeMoney(value, market)}</strong></span>`)
     .join("");
+}
+
+function rallyPlanBlockerText(item = {}) {
+  const blockers = Array.isArray(item.blockers) ? item.blockers : [];
+  const text = blockers
+    .map((blocker) => typeof blocker === "string" ? blocker : blocker?.reason || blocker?.code || blocker?.label)
+    .filter(Boolean)
+    .map(readableRallyLabel)
+    .slice(0, 2)
+    .join(" · ");
+  return text || readableRallyLabel(item.invalidation || "");
 }
 
 function rallyPlanRowHtml(item = {}, index = 0) {
   const action = String(item.action || "WATCH").toUpperCase();
   const blockers = Array.isArray(item.blockers) ? item.blockers : [];
   const blocked = blockers.length > 0;
-  return `<article class="rally-plan-row ${blocked ? "blocked" : ""}" role="button" tabindex="0" data-rally-index="${index}">
-    <div class="rally-plan-symbol">
-      <span class="rally-action ${escapeHtml(cssToken(action))}">${escapeHtml(action)}</span>
+  const stage = readableRallyLabel(item.stage || item.section_label || item.section || "Rally plan");
+  const strategy = readableRallyLabel(item.strategy || item.setup_family || item.plan_code || "");
+  const blockerText = rallyPlanBlockerText(item);
+  return `<article class="rally-plan-row ${blocked ? "blocked" : ""}" role="button" tabindex="0" data-rally-index="${index}" aria-label="Open ${escapeHtml(displayValue(item.symbol, "symbol"))} rally plan">
+    <header class="rally-card-head">
       <div>
         <strong>${escapeHtml(displayValue(item.symbol, "Symbol"))}</strong>
-        <small>${escapeHtml(item.stage || item.strategy || "Rally plan")}</small>
+        <small>${escapeHtml(stage)}${strategy ? ` · ${escapeHtml(strategy)}` : ""}</small>
       </div>
-    </div>
+      <span class="rally-action ${escapeHtml(cssToken(action))}">${escapeHtml(action)}</span>
+    </header>
     <div class="rally-plan-levels">${rallyPlanLevelsHtml(item)}</div>
     <div class="rally-plan-copy">
-      <div><span>Why</span><p>${escapeHtml(shortValue(item.why || "-", 150))}</p></div>
-      <div><span>What</span><p>${escapeHtml(shortValue(item.what || "-", 150))}</p></div>
-      <div><span>How</span><p>${escapeHtml(shortValue(item.how || "-", 150))}</p></div>
+      <div><span>Why</span><p>${escapeHtml(shortValue(item.why || "-", 220))}</p></div>
+      <div><span>What</span><p>${escapeHtml(shortValue(item.what || "-", 180))}</p></div>
+      <div><span>How</span><p>${escapeHtml(shortValue(item.how || "-", 180))}</p></div>
     </div>
-    <div class="rally-plan-score">
-      <strong>${fmtNumber(item.score || 0)}</strong>
-      <small>${blocked ? "blocked" : item.strategy || "ready"}</small>
-    </div>
+    <footer class="rally-plan-footer">
+      <span class="rally-plan-score"><small>Score</small><strong>${fmtNumber(item.score || 0)}</strong></span>
+      <span>${escapeHtml(blockerText ? `Blocker: ${shortValue(blockerText, 120)}` : item.evidence ? "Evidence available" : "Open detail audit")}</span>
+    </footer>
   </article>`;
 }
 
@@ -5515,10 +5536,14 @@ function renderRallyPlan(rawPlan = {}) {
   if (regimePanel) {
     const stateText = String(regime.state || "neutral_chop").replace(/_/g, " ");
     const allowed = Boolean(regime.momentum_allowed);
-    regimePanel.innerHTML = `<div>
+    const reasons = Array.isArray(regime.reasons) ? regime.reasons : [];
+    regimePanel.innerHTML = `<div class="rally-regime-main">
         <span class="rally-regime-pill ${escapeHtml(cssToken(regime.state || "neutral"))}">${escapeHtml(stateText)}</span>
         <strong>${allowed ? "Momentum allowed with confirmation" : "Momentum buys blocked or watch-only"}</strong>
         <p>${escapeHtml(regime.summary || "Market regime is still building from live evidence.")}</p>
+      </div>
+      <div class="rally-regime-reasons">
+        ${reasons.slice(0, 4).map((reason) => `<span>${escapeHtml(shortValue(reason, 90))}</span>`).join("") || `<span>${escapeHtml(allowed ? "Buying allowed only with confirmation." : "Watch first; do not chase weak regime moves.")}</span>`}
       </div>
       <button type="button" data-rally-regime-detail>Details</button>`;
     regimePanel.querySelector("[data-rally-regime-detail]")?.addEventListener("click", () => showDetails("Market Day Regime", regime));
