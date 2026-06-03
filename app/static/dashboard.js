@@ -66,8 +66,8 @@ const SETTINGS_TAB_CATEGORIES = {
   advanced: new Set(["Global Intelligence", "Institutional Feeds"]),
 };
 
-const POSITION_MARK_IDLE_REFRESH_MS = 10000;
-const POSITION_MARK_ACTIVE_REFRESH_MS = 3000;
+const POSITION_MARK_IDLE_REFRESH_MS = 20000;
+const POSITION_MARK_ACTIVE_REFRESH_MS = 8000;
 const STATUS_REFRESH_MIN_INTERVAL_MS = 4000;
 const IDEAS_REFRESH_MIN_INTERVAL_MS = 15000;
 
@@ -161,6 +161,25 @@ function payloadRowsForMarket(payload = {}, key, market = state.activeMarket) {
   const byMarket = payload[`${key}_by_market`] || payload[`${key}ByMarket`];
   if (byMarket && Array.isArray(byMarket[region])) return byMarket[region];
   return filterRowsByMarket(payload[key] || [], region);
+}
+
+function flattenRowsByMarket(byMarket = {}, limit = 100) {
+  if (!byMarket || typeof byMarket !== "object") return [];
+  const rows = [];
+  const seen = new Set();
+  const markets = ["IN", "US", ...Object.keys(byMarket).filter((market) => !["IN", "US"].includes(market))];
+  for (const market of markets) {
+    const marketRows = Array.isArray(byMarket[market]) ? byMarket[market] : [];
+    for (const row of marketRows) {
+      if (!row || typeof row !== "object") continue;
+      const key = `${row.follow_id || row.id || row.idea_id || ""}:${row.symbol || ""}:${row.updated_at || row.follow_updated_at || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+      if (rows.length >= limit) return rows;
+    }
+  }
+  return rows;
 }
 
 function dayClosedPositionRowsFromPayload(payload = {}, market = state.activeMarket) {
@@ -2165,6 +2184,7 @@ function updatePositionMarkKpis(scopedPortfolio, positions, allPositions, active
 function renderPositionMarkPanels(payload) {
   if (!payload) return;
   const activeMarket = normalizeUiMarket(state.activeMarket);
+  const activeView = currentViewName();
   const allPositions = payload.positions || [];
   const positions = filterRowsByMarket(allPositions, activeMarket);
   const suggestions = payloadRowsForMarket(payload, "suggestions", activeMarket);
@@ -2173,14 +2193,21 @@ function renderPositionMarkPanels(payload) {
   const decisions = sortDecisionRows(payloadRowsForMarket(payload, "decisions", activeMarket));
   const scopedPortfolio = marketPortfolioFromPayload(payload, activeMarket);
   updatePositionMarkKpis(scopedPortfolio, positions, allPositions, activeMarket, trackedIdeas, visibleTrackedIdeas);
-  renderPositions(positions);
-  renderOverviewPositions(positions);
-  renderIdeasWatchlist(suggestions, trackedIdeas, state.latest?.strategy_plans || [], payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
   renderMobileNativeHeader(payload, filterRowsByMarket(payload.quotes || [], activeMarket), activeMarket);
-  renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
-  renderTrackedIdeas(visibleTrackedIdeas);
-  renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
-  renderProductTrackingPanel(trackedIdeas, positions, suggestions);
+  if (activeView === "overview") {
+    renderOverviewPositions(positions);
+    renderProductActionPanel(payload, suggestions, trackedIdeas, positions, decisions, scopedPortfolio);
+    renderProductTrackingPanel(trackedIdeas, positions, suggestions);
+    renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
+  }
+  if (activeView === "positions") {
+    renderPositions(positions);
+    renderMobilePortfolio(positions, trackedIdeas, scopedPortfolio);
+  }
+  if (activeView === "suggestions") {
+    renderIdeasWatchlist(suggestions, trackedIdeas, state.latest?.strategy_plans || [], payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
+    renderTrackedIdeas(visibleTrackedIdeas);
+  }
 }
 
 function accountEditorIsFocused() {
@@ -2191,11 +2218,15 @@ function accountEditorIsFocused() {
 function applyAccountPositionMarks(payload = {}) {
   if (state.auth?.admin || !state.account) return;
   const paperPayload = payload.paper || {};
+  const trackedIdeas = payload.tracked_ideas
+    || (payload.tracked_ideas_by_market ? flattenRowsByMarket(payload.tracked_ideas_by_market, 100) : state.account.tracked_ideas || []);
+  const followHistory = payload.follow_history
+    || (payload.follow_history_by_market ? flattenRowsByMarket(payload.follow_history_by_market, 100) : state.account.follow_history || []);
   const paper = {
     ...(state.account.paper || {}),
     ...paperPayload,
     positions: payload.positions || paperPayload.positions || state.account.paper?.positions || [],
-    follow_history: payload.follow_history || paperPayload.follow_history || state.account.paper?.follow_history || [],
+    follow_history: followHistory || paperPayload.follow_history || state.account.paper?.follow_history || [],
     closed_positions: paperPayload.closed_positions || state.account.paper?.closed_positions || [],
     portfolio: payload.portfolio || paperPayload.portfolio || state.account.paper?.portfolio || {},
     portfolio_by_market: payload.portfolio_by_market || paperPayload.portfolio_by_market || state.account.paper?.portfolio_by_market || {},
@@ -2205,8 +2236,8 @@ function applyAccountPositionMarks(payload = {}) {
   };
   state.account = {
     ...state.account,
-    tracked_ideas: payload.tracked_ideas || state.account.tracked_ideas || [],
-    follow_history: payload.follow_history || state.account.follow_history || [],
+    tracked_ideas: trackedIdeas,
+    follow_history: followHistory,
     follow_history_by_market: payload.follow_history_by_market || state.account.follow_history_by_market || {},
     paper,
   };
@@ -2218,11 +2249,15 @@ function applyAccountPositionMarks(payload = {}) {
 function applyPositionMarks(payload = {}) {
   if (!payload || !state.latest) return;
   state.positionMarksLastAppliedAt = payload.updated_at || new Date().toISOString();
+  const trackedIdeas = payload.tracked_ideas
+    || (payload.tracked_ideas_by_market ? flattenRowsByMarket(payload.tracked_ideas_by_market, 100) : state.latest.tracked_ideas || []);
+  const followHistory = payload.follow_history
+    || (payload.follow_history_by_market ? flattenRowsByMarket(payload.follow_history_by_market, 100) : state.latest.follow_history || []);
   state.latest = {
     ...state.latest,
-    tracked_ideas: payload.tracked_ideas || state.latest.tracked_ideas || [],
+    tracked_ideas: trackedIdeas,
     tracked_ideas_by_market: payload.tracked_ideas_by_market || state.latest.tracked_ideas_by_market || {},
-    follow_history: payload.follow_history || state.latest.follow_history || [],
+    follow_history: followHistory,
     follow_history_by_market: payload.follow_history_by_market || state.latest.follow_history_by_market || {},
     positions: payload.positions || state.latest.positions || [],
     portfolio: payload.portfolio || state.latest.portfolio || {},
@@ -3813,11 +3848,15 @@ function renderAccount(account) {
 }
 
 function accountFromStatusPayload(payload = {}) {
+  const followHistory = payload.follow_history
+    || (payload.follow_history_by_market ? flattenRowsByMarket(payload.follow_history_by_market, 100) : []);
+  const trackedIdeas = payload.tracked_ideas
+    || (payload.tracked_ideas_by_market ? flattenRowsByMarket(payload.tracked_ideas_by_market, 100) : []);
   const paper = {
     mode: payload.runtime?.execution_mode || "paper",
     positions: payload.positions || [],
-    follow_history: payload.follow_history || [],
-    closed_positions: (payload.follow_history || []).filter((row) => String(row.state || "").toUpperCase() !== "OPEN"),
+    follow_history: followHistory,
+    closed_positions: followHistory.filter((row) => String(row.state || "").toUpperCase() !== "OPEN"),
     portfolio: payload.portfolio || {},
     portfolio_by_market: payload.portfolio_by_market || payload.portfolio?.portfolio_by_market || {},
     cash_pool_by_market: payload.paper_cash_pool_by_market || state.auth?.user?.paper_cash_by_market || {},
@@ -3826,8 +3865,8 @@ function accountFromStatusPayload(payload = {}) {
   };
   return {
     paper,
-    tracked_ideas: payload.tracked_ideas || [],
-    follow_history: payload.follow_history || [],
+    tracked_ideas: trackedIdeas,
+    follow_history: followHistory,
     follow_history_by_market: payload.follow_history_by_market || {},
     positions: payload.positions || [],
     broker_sync: payload.broker_sync_status || payload.trading_readiness?.broker_sync || {},

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -557,6 +558,8 @@ agent = stack["agent"]
 user_signal_sessions = UserSignalSessionManager()
 maintenance_task: asyncio.Task | None = None
 position_mark_task: asyncio.Task | None = None
+_STATUS_PAYLOAD_CACHE_TTL_SECONDS = 3.0
+_status_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 app = FastAPI(title="OpenStocks")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -799,7 +802,8 @@ async def dashboard(request: Request) -> HTMLResponse:
 @app.get("/api/status")
 async def status(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
-    return await asyncio.to_thread(_status_payload, user)
+    force_refresh = str(request.query_params.get("fresh") or "").lower() in {"1", "true", "yes"}
+    return await asyncio.to_thread(_cached_status_payload, user, force_refresh=force_refresh)
 
 
 @app.get("/api/signals/search")
@@ -1688,23 +1692,36 @@ def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
     return output
 
 
-def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _compact_dashboard_payload(payload: dict[str, Any], *, include_flat_aliases: bool = True) -> dict[str, Any]:
     for key in ("suggestions", "signal_ideas"):
         if isinstance(payload.get(key), list):
             payload[key] = _compact_signal_ideas(payload[key])
     if isinstance(payload.get("suggestions"), list):
-        payload["signal_ideas"] = payload.get("suggestions", [])
+        if include_flat_aliases:
+            payload["signal_ideas"] = payload.get("suggestions", [])
+        else:
+            payload.pop("signal_ideas", None)
     if isinstance(payload.get("suggestions_by_market"), dict):
         payload["suggestions_by_market"] = {
             market: _compact_signal_ideas(rows)
             for market, rows in payload["suggestions_by_market"].items()
         }
-        payload["suggestions"] = _flatten_by_market_rows(payload["suggestions_by_market"], limit=24)
-        payload["signal_ideas"] = payload["suggestions"]
+        if include_flat_aliases:
+            payload["suggestions"] = _flatten_by_market_rows(payload["suggestions_by_market"], limit=24)
+            payload["signal_ideas"] = payload["suggestions"]
+        else:
+            payload.pop("suggestions", None)
+            payload.pop("signal_ideas", None)
     if isinstance(payload.get("decisions_by_market"), dict):
-        payload["decisions"] = _flatten_by_market_rows(payload["decisions_by_market"], limit=40)
+        if include_flat_aliases:
+            payload["decisions"] = _flatten_by_market_rows(payload["decisions_by_market"], limit=40)
+        else:
+            payload.pop("decisions", None)
     if isinstance(payload.get("follow_history_by_market"), dict):
-        payload["follow_history"] = _flatten_by_market_rows(payload["follow_history_by_market"], limit=50)
+        if include_flat_aliases:
+            payload["follow_history"] = _flatten_by_market_rows(payload["follow_history_by_market"], limit=50)
+        else:
+            payload.pop("follow_history", None)
     if isinstance(payload.get("tracked_ideas"), list):
         payload["tracked_ideas"] = [_compact_tracked_idea(row) for row in payload["tracked_ideas"] if isinstance(row, dict)]
     if isinstance(payload.get("tracked_ideas_by_market"), dict):
@@ -1712,7 +1729,10 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
             market: [_compact_tracked_idea(row) for row in (rows or []) if isinstance(row, dict)]
             for market, rows in payload["tracked_ideas_by_market"].items()
         }
-        payload["tracked_ideas"] = _flatten_by_market_rows(payload["tracked_ideas_by_market"], limit=50)
+        if include_flat_aliases:
+            payload["tracked_ideas"] = _flatten_by_market_rows(payload["tracked_ideas_by_market"], limit=50)
+        else:
+            payload.pop("tracked_ideas", None)
     if isinstance(payload.get("strategy_plans"), list):
         payload["strategy_plans"] = [
             _compact_strategy_plan(row)
@@ -1788,9 +1808,6 @@ def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
         paper_cash_by_market,
     )
     paper = {
-        "positions": positions,
-        "portfolio": user_portfolio,
-        "portfolio_by_market": user_portfolio.get("portfolio_by_market", {}),
         "cash_pool_by_market": paper_cash_by_market,
         "realized_pnl_by_market": realized_pnl_by_market,
         "cash_by_market": {
@@ -1801,7 +1818,6 @@ def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "updated_at": utc_now(),
-        "tracked_ideas": compact_tracked_ideas,
         "tracked_ideas_by_market": compact_by_market,
         "positions": positions,
         "portfolio": user_portfolio,
@@ -2101,6 +2117,24 @@ def _strategy_plans_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
     return _filter_strategy_plans_for_symbols(db.strategy_plans(), _monitor_symbols_for_user(user))
 
 
+def _cached_status_payload(
+    user: dict[str, Any] | None = None,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    if not user or user.get("role") == "admin" or force_refresh:
+        return _status_payload(user)
+    key = f"user:{int(user['id'])}:{user.get('role') or ''}:{user.get('updated_at') or ''}"
+    now = time.monotonic()
+    cached = _status_payload_cache.get(key)
+    if cached and now - cached[0] <= _STATUS_PAYLOAD_CACHE_TTL_SECONDS:
+        return cached[1]
+    payload = _status_payload(user)
+    _status_payload_cache.clear()
+    _status_payload_cache[key] = (now, payload)
+    return payload
+
+
 def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     is_admin = bool(user and user.get("role") == "admin")
     snapshot = agent.snapshot(lightweight=not is_admin)
@@ -2161,12 +2195,12 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
             "IN": _monitor_watchlist_for_user(user_id, market_region="IN", monitor_symbols=monitor_symbols),
             "US": _monitor_watchlist_for_user(user_id, market_region="US", monitor_symbols=monitor_symbols),
         }
-        snapshot["tracked_ideas"] = tracked_ideas
+        snapshot["tracked_ideas"] = []
         snapshot["tracked_ideas_by_market"] = {
             "IN": _followed_signal_ideas_for_user(user_id, 100, market_region="IN", monitor_symbols=monitor_symbols),
             "US": _followed_signal_ideas_for_user(user_id, 100, market_region="US", monitor_symbols=monitor_symbols),
         }
-        snapshot["follow_history"] = follow_history
+        snapshot["follow_history"] = []
         snapshot["follow_history_by_market"] = _rows_by_market(follow_history)
         broker_orders: list[dict[str, Any]] = []
         paper_orders = _follow_history_order_events(follow_history)
@@ -2222,10 +2256,10 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot["tracked_ideas_by_market"] = {"IN": [], "US": []}
         snapshot["strategy_plans"] = db.strategy_plans()
         snapshot["user_signal_sessions"] = user_signal_sessions.admin_summary()
-    return _compact_dashboard_payload(snapshot)
+    return _compact_dashboard_payload(snapshot, include_flat_aliases=is_admin)
 
 
-def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _follow_history_order_events(follow_history: list[dict[str, Any]], *, limit: int = 40) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for row in follow_history:
         symbol = row.get("symbol")
@@ -2301,7 +2335,7 @@ def _follow_history_order_events(follow_history: list[dict[str, Any]]) -> list[d
                     "details": _compact_follow_event_details(row),
                 }
             )
-    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:60]
+    return sorted(events, key=lambda item: str(item.get("ts") or ""), reverse=True)[:limit]
 
 
 def _compact_follow_event_details(row: dict[str, Any]) -> dict[str, Any]:
