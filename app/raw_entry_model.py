@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, time
 from math import log1p
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 RAW_ENTRY_MODEL_VERSION = "raw_opportunity_v1"
 ENTRY_AUTHORITY_VERSION = RAW_ENTRY_MODEL_VERSION
+IST = ZoneInfo("Asia/Kolkata")
 
 ENTRY_READY = "ENTRY_READY"
 MANUAL_ONLY = "MANUAL_ONLY"
@@ -42,6 +45,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     setup = str(scan.get("setup") or "raw_market_action").strip() or "raw_market_action"
     bucket = str(scan.get("bucket") or "").strip()
     late_chase = bool(scan.get("late_chase") or bucket.upper() == "LATE_CHASE_AVOID")
+    quote_ts = _parse_ts(str(quote.get("asof") or ""))
+    late_session_entry = _late_session_entry(market, quote_ts)
 
     gain_component = _clamp((day_gain + 1.0) / 8.0, 0.0, 1.0) * 13.0
     range_component = range_position * 10.0
@@ -54,6 +59,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     soft_penalty = 0.0
     if late_chase:
         soft_penalty += 8.0
+    if late_session_entry:
+        soft_penalty += 12.0
     if bucket.upper() == "AVOID":
         soft_penalty += 10.0
     if negative_news_catalyst:
@@ -112,9 +119,24 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         warnings.append("negative_news_catalyst_score_penalty")
     if late_chase:
         warnings.append("late_chase_score_penalty")
+    if late_session_entry:
+        warnings.append("late_session_no_fresh_entry")
 
     setup_family = str(best_setup.get("family") or "none")
-    opportunity_ready = bool(best_setup.get("passed")) and raw_score >= entry_line
+    opportunity_ready = _opportunity_ready(
+        market=market,
+        setup_family=setup_family,
+        best_setup=best_setup,
+        raw_score=raw_score,
+        entry_line=entry_line,
+        day_gain=day_gain,
+        range_position=range_position,
+        high_distance=high_distance,
+        volume_ratio=volume_ratio,
+        technical_score=technical_score,
+        scan_score=scan_score,
+        late_session_entry=late_session_entry,
+    )
     if truth_blocks:
         decision_label = NO_TRADE
         reason = truth_blocks[0]["reason"]
@@ -176,6 +198,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         "diagnostics": {
             "bucket": bucket,
             "late_chase": late_chase,
+            "late_session_entry": late_session_entry,
             "missing_data": missing,
             "sentiment_event_types": sorted(sentiment_event_types),
             "soft_penalty": round(soft_penalty, 4),
@@ -255,6 +278,91 @@ def _sentiment_catalysts(sentiment: dict[str, Any], sentiment_score: float) -> t
         )
     )
     return positive, negative, event_types
+
+
+def _opportunity_ready(
+    *,
+    market: str,
+    setup_family: str,
+    best_setup: dict[str, Any],
+    raw_score: float,
+    entry_line: float,
+    day_gain: float,
+    range_position: float,
+    high_distance: float | None,
+    volume_ratio: float,
+    technical_score: float,
+    scan_score: float,
+    late_session_entry: bool,
+) -> bool:
+    if not bool(best_setup.get("passed")) or late_session_entry:
+        return False
+    if setup_family == "relative_strength_accumulation":
+        return False
+    setup_score = float(best_setup.get("score") or 0.0)
+    base_line = max(float(entry_line), 72.0)
+    if market == "IN":
+        high_ok = high_distance is None or high_distance <= 1.2
+        if setup_family == "live_momentum":
+            return (
+                raw_score >= max(base_line, 84.0)
+                and setup_score >= 66.0
+                and day_gain >= 1.8
+                and range_position >= 0.78
+                and volume_ratio >= 1.25
+                and high_ok
+                and max(technical_score, scan_score) >= 55.0
+            )
+        if setup_family == "breakout":
+            return (
+                raw_score >= max(base_line, 86.0)
+                and setup_score >= 72.0
+                and day_gain >= 1.0
+                and range_position >= 0.72
+                and volume_ratio >= 1.15
+                and high_ok
+                and max(technical_score, scan_score) >= 58.0
+            )
+        if setup_family == "delivery_btst":
+            return (
+                raw_score >= max(base_line, 84.0)
+                and setup_score >= 78.0
+                and day_gain >= 0.8
+                and range_position >= 0.68
+                and volume_ratio >= 1.1
+            )
+        if setup_family == "reversal_reclaim":
+            return raw_score >= max(base_line, 88.0) and setup_score >= 76.0 and day_gain >= 1.5
+        return False
+    if setup_family == "live_momentum":
+        return raw_score >= base_line and setup_score >= 60.0 and day_gain >= 1.8 and range_position >= 0.65
+    if setup_family in {"breakout", "smallcap_reclaim", "reversal_reclaim"}:
+        return raw_score >= base_line and setup_score >= 64.0
+    if setup_family == "delivery_btst":
+        return raw_score >= base_line and setup_score >= 70.0
+    return False
+
+
+def _late_session_entry(market: str, quote_ts: datetime | None) -> bool:
+    if quote_ts is None:
+        return False
+    local = quote_ts.astimezone(IST)
+    if market == "IN":
+        return local.time() >= time(14, 0)
+    if market == "US":
+        return False
+    return False
+
+
+def _parse_ts(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=IST)
+    except ValueError:
+        return None
 
 
 def _trade_plan(price: float | None) -> dict[str, Any]:
@@ -338,9 +446,9 @@ def _opportunity_reviews(
         _review(
             "live_momentum",
             setup_key in {"opening_ignition", "intraday_momentum", "top_gainer_momentum", "market_action_momentum", "price_shocker_reversal_breakout"}
-            and day_gain >= 1.2
-            and range_position >= 0.55
-            and volume_ratio >= 1.15
+            and day_gain >= 1.5
+            and range_position >= 0.68
+            and volume_ratio >= 1.25
             and max(live_score, scan_score) >= 42.0,
             score=_avg(max(live_score, scan_score), _norm(day_gain, 0.0, 5.0) * 100, range_position * 100, _norm(volume_ratio, 0.9, 2.5) * 100),
             reasons=["live price momentum", "upper-range trading", "volume participation"],
@@ -350,6 +458,8 @@ def _opportunity_reviews(
             setup_key in {"52_week_high_volume_breakout", "breakout_continuation", "near_breakout", "broker_re_rating_breakout", "earnings_beat_gap_and_go"}
             and near_high
             and volume_ratio >= 1.0
+            and day_gain >= 0.8
+            and range_position >= 0.65
             and max(technical_score, scan_score) >= 42.0,
             score=_avg(scan_score, technical_score, _norm(volume_ratio, 0.9, 2.2) * 100, 90.0 if near_high else 35.0),
             reasons=["breakout or near-breakout", "price near high", "volume not weak"],

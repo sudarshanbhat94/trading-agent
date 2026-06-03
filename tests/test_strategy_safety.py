@@ -45,8 +45,8 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             day_gain_pct=2.4,
             volume_ratio=1.8,
             projected_volume_ratio=2.2,
-            day_range_position=0.74,
-            day_high_distance_pct=1.2,
+            day_range_position=0.82,
+            day_high_distance_pct=1.0,
         )
         engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
 
