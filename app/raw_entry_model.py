@@ -136,6 +136,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         technical_score=technical_score,
         scan_score=scan_score,
         late_session_entry=late_session_entry,
+        price=price,
     )
     if truth_blocks:
         decision_label = NO_TRADE
@@ -294,6 +295,7 @@ def _opportunity_ready(
     technical_score: float,
     scan_score: float,
     late_session_entry: bool,
+    price: float | None = None,
 ) -> bool:
     if not bool(best_setup.get("passed")) or late_session_entry:
         return False
@@ -302,26 +304,29 @@ def _opportunity_ready(
     setup_score = float(best_setup.get("score") or 0.0)
     base_line = max(float(entry_line), 72.0)
     if market == "IN":
+        price_value = float(price or 0.0)
         high_ok = high_distance is None or high_distance <= 1.2
         if setup_family == "live_momentum":
             return (
-                raw_score >= max(base_line, 84.0)
-                and setup_score >= 66.0
-                and day_gain >= 1.8
-                and range_position >= 0.78
-                and volume_ratio >= 1.25
+                price_value >= 50.0
+                and raw_score >= max(base_line, 92.0)
+                and setup_score >= 90.0
+                and day_gain >= 3.0
+                and range_position >= 0.85
+                and volume_ratio >= 2.0
                 and high_ok
-                and max(technical_score, scan_score) >= 55.0
+                and max(technical_score, scan_score) >= 70.0
             )
         if setup_family == "breakout":
             return (
-                raw_score >= max(base_line, 86.0)
-                and setup_score >= 72.0
-                and day_gain >= 1.0
-                and range_position >= 0.72
-                and volume_ratio >= 1.15
+                price_value >= 50.0
+                and raw_score >= max(base_line, 94.0)
+                and setup_score >= 92.0
+                and day_gain >= 2.0
+                and range_position >= 0.85
+                and volume_ratio >= 2.0
                 and high_ok
-                and max(technical_score, scan_score) >= 58.0
+                and max(technical_score, scan_score) >= 70.0
             )
         if setup_family == "delivery_btst":
             return (

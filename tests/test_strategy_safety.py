@@ -41,12 +41,12 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             setup="opening_ignition",
             market_region="IN",
             data_readiness={"trade_decision_ready": False, "missing_data": ["legacy_phase2_gap"]},
-            technical_score=0.66,
-            day_gain_pct=2.4,
-            volume_ratio=1.8,
-            projected_volume_ratio=2.2,
-            day_range_position=0.82,
-            day_high_distance_pct=1.0,
+            technical_score=0.90,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.93,
+            day_high_distance_pct=0.4,
         )
         engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
 
