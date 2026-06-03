@@ -11,6 +11,12 @@ from zoneinfo import ZoneInfo
 from app.decision_contract import current_decision_rows
 from app.db import Database, _compact_decision_details, _paper_exit_action
 from app.full_spectrum import _strategy_confirmed_entry_quality
+from app.market_day_regime import (
+    REGIME_BROAD_RALLY,
+    REGIME_RISK_OFF,
+    REGIME_SELECTIVE_RALLY,
+    compute_market_day_regime,
+)
 from app.models import Candle, Decision, Quote, utc_now
 from app.opportunity_scanner import OpportunityScanner
 from app.opportunity_state import opportunity_state_from_signal_details
@@ -58,6 +64,116 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(context["raw_entry_model"]["decision_label"], "ENTRY_READY")
         self.assertEqual(context["raw_entry_model"]["setup_family"], "live_momentum")
         self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
+
+    def test_market_day_regime_classifies_broad_and_risk_off_sessions(self) -> None:
+        broad_universe, broad_quotes, broad_candles = _market_regime_rows("broad")
+        broad = compute_market_day_regime(
+            broad_universe,
+            broad_quotes,
+            broad_candles,
+            {"breadth_regime": "bull_confirmed", "advance_decline_ratio": 2.0},
+            market_region="IN",
+        )
+
+        risk_universe, risk_quotes, risk_candles = _market_regime_rows("risk_off")
+        risk_off = compute_market_day_regime(
+            risk_universe,
+            risk_quotes,
+            risk_candles,
+            {"breadth_regime": "bear_confirmed", "advance_decline_ratio": 0.45},
+            market_region="IN",
+        )
+
+        self.assertEqual(broad["state"], REGIME_BROAD_RALLY)
+        self.assertIn("live_momentum", broad["allowed_setup_families"])
+        self.assertEqual(risk_off["state"], REGIME_RISK_OFF)
+        self.assertNotIn("live_momentum", risk_off["allowed_setup_families"])
+
+    def test_market_day_regime_classifies_selective_rally(self) -> None:
+        universe, quotes, candles = _market_regime_rows("selective")
+
+        regime = compute_market_day_regime(
+            universe,
+            quotes,
+            candles,
+            {"breadth_regime": "neutral", "advance_decline_ratio": 1.0},
+            market_region="IN",
+        )
+
+        self.assertEqual(regime["state"], REGIME_SELECTIVE_RALLY)
+        self.assertIn("live_momentum_with_sector_and_catalyst", regime["allowed_setup_families"])
+        self.assertGreaterEqual(regime["sector_participation"]["Technology"]["advancer_pct"], 0.65)
+
+    def test_live_momentum_in_risk_off_becomes_watch_with_regime_blocker(self) -> None:
+        context = _raw_entry_context(
+            price=108.0,
+            setup="opening_ignition",
+            market_region="IN",
+            technical_score=0.90,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.93,
+            day_high_distance_pct=0.4,
+        )
+        context["market_day_regime"] = {"state": REGIME_RISK_OFF, "score": -45.0, "sector_participation": {}}
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "market_day_regime_not_supportive_for_live_momentum")
+        self.assertIn("market_day_regime_not_supportive_for_live_momentum", model["warnings"])
+        self.assertEqual(model["entry_blockers"][0]["gate"], "market_day_regime")
+
+    def test_live_momentum_in_broad_rally_can_be_entry_ready(self) -> None:
+        context = _raw_entry_context(
+            price=108.0,
+            setup="opening_ignition",
+            market_region="IN",
+            technical_score=0.90,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.93,
+            day_high_distance_pct=0.4,
+        )
+        context["market_day_regime"] = {"state": REGIME_BROAD_RALLY, "score": 70.0, "sector_participation": {}}
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertTrue(model["passed"], model)
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["entry_blockers"], [])
+
+    def test_selective_rally_requires_sector_strength_and_catalyst_for_live_momentum(self) -> None:
+        context = _raw_entry_context(
+            price=108.0,
+            setup="opening_ignition",
+            market_region="IN",
+            technical_score=0.90,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.93,
+            day_high_distance_pct=0.4,
+        )
+        context["sector"] = "Technology"
+        context["opportunity_scan"]["sector"] = "Technology"
+        context["market_day_regime"] = {
+            "state": REGIME_SELECTIVE_RALLY,
+            "score": 28.0,
+            "sector_participation": {"Technology": {"advancer_pct": 0.72}},
+        }
+
+        blocked = evaluate_raw_entry(context, _raw_opportunity_settings())
+        context["opportunity_scan"]["market_action"] = {"event_types": ["TOP_GAINER"], "score": 80.0}
+        allowed = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(blocked["passed"], blocked)
+        self.assertEqual(blocked["decision_label"], "WATCH")
+        self.assertTrue(allowed["passed"], allowed)
+        self.assertEqual(allowed["decision_label"], "ENTRY_READY")
 
     def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
         model = evaluate_raw_entry(
@@ -4231,6 +4347,24 @@ def _btst_raw_entry_context(asof: datetime) -> dict:
 
 def _raw_opportunity_settings() -> SimpleNamespace:
     return SimpleNamespace(entry_authority_min_score=64, entry_authority_watch_score=52, raw_entry_min_score=64)
+
+
+def _market_regime_rows(kind: str) -> tuple[list[dict], dict[str, dict], dict[str, list]]:
+    universe: list[dict] = []
+    quotes: dict[str, dict] = {}
+    for index in range(10):
+        symbol = f"MR{index}"
+        sector = "Technology" if index < 5 else "Industrials"
+        universe.append({"symbol": symbol, "exchange": "NSE", "sector": sector})
+        if kind == "broad":
+            quotes[symbol] = {"price": 110.0, "open": 104.0, "high": 111.0, "low": 99.0, "close": 100.0}
+        elif kind == "risk_off":
+            quotes[symbol] = {"price": 94.0, "open": 98.0, "high": 100.0, "low": 93.0, "close": 100.0}
+        elif kind == "selective" and index < 5:
+            quotes[symbol] = {"price": 104.0, "open": 103.0, "high": 105.0, "low": 99.0, "close": 100.0}
+        else:
+            quotes[symbol] = {"price": 99.0, "open": 98.0, "high": 101.0, "low": 97.0, "close": 100.0}
+    return universe, quotes, {}
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from .config import Settings
 from .indicators import technical_snapshot
 from .llm_brain import LLMBrain
 from .llm_policy import LLM_HARD_DISABLED
+from .market_day_regime import compute_market_day_regimes
 from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
 from .raw_entry_model import RAW_ENTRY_MODEL_VERSION, evaluate_raw_entry
@@ -236,6 +237,13 @@ class StrategyEngine:
         except Exception:
             performance_feedback = {}
         pattern_states = self._pattern_states_for_cycle([str(row.get("symbol") or "") for row in universe])
+        market_day_regime_context = compute_market_day_regimes(
+            universe,
+            quotes,
+            timeframe_candles_by_symbol or candles_by_symbol,
+            market_breadth or {},
+            market_region="BOTH",
+        )
 
         scan_items: list[dict[str, Any]] = []
         breadth_regime = (market_breadth or {}).get("breadth_regime")
@@ -266,6 +274,7 @@ class StrategyEngine:
                 else {}
             )
             symbol_breadth = _market_specific_context(market_breadth or {}, market_region)
+            symbol_day_regime = _market_specific_context(market_day_regime_context, market_region)
             symbol_sector_rotation = _market_specific_context(sector_rotation_context or {}, market_region)
             delivery_data = (
                 {
@@ -303,6 +312,7 @@ class StrategyEngine:
                 performance_feedback=performance_feedback,
                 execution_mode=self.settings.execution_mode,
             )
+            context["market_day_regime"] = symbol_day_regime
             self._persist_pattern_state_updates(symbol, context)
             combined = deterministic_score(context)
             score_breakdown = deterministic_score_breakdown(context)
@@ -686,9 +696,14 @@ class StrategyEngine:
             raw = evaluate_raw_entry(context, self.settings)
 
         truth_blocks = raw.get("truth_blocks") if isinstance(raw.get("truth_blocks"), list) else []
+        entry_blockers = raw.get("entry_blockers") if isinstance(raw.get("entry_blockers"), list) else truth_blocks
         compatibility_blocks = [
-            {"gate": "truth_check", "reason": item.get("reason"), "value": item.get("value")}
-            for item in truth_blocks
+            {
+                "gate": item.get("gate") or ("truth_check" if item in truth_blocks else "entry_authority"),
+                "reason": item.get("reason"),
+                "value": item.get("value"),
+            }
+            for item in entry_blockers
             if isinstance(item, dict)
         ]
         context["raw_entry_model"] = raw

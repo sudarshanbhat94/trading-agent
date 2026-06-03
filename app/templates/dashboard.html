@@ -132,6 +132,7 @@
           <span class="nav-section-label">User</span>
           <button class="nav-item active" type="button" data-view="overview"><span class="nav-icon" aria-hidden="true" data-icon="DB"><svg><use href="#icon-dashboard"></use></svg></span><span>Dashboard</span><strong id="nav-overview-badge">on</strong></button>
           <button class="nav-item" type="button" data-view="suggestions"><span class="nav-icon" aria-hidden="true" data-icon="ID"><svg><use href="#icon-ideas"></use></svg></span><span>Watchlist</span><strong id="nav-suggestions-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="rally"><span class="nav-icon" aria-hidden="true" data-icon="RP"><svg><use href="#icon-ideas"></use></svg></span><span>Rally Plan</span><strong id="nav-rally-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="analyze"><span class="nav-icon" aria-hidden="true" data-icon="AN"><svg><use href="#icon-analyze"></use></svg></span><span>Analyze</span><strong>symbol</strong></button>
           <button class="nav-item" type="button" data-view="positions"><span class="nav-icon" aria-hidden="true" data-icon="PO"><svg><use href="#icon-positions"></use></svg></span><span>Positions</span><strong id="nav-positions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true" data-icon="OR"><svg><use href="#icon-orders"></use></svg></span><span>Journal</span><strong id="nav-orders-badge">0</strong></button>
@@ -384,6 +385,20 @@
                 <div class="table-wrap strategy-mini"><table><thead><tr><th>Strategy</th><th>Open</th><th>Exposure</th><th>Unrealized</th><th>Realized</th><th>Orders</th></tr></thead><tbody id="strategies-body"></tbody></table></div>
               </div>
             </section>
+          </section>
+
+          <section id="rally-view" class="view">
+            <div class="panel full rally-plan-panel">
+              <div class="panel-head">
+                <div class="panel-title-stack">
+                  <h3 id="rally-plan-title">India Rally Plan</h3>
+                  <p>Pre-rally pressure, pre-open validation, live momentum, and do-not-chase decisions.</p>
+                </div>
+                <span id="rally-plan-count">waiting</span>
+              </div>
+              <div class="rally-regime-panel" id="rally-regime-panel"></div>
+              <div class="rally-plan-sections" id="rally-plan-body"></div>
+            </div>
           </section>
 
           <section id="suggestions-view" class="view">

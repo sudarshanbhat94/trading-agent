@@ -5,6 +5,8 @@ from math import log1p
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .market_day_regime import regime_allows_live_momentum
+
 
 RAW_ENTRY_MODEL_VERSION = "raw_opportunity_v1"
 ENTRY_AUTHORITY_VERSION = RAW_ENTRY_MODEL_VERSION
@@ -26,6 +28,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     data_ready = context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else {}
     market = str(context.get("market_region") or scan.get("market_region") or data_ready.get("market_region") or "").upper() or "IN"
     data_quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+    market_day_regime = context.get("market_day_regime") if isinstance(context.get("market_day_regime"), dict) else {}
 
     price = _num(quote.get("price"))
     truth_blocks = _truth_blocks(price=price, quote=quote, liquidity=liquidity)
@@ -40,6 +43,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     technical_score = _score_pct(technical.get("score"))
     sentiment_score = _num(sentiment.get("score")) or 0.0
     positive_news_catalyst, negative_news_catalyst, sentiment_event_types = _sentiment_catalysts(sentiment, sentiment_score)
+    market_action = scan.get("market_action") if isinstance(scan.get("market_action"), dict) else {}
+    has_market_action_catalyst = _market_action_catalyst(market_action)
+    sector = str(context.get("sector") or scan.get("sector") or "").strip()
     rs = context.get("universe_relative_strength") if isinstance(context.get("universe_relative_strength"), dict) else {}
     rs_percentile = _num(rs.get("percentile_63"))
     setup = str(scan.get("setup") or "raw_market_action").strip() or "raw_market_action"
@@ -110,6 +116,15 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     grade = "A" if raw_score >= 82.0 else "B" if raw_score >= entry_line else "WATCH"
     setup_family = str(best_setup.get("family") or "none")
     trade_plan = _trade_plan(price, market, setup_family) if price and price > 0 else {}
+    if settings is not None and getattr(settings, "market_day_regime_gate_enabled", True) is False:
+        live_momentum_regime_allowed = True
+        live_momentum_regime_gate = {"reason": "market_day_regime_gate_disabled", "state": market_day_regime.get("state")}
+    else:
+        live_momentum_regime_allowed, live_momentum_regime_gate = regime_allows_live_momentum(
+            market_day_regime,
+            sector=sector,
+            has_catalyst=bool(positive_news_catalyst or has_market_action_catalyst),
+        )
 
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
     warnings: list[str] = []
@@ -127,8 +142,10 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         warnings.append("btst_requires_late_non_friday_session")
     if market == "IN" and volume_ratio > 6.0:
         warnings.append("india_live_momentum_blowoff_volume_watch")
+    if setup_family == "live_momentum" and not live_momentum_regime_allowed:
+        warnings.append("market_day_regime_not_supportive_for_live_momentum")
 
-    opportunity_ready = _opportunity_ready(
+    opportunity_ready_without_regime = _opportunity_ready(
         market=market,
         setup_family=setup_family,
         best_setup=best_setup,
@@ -143,10 +160,26 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         late_session_entry=late_session_entry,
         btst_session_entry=btst_session_entry,
         price=price,
+        live_momentum_regime_allowed=True,
+    )
+    opportunity_ready = opportunity_ready_without_regime and (
+        setup_family != "live_momentum" or live_momentum_regime_allowed
+    )
+    regime_block = (
+        {
+            "gate": "market_day_regime",
+            "reason": "market_day_regime_not_supportive_for_live_momentum",
+            "value": live_momentum_regime_gate,
+        }
+        if setup_family == "live_momentum" and opportunity_ready_without_regime and not live_momentum_regime_allowed
+        else None
     )
     if truth_blocks:
         decision_label = NO_TRADE
         reason = truth_blocks[0]["reason"]
+    elif regime_block:
+        decision_label = WATCH
+        reason = "market_day_regime_not_supportive_for_live_momentum"
     elif opportunity_ready:
         decision_label = ENTRY_READY
         reason = "raw_opportunity_ready"
@@ -174,7 +207,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         "grade": grade,
         "confidence": confidence,
         "truth_blocks": truth_blocks,
-        "entry_blockers": truth_blocks,
+        "entry_blockers": [*truth_blocks, *([regime_block] if regime_block else [])],
         "warnings": warnings,
         "trade_plan": trade_plan,
         "market_region": market,
@@ -194,6 +227,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "sentiment_score": round(sentiment_score, 4),
             "positive_news_catalyst": positive_news_catalyst,
             "negative_news_catalyst": negative_news_catalyst,
+            "market_action_catalyst": has_market_action_catalyst,
             "relative_strength_percentile": round(rs_percentile, 4) if rs_percentile is not None else None,
         },
         "inputs": {
@@ -209,6 +243,26 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "btst_session_entry": btst_session_entry,
             "missing_data": missing,
             "sentiment_event_types": sorted(sentiment_event_types),
+            "market_day_regime": {
+                key: market_day_regime.get(key)
+                for key in (
+                    "enabled",
+                    "market_region",
+                    "state",
+                    "score",
+                    "momentum_allowed",
+                    "selective_momentum_allowed",
+                    "reasons",
+                    "checked_symbols",
+                    "advancer_pct",
+                    "above_open_pct",
+                    "fade_pct",
+                    "breadth_regime",
+                    "allowed_setup_families",
+                )
+                if key in market_day_regime
+            },
+            "live_momentum_regime_gate": live_momentum_regime_gate,
             "soft_penalty": round(soft_penalty, 4),
             "hard_block_policy": "invalid_quote_untradeable_or_hard_liquidity_only",
             "removed_vetoes": "legacy_strategy_and_india_specific_entry_vetoes_removed",
@@ -288,6 +342,27 @@ def _sentiment_catalysts(sentiment: dict[str, Any], sentiment_score: float) -> t
     return positive, negative, event_types
 
 
+def _market_action_catalyst(market_action: dict[str, Any]) -> bool:
+    if not isinstance(market_action, dict) or not market_action:
+        return False
+    event_types = {str(item or "").strip().upper() for item in market_action.get("event_types") or []}
+    score = _score_pct(market_action.get("score") or market_action.get("market_action_score"))
+    return bool(
+        market_action.get("available")
+        or score >= 70.0
+        or event_types
+        & {
+            "TOP_GAINER",
+            "VOLUME_SHOCKER",
+            "52_WEEK_HIGH",
+            "ALL_TIME_HIGH",
+            "ONLY_BUYERS",
+            "PRICE_SHOCKER",
+            "STRONG_INTRADAY_GAIN",
+        }
+    )
+
+
 def _opportunity_ready(
     *,
     market: str,
@@ -304,6 +379,7 @@ def _opportunity_ready(
     late_session_entry: bool,
     btst_session_entry: bool = False,
     price: float | None = None,
+    live_momentum_regime_allowed: bool = True,
 ) -> bool:
     if not bool(best_setup.get("passed")):
         return False
@@ -318,6 +394,8 @@ def _opportunity_ready(
             return False
         if setup_family == "live_momentum":
             return (
+                live_momentum_regime_allowed
+                and
                 price_value >= 50.0
                 and raw_score >= max(base_line, 92.0)
                 and setup_score >= 87.0
@@ -353,7 +431,13 @@ def _opportunity_ready(
             return raw_score >= max(base_line, 88.0) and setup_score >= 76.0 and day_gain >= 1.5
         return False
     if setup_family == "live_momentum":
-        return raw_score >= base_line and setup_score >= 60.0 and day_gain >= 1.8 and range_position >= 0.65
+        return (
+            live_momentum_regime_allowed
+            and raw_score >= base_line
+            and setup_score >= 60.0
+            and day_gain >= 1.8
+            and range_position >= 0.65
+        )
     if setup_family in {"breakout", "smallcap_reclaim", "reversal_reclaim"}:
         return raw_score >= base_line and setup_score >= 64.0
     if setup_family == "delivery_btst":

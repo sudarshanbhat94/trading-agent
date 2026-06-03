@@ -47,6 +47,7 @@ from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .macro_calendar import MacroCalendarService
 from .market_breadth import MarketBreadthService
+from .market_day_regime import compute_market_day_regimes
 from .market_data import (
     AlpacaMarketDataProvider,
     MarketDataError,
@@ -68,6 +69,7 @@ from .openclaw_bridge import (
 )
 from .paper_broker import PaperBroker
 from .request_context import current_llm_usage_scope, current_user_id
+from .rally_plan import build_rally_plan, build_rally_plan_by_market
 from .sector_rotation import SectorRotationService
 from .signal_quality import (
     AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
@@ -1364,6 +1366,78 @@ def _compact_tomorrow_plan(plan: Any) -> dict[str, Any]:
     return output
 
 
+def _compact_rally_plan_item(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "symbol",
+        "name",
+        "market_region",
+        "section",
+        "stage",
+        "action",
+        "strategy",
+        "score",
+        "why",
+        "what",
+        "how",
+        "trigger_price",
+        "max_entry",
+        "stop_loss",
+        "target1",
+        "invalidation",
+        "blockers",
+    )
+    output = {key: item.get(key) for key in keys if key in item}
+    for key in ("why", "what", "how", "invalidation"):
+        if output.get(key) not in (None, ""):
+            text = str(output[key]).strip()
+            output[key] = text if len(text) <= 360 else f"{text[:357].rstrip()}..."
+    if isinstance(item.get("evidence"), dict):
+        evidence = item["evidence"]
+        output["evidence"] = {
+            key: value
+            for key, value in evidence.items()
+            if key in {"regime", "pre_catalyst", "live_confirmation", "tomorrow_plan", "market_action_radar", "opportunity_scan"}
+        }
+    return output
+
+
+def _compact_rally_plan(plan: Any) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        return {}
+    output = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"items", "sections", "by_market"} and not isinstance(value, (list, dict))
+    }
+    if isinstance(plan.get("regime"), dict):
+        output["regime"] = {
+            key: plan["regime"].get(key)
+            for key in ("state", "score", "momentum_allowed", "summary", "reasons")
+            if key in plan["regime"]
+        }
+    if isinstance(plan.get("source_status"), dict):
+        output["source_status"] = plan["source_status"]
+    if isinstance(plan.get("section_labels"), dict):
+        output["section_labels"] = plan["section_labels"]
+    has_by_market = isinstance(plan.get("by_market"), dict)
+    if has_by_market:
+        output["by_market"] = {
+            str(market): _compact_rally_plan(raw)
+            for market, raw in plan["by_market"].items()
+            if isinstance(raw, dict)
+        }
+        return output
+    items = [_compact_rally_plan_item(row) for row in (plan.get("items") or []) if isinstance(row, dict)]
+    output["items"] = items[:100]
+    if isinstance(plan.get("sections"), dict):
+        output["sections"] = {
+            section: [_compact_rally_plan_item(row) for row in rows[:30] if isinstance(row, dict)]
+            for section, rows in plan["sections"].items()
+            if isinstance(rows, list)
+        }
+    return output
+
+
 def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
     if not isinstance(scan, dict):
         return {}
@@ -1442,6 +1516,8 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload["pre_catalyst_discovery"] = _compact_pre_catalyst_discovery(payload["pre_catalyst_discovery"])
     if isinstance(payload.get("tomorrow_plan"), dict):
         payload["tomorrow_plan"] = _compact_tomorrow_plan(payload["tomorrow_plan"])
+    if isinstance(payload.get("rally_plan"), dict):
+        payload["rally_plan"] = _compact_rally_plan(payload["rally_plan"])
     return payload
 
 
@@ -1673,6 +1749,87 @@ def _tomorrow_plan_for_user(user: dict[str, Any], market_region: str = "BOTH") -
     return _filter_tomorrow_plan_for_symbols(plan, _monitor_symbols_for_user(user))
 
 
+def _filter_rally_plan_for_symbols(plan: dict[str, Any], monitor_symbols: list[str]) -> dict[str, Any]:
+    if not monitor_symbols or not isinstance(plan, dict):
+        return plan
+    allowed = {str(symbol or "").upper() for symbol in monitor_symbols if str(symbol or "").strip()}
+
+    def allowed_row(row: Any) -> bool:
+        return isinstance(row, dict) and str(row.get("symbol") or "").upper() in allowed
+
+    def filter_single(raw: dict[str, Any]) -> dict[str, Any]:
+        output = dict(raw)
+        items = [dict(row) for row in (raw.get("items") or []) if allowed_row(row)]
+        sections: dict[str, list[dict[str, Any]]] = {}
+        for section, rows in (raw.get("sections") or {}).items():
+            sections[str(section)] = [dict(row) for row in (rows or []) if allowed_row(row)]
+        output["items"] = items
+        output["sections"] = sections
+        output["monitor_scope"] = "CUSTOM"
+        output["monitor_symbols_count"] = len(allowed)
+        return output
+
+    by_market = plan.get("by_market") if isinstance(plan.get("by_market"), dict) else {}
+    if by_market:
+        output = dict(plan)
+        output["by_market"] = {
+            str(market): filter_single(raw if isinstance(raw, dict) else {})
+            for market, raw in by_market.items()
+        }
+        output["monitor_scope"] = "CUSTOM"
+        output["monitor_symbols_count"] = len(allowed)
+        return output
+    return filter_single(plan)
+
+
+def _latest_market_day_regime(market_region: str) -> dict[str, Any]:
+    region = normalize_market_region(market_region or "BOTH", default="BOTH")
+    quote_rows = db.latest_quotes(limit=None, market_region=region)
+    symbols = [str(row.get("symbol") or "").upper() for row in quote_rows if row.get("symbol")]
+    candle_sets = db.recent_candle_sets_by_symbol(symbols)
+    quotes = {
+        str(row.get("symbol") or "").upper(): {
+            "price": row.get("price"),
+            "open": row.get("open"),
+            "high": row.get("high"),
+            "low": row.get("low"),
+            "close": row.get("close"),
+        }
+        for row in quote_rows
+        if row.get("symbol")
+    }
+    return compute_market_day_regimes(
+        quote_rows,
+        quotes,
+        candle_sets,
+        db.get_state("market_breadth_context", {}),
+        market_region=region,
+    )
+
+
+def _rally_plan_for_user(user: dict[str, Any], market_region: str = "BOTH") -> dict[str, Any]:
+    region = normalize_market_region(market_region or "BOTH", default="BOTH")
+    user_id = int(user["id"]) if user.get("role") != "admin" else None
+    monitor_symbols = _monitor_symbols_for_user(user)
+    signal_ideas = db.latest_signal_ideas(
+        120,
+        user_id=user_id,
+        market_region=region,
+        symbols=monitor_symbols or None,
+    )
+    base_kwargs = {
+        "market_day_regime": _latest_market_day_regime(region),
+        "pre_catalyst": db.get_state("pre_catalyst_discovery", {}),
+        "tomorrow_plan": db.latest_tomorrow_plan(region),
+        "opportunity_scan": db.get_state("opportunity_scan", {}),
+        "market_action_radar": db.get_state("market_action_radar", {}),
+        "signal_ideas": signal_ideas,
+    }
+    plan = build_rally_plan_by_market(**base_kwargs) if region == "BOTH" else build_rally_plan(market_region=region, **base_kwargs)
+    db.set_state("rally_plan", plan)
+    return _filter_rally_plan_for_symbols(plan, monitor_symbols)
+
+
 def _strategy_plans_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
     return _filter_strategy_plans_for_symbols(db.strategy_plans(), _monitor_symbols_for_user(user))
 
@@ -1681,6 +1838,7 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
     is_admin = bool(user and user.get("role") == "admin")
     snapshot = agent.snapshot(lightweight=not is_admin)
     snapshot["tomorrow_plan"] = _tomorrow_plan_for_user(user, "BOTH") if user else db.latest_tomorrow_plan("BOTH")
+    snapshot["rally_plan"] = _filter_rally_plan_for_symbols(db.get_state("rally_plan", {}), _monitor_symbols_for_user(user)) if user else db.get_state("rally_plan", {})
     trading_readiness = build_trading_readiness(db, settings, market_region=settings.market_region)
     snapshot["trading_readiness"] = trading_readiness
     snapshot["data_freshness"] = trading_readiness.get("data_freshness", {})
@@ -4094,6 +4252,15 @@ async def tomorrow_plan(request: Request, response: Response) -> dict[str, Any]:
     market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
     plan = _tomorrow_plan_for_user(user, market_region)
     return {"ok": True, "market": market_region, "tomorrow_plan": plan}
+
+
+@app.get("/api/rally-plan")
+async def rally_plan(request: Request, response: Response) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    market_region = normalize_market_region(request.query_params.get("market") or "BOTH", default="BOTH")
+    plan = _rally_plan_for_user(user, market_region)
+    return {"ok": True, "market": market_region, "rally_plan": _compact_rally_plan(plan)}
 
 
 @app.get("/api/ideas")

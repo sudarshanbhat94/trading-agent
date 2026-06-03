@@ -104,6 +104,8 @@ class Settings:
     market_action_us_min_gain_pct: float = _float("MARKET_ACTION_US_MIN_GAIN_PCT", 3.0)
     market_action_us_volume_multiplier: float = _float("MARKET_ACTION_US_VOLUME_MULTIPLIER", 1.8)
     market_action_us_near_52w_pct: float = _float("MARKET_ACTION_US_NEAR_52W_PCT", 2.0)
+    market_day_regime_gate_enabled: bool = _bool("MARKET_DAY_REGIME_GATE_ENABLED", True)
+    market_day_regime_strict: bool = _bool("MARKET_DAY_REGIME_STRICT", True)
     pre_catalyst_engine_enabled: bool = _bool("PRE_CATALYST_ENGINE_ENABLED", True)
     pre_catalyst_candidate_limit: int = _int("PRE_CATALYST_CANDIDATE_LIMIT", 120)
     pre_catalyst_min_score: float = _float("PRE_CATALYST_MIN_SCORE", 0.56)
@@ -427,6 +429,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "market_action_us_min_gain_pct", "label": "US Market Action Min Gain %", "type": "number", "category": "Market Data", "min": 0, "step": 0.25},
     {"key": "market_action_us_volume_multiplier", "label": "US Volume Shock Multiplier", "type": "number", "category": "Market Data", "min": 1, "step": 0.1},
     {"key": "market_action_us_near_52w_pct", "label": "US Near 52W High %", "type": "number", "category": "Market Data", "min": 0.1, "step": 0.1},
+    {"key": "market_day_regime_gate_enabled", "label": "Market Day Regime Gate", "type": "boolean", "category": "Market Data"},
+    {"key": "market_day_regime_strict", "label": "Strict Regime Gate", "type": "boolean", "category": "Market Data"},
     {"key": "pre_catalyst_engine_enabled", "label": "Pre-Catalyst Engine", "type": "boolean", "category": "Market Data"},
     {"key": "pre_catalyst_candidate_limit", "label": "Pre-Catalyst Candidates", "type": "number", "category": "Market Data", "min": 1, "step": 5},
     {"key": "pre_catalyst_min_score", "label": "Pre-Catalyst Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},

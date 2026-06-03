@@ -23,6 +23,9 @@ const state = {
   activeIdeaGroup: "buys",
   currentIdeaWatchlistRows: [],
   selectedIdeaWatchlistKey: "",
+  currentRallyPlanRows: [],
+  rallyPlanInFlight: false,
+  rallyPlanLastFetchAt: 0,
   currentDrawerValue: null,
   signalSearchQuery: "",
   signalSearchRows: [],
@@ -208,6 +211,14 @@ function scopedTomorrowPlan(plan = {}, market = state.activeMarket) {
   if (byMarket?.[region]) return byMarket[region];
   if (normalizeUiMarket(plan.market_region || plan.market) === region) return plan;
   return { enabled: false, market_region: region, items: [], sections: {}, summary: {} };
+}
+
+function scopedRallyPlan(plan = {}, market = state.activeMarket) {
+  const region = normalizeUiMarket(market);
+  const byMarket = plan.by_market || plan.byMarket;
+  if (byMarket?.[region]) return byMarket[region];
+  if (normalizeUiMarket(plan.market_region || plan.market) === region) return plan;
+  return { enabled: false, market_region: region, items: [], sections: {}, regime: {}, source_status: {} };
 }
 
 function scopedOpportunityScan(scan = {}, market = state.activeMarket) {
@@ -2055,6 +2066,7 @@ function render(payload) {
   byId("sentiment-count").textContent = `${filteredCountLabel(visibleSentiment.length, sentiment.length, "event")}`;
   byId("nav-positions-badge").textContent = String(openPositions.length);
   byId("nav-suggestions-badge").textContent = String(suggestions.length);
+  byId("nav-rally-badge").textContent = String((scopedRallyPlan(payload.rally_plan || {}, activeMarket).items || []).length || 0);
   byId("nav-decisions-badge").textContent = String(latestDecisions.length);
   byId("nav-orders-badge").textContent = String(dayOrders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
@@ -2068,6 +2080,7 @@ function render(payload) {
   renderStrategyPlans(visibleStrategyPlans);
   renderIdeasWatchlist(suggestions, trackedIdeas, strategyPlans, payloadRowsForMarket(payload, "monitor_watchlist", activeMarket));
   renderTomorrowPlan(payload.tomorrow_plan || {});
+  renderRallyPlan(payload.rally_plan || {});
   renderMobileNativeHeader(payload, quotes, activeMarket);
   renderTrackedIdeas(visibleTrackedIdeas);
   renderSentiment(visibleSentiment);
@@ -5366,6 +5379,134 @@ function renderTomorrowPlan(rawPlan = {}) {
   });
 }
 
+const RALLY_PLAN_SECTIONS = [
+  { key: "t1_pressure", label: "T-1 Pressure", empty: "No pressure names prepared yet." },
+  { key: "preopen_confirm", label: "Pre-open Confirm", empty: "No pre-open validation rows yet." },
+  { key: "opening_ignition", label: "Opening Ignition", empty: "No opening ignition candidates right now." },
+  { key: "live_momentum", label: "Live Momentum", empty: "No live momentum candidates right now." },
+  { key: "avoid", label: "Avoid / Do Not Chase", empty: "No avoid rows from rally review." },
+];
+
+function rallyPlanSectionRows(plan = {}, sectionKey = "") {
+  const sections = plan.sections && typeof plan.sections === "object" ? plan.sections : {};
+  if (Array.isArray(sections[sectionKey])) return sections[sectionKey];
+  return (plan.items || []).filter((item) => String(item.section || "") === sectionKey);
+}
+
+function rallyPlanLevelsHtml(item = {}) {
+  const market = rowMarket(item);
+  const parts = [
+    ["Trigger", item.trigger_price],
+    ["Max", item.max_entry],
+    ["Stop", item.stop_loss],
+    ["T1", item.target1],
+  ].filter(([, value]) => numericValue(value) !== null);
+  if (!parts.length) return `<span><small>Action</small><strong>${escapeHtml(item.action || "WATCH")}</strong></span>`;
+  return parts
+    .map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong class="${label === "Stop" ? "negative" : label === "T1" ? "positive" : ""}">${fmtTradeMoney(value, market)}</strong></span>`)
+    .join("");
+}
+
+function rallyPlanRowHtml(item = {}, index = 0) {
+  const action = String(item.action || "WATCH").toUpperCase();
+  const blockers = Array.isArray(item.blockers) ? item.blockers : [];
+  const blocked = blockers.length > 0;
+  return `<article class="rally-plan-row ${blocked ? "blocked" : ""}" role="button" tabindex="0" data-rally-index="${index}">
+    <div class="rally-plan-symbol">
+      <span class="rally-action ${escapeHtml(cssToken(action))}">${escapeHtml(action)}</span>
+      <div>
+        <strong>${escapeHtml(displayValue(item.symbol, "Symbol"))}</strong>
+        <small>${escapeHtml(item.stage || item.strategy || "Rally plan")}</small>
+      </div>
+    </div>
+    <div class="rally-plan-levels">${rallyPlanLevelsHtml(item)}</div>
+    <div class="rally-plan-copy">
+      <div><span>Why</span><p>${escapeHtml(shortValue(item.why || "-", 150))}</p></div>
+      <div><span>What</span><p>${escapeHtml(shortValue(item.what || "-", 150))}</p></div>
+      <div><span>How</span><p>${escapeHtml(shortValue(item.how || "-", 150))}</p></div>
+    </div>
+    <div class="rally-plan-score">
+      <strong>${fmtNumber(item.score || 0)}</strong>
+      <small>${blocked ? "blocked" : item.strategy || "ready"}</small>
+    </div>
+  </article>`;
+}
+
+function renderRallyPlan(rawPlan = {}) {
+  const body = byId("rally-plan-body");
+  const title = byId("rally-plan-title");
+  const count = byId("rally-plan-count");
+  const regimePanel = byId("rally-regime-panel");
+  if (!body) return;
+  const market = normalizeUiMarket(state.activeMarket);
+  const plan = scopedRallyPlan(rawPlan, market);
+  const items = Array.isArray(plan.items) ? plan.items : [];
+  const regime = plan.regime || {};
+  if (title) title.textContent = `${activeMarketLabel()} Rally Plan`;
+  if (count) count.textContent = items.length ? `${items.length} items` : "not prepared";
+  const navBadge = byId("nav-rally-badge");
+  if (navBadge) navBadge.textContent = String(items.length || 0);
+  if (regimePanel) {
+    const stateText = String(regime.state || "neutral_chop").replace(/_/g, " ");
+    const allowed = Boolean(regime.momentum_allowed);
+    regimePanel.innerHTML = `<div>
+        <span class="rally-regime-pill ${escapeHtml(cssToken(regime.state || "neutral"))}">${escapeHtml(stateText)}</span>
+        <strong>${allowed ? "Momentum allowed with confirmation" : "Momentum buys blocked or watch-only"}</strong>
+        <p>${escapeHtml(regime.summary || "Market regime is still building from live evidence.")}</p>
+      </div>
+      <button type="button" data-rally-regime-detail>Details</button>`;
+    regimePanel.querySelector("[data-rally-regime-detail]")?.addEventListener("click", () => showDetails("Market Day Regime", regime));
+  }
+  if (!items.length) {
+    body.innerHTML = emptyBlock(
+      `No ${activeMarketLabel()} rally plan yet`,
+      "Run a market cycle or refresh the rally plan to populate pressure, pre-open, momentum, and avoid rows.",
+      "Run Stock Check",
+      "analyze",
+    );
+    state.currentRallyPlanRows = [];
+    return;
+  }
+  const renderedRows = [];
+  body.innerHTML = RALLY_PLAN_SECTIONS.map((section) => {
+    const rows = rallyPlanSectionRows(plan, section.key);
+    renderedRows.push(...rows);
+    return `<section class="rally-plan-section">
+      <div class="rally-plan-section-head">
+        <strong>${escapeHtml(section.label)}</strong>
+        <span>${fmtNumber(rows.length)}</span>
+      </div>
+      <div class="rally-plan-list">
+        ${rows.length ? rows.slice(0, 16).map((item) => rallyPlanRowHtml(item, renderedRows.indexOf(item))).join("") : `<div class="rally-plan-empty">${escapeHtml(section.empty)}</div>`}
+      </div>
+    </section>`;
+  }).join("");
+  state.currentRallyPlanRows = renderedRows;
+  body.querySelectorAll("[data-rally-index]").forEach((rowEl) => {
+    const item = renderedRows[Number(rowEl.dataset.rallyIndex)];
+    if (item) rowEl.addEventListener("click", () => showDetails("Rally Plan", item));
+  });
+}
+
+async function refreshRallyPlan(force = false) {
+  const now = Date.now();
+  if (state.rallyPlanInFlight) return;
+  if (!force && now - state.rallyPlanLastFetchAt < 30000) return;
+  state.rallyPlanInFlight = true;
+  try {
+    const response = await fetch(`/api/rally-plan?market=${encodeURIComponent(state.activeMarket)}`);
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) throw new Error(payload.detail || "Could not refresh rally plan");
+    state.latest = { ...(state.latest || {}), rally_plan: payload.rally_plan || {} };
+    state.rallyPlanLastFetchAt = Date.now();
+    renderRallyPlan(state.latest.rally_plan || {});
+  } catch (error) {
+    console.warn("rally plan refresh failed", error);
+  } finally {
+    state.rallyPlanInFlight = false;
+  }
+}
+
 function portfolioSearchMatches(row = {}, search = "") {
   if (!search) return true;
   const text = [
@@ -7950,6 +8091,9 @@ function setActiveMarket(market, options = {}) {
   if (signalSearchActive()) {
     searchSignalsFromDatabase(state.signalSearchQuery);
   }
+  if (currentViewName() === "rally") {
+    refreshRallyPlan(true);
+  }
   refreshMarketIndices();
 }
 
@@ -8585,9 +8729,10 @@ function setView(view) {
     section.classList.toggle("active", section.id === `${view}-view`);
   }
   const label = document.querySelector(`.nav-item[data-view="${view}"] span:not(.nav-icon)`)?.textContent || "Overview";
-  const marketScoped = ["overview", "suggestions", "analyze", "positions", "orders", "decisions", "sentiment"].includes(view);
+  const marketScoped = ["overview", "suggestions", "rally", "analyze", "positions", "orders", "decisions", "sentiment"].includes(view);
   byId("view-title").textContent = marketScoped ? `${activeMarketLabel()} ${label}` : label;
   updateMarketWorkspaceLabels();
+  if (view === "rally") refreshRallyPlan(true);
 }
 
 function currentViewName() {

@@ -13400,6 +13400,239 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
   padding: 10px;
 }
 
+.rally-plan-panel {
+  overflow: hidden;
+}
+
+.rally-regime-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.55fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  border-top: 1px solid var(--border-color, var(--terminal-line));
+  border-bottom: 1px solid var(--border-color, var(--terminal-line));
+  background: var(--surface-0, rgba(255, 255, 255, 0.025));
+  padding: 10px 12px;
+}
+
+.rally-regime-panel strong,
+.rally-plan-symbol strong,
+.rally-plan-copy strong,
+.rally-plan-levels strong,
+.rally-plan-score strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary, var(--terminal-text));
+}
+
+.rally-regime-panel p {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-secondary, var(--muted));
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.rally-regime-pill,
+.rally-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--border-color, var(--terminal-line));
+  border-radius: 999px;
+  background: var(--surface-1, rgba(255, 255, 255, 0.04));
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.1;
+  min-height: 26px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.rally-regime-pill.broad-rally,
+.rally-regime-pill.selective-rally,
+.rally-action.buy-check,
+.rally-action.confirm {
+  border-color: rgba(72, 187, 120, 0.45);
+  background: rgba(72, 187, 120, 0.12);
+  color: var(--positive, #68d391);
+}
+
+.rally-regime-pill.fade-risk,
+.rally-regime-pill.risk-off,
+.rally-action.avoid {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--negative, #fc8181);
+}
+
+.rally-regime-pill.neutral-chop,
+.rally-action.watch {
+  border-color: rgba(255, 189, 74, 0.42);
+  background: rgba(255, 189, 74, 0.11);
+  color: var(--amber, #ffd58b);
+}
+
+.rally-regime-panel button {
+  min-height: 30px;
+  white-space: nowrap;
+}
+
+.rally-plan-sections {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.rally-plan-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rally-plan-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-secondary, var(--muted));
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.rally-plan-section-head strong {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.rally-plan-section-head span {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-color, var(--terminal-line));
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.rally-plan-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rally-plan-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.78fr) minmax(210px, 0.9fr) minmax(0, 1.6fr) minmax(82px, 0.34fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--border-color, var(--terminal-line));
+  border-radius: 6px;
+  background: var(--surface-1, rgba(255, 255, 255, 0.035));
+  cursor: pointer;
+  padding: 10px;
+}
+
+.rally-plan-row:hover {
+  border-color: rgba(96, 165, 250, 0.45);
+}
+
+.rally-plan-row.blocked {
+  background: rgba(248, 113, 113, 0.045);
+}
+
+.rally-plan-symbol {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+}
+
+.rally-plan-symbol strong {
+  font-size: 17px;
+  line-height: 1.05;
+}
+
+.rally-plan-symbol small,
+.rally-plan-copy p,
+.rally-plan-score small,
+.rally-plan-levels small {
+  color: var(--text-secondary, var(--muted));
+  font-size: 11px;
+  line-height: 1.28;
+}
+
+.rally-plan-levels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.rally-plan-levels span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border-left: 1px solid var(--border-color, var(--terminal-line));
+  padding-left: 8px;
+}
+
+.rally-plan-levels strong {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.rally-plan-copy {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.rally-plan-copy span {
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.rally-plan-copy p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rally-plan-score {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+  min-width: 0;
+  text-align: right;
+}
+
+.rally-plan-score strong {
+  font-size: 18px;
+  line-height: 1.05;
+}
+
+.rally-plan-empty {
+  border: 1px dashed var(--border-color, var(--terminal-line));
+  border-radius: 6px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 12px;
+  padding: 10px;
+}
+
 #suggestions-view .strategy-plan-card {
   display: grid !important;
   grid-template-columns: minmax(220px, 0.95fr) minmax(210px, 1fr) minmax(250px, 1.05fr) minmax(230px, 1fr) minmax(210px, 0.9fr);
@@ -13637,6 +13870,38 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .rally-regime-panel {
+    grid-template-columns: minmax(180px, 0.45fr) minmax(0, 1fr);
+  }
+
+  .rally-regime-panel button {
+    grid-column: 1 / -1;
+    width: fit-content;
+  }
+
+  .rally-plan-row {
+    grid-template-columns: minmax(180px, 0.78fr) minmax(210px, 1fr) minmax(0, 1.15fr) minmax(82px, 0.34fr);
+    grid-template-areas:
+      "symbol levels copy score";
+  }
+
+  .rally-plan-symbol {
+    grid-area: symbol;
+  }
+
+  .rally-plan-levels {
+    grid-area: levels;
+  }
+
+  .rally-plan-copy {
+    grid-area: copy;
+    grid-template-columns: 1fr;
+  }
+
+  .rally-plan-score {
+    grid-area: score;
+  }
+
   .tomorrow-plan-row {
     grid-template-columns: minmax(180px, 0.9fr) minmax(230px, 1fr) minmax(90px, 0.36fr);
     grid-template-areas:
@@ -13703,6 +13968,37 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
 
   .tomorrow-plan-sections {
     padding: 10px;
+  }
+
+  .rally-regime-panel,
+  .rally-plan-row {
+    grid-template-columns: 1fr;
+  }
+
+  .rally-regime-panel button {
+    width: 100%;
+  }
+
+  .rally-plan-sections {
+    padding: 10px;
+  }
+
+  .rally-plan-row {
+    grid-template-areas:
+      "symbol"
+      "levels"
+      "copy"
+      "score";
+    gap: 10px;
+  }
+
+  .rally-plan-copy p {
+    white-space: normal;
+  }
+
+  .rally-plan-score {
+    justify-items: start;
+    text-align: left;
   }
 
   .tomorrow-plan-row {

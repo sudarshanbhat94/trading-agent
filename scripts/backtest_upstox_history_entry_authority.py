@@ -29,6 +29,7 @@ from app.config import Settings
 from app.indicators import technical_snapshot
 from app.models import Candle, Quote
 from app.opportunity_scanner import OpportunityScanner
+from app.market_day_regime import compute_market_day_regime
 from app.raw_entry_model import evaluate_raw_entry
 from app.trade_economics import exit_economics, minimum_auto_follow_notional
 
@@ -138,6 +139,17 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             cycle_rows.append(row)
         if not cycle_rows:
             continue
+        market_day_regime = compute_market_day_regime(
+            cycle_rows,
+            quotes,
+            candle_sets,
+            {
+                "enabled": True,
+                "breadth_regime": "neutral",
+                "advance_decline_ratio": _advance_decline_ratio(cycle_rows, quotes, candle_sets),
+            },
+            market_region="IN",
+        )
         result = scanner.rank(cycle_rows, quotes, candle_sets, sentiment_by_symbol=sentiment_by_symbol)
         selected_counts.append(len(result.selected_universe))
         for selected in result.selected_universe:
@@ -159,6 +171,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             context = {
                 "symbol": symbol,
                 "market_region": "IN",
+                "sector": row.get("sector"),
                 "quote": quote.to_dict(),
                 "technical_math": tech.to_dict(),
                 "sentiment": sentiment,
@@ -172,6 +185,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     },
                 },
                 "opportunity_scan": scan,
+                "market_day_regime": market_day_regime,
                 "full_spectrum_analysis": {
                     "liquidity_profile": scan.get("liquidity_profile") if isinstance(scan.get("liquidity_profile"), dict) else {},
                     "trade_plan": {},
@@ -590,6 +604,29 @@ def _technical_for(daily: list[Candle], quote: Quote):
     lows.append(float(quote.low or quote.price))
     volumes.append(float(quote.volume or 0.0))
     return technical_snapshot(closes, highs, lows, volumes)
+
+
+def _advance_decline_ratio(
+    rows: list[dict[str, Any]],
+    quotes: dict[str, Quote],
+    candle_sets: dict[str, dict[str, list[Candle]]],
+) -> float:
+    advancers = 0
+    decliners = 0
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        quote = quotes.get(symbol)
+        daily = candle_sets.get(symbol, {}).get("daily") or []
+        if not quote or not daily:
+            continue
+        prev_close = float(daily[-1].close or 0.0)
+        if prev_close <= 0:
+            continue
+        if float(quote.price) > prev_close:
+            advancers += 1
+        elif float(quote.price) < prev_close:
+            decliners += 1
+    return round(advancers / max(decliners, 1), 4)
 
 
 def _simulate_trade(
