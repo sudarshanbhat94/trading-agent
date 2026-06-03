@@ -214,6 +214,46 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(allowed["decision_label"], "ENTRY_READY")
         self.assertTrue(allowed["components"]["big_runner_catalyst"])
 
+    def test_early_alpha_ignition_uses_regime_gate_and_alpha_evidence(self) -> None:
+        context = _raw_entry_context(
+            price=122.0,
+            setup="early_alpha_ignition",
+            market_region="IN",
+            technical_score=0.92,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.4,
+            day_range_position=0.93,
+            day_high_distance_pct=0.35,
+        )
+        context["sector"] = "Industrials"
+        context["opportunity_scan"]["sector"] = "Industrials"
+        context["opportunity_scan"]["components"] = {"live_momentum": 0.78, "early_alpha": 0.76}
+        context["opportunity_scan"]["early_alpha"] = {
+            "available": True,
+            "stage": "opening_ignition",
+            "setup": "early_alpha_ignition",
+            "action": "BUY CHECK",
+            "score": 0.76,
+            "tags": ["top_gainer_followthrough", "sector_leader"],
+            "evidence": {"catalyst_score": 0.62, "sector_rank_pct": 84.0},
+        }
+        context["market_day_regime"] = {"state": REGIME_RISK_OFF, "score": -45.0, "sector_participation": {}}
+
+        blocked = evaluate_raw_entry(context, _raw_opportunity_settings())
+        context["market_day_regime"] = {
+            "state": REGIME_SELECTIVE_RALLY,
+            "score": 28.0,
+            "sector_participation": {"Industrials": {"advancer_pct": 0.74}},
+        }
+        allowed = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(blocked["passed"], blocked)
+        self.assertEqual(blocked["reason"], "market_day_regime_not_supportive_for_live_momentum")
+        self.assertTrue(allowed["passed"], allowed)
+        self.assertEqual(allowed["decision_label"], "ENTRY_READY")
+        self.assertTrue(allowed["components"]["early_alpha_catalyst"])
+
     def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN"),

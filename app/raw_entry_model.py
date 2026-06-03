@@ -47,6 +47,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     has_market_action_catalyst = _market_action_catalyst(market_action)
     big_runner = scan.get("big_runner") if isinstance(scan.get("big_runner"), dict) else {}
     has_big_runner_catalyst = _big_runner_catalyst(big_runner)
+    early_alpha = scan.get("early_alpha") if isinstance(scan.get("early_alpha"), dict) else {}
+    has_early_alpha_catalyst = _early_alpha_catalyst(early_alpha)
     sector = str(context.get("sector") or scan.get("sector") or "").strip()
     rs = context.get("universe_relative_strength") if isinstance(context.get("universe_relative_strength"), dict) else {}
     rs_percentile = _num(rs.get("percentile_63"))
@@ -125,7 +127,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         live_momentum_regime_allowed, live_momentum_regime_gate = regime_allows_live_momentum(
             market_day_regime,
             sector=sector,
-            has_catalyst=bool(positive_news_catalyst or has_market_action_catalyst or has_big_runner_catalyst),
+            has_catalyst=bool(positive_news_catalyst or has_market_action_catalyst or has_big_runner_catalyst or has_early_alpha_catalyst),
         )
 
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
@@ -231,6 +233,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "negative_news_catalyst": negative_news_catalyst,
             "market_action_catalyst": has_market_action_catalyst,
             "big_runner_catalyst": has_big_runner_catalyst,
+            "early_alpha_catalyst": has_early_alpha_catalyst,
             "relative_strength_percentile": round(rs_percentile, 4) if rs_percentile is not None else None,
         },
         "inputs": {
@@ -375,6 +378,20 @@ def _big_runner_catalyst(big_runner: dict[str, Any]) -> bool:
         catalyst_score >= 0.55
         or str(big_runner.get("action") or "").upper() == "BUY CHECK"
         and catalyst_score >= 0.35
+    )
+
+
+def _early_alpha_catalyst(early_alpha: dict[str, Any]) -> bool:
+    if not isinstance(early_alpha, dict) or not early_alpha:
+        return False
+    evidence = early_alpha.get("evidence") if isinstance(early_alpha.get("evidence"), dict) else {}
+    tags = {str(item or "").strip().lower() for item in early_alpha.get("tags") or []}
+    catalyst_score = _num(evidence.get("catalyst_score")) or 0.0
+    score = _score_pct(early_alpha.get("score"))
+    return bool(
+        catalyst_score >= 0.55
+        or (bool({"top_gainer_followthrough", "sector_leader"} & tags) and score >= 62.0)
+        or (str(early_alpha.get("action") or "").upper() == "BUY CHECK" and score >= 68.0)
     )
 
 
@@ -587,7 +604,7 @@ def _opportunity_reviews(
     reviews = [
         _review(
             "live_momentum",
-            setup_key in {"opening_ignition", "intraday_momentum", "top_gainer_momentum", "market_action_momentum", "price_shocker_reversal_breakout", "big_runner_ignition"}
+            setup_key in {"opening_ignition", "intraday_momentum", "top_gainer_momentum", "market_action_momentum", "price_shocker_reversal_breakout", "big_runner_ignition", "early_alpha_ignition"}
             and day_gain >= 1.5
             and range_position >= 0.68
             and volume_ratio >= 1.25

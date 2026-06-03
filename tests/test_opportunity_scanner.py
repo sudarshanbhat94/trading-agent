@@ -271,6 +271,108 @@ class OpportunityScannerTests(unittest.TestCase):
         self.assertEqual(item["big_runner"]["action"], "AVOID")
         self.assertEqual(item["big_runner"]["blockers"][0]["reason"], "do_not_chase_extended_big_runner")
 
+    def test_early_alpha_pre_breakout_pressure_surfaces_in_rally_plan_feed(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "SEED", "exchange": "NSE", "sector": "Capital Goods"}
+        daily = _big_runner_base_candles("SEED", datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "SEED",
+            119.4,
+            "upstox-live",
+            _india_session_iso(10, 5),
+            open=119.0,
+            high=119.9,
+            low=118.7,
+            volume=2_600_000,
+        )
+
+        result = scanner.rank(
+            [row],
+            {"SEED": quote},
+            {"SEED": {"analysis": daily, "daily": daily}},
+            sentiment_by_symbol={"SEED": {"score": 0.2, "confidence": 0.5, "headline_count": 1}},
+        )
+
+        early = result.candidates[0]["early_alpha"]
+        self.assertTrue(early["available"])
+        self.assertIn("pre_breakout", early["tags"])
+        self.assertIn("pre-breakout", early["why"])
+        self.assertEqual(result.summary["top_early_alpha_candidates"][0]["symbol"], "SEED")
+
+    def test_early_alpha_detects_nuvl_style_reclaim_at_ignition(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {"symbol": "NUVL", "exchange": "NASDAQ", "sector": "Healthcare"}
+        daily = _reclaim_candles("NUVL", datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "NUVL",
+            31.4,
+            "polygon-live",
+            "2026-06-02T15:00:00+00:00",
+            open=30.65,
+            high=31.55,
+            low=29.9,
+            volume=850_000,
+        )
+
+        item = scanner._score_row(
+            row,
+            quote,
+            {"analysis": daily, "daily": daily},
+            False,
+            {"score": 0.1, "confidence": 0.4, "headline_count": 0},
+            {"rs_rank": 88, "improving": True},
+            {"sector_rank_pct": 82.0, "sector_leadership_score": 0.82, "sector": "Healthcare"},
+        )
+
+        self.assertEqual(item["early_alpha"]["stage"], "opening_ignition")
+        self.assertEqual(item["early_alpha"]["setup"], "early_alpha_ignition")
+        self.assertIn("reclaim", item["early_alpha"]["tags"])
+        self.assertIn(item["early_alpha"]["action"], {"CONFIRM", "BUY CHECK"})
+        self.assertGreaterEqual(item["components"]["early_alpha"], 0.56)
+
+    def test_early_alpha_tags_top_gainer_followthrough_without_late_chase(self) -> None:
+        scanner = OpportunityScanner(_settings())
+        row = {
+            "symbol": "FOLLOW",
+            "exchange": "NSE",
+            "sector": "Industrials",
+            "_market_action": {
+                "symbol": "FOLLOW",
+                "market_region": "IN",
+                "event_types": ["TOP_GAINER", "VOLUME_SHOCKER"],
+                "pct_change": 3.4,
+                "price": 122.0,
+                "volume": 4_000_000,
+                "avg_volume": 1_700_000,
+                "volume_multiplier": 2.35,
+            },
+        }
+        daily = _candles("FOLLOW", "upstox-live:day", 90, datetime(2026, 2, 1, tzinfo=timezone.utc))
+        quote = Quote(
+            "FOLLOW",
+            122.0,
+            "upstox-live",
+            _india_session_iso(10, 45),
+            open=118.0,
+            high=122.2,
+            low=117.6,
+            volume=4_000_000,
+        )
+
+        item = scanner._score_row(
+            row,
+            quote,
+            {"analysis": daily, "daily": daily},
+            False,
+            {},
+            {"rs_rank": 78, "improving": True},
+            {"sector_rank_pct": 72.0, "sector_leadership_score": 0.74, "sector": "Industrials"},
+        )
+
+        self.assertTrue(item["early_alpha"]["available"])
+        self.assertIn("top_gainer_followthrough", item["early_alpha"]["tags"])
+        self.assertNotEqual(item["early_alpha"]["action"], "AVOID")
+
     def test_india_slot_budgeting_refills_to_full_decision_target(self) -> None:
         scanner = OpportunityScanner(
             SimpleNamespace(
@@ -560,6 +662,8 @@ def _settings() -> SimpleNamespace:
         dynamic_scan_sentiment_weight=0.12,
         big_runner_detector_enabled=True,
         big_runner_min_score=0.62,
+        early_alpha_detector_enabled=True,
+        early_alpha_min_score=0.56,
     )
 
 
@@ -595,6 +699,31 @@ def _big_runner_base_candles(symbol: str, start: datetime) -> list[Candle]:
                 low=close * 0.991,
                 close=close,
                 volume=volume,
+                source="upstox-live:day",
+            )
+        )
+    return output
+
+
+def _reclaim_candles(symbol: str, start: datetime) -> list[Candle]:
+    output: list[Candle] = []
+    for index in range(70):
+        ts = start + timedelta(days=index)
+        if index < 35:
+            close = 24.0 + index * 0.34
+        elif index < 55:
+            close = 35.9 - (index - 35) * 0.32
+        else:
+            close = 29.8 + (index - 55) * 0.12
+        output.append(
+            Candle(
+                symbol=symbol,
+                ts=ts.isoformat(),
+                open=close * 0.992,
+                high=close * 1.016,
+                low=close * 0.982,
+                close=close,
+                volume=440_000 + (20_000 if index < 55 else -60_000),
                 source="upstox-live:day",
             )
         )

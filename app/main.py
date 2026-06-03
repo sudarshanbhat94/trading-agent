@@ -1396,7 +1396,7 @@ def _compact_rally_plan_item(item: dict[str, Any]) -> dict[str, Any]:
         output["evidence"] = {
             key: value
             for key, value in evidence.items()
-            if key in {"regime", "pre_catalyst", "live_confirmation", "tomorrow_plan", "market_action_radar", "opportunity_scan", "big_runner"}
+            if key in {"regime", "pre_catalyst", "live_confirmation", "tomorrow_plan", "market_action_radar", "opportunity_scan", "big_runner", "early_alpha"}
         }
     return output
 
@@ -1449,6 +1449,7 @@ def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
             "top_candidates",
             "top_rally_radar",
             "top_big_runner_candidates",
+            "top_early_alpha_candidates",
             "top_fast_movers",
             "top_market_action",
             "btst_buy_candidates",
@@ -1466,6 +1467,7 @@ def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
         ("top_candidates", 40),
         ("top_rally_radar", 25),
         ("top_big_runner_candidates", 25),
+        ("top_early_alpha_candidates", 30),
         ("top_fast_movers", 20),
         ("top_market_action", 20),
         ("btst_buy_candidates", 12),

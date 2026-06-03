@@ -177,6 +177,90 @@ class RallyPlanBuilderTests(unittest.TestCase):
         self.assertEqual(item["action"], "WATCH")
         self.assertEqual(item["blockers"][0]["reason"], "market_day_regime_not_supportive_for_live_momentum")
 
+    def test_early_alpha_candidate_renders_before_ignition_contract(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_BROAD_RALLY, "score": 72.0},
+            opportunity_scan={
+                "market_region": "IN",
+                "top_early_alpha_candidates": [
+                    {
+                        "symbol": "SEED",
+                        "name": "Seed Industries",
+                        "market_region": "IN",
+                        "score": 0.71,
+                        "setup": "early_alpha_watch",
+                        "early_alpha": {
+                            "available": True,
+                            "stage": "t1_pressure",
+                            "setup": "early_alpha_watch",
+                            "action": "WATCH",
+                            "score": 0.71,
+                            "why": "pre-breakout pressure; sector leadership with relative strength",
+                            "what": "Prepare levels before the move confirms.",
+                            "how": "Keep on Rally Plan until pre-open/opening ignition validates the setup.",
+                            "trigger_price": 121.0,
+                            "max_entry": 121.97,
+                            "stop_loss": 116.2,
+                            "target1": 126.0,
+                            "tags": ["pre_breakout", "sector_leader"],
+                            "evidence": {"sector_rank_pct": 86.0},
+                            "blockers": [],
+                        },
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["t1_pressure"]
+
+        self.assertEqual(item["symbol"], "SEED")
+        self.assertEqual(item["strategy"], "early_alpha_watch")
+        self.assertIn("pre-breakout", item["why"])
+        self.assertIn("before the move", item["what"])
+        self.assertIn("opening ignition", item["how"])
+        self.assertEqual(item["trigger_price"], 121.0)
+        self.assertIn("early_alpha", item["evidence"])
+        self.assertEqual(plan["source_status"]["early_alpha_candidates"], 1)
+
+    def test_early_alpha_ignition_is_watch_when_regime_blocks(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_FADE_RISK, "score": -12.0},
+            opportunity_scan={
+                "market_region": "IN",
+                "top_early_alpha_candidates": [
+                    {
+                        "symbol": "FOLLOW",
+                        "market_region": "IN",
+                        "setup": "early_alpha_ignition",
+                        "early_alpha": {
+                            "available": True,
+                            "stage": "opening_ignition",
+                            "setup": "early_alpha_ignition",
+                            "action": "BUY CHECK",
+                            "score": 0.78,
+                            "why": "top-gainer follow-through, not yet late chase",
+                            "what": "Confirm regime, VWAP/opening-range hold, and volume pace before entry.",
+                            "how": "Entry authority may promote only while price holds trigger and stays below max entry.",
+                            "trigger_price": 122.0,
+                            "max_entry": 122.61,
+                            "stop_loss": 118.0,
+                            "target1": 126.0,
+                            "tags": ["top_gainer_followthrough"],
+                            "blockers": [],
+                        },
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["opening_ignition"]
+
+        self.assertEqual(item["symbol"], "FOLLOW")
+        self.assertEqual(item["action"], "WATCH")
+        self.assertEqual(item["blockers"][0]["reason"], "market_day_regime_not_supportive_for_live_momentum")
+
     def test_by_market_respects_explicit_us_market_region(self) -> None:
         plan = build_rally_plan_by_market(
             market_day_regime={"by_market": {"IN": {"state": REGIME_BROAD_RALLY}, "US": {"state": REGIME_BROAD_RALLY}}},

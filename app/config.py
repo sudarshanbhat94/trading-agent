@@ -94,6 +94,8 @@ class Settings:
     dynamic_scan_sentiment_weight: float = _float("DYNAMIC_SCAN_SENTIMENT_WEIGHT", 0.12)
     big_runner_detector_enabled: bool = _bool("BIG_RUNNER_DETECTOR_ENABLED", True)
     big_runner_min_score: float = _float("BIG_RUNNER_MIN_SCORE", 0.62)
+    early_alpha_detector_enabled: bool = _bool("EARLY_ALPHA_DETECTOR_ENABLED", True)
+    early_alpha_min_score: float = _float("EARLY_ALPHA_MIN_SCORE", 0.56)
     market_action_radar_enabled: bool = _bool("MARKET_ACTION_RADAR_ENABLED", True)
     market_action_radar_limit: int = _int("MARKET_ACTION_RADAR_LIMIT", 40)
     market_action_radar_timeout_seconds: float = _float("MARKET_ACTION_RADAR_TIMEOUT_SECONDS", 8.0)
@@ -425,6 +427,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "dynamic_scan_sentiment_weight", "label": "Dynamic Sentiment Weight", "type": "number", "category": "Market Data", "min": 0, "max": 0.3, "step": 0.01},
     {"key": "big_runner_detector_enabled", "label": "Big Runner Detector", "type": "boolean", "category": "Market Data"},
     {"key": "big_runner_min_score", "label": "Big Runner Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
+    {"key": "early_alpha_detector_enabled", "label": "Early Alpha Detector", "type": "boolean", "category": "Market Data"},
+    {"key": "early_alpha_min_score", "label": "Early Alpha Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 1, "step": 0.01},
     {"key": "market_action_radar_enabled", "label": "Market Action Radar", "type": "boolean", "category": "Market Data"},
     {"key": "market_action_radar_limit", "label": "Market Action Symbols", "type": "number", "category": "Market Data", "min": 0, "step": 5},
     {"key": "market_action_priority_news_limit", "label": "Market Action News Symbols", "type": "number", "category": "Market Data", "min": 0, "step": 5},
