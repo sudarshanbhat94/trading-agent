@@ -1699,12 +1699,12 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
             market: _compact_signal_ideas(rows)
             for market, rows in payload["suggestions_by_market"].items()
         }
-        payload.pop("suggestions", None)
-        payload.pop("signal_ideas", None)
+        payload["suggestions"] = _flatten_by_market_rows(payload["suggestions_by_market"], limit=24)
+        payload["signal_ideas"] = payload["suggestions"]
     if isinstance(payload.get("decisions_by_market"), dict):
-        payload.pop("decisions", None)
+        payload["decisions"] = _flatten_by_market_rows(payload["decisions_by_market"], limit=40)
     if isinstance(payload.get("follow_history_by_market"), dict):
-        payload.pop("follow_history", None)
+        payload["follow_history"] = _flatten_by_market_rows(payload["follow_history_by_market"], limit=50)
     if isinstance(payload.get("tracked_ideas"), list):
         payload["tracked_ideas"] = [_compact_tracked_idea(row) for row in payload["tracked_ideas"] if isinstance(row, dict)]
     if isinstance(payload.get("tracked_ideas_by_market"), dict):
@@ -1712,7 +1712,7 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
             market: [_compact_tracked_idea(row) for row in (rows or []) if isinstance(row, dict)]
             for market, rows in payload["tracked_ideas_by_market"].items()
         }
-        payload.pop("tracked_ideas", None)
+        payload["tracked_ideas"] = _flatten_by_market_rows(payload["tracked_ideas_by_market"], limit=50)
     if isinstance(payload.get("strategy_plans"), list):
         payload["strategy_plans"] = [
             _compact_strategy_plan(row)
@@ -1730,6 +1730,28 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payload.get("rally_plan"), dict):
         payload["rally_plan"] = _compact_rally_plan_status(payload["rally_plan"])
     return payload
+
+
+def _flatten_by_market_rows(by_market: Any, *, limit: int) -> list[dict[str, Any]]:
+    if not isinstance(by_market, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for market in ("IN", "US"):
+        market_rows = by_market.get(market)
+        if isinstance(market_rows, list):
+            rows.extend(row for row in market_rows if isinstance(row, dict))
+    if len(rows) < limit:
+        for market_rows in by_market.values():
+            if not isinstance(market_rows, list):
+                continue
+            for row in market_rows:
+                if isinstance(row, dict) and row not in rows:
+                    rows.append(row)
+                if len(rows) >= limit:
+                    break
+            if len(rows) >= limit:
+                break
+    return rows[:limit]
 
 
 def _position_marks_payload(user: dict[str, Any]) -> dict[str, Any]:
