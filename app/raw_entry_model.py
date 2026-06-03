@@ -121,6 +121,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         warnings.append("late_chase_score_penalty")
     if late_session_entry:
         warnings.append("late_session_no_fresh_entry")
+    if market == "IN" and volume_ratio > 6.0:
+        warnings.append("india_live_momentum_blowoff_volume_watch")
 
     setup_family = str(best_setup.get("family") or "none")
     opportunity_ready = _opportunity_ready(
@@ -314,6 +316,7 @@ def _opportunity_ready(
                 and day_gain >= 3.0
                 and range_position >= 0.85
                 and volume_ratio >= 2.0
+                and volume_ratio <= 6.0
                 and high_ok
                 and max(technical_score, scan_score) >= 70.0
             )

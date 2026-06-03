@@ -306,8 +306,8 @@ class RawEntryModelSafetyTests(unittest.TestCase):
                 market_region="IN",
                 technical_score=0.61,
                 day_gain_pct=6.4,
-                volume_ratio=79.0,
-                projected_volume_ratio=79.0,
+                volume_ratio=5.8,
+                projected_volume_ratio=5.8,
                 day_range_position=0.98,
                 day_high_distance_pct=0.11,
             ),
@@ -317,6 +317,27 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertTrue(model["passed"])
         self.assertEqual(model["decision_label"], "ENTRY_READY")
         self.assertEqual(model["setup_family"], "live_momentum")
+
+    def test_india_live_momentum_extreme_blowoff_volume_stays_watch(self) -> None:
+        model = evaluate_raw_entry(
+            _raw_entry_context(
+                price=4408.0,
+                setup="intraday_momentum",
+                market_region="IN",
+                technical_score=0.61,
+                day_gain_pct=6.4,
+                volume_ratio=79.0,
+                projected_volume_ratio=79.0,
+                day_range_position=0.98,
+                day_high_distance_pct=0.11,
+            ),
+            _raw_opportunity_settings(),
+        )
+
+        self.assertFalse(model["passed"])
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["setup_family"], "live_momentum")
+        self.assertIn("india_live_momentum_blowoff_volume_watch", model["warnings"])
 
 
 @unittest.skip("Legacy strategy gate tests were intentionally retired for the raw opportunity model.")
