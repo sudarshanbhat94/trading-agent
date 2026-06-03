@@ -1600,6 +1600,38 @@ def _compact_rally_plan(plan: Any) -> dict[str, Any]:
     return output
 
 
+def _compact_rally_plan_status(plan: Any) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        return {}
+    output = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"items", "sections", "by_market"} and not isinstance(value, (list, dict))
+    }
+    output["summary_only"] = True
+    if isinstance(plan.get("regime"), dict):
+        output["regime"] = {
+            key: plan["regime"].get(key)
+            for key in ("state", "score", "momentum_allowed", "summary")
+            if key in plan["regime"]
+        }
+    if isinstance(plan.get("source_status"), dict):
+        output["source_status"] = plan["source_status"]
+    if isinstance(plan.get("by_market"), dict):
+        output["by_market"] = {
+            str(market): _compact_rally_plan_status(raw)
+            for market, raw in plan["by_market"].items()
+            if isinstance(raw, dict)
+        }
+        return output
+    output["items"] = [
+        _compact_rally_plan_item(row, include_evidence=False)
+        for row in (plan.get("items") or [])[:30]
+        if isinstance(row, dict)
+    ]
+    return output
+
+
 def _compact_opportunity_scan(scan: Any) -> dict[str, Any]:
     if not isinstance(scan, dict):
         return {}
@@ -1696,7 +1728,7 @@ def _compact_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payload.get("tomorrow_plan"), dict):
         payload["tomorrow_plan"] = _compact_tomorrow_plan(payload["tomorrow_plan"])
     if isinstance(payload.get("rally_plan"), dict):
-        payload["rally_plan"] = _compact_rally_plan(payload["rally_plan"])
+        payload["rally_plan"] = _compact_rally_plan_status(payload["rally_plan"])
     return payload
 
 
