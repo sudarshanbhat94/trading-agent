@@ -85,6 +85,8 @@ class Settings:
     raw_entry_min_score: float = _float("RAW_ENTRY_MIN_SCORE", 64.0)
     entry_authority_min_score: float = _float("ENTRY_AUTHORITY_MIN_SCORE", 64.0)
     entry_authority_watch_score: float = _float("ENTRY_AUTHORITY_WATCH_SCORE", 58.0)
+    rally_plan_promotion_enabled: bool = _bool("RALLY_PLAN_PROMOTION_ENABLED", True)
+    rally_plan_max_promotions_per_market: int = _int("RALLY_PLAN_MAX_PROMOTIONS_PER_MARKET", 8)
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
     dynamic_scan_min_turnover_inr: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_INR", 50_000_000.0)
     dynamic_scan_min_turnover_usd: float = _float("DYNAMIC_SCAN_MIN_TURNOVER_USD", 2_000_000.0)
@@ -420,6 +422,8 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "raw_entry_min_score", "label": "Raw Opportunity Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 100, "step": 1},
     {"key": "entry_authority_min_score", "label": "Raw Opportunity Min Score", "type": "number", "category": "Market Data", "min": 0, "max": 100, "step": 1},
     {"key": "entry_authority_watch_score", "label": "Entry Watch Score", "type": "number", "category": "Market Data", "min": 0, "max": 100, "step": 1},
+    {"key": "rally_plan_promotion_enabled", "label": "Rally Plan Promotion", "type": "boolean", "category": "Market Data"},
+    {"key": "rally_plan_max_promotions_per_market", "label": "Max Rally Promotions/Market", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_min_price", "label": "Dynamic Min Price", "type": "number", "category": "Market Data", "min": 0, "step": 1},
     {"key": "dynamic_scan_min_turnover_inr", "label": "Dynamic Min Turnover INR", "type": "number", "category": "Market Data", "min": 0, "step": 1000000},
     {"key": "dynamic_scan_min_turnover_usd", "label": "Dynamic Min Turnover USD", "type": "number", "category": "Market Data", "min": 0, "step": 100000},

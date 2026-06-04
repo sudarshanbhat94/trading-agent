@@ -49,6 +49,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     has_big_runner_catalyst = _big_runner_catalyst(big_runner)
     early_alpha = scan.get("early_alpha") if isinstance(scan.get("early_alpha"), dict) else {}
     has_early_alpha_catalyst = _early_alpha_catalyst(early_alpha)
+    rally_plan_promotion = scan.get("rally_plan_promotion") if isinstance(scan.get("rally_plan_promotion"), dict) else {}
+    has_rally_plan_catalyst = _rally_plan_promotion_catalyst(rally_plan_promotion)
     sector = str(context.get("sector") or scan.get("sector") or "").strip()
     rs = context.get("universe_relative_strength") if isinstance(context.get("universe_relative_strength"), dict) else {}
     rs_percentile = _num(rs.get("percentile_63"))
@@ -109,6 +111,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         volume_ratio=volume_ratio,
         rs_percentile=rs_percentile,
         turnover=turnover,
+        price=price,
+        rally_plan_promotion=rally_plan_promotion,
     )
     passed_setups = [item for item in setup_reviews if item.get("passed")]
     best_setup = max(passed_setups or setup_reviews, key=lambda item: float(item.get("score") or 0.0), default={})
@@ -127,12 +131,18 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         live_momentum_regime_allowed, live_momentum_regime_gate = regime_allows_live_momentum(
             market_day_regime,
             sector=sector,
-            has_catalyst=bool(positive_news_catalyst or has_market_action_catalyst or has_big_runner_catalyst or has_early_alpha_catalyst),
+            has_catalyst=bool(
+                positive_news_catalyst
+                or has_market_action_catalyst
+                or has_big_runner_catalyst
+                or has_early_alpha_catalyst
+                or has_rally_plan_catalyst
+            ),
         )
 
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
     readiness_block = _readiness_block(data_ready=data_ready, data_quality=data_quality)
-    confirmation_block = _confirmation_block(scan=scan, setup_family=setup_family)
+    confirmation_block = _confirmation_block(scan=scan, setup_family=setup_family, price=price)
     warnings: list[str] = []
     if readiness_block:
         warnings.append(readiness_block["reason"])
@@ -251,6 +261,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "market_action_catalyst": has_market_action_catalyst,
             "big_runner_catalyst": has_big_runner_catalyst,
             "early_alpha_catalyst": has_early_alpha_catalyst,
+            "rally_plan_catalyst": has_rally_plan_catalyst,
             "relative_strength_percentile": round(rs_percentile, 4) if rs_percentile is not None else None,
         },
         "inputs": {
@@ -286,6 +297,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
                 if key in market_day_regime
             },
             "live_momentum_regime_gate": live_momentum_regime_gate,
+            "rally_plan_promotion": rally_plan_promotion or None,
             "soft_penalty": round(soft_penalty, 4),
             "hard_block_policy": "invalid_quote_untradeable_hard_liquidity_data_readiness_or_confirmation",
             "removed_vetoes": "legacy_strategy_and_india_specific_entry_vetoes_removed",
@@ -332,8 +344,11 @@ def _readiness_block(*, data_ready: dict[str, Any], data_quality: dict[str, Any]
     return None
 
 
-def _confirmation_block(*, scan: dict[str, Any], setup_family: str) -> dict[str, Any] | None:
+def _confirmation_block(*, scan: dict[str, Any], setup_family: str, price: float | None = None) -> dict[str, Any] | None:
     if setup_family != "live_momentum":
+        return None
+    promotion = scan.get("rally_plan_promotion") if isinstance(scan.get("rally_plan_promotion"), dict) else {}
+    if _rally_plan_promotion_price_ready(promotion, price):
         return None
     for key in ("big_runner", "early_alpha"):
         review = scan.get(key) if isinstance(scan.get(key), dict) else {}
@@ -471,6 +486,36 @@ def _early_alpha_catalyst(early_alpha: dict[str, Any]) -> bool:
     )
 
 
+def _rally_plan_promotion_catalyst(promotion: dict[str, Any]) -> bool:
+    if not isinstance(promotion, dict) or promotion.get("ready") is not True:
+        return False
+    action = str(promotion.get("action") or "").strip().upper()
+    section = str(promotion.get("section") or "").strip().lower()
+    score = _score_pct(promotion.get("score"))
+    evidence_sources = {str(item or "").strip().lower() for item in promotion.get("evidence_sources") or []}
+    return bool(
+        action in {"BUY CHECK", "BUY", "ENTRY_READY"}
+        and section in {"opening_ignition", "live_momentum"}
+        and score >= 68.0
+        and evidence_sources
+    )
+
+
+def _rally_plan_promotion_price_ready(promotion: dict[str, Any], price: float | None) -> bool:
+    if not _rally_plan_promotion_catalyst(promotion):
+        return False
+    current = _num(price)
+    trigger = _num(promotion.get("trigger_price"))
+    max_entry = _num(promotion.get("max_entry"))
+    stop = _num(promotion.get("stop_loss"))
+    target = _num(promotion.get("target1"))
+    if None in (current, trigger, max_entry, stop, target):
+        return False
+    if not (stop < current <= max_entry * 1.0005 and target > current):
+        return False
+    return current >= trigger * 0.995
+
+
 def _opportunity_ready(
     *,
     market: str,
@@ -501,6 +546,19 @@ def _opportunity_ready(
         if setup_family != "delivery_btst" and late_session_entry:
             return False
         if setup_family == "live_momentum":
+            if best_setup.get("source") == "rally_plan":
+                return (
+                    live_momentum_regime_allowed
+                    and price_value >= 50.0
+                    and raw_score >= max(base_line, 78.0)
+                    and setup_score >= 70.0
+                    and day_gain >= 1.2
+                    and day_gain < 7.0
+                    and range_position >= 0.64
+                    and volume_ratio >= 1.10
+                    and high_ok
+                    and max(technical_score, scan_score) >= 62.0
+                )
             return (
                 live_momentum_regime_allowed
                 and
@@ -635,6 +693,8 @@ def _opportunity_reviews(
     volume_ratio: float,
     rs_percentile: float | None,
     turnover: float,
+    price: float | None = None,
+    rally_plan_promotion: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     setup_key = setup.lower()
     rally = scan.get("rally_evidence") if isinstance(scan.get("rally_evidence"), dict) else {}
@@ -677,7 +737,18 @@ def _opportunity_reviews(
         "top_gainer_momentum",
         "circuit_demand_lock",
     }
+    promotion_review = _rally_plan_promotion_review(
+        rally_plan_promotion or {},
+        price=price,
+        scan_score=scan_score,
+        live_score=live_score,
+        day_gain=day_gain,
+        range_position=range_position,
+        high_distance=high_distance,
+        volume_ratio=volume_ratio,
+    )
     reviews = [
+        promotion_review,
         _review(
             "live_momentum",
             setup_key in {"opening_ignition", "intraday_momentum", "top_gainer_momentum", "market_action_momentum", "price_shocker_reversal_breakout", "big_runner_ignition", "early_alpha_ignition"}
@@ -762,6 +833,49 @@ def _opportunity_reviews(
         ),
     ]
     return reviews
+
+
+def _rally_plan_promotion_review(
+    promotion: dict[str, Any],
+    *,
+    price: float | None,
+    scan_score: float,
+    live_score: float,
+    day_gain: float,
+    range_position: float,
+    high_distance: float | None,
+    volume_ratio: float,
+) -> dict[str, Any]:
+    price_ready = _rally_plan_promotion_price_ready(promotion, price)
+    score = _score_pct(promotion.get("score")) if isinstance(promotion, dict) else 0.0
+    live_strength = max(scan_score, live_score, score)
+    live_confirmed = (
+        day_gain >= 1.2
+        and day_gain < 7.0
+        and range_position >= 0.64
+        and (high_distance is None or high_distance <= 2.8)
+        and volume_ratio >= 1.10
+        and live_strength >= 68.0
+    )
+    return {
+        "family": "live_momentum",
+        "passed": bool(price_ready and live_confirmed),
+        "score": round(
+            _clamp(
+                _avg(score, live_strength, _norm(day_gain, 0.8, 5.0) * 100, range_position * 100, _norm(volume_ratio, 0.9, 2.2) * 100),
+                0.0,
+                100.0,
+            ),
+            4,
+        ),
+        "reasons": [
+            "rally plan buy-check promotion",
+            "live price inside trigger/max-entry zone" if price_ready else "rally plan entry zone not live-ready",
+            "live confirmation held" if live_confirmed else "live confirmation incomplete",
+        ],
+        "source": "rally_plan",
+        "promotion": promotion if isinstance(promotion, dict) else {},
+    }
 
 
 def _review(family: str, passed: bool, *, score: float, reasons: list[str]) -> dict[str, Any]:

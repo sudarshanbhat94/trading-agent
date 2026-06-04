@@ -309,6 +309,95 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(allowed["decision_label"], "ENTRY_READY")
         self.assertTrue(allowed["components"]["early_alpha_catalyst"])
 
+    def test_rally_plan_promotion_can_place_best_generic_india_rally(self) -> None:
+        context = _raw_entry_context(
+            price=123.8,
+            setup="big_runner_ignition",
+            market_region="IN",
+            technical_score=0.72,
+            day_gain_pct=2.4,
+            volume_ratio=1.65,
+            projected_volume_ratio=2.0,
+            day_range_position=0.74,
+            day_high_distance_pct=0.9,
+        )
+        context["sector"] = "NSE Listed Equity"
+        context["opportunity_scan"]["sector"] = "NSE Listed Equity"
+        context["opportunity_scan"]["score"] = 0.76
+        context["opportunity_scan"]["components"] = {"live_momentum": 0.74, "big_runner": 0.82}
+        context["opportunity_scan"]["big_runner"] = {
+            "available": True,
+            "stage": "live_momentum",
+            "setup": "big_runner_ignition",
+            "action": "CONFIRM",
+            "score": 0.82,
+            "evidence": {"catalyst_score": 0.30, "rs_rank": 86.0},
+        }
+        context["opportunity_scan"]["rally_plan_promotion"] = {
+            "ready": True,
+            "source": "rally_plan",
+            "section": "live_momentum",
+            "action": "BUY CHECK",
+            "strategy": "big_runner_ignition",
+            "score": 84.0,
+            "trigger_price": 123.2,
+            "max_entry": 124.2,
+            "stop_loss": 119.4,
+            "target1": 128.4,
+            "evidence_sources": ["big_runner", "opportunity_scan", "regime"],
+        }
+        context["market_day_regime"] = {
+            "state": REGIME_SELECTIVE_RALLY,
+            "score": 56.0,
+            "selective_momentum_allowed": True,
+            "above_open_pct": 0.86,
+            "strong_gain_pct": 0.29,
+            "fade_pct": 0.11,
+            "sector_participation": {"NSE Listed Equity": {"advancer_pct": 0.62}},
+        }
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertTrue(model["passed"], model)
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_evidence"]["source"], "rally_plan")
+        self.assertTrue(model["components"]["rally_plan_catalyst"])
+        self.assertEqual(model["diagnostics"]["live_momentum_regime_gate"]["reason"], "selective_rally_confirmed_by_sector_and_catalyst")
+
+    def test_rally_plan_promotion_does_not_buy_above_max_entry(self) -> None:
+        context = _raw_entry_context(
+            price=126.0,
+            setup="big_runner_ignition",
+            market_region="IN",
+            technical_score=0.82,
+            day_gain_pct=2.6,
+            volume_ratio=1.8,
+            day_range_position=0.78,
+            day_high_distance_pct=0.8,
+        )
+        context["opportunity_scan"]["score"] = 0.82
+        context["opportunity_scan"]["components"] = {"live_momentum": 0.82}
+        context["opportunity_scan"]["rally_plan_promotion"] = {
+            "ready": True,
+            "source": "rally_plan",
+            "section": "live_momentum",
+            "action": "BUY CHECK",
+            "strategy": "big_runner_ignition",
+            "score": 86.0,
+            "trigger_price": 123.2,
+            "max_entry": 124.2,
+            "stop_loss": 119.4,
+            "target1": 128.4,
+            "evidence_sources": ["big_runner", "opportunity_scan"],
+        }
+        context["market_day_regime"] = {"state": REGIME_BROAD_RALLY, "score": 76.0}
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "raw_opportunity_watch")
+
     def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN"),

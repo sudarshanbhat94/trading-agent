@@ -15,6 +15,9 @@ RALLY_PLAN_SECTIONS = {
     "avoid": "Avoid / Do Not Chase",
 }
 
+RALLY_PLAN_ACTION_SECTIONS = {"opening_ignition", "live_momentum"}
+RALLY_PLAN_PROMOTION_ACTIONS = {"BUY CHECK", "BUY", "ENTRY_READY"}
+
 
 def build_rally_plan(
     *,
@@ -88,6 +91,104 @@ def build_rally_plan_by_market(**kwargs: Any) -> dict[str, Any]:
             for region in ("IN", "US")
         },
     }
+
+
+def extract_rally_plan_promotions(
+    plan: dict[str, Any],
+    *,
+    max_per_market: int = 8,
+) -> dict[str, Any]:
+    """Return actionable Rally Plan rows that can be considered by entry authority."""
+    if not isinstance(plan, dict) or max_per_market <= 0:
+        return {"enabled": False, "by_market": {}, "total": 0, "reason": "disabled_or_empty_plan"}
+    by_market = plan.get("by_market") if isinstance(plan.get("by_market"), dict) else {}
+    markets = by_market if by_market else {str(plan.get("market_region") or "IN").upper(): plan}
+    result: dict[str, list[dict[str, Any]]] = {}
+    blocked: dict[str, int] = {}
+    for market, market_plan in markets.items():
+        rows = []
+        for item in (market_plan.get("items") if isinstance(market_plan, dict) else []) or []:
+            promotion, reason = _promotion_from_item(item)
+            if promotion:
+                rows.append(promotion)
+            elif reason:
+                blocked[reason] = blocked.get(reason, 0) + 1
+        rows.sort(key=lambda row: _promotion_rank(row), reverse=True)
+        result[str(market).upper()] = rows[:max_per_market]
+    return {
+        "enabled": True,
+        "by_market": result,
+        "total": sum(len(rows) for rows in result.values()),
+        "max_per_market": max_per_market,
+        "blocked_counts": blocked,
+    }
+
+
+def _promotion_from_item(item: Any) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(item, dict):
+        return None, "invalid_item"
+    section = str(item.get("section") or "").strip().lower()
+    action = str(item.get("action") or "").strip().upper()
+    if section not in RALLY_PLAN_ACTION_SECTIONS:
+        return None, "not_action_section"
+    if action not in RALLY_PLAN_PROMOTION_ACTIONS:
+        return None, "not_buy_check_action"
+    blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+    if blockers:
+        return None, "blocked_item"
+    entry_plan = item.get("entry_plan") if isinstance(item.get("entry_plan"), dict) else {}
+    if str(entry_plan.get("status") or "").strip().lower() != "entry_check":
+        return None, "not_entry_check"
+    trigger = _num(item.get("trigger_price"))
+    max_entry = _num(item.get("max_entry"))
+    stop = _num(item.get("stop_loss"))
+    target = _num(item.get("target1"))
+    if None in (trigger, max_entry, stop, target):
+        return None, "incomplete_levels"
+    if not (stop < trigger <= max_entry < target):
+        return None, "invalid_level_order"
+    risk_pct = ((trigger - stop) / trigger) * 100.0 if trigger else 999.0
+    reward_pct = ((target - trigger) / trigger) * 100.0 if trigger else 0.0
+    if risk_pct <= 0.0 or risk_pct > 7.5:
+        return None, "risk_too_wide"
+    if reward_pct < 1.2:
+        return None, "target_too_small"
+    score = _score(item.get("score"))
+    if score < 68.0:
+        return None, "score_below_promotion_floor"
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    return {
+        "ready": True,
+        "source": "rally_plan",
+        "symbol": str(item.get("symbol") or "").upper(),
+        "market_region": item.get("market_region"),
+        "section": section,
+        "stage": item.get("stage"),
+        "action": action,
+        "strategy": item.get("strategy"),
+        "score": round(score, 4),
+        "trigger_price": trigger,
+        "max_entry": max_entry,
+        "stop_loss": stop,
+        "target1": target,
+        "risk_pct": round(risk_pct, 4),
+        "reward_pct": round(reward_pct, 4),
+        "why": item.get("why"),
+        "what": item.get("what"),
+        "how": item.get("how"),
+        "invalidation": item.get("invalidation"),
+        "evidence_sources": sorted(evidence.keys()),
+        "entry_plan": entry_plan,
+        "exit_plan": item.get("exit_plan") if isinstance(item.get("exit_plan"), dict) else {},
+    }, ""
+
+
+def _promotion_rank(row: dict[str, Any]) -> float:
+    section_bonus = 4.0 if row.get("section") == "live_momentum" else 2.0
+    risk = float(row.get("risk_pct") or 0.0)
+    risk_bonus = max(0.0, 4.0 - min(risk, 4.0))
+    reward = min(float(row.get("reward_pct") or 0.0), 8.0) * 0.35
+    return float(row.get("score") or 0.0) + section_bonus + risk_bonus + reward
 
 
 def _pre_catalyst_items(pre_catalyst: dict[str, Any], region: str) -> list[dict[str, Any]]:

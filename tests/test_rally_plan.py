@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.market_day_regime import REGIME_BROAD_RALLY, REGIME_FADE_RISK
-from app.rally_plan import build_rally_plan, build_rally_plan_by_market
+from app.rally_plan import build_rally_plan, build_rally_plan_by_market, extract_rally_plan_promotions
 
 
 class RallyPlanBuilderTests(unittest.TestCase):
@@ -186,6 +186,62 @@ class RallyPlanBuilderTests(unittest.TestCase):
         self.assertEqual(item["symbol"], "IGNITE")
         self.assertEqual(item["action"], "WATCH")
         self.assertEqual(item["blockers"][0]["reason"], "market_day_regime_not_supportive_for_live_momentum")
+
+    def test_extract_promotions_returns_only_complete_buy_check_rally_rows(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_BROAD_RALLY, "score": 72.0},
+            opportunity_scan={
+                "market_region": "IN",
+                "top_big_runner_candidates": [
+                    {
+                        "symbol": "IGNITE",
+                        "market_region": "IN",
+                        "score": 0.83,
+                        "setup": "big_runner_ignition",
+                        "big_runner": {
+                            "available": True,
+                            "stage": "live_momentum",
+                            "setup": "big_runner_ignition",
+                            "action": "BUY CHECK",
+                            "score": 0.82,
+                            "trigger_price": 123.4,
+                            "max_entry": 124.14,
+                            "stop_loss": 119.1,
+                            "target1": 128.2,
+                            "blockers": [],
+                        },
+                    },
+                    {
+                        "symbol": "WATCHONLY",
+                        "market_region": "IN",
+                        "score": 0.84,
+                        "setup": "big_runner_watch",
+                        "big_runner": {
+                            "available": True,
+                            "stage": "t1_pressure",
+                            "setup": "big_runner_watch",
+                            "action": "WATCH",
+                            "score": 0.84,
+                            "trigger_price": 200.0,
+                            "max_entry": 202.0,
+                            "stop_loss": 194.0,
+                            "target1": 208.0,
+                            "blockers": [],
+                        },
+                    },
+                ],
+            },
+        )
+
+        promotions = extract_rally_plan_promotions(plan, max_per_market=3)
+        rows = promotions["by_market"]["IN"]
+
+        self.assertEqual([row["symbol"] for row in rows], ["IGNITE"])
+        self.assertEqual(rows[0]["section"], "live_momentum")
+        self.assertEqual(rows[0]["action"], "BUY CHECK")
+        self.assertEqual(rows[0]["trigger_price"], 123.4)
+        self.assertGreater(promotions["blocked_counts"]["not_action_section"], 0)
 
     def test_early_alpha_candidate_renders_before_ignition_contract(self) -> None:
         plan = build_rally_plan(

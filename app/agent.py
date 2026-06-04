@@ -24,7 +24,7 @@ from .models import Decision, Quote, utc_now
 from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
 from .pre_catalyst_engine import build_pre_catalyst_watchlist
-from .rally_plan import build_rally_plan, build_rally_plan_by_market
+from .rally_plan import build_rally_plan, build_rally_plan_by_market, extract_rally_plan_promotions
 from .request_context import current_llm_usage_scope, current_user_id
 from .signal_quality import (
     AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
@@ -704,6 +704,27 @@ class TradingAgentService:
             market_action_summary,
         )
         self._store_pre_catalyst_discovery(pre_catalyst_summary)
+        pre_decision_market_day_regime = compute_market_day_regimes(
+            universe,
+            quotes,
+            candle_sets,
+            market_breadth_context,
+            market_region=self.market_region,
+        )
+        self.db.set_state("market_day_regime", pre_decision_market_day_regime)
+        pre_decision_rally_plan = self._build_and_store_rally_plan(
+            market_day_regime_context=pre_decision_market_day_regime,
+            pre_catalyst_summary=pre_catalyst_summary,
+            scan_summary=scan_summary,
+            market_action_summary=market_action_summary,
+        )
+        rally_promotion_summary = self._annotate_rally_plan_promotions(
+            universe,
+            scan_summary,
+            pre_decision_rally_plan,
+        )
+        scan_summary["rally_plan_promotion"] = rally_promotion_summary
+        self.db.set_state("opportunity_scan", scan_summary)
         self._cycle_phase = "self_audit"
         quote_rows = [quote.to_dict() for quote in quotes.values()]
         market_health = self._market_health(quote_rows)
@@ -1023,6 +1044,70 @@ class TradingAgentService:
                 {"error": f"{exc.__class__.__name__}: {str(exc)[:220]}"},
             )
             return {}
+
+    def _annotate_rally_plan_promotions(
+        self,
+        universe: list[dict[str, Any]],
+        scan_summary: dict[str, Any],
+        rally_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not bool(getattr(self.strategy.settings, "rally_plan_promotion_enabled", True)):
+            return {"enabled": False, "reason": "rally_plan_promotion_disabled", "annotated_symbols": []}
+        max_per_market = max(0, int(getattr(self.strategy.settings, "rally_plan_max_promotions_per_market", 8) or 0))
+        promotions = extract_rally_plan_promotions(rally_plan, max_per_market=max_per_market)
+        by_symbol: dict[str, dict[str, Any]] = {}
+        by_market = promotions.get("by_market") if isinstance(promotions.get("by_market"), dict) else {}
+        for market, rows in by_market.items():
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+                by_symbol[symbol] = {**row, "market_region": str(row.get("market_region") or market or "").upper() or row.get("market_region")}
+        annotated: list[str] = []
+        for row in universe:
+            symbol = str(row.get("symbol") or "").upper()
+            promotion = by_symbol.get(symbol)
+            scan = row.get("_opportunity_scan") if isinstance(row.get("_opportunity_scan"), dict) else {}
+            if promotion:
+                scan["rally_plan_promotion"] = promotion
+                row["_opportunity_scan"] = scan
+                annotated.append(symbol)
+        for item in scan_summary.get("top_candidates") or []:
+            if isinstance(item, dict):
+                promotion = by_symbol.get(str(item.get("symbol") or "").upper())
+                if promotion:
+                    item["rally_plan_promotion"] = promotion
+        by_market_summary = scan_summary.get("by_market") if isinstance(scan_summary.get("by_market"), dict) else {}
+        for market_summary in by_market_summary.values():
+            if not isinstance(market_summary, dict):
+                continue
+            for item in market_summary.get("top_candidates") or []:
+                if isinstance(item, dict):
+                    promotion = by_symbol.get(str(item.get("symbol") or "").upper())
+                    if promotion:
+                        item["rally_plan_promotion"] = promotion
+        summary = {
+            "enabled": True,
+            "max_per_market": max_per_market,
+            "available_total": int(promotions.get("total") or 0),
+            "annotated_count": len(annotated),
+            "annotated_symbols": sorted(annotated)[:25],
+            "by_market_counts": {
+                str(market): len(rows or [])
+                for market, rows in by_market.items()
+            },
+            "blocked_counts": promotions.get("blocked_counts") if isinstance(promotions.get("blocked_counts"), dict) else {},
+        }
+        self._log(
+            "INFO",
+            "rally_plan",
+            "rally_plan_promotions_annotated",
+            "Actionable Rally Plan rows attached to the strategy decision context.",
+            summary,
+        )
+        return summary
 
     async def _run_optional_phase(
         self,

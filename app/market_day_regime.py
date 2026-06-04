@@ -197,13 +197,22 @@ def regime_allows_live_momentum(
         return True, {"reason": "broad_rally_allows_live_momentum", "state": state}
     if state == REGIME_SELECTIVE_RALLY:
         sector_stats = (regime.get("sector_participation") or {}).get(str(sector or "").strip(), {})
+        sector_label = str(sector or "").strip().lower()
+        generic_sector = sector_label in {"", "unknown", "nse listed equity", "listed equity", "equity"}
         sector_ok = float(sector_stats.get("advancer_pct") or 0.0) >= 0.65
+        if generic_sector and not sector_ok:
+            sector_ok = bool(regime.get("selective_momentum_allowed")) or (
+                float(regime.get("above_open_pct") or 0.0) >= 0.78
+                and float(regime.get("strong_gain_pct") or 0.0) >= 0.18
+                and float(regime.get("fade_pct") or 0.0) <= 0.18
+            )
         allowed = bool(sector_ok and has_catalyst)
         return allowed, {
             "reason": "selective_rally_requires_sector_and_catalyst" if not allowed else "selective_rally_confirmed_by_sector_and_catalyst",
             "state": state,
             "sector": sector,
             "sector_advancer_pct": sector_stats.get("advancer_pct"),
+            "generic_sector_fallback": generic_sector and sector_ok,
             "has_catalyst": bool(has_catalyst),
         }
     return False, {"reason": "market_day_regime_not_supportive_for_live_momentum", "state": state}

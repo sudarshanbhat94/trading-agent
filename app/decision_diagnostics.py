@@ -235,6 +235,9 @@ def build_cycle_decision_diagnostics(
         },
         "scanner_rejections": _top_mapping(scan.get("rejected_counts"), 15),
         "scanner_setups": _top_mapping(scan.get("setup_counts"), 15),
+        "rally_plan_promotion": scan.get("rally_plan_promotion")
+        if isinstance(scan.get("rally_plan_promotion"), dict)
+        else {},
         "auto_follow": {
             "users_checked": _int(auto_trade.get("users_checked")),
             "active_buy_ideas_checked": _int(auto_trade.get("active_buy_ideas_checked")),
