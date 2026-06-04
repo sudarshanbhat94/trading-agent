@@ -5450,6 +5450,7 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         )
         market_portfolio = (portfolio.get("portfolio_by_market") or {}).get(market) or {}
         cash = float(market_portfolio.get("cash") or 0.0)
+        portfolio_cash = float(market_portfolio.get("starting_cash") or cash)
         price = float(idea.get("latest_price") or idea.get("entry_price") or 0.0)
         size_multiplier = quality_size_multiplier(quality_gate)
         idea_details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
@@ -5462,6 +5463,9 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
             market_region=market,
             stop_loss=_float_or_none(idea.get("stop_loss") or idea_details.get("stop_loss")),
             confidence=_float_or_none(idea.get("confidence")),
+            overall_score_pct=_float_or_none(idea.get("overall_score_pct")),
+            overall_grade=str(idea.get("overall_grade") or ""),
+            portfolio_cash=portfolio_cash,
             avg_daily_turnover=_float_or_none(
                 opportunity_scan.get("avg20_turnover")
                 or opportunity_scan.get("turnover")
@@ -5512,6 +5516,9 @@ def _auto_follow_sizing(
     market_region: str = "IN",
     stop_loss: float | None = None,
     confidence: float | None = None,
+    overall_score_pct: float | None = None,
+    overall_grade: str | None = None,
+    portfolio_cash: float | None = None,
     avg_daily_turnover: float | None = None,
 ) -> dict[str, Any]:
     return auto_follow_sizing(
@@ -5523,6 +5530,9 @@ def _auto_follow_sizing(
         settings=settings,
         stop_loss=stop_loss,
         confidence=confidence,
+        overall_score_pct=overall_score_pct,
+        overall_grade=overall_grade,
+        portfolio_cash=portfolio_cash,
         avg_daily_turnover=avg_daily_turnover,
     )
 

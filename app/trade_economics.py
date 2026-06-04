@@ -24,10 +24,14 @@ def auto_follow_sizing(
     settings: Any = None,
     stop_loss: float | None = None,
     confidence: float | None = None,
+    overall_score_pct: float | None = None,
+    overall_grade: str | None = None,
+    portfolio_cash: float | None = None,
     avg_daily_turnover: float | None = None,
 ) -> dict[str, Any]:
     cash = max(float(cash or 0.0), 0.0)
     price = max(float(price or 0.0), 0.0)
+    base_cash = max(float(portfolio_cash or 0.0), cash)
     market = normalize_market_region(market_region or "IN", default="IN")
     if cash <= 0 or price <= 0:
         return {
@@ -41,11 +45,13 @@ def auto_follow_sizing(
 
     size_multiplier = max(min(float(size_multiplier or 1.0), 1.0), 0.10)
     max_pct = max(min(float(max_position_pct or 0.25), 0.50), 0.01)
-    confidence_multiplier = _confidence_multiplier(confidence)
-    target = cash * max_pct * size_multiplier * confidence_multiplier
+    max_positions = max(_int_setting(settings, "max_positions", 0), 0)
+    slot_pct = min(max_pct, 1.0 / max_positions) if max_positions > 0 else max_pct
+    confidence_multiplier = max(_confidence_multiplier(confidence), _score_multiplier(overall_score_pct, overall_grade))
+    target = base_cash * slot_pct * size_multiplier * confidence_multiplier
     min_notional = minimum_auto_follow_notional(settings, market)
     base_cap_pct = min(max_pct * max(size_multiplier, 0.25) * 1.5, 0.60)
-    cap = cash * base_cap_pct
+    cap = base_cash * base_cap_pct
     liquidity_cap = None
     if avg_daily_turnover is not None and float(avg_daily_turnover or 0.0) > 0:
         liquidity_cap = max(float(avg_daily_turnover or 0.0) * 0.01, min_notional)
@@ -55,7 +61,7 @@ def auto_follow_sizing(
     stop = max(float(stop_loss or 0.0), 0.0)
     if stop > 0 and stop < price:
         risk_budget_pct = _setting(settings, "paper_risk_per_trade_pct", 0.01)
-        base_risk_budget = cash * max(min(float(risk_budget_pct or 0.01), 0.05), 0.001)
+        base_risk_budget = base_cash * max(min(float(risk_budget_pct or 0.01), 0.05), 0.001)
         risk_budget = base_risk_budget * max(size_multiplier, 0.10)
         per_share_risk = max(price - stop, price * 0.005)
         risk_qty = max(int(risk_budget // per_share_risk), 0)
@@ -63,7 +69,7 @@ def auto_follow_sizing(
     min_qty = max(1, int(math.ceil(min_notional / price))) if min_notional > 0 else 1
     economics_floor_notional = min_qty * price
     economics_floor_applied = False
-    if economics_floor_notional > cap and economics_floor_notional <= cash * 0.60:
+    if economics_floor_notional > cap and economics_floor_notional <= min(cash, base_cash * 0.60):
         cap = economics_floor_notional
         economics_floor_applied = True
     max_qty_by_cap = int(min(cash, cap) // price)
@@ -86,10 +92,12 @@ def auto_follow_sizing(
             "reason": "position_size_below_minimum_trade_economics",
             "market_region": market,
             "cash": round(cash, 4),
+            "portfolio_cash": round(base_cash, 4),
             "price": round(price, 4),
             "target_notional": round(target, 2),
             "cap_notional": round(cap, 2),
             "base_cap_pct": round(base_cap_pct, 4),
+            "slot_pct": round(slot_pct, 4),
             "confidence_multiplier": round(confidence_multiplier, 4),
             "risk_qty": risk_qty,
             "floor_risk_qty": floor_risk_qty,
@@ -109,10 +117,12 @@ def auto_follow_sizing(
         "reason": "sized_after_trade_economics",
         "market_region": market,
         "cash": round(cash, 4),
+        "portfolio_cash": round(base_cash, 4),
         "price": round(price, 4),
         "target_notional": round(target, 2),
         "cap_notional": round(cap, 2),
         "base_cap_pct": round(base_cap_pct, 4),
+        "slot_pct": round(slot_pct, 4),
         "confidence_multiplier": round(confidence_multiplier, 4),
         "risk_qty": risk_qty,
         "floor_risk_qty": floor_risk_qty,
@@ -300,6 +310,37 @@ def _confidence_multiplier(confidence: float | None) -> float:
     if value >= 0.58:
         return 0.55
     return 0.35
+
+
+def _score_multiplier(score: float | None, grade: str | None) -> float:
+    grade_key = str(grade or "").strip().upper()
+    try:
+        score_value = float(score) if score not in (None, "") else None
+    except (TypeError, ValueError):
+        score_value = None
+    if score_value is not None:
+        if score_value >= 90:
+            return 1.0
+        if score_value >= 85:
+            return 0.85
+        if score_value >= 78:
+            return 0.70
+        if score_value >= 72:
+            return 0.55
+    if grade_key == "A":
+        return 0.85
+    if grade_key == "B":
+        return 0.55
+    return 0.0
+
+
+def _int_setting(settings: Any, name: str, default: int) -> int:
+    if settings is None:
+        return default
+    try:
+        return int(float(getattr(settings, name, default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _setting(settings: Any, name: str, default: float) -> float:

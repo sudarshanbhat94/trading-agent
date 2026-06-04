@@ -2171,6 +2171,7 @@ class TradingAgentService:
                     continue
                 market = str(idea.get("market_region") or "IN").upper()
                 cash = self._auto_follow_cash_for_user(user_id, user, market)
+                portfolio_cash = self._auto_follow_base_cash_for_user(user, market)
                 price = _float_or_none(idea.get("latest_price") or idea.get("entry_price")) or 0.0
                 size_multiplier = quality_size_multiplier(quality_gate)
                 idea_details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
@@ -2183,6 +2184,9 @@ class TradingAgentService:
                     market_region=market,
                     stop_loss=_float_or_none(idea.get("stop_loss") or idea_details.get("stop_loss")),
                     confidence=_float_or_none(idea.get("confidence")),
+                    overall_score_pct=_float_or_none(idea.get("overall_score_pct")),
+                    overall_grade=str(idea.get("overall_grade") or ""),
+                    portfolio_cash=portfolio_cash,
                     avg_daily_turnover=_float_or_none(
                         opportunity_scan.get("avg20_turnover")
                         or opportunity_scan.get("turnover")
@@ -2463,10 +2467,7 @@ class TradingAgentService:
 
     def _auto_follow_cash_for_user(self, user_id: int, user: dict[str, Any], market: str) -> float:
         market = "US" if str(market or "").upper() == "US" else "IN"
-        cash_by_market = user.get("paper_cash_by_market") if isinstance(user.get("paper_cash_by_market"), dict) else {}
-        base_cash = _float_or_none(cash_by_market.get(market)) if cash_by_market else None
-        if base_cash is None:
-            base_cash = float(self.strategy.settings.initial_cash_inr or 0.0)
+        base_cash = self._auto_follow_base_cash_for_user(user, market)
         tracked = self.db.user_followed_signal_ideas(user_id, 200, market_region=market)
         invested = sum(
             float(item.get("invested_amount") or 0.0)
@@ -2474,6 +2475,14 @@ class TradingAgentService:
             if str(item.get("mode") or "").upper() in {"PAPER", "LIVE"} and int(item.get("qty") or 0) > 0
         )
         return max(float(base_cash or 0.0) - invested, 0.0)
+
+    def _auto_follow_base_cash_for_user(self, user: dict[str, Any], market: str) -> float:
+        market = "US" if str(market or "").upper() == "US" else "IN"
+        cash_by_market = user.get("paper_cash_by_market") if isinstance(user.get("paper_cash_by_market"), dict) else {}
+        base_cash = _float_or_none(cash_by_market.get(market)) if cash_by_market else None
+        if base_cash is None:
+            base_cash = float(self.strategy.settings.initial_cash_inr or 0.0)
+        return max(float(base_cash or 0.0), 0.0)
 
     def _auto_follow_sizing(
         self,
@@ -2484,6 +2493,9 @@ class TradingAgentService:
         market_region: str = "IN",
         stop_loss: float | None = None,
         confidence: float | None = None,
+        overall_score_pct: float | None = None,
+        overall_grade: str | None = None,
+        portfolio_cash: float | None = None,
         avg_daily_turnover: float | None = None,
     ) -> dict[str, Any]:
         return auto_follow_sizing(
@@ -2495,6 +2507,9 @@ class TradingAgentService:
             settings=self.strategy.settings,
             stop_loss=stop_loss,
             confidence=confidence,
+            overall_score_pct=overall_score_pct,
+            overall_grade=overall_grade,
+            portfolio_cash=portfolio_cash,
             avg_daily_turnover=avg_daily_turnover,
         )
 

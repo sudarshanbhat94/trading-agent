@@ -4167,6 +4167,30 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(sizing["risk_qty"], 12)
         self.assertGreaterEqual(sizing["floor_risk_qty"], sizing["minimum_qty"])
 
+    def test_auto_follow_sizing_uses_funded_portfolio_slot_for_high_score_idea(self) -> None:
+        cost_settings = _economics_settings()
+        cost_settings.max_positions = 5
+        cost_settings.paper_risk_per_trade_pct = 0.01
+        sizing = auto_follow_sizing(
+            92_500.0,
+            100.0,
+            max_position_pct=0.25,
+            size_multiplier=1.0,
+            market_region="IN",
+            settings=cost_settings,
+            stop_loss=97.0,
+            confidence=0.20,
+            overall_score_pct=95.0,
+            overall_grade="A",
+            portfolio_cash=100_000.0,
+        )
+
+        self.assertTrue(sizing["passed"], sizing)
+        self.assertEqual(sizing["qty"], 200)
+        self.assertEqual(sizing["amount"], 20_000.0)
+        self.assertEqual(sizing["slot_pct"], 0.2)
+        self.assertEqual(sizing["confidence_multiplier"], 1.0)
+
     def test_auto_follow_sizing_rejects_floor_when_risk_qty_cannot_fund_minimum(self) -> None:
         sizing = auto_follow_sizing(
             25_000.0,
