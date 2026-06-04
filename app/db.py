@@ -580,6 +580,21 @@ def _normalize_targets(targets: Any) -> list[dict[str, Any]]:
     return normalize_trade_targets(targets)
 
 
+def _target_rank(label: Any) -> int | None:
+    value = str(label or "").strip().upper()
+    if not value:
+        return None
+    if value in {"T1", "T2", "T3"}:
+        return int(value[-1])
+    matches = re.findall(r"(?:^|[^A-Z0-9])T([123])(?:$|[^A-Z0-9])", value)
+    if matches:
+        return int(matches[-1])
+    suffix = re.search(r"T([123])$", value)
+    if suffix:
+        return int(suffix.group(1))
+    return None
+
+
 def _refresh_idea_lifecycle(
     previous_details: dict[str, Any] | None,
     incoming_details: dict[str, Any] | None,
@@ -605,16 +620,20 @@ def _refresh_idea_lifecycle(
     }
     target_status: list[dict[str, Any]] = []
     highest_hit = ""
+    highest_rank = 0
     for target in targets:
         label = str(target.get("label") or "").upper()
+        rank = _target_rank(label)
         price = float(target.get("price") or 0.0)
         previous = previous_statuses.get(label, {})
         hit = bool(previous.get("hit")) or (latest_price >= price > 0)
-        if hit:
+        if hit and (rank or 0) >= highest_rank:
             highest_hit = label
+            highest_rank = rank or 0
         target_status.append(
             {
                 "label": label,
+                "target_rank": rank,
                 "price": price,
                 "hit": hit,
                 "hit_at": previous.get("hit_at") or (now_iso if hit else None),
@@ -659,12 +678,12 @@ def _refresh_idea_lifecycle(
     elif str(status or "").upper() == "EXIT_SIGNAL":
         lifecycle_status = "exit_signal"
         new_status = "EXIT_SIGNAL"
-    elif highest_hit == "T3":
+    elif highest_rank >= 3:
         lifecycle_status = "target_3_hit"
         new_status = "TARGET_3_HIT"
-    elif highest_hit == "T2":
+    elif highest_rank == 2:
         lifecycle_status = "target_2_hit"
-    elif highest_hit == "T1":
+    elif highest_rank == 1:
         lifecycle_status = "target_1_hit"
     elif expired:
         lifecycle_status = "expired"
@@ -682,6 +701,7 @@ def _refresh_idea_lifecycle(
             "days_to_expiry": days_left,
             "target_status": target_status,
             "highest_target_hit": highest_hit or "NONE",
+            "highest_target_rank": highest_rank,
             "stop_status": stop_status,
             "drawdown_status": {
                 "return_pct": current_return_pct,
@@ -6253,7 +6273,8 @@ class Database:
             total_peak.append(peak)
             total_worst.append(worst)
             highest = str(details.get("highest_target_hit") or "NONE").upper()
-            hit_t1 = highest in {"T1", "T2", "T3"} or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"}
+            highest_rank = _target_rank(highest) or int(_optional_float(details.get("highest_target_rank")) or 0)
+            hit_t1 = highest_rank >= 1 or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"}
             stopped = status == "STOP_HIT" or lifecycle == "stopped"
             first_seen = _parse_dt(item.get("first_seen_at"))
             age_hours = ((now - first_seen).total_seconds() / 3600) if first_seen else 9999.0
@@ -6494,7 +6515,7 @@ def _performance_feedback_record(item: dict[str, Any]) -> dict[str, Any]:
         or min(return_pct, _optional_float(item.get("current_return_pct")) or return_pct)
     )
     target_status = [target for target in idea_details.get("target_status", []) if isinstance(target, dict)]
-    t1 = next((target for target in target_status if str(target.get("label") or "").upper() == "T1"), {})
+    t1 = next((target for target in target_status if _target_rank(target.get("label")) == 1), {})
     t1_hit = bool(t1.get("hit"))
     t1_hit_at = _parse_dt(t1.get("hit_at"))
     opened_at = _parse_dt(item.get("followed_at")) or _parse_dt(item.get("first_seen_at"))
@@ -6693,6 +6714,7 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
     status = str(item.get("idea_status") or "").upper()
     lifecycle = str(idea_details.get("lifecycle_status") or "").lower()
     highest = str(idea_details.get("highest_target_hit") or "NONE").upper()
+    highest_rank = _target_rank(highest) or int(_optional_float(idea_details.get("highest_target_rank")) or 0)
     latest = _optional_float(item.get("idea_latest_price") or item.get("latest_price")) or 0.0
     entry = _optional_float(item.get("entry_price") or item.get("idea_entry_price")) or 0.0
     stop = _optional_float(idea_details.get("stop_loss"))
@@ -6719,10 +6741,10 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
         return _exit_action("EXIT_SIGNAL", "EXIT_FULL", 100, "Engine generated an exit signal; close the followed position.", full=True)
     if status == "EXPIRED" or lifecycle == "expired":
         return _exit_action("EXPIRED", "EXIT_FULL", 100, "Idea expired without fresh confirmation; close the followed position.", full=True)
-    if highest == "T3" or status == "TARGET_3_HIT" or lifecycle == "target_3_hit":
+    if highest_rank >= 3 or status == "TARGET_3_HIT" or lifecycle == "target_3_hit":
         return _exit_action("TARGET_3", "EXIT_FULL", 100, "Final target reached; close or trail no more than a token remainder.", full=True)
 
-    t2_hit = highest in {"T2", "T3"} or status in {"TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T2")
+    t2_hit = highest_rank >= 2 or status in {"TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T2")
     if t2_hit and "TARGET_2_REDUCE" not in done:
         return _exit_action(
             "TARGET_2_REDUCE",
@@ -6731,7 +6753,7 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
             "T2 reached; book another tranche and trail the remaining quantity.",
         )
 
-    t1_hit = highest in {"T1", "T2", "T3"} or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_1_hit", "target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T1")
+    t1_hit = highest_rank >= 1 or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_1_hit", "target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T1")
     if t1_hit and "TARGET_1_PARTIAL" not in done:
         return _exit_action(
             "TARGET_1_PARTIAL",
@@ -6791,22 +6813,24 @@ def _exit_action(key: str, action: str, exit_pct: float, reason: str, full: bool
 
 
 def _target_hit(details: dict[str, Any], label: str) -> bool:
-    target_label = str(label or "").upper()
+    target_rank = _target_rank(label)
     for target in details.get("target_status", []) or []:
         if not isinstance(target, dict):
             continue
-        if str(target.get("label") or "").upper() == target_label and bool(target.get("hit")):
+        rank = _target_rank(target.get("label")) or int(_optional_float(target.get("target_rank")) or 0)
+        if rank == target_rank and bool(target.get("hit")):
             return True
     return False
 
 
 def _target_exit_pct(details: dict[str, Any], label: str, default: float) -> float:
-    target_label = str(label or "").upper()
+    target_rank = _target_rank(label)
     for collection in (details.get("target_status", []), details.get("targets", [])):
         for target in collection or []:
             if not isinstance(target, dict):
                 continue
-            if str(target.get("label") or "").upper() != target_label:
+            rank = _target_rank(target.get("label")) or int(_optional_float(target.get("target_rank")) or 0)
+            if rank != target_rank:
                 continue
             pct = _optional_float(target.get("suggested_exit_pct"))
             if pct and pct > 0:

@@ -75,6 +75,70 @@ class PositionMarkRefreshTests(unittest.TestCase):
         self.assertEqual(follow["unrealized_pnl"], 10)
         self.assertEqual(follow["return_pct"], 5)
 
+    def test_prefixed_raw_target_label_marks_target_one_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into universe (symbol, name, exchange, enabled)
+                    values ('MSTCLTD', 'MSTC', 'NSE', 1)
+                    """
+                )
+                conn.execute(
+                    """
+                    insert into signal_ideas (
+                        id, first_seen_at, last_seen_at, symbol, strategy, plan_code, signal_type, status,
+                        entry_price, latest_price, current_return_pct, peak_return_pct, worst_return_pct,
+                        confidence, combined_score, confluence, overall_score_pct, overall_grade,
+                        decision_id, latest_decision_id, reason, details_json
+                    )
+                    values (
+                        1, '2026-05-25T04:00:00+00:00', '2026-05-25T04:00:00+00:00',
+                        'MSTCLTD', 'raw_entry', 'raw_entry', 'BUY', 'ACTIVE',
+                        467.8, 467.8, 0, 0, 0, 0.8, 0.8, 20, 90, 'A',
+                        null, null, 'raw active buy', ?
+                    )
+                    """,
+                    (json.dumps({"targets": [{"label": "RAW-IN-T1", "price": 486.56}], "stop_loss": 445.0}),),
+                )
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (
+                        2, 1, 'PAPER', 'ACTIVE', 17, 467.8, 467.8,
+                        7952.6, 0, 0, '2026-05-25T04:01:00+00:00', '2026-05-25T04:01:00+00:00', '{}'
+                    )
+                    """
+                )
+
+            db.upsert_quotes(
+                {
+                    "MSTCLTD": Quote(
+                        symbol="MSTCLTD",
+                        price=511.0,
+                        source="upstox-live",
+                        asof="2026-05-25T04:02:00+00:00",
+                    )
+                }
+            )
+            marked = db.refresh_active_position_marks(["MSTCLTD"])
+
+            with db.connect() as conn:
+                idea = conn.execute("select * from signal_ideas where symbol = 'MSTCLTD'").fetchone()
+            details = json.loads(idea["details_json"])
+
+        self.assertEqual(marked, 1)
+        self.assertEqual(details["lifecycle_status"], "target_1_hit")
+        self.assertEqual(details["highest_target_hit"], "RAW-IN-T1")
+        self.assertEqual(details["highest_target_rank"], 1)
+        self.assertEqual(details["target_status"][0]["target_rank"], 1)
+        self.assertTrue(details["target_status"][0]["hit"])
+
     def test_active_position_universe_is_market_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")

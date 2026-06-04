@@ -1896,6 +1896,10 @@ class TradingAgentService:
             "users_checked": 0,
             "followed": 0,
             "exited": 0,
+            "managed_exit_actions": 0,
+            "managed_exit_skips": 0,
+            "managed_exits": [],
+            "managed_exit_skip_samples": [],
             "active_buy_ideas_checked": 0,
             "skipped": [],
         }
@@ -1940,6 +1944,36 @@ class TradingAgentService:
                     )
             exited_symbols = self._auto_exit_followed_signal_ideas_for_user(user_id, user, exit_symbols)
             summary["exited"] += len(exited_symbols)
+            managed_exits = self.db.manage_user_follow_exits(user_id, cost_settings=self.strategy.settings)
+            managed_actions = managed_exits.get("actions", []) if isinstance(managed_exits, dict) else []
+            managed_skips = managed_exits.get("skipped", []) if isinstance(managed_exits, dict) else []
+            summary["managed_exit_actions"] += len(managed_actions)
+            summary["managed_exit_skips"] += len(managed_skips)
+            summary["exited"] += sum(1 for action in managed_actions if str(action.get("action") or "").upper() == "EXIT_FULL")
+            for action in managed_actions:
+                payload = {
+                    "user_id": user.get("id"),
+                    "username": user.get("username"),
+                    **action,
+                }
+                if len(summary["managed_exits"]) < 50:
+                    summary["managed_exits"].append(payload)
+                self._log(
+                    "INFO",
+                    "user_session",
+                    "shared_user_follow_exit_managed",
+                    f"Managed paper follow exit for {payload.get('symbol')} ({payload.get('action')})",
+                    payload,
+                )
+            for skip in managed_skips:
+                if len(summary["managed_exit_skip_samples"]) < 30:
+                    summary["managed_exit_skip_samples"].append(
+                        {
+                            "user_id": user.get("id"),
+                            "username": user.get("username"),
+                            **skip,
+                        }
+                    )
             active_buy_ideas = [
                 idea
                 for idea in self.db.latest_signal_ideas(200, user_id=user_id, symbols=monitor_symbols or None)

@@ -3676,6 +3676,32 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["exit_qty"], 35)
         self.assertEqual(follow["qty"], 65)
 
+    def test_paper_exit_recognizes_prefixed_raw_target_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="MSTCLTD",
+                entry_price=467.8,
+                latest_price=511.0,
+                details={
+                    "lifecycle_status": "active",
+                    "highest_target_hit": "RAW-IN-T1",
+                    "stop_loss": 445.0,
+                    "target_status": [{"label": "RAW-IN-T1", "hit": True, "suggested_exit_pct": 35}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=100, entry_price=467.8, latest_price=511.0)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 1)
+        self.assertEqual(result["actions"][0]["key"], "TARGET_1_PARTIAL")
+        self.assertEqual(result["actions"][0]["exit_qty"], 35)
+        self.assertEqual(follow["qty"], 65)
+
     def test_paper_exit_is_pending_when_market_is_closed(self) -> None:
         closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as tmpdir:
