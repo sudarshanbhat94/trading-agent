@@ -133,11 +133,13 @@ class PositionMarkRefreshTests(unittest.TestCase):
             details = json.loads(idea["details_json"])
 
         self.assertEqual(marked, 1)
-        self.assertEqual(details["lifecycle_status"], "target_1_hit")
-        self.assertEqual(details["highest_target_hit"], "RAW-IN-T1")
-        self.assertEqual(details["highest_target_rank"], 1)
+        self.assertEqual(details["lifecycle_status"], "target_2_hit")
+        self.assertEqual(details["highest_target_hit"], "RAW-IN-T2")
+        self.assertEqual(details["highest_target_rank"], 2)
         self.assertEqual(details["target_status"][0]["target_rank"], 1)
         self.assertTrue(details["target_status"][0]["hit"])
+        self.assertEqual(details["target_status"][1]["target_rank"], 2)
+        self.assertTrue(details["target_status"][1]["hit"])
 
     def test_active_position_universe_is_market_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

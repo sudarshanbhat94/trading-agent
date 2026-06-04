@@ -595,6 +595,144 @@ def _target_rank(label: Any) -> int | None:
     return None
 
 
+TARGET_POLICY_PROFILE = "closer_t1_profit_ladder_v2"
+
+
+def _retarget_active_follow_details(
+    details: dict[str, Any],
+    entry_price: float,
+    market_region: Any,
+    strategy: Any,
+    plan_code: Any,
+    now_iso: str,
+) -> tuple[dict[str, Any], bool]:
+    if entry_price <= 0 or not isinstance(details, dict):
+        return details, False
+    if not _is_target_ladder_retarget_candidate(details, entry_price, market_region, strategy, plan_code):
+        return details, False
+
+    market = normalize_market_region(market_region or details.get("market_region") or "IN", default="IN")
+    strategy_key = str(strategy or details.get("strategy") or "").lower()
+    plan_key = str(plan_code or details.get("plan_code") or "").lower()
+    setup_key = str(details.get("setup_family") or details.get("setup") or "").lower()
+    is_btst = market == "IN" and any(token in f"{strategy_key} {plan_key} {setup_key}" for token in ("btst", "delivery"))
+    is_top_mover = any(
+        token in f"{strategy_key} {plan_key} {str(details.get('source') or '').lower()}"
+        for token in ("top_gainer", "top_gain", "top_mover", "market_action")
+    )
+
+    if is_btst:
+        targets = _target_ladder(entry_price, [("BTST-T1", 2.2, 75), ("BTST-T2", 3.8, 25)])
+    elif market == "IN" and is_top_mover:
+        targets = _target_ladder(entry_price, [("T1", 3.2, 70), ("T2", 5.8, 20), ("T3", 8.5, 10)])
+    elif market == "IN":
+        targets = _target_ladder(entry_price, [("RAW-IN-T1", 2.8, 70), ("RAW-IN-T2", 4.6, 30)])
+    elif is_top_mover:
+        targets = _target_ladder(entry_price, [("T1", 3.2, 70), ("T2", 5.8, 20), ("T3", 8.2, 10)])
+    else:
+        targets = _target_ladder(entry_price, [("RAW-T1", 3.2, 70), ("RAW-T2", 5.5, 30)])
+
+    previous_targets = [
+        target
+        for target in (details.get("target_status") or details.get("targets") or [])
+        if isinstance(target, dict)
+    ]
+    updated = dict(details)
+    updated["targets"] = targets
+    policy = updated.get("target_policy") if isinstance(updated.get("target_policy"), dict) else {}
+    updated["target_policy"] = {
+        **policy,
+        "profile": TARGET_POLICY_PROFILE,
+        "retargeted_at": now_iso,
+        "reason": "active_follow_target_repair",
+        "rule": "Book most size into the first reachable target; trail only the remainder.",
+        "previous_targets": policy.get("previous_targets") or previous_targets[:5],
+    }
+    return updated, True
+
+
+def _target_ladder(entry_price: float, profile: list[tuple[str, float, int]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": label,
+            "price": round(entry_price * (1.0 + pct / 100.0), 4),
+            "distance_pct": round(pct, 4),
+            "basis": TARGET_POLICY_PROFILE,
+            "probability_label": "reachable_profit_booking",
+            "suggested_exit_pct": exit_pct,
+        }
+        for label, pct, exit_pct in profile
+    ]
+
+
+def _is_target_ladder_retarget_candidate(
+    details: dict[str, Any],
+    entry_price: float,
+    market_region: Any,
+    strategy: Any,
+    plan_code: Any,
+) -> bool:
+    if entry_price <= 0:
+        return False
+    signal_type = str(details.get("signal_type") or details.get("action") or "BUY").upper()
+    if signal_type not in {"BUY", "BUY_NOW", "ENTRY_READY"}:
+        return False
+
+    target_rows = [
+        target
+        for target in (details.get("targets") or details.get("target_status") or [])
+        if isinstance(target, dict)
+    ]
+    if not target_rows:
+        return False
+
+    labels = " ".join(str(target.get("label") or "") for target in target_rows).lower()
+    joined = " ".join(
+        str(value or "").lower()
+        for value in (
+            strategy,
+            plan_code,
+            details.get("source"),
+            details.get("setup"),
+            details.get("setup_family"),
+            labels,
+        )
+    )
+    if not any(token in joined for token in ("raw", "btst", "delivery", "top_gainer", "top_gain", "top_mover", "market_action")):
+        return False
+
+    market = normalize_market_region(market_region or details.get("market_region") or "IN", default="IN")
+    is_btst = market == "IN" and any(token in joined for token in ("btst", "delivery"))
+    expected_t1 = 2.2 if is_btst else 2.8 if market == "IN" else 3.2
+    expected_exit = 75 if is_btst else 70
+    policy = details.get("target_policy") if isinstance(details.get("target_policy"), dict) else {}
+    t1 = _first_ranked_target(target_rows, 1)
+    t2 = _first_ranked_target(target_rows, 2)
+    t1_price = _optional_float(t1.get("price")) if t1 else None
+    t1_pct = ((t1_price - entry_price) / entry_price) * 100.0 if t1_price and entry_price > 0 else None
+    t1_exit = _optional_float(t1.get("suggested_exit_pct")) if t1 else None
+    if (
+        policy.get("profile") == TARGET_POLICY_PROFILE
+        and t2
+        and t1_pct is not None
+        and t1_pct <= expected_t1 + 0.45
+        and t1_exit is not None
+        and t1_exit >= expected_exit
+    ):
+        return False
+    return True
+
+
+def _first_ranked_target(targets: list[dict[str, Any]], rank: int) -> dict[str, Any] | None:
+    for index, target in enumerate(targets):
+        target_rank = _target_rank(target.get("label")) or int(_optional_float(target.get("target_rank")) or 0)
+        if not target_rank and index + 1 == rank:
+            target_rank = rank
+        if target_rank == rank:
+            return target
+    return None
+
+
 def _refresh_idea_lifecycle(
     previous_details: dict[str, Any] | None,
     incoming_details: dict[str, Any] | None,
@@ -2957,9 +3095,10 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                select distinct i.*, q.price as quote_price
+                select distinct i.*, q.price as quote_price, {_market_region_case("u")} as market_region
                 from signal_ideas i
                 join user_idea_follows f on f.idea_id = i.id
+                left join universe u on u.symbol = i.symbol
                 left join latest_quotes q on q.symbol = i.symbol
                 where f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
                   and coalesce(f.qty, 0) > 0
@@ -2976,6 +3115,14 @@ class Database:
                 peak_return = max(float(row["peak_return_pct"] or 0.0), current_return)
                 worst_return = min(float(row["worst_return_pct"] or 0.0), current_return)
                 details = self._decode_json(row["details_json"])
+                details, _ = _retarget_active_follow_details(
+                    details,
+                    entry_price,
+                    row["market_region"],
+                    row["strategy"],
+                    row["plan_code"],
+                    now,
+                )
                 next_status, details = _refresh_idea_lifecycle(
                     details,
                     {},
@@ -6775,15 +6922,6 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
     if highest_rank >= 3 or status == "TARGET_3_HIT" or lifecycle == "target_3_hit":
         return _exit_action("TARGET_3", "EXIT_FULL", 100, "Final target reached; close or trail no more than a token remainder.", full=True)
 
-    t2_hit = highest_rank >= 2 or status in {"TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T2")
-    if t2_hit and "TARGET_2_REDUCE" not in done:
-        return _exit_action(
-            "TARGET_2_REDUCE",
-            "REDUCE",
-            _target_exit_pct(idea_details, "T2", 50.0),
-            "T2 reached; book another tranche and trail the remaining quantity.",
-        )
-
     t1_hit = highest_rank >= 1 or status in {"TARGET_1_HIT", "TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_1_hit", "target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T1")
     if t1_hit and "TARGET_1_PARTIAL" not in done:
         return _exit_action(
@@ -6791,6 +6929,15 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
             "REDUCE",
             _target_exit_pct(idea_details, "T1", 70.0),
             "T1 reached; book most of the trade and trail only the remainder.",
+        )
+
+    t2_hit = highest_rank >= 2 or status in {"TARGET_2_HIT", "TARGET_3_HIT"} or lifecycle in {"target_2_hit", "target_3_hit"} or _target_hit(idea_details, "T2")
+    if t2_hit and "TARGET_2_REDUCE" not in done:
+        return _exit_action(
+            "TARGET_2_REDUCE",
+            "REDUCE",
+            _target_exit_pct(idea_details, "T2", 50.0),
+            "T2 reached; book another tranche and trail the remaining quantity.",
         )
 
     if "MFE_PROFIT_PROTECT" not in done:

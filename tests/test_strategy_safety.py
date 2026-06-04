@@ -3860,6 +3860,96 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["exit_qty"], 70)
         self.assertEqual(follow["qty"], 30)
 
+    def test_paper_exit_books_t1_before_t2_when_ladder_repair_marks_both_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="FASTJUMP",
+                entry_price=100.0,
+                latest_price=106.0,
+                details={
+                    "lifecycle_status": "target_2_hit",
+                    "highest_target_hit": "RAW-T2",
+                    "highest_target_rank": 2,
+                    "stop_loss": 97.0,
+                    "target_status": [
+                        {"label": "RAW-T1", "price": 103.2, "hit": True, "suggested_exit_pct": 70},
+                        {"label": "RAW-T2", "price": 105.5, "hit": True, "suggested_exit_pct": 30},
+                    ],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=100, entry_price=100.0, latest_price=106.0)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 1)
+        self.assertEqual(result["actions"][0]["key"], "TARGET_1_PARTIAL")
+        self.assertEqual(result["actions"][0]["exit_qty"], 70)
+        self.assertEqual(follow["qty"], 30)
+
+    def test_active_us_raw_follow_targets_are_repaired_to_closer_ladder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="PBUS",
+                entry_price=100.0,
+                latest_price=100.0,
+                details={
+                    "stop_loss": 96.5,
+                    "targets": [{"label": "RAW-T1", "price": 106.3, "distance_pct": 6.3}],
+                    "target_status": [{"label": "RAW-T1", "price": 106.3, "distance_pct": 6.3, "hit": False}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=10, entry_price=100.0, latest_price=100.0)
+            _insert_market_quote(db, "PBUS", "NASDAQ", 103.3, "polygon-live")
+
+            refreshed = db.refresh_active_position_marks(["PBUS"])
+            [item] = db.user_followed_signal_ideas(1, 10, symbols=["PBUS"])
+
+        self.assertEqual(refreshed, 1)
+        self.assertEqual(item["target_status"][0]["label"], "RAW-T1")
+        self.assertEqual(item["target_status"][0]["price"], 103.2)
+        self.assertEqual(item["target_status"][0]["suggested_exit_pct"], 70)
+        self.assertTrue(item["target_status"][0]["hit"])
+        self.assertEqual(item["target_status"][1]["label"], "RAW-T2")
+        self.assertEqual(item["target_status"][1]["price"], 105.5)
+        self.assertEqual(item["details"]["target_policy"]["profile"], "closer_t1_profit_ladder_v2")
+
+    def test_active_india_raw_follow_targets_are_repaired_to_closer_ladder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="CGPOWER",
+                entry_price=100.0,
+                latest_price=100.0,
+                details={
+                    "stop_loss": 97.5,
+                    "targets": [{"label": "RAW-IN-T1", "price": 105.0, "distance_pct": 5.0}],
+                    "target_status": [{"label": "RAW-IN-T1", "price": 105.0, "distance_pct": 5.0, "hit": False}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=10, entry_price=100.0, latest_price=100.0)
+            _insert_market_quote(db, "CGPOWER", "NSE", 103.0, "upstox-live")
+
+            refreshed = db.refresh_active_position_marks(["CGPOWER"])
+            [item] = db.user_followed_signal_ideas(1, 10, symbols=["CGPOWER"])
+
+        self.assertEqual(refreshed, 1)
+        self.assertEqual(item["target_status"][0]["label"], "RAW-IN-T1")
+        self.assertEqual(item["target_status"][0]["price"], 102.8)
+        self.assertEqual(item["target_status"][0]["suggested_exit_pct"], 70)
+        self.assertTrue(item["target_status"][0]["hit"])
+        self.assertEqual(item["target_status"][1]["label"], "RAW-IN-T2")
+        self.assertEqual(item["target_status"][1]["price"], 104.6)
+        self.assertEqual(item["details"]["target_policy"]["profile"], "closer_t1_profit_ladder_v2")
+
     def test_paper_exit_recognizes_prefixed_raw_target_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
@@ -4445,6 +4535,33 @@ def _insert_trade_economics_follow(
                 now,
                 json.dumps(payload),
             ),
+        )
+
+
+def _insert_market_quote(db: Database, symbol: str, exchange: str, price: float, source: str) -> None:
+    now = utc_now()
+    with db.connect() as conn:
+        conn.execute(
+            """
+            insert into universe (symbol, name, exchange, base_price, enabled)
+            values (?, ?, ?, ?, 1)
+            on conflict(symbol) do update set
+                exchange = excluded.exchange,
+                base_price = excluded.base_price,
+                enabled = 1
+            """,
+            (symbol, symbol, exchange, price),
+        )
+        conn.execute(
+            """
+            insert into latest_quotes (symbol, ts, price, source)
+            values (?, ?, ?, ?)
+            on conflict(symbol) do update set
+                ts = excluded.ts,
+                price = excluded.price,
+                source = excluded.source
+            """,
+            (symbol, now, price, source),
         )
 
 
