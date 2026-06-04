@@ -548,6 +548,7 @@ def _opportunity_ready(
             return False
         if setup_family == "live_momentum":
             if best_setup.get("source") == "rally_plan":
+                promotion_high_ok = high_distance is None or high_distance <= 2.8
                 return (
                     live_momentum_regime_allowed
                     and price_value >= 50.0
@@ -557,7 +558,7 @@ def _opportunity_ready(
                     and day_gain < 7.0
                     and range_position >= 0.64
                     and volume_ratio >= 1.10
-                    and high_ok
+                    and promotion_high_ok
                     and max(technical_score, scan_score) >= 62.0
                 )
             return (

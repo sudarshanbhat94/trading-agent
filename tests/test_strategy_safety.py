@@ -408,7 +408,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             volume_ratio=1.9,
             projected_volume_ratio=2.0,
             day_range_position=0.74,
-            day_high_distance_pct=1.1,
+            day_high_distance_pct=1.28,
         )
         context["quote"]["asof"] = datetime(2026, 6, 1, 14, 30, tzinfo=ZoneInfo("Asia/Kolkata")).isoformat()
         context["sector"] = "NSE Listed Equity"
