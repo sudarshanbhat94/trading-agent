@@ -131,7 +131,13 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         )
 
     missing = [str(item or "").strip() for item in data_quality.get("missing") or [] if str(item or "").strip()]
+    readiness_block = _readiness_block(data_ready=data_ready, data_quality=data_quality)
+    confirmation_block = _confirmation_block(scan=scan, setup_family=setup_family)
     warnings: list[str] = []
+    if readiness_block:
+        warnings.append(readiness_block["reason"])
+    if confirmation_block:
+        warnings.append(confirmation_block["reason"])
     if "stale_quote" in missing:
         warnings.append("stale_quote_seen_in_scan_quality")
     if any(item in {"fresh_intraday_candles", "stale_intraday_candles"} for item in missing):
@@ -181,6 +187,12 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     if truth_blocks:
         decision_label = NO_TRADE
         reason = truth_blocks[0]["reason"]
+    elif readiness_block and opportunity_ready_without_regime:
+        decision_label = WATCH
+        reason = readiness_block["reason"]
+    elif confirmation_block and opportunity_ready_without_regime:
+        decision_label = WATCH
+        reason = confirmation_block["reason"]
     elif regime_block:
         decision_label = WATCH
         reason = "market_day_regime_not_supportive_for_live_momentum"
@@ -211,7 +223,12 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         "grade": grade,
         "confidence": confidence,
         "truth_blocks": truth_blocks,
-        "entry_blockers": [*truth_blocks, *([regime_block] if regime_block else [])],
+        "entry_blockers": [
+            *truth_blocks,
+            *([readiness_block] if readiness_block else []),
+            *([confirmation_block] if confirmation_block else []),
+            *([regime_block] if regime_block else []),
+        ],
         "warnings": warnings,
         "trade_plan": trade_plan,
         "market_region": market,
@@ -270,7 +287,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             },
             "live_momentum_regime_gate": live_momentum_regime_gate,
             "soft_penalty": round(soft_penalty, 4),
-            "hard_block_policy": "invalid_quote_untradeable_or_hard_liquidity_only",
+            "hard_block_policy": "invalid_quote_untradeable_hard_liquidity_data_readiness_or_confirmation",
             "removed_vetoes": "legacy_strategy_and_india_specific_entry_vetoes_removed",
         },
         "legacy_decision_logic_removed": True,
@@ -287,6 +304,63 @@ def _truth_blocks(*, price: float | None, quote: dict[str, Any], liquidity: dict
     if liquidity.get("tradeable") is False and liquidity.get("liquidity_tier") == "untradeable":
         blocks.append({"reason": "liquidity_marked_untradeable", "value": liquidity})
     return blocks
+
+
+def _readiness_block(*, data_ready: dict[str, Any], data_quality: dict[str, Any]) -> dict[str, Any] | None:
+    if data_ready and data_ready.get("trade_decision_ready") is False:
+        return {
+            "gate": "data_readiness",
+            "reason": "data_not_trade_decision_ready",
+            "value": {
+                "trade_decision_ready": data_ready.get("trade_decision_ready"),
+                "missing_data": data_ready.get("missing_data") or [],
+                "hard_gaps": data_ready.get("hard_gaps") or [],
+                "fresh_market_data_gate": data_ready.get("fresh_market_data_gate"),
+            },
+        }
+    reject_reason = str(data_quality.get("reject_reason") or "").strip()
+    if reject_reason:
+        return {
+            "gate": "scan_data_quality",
+            "reason": "scan_data_quality_rejected",
+            "value": {
+                "reject_reason": reject_reason,
+                "missing": data_quality.get("missing") or [],
+                "actionable_data_ready": data_quality.get("actionable_data_ready"),
+            },
+        }
+    return None
+
+
+def _confirmation_block(*, scan: dict[str, Any], setup_family: str) -> dict[str, Any] | None:
+    if setup_family != "live_momentum":
+        return None
+    for key in ("big_runner", "early_alpha"):
+        review = scan.get(key) if isinstance(scan.get(key), dict) else {}
+        action = str(review.get("action") or "").strip().upper()
+        if action in {"CONFIRM", "WATCH"}:
+            return {
+                "gate": key,
+                "reason": "setup_requires_live_confirmation",
+                "value": {
+                    "action": action,
+                    "stage": review.get("stage"),
+                    "trade_window": review.get("trade_window"),
+                    "what": review.get("what"),
+                    "how": review.get("how"),
+                },
+            }
+        if action == "AVOID":
+            return {
+                "gate": key,
+                "reason": "setup_marked_avoid",
+                "value": {
+                    "action": action,
+                    "stage": review.get("stage"),
+                    "blockers": review.get("blockers") or [],
+                },
+            }
+    return None
 
 
 def _entry_line(settings: Any = None) -> float:

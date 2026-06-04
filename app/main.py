@@ -562,6 +562,7 @@ _STATUS_PAYLOAD_CACHE_TTL_SECONDS = 8.0
 _status_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _POSITION_MARKS_CACHE_TTL_SECONDS = 5.0
 _position_marks_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_RALLY_PLAN_CACHE_TTL_SECONDS = 300.0
 
 app = FastAPI(title="OpenStocks")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -614,6 +615,8 @@ def _position_quote_refresh_rows(
     refresh_rows = filter_universe_for_open_markets(active_rows, session_context)
     seen = {str(row.get("symbol") or "").upper() for row in refresh_rows}
     closed_us_polling = (
+        bool(getattr(settings, "position_quote_refresh_closed_us_enabled", False))
+        and
         normalize_market_region(refresh_region or "BOTH", default="BOTH") in {"US", "BOTH"}
         and settings.us_market_data_provider in {"alpaca", "alpaca_yahoo"}
         and bool(settings.alpaca_api_key and settings.alpaca_api_secret)
@@ -630,6 +633,22 @@ def _position_quote_refresh_rows(
         seen.add(symbol)
         added_closed_us = True
     return refresh_rows, added_closed_us
+
+
+def _effective_position_quote_refresh_seconds(
+    configured_seconds: float,
+    refresh_count: int,
+    *,
+    closed_us_polling: bool = False,
+) -> float:
+    base = max(1.0, float(configured_seconds or 1.0))
+    if refresh_count >= 75:
+        return max(base, 10.0)
+    if refresh_count >= 25:
+        return max(base, 5.0)
+    if closed_us_polling:
+        return max(base, 5.0)
+    return base
 
 
 async def _position_quote_refresh_loop() -> None:
@@ -663,6 +682,11 @@ async def _position_quote_refresh_loop() -> None:
 
             session_context = market_session_context(refresh_region, active_rows)
             refresh_rows, closed_us_polling = _position_quote_refresh_rows(active_rows, session_context, refresh_region)
+            sleep_seconds = _effective_position_quote_refresh_seconds(
+                sleep_seconds,
+                len(refresh_rows),
+                closed_us_polling=closed_us_polling,
+            )
             if not refresh_rows:
                 active_symbols = [row.get("symbol") for row in active_rows]
                 idle_signature = f"paused:markets_closed:{refresh_region}:{','.join(str(symbol) for symbol in active_symbols)}"
@@ -2046,8 +2070,38 @@ def _filter_rally_plan_for_symbols(plan: dict[str, Any], monitor_symbols: list[s
     return filter_single(plan)
 
 
-def _rally_plan_is_cached(plan: Any) -> bool:
+def _parse_state_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _rally_plan_has_market(plan: dict[str, Any], market_region: str) -> bool:
+    region = normalize_market_region(market_region or "BOTH", default="BOTH")
+    by_market = plan.get("by_market") if isinstance(plan.get("by_market"), dict) else {}
+    if region == "BOTH":
+        if by_market:
+            return any(isinstance(raw, dict) for raw in by_market.values())
+        return normalize_market_region(plan.get("market_region") or "", default="") == "BOTH"
+    if isinstance(by_market.get(region), dict):
+        return True
+    return normalize_market_region(plan.get("market_region") or "", default="") == region
+
+
+def _rally_plan_is_cached(plan: Any, market_region: str = "BOTH") -> bool:
     if not isinstance(plan, dict):
+        return False
+    generated_at = _parse_state_datetime(plan.get("generated_at"))
+    if generated_at is None:
+        return False
+    if (datetime.now(timezone.utc) - generated_at).total_seconds() > _RALLY_PLAN_CACHE_TTL_SECONDS:
+        return False
+    if not _rally_plan_has_market(plan, market_region):
         return False
     if plan.get("generated_at") or plan.get("enabled") is True:
         return True
@@ -2107,7 +2161,7 @@ def _rally_plan_for_user(user: dict[str, Any], market_region: str = "BOTH", *, r
     monitor_symbols = _monitor_symbols_for_user(user)
     if not rebuild:
         cached = db.get_state("rally_plan", {})
-        if _rally_plan_is_cached(cached):
+        if _rally_plan_is_cached(cached, region):
             return _filter_rally_plan_for_symbols(_rally_plan_market_view(cached, region), monitor_symbols)
     signal_ideas = db.latest_signal_ideas(
         120,
@@ -2245,16 +2299,30 @@ def _status_payload(user: dict[str, Any] | None = None) -> dict[str, Any]:
         shared_status["signal_execution_mode"] = _normalize_signal_execution_mode(user.get("signal_execution_mode"))
         shared_status["signal_execution_mode_message"] = _signal_execution_mode_message(shared_status["signal_execution_mode"])
         if shared_status.get("running"):
-            shared_status.update({"shared_backend": False, "message": "Your personal signal cycle is running."})
-        else:
             shared_status.update(
                 {
-                    "running": bool(snapshot.get("running")),
-                    "phase": snapshot.get("cycle", {}).get("phase", "shared_backend"),
+                    "personal_running": True,
+                    "shared_backend": False,
+                    "shared_backend_running": bool(snapshot.get("running")),
+                    "message": "Your personal signal cycle is running.",
+                }
+            )
+        else:
+            shared_phase = snapshot.get("cycle", {}).get("phase", "shared_backend")
+            shared_running = bool(snapshot.get("running"))
+            shared_status.update(
+                {
+                    "personal_running": False,
+                    "running": shared_running,
+                    "phase": shared_phase,
                     "last_cycle_at": snapshot.get("last_cycle_at"),
                     "last_error": snapshot.get("last_error"),
                     "shared_backend": True,
-                    "message": "Signals come from the shared backend engine. Use Run Now to start your own credit-budgeted scan.",
+                    "shared_backend_running": shared_running,
+                    "shared_backend_phase": shared_phase,
+                    "message": (
+                        "Your personal scan is idle; signals come from the shared backend engine. Use Run Now to start your own credit-budgeted scan."
+                    ),
                     "auto_trade": snapshot.get("shared_auto_trade") or shared_status.get("auto_trade") or {},
                 }
             )

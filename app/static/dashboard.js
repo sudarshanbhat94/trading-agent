@@ -5585,7 +5585,9 @@ async function refreshRallyPlan(force = false) {
   if (!force && now - state.rallyPlanLastFetchAt < 30000) return;
   state.rallyPlanInFlight = true;
   try {
-    const response = await fetch(`/api/rally-plan?market=${encodeURIComponent(state.activeMarket)}`);
+    const params = new URLSearchParams({ market: state.activeMarket });
+    if (force) params.set("refresh", "1");
+    const response = await fetch(`/api/rally-plan?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok || payload.ok === false) throw new Error(payload.detail || "Could not refresh rally plan");
     state.latest = { ...(state.latest || {}), rally_plan: payload.rally_plan || {} };

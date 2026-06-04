@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 
-from app.main import _follow_history_order_events
+from app.main import (
+    _effective_position_quote_refresh_seconds,
+    _rally_plan_is_cached,
+    _rally_plan_market_view,
+    _follow_history_order_events,
+)
 
 
 class DashboardJournalContractTests(unittest.TestCase):
@@ -42,6 +48,29 @@ class DashboardJournalContractTests(unittest.TestCase):
         self.assertIn("Simulated paper", buy["reason"])
         self.assertEqual(sell["status"], "PAPER_EXITED")
         self.assertEqual(sell["status_label"], "PAPER EXIT")
+
+    def test_rally_plan_cache_rejects_stale_or_wrong_market_state(self) -> None:
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        stale_us_plan = {
+            "enabled": True,
+            "market_region": "US",
+            "generated_at": yesterday,
+            "items": [{"symbol": "AAPL"}],
+            "sections": {},
+        }
+
+        self.assertFalse(_rally_plan_is_cached(stale_us_plan, "IN"))
+
+        fresh_us_plan = {**stale_us_plan, "generated_at": datetime.now(timezone.utc).isoformat()}
+        self.assertFalse(_rally_plan_is_cached(fresh_us_plan, "IN"))
+        self.assertTrue(_rally_plan_is_cached(fresh_us_plan, "US"))
+        self.assertEqual(_rally_plan_market_view(fresh_us_plan, "IN")["items"], [])
+
+    def test_position_quote_refresh_backs_off_for_large_books(self) -> None:
+        self.assertEqual(_effective_position_quote_refresh_seconds(1, 12), 1.0)
+        self.assertEqual(_effective_position_quote_refresh_seconds(1, 30), 5.0)
+        self.assertEqual(_effective_position_quote_refresh_seconds(1, 97), 10.0)
+        self.assertEqual(_effective_position_quote_refresh_seconds(1, 4, closed_us_polling=True), 5.0)
 
 
 if __name__ == "__main__":

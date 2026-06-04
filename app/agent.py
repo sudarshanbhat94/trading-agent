@@ -17,12 +17,14 @@ from .llm_policy import LLM_HARD_DISABLED
 from .llm_usage import credit_breakdown_for_usage
 from .macro import GlobalIntelligenceService
 from .market_action_radar import MarketActionRadar
+from .market_day_regime import compute_market_day_regimes
 from .market_data import MarketDataError, MarketDataProvider
 from .market_regions import filter_universe_for_open_markets, market_region_for_row, market_session_context, normalize_market_region
 from .models import Decision, Quote, utc_now
 from .opportunity_scanner import OpportunityScanner
 from .paper_broker import PaperBroker
 from .pre_catalyst_engine import build_pre_catalyst_watchlist
+from .rally_plan import build_rally_plan, build_rally_plan_by_market
 from .request_context import current_llm_usage_scope, current_user_id
 from .signal_quality import (
     AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
@@ -795,6 +797,20 @@ class TradingAgentService:
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
+        market_day_regime_context = compute_market_day_regimes(
+            universe,
+            quotes,
+            candle_sets,
+            market_breadth_context,
+            market_region=self.market_region,
+        )
+        self.db.set_state("market_day_regime", market_day_regime_context)
+        self._build_and_store_rally_plan(
+            market_day_regime_context=market_day_regime_context,
+            pre_catalyst_summary=pre_catalyst_summary,
+            scan_summary=scan_summary,
+            market_action_summary=market_action_summary,
+        )
         unsafe_follow_exits: list[dict[str, Any]] = []
         legacy_economics_exits = self.db.exit_subfloor_paper_follows(
             reason="legacy_position_below_minimum_trade_economics",
@@ -951,6 +967,62 @@ class TradingAgentService:
                     )
         finally:
             self._cycle_phase = previous_phase
+
+    def _build_and_store_rally_plan(
+        self,
+        *,
+        market_day_regime_context: dict[str, Any],
+        pre_catalyst_summary: dict[str, Any],
+        scan_summary: dict[str, Any],
+        market_action_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            generated_at = utc_now()
+            signal_ideas = self.db.latest_signal_ideas(300, market_region=self.market_region)
+            kwargs = {
+                "market_day_regime": market_day_regime_context,
+                "pre_catalyst": pre_catalyst_summary,
+                "tomorrow_plan": self.db.latest_tomorrow_plan(self.market_region),
+                "opportunity_scan": scan_summary,
+                "market_action_radar": market_action_summary,
+                "signal_ideas": signal_ideas,
+                "generated_at": generated_at,
+            }
+            region = normalize_market_region(self.market_region or "BOTH", default="BOTH")
+            plan = build_rally_plan_by_market(**kwargs) if region == "BOTH" else build_rally_plan(market_region=region, **kwargs)
+            self.db.set_state("rally_plan", plan)
+            by_market = plan.get("by_market") if isinstance(plan.get("by_market"), dict) else {}
+            item_counts = (
+                {
+                    market: len(raw.get("items") or [])
+                    for market, raw in by_market.items()
+                    if isinstance(raw, dict)
+                }
+                if by_market
+                else {region: len(plan.get("items") or [])}
+            )
+            self._log(
+                "INFO",
+                "rally_plan",
+                "rally_plan_built",
+                "Rally Plan refreshed from the latest shared market cycle.",
+                {
+                    "market_region": region,
+                    "generated_at": generated_at,
+                    "item_counts": item_counts,
+                    "regime": plan.get("regime"),
+                },
+            )
+            return plan
+        except Exception as exc:
+            self._log(
+                "WARN",
+                "rally_plan",
+                "rally_plan_build_failed",
+                "Rally Plan could not be refreshed during the shared market cycle.",
+                {"error": f"{exc.__class__.__name__}: {str(exc)[:220]}"},
+            )
+            return {}
 
     async def _run_optional_phase(
         self,

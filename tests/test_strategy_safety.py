@@ -39,14 +39,17 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertIn(action, {"BUY", "HOLD"})
         self.assertEqual(context["decision_gate_context"]["decision_authority"], "raw_opportunity_v1")
         self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
-        self.assertEqual(context["raw_entry_model"]["diagnostics"]["hard_block_policy"], "invalid_quote_untradeable_or_hard_liquidity_only")
+        self.assertEqual(
+            context["raw_entry_model"]["diagnostics"]["hard_block_policy"],
+            "invalid_quote_untradeable_hard_liquidity_data_readiness_or_confirmation",
+        )
 
     def test_raw_opportunity_buys_live_india_momentum_without_price_3000_or_news_gate(self) -> None:
         context = _raw_entry_context(
             price=108.0,
             setup="opening_ignition",
             market_region="IN",
-            data_readiness={"trade_decision_ready": False, "missing_data": ["legacy_phase2_gap"]},
+            data_readiness={"trade_decision_ready": True, "missing_data": ["legacy_phase2_gap"]},
             technical_score=0.90,
             day_gain_pct=4.2,
             volume_ratio=3.0,
@@ -64,6 +67,57 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(context["raw_entry_model"]["decision_label"], "ENTRY_READY")
         self.assertEqual(context["raw_entry_model"]["setup_family"], "live_momentum")
         self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
+
+    def test_raw_opportunity_blocks_entry_ready_when_trade_decision_data_missing(self) -> None:
+        context = _raw_entry_context(
+            price=108.0,
+            setup="opening_ignition",
+            market_region="IN",
+            data_readiness={
+                "trade_decision_ready": False,
+                "missing_data": ["daily_history"],
+                "hard_gaps": [{"key": "daily_history"}],
+            },
+            technical_score=0.90,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.93,
+            day_high_distance_pct=0.4,
+        )
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "data_not_trade_decision_ready")
+        self.assertEqual(model["entry_blockers"][0]["gate"], "data_readiness")
+
+    def test_raw_opportunity_confirm_stage_stays_watch_not_buy(self) -> None:
+        context = _raw_entry_context(
+            price=108.0,
+            setup="big_runner_ignition",
+            market_region="IN",
+            technical_score=0.90,
+            day_gain_pct=4.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.93,
+            day_high_distance_pct=0.4,
+        )
+        context["opportunity_scan"]["big_runner"] = {
+            "available": True,
+            "action": "CONFIRM",
+            "stage": "opening_ignition",
+            "trade_window": "confirm_vwap_opening_range",
+        }
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "setup_requires_live_confirmation")
+        self.assertEqual(model["entry_blockers"][0]["gate"], "big_runner")
 
     def test_market_day_regime_classifies_broad_and_risk_off_sessions(self) -> None:
         broad_universe, broad_quotes, broad_candles = _market_regime_rows("broad")

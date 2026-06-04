@@ -133,6 +133,7 @@ class Settings:
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     position_quote_refresh_enabled: bool = _bool("POSITION_QUOTE_REFRESH_ENABLED", True)
     position_quote_refresh_seconds: float = _float("POSITION_QUOTE_REFRESH_SECONDS", 1.0)
+    position_quote_refresh_closed_us_enabled: bool = _bool("POSITION_QUOTE_REFRESH_CLOSED_US_ENABLED", False)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
     optional_phase_timeout_seconds: float = _float("OPTIONAL_PHASE_TIMEOUT_SECONDS", 3.0)
     strategy_eval_timeout_seconds: float = _float("STRATEGY_EVAL_TIMEOUT_SECONDS", 75.0)
@@ -273,7 +274,7 @@ class Settings:
     india_gst_pct: float = _float("INDIA_GST_PCT", 18.0)
     india_stamp_duty_bps: float = _float("INDIA_STAMP_DUTY_BPS", 1.5)
     paper_risk_per_trade_pct: float = _float("PAPER_RISK_PER_TRADE_PCT", 0.01)
-    paper_min_auto_follow_notional_inr: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_INR", 20_000.0)
+    paper_min_auto_follow_notional_inr: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_INR", 7_500.0)
     paper_min_auto_follow_notional_usd: float = _float("PAPER_MIN_AUTO_FOLLOW_NOTIONAL_USD", 250.0)
     paper_min_exit_net_profit_inr: float = _float("PAPER_MIN_EXIT_NET_PROFIT_INR", 75.0)
     paper_min_exit_net_profit_usd: float = _float("PAPER_MIN_EXIT_NET_PROFIT_USD", 2.0)
@@ -357,6 +358,7 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "agent_interval_seconds", "label": "Cycle Seconds", "type": "number", "category": "Agent Cycle", "min": 5, "step": 1},
     {"key": "position_quote_refresh_enabled", "label": "Fast Position Quotes", "type": "boolean", "category": "Agent Cycle"},
     {"key": "position_quote_refresh_seconds", "label": "Position Quote Seconds", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
+    {"key": "position_quote_refresh_closed_us_enabled", "label": "Closed US Position Quotes", "type": "boolean", "category": "Agent Cycle"},
     {"key": "cycle_timeout_seconds", "label": "Cycle Timeout Seconds", "type": "number", "category": "Agent Cycle", "min": 30, "step": 15},
     {"key": "optional_phase_timeout_seconds", "label": "Optional Phase Timeout", "type": "number", "category": "Agent Cycle", "min": 1, "step": 1},
     {"key": "strategy_eval_timeout_seconds", "label": "Strategy Eval Timeout", "type": "number", "category": "Agent Cycle", "min": 10, "step": 5},
