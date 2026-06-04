@@ -4527,6 +4527,31 @@ class Database:
                 if exit_qty <= 0:
                     continue
                 remaining_qty = max(qty - exit_qty, 0)
+                subfloor_remainder_economics = None
+                if mode == "PAPER" and not action.get("full") and remaining_qty > 0:
+                    subfloor_remainder_economics = entry_size_economics(
+                        entry_price,
+                        remaining_qty,
+                        item.get("market_region"),
+                        cost_settings,
+                    )
+                    if not subfloor_remainder_economics.get("passed"):
+                        action = {
+                            **action,
+                            "key": f"{event_key}_FULL_SUBFLOOR_REMAINDER",
+                            "action": "EXIT_FULL",
+                            "label": "Exit",
+                            "exit_pct": 100.0,
+                            "reason": (
+                                f"{action.get('reason')} Remaining paper quantity would fall below "
+                                "the minimum trade-economics floor, so close the full follow."
+                            ),
+                            "full": True,
+                        }
+                        event_key = str(action["key"])
+                        exit_pct = 100.0
+                        exit_qty = qty
+                        remaining_qty = 0
                 realized_pnl = round((latest_price - entry_price) * exit_qty, 2)
                 remaining_invested = round(remaining_qty * entry_price, 2)
                 remaining_unrealized = round((latest_price - entry_price) * remaining_qty, 2)
@@ -4548,6 +4573,7 @@ class Database:
                         "exit_price": latest_price,
                         "return_pct": return_pct,
                         "economics": economics,
+                        "subfloor_remainder_economics": subfloor_remainder_economics,
                         **session_block,
                     }
                     management["pending_after_hours_exit"] = pending_event
@@ -4584,6 +4610,7 @@ class Database:
                             "exit_price": latest_price,
                             "return_pct": return_pct,
                             "economics": economics,
+                            "subfloor_remainder_economics": subfloor_remainder_economics,
                             "next_open": session_block.get("next_open"),
                         }
                     )
@@ -4607,6 +4634,7 @@ class Database:
                         "exit_price": latest_price,
                         "return_pct": return_pct,
                         "economics": economics,
+                        "subfloor_remainder_economics": subfloor_remainder_economics,
                     }
                     management["last_skipped_action"] = skip_event
                     management["last_skip_reason"] = skip_reason
@@ -4641,6 +4669,7 @@ class Database:
                             "exit_price": latest_price,
                             "return_pct": return_pct,
                             "economics": economics,
+                            "subfloor_remainder_economics": subfloor_remainder_economics,
                         }
                     )
                     continue
@@ -4660,6 +4689,7 @@ class Database:
                         "realized_pnl": realized_pnl,
                         "return_pct": return_pct,
                         "economics": economics,
+                        "subfloor_remainder_economics": subfloor_remainder_economics,
                     }
                 )
                 management["last_action"] = action.get("action")
@@ -4707,6 +4737,7 @@ class Database:
                     "exit_price": latest_price,
                     "return_pct": return_pct,
                     "realized_pnl": realized_pnl,
+                    "subfloor_remainder_economics": subfloor_remainder_economics,
                 }
                 actions.append(action_row)
         return {

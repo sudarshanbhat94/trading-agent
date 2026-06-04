@@ -3702,6 +3702,36 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["exit_qty"], 35)
         self.assertEqual(follow["qty"], 65)
 
+    def test_target_partial_closes_full_when_remainder_is_below_economics_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="MSTCLTD",
+                entry_price=467.8,
+                latest_price=514.6,
+                details={
+                    "lifecycle_status": "target_1_hit",
+                    "highest_target_hit": "RAW-IN-T1",
+                    "stop_loss": 445.0,
+                    "target_status": [{"label": "RAW-IN-T1", "hit": True, "suggested_exit_pct": 35}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=17, entry_price=467.8, latest_price=514.6)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 1)
+        self.assertEqual(result["actions"][0]["key"], "TARGET_1_PARTIAL_FULL_SUBFLOOR_REMAINDER")
+        self.assertEqual(result["actions"][0]["action"], "EXIT_FULL")
+        self.assertEqual(result["actions"][0]["exit_qty"], 17)
+        self.assertEqual(result["actions"][0]["remaining_qty"], 0)
+        self.assertFalse(result["actions"][0]["subfloor_remainder_economics"]["passed"])
+        self.assertEqual(follow["follow_status"], "EXITED")
+        self.assertEqual(follow["qty"], 0)
+
     def test_paper_exit_is_pending_when_market_is_closed(self) -> None:
         closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as tmpdir:
