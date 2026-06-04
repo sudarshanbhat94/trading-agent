@@ -115,7 +115,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         rally_plan_promotion=rally_plan_promotion,
     )
     passed_setups = [item for item in setup_reviews if item.get("passed")]
-    best_setup = max(passed_setups or setup_reviews, key=lambda item: float(item.get("score") or 0.0), default={})
+    promoted_setups = [item for item in passed_setups if item.get("source") == "rally_plan"]
+    best_setup = max(promoted_setups or passed_setups or setup_reviews, key=lambda item: float(item.get("score") or 0.0), default={})
     setup_score = float(best_setup.get("score") or 0.0)
     raw_score = round(_clamp(base_score * 0.72 + setup_score * 0.28, 0.0, 99.0), 4)
     entry_line = _entry_line(settings)
@@ -156,7 +157,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         warnings.append("negative_news_catalyst_score_penalty")
     if late_chase:
         warnings.append("late_chase_score_penalty")
-    if late_session_entry and setup_family != "delivery_btst":
+    if late_session_entry and setup_family != "delivery_btst" and best_setup.get("source") != "rally_plan":
         warnings.append("late_session_no_fresh_entry")
     if setup_family == "delivery_btst" and not btst_session_entry:
         warnings.append("btst_requires_late_non_friday_session")
@@ -543,7 +544,7 @@ def _opportunity_ready(
     if market == "IN":
         price_value = float(price or 0.0)
         high_ok = high_distance is None or high_distance <= 1.2
-        if setup_family != "delivery_btst" and late_session_entry:
+        if setup_family != "delivery_btst" and late_session_entry and best_setup.get("source") != "rally_plan":
             return False
         if setup_family == "live_momentum":
             if best_setup.get("source") == "rally_plan":

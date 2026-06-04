@@ -398,6 +398,67 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["decision_label"], "WATCH")
         self.assertEqual(model["reason"], "raw_opportunity_watch")
 
+    def test_rally_plan_promotion_wins_over_watch_only_relative_strength_late_session(self) -> None:
+        context = _raw_entry_context(
+            price=939.6,
+            setup="52_week_high_volume_breakout",
+            market_region="IN",
+            technical_score=0.80,
+            day_gain_pct=2.7,
+            volume_ratio=1.9,
+            projected_volume_ratio=2.0,
+            day_range_position=0.74,
+            day_high_distance_pct=1.1,
+        )
+        context["quote"]["asof"] = datetime(2026, 6, 1, 14, 30, tzinfo=ZoneInfo("Asia/Kolkata")).isoformat()
+        context["sector"] = "NSE Listed Equity"
+        context["opportunity_scan"].update(
+            {
+                "sector": "NSE Listed Equity",
+                "score": 1.0,
+                "components": {"live_momentum": 0.42},
+                "rally_evidence": {"volume_support": True, "distance_to_near_high_pct": 0.5},
+                "market_action": {
+                    "available": True,
+                    "event_types": ["52_WEEK_HIGH", "VOLUME_SHOCKER"],
+                    "score": 100.0,
+                },
+                "rally_plan_promotion": {
+                    "ready": True,
+                    "source": "rally_plan",
+                    "symbol": "CGPOWER",
+                    "market_region": "IN",
+                    "section": "live_momentum",
+                    "action": "BUY CHECK",
+                    "strategy": "52_week_high_volume_breakout",
+                    "score": 100.0,
+                    "trigger_price": 937.5,
+                    "max_entry": 943.125,
+                    "stop_loss": 915.0,
+                    "target1": 961.875,
+                    "evidence_sources": ["market_action_radar", "regime"],
+                },
+            }
+        )
+        context["universe_relative_strength"] = {"percentile_63": 84.0}
+        context["market_day_regime"] = {
+            "state": REGIME_SELECTIVE_RALLY,
+            "score": 56.0,
+            "selective_momentum_allowed": True,
+            "above_open_pct": 0.86,
+            "strong_gain_pct": 0.29,
+            "fade_pct": 0.12,
+            "sector_participation": {"NSE Listed Equity": {"advancer_pct": 0.60}},
+        }
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertTrue(model["passed"], model)
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertEqual(model["setup_family"], "live_momentum")
+        self.assertEqual(model["setup_evidence"]["source"], "rally_plan")
+        self.assertNotIn("late_session_no_fresh_entry", model["warnings"])
+
     def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN"),
