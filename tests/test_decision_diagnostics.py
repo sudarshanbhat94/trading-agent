@@ -63,6 +63,11 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["raw_symbols"], 2657)
         self.assertEqual(diagnostics["funnel"]["scanner_selected_symbols"], 90)
         self.assertEqual(diagnostics["funnel"]["decision_buy_rate_pct"], 0.0)
+        self.assertEqual(diagnostics["raw_symbol_count"], 2657)
+        self.assertEqual(diagnostics["scanner_shortlist_count"], 90)
+        self.assertEqual(diagnostics["full_decision_count"], 2)
+        self.assertEqual(diagnostics["target_decision_count"], 200)
+        self.assertEqual(diagnostics["paper_follow_conversion_count"], 0)
         self.assertEqual(diagnostics["top_blockers"][0]["gate"], "fresh_market_data_gate")
         self.assertEqual(diagnostics["live_quote_stale_intraday"]["only_blocker_symbols"], 1)
         self.assertIn("SENORES", diagnostics["live_quote_stale_intraday"]["sample_only_blocker_symbols"])
@@ -299,6 +304,7 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["funnel"]["paper_trade_source"], "user_idea_follows")
         self.assertEqual(diagnostics["funnel"]["paper_followed_user_actions"], 1)
         self.assertEqual(diagnostics["funnel"]["central_broker_orders"], 0)
+        self.assertEqual(diagnostics["paper_follow_conversion_count"], 1)
 
     def test_diagnostics_flags_paper_follow_safety_exits(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
