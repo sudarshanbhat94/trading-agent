@@ -490,16 +490,19 @@ def _levels(
 ) -> GainerLevels:
     if not price or not pivot:
         return GainerLevels(None, None, None, None, None, None, None)
-    entry = max(pivot, price) if price <= pivot * 1.05 else pivot
-    stop = entry * 0.93
-    target2 = high_52w if high_52w and high_52w > entry else entry * 1.30
-    target3 = entry * 1.30 if stage2 and (volume_ratio or 0.0) > 2 else None
+    entry = max(pivot, price) if price <= pivot * 1.025 else pivot
+    stop_pct = 0.028 if stage2 and (volume_ratio or 0.0) >= 1.8 else 0.032
+    stop = entry * (1.0 - stop_pct)
+    target1 = entry * 1.032
+    structure_target = high_52w if high_52w and high_52w > entry * 1.045 else None
+    target2 = structure_target or entry * 1.058
+    target3 = entry * 1.085 if stage2 and (volume_ratio or 0.0) > 2 else None
     return GainerLevels(
         pivot=_round(pivot),
         entry=_round(entry),
-        max_entry=_round(pivot * 1.05),
+        max_entry=_round(pivot * 1.025),
         stop=_round(stop),
-        target1=_round(entry * 1.20),
+        target1=_round(target1),
         target2=_round(target2),
         target3=_round(target3),
     )

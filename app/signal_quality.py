@@ -531,7 +531,14 @@ def _auto_follow_execution_contract(
     reward = target_price - price
     risk = price - stop
     reward_risk = reward / risk if risk > 0 else 0.0
-    if reward_risk < AUTO_FOLLOW_MIN_REWARD_RISK:
+    ladder_target = _reward_risk_ladder_target(
+        price,
+        stop,
+        item.get("target_status"),
+        details.get("target_status"),
+        details.get("targets"),
+    )
+    if reward_risk < AUTO_FOLLOW_MIN_REWARD_RISK and not ladder_target:
         return _blocked(
             "auto_follow_reward_risk_below_minimum",
             f"Auto-paper requires reward/risk of at least {AUTO_FOLLOW_MIN_REWARD_RISK:.1f}.",
@@ -1398,6 +1405,44 @@ def _target_one(*collections: Any) -> dict[str, Any] | None:
             label = str(target.get("label") or f"T{index + 1}").strip().upper()
             if label == "T1" or index == 0:
                 return target
+    return None
+
+
+def _reward_risk_ladder_target(price: float, stop: float, *collections: Any) -> dict[str, Any] | None:
+    risk = price - stop
+    if price <= 0 or risk <= 0:
+        return None
+    for collection in collections:
+        if not isinstance(collection, list):
+            continue
+        for index, target in enumerate(collection):
+            if not isinstance(target, dict):
+                continue
+            label = str(target.get("label") or f"T{index + 1}").strip().upper()
+            rank = 1
+            digits = "".join(char for char in label if char.isdigit())
+            if digits:
+                try:
+                    rank = int(digits)
+                except ValueError:
+                    rank = index + 1
+            elif index >= 0:
+                rank = index + 1
+            if rank <= 1:
+                continue
+            target_price = _number(target.get("price"), target.get("target"), target.get("target_price"))
+            distance_pct = _number(target.get("distance_pct"))
+            if target_price is None and distance_pct is not None:
+                target_price = price * (1.0 + (distance_pct / 100.0))
+            if target_price is None or target_price <= price:
+                continue
+            reward_risk = (target_price - price) / risk
+            if reward_risk >= AUTO_FOLLOW_MIN_REWARD_RISK:
+                return {
+                    **target,
+                    "reward_risk": round(reward_risk, 4),
+                    "ladder_policy": "closer_t1_with_rr_supported_t2",
+                }
     return None
 
 

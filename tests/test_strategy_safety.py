@@ -467,13 +467,16 @@ class RawEntryModelSafetyTests(unittest.TestCase):
 
         plan = model["trade_plan"]
 
-        self.assertEqual(plan["stop_loss"], 97.5)
+        self.assertEqual(plan["stop_loss"], 97.8)
         self.assertEqual(plan["targets"][0]["label"], "RAW-IN-T1")
-        self.assertEqual(plan["targets"][0]["price"], 102.5)
-        self.assertEqual(plan["targets"][0]["distance_pct"], 2.5)
+        self.assertEqual(plan["targets"][0]["price"], 102.8)
+        self.assertEqual(plan["targets"][0]["distance_pct"], 2.8)
+        self.assertEqual(plan["targets"][0]["suggested_exit_pct"], 70)
+        self.assertEqual(plan["targets"][1]["label"], "RAW-IN-T2")
+        self.assertEqual(plan["targets"][1]["price"], 104.6)
         self.assertEqual(plan["holding_period"], "intraday_or_next_session")
 
-    def test_raw_opportunity_us_trade_plan_keeps_wider_swing_target(self) -> None:
+    def test_raw_opportunity_us_trade_plan_uses_reachable_first_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="US"),
             _raw_opportunity_settings(),
@@ -481,10 +484,13 @@ class RawEntryModelSafetyTests(unittest.TestCase):
 
         plan = model["trade_plan"]
 
-        self.assertEqual(plan["stop_loss"], 96.5)
+        self.assertEqual(plan["stop_loss"], 97.0)
         self.assertEqual(plan["targets"][0]["label"], "RAW-T1")
-        self.assertEqual(plan["targets"][0]["price"], 106.3)
-        self.assertEqual(plan["targets"][0]["distance_pct"], 6.3)
+        self.assertEqual(plan["targets"][0]["price"], 103.2)
+        self.assertEqual(plan["targets"][0]["distance_pct"], 3.2)
+        self.assertEqual(plan["targets"][0]["suggested_exit_pct"], 70)
+        self.assertEqual(plan["targets"][1]["label"], "RAW-T2")
+        self.assertEqual(plan["targets"][1]["price"], 105.5)
         self.assertEqual(plan["holding_period"], "intraday_to_swing")
 
     def test_raw_opportunity_btst_requires_late_non_friday_session(self) -> None:
@@ -511,7 +517,9 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_family"], "delivery_btst")
         self.assertEqual(model["trade_plan"]["holding_period"], "BTST_next_session")
         self.assertEqual(model["trade_plan"]["targets"][0]["label"], "BTST-T1")
-        self.assertEqual(model["trade_plan"]["targets"][0]["distance_pct"], 1.8)
+        self.assertEqual(model["trade_plan"]["targets"][0]["distance_pct"], 2.2)
+        self.assertEqual(model["trade_plan"]["targets"][0]["suggested_exit_pct"], 75)
+        self.assertEqual(model["trade_plan"]["targets"][1]["distance_pct"], 3.8)
 
     def test_raw_opportunity_btst_rejects_friday_weekend_carry(self) -> None:
         context = _btst_raw_entry_context(
@@ -3825,6 +3833,32 @@ class StrategySafetyTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["label"], "Reduce")
         self.assertEqual(result["actions"][0]["exit_qty"], 35)
         self.assertEqual(follow["qty"], 65)
+
+    def test_paper_exit_defaults_t1_to_larger_profit_booking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = _insert_trade_economics_idea(
+                db,
+                symbol="FASTWIN",
+                entry_price=100.0,
+                latest_price=103.5,
+                details={
+                    "lifecycle_status": "target_1_hit",
+                    "highest_target_hit": "T1",
+                    "stop_loss": 97.0,
+                    "target_status": [{"label": "T1", "hit": True}],
+                },
+            )
+            _insert_trade_economics_follow(db, idea_id, qty=100, entry_price=100.0, latest_price=103.5)
+
+            result = db.manage_user_follow_exits(1, cost_settings=_economics_settings())
+            [follow] = db.user_followed_signal_ideas(1, 10)
+
+        self.assertEqual(result["action_count"], 1)
+        self.assertEqual(result["actions"][0]["key"], "TARGET_1_PARTIAL")
+        self.assertEqual(result["actions"][0]["exit_qty"], 70)
+        self.assertEqual(follow["qty"], 30)
 
     def test_paper_exit_recognizes_prefixed_raw_target_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -55,9 +55,9 @@ class UsTopMoversPlaybookTests(unittest.TestCase):
         self.assertEqual(result["tier"], "TIER 1")
         self.assertGreaterEqual(result["quant_score"], 70)
         self.assertIn(result["final_signal"], {"STRONG BUY", "MODERATE BUY"})
-        self.assertEqual(result["levels"]["stop_rule"], "atr_aware_5_to_8_pct_below_entry")
+        self.assertEqual(result["levels"]["stop_rule"], "atr_aware_2_4_to_4_2_pct_below_entry")
         self.assertLess(result["levels"]["stop"], result["levels"]["entry"])
-        self.assertLessEqual(((result["levels"]["entry"] - result["levels"]["stop"]) / result["levels"]["entry"]) * 100, 8.1)
+        self.assertLessEqual(((result["levels"]["entry"] - result["levels"]["stop"]) / result["levels"]["entry"]) * 100, 4.3)
 
     def test_us_playbook_blocks_otc_low_liquidity_movers(self) -> None:
         candles = _stage2_candles("PUMP", count=90)

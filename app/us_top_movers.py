@@ -393,23 +393,25 @@ def _levels(
 ) -> UsMoverLevels:
     if not price or not pivot:
         return UsMoverLevels(GainerLevels(None, None, None, None, None, None, None), "missing_pivot", atr_pct)
-    entry = max(pivot, price) if price <= pivot * 1.05 else pivot
-    stop_pct = _clamp((atr_pct or 3.5) * 1.6, 5.0, 8.0) / 100.0
+    entry = max(pivot, price) if price <= pivot * 1.025 else pivot
+    stop_pct = _clamp((atr_pct or 3.5) * 0.85, 2.4, 4.2) / 100.0
     stop = entry * (1.0 - stop_pct)
-    risk = entry - stop
-    target2 = high_52w if high_52w and high_52w > entry * 1.08 else entry + risk * 3.0
-    target3 = entry + risk * 4.0 if stage2 and (volume_ratio or 0.0) > 2 else None
+    target1_pct = _clamp((atr_pct or 3.5) * 0.85, 2.5, 3.6) / 100.0
+    target2_pct = max(target1_pct * 1.75, 0.055)
+    structure_target = high_52w if high_52w and high_52w > entry * 1.045 else None
+    target2 = structure_target or entry * (1.0 + target2_pct)
+    target3 = entry * (1.0 + max(target2_pct * 1.45, 0.082)) if stage2 and (volume_ratio or 0.0) > 2 else None
     return UsMoverLevels(
         GainerLevels(
             pivot=_round(pivot),
             entry=_round(entry),
-            max_entry=_round(pivot * 1.05),
+            max_entry=_round(pivot * 1.025),
             stop=_round(stop),
-            target1=_round(entry + risk * 2.0),
+            target1=_round(entry * (1.0 + target1_pct)),
             target2=_round(target2),
             target3=_round(target3),
         ),
-        "atr_aware_5_to_8_pct_below_entry",
+        "atr_aware_2_4_to_4_2_pct_below_entry",
         atr_pct,
     )
 

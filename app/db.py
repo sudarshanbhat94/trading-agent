@@ -6789,12 +6789,12 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
         return _exit_action(
             "TARGET_1_PARTIAL",
             "REDUCE",
-            _target_exit_pct(idea_details, "T1", 35.0),
-            "T1 reached; book partial profit and move the remaining trade to tighter risk.",
+            _target_exit_pct(idea_details, "T1", 70.0),
+            "T1 reached; book most of the trade and trail only the remainder.",
         )
 
     if "MFE_PROFIT_PROTECT" not in done:
-        if peak_return >= 4.0 and current_return <= max(0.75, peak_return * 0.25):
+        if peak_return >= 3.0 and current_return <= max(1.0, peak_return * 0.45):
             return _exit_action(
                 "MFE_PROFIT_PROTECT",
                 "EXIT_FULL",
@@ -6802,20 +6802,20 @@ def _paper_exit_action(item: dict[str, Any], idea_details: dict[str, Any], follo
                 f"Trade gave back a {peak_return:.2f}% favorable move; protect capital instead of round-tripping.",
                 full=True,
             )
-        if peak_return >= 2.5 and current_return <= 0.0:
+        if peak_return >= 2.2 and current_return <= 0.25:
             return _exit_action(
                 "MFE_PROFIT_PROTECT",
                 "EXIT_FULL",
                 100,
-                f"Trade was up {peak_return:.2f}% but has returned to breakeven/loss; close before momentum failure deepens.",
+                f"Trade was up {peak_return:.2f}% but has faded near breakeven; close before momentum failure deepens.",
                 full=True,
             )
 
-    if peak_return >= 2.0 and current_return <= 0.25 and "MFE_BREAKEVEN_REDUCE" not in done:
+    if peak_return >= 1.6 and current_return <= 0.75 and "MFE_BREAKEVEN_REDUCE" not in done:
         return _exit_action(
             "MFE_BREAKEVEN_REDUCE",
             "REDUCE",
-            50,
+            70,
             f"Trade was up {peak_return:.2f}% but has faded near breakeven; reduce exposure and keep optionality.",
         )
 
@@ -7484,6 +7484,7 @@ def _apply_top_gainers_playbook_signal_details(details: dict[str, Any], price: f
                 "distance_pct": round(distance, 2) if distance is not None else None,
                 "probability_label": probability,
                 "source": "top_gainers_playbook",
+                "suggested_exit_pct": {"T1": 70, "T2": 20, "T3": 10}.get(label, 10),
             }
         )
     if targets:
@@ -7537,6 +7538,7 @@ def _apply_btst_signal_details(details: dict[str, Any], price: float) -> None:
                 "distance_pct": round(distance, 2) if distance is not None else None,
                 "probability_label": "next_day_follow_through",
                 "source": "btst_buy_candidate",
+                "suggested_exit_pct": 75,
             }
         ]
         details["target_status"] = details["targets"]

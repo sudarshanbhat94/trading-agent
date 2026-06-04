@@ -650,33 +650,48 @@ def _trade_plan(price: float | None, market: str | None = "IN", setup_family: st
     market_key = str(market or "IN").upper()
     setup_key = str(setup_family or "").strip().lower()
     if market_key == "IN" and setup_key == "delivery_btst":
-        stop_pct = 0.022
-        target_pct = 0.018
+        stop_pct = 0.020
+        targets = [
+            ("BTST-T1", 0.022, 75),
+            ("BTST-T2", 0.038, 25),
+        ]
         label = "BTST-T1"
         holding_period = "BTST_next_session"
     elif market_key == "IN":
-        stop_pct = 0.025
-        target_pct = 0.025
+        stop_pct = 0.022
+        targets = [
+            ("RAW-IN-T1", 0.028, 70),
+            ("RAW-IN-T2", 0.046, 30),
+        ]
         label = "RAW-IN-T1"
         holding_period = "intraday_or_next_session"
     else:
-        stop_pct = 0.035
-        target_pct = stop_pct * 1.8
+        stop_pct = 0.030
+        targets = [
+            ("RAW-T1", 0.032, 70),
+            ("RAW-T2", 0.055, 30),
+        ]
         label = "RAW-T1"
         holding_period = "intraday_to_swing"
     stop = price * (1.0 - stop_pct)
-    target = price * (1.0 + target_pct)
     return {
         "entry_zone": [round(price * 0.995, 4), round(price * 1.005, 4)],
         "stop_loss": round(stop, 4),
         "targets": [
             {
-                "label": label,
-                "price": round(target, 4),
-                "distance_pct": round(((target - price) / price) * 100.0, 4),
+                "label": target_label,
+                "price": round(price * (1.0 + target_pct), 4),
+                "distance_pct": round(target_pct * 100.0, 4),
+                "suggested_exit_pct": exit_pct,
             }
+            for target_label, target_pct, exit_pct in targets
         ],
         "holding_period": holding_period,
+        "target_policy": {
+            "profile": "closer_t1_profit_ladder_v2",
+            "first_booking": label,
+            "rule": "Book most size into the first reachable target; trail only the remainder.",
+        },
         "source": RAW_ENTRY_MODEL_VERSION,
     }
 

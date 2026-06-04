@@ -773,6 +773,31 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertFalse(gate["passed"], gate)
         self.assertEqual(gate["reason"], "auto_follow_reward_risk_below_minimum")
 
+    def test_auto_follow_allows_close_t1_when_t2_carries_reward_risk(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 88,
+                "overall_grade": "A",
+                "confluence": 22,
+                "latest_price": 100.0,
+                "data_readiness": {"trade_decision_ready": True},
+                "details": {
+                    "action": "BUY",
+                    "stop_loss": 97.0,
+                    "targets": [
+                        {"label": "RAW-T1", "price": 103.2, "distance_pct": 3.2, "suggested_exit_pct": 70},
+                        {"label": "RAW-T2", "price": 105.5, "distance_pct": 5.5, "suggested_exit_pct": 30},
+                    ],
+                },
+            }
+        )
+
+        self.assertTrue(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
+
     def test_stored_opportunity_probe_min_confluence_is_reused(self) -> None:
         gate = fresh_buy_quality_gate(
             {

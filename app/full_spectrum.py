@@ -1726,7 +1726,7 @@ def _planned_targets(
                 "basis": basis,
                 "distance_pct": _round(((target_price - price) / price) * 100 if price else None),
                 "probability_label": probability_label,
-                "suggested_exit_pct": [35, 35, 30][index - 1],
+                "suggested_exit_pct": [70, 20, 10][index - 1],
                 "note": note,
             }
         )
@@ -1749,13 +1749,13 @@ def _target_rr_profile(
 ) -> list[float]:
     tier = str(confluence.get("tier") or "").upper()
     if tier == "MAXIMUM_CONVICTION":
-        profile = [1.45, 2.35, 3.35]
+        profile = [1.10, 1.85, 2.65]
     elif tier == "HIGH_CONVICTION":
-        profile = [1.25, 2.05, 2.95]
+        profile = [1.00, 1.65, 2.35]
     elif tier == "TRADE_SIGNAL":
-        profile = [1.1, 1.75, 2.45]
+        profile = [0.90, 1.45, 2.05]
     else:
-        profile = [0.95, 1.4, 2.0]
+        profile = [0.82, 1.25, 1.75]
     volatility = float(atr_pct or 0.0)
     if volatility >= 6:
         profile = [value * 0.82 for value in profile]
@@ -1764,7 +1764,7 @@ def _target_rr_profile(
     liquidity_tier = str(liquidity.get("liquidity_tier") or "").lower()
     if liquidity_tier in {"thin", "illiquid"}:
         profile = [value * 0.86 for value in profile]
-    return [round(max(value, 0.75), 3) for value in profile]
+    return [round(max(value, 0.70), 3) for value in profile]
 
 
 def _target_probability_label(

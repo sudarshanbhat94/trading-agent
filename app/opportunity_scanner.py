@@ -1139,7 +1139,7 @@ class OpportunityScanner:
             "sentiment_ok",
         )))
         stop_risk_pct = _clamp(max(2.2, min(5.5, atr_pct * 0.85)), 2.0, 6.0)
-        target_pct = _clamp(max(2.4, min(6.0, atr_pct * 1.05)), 2.0, 7.0)
+        target_pct = _clamp(max(2.0, min(4.2, atr_pct * 0.85)), 1.8, 4.5)
         max_entry_pct = 1.2 if day_gain is not None and day_gain <= 3.5 else 0.8
         entry_low = price * 0.995 if price else None
         entry_high = price * (1 + max_entry_pct / 100.0) if price else None
@@ -1334,7 +1334,7 @@ class OpportunityScanner:
         max_entry = trigger_price * (1.010 if action == "WATCH" else 1.006) if trigger_price else price * 1.006
         atr_pct = _float_or_none(metrics.get("atr_pct")) or 3.0
         stop_pct = _clamp(max(2.2, min(4.2, atr_pct * 0.82)), 2.0, 4.5)
-        target_pct = _clamp(max(2.4, min(6.0, atr_pct * 1.20)), 2.2, 6.5)
+        target_pct = _clamp(max(2.4, min(4.2, atr_pct * 0.90)), 2.2, 4.5)
         stop_loss = price * (1 - stop_pct / 100.0)
         target1 = price * (1 + target_pct / 100.0)
         invalidation = min(
@@ -3138,7 +3138,7 @@ def _early_alpha_payload(
 ) -> dict[str, Any]:
     price = _float_or_none(metrics.get("price")) or trigger_price
     stop_pct = _clamp(max(2.0, min(4.0, atr_pct * 0.78)), 1.8, 4.4)
-    target_pct = _clamp(max(2.2, min(5.6, atr_pct * 1.15)), 2.0, 6.0)
+    target_pct = _clamp(max(2.3, min(4.0, atr_pct * 0.88)), 2.0, 4.4)
     stop_loss = price * (1 - stop_pct / 100.0)
     target1 = price * (1 + target_pct / 100.0)
     action_upper = str(action or "WATCH").upper()
