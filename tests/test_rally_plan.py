@@ -243,6 +243,39 @@ class RallyPlanBuilderTests(unittest.TestCase):
         self.assertEqual(rows[0]["trigger_price"], 123.4)
         self.assertGreater(promotions["blocked_counts"]["not_action_section"], 0)
 
+    def test_buy_check_rally_row_derives_missing_exit_levels_before_promotion(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_BROAD_RALLY, "score": 72.0},
+            opportunity_scan={
+                "market_region": "IN",
+                "top_candidates": [
+                    {
+                        "symbol": "LEVELS",
+                        "market_region": "IN",
+                        "score": 0.92,
+                        "setup": "opening_ignition",
+                        "price": 100.0,
+                        "volume_ratio": 2.2,
+                        "day_gain_pct": 2.4,
+                        "day_range_position": 0.82,
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["live_momentum"]
+        promotions = extract_rally_plan_promotions(plan, max_per_market=3)
+        [promotion] = promotions["by_market"]["IN"]
+
+        self.assertEqual(item["entry_plan"]["status"], "entry_check")
+        self.assertEqual(item["trigger_price"], 100.0)
+        self.assertGreater(item["max_entry"], item["trigger_price"])
+        self.assertLess(item["stop_loss"], item["trigger_price"])
+        self.assertGreater(item["target1"], item["max_entry"])
+        self.assertEqual(promotion["symbol"], "LEVELS")
+        self.assertEqual(promotion["stop_loss"], item["stop_loss"])
+
     def test_early_alpha_candidate_renders_before_ignition_contract(self) -> None:
         plan = build_rally_plan(
             market_region="IN",

@@ -545,6 +545,15 @@ def _item(**kwargs: Any) -> dict[str, Any]:
     max_entry = kwargs.get("max_entry")
     stop_loss = kwargs.get("stop_loss")
     target1 = kwargs.get("target1")
+    trigger_price, max_entry, stop_loss, target1 = _complete_actionable_levels(
+        market_region=kwargs.get("market_region"),
+        action=action,
+        section=section,
+        trigger_price=trigger_price,
+        max_entry=max_entry,
+        stop_loss=stop_loss,
+        target1=target1,
+    )
     invalidation = str(kwargs.get("invalidation") or "")[:600]
     return {
         "symbol": str(kwargs.get("symbol") or "").upper(),
@@ -583,6 +592,45 @@ def _item(**kwargs: Any) -> dict[str, Any]:
         "evidence": kwargs.get("evidence") if isinstance(kwargs.get("evidence"), dict) else {},
         "blockers": blockers,
     }
+
+
+def _complete_actionable_levels(
+    *,
+    market_region: Any,
+    action: Any,
+    section: Any,
+    trigger_price: Any,
+    max_entry: Any,
+    stop_loss: Any,
+    target1: Any,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    trigger = _num(trigger_price)
+    max_price = _num(max_entry)
+    stop = _num(stop_loss)
+    target = _num(target1)
+    action_text = str(action or "").strip().upper()
+    section_key = str(section or "").strip().lower()
+    if action_text not in RALLY_PLAN_PROMOTION_ACTIONS or section_key not in RALLY_PLAN_ACTION_SECTIONS or trigger is None:
+        return trigger, max_price, stop, target
+    market = str(market_region or "").strip().upper()
+    if max_price is None or max_price <= trigger:
+        max_price = trigger * (1.006 if section_key == "live_momentum" else 1.008)
+    if market == "US":
+        stop_pct = 0.035 if section_key == "live_momentum" else 0.04
+        target_pct = 0.055 if section_key == "live_momentum" else 0.06
+    else:
+        stop_pct = 0.024 if section_key == "live_momentum" else 0.027
+        target_pct = 0.026 if section_key == "live_momentum" else 0.032
+    if stop is None or stop >= trigger:
+        stop = trigger * (1.0 - stop_pct)
+    if target is None or target <= max_price:
+        target = trigger * (1.0 + target_pct)
+    return (
+        round(trigger, 4),
+        round(max_price, 4),
+        round(stop, 4),
+        round(target, 4),
+    )
 
 
 def _entry_plan(
