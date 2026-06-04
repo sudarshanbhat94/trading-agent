@@ -642,6 +642,9 @@ def _effective_position_quote_refresh_seconds(
     closed_us_polling: bool = False,
 ) -> float:
     base = max(1.0, float(configured_seconds or 1.0))
+    if refresh_count <= 0:
+        return base
+    base = max(base, 5.0)
     if refresh_count >= 75:
         return max(base, 10.0)
     if refresh_count >= 25:

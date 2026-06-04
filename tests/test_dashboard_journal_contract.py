@@ -67,7 +67,8 @@ class DashboardJournalContractTests(unittest.TestCase):
         self.assertEqual(_rally_plan_market_view(fresh_us_plan, "IN")["items"], [])
 
     def test_position_quote_refresh_backs_off_for_large_books(self) -> None:
-        self.assertEqual(_effective_position_quote_refresh_seconds(1, 12), 1.0)
+        self.assertEqual(_effective_position_quote_refresh_seconds(1, 0), 1.0)
+        self.assertEqual(_effective_position_quote_refresh_seconds(1, 12), 5.0)
         self.assertEqual(_effective_position_quote_refresh_seconds(1, 30), 5.0)
         self.assertEqual(_effective_position_quote_refresh_seconds(1, 97), 10.0)
         self.assertEqual(_effective_position_quote_refresh_seconds(1, 4, closed_us_polling=True), 5.0)

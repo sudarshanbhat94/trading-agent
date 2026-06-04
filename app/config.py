@@ -132,7 +132,7 @@ class Settings:
     auto_start_agent: bool = _bool("AUTO_START_AGENT", True)
     agent_interval_seconds: int = _int("AGENT_INTERVAL_SECONDS", 180)
     position_quote_refresh_enabled: bool = _bool("POSITION_QUOTE_REFRESH_ENABLED", True)
-    position_quote_refresh_seconds: float = _float("POSITION_QUOTE_REFRESH_SECONDS", 1.0)
+    position_quote_refresh_seconds: float = _float("POSITION_QUOTE_REFRESH_SECONDS", 5.0)
     position_quote_refresh_closed_us_enabled: bool = _bool("POSITION_QUOTE_REFRESH_CLOSED_US_ENABLED", False)
     cycle_timeout_seconds: int = _int("CYCLE_TIMEOUT_SECONDS", 120)
     optional_phase_timeout_seconds: float = _float("OPTIONAL_PHASE_TIMEOUT_SECONDS", 3.0)
