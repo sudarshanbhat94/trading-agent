@@ -675,7 +675,7 @@ def _is_target_ladder_retarget_candidate(
     if entry_price <= 0:
         return False
     signal_type = str(details.get("signal_type") or details.get("action") or "BUY").upper()
-    if signal_type not in {"BUY", "BUY_NOW", "ENTRY_READY"}:
+    if signal_type in {"SELL", "EXIT", "EXIT_SIGNAL"}:
         return False
 
     target_rows = [

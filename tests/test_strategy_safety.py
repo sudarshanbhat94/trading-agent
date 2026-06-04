@@ -3900,6 +3900,7 @@ class StrategySafetyTests(unittest.TestCase):
                 entry_price=100.0,
                 latest_price=100.0,
                 details={
+                    "action": "HOLD",
                     "stop_loss": 96.5,
                     "targets": [{"label": "RAW-T1", "price": 106.3, "distance_pct": 6.3}],
                     "target_status": [{"label": "RAW-T1", "price": 106.3, "distance_pct": 6.3, "hit": False}],
