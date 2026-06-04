@@ -13628,6 +13628,53 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
   line-height: 1.15;
 }
 
+.rally-trade-plan {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.rally-trade-box {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid rgba(72, 187, 120, 0.28);
+  border-radius: 6px;
+  background: rgba(72, 187, 120, 0.055);
+  padding: 8px;
+}
+
+.rally-trade-box.exit {
+  border-color: rgba(96, 165, 250, 0.3);
+  background: rgba(96, 165, 250, 0.055);
+}
+
+.rally-trade-box span {
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.rally-trade-box strong,
+.rally-trade-box small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.28;
+}
+
+.rally-trade-box strong {
+  color: var(--text-primary, var(--terminal-text));
+  font-size: 12px;
+}
+
+.rally-trade-box small {
+  color: var(--text-secondary, var(--muted));
+  font-size: 11px;
+}
+
 .rally-plan-copy {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -14033,6 +14080,7 @@ body[data-theme="dark"]:not(#openstocks-dark-cascade):not(#openstocks-dark-casca
 
   .rally-plan-list,
   .rally-plan-levels,
+  .rally-trade-plan,
   .rally-plan-copy {
     grid-template-columns: 1fr;
   }

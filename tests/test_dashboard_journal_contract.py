@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.main import (
+    _compact_rally_plan_item,
     _effective_position_quote_refresh_seconds,
     _rally_plan_is_cached,
     _rally_plan_market_view,
@@ -65,6 +66,22 @@ class DashboardJournalContractTests(unittest.TestCase):
         self.assertFalse(_rally_plan_is_cached(fresh_us_plan, "IN"))
         self.assertTrue(_rally_plan_is_cached(fresh_us_plan, "US"))
         self.assertEqual(_rally_plan_market_view(fresh_us_plan, "IN")["items"], [])
+
+    def test_rally_plan_compact_preserves_entry_and_exit_plan(self) -> None:
+        item = _compact_rally_plan_item(
+            {
+                "symbol": "NUVL",
+                "action": "BUY CHECK",
+                "entry_plan": {"status": "entry_check", "when": "Enter above trigger", "trigger_price": 91.2},
+                "exit_plan": {"summary": "Partial at T1", "stop_loss": 88.4, "target1": 94.8},
+                "evidence": {"large": {"ignored": True}},
+            },
+            include_evidence=False,
+        )
+
+        self.assertEqual(item["entry_plan"]["status"], "entry_check")
+        self.assertEqual(item["exit_plan"]["stop_loss"], 88.4)
+        self.assertNotIn("evidence", item)
 
     def test_position_quote_refresh_backs_off_for_large_books(self) -> None:
         self.assertEqual(_effective_position_quote_refresh_seconds(1, 0), 1.0)

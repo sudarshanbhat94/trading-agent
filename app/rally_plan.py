@@ -437,25 +437,175 @@ def _signal_avoid_items(ideas: list[dict[str, Any]], region: str) -> list[dict[s
 
 
 def _item(**kwargs: Any) -> dict[str, Any]:
+    blockers = kwargs.get("blockers") if isinstance(kwargs.get("blockers"), list) else []
+    action = kwargs.get("action")
+    section = kwargs.get("section")
+    trigger_price = kwargs.get("trigger_price")
+    max_entry = kwargs.get("max_entry")
+    stop_loss = kwargs.get("stop_loss")
+    target1 = kwargs.get("target1")
+    invalidation = str(kwargs.get("invalidation") or "")[:600]
     return {
         "symbol": str(kwargs.get("symbol") or "").upper(),
         "name": kwargs.get("name") or kwargs.get("symbol"),
         "market_region": kwargs.get("market_region"),
-        "section": kwargs.get("section"),
+        "section": section,
         "stage": kwargs.get("stage"),
-        "action": kwargs.get("action"),
+        "action": action,
         "strategy": kwargs.get("strategy"),
         "score": round(float(kwargs.get("score") or 0.0), 4),
         "why": str(kwargs.get("why") or "")[:600],
         "what": str(kwargs.get("what") or "")[:600],
         "how": str(kwargs.get("how") or "")[:600],
-        "trigger_price": kwargs.get("trigger_price"),
-        "max_entry": kwargs.get("max_entry"),
-        "stop_loss": kwargs.get("stop_loss"),
-        "target1": kwargs.get("target1"),
-        "invalidation": str(kwargs.get("invalidation") or "")[:600],
+        "trigger_price": trigger_price,
+        "max_entry": max_entry,
+        "stop_loss": stop_loss,
+        "target1": target1,
+        "invalidation": invalidation,
+        "entry_plan": _entry_plan(
+            action=action,
+            section=section,
+            trigger_price=trigger_price,
+            max_entry=max_entry,
+            stop_loss=stop_loss,
+            blockers=blockers,
+        ),
+        "exit_plan": _exit_plan(
+            action=action,
+            section=section,
+            trigger_price=trigger_price,
+            max_entry=max_entry,
+            stop_loss=stop_loss,
+            target1=target1,
+            invalidation=invalidation,
+        ),
         "evidence": kwargs.get("evidence") if isinstance(kwargs.get("evidence"), dict) else {},
-        "blockers": kwargs.get("blockers") if isinstance(kwargs.get("blockers"), list) else [],
+        "blockers": blockers,
+    }
+
+
+def _entry_plan(
+    *,
+    action: Any,
+    section: Any,
+    trigger_price: Any,
+    max_entry: Any,
+    stop_loss: Any,
+    blockers: list[Any],
+) -> dict[str, Any]:
+    action_text = str(action or "WATCH").upper()
+    section_key = str(section or "").lower()
+    trigger = _num(trigger_price)
+    max_price = _num(max_entry)
+    stop = _num(stop_loss)
+    missing = [
+        label
+        for label, value in (("trigger_price", trigger), ("max_entry", max_price), ("stop_loss", stop))
+        if value is None
+    ]
+    confirmations = [
+        "price trades above trigger",
+        "price holds below max entry",
+        "volume/opening-range confirmation",
+        "market regime allows the setup",
+    ]
+    if action_text == "AVOID" or section_key == "avoid":
+        status = "no_entry"
+        when = "Do not enter. This row is marked avoid/do-not-chase until a fresh rally setup appears."
+    elif blockers:
+        status = "blocked_watch"
+        when = "Do not enter yet. Keep on watch until blockers clear and the entry trigger confirms."
+    elif missing:
+        status = "incomplete_levels"
+        when = f"Do not enter until {', '.join(missing)} is available."
+    elif section_key in {"t1_pressure", "preopen_confirm"} or action_text == "WATCH":
+        status = "watch_only"
+        when = "No entry from this watch row alone. Enter only after pre-open/open confirmation holds above trigger and stays under max entry."
+    else:
+        status = "entry_check"
+        when = "Enter only while price is at or above trigger, still below max entry, and live confirmation remains valid."
+
+    if trigger is not None and max_price is not None:
+        price_rule = f"Entry zone: {trigger:.2f} to {max_price:.2f}. Do not chase above {max_price:.2f}."
+    elif trigger is not None:
+        price_rule = f"Entry trigger: {trigger:.2f}. Wait for max-entry guard before sizing."
+    else:
+        price_rule = "No actionable entry price yet."
+
+    return {
+        "status": status,
+        "when": when,
+        "price_rule": price_rule,
+        "trigger_price": trigger,
+        "max_entry": max_price,
+        "entry_zone": {"low": trigger, "high": max_price} if trigger is not None and max_price is not None else None,
+        "do_not_chase_above": max_price,
+        "requires_stop_before_entry": stop is None,
+        "confirmations": confirmations,
+    }
+
+
+def _exit_plan(
+    *,
+    action: Any,
+    section: Any,
+    trigger_price: Any,
+    max_entry: Any,
+    stop_loss: Any,
+    target1: Any,
+    invalidation: str,
+) -> dict[str, Any]:
+    action_text = str(action or "WATCH").upper()
+    section_key = str(section or "").lower()
+    trigger = _num(trigger_price)
+    max_price = _num(max_entry)
+    stop = _num(stop_loss)
+    t1 = _num(target1)
+    target2 = None
+    target3 = None
+    if trigger is not None and t1 is not None and t1 > trigger:
+        reward_unit = t1 - trigger
+        target2 = round(trigger + reward_unit * 2.0, 4)
+        target3 = round(trigger + reward_unit * 3.0, 4)
+    elif max_price is not None and t1 is not None and t1 > max_price:
+        reward_unit = t1 - max_price
+        target2 = round(max_price + reward_unit * 2.0, 4)
+        target3 = round(max_price + reward_unit * 3.0, 4)
+
+    rules: list[dict[str, Any]] = []
+    if action_text == "AVOID" or section_key == "avoid":
+        rules.append({"label": "No trade", "when": "Do not enter; no exit plan applies until a fresh valid setup appears."})
+    if stop is not None:
+        rules.append({"label": "Hard stop", "price": stop, "when": "Exit full if price trades below stop or the invalidation condition triggers."})
+    else:
+        rules.append({"label": "Stop required", "when": "Do not enter without a hard stop."})
+    if t1 is not None:
+        rules.append({"label": "T1", "price": t1, "exit_pct": 35, "when": "Book partial profit near T1 and move remaining risk to breakeven/trigger."})
+    else:
+        rules.append({"label": "T1 required", "when": "Do not enter without at least one profit target."})
+    if target2 is not None:
+        rules.append({"label": "T2", "price": target2, "exit_pct": 50, "when": "Book another tranche near T2 and trail the remainder."})
+    if target3 is not None:
+        rules.append({"label": "T3 / trail", "price": target3, "exit_pct": 100, "when": "Close final remainder near T3 or trail until momentum breaks."})
+    rules.append({"label": "Invalidation", "when": invalidation or "Exit/watch-reset if confirmation fails or market regime fades."})
+
+    if action_text == "AVOID" or section_key == "avoid":
+        summary = "No entry. Avoid chasing; reset only on a fresh setup."
+    elif stop is None or t1 is None:
+        summary = "Entry not allowed until stop and target are defined."
+    else:
+        summary = "Manage by hard stop first, partial at T1, then trail/reduce remaining quantity."
+
+    return {
+        "summary": summary,
+        "stop_loss": stop,
+        "target1": t1,
+        "target2": target2,
+        "target3": target3,
+        "partial_exit_pct": 35 if t1 is not None else None,
+        "second_exit_pct": 50 if target2 is not None else None,
+        "rules": rules,
+        "invalidation": invalidation,
     }
 
 

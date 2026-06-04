@@ -5491,6 +5491,88 @@ function rallyPlanBlockerText(item = {}) {
   return text || readableRallyLabel(item.invalidation || "");
 }
 
+function fallbackRallyEntryPlan(item = {}) {
+  const trigger = numericValue(item.trigger_price);
+  const maxEntry = numericValue(item.max_entry);
+  const stop = numericValue(item.stop_loss);
+  const action = String(item.action || "WATCH").toUpperCase();
+  const blocked = Array.isArray(item.blockers) && item.blockers.length > 0;
+  const avoid = action === "AVOID" || String(item.section || "").toLowerCase() === "avoid";
+  let when = "Enter only after trigger confirmation, below max entry, with regime and volume support.";
+  let status = "entry_check";
+  if (avoid) {
+    status = "no_entry";
+    when = "Do not enter. This is an avoid/do-not-chase row.";
+  } else if (blocked) {
+    status = "blocked_watch";
+    when = "Do not enter yet. Wait until blockers clear.";
+  } else if (action === "WATCH") {
+    status = "watch_only";
+    when = "No entry from watch alone. Wait for pre-open/opening confirmation.";
+  } else if (trigger === null || maxEntry === null || stop === null) {
+    status = "incomplete_levels";
+    when = "Do not enter until trigger, max entry, and stop are defined.";
+  }
+  return {
+    status,
+    when,
+    trigger_price: trigger,
+    max_entry: maxEntry,
+    do_not_chase_above: maxEntry,
+    requires_stop_before_entry: stop === null,
+    confirmations: ["trigger hold", "max-entry guard", "volume/opening-range confirmation", "supportive regime"],
+  };
+}
+
+function fallbackRallyExitPlan(item = {}) {
+  const trigger = numericValue(item.trigger_price);
+  const stop = numericValue(item.stop_loss);
+  const t1 = numericValue(item.target1);
+  const reward = trigger !== null && t1 !== null && t1 > trigger ? t1 - trigger : null;
+  const target2 = reward !== null ? trigger + reward * 2 : null;
+  const target3 = reward !== null ? trigger + reward * 3 : null;
+  return {
+    summary: stop === null || t1 === null ? "Do not enter until stop and target are defined." : "Hard stop first; partial at T1; trail the remainder.",
+    stop_loss: stop,
+    target1: t1,
+    target2,
+    target3,
+    partial_exit_pct: t1 !== null ? 35 : null,
+    second_exit_pct: target2 !== null ? 50 : null,
+    invalidation: item.invalidation || "",
+    rules: [],
+  };
+}
+
+function rallyPlanTradePlanHtml(item = {}) {
+  const market = rowMarket(item);
+  const entry = item.entry_plan && typeof item.entry_plan === "object" ? item.entry_plan : fallbackRallyEntryPlan(item);
+  const exit = item.exit_plan && typeof item.exit_plan === "object" ? item.exit_plan : fallbackRallyExitPlan(item);
+  const entryBits = [
+    entry.trigger_price !== null && entry.trigger_price !== undefined ? `Trigger ${fmtTradeMoney(entry.trigger_price, market)}` : "Trigger needed",
+    entry.max_entry !== null && entry.max_entry !== undefined ? `Max ${fmtTradeMoney(entry.max_entry, market)}` : "Max needed",
+    entry.requires_stop_before_entry ? "Stop needed" : "Stop set",
+  ];
+  const exitBits = [
+    exit.stop_loss !== null && exit.stop_loss !== undefined ? `Stop ${fmtTradeMoney(exit.stop_loss, market)}` : "Stop required",
+    exit.target1 !== null && exit.target1 !== undefined ? `T1 ${fmtTradeMoney(exit.target1, market)}${exit.partial_exit_pct ? ` · ${fmtNumber(exit.partial_exit_pct)}%` : ""}` : "T1 required",
+    exit.target2 !== null && exit.target2 !== undefined ? `T2 ${fmtTradeMoney(exit.target2, market)}` : "",
+    exit.target3 !== null && exit.target3 !== undefined ? `T3 ${fmtTradeMoney(exit.target3, market)}` : "",
+  ].filter(Boolean);
+  return `<div class="rally-trade-plan">
+    <div class="rally-trade-box">
+      <span>Enter</span>
+      <strong>${escapeHtml(shortValue(entry.when || "Wait for trigger confirmation before entry.", 170))}</strong>
+      <small>${escapeHtml(entryBits.join(" · "))}</small>
+    </div>
+    <div class="rally-trade-box exit">
+      <span>Exit</span>
+      <strong>${escapeHtml(shortValue(exit.summary || "Manage by stop, targets, and invalidation.", 170))}</strong>
+      <small>${escapeHtml(exitBits.join(" · "))}</small>
+    </div>
+  </div>`;
+}
+
 function rallyPlanRowHtml(item = {}, index = 0) {
   const action = String(item.action || "WATCH").toUpperCase();
   const blockers = Array.isArray(item.blockers) ? item.blockers : [];
@@ -5507,6 +5589,7 @@ function rallyPlanRowHtml(item = {}, index = 0) {
       <span class="rally-action ${escapeHtml(cssToken(action))}">${escapeHtml(action)}</span>
     </header>
     <div class="rally-plan-levels">${rallyPlanLevelsHtml(item)}</div>
+    ${rallyPlanTradePlanHtml(item)}
     <div class="rally-plan-copy">
       <div><span>Why</span><p>${escapeHtml(shortValue(item.why || "-", 220))}</p></div>
       <div><span>What</span><p>${escapeHtml(shortValue(item.what || "-", 180))}</p></div>

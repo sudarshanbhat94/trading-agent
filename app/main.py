@@ -1487,6 +1487,8 @@ def _compact_rally_plan_item(item: dict[str, Any], *, include_evidence: bool = T
         "stop_loss",
         "target1",
         "invalidation",
+        "entry_plan",
+        "exit_plan",
         "blockers",
     )
     output = {key: item.get(key) for key in keys if key in item}

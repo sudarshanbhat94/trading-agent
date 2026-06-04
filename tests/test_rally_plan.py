@@ -38,6 +38,13 @@ class RallyPlanBuilderTests(unittest.TestCase):
         self.assertTrue(item["what"])
         self.assertTrue(item["how"])
         self.assertEqual(item["trigger_price"], 91.2)
+        self.assertEqual(item["entry_plan"]["status"], "watch_only")
+        self.assertIn("No entry", item["entry_plan"]["when"])
+        self.assertEqual(item["entry_plan"]["trigger_price"], 91.2)
+        self.assertEqual(item["exit_plan"]["stop_loss"], 88.4)
+        self.assertEqual(item["exit_plan"]["target1"], 94.8)
+        self.assertTrue(item["exit_plan"]["target2"])
+        self.assertIn("partial", item["exit_plan"]["summary"])
         self.assertEqual(item["blockers"], [])
 
     def test_market_action_live_mover_is_watch_when_regime_blocks_momentum(self) -> None:
@@ -91,6 +98,9 @@ class RallyPlanBuilderTests(unittest.TestCase):
 
         self.assertEqual(item["symbol"], "CHASE")
         self.assertEqual(item["action"], "AVOID")
+        self.assertEqual(item["entry_plan"]["status"], "no_entry")
+        self.assertIn("Do not enter", item["entry_plan"]["when"])
+        self.assertIn("No entry", item["exit_plan"]["summary"])
         self.assertEqual(item["blockers"][0]["reason"], "do_not_chase_extended_market_action")
 
     def test_big_runner_candidate_includes_why_what_how_and_levels(self) -> None:
