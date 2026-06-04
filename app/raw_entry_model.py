@@ -340,9 +340,10 @@ def _confirmation_block(*, scan: dict[str, Any], setup_family: str) -> dict[str,
         action = str(review.get("action") or "").strip().upper()
         if action in {"CONFIRM", "WATCH"}:
             return {
-                "gate": key,
+                "gate": "setup_confirmation",
                 "reason": "setup_requires_live_confirmation",
                 "value": {
+                    "source": key,
                     "action": action,
                     "stage": review.get("stage"),
                     "trade_window": review.get("trade_window"),
@@ -352,9 +353,10 @@ def _confirmation_block(*, scan: dict[str, Any], setup_family: str) -> dict[str,
             }
         if action == "AVOID":
             return {
-                "gate": key,
+                "gate": "setup_confirmation",
                 "reason": "setup_marked_avoid",
                 "value": {
+                    "source": key,
                     "action": action,
                     "stage": review.get("stage"),
                     "blockers": review.get("blockers") or [],

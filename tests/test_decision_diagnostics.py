@@ -101,6 +101,37 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         )
         self.assertNotIn("buy_decisions_not_followed", {flag["code"] for flag in diagnostics["health_flags"]})
 
+    def test_zero_buys_explained_by_confirmation_blocker_is_not_critical(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 2500,
+                "quoted_symbols": 2500,
+                "selected_symbols": 200,
+                "target_decision_symbols": 200,
+            },
+            [
+                _decision(
+                    f"CONFIRM{index}",
+                    "HOLD",
+                    details={
+                        "risk_gates": {
+                            "decision_gate_context": {
+                                "blocking_failed_gates": [{"gate": "setup_confirmation"}],
+                            }
+                        }
+                    },
+                )
+                for index in range(200)
+            ],
+            shared_auto_trade={"users_checked": 1, "followed": 0, "skipped": []},
+            market_region="IN",
+            missed_move_review_row_id=42,
+        )
+
+        self.assertEqual(diagnostics["top_blockers"][0]["gate"], "setup_confirmation")
+        self.assertNotIn("no_buys_from_large_decision_set", {flag["code"] for flag in diagnostics["health_flags"]})
+
     def test_cycle_diagnostics_surfaces_buy_decisions_not_mapped_to_active_ideas(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {"raw_symbols": 100, "quoted_symbols": 100, "selected_symbols": 40},

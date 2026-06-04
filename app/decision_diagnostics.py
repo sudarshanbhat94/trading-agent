@@ -406,7 +406,7 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                         "message": "The cycle found BUY-grade ideas, but all were already active monitors rather than fresh entries.",
                     }
                 )
-        else:
+        elif not _zero_buy_cycle_explained(diagnostics, decisions):
             flags.append(
                 {
                     "severity": "critical",
@@ -474,6 +474,21 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return flags
+
+
+def _zero_buy_cycle_explained(diagnostics: dict[str, Any], decisions: int) -> bool:
+    top_blockers = diagnostics.get("top_blockers") if isinstance(diagnostics.get("top_blockers"), list) else []
+    if not top_blockers:
+        return False
+    explained_gates = {"market_day_regime", "setup_confirmation"}
+    explained_count = 0
+    for item in top_blockers:
+        if not isinstance(item, dict):
+            continue
+        gate = str(item.get("gate") or "").strip()
+        if gate in explained_gates:
+            explained_count += _int(item.get("count"))
+    return decisions > 0 and explained_count / max(decisions, 1) >= 0.70
 
 
 def _summary(diagnostics: dict[str, Any]) -> str:

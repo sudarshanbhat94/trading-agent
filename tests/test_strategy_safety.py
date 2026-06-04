@@ -117,7 +117,8 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertFalse(model["passed"], model)
         self.assertEqual(model["decision_label"], "WATCH")
         self.assertEqual(model["reason"], "setup_requires_live_confirmation")
-        self.assertEqual(model["entry_blockers"][0]["gate"], "big_runner")
+        self.assertEqual(model["entry_blockers"][0]["gate"], "setup_confirmation")
+        self.assertEqual(model["entry_blockers"][0]["value"]["source"], "big_runner")
 
     def test_market_day_regime_classifies_broad_and_risk_off_sessions(self) -> None:
         broad_universe, broad_quotes, broad_candles = _market_regime_rows("broad")
