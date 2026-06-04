@@ -63,6 +63,12 @@ def build_cycle_decision_diagnostics(
         blocking_gates = _gate_names(gate_context.get("blocking_failed_gates") or gate_context.get("failed_gates"))
         absorbed_gates = _gate_names(probe.get("absorbed_gates"))
         primary_gate = _primary_gate_name(gate_context, blocking_gates)
+        if str(decision.action or "").upper() == "HOLD" and not primary_gate:
+            inferred_gate = _inferred_raw_entry_hold_blocker(audit, gate_context)
+            if inferred_gate:
+                primary_gate = inferred_gate
+                if not blocking_gates:
+                    blocking_gates = [inferred_gate]
         if canonical_gate:
             canonical_gate_seen += 1
             version = str(canonical_gate.get("canonical_version") or "unknown").strip() or "unknown"
@@ -300,6 +306,44 @@ def _primary_gate_name(gate_context: dict[str, Any], blocking_gates: list[str]) 
     return sorted(blocking_gates, key=lambda gate: (priority.get(gate, 500), blocking_gates.index(gate)))[0]
 
 
+def _inferred_raw_entry_hold_blocker(audit: dict[str, Any], gate_context: dict[str, Any]) -> str:
+    raw = _raw_entry_model_from_audit(audit, gate_context)
+    if not raw or raw.get("passed") is True:
+        return ""
+    label = str(raw.get("decision_label") or "").strip().upper()
+    reason = str(raw.get("reason") or "").strip()
+    if label == "NO_FRESH_ADD" or reason == "existing_position_managed_by_position_rules":
+        return "existing_position"
+    if reason in {"data_not_trade_decision_ready", "scan_data_quality_rejected"}:
+        return "data_readiness"
+    if reason in {"setup_requires_live_confirmation", "setup_marked_avoid"}:
+        return "setup_confirmation"
+    if reason == "market_day_regime_not_supportive_for_live_momentum":
+        return "market_day_regime"
+    if label == "WATCH" or reason == "raw_opportunity_watch":
+        return "watch_only_evidence_below_entry_line"
+    if label == "NO_TRADE" or reason == "raw_opportunity_not_enough_evidence":
+        return "entry_score_below_watch_threshold"
+    return f"raw_entry_{reason}" if reason else "raw_entry_hold_unclassified"
+
+
+def _raw_entry_model_from_audit(audit: dict[str, Any], gate_context: dict[str, Any]) -> dict[str, Any]:
+    candidates: list[Any] = [
+        audit.get("raw_entry_model"),
+        gate_context.get("raw_entry_model"),
+    ]
+    risk_gates = audit.get("risk_gates") if isinstance(audit.get("risk_gates"), dict) else {}
+    candidates.extend([risk_gates.get("entry_model"), risk_gates.get("raw_entry_model")])
+    context = audit.get("context") if isinstance(audit.get("context"), dict) else {}
+    candidates.append(context.get("raw_entry_model"))
+    nested_gate = context.get("decision_gate_context") if isinstance(context.get("decision_gate_context"), dict) else {}
+    candidates.append(nested_gate.get("raw_entry_model"))
+    for item in candidates:
+        if isinstance(item, dict) and item.get("version"):
+            return item
+    return {}
+
+
 def _hold_summary(
     decision: Decision,
     audit: dict[str, Any],
@@ -480,7 +524,13 @@ def _zero_buy_cycle_explained(diagnostics: dict[str, Any], decisions: int) -> bo
     top_blockers = diagnostics.get("top_blockers") if isinstance(diagnostics.get("top_blockers"), list) else []
     if not top_blockers:
         return False
-    explained_gates = {"market_day_regime", "setup_confirmation"}
+    explained_gates = {
+        "market_day_regime",
+        "setup_confirmation",
+        "watch_only_evidence_below_entry_line",
+        "entry_score_below_watch_threshold",
+        "existing_position",
+    }
     explained_count = 0
     for item in top_blockers:
         if not isinstance(item, dict):

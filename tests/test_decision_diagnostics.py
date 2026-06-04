@@ -132,6 +132,60 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["top_blockers"][0]["gate"], "setup_confirmation")
         self.assertNotIn("no_buys_from_large_decision_set", {flag["code"] for flag in diagnostics["health_flags"]})
 
+    def test_zero_buys_explained_by_raw_entry_watch_and_confirmation_mix(self) -> None:
+        decisions = [
+            _decision(
+                f"WATCH{index}",
+                "HOLD",
+                details={
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": False,
+                        "decision_label": "WATCH",
+                        "reason": "raw_opportunity_watch",
+                    },
+                    "risk_gates": {"decision_gate_context": {"blocking_failed_gates": []}},
+                },
+            )
+            for index in range(164)
+        ] + [
+            _decision(
+                f"CONFIRM{index}",
+                "HOLD",
+                details={
+                    "risk_gates": {
+                        "decision_gate_context": {
+                            "blocking_failed_gates": [{"gate": "setup_confirmation"}],
+                            "raw_entry_model": {
+                                "version": "raw_opportunity_v1",
+                                "passed": False,
+                                "decision_label": "WATCH",
+                                "reason": "setup_requires_live_confirmation",
+                            },
+                        }
+                    }
+                },
+            )
+            for index in range(36)
+        ]
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 2658,
+                "quoted_symbols": 2658,
+                "selected_symbols": 200,
+                "target_decision_symbols": 200,
+            },
+            decisions,
+            shared_auto_trade={"users_checked": 1, "followed": 0, "skipped": []},
+            market_region="IN",
+            missed_move_review_row_id=43,
+        )
+
+        self.assertEqual(diagnostics["primary_blocker_counts"]["watch_only_evidence_below_entry_line"], 164)
+        self.assertEqual(diagnostics["primary_blocker_counts"]["setup_confirmation"], 36)
+        self.assertNotIn("no_buys_from_large_decision_set", {flag["code"] for flag in diagnostics["health_flags"]})
+
     def test_cycle_diagnostics_surfaces_buy_decisions_not_mapped_to_active_ideas(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {"raw_symbols": 100, "quoted_symbols": 100, "selected_symbols": 40},
