@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.main import (
+    WebSocketHub,
     _compact_rally_plan_item,
     _effective_position_quote_refresh_seconds,
     _rally_plan_is_cached,
@@ -13,6 +15,27 @@ from app.main import (
 
 
 class DashboardJournalContractTests(unittest.TestCase):
+    def test_websocket_broadcast_tolerates_connection_set_mutation(self) -> None:
+        class MutatingSocket:
+            def __init__(self, hub: WebSocketHub) -> None:
+                self.hub = hub
+                self.messages: list[str] = []
+
+            async def send_text(self, message: str) -> None:
+                self.messages.append(message)
+                self.hub.connections.add(object())  # type: ignore[arg-type]
+
+        async def run() -> MutatingSocket:
+            hub = WebSocketHub()
+            socket = MutatingSocket(hub)
+            hub.connections.add(socket)  # type: ignore[arg-type]
+            await hub.broadcast({"ok": True})
+            return socket
+
+        socket = asyncio.run(run())
+
+        self.assertEqual(len(socket.messages), 1)
+
     def test_paper_follow_events_are_labeled_simulated_not_broker_orders(self) -> None:
         events = _follow_history_order_events(
             [

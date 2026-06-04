@@ -135,7 +135,7 @@ class WebSocketHub:
     async def broadcast(self, payload: dict[str, Any]) -> None:
         message = json.dumps(payload)
         dead: list[WebSocket] = []
-        for websocket in self.connections:
+        for websocket in tuple(self.connections):
             try:
                 await websocket.send_text(message)
             except Exception:
