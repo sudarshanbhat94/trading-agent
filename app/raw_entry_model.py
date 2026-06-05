@@ -22,6 +22,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     quote = context.get("quote") if isinstance(context.get("quote"), dict) else {}
     scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
     technical = context.get("technical_math") if isinstance(context.get("technical_math"), dict) else {}
+    candle_summary = context.get("candlestick_analysis") if isinstance(context.get("candlestick_analysis"), dict) else {}
     sentiment = context.get("sentiment") if isinstance(context.get("sentiment"), dict) else {}
     full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
     liquidity = full.get("liquidity_profile") if isinstance(full.get("liquidity_profile"), dict) else {}
@@ -41,6 +42,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     volume_ratio = max(_num(scan.get("volume_ratio")) or 0.0, _num(scan.get("projected_volume_ratio")) or 0.0)
     turnover = max(_num(scan.get("turnover")) or 0.0, _num(scan.get("projected_turnover")) or 0.0)
     technical_score = _score_pct(technical.get("score"))
+    candle_score = _score_pct(candle_summary.get("score"))
+    candle_patterns = _candle_patterns(candle_summary, full)
+    combined_score = _num(context.get("combined_score"))
     sentiment_score = _num(sentiment.get("score")) or 0.0
     positive_news_catalyst, negative_news_catalyst, sentiment_event_types = _sentiment_catalysts(sentiment, sentiment_score)
     market_action = scan.get("market_action") if isinstance(scan.get("market_action"), dict) else {}
@@ -183,9 +187,33 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         price=price,
         live_momentum_regime_allowed=True,
     )
+    quality_block = (
+        _raw_opportunity_quality_block(
+            market=market,
+            setup_family=setup_family,
+            best_setup=best_setup,
+            technical_score=technical_score,
+            candle_score=candle_score,
+            candle_patterns=candle_patterns,
+            combined_score=combined_score,
+            day_gain=day_gain,
+            range_position=range_position,
+            volume_ratio=volume_ratio,
+            market_action=market_action,
+            rally_plan_promotion=rally_plan_promotion,
+            positive_news_catalyst=positive_news_catalyst,
+            has_big_runner_catalyst=has_big_runner_catalyst,
+            has_early_alpha_catalyst=has_early_alpha_catalyst,
+            has_rally_plan_catalyst=has_rally_plan_catalyst,
+        )
+        if opportunity_ready_without_regime
+        else None
+    )
+    if quality_block:
+        warnings.append(quality_block["reason"])
     opportunity_ready = opportunity_ready_without_regime and (
         setup_family != "live_momentum" or live_momentum_regime_allowed
-    )
+    ) and quality_block is None
     regime_block = (
         {
             "gate": "market_day_regime",
@@ -204,6 +232,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     elif confirmation_block and opportunity_ready_without_regime:
         decision_label = WATCH
         reason = confirmation_block["reason"]
+    elif quality_block:
+        decision_label = WATCH
+        reason = quality_block["reason"]
     elif regime_block:
         decision_label = WATCH
         reason = "market_day_regime_not_supportive_for_live_momentum"
@@ -238,6 +269,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             *truth_blocks,
             *([readiness_block] if readiness_block else []),
             *([confirmation_block] if confirmation_block else []),
+            *([quality_block] if quality_block else []),
             *([regime_block] if regime_block else []),
         ],
         "warnings": warnings,
@@ -251,6 +283,8 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "scan_score_pct": round(scan_score, 4),
             "live_score_pct": round(live_score, 4),
             "technical_score_pct": round(technical_score, 4),
+            "candlestick_score_pct": round(candle_score, 4),
+            "combined_score": round(combined_score, 4) if combined_score is not None else None,
             "day_gain_pct": round(day_gain, 4),
             "day_range_position": round(range_position, 4),
             "day_high_distance_pct": round(high_distance, 4) if high_distance is not None else None,
@@ -277,7 +311,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "late_session_entry": late_session_entry,
             "btst_session_entry": btst_session_entry,
             "missing_data": missing,
+            "candle_patterns": sorted(candle_patterns),
             "sentiment_event_types": sorted(sentiment_event_types),
+            "raw_opportunity_quality_floor": quality_block,
             "market_day_regime": {
                 key: market_day_regime.get(key)
                 for key in (
@@ -306,6 +342,185 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         "legacy_decision_logic_removed": True,
         "raw_opportunity_v1": True,
     }
+
+
+def _raw_opportunity_quality_block(
+    *,
+    market: str,
+    setup_family: str,
+    best_setup: dict[str, Any],
+    technical_score: float,
+    candle_score: float,
+    candle_patterns: set[str],
+    combined_score: float | None,
+    day_gain: float,
+    range_position: float,
+    volume_ratio: float,
+    market_action: dict[str, Any],
+    rally_plan_promotion: dict[str, Any],
+    positive_news_catalyst: bool,
+    has_big_runner_catalyst: bool,
+    has_early_alpha_catalyst: bool,
+    has_rally_plan_catalyst: bool,
+) -> dict[str, Any] | None:
+    market_key = str(market or "").upper()
+    setup_key = str(setup_family or "").strip().lower()
+    if setup_key not in {"live_momentum", "breakout"}:
+        return None
+
+    bearish_patterns = sorted(candle_patterns & _BEARISH_CANDLE_PATTERNS)
+    constructive_patterns = sorted(candle_patterns & _CONSTRUCTIVE_CANDLE_PATTERNS)
+    high_volatility = "high-volatility" in candle_patterns
+    weak_combined_floor = 0.18 if market_key == "IN" else 0.05
+    weak_combined = combined_score is not None and combined_score < weak_combined_floor
+    severe_technical_floor = 30.0 if market_key == "US" else 28.0
+    weak_technical_floor = 40.0 if market_key == "US" else 45.0
+    severe_technical = technical_score < severe_technical_floor
+    weak_technical = technical_score < weak_technical_floor
+    bearish_candle = bool(bearish_patterns)
+    volatile_without_constructive_candle = bool(high_volatility and not constructive_patterns)
+
+    reasons: list[str] = []
+    if severe_technical:
+        reasons.append("technical_score_severely_weak")
+    if weak_technical and weak_combined:
+        reasons.append("weak_technical_and_low_combined_score")
+    if weak_technical and bearish_candle:
+        reasons.append("weak_technical_with_bearish_candle")
+    if weak_combined and bearish_candle:
+        reasons.append("low_combined_score_with_bearish_candle")
+    if weak_technical and volatile_without_constructive_candle:
+        reasons.append("weak_technical_high_volatility_without_constructive_candle")
+    if setup_key == "breakout" and bearish_candle and candle_score < 45.0:
+        reasons.append("breakout_has_bearish_candle_confirmation")
+
+    if not reasons:
+        return None
+
+    if _strong_quality_confirmation(
+        best_setup=best_setup,
+        market_action=market_action,
+        rally_plan_promotion=rally_plan_promotion,
+        positive_news_catalyst=positive_news_catalyst,
+        has_big_runner_catalyst=has_big_runner_catalyst,
+        has_early_alpha_catalyst=has_early_alpha_catalyst,
+        has_rally_plan_catalyst=has_rally_plan_catalyst,
+        day_gain=day_gain,
+        range_position=range_position,
+        volume_ratio=volume_ratio,
+        technical_score=technical_score,
+        constructive_patterns=constructive_patterns,
+        severe_technical=severe_technical,
+    ):
+        return None
+
+    return {
+        "gate": "raw_opportunity_quality_floor",
+        "reason": "raw_opportunity_quality_floor_failed",
+        "value": {
+            "reasons": reasons,
+            "technical_score_pct": round(technical_score, 4),
+            "minimum_technical_score_pct": severe_technical_floor if severe_technical else weak_technical_floor,
+            "combined_score": round(combined_score, 4) if combined_score is not None else None,
+            "weak_combined_floor": weak_combined_floor,
+            "candle_score_pct": round(candle_score, 4),
+            "bearish_patterns": bearish_patterns,
+            "constructive_patterns": constructive_patterns,
+            "high_volatility": high_volatility,
+            "override_policy": "requires rally-plan price readiness, strong market-action evidence, or strong catalyst/playbook confirmation",
+        },
+    }
+
+
+def _strong_quality_confirmation(
+    *,
+    best_setup: dict[str, Any],
+    market_action: dict[str, Any],
+    rally_plan_promotion: dict[str, Any],
+    positive_news_catalyst: bool,
+    has_big_runner_catalyst: bool,
+    has_early_alpha_catalyst: bool,
+    has_rally_plan_catalyst: bool,
+    day_gain: float,
+    range_position: float,
+    volume_ratio: float,
+    technical_score: float,
+    constructive_patterns: list[str],
+    severe_technical: bool,
+) -> bool:
+    if has_rally_plan_catalyst and best_setup.get("source") == "rally_plan":
+        return True
+
+    event_types = {str(item or "").strip().upper() for item in market_action.get("event_types") or []}
+    market_action_score = _score_pct(market_action.get("score") or market_action.get("market_action_score"))
+    strong_market_action = bool(
+        market_action_score >= 88.0
+        or (
+            market_action_score >= 78.0
+            and event_types
+            & {
+                "TOP_GAINER",
+                "VOLUME_SHOCKER",
+                "52_WEEK_HIGH",
+                "ALL_TIME_HIGH",
+                "ONLY_BUYERS",
+                "PRICE_SHOCKER",
+                "STRONG_INTRADAY_GAIN",
+            }
+        )
+    )
+    strong_playbook = bool(has_big_runner_catalyst or has_early_alpha_catalyst)
+    strong_price_volume = day_gain >= 3.0 and range_position >= 0.82 and volume_ratio >= 2.0
+    strong_news = positive_news_catalyst and day_gain >= 1.2 and range_position >= 0.65 and volume_ratio >= 1.2
+    constructive = bool(constructive_patterns)
+
+    if severe_technical and not (constructive and strong_market_action and strong_price_volume):
+        return False
+    return bool(
+        strong_news
+        or has_rally_plan_catalyst
+        or (strong_market_action and (strong_price_volume or constructive))
+        or (strong_playbook and strong_price_volume and (technical_score >= 35.0 or constructive))
+    )
+
+
+_BEARISH_CANDLE_PATTERNS = {
+    "bearish-engulfing",
+    "bearish-volume-expansion",
+    "bearish-marubozu-like",
+    "evening-star-like",
+    "gravestone-doji-like",
+    "range-breakdown",
+    "shooting-star-like",
+    "three-black-crows-like",
+    "tweezer-top-like",
+}
+
+
+_CONSTRUCTIVE_CANDLE_PATTERNS = {
+    "bullish-engulfing",
+    "bullish-volume-expansion",
+    "bullish-marubozu-like",
+    "dragonfly-doji-like",
+    "hammer-like",
+    "morning-star-like",
+    "range-breakout",
+    "three-white-soldiers-like",
+    "tweezer-bottom-like",
+}
+
+
+def _candle_patterns(candle_summary: dict[str, Any], full: dict[str, Any]) -> set[str]:
+    patterns: set[str] = set()
+    for source in (
+        candle_summary,
+        full.get("candlestick_v2") if isinstance(full.get("candlestick_v2"), dict) else {},
+    ):
+        for item in source.get("patterns") or []:
+            text = str(item or "").strip().lower()
+            if text:
+                patterns.add(text)
+    return patterns
 
 
 def _truth_blocks(*, price: float | None, quote: dict[str, Any], liquidity: dict[str, Any]) -> list[dict[str, Any]]:

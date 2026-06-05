@@ -201,6 +201,87 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["decision_label"], "ENTRY_READY")
         self.assertEqual(model["entry_blockers"], [])
 
+    def test_india_raw_opportunity_blocks_weak_downtrend_live_momentum(self) -> None:
+        context = _raw_entry_context(
+            price=202.7,
+            setup="opening_ignition",
+            market_region="IN",
+            technical_score=-0.82,
+            day_gain_pct=4.2,
+            volume_ratio=3.2,
+            projected_volume_ratio=3.6,
+            day_range_position=0.94,
+            day_high_distance_pct=0.35,
+        )
+        context["combined_score"] = 0.057
+        context["candlestick_analysis"] = {"score": 0.0, "patterns": ["high-volatility"]}
+        context["opportunity_scan"]["score"] = 1.0
+        context["opportunity_scan"]["components"] = {"live_momentum": 1.0}
+        context["market_day_regime"] = {"state": REGIME_BROAD_RALLY, "score": 72.0}
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "raw_opportunity_quality_floor_failed")
+        self.assertEqual(model["entry_blockers"][0]["gate"], "raw_opportunity_quality_floor")
+        self.assertIn("technical_score_severely_weak", model["entry_blockers"][0]["value"]["reasons"])
+
+    def test_india_raw_opportunity_blocks_bearish_candle_low_combined_breakout(self) -> None:
+        context = _raw_entry_context(
+            price=711.4,
+            setup="52_week_high_volume_breakout",
+            market_region="IN",
+            technical_score=0.84,
+            day_gain_pct=4.0,
+            volume_ratio=3.4,
+            projected_volume_ratio=3.6,
+            day_range_position=0.91,
+            day_high_distance_pct=0.45,
+        )
+        context["combined_score"] = 0.188
+        context["candlestick_analysis"] = {"score": -0.25, "patterns": ["bearish-engulfing"]}
+        context["opportunity_scan"]["score"] = 1.0
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "raw_opportunity_quality_floor_failed")
+        self.assertIn("bearish-engulfing", model["entry_blockers"][0]["value"]["bearish_patterns"])
+
+    def test_india_raw_opportunity_allows_weak_technical_only_with_strong_market_action_confirmation(self) -> None:
+        context = _raw_entry_context(
+            price=198.0,
+            setup="big_runner_ignition",
+            market_region="IN",
+            technical_score=0.36,
+            day_gain_pct=4.8,
+            volume_ratio=3.4,
+            projected_volume_ratio=3.8,
+            day_range_position=0.94,
+            day_high_distance_pct=0.4,
+        )
+        context["combined_score"] = 0.10
+        context["candlestick_analysis"] = {
+            "score": 0.32,
+            "patterns": ["range-breakout", "bullish-volume-expansion", "high-volatility"],
+        }
+        context["opportunity_scan"]["score"] = 0.98
+        context["opportunity_scan"]["components"] = {"live_momentum": 0.95}
+        context["opportunity_scan"]["market_action"] = {
+            "available": True,
+            "event_types": ["TOP_GAINER", "VOLUME_SHOCKER"],
+            "score": 92.0,
+        }
+        context["market_day_regime"] = {"state": REGIME_BROAD_RALLY, "score": 76.0}
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertTrue(model["passed"], model)
+        self.assertEqual(model["decision_label"], "ENTRY_READY")
+        self.assertNotIn("raw_opportunity_quality_floor_failed", model["warnings"])
+
     def test_selective_rally_requires_sector_strength_and_catalyst_for_live_momentum(self) -> None:
         context = _raw_entry_context(
             price=108.0,

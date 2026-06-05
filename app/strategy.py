@@ -315,6 +315,7 @@ class StrategyEngine:
             context["market_day_regime"] = symbol_day_regime
             self._persist_pattern_state_updates(symbol, context)
             combined = deterministic_score(context)
+            context["combined_score"] = combined
             score_breakdown = deterministic_score_breakdown(context)
             action = self._action_from_context(symbol, combined, positions, context, candles_by_symbol)
             confidence = self._confidence_for_action(action, combined, macro_event_context, symbol_breadth)
