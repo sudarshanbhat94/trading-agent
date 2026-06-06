@@ -106,6 +106,56 @@ class RealMoneyReadinessTests(unittest.TestCase):
         self.assertEqual(audits[0]["event_type"], "live_order_veto")
         self.assertEqual(orders, [])
 
+    def test_live_follow_vetoes_when_readiness_is_blocked(self) -> None:
+        tmp, db, settings = self._db()
+        self.addCleanup(tmp.cleanup)
+        now = _now_iso()
+        details = {
+            "action": "BUY",
+            "market_region": "IN",
+            "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
+            "stop_loss": 95,
+            "targets": [{"label": "T1", "price": 108}],
+            "raw_entry_model": {
+                "version": "raw_opportunity_v1",
+                "passed": True,
+                "decision_label": "ENTRY_READY",
+                "auto_follow_ready": True,
+                "raw_score": 90,
+                "grade": "A",
+                "setup_family": "live_momentum",
+                "market_region": "IN",
+                "trade_plan": {"stop_loss": 95, "targets": [{"label": "T1", "price": 108}]},
+                "truth_blocks": [],
+                "entry_blockers": [],
+            },
+        }
+        with db.connect() as conn:
+            conn.execute("insert into universe(symbol, name, exchange, enabled) values ('LIVEVETO','Live Veto','NSE',1)")
+            conn.execute(
+                """
+                insert into signal_ideas (
+                    first_seen_at, last_seen_at, symbol, strategy, signal_type, status,
+                    entry_price, latest_price, confidence, confluence, overall_score_pct,
+                    overall_grade, reason, details_json
+                )
+                values (?, ?, 'LIVEVETO', 'unit', 'BUY', 'ACTIVE', 100, 100, 0.9, 22, 90, 'A', 'unit', ?)
+                """,
+                (now, now, json.dumps(details)),
+            )
+            idea_id = int(conn.execute("select last_insert_rowid() as id").fetchone()["id"])
+
+        with self.assertRaisesRegex(ValueError, "live_readiness_blocked"):
+            db.follow_signal_idea(1, idea_id, mode="LIVE", amount=10_000, cost_settings=settings)
+
+        audits = db.latest_trade_audit_events()
+        follows = db.user_followed_signal_ideas(1, 20)
+
+        self.assertEqual(audits[0]["event_type"], "live_follow_veto")
+        self.assertEqual(audits[0]["status"], "LIVE_VETOED")
+        self.assertEqual(audits[0]["reason"], "live_readiness_blocked")
+        self.assertEqual(follows, [])
+
     def test_buy_decision_is_stamped_with_market_region_from_universe(self) -> None:
         tmp, db, _settings = self._db()
         self.addCleanup(tmp.cleanup)

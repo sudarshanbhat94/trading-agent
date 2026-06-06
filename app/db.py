@@ -34,6 +34,7 @@ from .trade_economics import (
     exit_economics,
     should_block_low_value_profit_exit,
 )
+from .trading_readiness import live_order_gate
 from .trading_rules import _score_grade
 
 
@@ -4020,6 +4021,50 @@ class Database:
                         f"notional={entry_economics.get('notional')},"
                         f"minimum={entry_economics.get('minimum_notional')}"
                     )
+            if mode == "LIVE":
+                if cost_settings is None:
+                    live_gate = {
+                        "passed": False,
+                        "reason": "live_readiness_blocked",
+                        "blocking_reasons": ["live_settings_missing"],
+                    }
+                else:
+                    try:
+                        live_gate = live_order_gate(self, cost_settings, market_region=market_region)
+                    except Exception as exc:
+                        live_gate = {
+                            "passed": False,
+                            "reason": "live_readiness_check_failed",
+                            "blocking_reasons": [f"{exc.__class__.__name__}: {exc}"],
+                        }
+                if not live_gate.get("passed"):
+                    blocking_reasons = [
+                        str(item or "")
+                        for item in (live_gate.get("blocking_reasons") or [live_gate.get("reason") or "live_readiness_blocked"])
+                        if str(item or "").strip()
+                    ]
+                    self.insert_trade_audit_event(
+                        symbol=str(idea["symbol"] or ""),
+                        event_type="live_follow_veto",
+                        side="BUY",
+                        qty=qty,
+                        price=latest_price,
+                        status="LIVE_VETOED",
+                        reason="live_readiness_blocked",
+                        details={
+                            "audit_version": 1,
+                            "user_id": user_id,
+                            "idea_id": idea_id,
+                            "mode": mode,
+                            "is_broker_order": False,
+                            "blocking_reasons": blocking_reasons,
+                            "readiness_status": (live_gate.get("readiness") or {}).get("status"),
+                            "quality_gate": quality_gate,
+                            "entry_economics": entry_economics,
+                            "market_region": market_region,
+                        },
+                    )
+                    raise ValueError(f"live_readiness_blocked:{','.join(blocking_reasons[:4])}")
             invested = float(qty * latest_price)
             status = "ACTIVE" if mode != "LIVE" else "LIVE_REQUESTED"
             existing_follow = conn.execute(
