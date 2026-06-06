@@ -9,7 +9,7 @@ from pathlib import Path
 from app.config import CONFIG_SCHEMA, Settings, settings_from_overrides
 from app.db import Database
 from app.models import Decision, utc_now
-from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
+from app.signal_quality import active_follow_safety_gate, auto_follow_quality_gate, fresh_buy_quality_gate
 
 
 class RawSignalQualityTests(unittest.TestCase):
@@ -1430,6 +1430,67 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(history["exit_price"], 96.0)
         self.assertEqual(history["realized_pnl"], -40.0)
         self.assertEqual(history["exit_reason"], "active_follow_hard_blocked")
+
+    def test_active_follow_safety_blocks_legacy_raw_entry_contract(self) -> None:
+        gate = active_follow_safety_gate(
+            {
+                "mode": "PAPER",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "latest_price": 100,
+                "overall_score_pct": 92,
+                "overall_grade": "A",
+                "confluence": 24,
+                "details": {
+                    "market_region": "US",
+                    "raw_entry_model": {
+                        "version": "raw_entry_model_v1",
+                        "decision_label": "WATCH",
+                        "auto_follow_ready": False,
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "active_follow_raw_entry_model_missing")
+
+    def test_stale_active_buy_with_follow_is_downgraded_to_watch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=90,
+                grade="A",
+            )
+            stale_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+            now = utc_now()
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set last_seen_at = ? where id = ?", (stale_at, idea_id))
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 10, 100, 100, 1000, 0, 0, ?, ?, '{}')
+                    """,
+                    (idea_id, now, now),
+                )
+
+            downgraded = db.downgrade_non_tradeable_buy_ideas(reason="unit_stale_buy_cleanup")
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where id = ?", (idea_id,)).fetchone()
+
+        self.assertEqual(len(downgraded), 1)
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
+        details = json.loads(row["details_json"])
+        self.assertEqual(details["quality_downgrade"]["reason"], "active_buy_stale_signal")
+        self.assertEqual(details["quality_downgrade"]["cleanup_reason"], "unit_stale_buy_cleanup")
 
     def test_manual_paper_follow_allows_strong_buy_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

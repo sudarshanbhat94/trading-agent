@@ -643,6 +643,33 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
     if hard_blocked or hard_blocks or phase3_blocks:
         return _blocked("active_follow_hard_blocked", "Followed position has explicit hard invalidation.")
 
+    if mode in {"PAPER", "LIVE"}:
+        raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
+        market_region = _market_region(item, details, raw)
+        if market_region not in {"IN", "US"}:
+            return _blocked(
+                "active_follow_market_region_missing",
+                "Active followed positions must retain a provable market before they can remain open.",
+                market_region=market_region or None,
+            )
+        if raw.get("version") not in _RAW_OPPORTUNITY_VERSIONS:
+            return _blocked(
+                "active_follow_raw_entry_model_missing",
+                "Active followed positions must remain tied to the raw opportunity execution contract.",
+                raw_opportunity_version=raw.get("version"),
+                market_region=market_region,
+            )
+        decision_label = _upper(raw.get("decision_label"))
+        if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
+            return _blocked(
+                "active_follow_raw_opportunity_not_entry_ready",
+                "Active followed positions are no longer ENTRY_READY; exit and wait for a fresh clean BUY.",
+                raw_opportunity_version=raw.get("version"),
+                decision_label=decision_label or raw.get("decision_label"),
+                auto_follow_ready=raw.get("auto_follow_ready"),
+                market_region=market_region,
+            )
+
     risk_flags = _risk_flags(item, details)
     severe_flags = _severe_risk_flags(risk_flags)
     if severe_flags:

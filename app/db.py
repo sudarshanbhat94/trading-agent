@@ -18,8 +18,11 @@ from .models import Candle, Decision, Quote, utc_now
 from .market_regions import INDIA_EXCHANGES, market_session_for_region, normalize_market_region
 from .opportunity_state import is_signal_candidate_state, opportunity_state_from_signal_details
 from .signal_quality import (
+    ACTIONABLE_MIN_CONFLUENCE,
     AUTO_FOLLOW_REENTRY_COOLDOWN_HOURS,
     DUPLICATE_BUY_COOLDOWN_HOURS,
+    FRESH_BUY_ALLOWED_GRADES,
+    FRESH_BUY_MIN_SCORE,
     FRESH_BUY_WINDOW_MINUTES,
     active_follow_safety_gate,
     auto_follow_quality_gate,
@@ -420,6 +423,38 @@ def _active_follow_stale_signal_gate(item: dict[str, Any], now_utc: datetime) ->
         "last_seen_at": last_seen.isoformat(),
         "age_hours": round(age_hours, 2),
         "max_age_hours": max_age_hours,
+    }
+
+
+def _buy_idea_stale_signal_gate(item: dict[str, Any], now_utc: datetime) -> dict[str, Any] | None:
+    last_seen = _parse_dt(item.get("last_seen_at"))
+    if last_seen is None:
+        return {
+            "passed": False,
+            "fresh_buy_allowed": False,
+            "reason": "active_buy_stale_signal",
+            "message": "BUY row has no current signal timestamp; keep it as WATCH until a fresh scan re-promotes it.",
+            "min_score": FRESH_BUY_MIN_SCORE,
+            "min_confluence": ACTIONABLE_MIN_CONFLUENCE,
+            "allowed_grades": sorted(FRESH_BUY_ALLOWED_GRADES),
+        }
+    now = now_utc.astimezone(timezone.utc)
+    age_minutes = (now - last_seen).total_seconds() / 60.0
+    if age_minutes < -5.0:
+        return None
+    if age_minutes <= FRESH_BUY_WINDOW_MINUTES:
+        return None
+    return {
+        "passed": False,
+        "fresh_buy_allowed": False,
+        "reason": "active_buy_stale_signal",
+        "message": "BUY row is outside the fresh-entry window; keep it as WATCH until a fresh scan re-promotes it.",
+        "last_seen_at": last_seen.isoformat(),
+        "age_minutes": round(age_minutes, 2),
+        "max_age_minutes": FRESH_BUY_WINDOW_MINUTES,
+        "min_score": FRESH_BUY_MIN_SCORE,
+        "min_confluence": ACTIONABLE_MIN_CONFLUENCE,
+        "allowed_grades": sorted(FRESH_BUY_ALLOWED_GRADES),
     }
 
 
@@ -4197,9 +4232,11 @@ class Database:
             for row in rows:
                 item = _row_dict(row)
                 idea_details = self._decode_json(item.get("idea_details_json"))
+                market_region = _payload_market_region(idea_details) or normalize_market_region(item.get("market_region"), default="")
+                gate_details = {**idea_details, "market_region": idea_details.get("market_region") or market_region}
                 quality_gate = _active_follow_stale_signal_gate(item, now_dt) or active_follow_safety_gate(
                     {
-                        "action": idea_details.get("action") or item.get("signal_type"),
+                        "action": gate_details.get("action") or item.get("signal_type"),
                         "mode": item.get("mode"),
                         "signal_type": item.get("signal_type"),
                         "status": item.get("idea_status"),
@@ -4209,9 +4246,10 @@ class Database:
                         "overall_score_pct": item.get("overall_score_pct"),
                         "overall_grade": item.get("overall_grade"),
                         "confluence": item.get("confluence"),
-                        "data_readiness": idea_details.get("data_readiness"),
-                        "hard_blocked": idea_details.get("hard_blocked"),
-                        "details": idea_details,
+                        "data_readiness": gate_details.get("data_readiness"),
+                        "hard_blocked": gate_details.get("hard_blocked"),
+                        "market_region": market_region,
+                        "details": gate_details,
                     }
                 )
                 if quality_gate.get("passed"):
@@ -4445,23 +4483,27 @@ class Database:
         """
 
         downgraded: list[dict[str, Any]] = []
-        now = utc_now()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                select i.*, {_market_region_case("u")} as market_region
+                select
+                    i.*,
+                    {_market_region_case("u")} as market_region,
+                    u.symbol as universe_symbol,
+                    (
+                        select count(1)
+                        from user_idea_follows f
+                        where f.idea_id = i.id
+                          and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
+                          and upper(f.mode) in ('PAPER','LIVE')
+                          and f.qty > 0
+                    ) as active_follow_count
                 from signal_ideas i
                 left join universe u on u.symbol = i.symbol
                 where i.signal_type = 'BUY'
                   and i.status in ('ACTIVE','MONITORING')
-                  and not exists (
-                      select 1
-                      from user_idea_follows f
-                      where f.idea_id = i.id
-                        and f.status in ('ACTIVE','LIVE_REQUESTED','LIVE_EXIT_REQUESTED')
-                        and upper(f.mode) in ('PAPER','LIVE')
-                        and f.qty > 0
-                  )
                 order by i.last_seen_at desc, i.id desc
                 """
             ).fetchall()
@@ -4484,7 +4526,7 @@ class Database:
                     "market_region": market_region,
                     "details": {**details, "market_region": details.get("market_region") or market_region},
                 }
-                quality_gate = auto_follow_quality_gate(gate_item)
+                quality_gate = _buy_idea_stale_signal_gate(item, now_dt) or auto_follow_quality_gate(gate_item)
                 if quality_gate.get("passed"):
                     continue
                 readiness_gate = trade_readiness_gate(gate_item)
