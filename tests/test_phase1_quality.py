@@ -21,6 +21,7 @@ class RawSignalQualityTests(unittest.TestCase):
             "overall_score_pct": 42,
             "overall_grade": "C",
             "details": {
+                "market_region": "IN",
                 "raw_entry_model": {
                     "version": "raw_opportunity_v1",
                     "legacy_decision_logic_removed": True,
@@ -75,15 +76,81 @@ class RawSignalQualityTests(unittest.TestCase):
 
         self.assertTrue(gate["passed"])
         self.assertEqual(gate["reason"], "raw_opportunity_ready")
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "auto_follow_score_below_strict_minimum")
+
+    def test_raw_entry_ready_with_clean_execution_plan_auto_follows(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "latest_price": 100.0,
+            "overall_score_pct": 88,
+            "overall_grade": "A",
+            "confluence": 24,
+            "details": {
+                "market_region": "IN",
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "legacy_decision_logic_removed": True,
+                    "raw_score": 88,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "setup_family": "live_momentum",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                    "market_region": "IN",
+                },
+            },
+        }
+
+        auto = auto_follow_quality_gate(item)
+
         self.assertTrue(auto["passed"])
         self.assertEqual(auto["reason"], "raw_opportunity_auto_follow_ready")
+        self.assertEqual(auto["auto_follow_contract"], "raw_opportunity_strict_execution_v1")
+
+    def test_active_buy_without_market_region_is_blocked(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "latest_price": 100.0,
+                "details": {
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": 90,
+                    }
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "market_region_missing")
+
+    def test_legacy_buy_without_raw_entry_model_is_blocked(self) -> None:
+        gate = fresh_buy_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "latest_price": 100.0,
+                "details": {"market_region": "IN"},
+            }
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "raw_entry_model_missing")
 
     def test_truth_checks_still_reject_missing_price_or_non_buy(self) -> None:
         missing_price = fresh_buy_quality_gate({"signal_type": "BUY", "status": "ACTIVE"})
         watch = fresh_buy_quality_gate({"signal_type": "WATCH", "status": "WATCH", "latest_price": 100})
 
         self.assertFalse(missing_price["passed"])
-        self.assertEqual(missing_price["reason"], "price_missing")
+        self.assertEqual(missing_price["reason"], "market_region_missing")
         self.assertFalse(watch["passed"])
         self.assertEqual(watch["reason"], "not_fresh_buy_signal")
 
@@ -878,7 +945,7 @@ class Phase1QualityGateTests(unittest.TestCase):
 
 
 class Phase1FollowSafetyTests(unittest.TestCase):
-    def test_raw_buy_decisions_are_not_downgraded_by_legacy_quality_gate(self) -> None:
+    def test_buy_decisions_without_raw_authority_are_downgraded_to_watch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -913,11 +980,11 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 row = conn.execute("select * from signal_ideas where symbol = 'WEAKBUY'").fetchone()
 
         self.assertIsNotNone(row)
-        self.assertEqual(row["signal_type"], "BUY")
-        self.assertEqual(row["status"], "ACTIVE")
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
         details = json.loads(row["details_json"])
-        self.assertNotIn("quality_downgrade", details)
-        self.assertEqual(details["quality_gate"]["reason"], "legacy_entry_gates_removed")
+        self.assertEqual(details["quality_downgrade"]["to"], "WATCH")
+        self.assertEqual(details["quality_gate"]["reason"], "market_region_missing")
 
     def test_hold_refresh_preserves_old_buy_as_monitor_not_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1372,7 +1439,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 db,
                 signal_type="BUY",
                 status="ACTIVE",
-                score=82,
+                score=88,
                 grade="A",
             )
 
@@ -1385,6 +1452,35 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["display_signal"], "Paper Entered")
         self.assertEqual(latest["trade_state"], "PAPER_ENTERED")
         self.assertEqual(latest["execution_state"], "PAPER_ENTERED")
+
+    def test_manual_paper_follow_rejects_buy_without_executable_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=88,
+                grade="A",
+                details_extra={"targets": [], "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "passed": True,
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "raw_score": 88,
+                    "grade": "A",
+                    "setup_family": "live_momentum",
+                    "market_region": "IN",
+                    "trade_plan": {"stop_loss": 95, "targets": []},
+                    "truth_blocks": [],
+                    "entry_blockers": [],
+                    "legacy_decision_logic_removed": True,
+                }},
+            )
+
+            with self.assertRaisesRegex(ValueError, "phase1_quality_gate:auto_follow_target_missing"):
+                db.follow_signal_idea(1, idea_id, mode="PAPER", amount=10_000)
 
     def test_duplicate_active_buy_is_labeled_as_already_active_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1510,8 +1606,30 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             "overall_grade": grade,
             "hard_blocked": False,
             "hard_blocks": [],
-            "data_readiness": {"trade_decision_ready": True},
+            "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
         }
+        if signal_type == "BUY":
+            details.update(
+                {
+                    "market_region": "IN",
+                    "stop_loss": 95,
+                    "targets": [{"price": 108}],
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": True,
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": score,
+                        "grade": grade,
+                        "setup_family": "live_momentum",
+                        "market_region": "IN",
+                        "trade_plan": {"stop_loss": 95, "targets": [{"price": 108}]},
+                        "truth_blocks": [],
+                        "entry_blockers": [],
+                        "legacy_decision_logic_removed": True,
+                    },
+                }
+            )
         if details_extra:
             details.update(details_extra)
         with db.connect() as conn:

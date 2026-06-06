@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -8,6 +9,8 @@ from pathlib import Path
 
 from app.config import Settings
 from app.db import Database
+from app.models import Decision, utc_now
+from app.order_router import UpstoxOrderRouter
 from app.sector_rotation import _sector_for_row
 from app.signal_quality import fresh_buy_quality_gate
 from app.trade_economics import auto_follow_sizing, exit_economics
@@ -69,6 +72,95 @@ class RealMoneyReadinessTests(unittest.TestCase):
         self.assertEqual(audits[0]["event_type"], "order")
         self.assertEqual(audits[0]["qty"], 3)
 
+    def test_live_router_vetoes_when_readiness_is_blocked(self) -> None:
+        tmp, db, base = self._db()
+        self.addCleanup(tmp.cleanup)
+        settings = replace(
+            base,
+            execution_mode="upstox_live",
+            live_trading_enabled=True,
+            live_trading_confirm="I_UNDERSTAND_THIS_PLACES_REAL_ORDERS",
+            upstox_access_token="token",
+        )
+        router = UpstoxOrderRouter(settings, db)
+        decision = Decision(
+            symbol="TEST",
+            action="BUY",
+            confidence=0.9,
+            price=100.0,
+            technical_score=90,
+            sentiment_score=0.1,
+            reason="unit",
+            asof=utc_now(),
+            strategy="unit",
+            details_json='{"market_region":"IN"}',
+        )
+
+        router.route(decision, 10)
+        audits = db.latest_trade_audit_events()
+        orders = db.latest_order_summaries()
+
+        self.assertEqual(audits[0]["symbol"], "TEST")
+        self.assertEqual(audits[0]["status"], "LIVE_VETOED")
+        self.assertEqual(audits[0]["reason"], "live_readiness_blocked")
+        self.assertEqual(audits[0]["event_type"], "live_order_veto")
+        self.assertEqual(orders, [])
+
+    def test_buy_decision_is_stamped_with_market_region_from_universe(self) -> None:
+        tmp, db, _settings = self._db()
+        self.addCleanup(tmp.cleanup)
+        with db.connect() as conn:
+            conn.execute("insert into universe(symbol, name, exchange, enabled) values ('STAMPIN','Stamp India','NSE',1)")
+        db.insert_decisions(
+            [
+                Decision(
+                    symbol="STAMPIN",
+                    action="BUY",
+                    confidence=0.9,
+                    price=100.0,
+                    technical_score=90,
+                    sentiment_score=0.1,
+                    reason="unit",
+                    asof=utc_now(),
+                    strategy="unit",
+                    details_json='{"score_breakdown":{"combined":0.4}}',
+                )
+            ]
+        )
+
+        row = db.decision_by_id(1)
+        details = json.loads(row["details_json"])
+
+        self.assertEqual(row["action"], "BUY")
+        self.assertEqual(details["market_region"], "IN")
+        self.assertEqual(details["context"]["market_region"], "IN")
+
+    def test_buy_decision_without_provable_market_is_safe_hold(self) -> None:
+        tmp, db, _settings = self._db()
+        self.addCleanup(tmp.cleanup)
+        db.insert_decisions(
+            [
+                Decision(
+                    symbol="UNKNOWNMARKET",
+                    action="BUY",
+                    confidence=0.9,
+                    price=100.0,
+                    technical_score=90,
+                    sentiment_score=0.1,
+                    reason="unit",
+                    asof=utc_now(),
+                    strategy="unit",
+                    details_json='{"score_breakdown":{"combined":0.4}}',
+                )
+            ]
+        )
+
+        row = db.decision_by_id(1)
+        details = json.loads(row["details_json"])
+
+        self.assertEqual(row["action"], "HOLD")
+        self.assertEqual(details["market_region_contract"]["reason"], "market_region_missing")
+
     def test_qty_zero_invariant_flags_active_paper_follow_only(self) -> None:
         tmp, db, _settings = self._db()
         self.addCleanup(tmp.cleanup)
@@ -113,7 +205,7 @@ class RealMoneyReadinessTests(unittest.TestCase):
         self.assertEqual(_sector_for_row({"symbol": "JPPOWER", "sector": "NSE Listed Equity"}), "Power Generation")
         self.assertEqual(_sector_for_row({"symbol": "FINCABLES", "sector": "Equity"}), "Electrical Equipment")
 
-    def test_buy_truth_check_no_longer_blocks_old_soft_gate_cases(self) -> None:
+    def test_buy_truth_check_blocks_legacy_buy_without_raw_authority(self) -> None:
         base = {
             "signal_type": "BUY",
             "status": "ACTIVE",
@@ -122,7 +214,7 @@ class RealMoneyReadinessTests(unittest.TestCase):
             "overall_grade": "A",
             "confluence": 24,
             "fresh_action": "BUY_NOW",
-            "details": {"data_readiness": {"trade_decision_ready": True}},
+            "details": {"market_region": "IN", "data_readiness": {"trade_decision_ready": True}},
         }
 
         uc = fresh_buy_quality_gate({**base, "details": {**base["details"], "opportunity_scan": {"only_buyers": True}}})
@@ -130,11 +222,11 @@ class RealMoneyReadinessTests(unittest.TestCase):
         pivot = fresh_buy_quality_gate({**base, "details": {**base["details"], "opportunity_scan": {"pivot_extension_pct": 6}}})
         squeeze = fresh_buy_quality_gate({**base, "details": {**base["details"], "opportunity_scan": {"setup": "short_covering_squeeze"}}})
 
-        self.assertTrue(uc["passed"])
-        self.assertTrue(late["passed"])
-        self.assertTrue(pivot["passed"])
-        self.assertTrue(squeeze["passed"])
-        self.assertEqual(uc["reason"], "legacy_entry_gates_removed")
+        self.assertFalse(uc["passed"])
+        self.assertFalse(late["passed"])
+        self.assertFalse(pivot["passed"])
+        self.assertFalse(squeeze["passed"])
+        self.assertEqual(uc["reason"], "raw_entry_model_missing")
 
     def test_replay_validation_records_named_symbols_without_llm(self) -> None:
         tmp, db, _settings = self._db()

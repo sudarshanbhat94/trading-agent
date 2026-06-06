@@ -213,12 +213,10 @@ class MonitorScopeTests(unittest.TestCase):
             followed = db.user_followed_signal_ideas(user_id, 20, market_region="IN")
 
         self.assertEqual(idea["symbol"], "IFCI")
-        self.assertEqual(idea["signal_type"], "BUY")
-        self.assertEqual(idea["status"], "ACTIVE")
-        self.assertEqual(idea["fresh_action"], "BUY_NOW")
-        self.assertEqual(summary["followed"], 1, summary)
-        self.assertEqual(len(followed), 1)
-        self.assertEqual(followed[0]["symbol"], "IFCI")
+        self.assertEqual(idea["signal_type"], "WATCH")
+        self.assertEqual(idea["status"], "WATCH")
+        self.assertEqual(summary["followed"], 0, summary)
+        self.assertEqual(len(followed), 0)
 
     def test_shared_auto_paper_follows_clean_india_buy_with_trade_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -437,6 +435,27 @@ class MonitorScopeTests(unittest.TestCase):
 
     @staticmethod
     def _clean_india_auto_follow_buy(symbol: str) -> Decision:
+        trade_plan = {
+            "entry_zone": [99.0, 101.0],
+            "stop_loss": 96.0,
+            "targets": [{"price": 108.0, "distance_pct": 8.0}],
+        }
+        raw_entry = {
+            "version": "raw_opportunity_v1",
+            "passed": True,
+            "action": "BUY",
+            "reason": "raw_opportunity_ready",
+            "decision_label": "ENTRY_READY",
+            "auto_follow_ready": True,
+            "raw_score": 90.0,
+            "grade": "A",
+            "setup_family": "live_momentum",
+            "trade_plan": trade_plan,
+            "market_region": "IN",
+            "truth_blocks": [],
+            "entry_blockers": [],
+            "legacy_decision_logic_removed": True,
+        }
         details = {
             "action_reason": "clean India auto-follow buy",
             "score_breakdown": {"combined": 0.50, "score_percent": 90.0},
@@ -470,20 +489,22 @@ class MonitorScopeTests(unittest.TestCase):
                     "sources": {"quote": "upstox-live"},
                 },
                 "decision_gate_context": {"failed_gates": []},
+                "raw_entry_model": raw_entry,
                 "full_spectrum_analysis": {
                     "confluence_score": {"total": 24, "tier": "TRADE_SIGNAL"},
                     "signal_plan": {"direction": "BUY", "decision_readiness": "actionable"},
-                    "trade_plan": {
-                        "entry_zone": [99.0, 101.0],
-                        "stop_loss": 96.0,
-                        "targets": [{"price": 108.0, "distance_pct": 8.0}],
-                    },
+                    "trade_plan": trade_plan,
                     "risk_overrides": {"flags": []},
                     "strategy_logic_filters": {"passed": True, "hard_blocks": []},
                     "breakout_quality": {"breakout_quality": "not_breakout", "volume_confirmation": True},
                     "entry_quality": {"entry_grade": "A"},
                 },
             },
+        }
+        details["context"]["decision_gate_context"] = {
+            "failed_gates": [],
+            "raw_entry_model": raw_entry,
+            "fresh_trade_authority": raw_entry,
         }
         return Decision(
             symbol=symbol,

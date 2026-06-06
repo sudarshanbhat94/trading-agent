@@ -22,6 +22,7 @@ from .signal_quality import (
     DUPLICATE_BUY_COOLDOWN_HOURS,
     FRESH_BUY_WINDOW_MINUTES,
     active_follow_safety_gate,
+    auto_follow_quality_gate,
     fresh_buy_quality_gate,
     trade_readiness_gate,
 )
@@ -54,6 +55,111 @@ def _market_region_where(alias: str, market_region: str | None) -> tuple[str, li
         f"{alias}.exchange is not null and upper(coalesce({alias}.exchange,'')) not in ({placeholders})",
         sorted(INDIA_EXCHANGES),
     )
+
+
+def _payload_market_region(payload: dict[str, Any]) -> str:
+    for source in _payload_market_sources(payload):
+        for key in ("market_region", "market"):
+            region = normalize_market_region(source.get(key), default="")
+            if region in {"IN", "US"}:
+                return region
+    return ""
+
+
+def _payload_market_sources(payload: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    if isinstance(payload, dict):
+        yield payload
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    if context:
+        yield context
+    for parent in (payload, context):
+        data_readiness = parent.get("data_readiness") if isinstance(parent.get("data_readiness"), dict) else {}
+        if data_readiness:
+            yield data_readiness
+        raw_entry = parent.get("raw_entry_model") if isinstance(parent.get("raw_entry_model"), dict) else {}
+        if raw_entry:
+            yield raw_entry
+        opportunity_scan = parent.get("opportunity_scan") if isinstance(parent.get("opportunity_scan"), dict) else {}
+        if opportunity_scan:
+            yield opportunity_scan
+        decision_gate = parent.get("decision_gate_context") if isinstance(parent.get("decision_gate_context"), dict) else {}
+        raw_from_gate = decision_gate.get("raw_entry_model") if isinstance(decision_gate.get("raw_entry_model"), dict) else {}
+        if raw_from_gate:
+            yield raw_from_gate
+    risk_gates = payload.get("risk_gates") if isinstance(payload.get("risk_gates"), dict) else {}
+    decision_gate = risk_gates.get("decision_gate_context") if isinstance(risk_gates.get("decision_gate_context"), dict) else {}
+    if decision_gate:
+        yield decision_gate
+    raw_from_gate = decision_gate.get("raw_entry_model") if isinstance(decision_gate.get("raw_entry_model"), dict) else {}
+    if raw_from_gate:
+        yield raw_from_gate
+
+
+def _symbol_market_region_from_universe(conn: sqlite3.Connection, symbol: Any) -> str:
+    symbol_value = str(symbol or "").strip().upper()
+    if not symbol_value:
+        return ""
+    row = conn.execute(
+        f"""
+        select {_market_region_case("u")} as market_region
+        from universe u
+        where upper(u.symbol) = ?
+        order by enabled desc
+        limit 1
+        """,
+        (symbol_value,),
+    ).fetchone()
+    return normalize_market_region(row["market_region"], default="") if row else ""
+
+
+def _stamp_market_region(payload: dict[str, Any], market_region: str) -> dict[str, Any]:
+    region = normalize_market_region(market_region, default="")
+    if region not in {"IN", "US"}:
+        return payload
+    payload["market_region"] = region
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    if not context:
+        context = {}
+        payload["context"] = context
+    context.setdefault("market_region", region)
+    for parent in (payload, context):
+        data_readiness = parent.get("data_readiness") if isinstance(parent.get("data_readiness"), dict) else {}
+        if data_readiness:
+            data_readiness.setdefault("market_region", region)
+        opportunity_scan = parent.get("opportunity_scan") if isinstance(parent.get("opportunity_scan"), dict) else {}
+        if opportunity_scan:
+            opportunity_scan.setdefault("market_region", region)
+        raw_entry = parent.get("raw_entry_model") if isinstance(parent.get("raw_entry_model"), dict) else {}
+        if raw_entry:
+            raw_entry.setdefault("market_region", region)
+    return payload
+
+
+def _enforce_decision_market_contract(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    try:
+        audit = json.loads(row.get("details_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        audit = {}
+    if not isinstance(audit, dict):
+        audit = {}
+    market_region = _payload_market_region(audit) or _symbol_market_region_from_universe(conn, row.get("symbol"))
+    if market_region in {"IN", "US"}:
+        row["details_json"] = json.dumps(_stamp_market_region(audit, market_region), default=str, separators=(",", ":"))
+        return
+    if str(row.get("action") or "").upper() != "BUY":
+        return
+    audit["final_action"] = "HOLD"
+    audit["action_reason"] = "BUY blocked because market_region could not be proven from signal details or universe."
+    audit["market_region_contract"] = {
+        "passed": False,
+        "reason": "market_region_missing",
+        "symbol": row.get("symbol"),
+        "blocked_action": "BUY",
+    }
+    row["action"] = "HOLD"
+    row["confidence"] = min(float(row.get("confidence") or 0.0), 0.1)
+    row["reason"] = "safe hold: BUY missing market_region"
+    row["details_json"] = json.dumps(audit, default=str, separators=(",", ":"))
 
 
 def _is_cross_market_duplicate(existing_exchange: Any, incoming_exchange: Any) -> bool:
@@ -1536,9 +1642,10 @@ class Database:
 
     def _demote_non_actionable_buy_signal_ideas(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
-            """
-            select id, status, reason, details_json
-            from signal_ideas
+            f"""
+            select i.*, {_market_region_case("u")} as market_region, u.symbol as universe_symbol
+            from signal_ideas i
+            left join universe u on u.symbol = i.symbol
             where upper(signal_type) = 'BUY'
               and upper(status) in ('ACTIVE','MONITORING')
             """
@@ -1546,28 +1653,48 @@ class Database:
         for row in rows:
             details = self._decode_json(row["details_json"])
             action = str(details.get("action") or details.get("latest_system_action") or "").upper()
-            quality_gate = details.get("quality_gate") if isinstance(details.get("quality_gate"), dict) else {}
             continuity = details.get("signal_continuity") if isinstance(details.get("signal_continuity"), dict) else {}
-            quality_passed = quality_gate.get("passed") is True
-            if action == "BUY" and quality_passed:
-                continue
             if continuity.get("preserved") and str(continuity.get("latest_engine_action") or "").upper() in {"HOLD", "NO_TRADE", "UNKNOWN"}:
                 continue
+            market_region = _payload_market_region(details)
+            if not market_region and row["universe_symbol"]:
+                market_region = normalize_market_region(row["market_region"], default="")
+            gate_item = {
+                "action": action or row["signal_type"],
+                "signal_type": row["signal_type"],
+                "status": row["status"],
+                "latest_price": row["latest_price"],
+                "overall_score_pct": row["overall_score_pct"],
+                "overall_grade": row["overall_grade"],
+                "confluence": row["confluence"],
+                "data_readiness": details.get("data_readiness"),
+                "hard_blocked": details.get("hard_blocked"),
+                "market_region": market_region,
+                "details": {**details, "market_region": details.get("market_region") or market_region},
+            }
+            strict_gate = auto_follow_quality_gate(gate_item)
+            if action == "BUY" and strict_gate.get("passed"):
+                continue
+            downgrade_reason = "latest_state_not_fresh_buy" if action != "BUY" else str(strict_gate.get("reason") or "strict_execution_contract_failed")
             reason = (
-                str(quality_gate.get("message") or quality_gate.get("reason") or "").strip()
-                or f"Latest engine action is {action or 'not BUY'}."
+                f"Latest engine action is {action or 'not BUY'}."
+                if action != "BUY"
+                else str(strict_gate.get("message") or strict_gate.get("reason") or "Strict execution contract failed.").strip()
             )
+            details["quality_gate"] = strict_gate
+            details["auto_follow_gate"] = strict_gate
+            details["market_region"] = details.get("market_region") or market_region
             details["signal_continuity"] = {
                 "preserved": False,
                 "previous_signal_type": "BUY",
                 "previous_status": row["status"],
                 "latest_engine_action": action or "UNKNOWN",
-                "reason": "Old BUY row demoted because the latest deterministic state is not a fresh actionable BUY.",
+                "reason": "Old BUY row demoted because the latest deterministic state is not a fresh executable BUY.",
             }
             details["quality_downgrade"] = {
                 "from": "BUY",
                 "to": "WATCH",
-                "reason": "latest_state_not_fresh_buy",
+                "reason": downgrade_reason,
                 "message": reason,
             }
             details["latest_system_action"] = action or "UNKNOWN"
@@ -2725,11 +2852,12 @@ class Database:
         rows = [decision.to_dict() for decision in decisions]
         if not rows:
             return
-        for row in rows:
-            raw_details = row.get("details_json") or "{}"
-            if str(row.get("action") or "").upper() == "HOLD" and len(raw_details) > 5000:
-                row["details_json"] = _compact_decision_details(row, raw_details)
         with self.connect() as conn:
+            for row in rows:
+                _enforce_decision_market_contract(conn, row)
+                raw_details = row.get("details_json") or "{}"
+                if str(row.get("action") or "").upper() == "HOLD" and len(raw_details) > 5000:
+                    row["details_json"] = _compact_decision_details(row, raw_details)
             conn.executemany(
                 """
                 insert into decisions (
@@ -3781,7 +3909,7 @@ class Database:
         with self.connect() as conn:
             idea = conn.execute(
                 f"""
-                select i.*, {_market_region_case("u")} as market_region
+                select i.*, {_market_region_case("u")} as market_region, u.symbol as universe_symbol
                 from signal_ideas i
                 left join universe u on u.symbol = i.symbol
                 where i.id = ?
@@ -3791,8 +3919,11 @@ class Database:
             if idea is None:
                 raise ValueError("idea not found")
             latest_price = float(idea["latest_price"] or idea["entry_price"] or 0.0)
-            market_region = normalize_market_region(idea["market_region"] or "IN", default="IN")
             idea_details = self._decode_json(idea["details_json"])
+            strict_market_region = _payload_market_region(idea_details)
+            if not strict_market_region and idea["universe_symbol"]:
+                strict_market_region = normalize_market_region(idea["market_region"], default="")
+            market_region = normalize_market_region(strict_market_region or idea["market_region"] or "IN", default="IN")
             quality_gate: dict[str, Any] | None = None
             if mode in {"PAPER", "LIVE"}:
                 reentry_block = self.recent_user_symbol_exit(
@@ -3805,21 +3936,34 @@ class Database:
                         "recent_risk_exit_cooldown:"
                         f"{reentry_block.get('exit_reason') or reentry_block.get('exit_key') or 'risk_exit'}"
                     )
-                quality_gate = fresh_buy_quality_gate(
-                    {
-                        "action": idea_details.get("action") or idea["signal_type"],
-                        "signal_type": idea["signal_type"],
-                        "status": idea["status"],
-                        "latest_price": latest_price,
-                        "overall_score_pct": idea["overall_score_pct"],
-                        "overall_grade": idea["overall_grade"],
-                        "confluence": idea["confluence"],
-                        "data_readiness": idea_details.get("data_readiness"),
-                        "hard_blocked": idea_details.get("hard_blocked"),
-                        "details": idea_details,
+                gate_item = {
+                    "action": idea_details.get("action") or idea["signal_type"],
+                    "signal_type": idea["signal_type"],
+                    "status": idea["status"],
+                    "latest_price": latest_price,
+                    "overall_score_pct": idea["overall_score_pct"],
+                    "overall_grade": idea["overall_grade"],
+                    "confluence": idea["confluence"],
+                    "data_readiness": idea_details.get("data_readiness"),
+                    "hard_blocked": idea_details.get("hard_blocked"),
+                    "market_region": strict_market_region,
+                    "details": {**idea_details, "market_region": idea_details.get("market_region") or strict_market_region},
+                }
+                quality_gate = auto_follow_quality_gate(gate_item)
+                if not quality_gate.get("passed") and manual_override and mode == "PAPER":
+                    entry_gate = fresh_buy_quality_gate(gate_item)
+                    quality_gate = {
+                        **entry_gate,
+                        "manual_paper_override": True,
+                        "strict_execution_gate": quality_gate,
+                        "reason": "manual_paper_override" if entry_gate.get("passed") else quality_gate.get("reason"),
+                        "message": (
+                            "User manually confirmed this paper-only entry despite the strict auto-follow execution gate."
+                            if entry_gate.get("passed")
+                            else quality_gate.get("message")
+                        ),
                     }
-                )
-                if not quality_gate.get("passed") and not (manual_override and mode == "PAPER"):
+                if not quality_gate.get("passed"):
                     raise ValueError(f"phase1_quality_gate:{quality_gate.get('reason')}")
             if qty <= 0 and amount > 0 and latest_price > 0:
                 qty = _follow_qty_from_amount(amount, latest_price)
@@ -4304,9 +4448,10 @@ class Database:
         now = utc_now()
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                select i.*
+                f"""
+                select i.*, {_market_region_case("u")} as market_region
                 from signal_ideas i
+                left join universe u on u.symbol = i.symbol
                 where i.signal_type = 'BUY'
                   and i.status in ('ACTIVE','MONITORING')
                   and not exists (
@@ -4323,22 +4468,41 @@ class Database:
             for row in rows:
                 item = _row_dict(row)
                 details = self._decode_json(item.get("details_json"))
-                quality_gate = fresh_buy_quality_gate(
-                    {
-                        "action": details.get("action") or item.get("signal_type"),
-                        "signal_type": item.get("signal_type"),
-                        "status": item.get("status"),
-                        "overall_score_pct": item.get("overall_score_pct"),
-                        "overall_grade": item.get("overall_grade"),
-                        "confluence": item.get("confluence"),
-                        "data_readiness": details.get("data_readiness"),
-                        "hard_blocked": details.get("hard_blocked"),
-                        "details": details,
-                    }
-                )
+                market_region = _payload_market_region(details)
+                if not market_region and item.get("universe_symbol"):
+                    market_region = normalize_market_region(item.get("market_region"), default="")
+                gate_item = {
+                    "action": details.get("action") or item.get("signal_type"),
+                    "signal_type": item.get("signal_type"),
+                    "status": item.get("status"),
+                    "latest_price": item.get("latest_price"),
+                    "overall_score_pct": item.get("overall_score_pct"),
+                    "overall_grade": item.get("overall_grade"),
+                    "confluence": item.get("confluence"),
+                    "data_readiness": details.get("data_readiness"),
+                    "hard_blocked": details.get("hard_blocked"),
+                    "market_region": market_region,
+                    "details": {**details, "market_region": details.get("market_region") or market_region},
+                }
+                quality_gate = auto_follow_quality_gate(gate_item)
                 if quality_gate.get("passed"):
                     continue
+                readiness_gate = trade_readiness_gate(gate_item)
+                if readiness_gate.get("passed") and quality_gate.get("reason") != "raw_entry_model_missing":
+                    quality_gate = {
+                        **quality_gate,
+                        "trade_readiness_gate": readiness_gate,
+                        "cleanup_scope": "strict_auto_follow_contract",
+                    }
+                else:
+                    quality_gate = {
+                        **quality_gate,
+                        "trade_readiness_gate": readiness_gate,
+                        "cleanup_scope": "entry_readiness_contract",
+                    }
                 details["quality_gate"] = quality_gate
+                details["auto_follow_gate"] = quality_gate
+                details["market_region"] = details.get("market_region") or market_region
                 details["decision_readiness"] = "monitor_only"
                 details["quality_downgrade"] = {
                     "from": "BUY",
@@ -7243,7 +7407,7 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     execution = _execution_state_payload(item)
     setup_bucket = _setup_bucket_payload(item, details, state) if raw_entry_item else contract["setup_bucket"]
     quality_gate = trade_readiness_gate({**item, "details": details}) if raw_entry_item else contract["quality_gate"]
-    auto_follow_gate = quality_gate if raw_entry_item else contract["auto_follow_gate"]
+    auto_follow_gate = auto_follow_quality_gate({**item, "details": details}) if raw_entry_item else contract["auto_follow_gate"]
     item["signal_state"] = state
     item["display_signal"] = state["display_signal"]
     item["fresh_action"] = state["fresh_action"]
@@ -7265,7 +7429,7 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
         "version": str(raw_entry.get("version") or "raw_opportunity_v1") if raw_entry_item else contract["version"],
         "primary_blocker": None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker"),
         "secondary_blockers": [] if raw_entry_item else contract.get("secondary_blockers") or [],
-        "paper_follow_eligible": bool(quality_gate.get("passed")) if raw_entry_item else contract.get("paper_follow_eligible"),
+        "paper_follow_eligible": bool(auto_follow_gate.get("passed")) if raw_entry_item else contract.get("paper_follow_eligible"),
         "quality_reason": quality_gate.get("reason"),
         "auto_follow_reason": auto_follow_gate.get("reason"),
         "legacy_decision_logic_removed": raw_entry_item,
@@ -7274,7 +7438,7 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     }
     item["primary_blocker"] = None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker")
     item["secondary_blockers"] = [] if raw_entry_item else contract.get("secondary_blockers") or []
-    item["paper_follow_eligible"] = bool(quality_gate.get("passed")) if raw_entry_item else bool(contract.get("paper_follow_eligible"))
+    item["paper_follow_eligible"] = bool(auto_follow_gate.get("passed")) if raw_entry_item else bool(contract.get("paper_follow_eligible"))
     item["paper_follow_quality_reason"] = auto_follow_gate.get("reason")
     item["opportunity_state"] = opportunity.get("state")
     item["opportunity_label"] = opportunity.get("label")
@@ -7449,6 +7613,14 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(context.get("raw_entry_model"), dict)
         else {}
     )
+    market_region = _payload_market_region(audit)
+    if market_region:
+        if raw_entry_model and not raw_entry_model.get("market_region"):
+            raw_entry_model = {**raw_entry_model, "market_region": market_region}
+        if data_readiness and not data_readiness.get("market_region"):
+            data_readiness = {**data_readiness, "market_region": market_region}
+        if opportunity_scan and not opportunity_scan.get("market_region"):
+            opportunity_scan = {**opportunity_scan, "market_region": market_region}
     fresh_authority_passed = action == "BUY" and fresh_authority.get("passed") is True
     raw_entry_passed = action == "BUY" and raw_entry_model.get("passed") is True
     details_risk_flags = risk.get("flags", [])
@@ -7489,6 +7661,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
             targets = fresh_plan.get("targets") if isinstance(fresh_plan.get("targets"), list) else []
     details = {
         "action": action,
+        "market_region": market_region,
         "latest_system_action": action,
         "raw_decision_action": raw_action,
         "tier": confluence.get("tier"),

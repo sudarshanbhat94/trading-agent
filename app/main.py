@@ -5884,8 +5884,15 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     if tagged_decisions:
         db.insert_decisions(tagged_decisions)
         db.upsert_signal_ideas_from_decisions(tagged_decisions)
+    signal_hygiene = {
+        "zero_qty_cleaned": len(db.cleanup_zero_qty_active_follows(reason="user_cycle_zero_qty_cleanup")),
+        "unsafe_follow_exits": len(db.exit_unsafe_active_follows(reason="user_cycle_strict_contract_cleanup")),
+        "downgraded_buy_ideas": len(db.downgrade_non_tradeable_buy_ideas(reason="user_cycle_strict_contract_cleanup")),
+        "checked_at": utc_now(),
+    }
     set_phase("auto_execute", {"symbol_count": len(universe), "decision_count": len(tagged_decisions)})
     auto_trade = _auto_follow_buy_ideas_for_user(user, tagged_decisions)
+    auto_trade["signal_hygiene"] = signal_hygiene
 
     action_counts: dict[str, int] = {}
     for decision in tagged_decisions:

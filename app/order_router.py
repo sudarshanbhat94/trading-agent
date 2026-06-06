@@ -34,6 +34,8 @@ class IndStocksOrderRouter(OrderRouter):
             )
 
     def route(self, decision: Decision, qty: int) -> None:
+        if _live_route_blocked(self.db, self.settings, decision, qty, "indstocks_live"):
+            return
         row = self.db.universe_row(decision.symbol)
         security_id = self._security_id(row)
         exchange = str((row or {}).get("exchange") or "NSE").strip().upper()
@@ -77,7 +79,7 @@ class IndStocksOrderRouter(OrderRouter):
             data = response.json().get("data", {})
             order_id = data.get("order_id") or data.get("id") or "unknown"
             order_status = data.get("order_status") or data.get("status") or "submitted"
-            self.db.insert_order(
+            local_order_id = self.db.insert_order(
                 decision.symbol,
                 decision.action,
                 qty,
@@ -163,6 +165,8 @@ class UpstoxOrderRouter(OrderRouter):
             )
 
     def route(self, decision: Decision, qty: int) -> None:
+        if not self.sandbox and _live_route_blocked(self.db, self.settings, decision, qty, "upstox_live"):
+            return
         row = self.db.universe_row(decision.symbol)
         instrument = row.get("upstox_instrument_key") if row else None
         if not instrument:
@@ -203,7 +207,7 @@ class UpstoxOrderRouter(OrderRouter):
                 response.raise_for_status()
             order_id = response.json().get("data", {}).get("order_id", "unknown")
             status = "SANDBOX_SUBMITTED" if self.sandbox else "LIVE_SUBMITTED"
-            self.db.insert_order(
+            local_order_id = self.db.insert_order(
                 decision.symbol,
                 decision.action,
                 qty,
@@ -280,3 +284,45 @@ def build_order_router(settings: Settings, db: Database) -> OrderRouter | None:
     if settings.execution_mode != "indstocks_live":
         return None
     return IndStocksOrderRouter(settings, db)
+
+
+def _live_route_blocked(db: Database, settings: Settings, decision: Decision, qty: int, router: str) -> bool:
+    gate = live_order_gate(db, settings, market_region=_decision_market_region(decision))
+    if gate.get("passed"):
+        return False
+    db.insert_trade_audit_event(
+        symbol=decision.symbol,
+        event_type="live_order_veto",
+        side=decision.action,
+        qty=qty,
+        price=decision.price,
+        status="LIVE_VETOED",
+        reason="live_readiness_blocked",
+        details={
+            "audit_version": 1,
+            "router": router,
+            "is_broker_order": False,
+            "blocking_reasons": gate.get("blocking_reasons", []),
+            "readiness_status": (gate.get("readiness") or {}).get("status"),
+            "decision": decision.to_dict(),
+        },
+    )
+    return True
+
+
+def _decision_market_region(decision: Decision) -> str:
+    try:
+        details = json.loads(decision.details_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        details = {}
+    if not isinstance(details, dict):
+        details = {}
+    for source in (
+        details,
+        details.get("context") if isinstance(details.get("context"), dict) else {},
+        details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {},
+    ):
+        value = str((source or {}).get("market_region") or "").strip().upper()
+        if value in {"IN", "US"}:
+            return value
+    return "IN"

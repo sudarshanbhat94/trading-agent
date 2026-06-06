@@ -8,8 +8,8 @@ from .signal_quality import (
     FRESH_BUY_ALLOWED_GRADES,
     FRESH_BUY_MIN_SCORE,
     FRESH_BUY_WINDOW_MINUTES,
-    _legacy_auto_follow_quality_gate,
-    _legacy_trade_readiness_gate,
+    auto_follow_quality_gate,
+    trade_readiness_gate,
 )
 
 
@@ -25,7 +25,7 @@ def canonical_trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     """
 
     normalized = _normalized_item(item)
-    gate = _legacy_trade_readiness_gate(normalized)
+    gate = trade_readiness_gate(normalized)
     return _canonicalize_gate(gate, normalized)
 
 
@@ -33,7 +33,7 @@ def canonical_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     """Single auto-follow gate layered on the canonical entry gate."""
 
     normalized = _normalized_item(item)
-    gate = _legacy_auto_follow_quality_gate(normalized)
+    gate = auto_follow_quality_gate(normalized)
     return _canonicalize_gate(gate, normalized, auto_follow=True)
 
 

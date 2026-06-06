@@ -40,9 +40,27 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 },
                 "details": {
                     "action": "BUY",
+                    "market_region": "IN",
                     "entry_zone": [4485.0, 4520.0],
                     "stop_loss": 4346.35,
                     "targets": [{"price": 4727.0, "distance_pct": 5.0}],
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": True,
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": 88,
+                        "grade": "A",
+                        "setup_family": "live_momentum",
+                        "market_region": "IN",
+                        "trade_plan": {
+                            "stop_loss": 4346.35,
+                            "targets": [{"price": 4727.0, "distance_pct": 5.0}],
+                        },
+                        "truth_blocks": [],
+                        "entry_blockers": [],
+                        "legacy_decision_logic_removed": True,
+                    },
                     "risk_gates": {
                         "decision_gate_context": {
                             "opportunity_probe": {
@@ -71,10 +89,10 @@ class CanonicalTradeContractTests(unittest.TestCase):
 
         self.assertEqual(contract["version"], CANONICAL_TRADE_CONTRACT_VERSION)
         self.assertTrue(contract["quality_gate"]["passed"], contract)
-        self.assertEqual(contract["quality_gate"]["min_confluence"], 6.0)
+        self.assertEqual(contract["auto_follow_gate"]["min_confluence"], 18.0)
         self.assertEqual(contract["fresh_action"], "BUY_NOW")
         self.assertEqual(contract["trade_state"], "ACTIONABLE")
-        self.assertEqual(contract["setup_bucket"]["bucket"], "SMALL_SIZE_ONLY")
+        self.assertEqual(contract["setup_bucket"]["bucket"], "ACTIONABLE")
         self.assertFalse(contract["paper_follow_eligible"], contract)
         self.assertEqual(contract["primary_blocker"], "auto_follow_confluence_below_strict_minimum")
 
@@ -125,10 +143,10 @@ class CanonicalTradeContractTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(contract["quality_gate"]["passed"], contract)
+        self.assertFalse(contract["quality_gate"]["passed"], contract)
         self.assertEqual(contract["market_region"], "US")
-        self.assertLessEqual(contract["quality_gate"]["size_multiplier"], 0.35)
-        self.assertEqual(contract["setup_bucket"]["bucket"], "SMALL_SIZE_ONLY")
+        self.assertEqual(contract["quality_gate"]["reason"], "raw_entry_model_missing")
+        self.assertEqual(contract["setup_bucket"]["bucket"], "WATCH")
 
     def test_blocked_contract_has_one_primary_blocker_and_secondary_diagnostics(self) -> None:
         contract = canonical_trade_contract(
@@ -141,6 +159,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 "overall_grade": "A",
                 "confluence": 20,
                 "data_readiness": {
+                    "market_region": "IN",
                     "trade_decision_ready": False,
                     "hard_gaps": [{"key": "in_live_quote", "label": "India live quote"}],
                     "soft_gaps": [],
@@ -159,10 +178,10 @@ class CanonicalTradeContractTests(unittest.TestCase):
         )
 
         self.assertFalse(contract["quality_gate"]["passed"])
-        self.assertEqual(contract["primary_blocker"], "stale_market_data")
-        self.assertEqual(contract["quality_gate"]["primary_blocker"], "stale_market_data")
+        self.assertEqual(contract["primary_blocker"], "price_missing")
+        self.assertEqual(contract["quality_gate"]["primary_blocker"], "price_missing")
         self.assertIn("in_live_quote", contract["secondary_blockers"])
-        self.assertNotIn("stale_market_data", contract["secondary_blockers"])
+        self.assertNotIn("price_missing", contract["secondary_blockers"])
 
     def test_database_decoration_exposes_canonical_contract_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -171,6 +190,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
             now = utc_now()
             details = {
                 "action": "BUY",
+                "market_region": "IN",
                 "overall_score_pct": 86,
                 "overall_grade": "A",
                 "confluence": 22,
@@ -179,7 +199,21 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 "targets": [{"price": 108}],
                 "hard_blocked": False,
                 "hard_blocks": [],
-                "data_readiness": {"trade_decision_ready": True},
+                "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "passed": True,
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "raw_score": 86,
+                    "grade": "A",
+                    "setup_family": "live_momentum",
+                    "market_region": "IN",
+                    "trade_plan": {"stop_loss": 95, "targets": [{"price": 108}]},
+                    "truth_blocks": [],
+                    "entry_blockers": [],
+                    "legacy_decision_logic_removed": True,
+                },
             }
             with db.connect() as conn:
                 conn.execute(
@@ -199,7 +233,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
 
             row = db.latest_signal_ideas(1)[0]
 
-        self.assertEqual(row["canonical_trade"]["version"], CANONICAL_TRADE_CONTRACT_VERSION)
+        self.assertEqual(row["canonical_trade"]["version"], "raw_opportunity_v1")
         self.assertEqual(row["fresh_action"], "BUY_NOW")
         self.assertEqual(row["setup_bucket"], "ACTIONABLE")
         self.assertTrue(row["paper_follow_eligible"])
@@ -220,6 +254,20 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 strategy="canonical_contract",
                 details_json=json.dumps(
                     {
+                        "raw_entry_model": {
+                            "version": "raw_opportunity_v1",
+                            "passed": True,
+                            "decision_label": "ENTRY_READY",
+                            "auto_follow_ready": True,
+                            "raw_score": 88,
+                            "grade": "A",
+                            "setup_family": "live_momentum",
+                            "market_region": "IN",
+                            "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
+                            "truth_blocks": [],
+                            "entry_blockers": [],
+                            "legacy_decision_logic_removed": True,
+                        },
                         "score_breakdown": {"combined": 0.24, "score_percent": 88},
                         "system_gate_audit": {"overall_score_pct": 88, "overall_grade": "A", "hard_blocked": False},
                         "risk_gates": {
@@ -234,7 +282,21 @@ class CanonicalTradeContractTests(unittest.TestCase):
                             }
                         },
                         "context": {
-                            "data_readiness": {"trade_decision_ready": True},
+                            "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
+                            "raw_entry_model": {
+                                "version": "raw_opportunity_v1",
+                                "passed": True,
+                                "decision_label": "ENTRY_READY",
+                                "auto_follow_ready": True,
+                                "raw_score": 88,
+                                "grade": "A",
+                                "setup_family": "live_momentum",
+                                "market_region": "IN",
+                                "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
+                                "truth_blocks": [],
+                                "entry_blockers": [],
+                                "legacy_decision_logic_removed": True,
+                            },
                             "full_spectrum_analysis": {
                                 "confluence_score": {"total": 18},
                                 "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
@@ -261,12 +323,29 @@ class CanonicalTradeContractTests(unittest.TestCase):
             now = utc_now()
             details = {
                 "action": "BUY",
+                "market_region": "IN",
                 "overall_score_pct": 86,
                 "overall_grade": "A",
                 "confluence": 22,
                 "hard_blocked": False,
                 "hard_blocks": [],
-                "data_readiness": {"trade_decision_ready": True},
+                "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
+                "stop_loss": 95,
+                "targets": [{"price": 108}],
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "passed": True,
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "raw_score": 86,
+                    "grade": "A",
+                    "setup_family": "live_momentum",
+                    "market_region": "IN",
+                    "trade_plan": {"stop_loss": 95, "targets": [{"price": 108}]},
+                    "truth_blocks": [],
+                    "entry_blockers": [],
+                    "legacy_decision_logic_removed": True,
+                },
             }
             with db.connect() as conn:
                 conn.execute(
@@ -297,6 +376,20 @@ class CanonicalTradeContractTests(unittest.TestCase):
                     {
                         "action_reason": "Already active; repeated BUY is position monitoring, not a new entry.",
                         "duplicate_buy_suppression": {"suppressed": True, "reason": "already_active_buy_cooldown"},
+                        "raw_entry_model": {
+                            "version": "raw_opportunity_v1",
+                            "passed": True,
+                            "decision_label": "ENTRY_READY",
+                            "auto_follow_ready": True,
+                            "raw_score": 88,
+                            "grade": "A",
+                            "setup_family": "live_momentum",
+                            "market_region": "IN",
+                            "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
+                            "truth_blocks": [],
+                            "entry_blockers": [],
+                            "legacy_decision_logic_removed": True,
+                        },
                         "score_breakdown": {"combined": 0.24, "score_percent": 88},
                         "system_gate_audit": {"overall_score_pct": 88, "overall_grade": "A", "hard_blocked": False},
                         "risk_gates": {
@@ -310,7 +403,21 @@ class CanonicalTradeContractTests(unittest.TestCase):
                             }
                         },
                         "context": {
-                            "data_readiness": {"trade_decision_ready": True},
+                            "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
+                            "raw_entry_model": {
+                                "version": "raw_opportunity_v1",
+                                "passed": True,
+                                "decision_label": "ENTRY_READY",
+                                "auto_follow_ready": True,
+                                "raw_score": 88,
+                                "grade": "A",
+                                "setup_family": "live_momentum",
+                                "market_region": "IN",
+                                "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
+                                "truth_blocks": [],
+                                "entry_blockers": [],
+                                "legacy_decision_logic_removed": True,
+                            },
                             "full_spectrum_analysis": {
                                 "confluence_score": {"total": 18},
                                 "trade_plan": {"entry_zone": [99, 101], "stop_loss": 95, "targets": [{"price": 105}]},
@@ -331,7 +438,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
         self.assertEqual(row["fresh_action"], "NO_FRESH_ADD")
         self.assertIn("Already active", row["display_reason"])
 
-    def test_unfollowed_active_buy_monitor_can_auto_follow_after_legacy_gate_removal(self) -> None:
+    def test_unfollowed_active_buy_monitor_does_not_auto_follow_duplicate_refresh(self) -> None:
         gate = auto_follow_quality_gate(
             {
                 "symbol": "MONITORBUY",
@@ -345,9 +452,24 @@ class CanonicalTradeContractTests(unittest.TestCase):
                 "latest_price": 100,
                 "details": {
                     "action": "BUY",
-                    "data_readiness": {"trade_decision_ready": True},
+                    "market_region": "IN",
+                    "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
                     "stop_loss": 95,
                     "targets": [{"price": 108}],
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": True,
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": 86,
+                        "grade": "A",
+                        "setup_family": "live_momentum",
+                        "market_region": "IN",
+                        "trade_plan": {"stop_loss": 95, "targets": [{"price": 108}]},
+                        "truth_blocks": [],
+                        "entry_blockers": [],
+                        "legacy_decision_logic_removed": True,
+                    },
                     "signal_continuity": {
                         "duplicate_active_buy": True,
                         "already_active_buy": True,
@@ -356,8 +478,8 @@ class CanonicalTradeContractTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(gate["passed"], gate)
-        self.assertEqual(gate["reason"], "legacy_auto_follow_gates_removed")
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "not_actionable_fresh_state")
 
 
 if __name__ == "__main__":

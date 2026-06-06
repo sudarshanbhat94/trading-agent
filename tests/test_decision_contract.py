@@ -100,6 +100,7 @@ class DecisionContractTests(unittest.TestCase):
                         "decision_label": "ENTRY_READY",
                         "auto_follow_ready": True,
                         "setup_family": "live_momentum",
+                        "market_region": "IN",
                     }
                 },
             },
@@ -114,6 +115,7 @@ class DecisionContractTests(unittest.TestCase):
                     "decision_label": "ENTRY_READY",
                     "auto_follow_ready": True,
                     "setup_family": "live_momentum",
+                    "market_region": "IN",
                 },
                 "quote": {
                     "price": 834.35,
@@ -124,6 +126,7 @@ class DecisionContractTests(unittest.TestCase):
                     "source": "upstox-live",
                 },
                 "data_readiness": {
+                    "market_region": "IN",
                     "trade_decision_ready": True,
                     "fresh_market_data_gate": {
                         "passed": True,

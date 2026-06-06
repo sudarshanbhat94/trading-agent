@@ -80,8 +80,14 @@ def opportunity_state_from_decision_audit(audit: dict[str, Any], row: dict[str, 
     )
     opportunity_scan = context.get("opportunity_scan") if isinstance(context.get("opportunity_scan"), dict) else {}
     live_momentum_review = full.get("live_momentum_review") if isinstance(full.get("live_momentum_review"), dict) else {}
+    raw_entry_model = _first_dict(
+        decision_gate.get("raw_entry_model"),
+        context.get("raw_entry_model"),
+        risk_gates.get("raw_entry_model"),
+    )
     quality_details = {
         "action": action,
+        "market_region": raw_entry_model.get("market_region") or data_readiness.get("market_region"),
         "overall_score_pct": overall_score,
         "overall_grade": system_audit.get("overall_grade") or audit.get("overall_grade"),
         "confluence": _number(confluence.get("total")),
@@ -97,6 +103,7 @@ def opportunity_state_from_decision_audit(audit: dict[str, Any], row: dict[str, 
         "strategy_logic_filters": full.get("strategy_logic_filters") if isinstance(full.get("strategy_logic_filters"), dict) else {},
         "opportunity_scan": opportunity_scan,
         "live_momentum_review": live_momentum_review,
+        "raw_entry_model": raw_entry_model,
         "risk_gates": risk_gates,
         "entry_zone": trade_plan.get("entry_zone"),
         "stop_loss": trade_plan.get("stop_loss"),

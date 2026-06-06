@@ -9,6 +9,10 @@ from app.models import Candle, Quote
 from app.opportunity_scanner import OpportunityScanner
 
 
+IST = ZoneInfo("Asia/Kolkata")
+TEST_INDIA_SESSION_DATE = datetime(2026, 6, 3, tzinfo=IST)
+
+
 class OpportunityScannerTests(unittest.TestCase):
     def test_stale_intraday_candles_are_visible_and_not_actionable(self) -> None:
         scanner = OpportunityScanner(_settings())
@@ -668,12 +672,12 @@ def _settings() -> SimpleNamespace:
 
 
 def _india_session_iso(hour: int, minute: int) -> str:
-    local = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    local = TEST_INDIA_SESSION_DATE.replace(hour=hour, minute=minute, second=0, microsecond=0)
     return local.isoformat()
 
 
 def _india_intraday_start_utc() -> datetime:
-    local = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=9, minute=15, second=0, microsecond=0)
+    local = TEST_INDIA_SESSION_DATE.replace(hour=9, minute=15, second=0, microsecond=0)
     return local.astimezone(timezone.utc)
 
 

@@ -832,13 +832,15 @@ class TradingAgentService:
             scan_summary=scan_summary,
             market_action_summary=market_action_summary,
         )
-        unsafe_follow_exits: list[dict[str, Any]] = []
+        signal_hygiene = self._run_signal_hygiene("pre_auto_follow_strict_contract_cleanup")
+        unsafe_follow_exits = signal_hygiene.get("unsafe_follow_exits", [])
         legacy_economics_exits = self.db.exit_subfloor_paper_follows(
             reason="legacy_position_below_minimum_trade_economics",
             cost_settings=self.strategy.settings,
         )
-        downgraded_buy_ideas: list[dict[str, Any]] = []
+        downgraded_buy_ideas = signal_hygiene.get("downgraded_buy_ideas", [])
         shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
+        shared_auto_trade["signal_hygiene"] = signal_hygiene
         shared_auto_trade["credit_billing"] = self._charge_shared_ai_cycle_to_users(
             shared_llm_usage,
             decisions,
@@ -873,6 +875,7 @@ class TradingAgentService:
             shared_auto_trade["downgraded_buy_ideas"] = [
                 {
                     "symbol": item.get("symbol"),
+                    "market_region": item.get("market_region"),
                     "quality_reason": (item.get("quality_gate") or {}).get("reason"),
                 }
                 for item in downgraded_buy_ideas[:20]
@@ -1575,6 +1578,21 @@ class TradingAgentService:
         market_health["portfolio_equity"] = portfolio.get("equity")
         self_audit = build_self_audit(list(positions.values()), quote_rows, portfolio, market_health, macro_calendar_context)
         self.db.set_state("self_audit", self_audit)
+        signal_hygiene = self._run_signal_hygiene("closed_market_strict_contract_cleanup")
+        closed_auto_trade_summary = {
+            "buy_symbols": [],
+            "exit_symbols": [],
+            "users_checked": 0,
+            "followed": 0,
+            "exited": 0,
+            "managed_exit_actions": 0,
+            "managed_exit_skips": 0,
+            "active_buy_ideas_checked": 0,
+            "skipped": [{"reason": "market_closed_scan_paused", "closed_regions": session_context.get("closed_regions", [])}],
+            "signal_hygiene": signal_hygiene,
+        }
+        self._last_shared_auto_trade = closed_auto_trade_summary
+        self._store_shared_auto_trade_summary(closed_auto_trade_summary)
         tomorrow_plan_summary: dict[str, Any] = {"enabled": False, "reason": "not_built"}
         try:
             configured_region = str(self.market_region or "IN").upper()
@@ -1642,6 +1660,7 @@ class TradingAgentService:
                 "label_counts": pre_catalyst_summary.get("label_counts"),
             },
             "tomorrow_plan": tomorrow_plan_summary,
+            "signal_hygiene": signal_hygiene,
             "skipped_phases": [
                 "market_quotes",
                 "candles",
@@ -1843,6 +1862,62 @@ class TradingAgentService:
                 "events": (summary.get("log_events") or [])[-20:],
             },
         )
+
+    def _run_signal_hygiene(self, reason: str) -> dict[str, Any]:
+        cleaned_zero_qty = self.db.cleanup_zero_qty_active_follows(reason=f"{reason}_zero_qty")
+        unsafe_follow_exits = self.db.exit_unsafe_active_follows(reason=reason)
+        downgraded_buy_ideas = self.db.downgrade_non_tradeable_buy_ideas(reason=reason)
+        summary = {
+            "checked_at": utc_now(),
+            "reason": reason,
+            "zero_qty_cleaned_count": len(cleaned_zero_qty),
+            "unsafe_follow_exit_count": len(unsafe_follow_exits),
+            "downgraded_buy_idea_count": len(downgraded_buy_ideas),
+            "zero_qty_cleaned": [
+                {
+                    "user_id": item.get("user_id"),
+                    "symbol": item.get("symbol"),
+                    "mode": item.get("mode"),
+                    "status": item.get("status"),
+                    "qty": item.get("qty"),
+                }
+                for item in cleaned_zero_qty[:20]
+            ],
+            "unsafe_follow_exits": [
+                {
+                    "user_id": item.get("user_id"),
+                    "symbol": item.get("symbol"),
+                    "mode": item.get("mode"),
+                    "market_region": item.get("market_region"),
+                    "quality_reason": (item.get("quality_gate") or {}).get("reason"),
+                    "return_pct": item.get("return_pct"),
+                }
+                for item in unsafe_follow_exits[:20]
+            ],
+            "downgraded_buy_ideas": [
+                {
+                    "symbol": item.get("symbol"),
+                    "market_region": item.get("market_region"),
+                    "quality_reason": (item.get("quality_gate") or {}).get("reason"),
+                }
+                for item in downgraded_buy_ideas[:20]
+            ],
+        }
+        self.db.set_state("signal_hygiene", summary)
+        if cleaned_zero_qty or unsafe_follow_exits or downgraded_buy_ideas:
+            self._log(
+                "INFO",
+                "signal_hygiene",
+                "strict_signal_hygiene_applied",
+                "Strict signal hygiene cleaned stale or unsafe trading records.",
+                {
+                    "reason": reason,
+                    "zero_qty_cleaned_count": len(cleaned_zero_qty),
+                    "unsafe_follow_exit_count": len(unsafe_follow_exits),
+                    "downgraded_buy_idea_count": len(downgraded_buy_ideas),
+                },
+            )
+        return summary
 
     def _store_shared_auto_trade_summary(self, summary: dict[str, Any]) -> None:
         if not isinstance(summary, dict):

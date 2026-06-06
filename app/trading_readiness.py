@@ -15,6 +15,7 @@ DEFAULT_REPLAY_SYMBOLS = ["CUMMINSIND", "JPPOWER", "ATGL", "GUJTHEM", "FINCABLES
 LIVE_TRADING_CONFIRMATION = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
 READINESS_CACHE_SECONDS = 20
 DATA_FRESHNESS_CACHE_SECONDS = 45
+SUPPORTED_LIVE_EXECUTION_MODES = {"upstox_live", "indstocks_live"}
 
 
 def build_trading_readiness(
@@ -63,7 +64,14 @@ def build_trading_readiness(
     execution_mode = str(settings.execution_mode or "paper").strip().lower()
     add_check("paper_first_rollout", execution_mode == "paper", "Default rollout is paper-only", "live mode is not part of this release", "info")
     add_check("kill_switch", not kill_switch["engaged"], "Emergency kill switch off", kill_switch.get("reason") or "kill switch engaged")
-    add_check("execution_mode", execution_mode == "upstox_live", "Execution mode is Upstox live", f"current mode is {execution_mode}")
+    add_check(
+        "execution_mode",
+        execution_mode in SUPPORTED_LIVE_EXECUTION_MODES,
+        "Execution mode is a supported India live broker",
+        f"current mode is {execution_mode}",
+        "hard",
+        {"supported_modes": sorted(SUPPORTED_LIVE_EXECUTION_MODES)},
+    )
     add_check("live_enabled", bool(settings.live_trading_enabled), "Runtime live trading flag enabled", "LIVE_TRADING_ENABLED is false")
     add_check(
         "confirmation_phrase",
@@ -200,9 +208,11 @@ def build_broker_sync_status(db: Any, settings: Settings, *, now_utc: datetime |
     last_sync = _parse_dt(state.get("last_sync_at") or state.get("checked_at"))
     age_minutes = ((now - last_sync).total_seconds() / 60.0) if last_sync else None
     connected = bool(state.get("connected")) or bool(settings.upstox_access_token)
+    if execution_mode == "indstocks_live":
+        connected = bool(state.get("connected")) or bool(settings.indstocks_access_token)
     current = bool(last_sync and age_minutes is not None and age_minutes <= 5.0)
     ready = (
-        execution_mode == "upstox_live"
+        execution_mode in SUPPORTED_LIVE_EXECUTION_MODES
         and bool(settings.live_trading_enabled)
         and connected
         and current
@@ -218,7 +228,8 @@ def build_broker_sync_status(db: Any, settings: Settings, *, now_utc: datetime |
     return {
         "version": READINESS_VERSION,
         "checked_at": now.isoformat(),
-        "provider": state.get("provider") or ("upstox" if settings.upstox_access_token else "none"),
+        "provider": state.get("provider")
+        or ("indstocks" if execution_mode == "indstocks_live" and settings.indstocks_access_token else "upstox" if settings.upstox_access_token else "none"),
         "connected": connected,
         "status": state.get("status") or ("PAPER_ONLY" if execution_mode == "paper" else "SYNC_REQUIRED"),
         "ready_for_live": ready,

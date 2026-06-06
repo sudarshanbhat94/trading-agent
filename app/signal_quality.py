@@ -59,6 +59,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     """Minimal truth check for presenting or following a BUY."""
 
     details = _details(item)
+    raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
     signal_type = _upper(item.get("signal_type") or item.get("suggestion"))
     status = _upper(item.get("status"))
     action = _upper(item.get("action") or details.get("action") or signal_type)
@@ -66,6 +67,13 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         return _blocked("not_fresh_buy_signal", "Only an active BUY idea can be followed.")
     if action != "BUY" and signal_type != "BUY":
         return _blocked("not_buy_action", "Latest engine action is not BUY.")
+    market_region = _market_region(item, details, raw)
+    if market_region not in {"IN", "US"}:
+        return _blocked(
+            "market_region_missing",
+            "A BUY must identify whether it belongs to India or US before it can be followed.",
+            market_region=market_region or None,
+        )
     if bool(item.get("hard_blocked") or details.get("hard_blocked")):
         return _blocked("truth_check_hard_blocked", "The idea has an invalid quote or is explicitly untradeable.")
     quote = item.get("quote") if isinstance(item.get("quote"), dict) else details.get("quote") if isinstance(details.get("quote"), dict) else {}
@@ -78,22 +86,36 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     )
     if price is None or price <= 0:
         return _blocked("price_missing", "A valid current price is required before following.")
-    raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
-    if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS:
-        decision_label = _upper(raw.get("decision_label"))
-        if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
-            return _blocked(
-                "raw_opportunity_not_entry_ready",
-                "The raw opportunity model did not mark this symbol ENTRY_READY.",
-                raw_opportunity_version=raw.get("version"),
-                decision_label=decision_label or raw.get("decision_label"),
-                truth_blocks=raw.get("truth_blocks") if isinstance(raw.get("truth_blocks"), list) else [],
-                setup_family=raw.get("setup_family"),
-                setup_evidence=raw.get("setup_evidence"),
-                overall_score_pct=raw.get("raw_score"),
-                overall_grade=raw.get("grade"),
-                legacy_entry_gates_removed=True,
-            )
+    if raw.get("version") not in _RAW_OPPORTUNITY_VERSIONS:
+        return _blocked(
+            "raw_entry_model_missing",
+            "A BUY must come from the raw entry authority before it can be followed.",
+            raw_opportunity_version=raw.get("version"),
+            market_region=market_region,
+        )
+    raw_market = _market_region({}, raw, {})
+    if raw_market and raw_market != market_region:
+        return _blocked(
+            "market_region_mismatch",
+            "The raw entry authority market does not match the signal market.",
+            market_region=market_region,
+            raw_market_region=raw_market,
+        )
+    decision_label = _upper(raw.get("decision_label"))
+    if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
+        return _blocked(
+            "raw_opportunity_not_entry_ready",
+            "The raw opportunity model did not mark this symbol ENTRY_READY.",
+            raw_opportunity_version=raw.get("version"),
+            decision_label=decision_label or raw.get("decision_label"),
+            truth_blocks=raw.get("truth_blocks") if isinstance(raw.get("truth_blocks"), list) else [],
+            setup_family=raw.get("setup_family"),
+            setup_evidence=raw.get("setup_evidence"),
+            overall_score_pct=raw.get("raw_score"),
+            overall_grade=raw.get("grade"),
+            market_region=market_region,
+            legacy_entry_gates_removed=True,
+        )
     raw_score = _number(raw.get("raw_score"), item.get("overall_score_pct"), details.get("overall_score_pct"))
     grade = _upper(raw.get("grade") or item.get("overall_grade") or details.get("overall_grade")) or "B"
     return {
@@ -122,6 +144,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         "raw_opportunity_version": raw.get("version") if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS else None,
         "decision_label": raw.get("decision_label"),
         "setup_family": raw.get("setup_family"),
+        "market_region": market_region,
     }
 
 
@@ -351,23 +374,50 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     details = _details(item)
     raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
     if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS:
+        fresh_action = _upper(item.get("fresh_action") or details.get("fresh_action"))
+        if fresh_action and fresh_action != "BUY_NOW":
+            return _blocked(
+                "not_actionable_fresh_state",
+                "Auto-paper only follows ideas marked Actionable by the current tradeability state.",
+                fresh_action=fresh_action,
+                auto_follow_contract="raw_opportunity_strict_execution_v1",
+            )
+        if is_duplicate_active_buy_refresh(item):
+            return _blocked(
+                "duplicate_active_buy_cooldown",
+                "BUY is already active; do not auto-follow repeated refreshes.",
+                duplicate_active_buy=True,
+                auto_follow_contract="raw_opportunity_strict_execution_v1",
+            )
         score = _number(raw.get("raw_score"), gate.get("overall_score_pct")) or 0.0
-        size_multiplier = 1.0 if score >= 82.0 else 0.8 if score >= 72.0 else 0.6
-        return {
+        size_multiplier = 1.0 if score >= 88.0 else 0.85 if score >= AUTO_FOLLOW_MIN_SCORE else 0.7
+        contract_details = _details_with_raw_trade_plan(details, raw)
+        risk_flags = _risk_flags(item, contract_details)
+        contract_gate = {
             **gate,
+            "overall_score_pct": score,
+            "overall_grade": _upper(raw.get("grade") or gate.get("overall_grade")) or gate.get("overall_grade"),
+            "size_multiplier": size_multiplier,
+            "risk_flags": risk_flags,
+            "min_score": AUTO_FOLLOW_MIN_SCORE,
+            "min_confluence": AUTO_FOLLOW_MIN_CONFLUENCE,
+        }
+        contract_block = _auto_follow_execution_contract(item, contract_details, contract_gate, risk_flags)
+        if contract_block:
+            return contract_block
+        return {
+            **contract_gate,
             "reason": "raw_opportunity_auto_follow_ready",
-            "message": "Auto-paper follows raw ENTRY_READY ideas after truth checks; sizing economics still decides quantity.",
-            "auto_follow_contract": raw.get("version"),
-            "auto_follow_min_reward_risk": None,
+            "message": "Auto-paper follows only raw ENTRY_READY ideas that also have a clean executable stop/target contract.",
+            "auto_follow_contract": "raw_opportunity_strict_execution_v1",
+            "auto_follow_min_reward_risk": AUTO_FOLLOW_MIN_REWARD_RISK,
             "size_multiplier": size_multiplier,
         }
-    return {
-        **gate,
-        "reason": "legacy_auto_follow_gates_removed",
-        "message": "Auto-paper follows the active raw BUY after truth checks; sizing economics still decide quantity.",
-        "auto_follow_contract": "raw_entry_truth_checks_only",
-        "auto_follow_min_reward_risk": None,
-    }
+    return _blocked(
+        "raw_entry_model_missing",
+        "Auto-paper requires the raw entry authority and a clean execution plan.",
+        auto_follow_contract="raw_opportunity_strict_execution_v1",
+    )
 
 
 def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -683,6 +733,47 @@ def _blocked(reason: str, message: str, **extra: Any) -> dict[str, Any]:
 def _details(item: dict[str, Any]) -> dict[str, Any]:
     details = item.get("details")
     return details if isinstance(details, dict) else {}
+
+
+def _market_region(*sources: dict[str, Any]) -> str:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("market_region", "market"):
+            value = _upper(source.get(key))
+            if value in {"IN", "INDIA"}:
+                return "IN"
+            if value in {"US", "USA", "UNITED_STATES"}:
+                return "US"
+        data_readiness = source.get("data_readiness") if isinstance(source.get("data_readiness"), dict) else {}
+        value = _upper(data_readiness.get("market_region"))
+        if value in {"IN", "INDIA"}:
+            return "IN"
+        if value in {"US", "USA", "UNITED_STATES"}:
+            return "US"
+        scan = source.get("opportunity_scan") if isinstance(source.get("opportunity_scan"), dict) else {}
+        value = _upper(scan.get("market_region"))
+        if value in {"IN", "INDIA"}:
+            return "IN"
+        if value in {"US", "USA", "UNITED_STATES"}:
+            return "US"
+    return ""
+
+
+def _details_with_raw_trade_plan(details: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(details)
+    raw_plan = raw.get("trade_plan") if isinstance(raw.get("trade_plan"), dict) else {}
+    if raw_plan:
+        for key in ("stop_loss", "targets", "target_status", "stop_status", "entry_zone", "max_entry"):
+            if key not in merged or merged.get(key) in (None, "", []):
+                merged[key] = raw_plan.get(key)
+    if "market_region" not in merged and raw.get("market_region"):
+        merged["market_region"] = raw.get("market_region")
+    if "overall_score_pct" not in merged and raw.get("raw_score") is not None:
+        merged["overall_score_pct"] = raw.get("raw_score")
+    if "overall_grade" not in merged and raw.get("grade"):
+        merged["overall_grade"] = raw.get("grade")
+    return merged
 
 
 def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any] | None:
