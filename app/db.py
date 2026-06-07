@@ -36,6 +36,7 @@ from .trade_economics import (
 )
 from .trading_readiness import live_order_gate
 from .trading_rules import _score_grade
+from .whatsapp import DEFAULT_ALERT_TYPES, mask_whatsapp_phone, normalize_alert_types, normalize_whatsapp_phone
 
 
 def _market_region_case(alias: str = "u") -> str:
@@ -1034,6 +1035,7 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         },
     }
     monitor_symbols = _normalize_monitor_symbols(_json_load(row.get("monitor_symbols_json")) or [])
+    whatsapp_alert_types = normalize_alert_types(_json_load(row.get("whatsapp_alert_types_json")) or DEFAULT_ALERT_TYPES)
     return {
         "id": int(row["id"]),
         "username": row["username"],
@@ -1051,6 +1053,15 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "monitor_symbols": monitor_symbols,
         "monitor_symbols_count": len(monitor_symbols),
         "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
+        "whatsapp": {
+            "subscribed": bool(row.get("whatsapp_alerts_enabled") and row.get("whatsapp_phone")),
+            "phone_masked": mask_whatsapp_phone(row.get("whatsapp_phone")),
+            "phone_saved": bool(row.get("whatsapp_phone")),
+            "alert_types": whatsapp_alert_types,
+            "verified": bool(row.get("whatsapp_verified_at")),
+            "verified_at": row.get("whatsapp_verified_at"),
+            "updated_at": row.get("whatsapp_updated_at"),
+        },
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "last_login_at": row.get("last_login_at"),
@@ -1429,6 +1440,19 @@ class Database:
                     details_json text not null default '{}'
                 );
 
+                create table if not exists whatsapp_alert_events (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    user_id integer not null,
+                    phone text not null default '',
+                    alert_type text not null,
+                    symbol text not null default '',
+                    status text not null,
+                    provider_message_id text not null default '',
+                    reason text not null default '',
+                    details_json text not null default '{}'
+                );
+
                 create index if not exists idx_market_ticks_symbol_ts
                     on market_ticks(symbol, ts);
                 create index if not exists idx_candles_symbol_ts
@@ -1475,6 +1499,8 @@ class Database:
                     on broker_sync_results(ts);
                 create index if not exists idx_missed_move_reviews_ts
                     on missed_move_reviews(ts);
+                create index if not exists idx_whatsapp_alert_user_type_symbol_ts
+                    on whatsapp_alert_events(user_id, alert_type, symbol, ts);
                 """
             )
             self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
@@ -1549,6 +1575,11 @@ class Database:
             self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
             self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
             self._ensure_column(conn, "users", "kite_token_scope", "text not null default ''")
+            self._ensure_column(conn, "users", "whatsapp_phone", "text not null default ''")
+            self._ensure_column(conn, "users", "whatsapp_alerts_enabled", "integer not null default 0")
+            self._ensure_column(conn, "users", "whatsapp_alert_types_json", "text not null default '[\"fresh_buy\",\"paper_follow\",\"risk_exit\"]'")
+            self._ensure_column(conn, "users", "whatsapp_verified_at", "text")
+            self._ensure_column(conn, "users", "whatsapp_updated_at", "text")
             self._ensure_column(conn, "users", "broker_updated_at", "text")
             self._seed_strategy_plans(conn)
             self._backfill_signal_plan_codes(conn)
@@ -1940,6 +1971,144 @@ class Database:
             )
         user = self.user_by_id(user_id)
         return _public_user(user) if user else None
+
+    def update_user_whatsapp_subscription(
+        self,
+        user_id: int,
+        *,
+        phone: Any | None = None,
+        enabled: bool | None = None,
+        alert_types: Any | None = None,
+        default_country_code: str = "91",
+    ) -> dict[str, Any] | None:
+        user = self.user_by_id(user_id)
+        if not user:
+            return None
+        current_phone = str(user.get("whatsapp_phone") or "")
+        next_phone = current_phone
+        if phone is not None:
+            next_phone = normalize_whatsapp_phone(phone, default_country_code=default_country_code)
+        next_enabled = bool(user.get("whatsapp_alerts_enabled")) if enabled is None else bool(enabled)
+        next_types = normalize_alert_types(
+            alert_types
+            if alert_types is not None
+            else (_json_load(user.get("whatsapp_alert_types_json")) or DEFAULT_ALERT_TYPES)
+        )
+        now = utc_now()
+        verified_at = user.get("whatsapp_verified_at")
+        if next_phone and next_phone != current_phone:
+            verified_at = now
+        if not next_enabled:
+            verified_at = None
+        with self.connect() as conn:
+            conn.execute(
+                """
+                update users
+                set whatsapp_phone = ?,
+                    whatsapp_alerts_enabled = ?,
+                    whatsapp_alert_types_json = ?,
+                    whatsapp_verified_at = ?,
+                    whatsapp_updated_at = ?,
+                    updated_at = ?
+                where id = ?
+                """,
+                (
+                    next_phone,
+                    1 if next_enabled and next_phone else 0,
+                    json.dumps(next_types, separators=(",", ":")),
+                    verified_at,
+                    now,
+                    now,
+                    user_id,
+                ),
+            )
+        user = self.user_by_id(user_id)
+        return _public_user(user) if user else None
+
+    def user_whatsapp_subscription(self, user_id: int) -> dict[str, Any]:
+        user = self.user_by_id(user_id) or {}
+        public = _public_user(user) or {}
+        return public.get("whatsapp") or {
+            "subscribed": False,
+            "phone_masked": "",
+            "phone_saved": False,
+            "alert_types": list(DEFAULT_ALERT_TYPES),
+        }
+
+    def subscribed_whatsapp_users(self, alert_type: str = "fresh_buy") -> list[dict[str, Any]]:
+        requested_type = str(alert_type or "").strip().lower()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from users
+                where active = 1
+                  and role != 'admin'
+                  and whatsapp_alerts_enabled = 1
+                  and coalesce(whatsapp_phone, '') != ''
+                order by id
+                """
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            alert_types = normalize_alert_types(_json_load(item.get("whatsapp_alert_types_json")) or DEFAULT_ALERT_TYPES)
+            if requested_type in alert_types:
+                output.append(item)
+        return output
+
+    def recent_whatsapp_alert(self, user_id: int, alert_type: str, symbol: str, since_iso: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select id
+                from whatsapp_alert_events
+                where user_id = ?
+                  and alert_type = ?
+                  and upper(symbol) = upper(?)
+                  and status = 'SENT'
+                  and ts >= ?
+                order by id desc
+                limit 1
+                """,
+                (user_id, alert_type, symbol, since_iso),
+            ).fetchone()
+        return row is not None
+
+    def record_whatsapp_alert(
+        self,
+        *,
+        user_id: int,
+        phone: str,
+        alert_type: str,
+        symbol: str = "",
+        status: str,
+        provider_message_id: str = "",
+        reason: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> int:
+        details_payload = dict(details or {})
+        details_payload["phone_masked"] = mask_whatsapp_phone(phone)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                insert into whatsapp_alert_events
+                    (ts, user_id, phone, alert_type, symbol, status, provider_message_id, reason, details_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    user_id,
+                    mask_whatsapp_phone(phone),
+                    str(alert_type or "").strip().lower(),
+                    str(symbol or "").strip().upper(),
+                    str(status or "").strip().upper(),
+                    str(provider_message_id or ""),
+                    str(reason or "")[:500],
+                    json.dumps(_bounded_for_storage(details_payload, dict_limit=32), default=str, separators=(",", ":")),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
 
     def update_user_paper_cash(self, user_id: int, cash_in: float | None = None, cash_us: float | None = None) -> dict[str, Any] | None:
         assignments: list[str] = []

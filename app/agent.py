@@ -37,6 +37,7 @@ from .strategy import StrategyEngine
 from .tomorrow_plan import build_tomorrow_plan
 from .trade_economics import auto_follow_sizing
 from .trading_rules import build_position_summary, build_self_audit
+from .whatsapp import dispatch_fresh_buy_alerts
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -63,6 +64,7 @@ class TradingAgentService:
         execute_trades: bool = True,
         on_update: UpdateCallback | None = None,
         openclaw_notifier: Any | None = None,
+        whatsapp_notifier: Any | None = None,
     ) -> None:
         self.db = db
         self.market_data = market_data
@@ -76,6 +78,7 @@ class TradingAgentService:
         self.macro_calendar = macro_calendar
         self.options_intelligence = options_intelligence
         self.openclaw_notifier = openclaw_notifier
+        self.whatsapp_notifier = whatsapp_notifier
         self.interval_seconds = interval_seconds
         self.cycle_timeout_seconds = max(30, cycle_timeout_seconds)
         self.market_region = market_region
@@ -818,6 +821,17 @@ class TradingAgentService:
         decisions = self._merge_risk_exits(decisions, risk_exits)
         self.db.insert_decisions(decisions)
         self.db.upsert_signal_ideas_from_decisions(decisions)
+        whatsapp_alerts = dispatch_fresh_buy_alerts(
+            db=self.db,
+            settings=self.strategy.settings,
+            notifier=self.whatsapp_notifier,
+            decision_buy_symbols={
+                str(decision.symbol or "").upper()
+                for decision in decisions
+                if _decision_has_buy_intent(decision)
+            },
+            source="shared_agent_cycle",
+        ) if self.whatsapp_notifier is not None else {"enabled": False, "reason": "whatsapp_notifier_missing"}
         market_day_regime_context = compute_market_day_regimes(
             universe,
             quotes,
@@ -841,6 +855,7 @@ class TradingAgentService:
         downgraded_buy_ideas = signal_hygiene.get("downgraded_buy_ideas", [])
         shared_auto_trade = self._auto_follow_buy_ideas_for_signal_users(decisions)
         shared_auto_trade["signal_hygiene"] = signal_hygiene
+        shared_auto_trade["whatsapp_alerts"] = whatsapp_alerts
         shared_auto_trade["credit_billing"] = self._charge_shared_ai_cycle_to_users(
             shared_llm_usage,
             decisions,

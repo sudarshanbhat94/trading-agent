@@ -94,6 +94,7 @@ from .trading_readiness import (
     set_trading_kill_switch,
 )
 from .universe import UniverseService
+from .whatsapp import WhatsAppNotifier, dispatch_fresh_buy_alerts, normalize_alert_types, normalize_whatsapp_phone
 
 
 base_settings = _settings_without_llm(Settings())
@@ -493,6 +494,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
     new_universe_service = UniverseService(new_settings, db)
     new_options_intelligence = OptionsIntelligenceService(new_settings, db)
     new_openclaw_notifier = OpenClawNotifier(new_settings, db)
+    new_whatsapp_notifier = WhatsAppNotifier(new_settings)
     monitor_llm = LLMBrain(strategy_settings, db)
     admin_llm = LLMBrain(new_settings, db)
     new_strategy = StrategyEngine(strategy_settings, new_sentiment, monitor_llm)
@@ -515,6 +517,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         execute_trades=False,
         on_update=hub.broadcast,
         openclaw_notifier=new_openclaw_notifier,
+        whatsapp_notifier=new_whatsapp_notifier,
     )
     return {
         "market_data": new_market_data,
@@ -531,6 +534,7 @@ def build_agent_stack(new_settings: Settings) -> dict[str, Any]:
         "universe_service": new_universe_service,
         "options_intelligence": new_options_intelligence,
         "openclaw_notifier": new_openclaw_notifier,
+        "whatsapp_notifier": new_whatsapp_notifier,
         "llm": admin_llm,
         "strategy": new_strategy,
         "agent": new_agent,
@@ -552,6 +556,7 @@ macro_calendar = stack["macro_calendar"]
 universe_service = stack["universe_service"]
 options_intelligence = stack["options_intelligence"]
 openclaw_notifier = stack["openclaw_notifier"]
+whatsapp_notifier = stack["whatsapp_notifier"]
 llm = stack["llm"]
 strategy = stack["strategy"]
 agent = stack["agent"]
@@ -3465,6 +3470,101 @@ async def set_my_monitor_symbols(payload: dict[str, Any], request: Request) -> d
     }
 
 
+@app.get("/api/me/whatsapp")
+async def my_whatsapp_subscription(request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    return {
+        "ok": True,
+        "subscription": db.user_whatsapp_subscription(int(user["id"])),
+        "provider": whatsapp_notifier.status(),
+    }
+
+
+@app.post("/api/me/whatsapp/subscribe")
+async def subscribe_my_whatsapp(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    try:
+        phone = normalize_whatsapp_phone(
+            payload.get("phone") or payload.get("whatsapp_phone") or "",
+            default_country_code=settings.whatsapp_default_country_code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not phone:
+        raise HTTPException(status_code=400, detail="Enter a WhatsApp phone number.")
+    alert_types = normalize_alert_types(payload.get("alert_types"))
+    updated_user = db.update_user_whatsapp_subscription(
+        int(user["id"]),
+        phone=phone,
+        enabled=True,
+        alert_types=alert_types,
+        default_country_code=settings.whatsapp_default_country_code,
+    )
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.insert_agent_log(
+        "INFO",
+        "notifications",
+        "whatsapp_subscribed",
+        f"{user['username']} subscribed to WhatsApp alerts",
+        {"user_id": user["id"], "alert_types": alert_types, "phone_masked": updated_user.get("whatsapp", {}).get("phone_masked")},
+    )
+    return {
+        "ok": True,
+        "user": updated_user,
+        "subscription": updated_user.get("whatsapp"),
+        "provider": whatsapp_notifier.status(),
+        "message": "WhatsApp alerts subscribed.",
+    }
+
+
+@app.post("/api/me/whatsapp/unsubscribe")
+async def unsubscribe_my_whatsapp(request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    updated_user = db.update_user_whatsapp_subscription(int(user["id"]), enabled=False)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.insert_agent_log(
+        "INFO",
+        "notifications",
+        "whatsapp_unsubscribed",
+        f"{user['username']} unsubscribed from WhatsApp alerts",
+        {"user_id": user["id"]},
+    )
+    return {
+        "ok": True,
+        "user": updated_user,
+        "subscription": updated_user.get("whatsapp"),
+        "provider": whatsapp_notifier.status(),
+        "message": "WhatsApp alerts unsubscribed.",
+    }
+
+
+@app.post("/api/me/whatsapp/test")
+async def test_my_whatsapp(request: Request) -> dict[str, Any]:
+    user = _require_signal_user(request)
+    stored = db.user_by_id(int(user["id"])) or {}
+    phone = str(stored.get("whatsapp_phone") or "")
+    if not bool(stored.get("whatsapp_alerts_enabled")) or not phone:
+        raise HTTPException(status_code=400, detail="Subscribe a WhatsApp number before sending a test.")
+    result = whatsapp_notifier.send_text(
+        phone,
+        f"OpenStocks WhatsApp test for {stored.get('username')}. Fresh BUY alerts will appear here when strict signal gates pass.",
+    )
+    db.record_whatsapp_alert(
+        user_id=int(user["id"]),
+        phone=phone,
+        alert_type="test",
+        status="SENT" if result.ok else "FAILED",
+        reason="" if result.ok else result.error,
+        provider_message_id=result.provider_message_id,
+        details={"status_code": result.status_code, "response": result.response, "source": "user_test"},
+    )
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=f"WhatsApp test failed: {result.error or result.status_code}")
+    return {"ok": True, "provider_message_id": result.provider_message_id, "provider": whatsapp_notifier.status()}
+
+
 @app.post("/api/me/paper-cash")
 async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = _require_signal_user(request)
@@ -4334,7 +4434,7 @@ async def _apply_runtime_stack(
     event: str,
     message: str,
 ) -> dict[str, Any]:
-    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, universe_service, options_intelligence, openclaw_notifier, llm, strategy, agent
+    global settings, market_data, order_router, broker, account, sentiment, macro, institutional_feeds, delivery_service, market_breadth, sector_rotation, macro_calendar, universe_service, options_intelligence, openclaw_notifier, whatsapp_notifier, llm, strategy, agent
     candidate_overrides = _runtime_overrides_without_llm(candidate_overrides)
     candidate_settings = _settings_without_llm(candidate_settings)
     was_running = agent.running
@@ -4367,6 +4467,7 @@ async def _apply_runtime_stack(
     universe_service = candidate_stack["universe_service"]
     options_intelligence = candidate_stack["options_intelligence"]
     openclaw_notifier = candidate_stack["openclaw_notifier"]
+    whatsapp_notifier = candidate_stack["whatsapp_notifier"]
     llm = candidate_stack["llm"]
     strategy = candidate_stack["strategy"]
     agent = candidate_stack["agent"]
@@ -5884,6 +5985,17 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     if tagged_decisions:
         db.insert_decisions(tagged_decisions)
         db.upsert_signal_ideas_from_decisions(tagged_decisions)
+    whatsapp_alerts = dispatch_fresh_buy_alerts(
+        db=db,
+        settings=settings,
+        notifier=whatsapp_notifier,
+        decision_buy_symbols={
+            str(decision.symbol or "").upper()
+            for decision in tagged_decisions
+            if _decision_has_buy_intent(decision)
+        },
+        source="user_signal_cycle",
+    )
     signal_hygiene = {
         "zero_qty_cleaned": len(db.cleanup_zero_qty_active_follows(reason="user_cycle_zero_qty_cleanup")),
         "unsafe_follow_exits": len(db.exit_unsafe_active_follows(reason="user_cycle_strict_contract_cleanup")),
@@ -5893,6 +6005,7 @@ async def _run_user_signal_cycle(user_id: int) -> dict[str, Any]:
     set_phase("auto_execute", {"symbol_count": len(universe), "decision_count": len(tagged_decisions)})
     auto_trade = _auto_follow_buy_ideas_for_user(user, tagged_decisions)
     auto_trade["signal_hygiene"] = signal_hygiene
+    auto_trade["whatsapp_alerts"] = whatsapp_alerts
 
     action_counts: dict[str, int] = {}
     for decision in tagged_decisions:

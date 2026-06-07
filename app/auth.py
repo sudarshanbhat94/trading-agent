@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import HTTPException, Request, Response
 
 from .config import Settings
+from .whatsapp import DEFAULT_ALERT_TYPES, mask_whatsapp_phone, normalize_alert_types
 
 
 SESSION_COOKIE = "openstocks_session"
@@ -69,6 +70,13 @@ def _normalize_monitor_symbols(value: Any) -> list[str]:
             seen.add(token)
             symbols.append(token[:32])
     return symbols
+
+
+def _json_load(value: Any) -> Any:
+    try:
+        return json.loads(value or "null")
+    except (TypeError, json.JSONDecodeError):
+        return None
 
 
 def hash_password(password: str) -> str:
@@ -218,6 +226,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "US": round(float(user["paper_cash_us"]), 2) if user.get("paper_cash_us") is not None else None,
     }
     monitor_symbols = _normalize_monitor_symbols(user.get("monitor_symbols_json") or [])
+    whatsapp_alert_types = normalize_alert_types(_json_load(user.get("whatsapp_alert_types_json")) or DEFAULT_ALERT_TYPES)
     return {
         "id": int(user["id"]),
         "username": user["username"],
@@ -230,6 +239,15 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "monitor_symbols": monitor_symbols,
         "monitor_symbols_count": len(monitor_symbols),
         "monitor_scope": "CUSTOM" if monitor_symbols else "DYNAMIC_OPPORTUNITY",
+        "whatsapp": {
+            "subscribed": bool(user.get("whatsapp_alerts_enabled") and user.get("whatsapp_phone")),
+            "phone_masked": mask_whatsapp_phone(user.get("whatsapp_phone")),
+            "phone_saved": bool(user.get("whatsapp_phone")),
+            "alert_types": whatsapp_alert_types,
+            "verified": bool(user.get("whatsapp_verified_at")),
+            "verified_at": user.get("whatsapp_verified_at"),
+            "updated_at": user.get("whatsapp_updated_at"),
+        },
         "broker_accounts": {
             "indstocks": {
                 "connected": bool(user.get("indstocks_access_token")),

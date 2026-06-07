@@ -2424,6 +2424,7 @@ td.reason {
 }
 
 .paper-cash-form input,
+.paper-cash-form select,
 .paper-cash-form textarea {
   width: 100%;
   min-height: 38px;
@@ -2442,6 +2443,18 @@ td.reason {
 
 .paper-cash-form button {
   min-height: 38px;
+}
+
+.paper-cash-form .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.paper-cash-form .checkbox-label input {
+  width: auto;
+  min-height: 0;
 }
 
 .paper-cash-form small {

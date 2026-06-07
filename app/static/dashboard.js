@@ -56,7 +56,7 @@ const MARKET_LABELS = {
 const SETTINGS_TABS = ["broker", "markets", "runtime", "ai", "risk", "users", "calendar", "advanced"];
 
 const SETTINGS_TAB_CATEGORIES = {
-  broker: new Set(["Live Protection"]),
+  broker: new Set(["Live Protection", "Notifications"]),
   markets: new Set(["Market Data"]),
   runtime: new Set(["Runtime", "Agent Cycle"]),
   ai: new Set(["Signals", "Sentiment"]),
@@ -3684,6 +3684,7 @@ function renderAccount(account) {
   const indiaCashPool = Number(cashPool.IN ?? (Number(indiaPaper.cash || 0) + Number(indiaPaper.invested || 0)));
   const usCashPool = Number(cashPool.US ?? (Number(usPaper.cash || 0) + Number(usPaper.invested || 0)));
   const monitorSymbols = account.monitor_symbols || state.auth?.user?.monitor_symbols || [];
+  const whatsapp = account.whatsapp || state.auth?.user?.whatsapp || {};
   const cashEditor = state.auth?.admin ? "" : `
     <form id="paper-cash-form" class="paper-cash-form">
       <label>
@@ -3722,6 +3723,22 @@ function renderAccount(account) {
       <button id="save-monitor-symbols-btn" type="submit">Save List</button>
       <button id="clear-monitor-symbols-btn" type="button">Use Dynamic Scan</button>
       <small id="monitor-symbols-status">${monitorSymbols.length ? `${fmtNumber(monitorSymbols.length)} custom symbol(s) active` : "Empty list uses the dynamic opportunity scan."}</small>
+    </form>
+  `;
+  const whatsappEditor = state.auth?.admin ? "" : `
+    <form id="whatsapp-alert-form" class="paper-cash-form monitor-symbols-form">
+      <label class="wide">
+        <span>WhatsApp Alerts</span>
+        <input id="whatsapp-phone-input" type="tel" placeholder="${escapeHtml(whatsapp.phone_masked || "+91...")}" autocomplete="tel" />
+      </label>
+      <label class="checkbox-label">
+        <input id="whatsapp-alert-fresh-buy" type="checkbox" checked />
+        <span>Fresh BUY alerts</span>
+      </label>
+      <button id="save-whatsapp-alerts-btn" type="submit">${whatsapp.subscribed ? "Update WhatsApp" : "Subscribe"}</button>
+      <button id="test-whatsapp-alerts-btn" type="button" ${whatsapp.subscribed ? "" : "disabled"}>Test</button>
+      <button id="unsubscribe-whatsapp-alerts-btn" type="button" ${whatsapp.subscribed ? "" : "disabled"}>Unsubscribe</button>
+      <small id="whatsapp-alert-status">${whatsapp.subscribed ? `Subscribed ${escapeHtml(whatsapp.phone_masked || "")}` : "Subscribe to receive strict fresh BUY alerts on WhatsApp."}</small>
     </form>
   `;
   const userUpstoxPersonal = userUpstox.connected && userUpstox.scope === "user";
@@ -3818,6 +3835,7 @@ function renderAccount(account) {
       <div><span>User Feed</span><strong>${userFeedLabel}</strong></div>
       <div><span>Signal Action</span><strong>${escapeHtml(signalModeLabel(signalExecutionMode))}</strong></div>
       <div><span>Monitor Scope</span><strong>${monitorSymbols.length ? `${fmtNumber(monitorSymbols.length)} custom` : "Dynamic"}</strong></div>
+      <div><span>WhatsApp</span><strong>${whatsapp.subscribed ? "Subscribed" : "Off"}</strong></div>
       <div><span>Broker Sync</span><strong>${escapeHtml(brokerSync.status_label || brokerSync.status || "Not Connected")}</strong></div>
       <div><span>Tracked Ideas</span><strong>${fmtNumber(trackedIdeas.length)}</strong></div>
       <div><span>Open Paper</span><strong>${fmtNumber(paperOpenCount)}</strong></div>
@@ -3828,6 +3846,7 @@ function renderAccount(account) {
     ${cashEditor}
     ${signalModeEditor}
     ${monitorEditor}
+    ${whatsappEditor}
     ${verificationMarkup}
     <div class="account-note">
       <strong>${state.auth?.admin ? "Admin mode" : "User trading mode"}</strong>
@@ -3851,6 +3870,12 @@ function renderAccount(account) {
   if (monitorForm) monitorForm.addEventListener("submit", saveMonitorSymbols);
   const clearMonitorButton = byId("clear-monitor-symbols-btn");
   if (clearMonitorButton) clearMonitorButton.addEventListener("click", clearMonitorSymbols);
+  const whatsappForm = byId("whatsapp-alert-form");
+  if (whatsappForm) whatsappForm.addEventListener("submit", saveWhatsAppAlerts);
+  const whatsappTestButton = byId("test-whatsapp-alerts-btn");
+  if (whatsappTestButton) whatsappTestButton.addEventListener("click", testWhatsAppAlerts);
+  const whatsappUnsubscribeButton = byId("unsubscribe-whatsapp-alerts-btn");
+  if (whatsappUnsubscribeButton) whatsappUnsubscribeButton.addEventListener("click", unsubscribeWhatsAppAlerts);
   byId("account-body")?.querySelector("[data-account-logout]")?.addEventListener("click", logout);
   renderUserBrokerStatus();
 }
@@ -3884,6 +3909,7 @@ function accountFromStatusPayload(payload = {}) {
     monitor_symbols: state.auth?.user?.monitor_symbols || [],
     monitor_symbols_count: state.auth?.user?.monitor_symbols_count || 0,
     monitor_scope: state.auth?.user?.monitor_scope || "DYNAMIC_OPPORTUNITY",
+    whatsapp: state.auth?.user?.whatsapp || {},
   };
 }
 
@@ -3936,6 +3962,67 @@ async function clearMonitorSymbols() {
   const input = byId("monitor-symbols-input");
   if (input) input.value = "";
   await saveMonitorSymbols({ preventDefault() {} });
+}
+
+async function saveWhatsAppAlerts(event) {
+  event.preventDefault();
+  const status = byId("whatsapp-alert-status");
+  const phone = byId("whatsapp-phone-input")?.value || "";
+  const alertTypes = byId("whatsapp-alert-fresh-buy")?.checked ? ["fresh_buy"] : [];
+  if (status) status.textContent = "subscribing";
+  try {
+    const response = await fetch("/api/me/whatsapp/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, alert_types: alertTypes }),
+    });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      if (status) status.textContent = payload.detail || "subscribe failed";
+      return;
+    }
+    if (state.auth?.user) state.auth.user = payload.user || state.auth.user;
+    if (status) status.textContent = payload.subscription?.phone_masked
+      ? `subscribed ${payload.subscription.phone_masked}`
+      : payload.message || "subscribed";
+    await loadAuthenticatedData();
+  } catch (error) {
+    if (status) status.textContent = "subscribe failed";
+  }
+}
+
+async function unsubscribeWhatsAppAlerts() {
+  const status = byId("whatsapp-alert-status");
+  if (status) status.textContent = "unsubscribing";
+  try {
+    const response = await fetch("/api/me/whatsapp/unsubscribe", { method: "POST" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      if (status) status.textContent = payload.detail || "unsubscribe failed";
+      return;
+    }
+    if (state.auth?.user) state.auth.user = payload.user || state.auth.user;
+    if (status) status.textContent = payload.message || "unsubscribed";
+    await loadAuthenticatedData();
+  } catch (error) {
+    if (status) status.textContent = "unsubscribe failed";
+  }
+}
+
+async function testWhatsAppAlerts() {
+  const status = byId("whatsapp-alert-status");
+  if (status) status.textContent = "sending test";
+  try {
+    const response = await fetch("/api/me/whatsapp/test", { method: "POST" });
+    const payload = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+    if (!response.ok) {
+      if (status) status.textContent = payload.detail || "test failed";
+      return;
+    }
+    if (status) status.textContent = payload.provider_message_id ? "test sent" : "test sent to provider";
+  } catch (error) {
+    if (status) status.textContent = "test failed";
+  }
 }
 
 async function saveSignalExecutionMode(event) {

@@ -10,7 +10,16 @@ from app.opportunity_scanner import OpportunityScanner
 
 
 IST = ZoneInfo("Asia/Kolkata")
-TEST_INDIA_SESSION_DATE = datetime(2026, 6, 3, tzinfo=IST)
+
+
+def _recent_india_session_date() -> datetime:
+    local = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
+    while local.weekday() >= 5:
+        local -= timedelta(days=1)
+    return local
+
+
+TEST_INDIA_SESSION_DATE = _recent_india_session_date()
 
 
 class OpportunityScannerTests(unittest.TestCase):
