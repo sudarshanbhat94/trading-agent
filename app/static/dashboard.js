@@ -53,12 +53,13 @@ const MARKET_LABELS = {
   US: "US",
 };
 
-const SETTINGS_TABS = ["broker", "markets", "runtime", "ai", "risk", "users", "calendar", "advanced"];
+const SETTINGS_TABS = ["broker", "markets", "runtime", "notifications", "ai", "risk", "users", "calendar", "advanced"];
 
 const SETTINGS_TAB_CATEGORIES = {
-  broker: new Set(["Live Protection", "Notifications"]),
+  broker: new Set(["Live Protection"]),
   markets: new Set(["Market Data"]),
   runtime: new Set(["Runtime", "Agent Cycle"]),
+  notifications: new Set(["Notifications", "OpenClaw"]),
   ai: new Set(["Signals", "Sentiment"]),
   risk: new Set(["Risk"]),
   users: new Set(["Access Control", "User Credits"]),
