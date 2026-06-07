@@ -21485,3 +21485,51 @@ body[data-theme="dark"] .market-tape-viewport::before {
 body[data-theme="dark"] .market-tape-viewport::after {
   background: linear-gradient(270deg, #000000 0%, transparent 100%) !important;
 }
+
+/* =====================================================================
+   P0 mobile UX (added): >= 44px touch targets + table scroll ergonomics
+   Scoped to phones so the desktop layout is untouched. Native <button>
+   centers its label vertically, so min-height alone is enough and safe.
+   ===================================================================== */
+@media (max-width: 767px) {
+  /* Anchor on #app-shell so this 44px touch floor wins over the many
+     per-component compact !important rules already in this file. */
+  #app-shell .view button,
+  #app-shell .view [role="button"],
+  #app-shell .view a.btn,
+  #app-shell .view a.button,
+  #app-shell .view .primary,
+  #app-shell .view .secondary {
+    min-height: 44px !important;
+  }
+
+  /* icon-only / close controls get a full 44x44 hit area */
+  #app-shell .view .icon-button,
+  #app-shell .view .icon-btn,
+  #app-shell .view button.close,
+  #app-shell [aria-label="Close"] {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+
+  /* Restore intentionally-dense control strips so the floor does not
+     bloat segmented filters, search rows, or status pills. */
+  #app-shell .view .mobile-watchlist-tabs button,
+  #app-shell .view .mobile-watchlist-search button,
+  #app-shell .view .signal-search-bar button,
+  #app-shell .view .mobile-order-status-row button,
+  #app-shell .view .order-status-pill {
+    min-height: 38px !important;
+  }
+
+  /* a little breathing room between adjacent buttons in a row */
+  #app-shell .view .actions button + button,
+  #app-shell .view .btn-row button + button {
+    margin-left: 8px;
+  }
+
+  /* smooth momentum scrolling for the horizontally scrollable data tables */
+  .table-wrap {
+    -webkit-overflow-scrolling: touch;
+  }
+}
