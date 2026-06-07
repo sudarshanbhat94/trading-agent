@@ -4596,6 +4596,17 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
         if "signal_execution_mode" in payload
         else None
     )
+    whatsapp_requested = any(
+        key in payload
+        for key in ("whatsapp_phone", "whatsapp_alerts_enabled", "whatsapp_alert_types")
+    )
+    whatsapp_phone = payload.get("whatsapp_phone") if "whatsapp_phone" in payload else None
+    whatsapp_enabled = (
+        bool(payload.get("whatsapp_alerts_enabled"))
+        if "whatsapp_alerts_enabled" in payload
+        else (bool(str(whatsapp_phone or "").strip()) if whatsapp_phone is not None else None)
+    )
+    whatsapp_alert_types = payload.get("whatsapp_alert_types") if "whatsapp_alert_types" in payload else None
     if existing.get("role") == "admin" and db.active_admin_count() <= 1:
         would_remove_admin = (role is not None and role != "admin") or active is False
         if would_remove_admin:
@@ -4612,6 +4623,17 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
     if daily_credit_limit is not None:
         db.update_user_daily_credit_limit(user_id, daily_credit_limit)
         user = next((item for item in db.list_users() if int(item["id"]) == user_id), user)
+    if whatsapp_requested:
+        try:
+            user = db.update_user_whatsapp_subscription(
+                user_id,
+                phone=whatsapp_phone,
+                enabled=whatsapp_enabled,
+                alert_types=whatsapp_alert_types,
+                default_country_code=settings.whatsapp_default_country_code,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.insert_agent_log(
         "INFO",
         "admin",
@@ -4626,6 +4648,7 @@ async def update_user(user_id: int, payload: dict[str, Any], request: Request) -
             "active_changed": active is not None,
             "password_changed": password_hash is not None,
             "daily_credit_limit_changed": daily_credit_limit is not None,
+            "whatsapp_changed": whatsapp_requested,
         },
     )
     return {"ok": True, "user": user, "users": db.list_users()}

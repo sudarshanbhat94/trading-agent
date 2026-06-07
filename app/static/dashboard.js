@@ -3347,11 +3347,11 @@ function renderUsers(rows) {
   byId("users-count").textContent = `${state.users.length} users`;
   byId("nav-users-badge").textContent = String(state.users.length);
   if (!state.auth?.admin) {
-    body.innerHTML = emptyTableRow(8, "Admin access required", "Only admins can create users, allocate credits, and assign broker feeds.");
+    body.innerHTML = emptyTableRow(9, "Admin access required", "Only admins can create users, allocate credits, and assign broker feeds.");
     return;
   }
   if (!state.users.length) {
-    body.innerHTML = emptyTableRow(8, "No users yet", "Create the first user to run signals with separate credits, cash, and broker feed settings.");
+    body.innerHTML = emptyTableRow(9, "No users yet", "Create the first user to run signals with separate credits, cash, and broker feed settings.");
     return;
   }
   body.innerHTML = state.users
@@ -3363,6 +3363,7 @@ function renderUsers(rows) {
       const kite = user.broker_accounts?.kite || {};
       const assigned = user.assigned_llm || {};
       const signalMode = String(user.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
+      const whatsapp = user.whatsapp || {};
       const upstoxEffective = Boolean(upstox.connected || sharedUpstox.connected);
       const upstoxLabel = upstox.connected
         ? (upstox.scope === "user" ? "personal" : "shared data")
@@ -3380,12 +3381,14 @@ function renderUsers(rows) {
         <td><strong>${fmtCredits(credits.credits_used_today || 0)}</strong><br><small>left ${fmtCredits(credits.daily_credits_remaining || 0)}</small></td>
         <td><span class="tag ${signalModeClass(signalMode)}">${escapeHtml(signalModeLabel(signalMode))}</span></td>
         <td><span class="tag ${upstoxEffective ? "open" : "watch"}">Upstox ${upstoxLabel}</span><br><small>${escapeHtml(brokerSubLabel)}</small></td>
+        <td><span class="tag ${whatsapp.subscribed ? "open" : "watch"}">${whatsapp.subscribed ? "subscribed" : "off"}</span><br><small>${escapeHtml(whatsapp.phone_masked || "no recipient")}</small></td>
         <td><span class="tag ${active ? "open" : "sell"}">${active ? "active" : "disabled"}</span></td>
         <td class="row-actions">
           <button type="button" data-user-action="toggle">${active ? "Disable" : "Enable"}</button>
           <button type="button" data-user-action="role" title="${user.role === "admin" ? "Change to user role" : "Change to admin role"}">Role</button>
           <button type="button" data-user-action="model">Model</button>
           <button type="button" data-user-action="signal-mode">Mode</button>
+          <button type="button" data-user-action="whatsapp">WhatsApp</button>
           <button type="button" data-user-action="credits">Credits</button>
         </td>
       </tr>`;
@@ -3405,6 +3408,8 @@ function renderUsers(rows) {
         openModelAssign(user);
       } else if (button.dataset.userAction === "signal-mode") {
         openSignalModeAssign(user);
+      } else if (button.dataset.userAction === "whatsapp") {
+        openWhatsAppAssign(user);
       } else if (button.dataset.userAction === "credits") {
         openCreditAdjust(user);
       }
@@ -3452,6 +3457,21 @@ function openSignalModeAssign(user) {
   );
   if (raw === null) return;
   updateUser(user.id, { signal_execution_mode: raw });
+}
+
+function openWhatsAppAssign(user) {
+  const current = user.whatsapp?.phone_masked || "not subscribed";
+  const raw = window.prompt(
+    `WhatsApp recipient for ${user.username}\nCurrent: ${current}\nEnter the full receiving number, or leave blank to unsubscribe.`,
+    "",
+  );
+  if (raw === null) return;
+  const phone = raw.trim();
+  updateUser(user.id, {
+    whatsapp_phone: phone,
+    whatsapp_alerts_enabled: Boolean(phone),
+    whatsapp_alert_types: ["fresh_buy"],
+  });
 }
 
 function openCreditAdjust(user) {
