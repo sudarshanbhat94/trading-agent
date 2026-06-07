@@ -3547,10 +3547,20 @@ async def test_my_whatsapp(request: Request) -> dict[str, Any]:
     phone = str(stored.get("whatsapp_phone") or "")
     if not bool(stored.get("whatsapp_alerts_enabled")) or not phone:
         raise HTTPException(status_code=400, detail="Subscribe a WhatsApp number before sending a test.")
-    result = whatsapp_notifier.send_text(
-        phone,
-        f"OpenStocks WhatsApp test for {stored.get('username')}. Fresh BUY alerts will appear here when strict signal gates pass.",
-    )
+    test_template = str(settings.whatsapp_test_template_name or "").strip()
+    if test_template:
+        result = whatsapp_notifier.send_template(
+            phone,
+            test_template,
+            language_code=settings.whatsapp_template_language_code,
+        )
+        message_mode = "template"
+    else:
+        result = whatsapp_notifier.send_text(
+            phone,
+            f"OpenStocks WhatsApp test for {stored.get('username')}. Fresh BUY alerts will appear here when strict signal gates pass.",
+        )
+        message_mode = "text"
     db.record_whatsapp_alert(
         user_id=int(user["id"]),
         phone=phone,
@@ -3558,7 +3568,13 @@ async def test_my_whatsapp(request: Request) -> dict[str, Any]:
         status="SENT" if result.ok else "FAILED",
         reason="" if result.ok else result.error,
         provider_message_id=result.provider_message_id,
-        details={"status_code": result.status_code, "response": result.response, "source": "user_test"},
+        details={
+            "status_code": result.status_code,
+            "response": result.response,
+            "source": "user_test",
+            "message_mode": message_mode,
+            "template_name": test_template,
+        },
     )
     if not result.ok:
         raise HTTPException(status_code=502, detail=f"WhatsApp test failed: {result.error or result.status_code}")

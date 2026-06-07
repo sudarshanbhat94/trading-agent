@@ -80,7 +80,7 @@ class WhatsAppAlertTests(unittest.TestCase):
         settings = replace(
             base,
             whatsapp_alerts_enabled=True,
-            whatsapp_api_base_url="https://graph.facebook.com/v23.0",
+            whatsapp_api_base_url="https://graph.facebook.com/v25.0",
             whatsapp_phone_number_id="12345",
             whatsapp_access_token="token",
         )
@@ -100,11 +100,44 @@ class WhatsAppAlertTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.provider_message_id, "wamid.unit")
         args, kwargs = post.call_args
-        self.assertEqual(args[0], "https://graph.facebook.com/v23.0/12345/messages")
+        self.assertEqual(args[0], "https://graph.facebook.com/v25.0/12345/messages")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer token")
         self.assertEqual(kwargs["json"]["messaging_product"], "whatsapp")
         self.assertEqual(kwargs["json"]["to"], "919876543210")
         self.assertEqual(kwargs["json"]["text"]["body"], "Hello")
+
+    def test_notifier_posts_meta_template_payload(self) -> None:
+        _tmp, _db, base = self._db()
+        self.addCleanup(_tmp.cleanup)
+        settings = replace(
+            base,
+            whatsapp_alerts_enabled=True,
+            whatsapp_api_base_url="https://graph.facebook.com/v25.0",
+            whatsapp_phone_number_id="12345",
+            whatsapp_access_token="token",
+        )
+        notifier = WhatsAppNotifier(settings)
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {"messages": [{"id": "wamid.template"}]}
+
+        with patch("app.whatsapp.httpx.post", return_value=Response()) as post:
+            result = notifier.send_template("+919876543210", "hello_world", language_code="en_US")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.provider_message_id, "wamid.template")
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "https://graph.facebook.com/v25.0/12345/messages")
+        self.assertEqual(kwargs["json"]["messaging_product"], "whatsapp")
+        self.assertEqual(kwargs["json"]["to"], "919876543210")
+        self.assertEqual(kwargs["json"]["type"], "template")
+        self.assertEqual(kwargs["json"]["template"]["name"], "hello_world")
+        self.assertEqual(kwargs["json"]["template"]["language"]["code"], "en_US")
 
 
 if __name__ == "__main__":

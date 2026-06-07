@@ -164,13 +164,17 @@ class Settings:
     openclaw_notify_ideas: bool = _bool("OPENCLAW_NOTIFY_IDEAS", True)
     openclaw_notify_orders: bool = _bool("OPENCLAW_NOTIFY_ORDERS", True)
     whatsapp_alerts_enabled: bool = _bool("WHATSAPP_ALERTS_ENABLED", False)
-    whatsapp_api_base_url: str = os.getenv("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v23.0").rstrip("/")
+    whatsapp_api_base_url: str = os.getenv("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v25.0").rstrip("/")
     whatsapp_phone_number_id: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
     whatsapp_access_token: str = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
     whatsapp_default_country_code: str = os.getenv("WHATSAPP_DEFAULT_COUNTRY_CODE", "91").strip()
     whatsapp_alert_cooldown_minutes: int = _int("WHATSAPP_ALERT_COOLDOWN_MINUTES", 30)
     whatsapp_max_alerts_per_cycle: int = _int("WHATSAPP_MAX_ALERTS_PER_CYCLE", 5)
     whatsapp_timeout_seconds: float = _float("WHATSAPP_TIMEOUT_SECONDS", 10.0)
+    whatsapp_test_template_name: str = os.getenv("WHATSAPP_TEST_TEMPLATE_NAME", "hello_world").strip()
+    whatsapp_template_language_code: str = os.getenv("WHATSAPP_TEMPLATE_LANGUAGE_CODE", "en_US").strip()
+    whatsapp_alert_template_name: str = os.getenv("WHATSAPP_ALERT_TEMPLATE_NAME", "").strip()
+    whatsapp_alert_template_language_code: str = os.getenv("WHATSAPP_ALERT_TEMPLATE_LANGUAGE_CODE", "en_US").strip()
 
     initial_cash_inr: float = _float("INITIAL_CASH_INR", 10_000)
     max_positions: int = _int("MAX_POSITIONS", 5)
@@ -416,6 +420,10 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "whatsapp_alert_cooldown_minutes", "label": "WhatsApp Cooldown Min", "type": "number", "category": "Notifications", "min": 1, "step": 1},
     {"key": "whatsapp_max_alerts_per_cycle", "label": "Max WhatsApp Alerts/Cycle", "type": "number", "category": "Notifications", "min": 1, "step": 1},
     {"key": "whatsapp_timeout_seconds", "label": "WhatsApp Timeout Seconds", "type": "number", "category": "Notifications", "min": 3, "step": 1},
+    {"key": "whatsapp_test_template_name", "label": "WhatsApp Test Template", "type": "text", "category": "Notifications"},
+    {"key": "whatsapp_template_language_code", "label": "WhatsApp Test Language", "type": "text", "category": "Notifications"},
+    {"key": "whatsapp_alert_template_name", "label": "WhatsApp Alert Template", "type": "text", "category": "Notifications"},
+    {"key": "whatsapp_alert_template_language_code", "label": "WhatsApp Alert Language", "type": "text", "category": "Notifications"},
     {"key": "market_region", "label": "Market Region", "type": "select", "category": "Market Data", "choices": ["IN", "US", "BOTH"]},
     {"key": "market_data_provider", "label": "Market Data", "type": "select", "category": "Market Data", "choices": ["simulated", "upstox", "upstox_yahoo", "kite", "kite_yahoo", "nubra", "yahoo"]},
     {"key": "universe_source", "label": "Universe Source", "type": "select", "category": "Market Data", "choices": ["csv", "nse_equity"]},
@@ -612,7 +620,7 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
     if key == "upstox_order_base_url":
         return str(value).strip().rstrip("/") or "https://api-hft.upstox.com/v2"
     if key == "whatsapp_api_base_url":
-        return str(value).strip().rstrip("/") or "https://graph.facebook.com/v23.0"
+        return str(value).strip().rstrip("/") or "https://graph.facebook.com/v25.0"
     if key == "whatsapp_default_country_code":
         cleaned = "".join(char for char in str(value or "91") if char.isdigit())
         return cleaned or "91"
@@ -622,6 +630,13 @@ def coerce_setting_value(key: str, value: Any, base: Settings) -> Any:
         return max(int(value), 1)
     if key == "whatsapp_timeout_seconds":
         return max(float(value), 3.0)
+    if key in {
+        "whatsapp_test_template_name",
+        "whatsapp_template_language_code",
+        "whatsapp_alert_template_name",
+        "whatsapp_alert_template_language_code",
+    }:
+        return str(value or "").strip()
     if key == "upstox_candle_interval":
         interval = str(value).strip()
         choices = {"1minute", "30minute", "day", "week", "month"}

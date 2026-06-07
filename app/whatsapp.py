@@ -87,6 +87,8 @@ class WhatsAppNotifier:
             "phone_number_id_saved": bool(getattr(self.settings, "whatsapp_phone_number_id", "")),
             "access_token_saved": bool(getattr(self.settings, "whatsapp_access_token", "")),
             "cooldown_minutes": int(getattr(self.settings, "whatsapp_alert_cooldown_minutes", 30) or 30),
+            "test_template_name": str(getattr(self.settings, "whatsapp_test_template_name", "hello_world") or ""),
+            "alert_template_name": str(getattr(self.settings, "whatsapp_alert_template_name", "") or ""),
         }
 
     def send_text(self, to_phone: str, body: str) -> WhatsAppSendResult:
@@ -98,20 +100,59 @@ class WhatsAppNotifier:
         message = str(body or "").strip()
         if not message:
             return WhatsAppSendResult(ok=False, error="whatsapp_message_empty")
-        base_url = str(getattr(self.settings, "whatsapp_api_base_url", "https://graph.facebook.com/v23.0")).rstrip("/")
-        phone_number_id = str(getattr(self.settings, "whatsapp_phone_number_id", "")).strip()
-        timeout = float(getattr(self.settings, "whatsapp_timeout_seconds", 10) or 10)
-        url = f"{base_url}/{phone_number_id}/messages"
         payload = {
             "messaging_product": "whatsapp",
             "to": to_number,
             "type": "text",
             "text": {"preview_url": False, "body": message[:4000]},
         }
+        return self._post_message(payload)
+
+    def send_template(
+        self,
+        to_phone: str,
+        template_name: str,
+        *,
+        language_code: str = "en_US",
+        body_parameters: list[Any] | None = None,
+    ) -> WhatsAppSendResult:
+        if not self.configured:
+            return WhatsAppSendResult(ok=False, error="whatsapp_provider_not_configured")
+        to_number = provider_phone_number(to_phone)
+        if not to_number:
+            return WhatsAppSendResult(ok=False, error="whatsapp_phone_missing")
+        name = str(template_name or "").strip()
+        if not name:
+            return WhatsAppSendResult(ok=False, error="whatsapp_template_missing")
+        template: dict[str, Any] = {
+            "name": name,
+            "language": {"code": str(language_code or "en_US").strip() or "en_US"},
+        }
+        parameters = [
+            {"type": "text", "text": str(value or "")[:1024]}
+            for value in (body_parameters or [])
+        ]
+        if parameters:
+            template["components"] = [{"type": "body", "parameters": parameters}]
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "template",
+            "template": template,
+        }
+        return self._post_message(payload)
+
+    def _post_message(self, payload: dict[str, Any]) -> WhatsAppSendResult:
+        if not self.configured:
+            return WhatsAppSendResult(ok=False, error="whatsapp_provider_not_configured")
         headers = {
             "Authorization": f"Bearer {getattr(self.settings, 'whatsapp_access_token', '')}",
             "Content-Type": "application/json",
         }
+        base_url = str(getattr(self.settings, "whatsapp_api_base_url", "https://graph.facebook.com/v25.0")).rstrip("/")
+        phone_number_id = str(getattr(self.settings, "whatsapp_phone_number_id", "")).strip()
+        timeout = float(getattr(self.settings, "whatsapp_timeout_seconds", 10) or 10)
+        url = f"{base_url}/{phone_number_id}/messages"
         try:
             response = httpx.post(url, headers=headers, json=payload, timeout=timeout)
         except httpx.HTTPError as exc:
@@ -154,6 +195,17 @@ def format_signal_alert(idea: dict[str, Any]) -> str:
     lines.append(f"Why: {reason[:240]}")
     lines.append("Action: verify liquidity and place only if price is still inside the entry zone.")
     return "\n".join(lines)
+
+
+def alert_template_parameters(idea: dict[str, Any]) -> list[str]:
+    return [
+        str(idea.get("symbol") or "").upper(),
+        str(idea.get("market_region") or "IN").upper(),
+        _fmt_number(idea.get("latest_price") or idea.get("entry_price")),
+        _fmt_number(idea.get("stop_loss")),
+        _fmt_number(idea.get("target1")),
+        str(idea.get("reason") or idea.get("action_reason") or "Fresh OpenStocks BUY signal.")[:180],
+    ]
 
 
 def dispatch_fresh_buy_alerts(
@@ -200,7 +252,18 @@ def dispatch_fresh_buy_alerts(
             if db.recent_whatsapp_alert(user_id, "fresh_buy", symbol, since.isoformat()):
                 summary["skipped"].append({"user_id": user_id, "symbol": symbol, "reason": "cooldown"})
                 continue
-            result = notifier.send_text(str(user.get("whatsapp_phone") or ""), format_signal_alert(idea))
+            alert_template = str(getattr(settings, "whatsapp_alert_template_name", "") or "").strip()
+            if alert_template:
+                result = notifier.send_template(
+                    str(user.get("whatsapp_phone") or ""),
+                    alert_template,
+                    language_code=str(getattr(settings, "whatsapp_alert_template_language_code", "en_US") or "en_US"),
+                    body_parameters=alert_template_parameters(idea),
+                )
+                message_mode = "template"
+            else:
+                result = notifier.send_text(str(user.get("whatsapp_phone") or ""), format_signal_alert(idea))
+                message_mode = "text"
             db.record_whatsapp_alert(
                 user_id=user_id,
                 phone=str(user.get("whatsapp_phone") or ""),
@@ -211,6 +274,8 @@ def dispatch_fresh_buy_alerts(
                 provider_message_id=result.provider_message_id,
                 details={
                     "source": source,
+                    "message_mode": message_mode,
+                    "template_name": alert_template,
                     "idea_id": idea.get("id"),
                     "status_code": result.status_code,
                     "response": result.response,
