@@ -146,7 +146,7 @@ class RealMoneyReadinessTests(unittest.TestCase):
             idea_id = int(conn.execute("select last_insert_rowid() as id").fetchone()["id"])
 
         with self.assertRaisesRegex(ValueError, "live_readiness_blocked"):
-            db.follow_signal_idea(1, idea_id, mode="LIVE", amount=10_000, cost_settings=settings)
+            db.follow_signal_idea(1, idea_id, mode="LIVE", amount=20_000, cost_settings=settings)
 
         audits = db.latest_trade_audit_events()
         follows = db.user_followed_signal_ideas(1, 20)
