@@ -128,7 +128,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     confidence = round(_clamp(raw_score / 100.0, 0.05, 0.99), 4)
     grade = "A" if raw_score >= 82.0 else "B" if raw_score >= entry_line else "WATCH"
     setup_family = str(best_setup.get("family") or "none")
-    trade_plan = _trade_plan(price, market, setup_family, atr_pct=_num(technical.get("atr_pct"))) if price and price > 0 else {}
+    trade_plan = _trade_plan(price, market, setup_family) if price and price > 0 else {}
     if settings is not None and getattr(settings, "market_day_regime_gate_enabled", True) is False:
         live_momentum_regime_allowed = True
         live_momentum_regime_gate = {"reason": "market_day_regime_gate_disabled", "state": market_day_regime.get("state")}
@@ -859,84 +859,53 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
-# Volatility-adaptive risk model. The stop is sized from the symbol's own ATR so it sits
-# outside normal noise instead of a flat percentage applied to every stock, and targets are
-# expressed in R (multiples of risk) so reward:risk is constant regardless of volatility.
-# Backtesting showed the prior flat -2.2%/+2.8% bands had reward:risk < 1.3 and lost money
-# net of costs at sub-50% win rates; ATR stops + R-multiple targets + trailing strictly
-# dominated them out-of-sample. Falls back to the legacy flat bands when ATR is unavailable.
-_ATR_STOP_MULTIPLIER = 1.6
-# (label_suffix, target_R, suggested_exit_pct)
-_R_TARGET_LADDER = [("T1", 1.5, 60), ("T2", 3.0, 40)]
-_BTST_R_TARGET_LADDER = [("T1", 1.2, 65), ("T2", 2.2, 35)]
-# Keep ATR-derived risk inside sane bounds so a quiet stock is not stopped on a tick and a
-# wild stock does not get a runaway stop. (min_stop_pct, max_stop_pct, legacy_fallback_pct)
-_RISK_BOUNDS = {
-    "IN": (0.012, 0.060, 0.022),
-    "IN_BTST": (0.012, 0.035, 0.020),
-    "US": (0.015, 0.080, 0.030),
-}
-
-
-def _trade_plan(
-    price: float | None,
-    market: str | None = "IN",
-    setup_family: str | None = None,
-    atr_pct: float | None = None,
-) -> dict[str, Any]:
+def _trade_plan(price: float | None, market: str | None = "IN", setup_family: str | None = None) -> dict[str, Any]:
     if price is None or price <= 0:
         return {}
     market_key = str(market or "IN").upper()
     setup_key = str(setup_family or "").strip().lower()
-    is_btst = market_key == "IN" and setup_key == "delivery_btst"
-    if is_btst:
-        bounds_key, prefix, holding_period, ladder = "IN_BTST", "BTST", "BTST_next_session", _BTST_R_TARGET_LADDER
+    if market_key == "IN" and setup_key == "delivery_btst":
+        stop_pct = 0.020
+        targets = [
+            ("BTST-T1", 0.022, 75),
+            ("BTST-T2", 0.038, 25),
+        ]
+        label = "BTST-T1"
+        holding_period = "BTST_next_session"
     elif market_key == "IN":
-        bounds_key, prefix, holding_period, ladder = "IN", "RAW-IN", "intraday_or_next_session", _R_TARGET_LADDER
+        stop_pct = 0.022
+        targets = [
+            ("RAW-IN-T1", 0.028, 70),
+            ("RAW-IN-T2", 0.046, 30),
+        ]
+        label = "RAW-IN-T1"
+        holding_period = "intraday_or_next_session"
     else:
-        bounds_key, prefix, holding_period, ladder = "US", "RAW", "intraday_to_swing", _R_TARGET_LADDER
-
-    min_stop_pct, max_stop_pct, fallback_pct = _RISK_BOUNDS[bounds_key]
-    atr_value = _num(atr_pct)
-    if atr_value is not None and atr_value > 0:
-        risk_pct = _clamp(_ATR_STOP_MULTIPLIER * (atr_value / 100.0), min_stop_pct, max_stop_pct)
-        stop_basis = f"atr_x{_ATR_STOP_MULTIPLIER}"
-    else:
-        risk_pct = fallback_pct
-        stop_basis = "fixed_fallback_no_atr"
-
-    risk_per_share = price * risk_pct
-    stop = price - risk_per_share
-    label = f"{prefix}-{ladder[0][0]}"
+        stop_pct = 0.030
+        targets = [
+            ("RAW-T1", 0.032, 70),
+            ("RAW-T2", 0.055, 30),
+        ]
+        label = "RAW-T1"
+        holding_period = "intraday_to_swing"
+    stop = price * (1.0 - stop_pct)
     return {
         "entry_zone": [round(price * 0.995, 4), round(price * 1.005, 4)],
         "stop_loss": round(stop, 4),
-        "risk_per_share": round(risk_per_share, 4),
-        "risk_pct": round(risk_pct * 100.0, 4),
-        "stop_basis": stop_basis,
-        "atr_pct_used": round(atr_value, 4) if atr_value is not None else None,
         "targets": [
             {
-                "label": f"{prefix}-{suffix}",
-                "price": round(price + target_r * risk_per_share, 4),
-                "distance_pct": round((target_r * risk_per_share / price) * 100.0, 4),
-                "r_multiple": target_r,
+                "label": target_label,
+                "price": round(price * (1.0 + target_pct), 4),
+                "distance_pct": round(target_pct * 100.0, 4),
                 "suggested_exit_pct": exit_pct,
             }
-            for suffix, target_r, exit_pct in ladder
+            for target_label, target_pct, exit_pct in targets
         ],
         "holding_period": holding_period,
         "target_policy": {
-            "profile": "atr_r_multiple_ladder_v3",
+            "profile": "closer_t1_profit_ladder_v2",
             "first_booking": label,
-            "rule": "Book most size into the first R target; trail the remainder with the ATR chandelier.",
-        },
-        "trailing": {
-            "enabled": True,
-            "move_to_breakeven_at_r": 1.0,
-            "activate_at_r": ladder[0][1],
-            "method": "chandelier_atr",
-            "atr_multiple": 2.5,
+            "rule": "Book most size into the first reachable target; trail only the remainder.",
         },
         "source": RAW_ENTRY_MODEL_VERSION,
     }

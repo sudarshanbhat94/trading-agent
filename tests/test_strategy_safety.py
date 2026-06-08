@@ -540,10 +540,7 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_evidence"]["source"], "rally_plan")
         self.assertNotIn("late_session_no_fresh_entry", model["warnings"])
 
-    def test_raw_opportunity_india_trade_plan_uses_atr_r_multiple_targets(self) -> None:
-        # No atr_pct in the context -> stop falls back to the legacy 2.2% band, but targets are
-        # now R-multiples of that risk (1.5R / 3.0R) so reward:risk is explicit instead of the
-        # old sub-1.3R flat bands that lost money net of costs in backtesting.
+    def test_raw_opportunity_india_trade_plan_uses_more_reachable_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN"),
             _raw_opportunity_settings(),
@@ -552,41 +549,15 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         plan = model["trade_plan"]
 
         self.assertEqual(plan["stop_loss"], 97.8)
-        self.assertEqual(plan["stop_basis"], "fixed_fallback_no_atr")
-        self.assertEqual(plan["risk_per_share"], 2.2)
         self.assertEqual(plan["targets"][0]["label"], "RAW-IN-T1")
-        self.assertEqual(plan["targets"][0]["price"], 103.3)
-        self.assertEqual(plan["targets"][0]["distance_pct"], 3.3)
-        self.assertEqual(plan["targets"][0]["r_multiple"], 1.5)
-        self.assertEqual(plan["targets"][0]["suggested_exit_pct"], 60)
+        self.assertEqual(plan["targets"][0]["price"], 102.8)
+        self.assertEqual(plan["targets"][0]["distance_pct"], 2.8)
+        self.assertEqual(plan["targets"][0]["suggested_exit_pct"], 70)
         self.assertEqual(plan["targets"][1]["label"], "RAW-IN-T2")
-        self.assertEqual(plan["targets"][1]["price"], 106.6)
-        self.assertEqual(plan["targets"][1]["r_multiple"], 3.0)
-        self.assertTrue(plan["trailing"]["enabled"])
+        self.assertEqual(plan["targets"][1]["price"], 104.6)
         self.assertEqual(plan["holding_period"], "intraday_or_next_session")
 
-    def test_raw_opportunity_trade_plan_stop_scales_with_atr(self) -> None:
-        # When the symbol's ATR is available the stop is volatility-sized, not a flat percent.
-        context = _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN")
-        context["technical_math"]["atr_pct"] = 3.0  # high-volatility name
-        plan = evaluate_raw_entry(context, _raw_opportunity_settings())["trade_plan"]
-
-        # 1.6 * 3.0% = 4.8% risk -> stop 95.2, T1 at 1.5R = +7.2% -> 107.2
-        self.assertEqual(plan["stop_basis"], "atr_x1.6")
-        self.assertEqual(plan["stop_loss"], 95.2)
-        self.assertEqual(plan["risk_per_share"], 4.8)
-        self.assertEqual(plan["targets"][0]["price"], 107.2)
-        self.assertEqual(plan["atr_pct_used"], 3.0)
-
-    def test_raw_opportunity_trade_plan_atr_stop_is_bounded(self) -> None:
-        # A near-zero ATR must not produce a hair-trigger stop; it is clamped to the floor.
-        context = _raw_entry_context(price=100.0, setup="opening_ignition", market_region="IN")
-        context["technical_math"]["atr_pct"] = 0.1  # 1.6*0.1% = 0.16% -> clamp to 1.2% floor
-        plan = evaluate_raw_entry(context, _raw_opportunity_settings())["trade_plan"]
-        self.assertEqual(plan["risk_pct"], 1.2)
-        self.assertEqual(plan["stop_loss"], 98.8)
-
-    def test_raw_opportunity_us_trade_plan_uses_atr_r_multiple_targets(self) -> None:
+    def test_raw_opportunity_us_trade_plan_uses_reachable_first_target(self) -> None:
         model = evaluate_raw_entry(
             _raw_entry_context(price=100.0, setup="opening_ignition", market_region="US"),
             _raw_opportunity_settings(),
@@ -596,11 +567,11 @@ class RawEntryModelSafetyTests(unittest.TestCase):
 
         self.assertEqual(plan["stop_loss"], 97.0)
         self.assertEqual(plan["targets"][0]["label"], "RAW-T1")
-        self.assertEqual(plan["targets"][0]["price"], 104.5)
-        self.assertEqual(plan["targets"][0]["distance_pct"], 4.5)
-        self.assertEqual(plan["targets"][0]["suggested_exit_pct"], 60)
+        self.assertEqual(plan["targets"][0]["price"], 103.2)
+        self.assertEqual(plan["targets"][0]["distance_pct"], 3.2)
+        self.assertEqual(plan["targets"][0]["suggested_exit_pct"], 70)
         self.assertEqual(plan["targets"][1]["label"], "RAW-T2")
-        self.assertEqual(plan["targets"][1]["price"], 109.0)
+        self.assertEqual(plan["targets"][1]["price"], 105.5)
         self.assertEqual(plan["holding_period"], "intraday_to_swing")
 
     def test_raw_opportunity_btst_requires_late_non_friday_session(self) -> None:
@@ -627,10 +598,9 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(model["setup_family"], "delivery_btst")
         self.assertEqual(model["trade_plan"]["holding_period"], "BTST_next_session")
         self.assertEqual(model["trade_plan"]["targets"][0]["label"], "BTST-T1")
-        # BTST ladder is 1.2R / 2.2R of the 2.0% fallback risk -> 2.4% / 4.4%.
-        self.assertEqual(model["trade_plan"]["targets"][0]["distance_pct"], 2.4)
-        self.assertEqual(model["trade_plan"]["targets"][0]["suggested_exit_pct"], 65)
-        self.assertEqual(model["trade_plan"]["targets"][1]["distance_pct"], 4.4)
+        self.assertEqual(model["trade_plan"]["targets"][0]["distance_pct"], 2.2)
+        self.assertEqual(model["trade_plan"]["targets"][0]["suggested_exit_pct"], 75)
+        self.assertEqual(model["trade_plan"]["targets"][1]["distance_pct"], 3.8)
 
     def test_raw_opportunity_btst_rejects_friday_weekend_carry(self) -> None:
         context = _btst_raw_entry_context(
