@@ -223,6 +223,14 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         if setup_family == "live_momentum" and opportunity_ready_without_regime and not live_momentum_regime_allowed
         else None
     )
+    momentum_v2_block = _momentum_entry_v2_block(
+        settings,
+        setup_family=setup_family,
+        day_gain=day_gain,
+        volume_ratio=volume_ratio,
+    )
+    if momentum_v2_block:
+        warnings.append(momentum_v2_block["reason"])
     if truth_blocks:
         decision_label = NO_TRADE
         reason = truth_blocks[0]["reason"]
@@ -238,6 +246,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     elif regime_block:
         decision_label = WATCH
         reason = "market_day_regime_not_supportive_for_live_momentum"
+    elif momentum_v2_block and opportunity_ready:
+        decision_label = WATCH
+        reason = momentum_v2_block["reason"]
     elif opportunity_ready:
         decision_label = ENTRY_READY
         reason = "raw_opportunity_ready"
@@ -594,6 +605,45 @@ def _confirmation_block(*, scan: dict[str, Any], setup_family: str, price: float
                 },
             }
     return None
+
+
+def _momentum_entry_v2_block(
+    settings: Any,
+    *,
+    setup_family: str,
+    day_gain: float | None,
+    volume_ratio: float | None,
+) -> dict[str, Any] | None:
+    """Momentum entry-quality gate v2 (IN + US), OFF unless explicitly enabled.
+
+    A would-be live-momentum ENTRY_READY is demoted to WATCH when it is either
+    chasing an already-extended move (day gain past the threshold) or lacks real
+    volume confirmation. This targets the two failure modes seen in production:
+    entries at a median +3.4% extension on ~1.5x volume. No effect when the flag
+    is off, so it ships dark and is flipped on only after backtest validation.
+    """
+    if settings is None or not getattr(settings, "momentum_entry_v2_enabled", False):
+        return None
+    if str(setup_family or "").strip().lower() != "live_momentum":
+        return None
+    max_gain = float(getattr(settings, "momentum_max_chase_gain_pct", 2.5) or 2.5)
+    min_vol = float(getattr(settings, "momentum_min_volume_ratio", 2.0) or 2.0)
+    reasons: list[str] = []
+    if day_gain is not None and day_gain > max_gain:
+        reasons.append(f"chasing_extended_move_gain_{round(float(day_gain), 2)}pct_over_{max_gain}")
+    if volume_ratio is not None and volume_ratio < min_vol:
+        reasons.append(f"weak_volume_ratio_{round(float(volume_ratio), 2)}_under_{min_vol}")
+    if not reasons:
+        return None
+    return {
+        "gate": "momentum_entry_v2",
+        "reason": reasons[0],
+        "checks": reasons,
+        "day_gain_pct": day_gain,
+        "volume_ratio": volume_ratio,
+        "max_chase_gain_pct": max_gain,
+        "min_volume_ratio": min_vol,
+    }
 
 
 def _entry_line(settings: Any = None) -> float:

@@ -22,7 +22,7 @@ from app.opportunity_scanner import OpportunityScanner
 from app.opportunity_state import opportunity_state_from_signal_details
 from app.agent import _auto_follow_idea_fresh_enough
 from app.paper_broker import PaperBroker
-from app.raw_entry_model import evaluate_raw_entry
+from app.raw_entry_model import _momentum_entry_v2_block, evaluate_raw_entry
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
 from app.strategy import StrategyEngine, _compact_context, _fresh_market_data_block_reason, _performance_feedback_block
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
@@ -4962,6 +4962,49 @@ def _market_regime_rows(kind: str) -> tuple[list[dict], dict[str, dict], dict[st
         else:
             quotes[symbol] = {"price": 99.0, "open": 98.0, "high": 101.0, "low": 97.0, "close": 100.0}
     return universe, quotes, {}
+
+
+class MomentumEntryV2GateTests(unittest.TestCase):
+    """Anti-chase + volume-confirmation gate for live_momentum (IN + US)."""
+
+    def _settings(self, enabled, max_gain=2.5, min_vol=2.0):
+        return SimpleNamespace(
+            momentum_entry_v2_enabled=enabled,
+            momentum_max_chase_gain_pct=max_gain,
+            momentum_min_volume_ratio=min_vol,
+        )
+
+    def test_disabled_by_default_no_block(self):
+        block = _momentum_entry_v2_block(
+            self._settings(False), setup_family="live_momentum", day_gain=9.0, volume_ratio=0.5
+        )
+        self.assertIsNone(block)
+
+    def test_blocks_chasing_extended_move(self):
+        block = _momentum_entry_v2_block(
+            self._settings(True), setup_family="live_momentum", day_gain=3.4, volume_ratio=3.0
+        )
+        self.assertIsNotNone(block)
+        self.assertIn("chasing_extended_move", block["reason"])
+
+    def test_blocks_weak_volume(self):
+        block = _momentum_entry_v2_block(
+            self._settings(True), setup_family="live_momentum", day_gain=1.0, volume_ratio=1.48
+        )
+        self.assertIsNotNone(block)
+        self.assertIn("weak_volume", block["reason"])
+
+    def test_allows_clean_early_entry_with_volume(self):
+        block = _momentum_entry_v2_block(
+            self._settings(True), setup_family="live_momentum", day_gain=1.2, volume_ratio=2.4
+        )
+        self.assertIsNone(block)
+
+    def test_only_applies_to_live_momentum(self):
+        block = _momentum_entry_v2_block(
+            self._settings(True), setup_family="breakout", day_gain=8.0, volume_ratio=0.4
+        )
+        self.assertIsNone(block)
 
 
 if __name__ == "__main__":

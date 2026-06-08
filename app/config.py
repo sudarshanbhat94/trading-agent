@@ -85,6 +85,12 @@ class Settings:
     raw_entry_min_score: float = _float("RAW_ENTRY_MIN_SCORE", 64.0)
     entry_authority_min_score: float = _float("ENTRY_AUTHORITY_MIN_SCORE", 64.0)
     entry_authority_watch_score: float = _float("ENTRY_AUTHORITY_WATCH_SCORE", 58.0)
+    # Momentum entry quality v2 (anti-chase + volume confirmation). OFF by default;
+    # validated on backtest before being enabled live. Demotes live_momentum BUYs that
+    # are chasing an extended move or lack real volume to WATCH. Applies to IN and US.
+    momentum_entry_v2_enabled: bool = _bool("MOMENTUM_ENTRY_V2_ENABLED", False)
+    momentum_max_chase_gain_pct: float = _float("MOMENTUM_MAX_CHASE_GAIN_PCT", 2.5)
+    momentum_min_volume_ratio: float = _float("MOMENTUM_MIN_VOLUME_RATIO", 2.0)
     rally_plan_promotion_enabled: bool = _bool("RALLY_PLAN_PROMOTION_ENABLED", True)
     rally_plan_max_promotions_per_market: int = _int("RALLY_PLAN_MAX_PROMOTIONS_PER_MARKET", 8)
     dynamic_scan_min_price: float = _float("DYNAMIC_SCAN_MIN_PRICE", 10.0)
