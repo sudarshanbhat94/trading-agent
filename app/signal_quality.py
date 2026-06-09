@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .trade_economics import minimum_auto_follow_notional
@@ -18,6 +19,8 @@ ACTIONABLE_MIN_CONFLUENCE = 18.0
 AUTO_FOLLOW_MIN_SCORE = 85.0
 AUTO_FOLLOW_MIN_CONFLUENCE = ACTIONABLE_MIN_CONFLUENCE
 AUTO_FOLLOW_MIN_REWARD_RISK = 1.5
+AUTO_FOLLOW_MIN_CONFIDENCE = 0.35
+AUTO_FOLLOW_MIN_TECHNICAL_SCORE = 0.0
 CAUTION_STOP_RISK_PCT = 5.5
 HARD_STOP_RISK_PCT = 9.0
 CAUTION_T1_DISTANCE_PCT = 10.0
@@ -47,6 +50,19 @@ _BREAKOUT_OPPORTUNITY_SETUPS = {
     "earnings_beat_gap_and_go",
 }
 _RAW_OPPORTUNITY_VERSIONS = {"raw_opportunity_v1"}
+_WATCH_STRATEGY_NAMES = {
+    "big_runner_watch",
+    "early_alpha_watch",
+    "extended_momentum_watch",
+}
+_WAIT_ENTRY_REASON_TOKENS = (
+    "raw_opportunity_watch",
+    "setup_requires_live_confirmation",
+    "watch_only",
+    "not_ready",
+    "wait_for_",
+    "avoid",
+)
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -116,6 +132,9 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
             market_region=market_region,
             legacy_entry_gates_removed=True,
         )
+    entry_reason_block = _raw_entry_reason_block(item, details, raw)
+    if entry_reason_block:
+        return entry_reason_block
     raw_score = _number(raw.get("raw_score"), item.get("overall_score_pct"), details.get("overall_score_pct"))
     grade = _upper(raw.get("grade") or item.get("overall_grade") or details.get("overall_grade")) or "B"
     return {
@@ -389,6 +408,9 @@ def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
                 duplicate_active_buy=True,
                 auto_follow_contract="raw_opportunity_strict_execution_v1",
             )
+        evidence_block = _auto_follow_evidence_contract(item, details, raw)
+        if evidence_block:
+            return evidence_block
         score = _number(raw.get("raw_score"), gate.get("overall_score_pct")) or 0.0
         size_multiplier = 1.0 if score >= 88.0 else 0.85 if score >= AUTO_FOLLOW_MIN_SCORE else 0.7
         contract_details = _details_with_raw_trade_plan(details, raw)
@@ -469,6 +491,77 @@ def _legacy_auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
         "auto_follow_min_reward_risk": AUTO_FOLLOW_MIN_REWARD_RISK,
         "auto_follow_contract": "strict_clean_execution_v1",
     }
+
+
+def _raw_entry_reason_block(
+    item: dict[str, Any],
+    details: dict[str, Any],
+    raw: dict[str, Any],
+) -> dict[str, Any] | None:
+    entry_reason = _entry_reason_text(item, details, raw)
+    if not entry_reason:
+        return None
+    normalized = entry_reason.lower()
+    if not any(token in normalized for token in _WAIT_ENTRY_REASON_TOKENS):
+        return None
+    return _blocked(
+        "raw_opportunity_entry_reason_not_ready",
+        "The raw entry authority marked the idea as wait/watch, so it cannot be treated as an executable BUY.",
+        raw_opportunity_version=raw.get("version"),
+        decision_label=raw.get("decision_label"),
+        entry_reason=entry_reason,
+        setup_family=raw.get("setup_family"),
+        market_region=_market_region(item, details, raw) or None,
+        legacy_entry_gates_removed=True,
+    )
+
+
+def _auto_follow_evidence_contract(
+    item: dict[str, Any],
+    details: dict[str, Any],
+    raw: dict[str, Any],
+) -> dict[str, Any] | None:
+    base_payload = {
+        "auto_follow_contract": "raw_opportunity_strict_execution_v1",
+        "min_confidence": AUTO_FOLLOW_MIN_CONFIDENCE,
+        "min_technical_score": AUTO_FOLLOW_MIN_TECHNICAL_SCORE,
+    }
+    watch_strategy = _watch_strategy_name(item, details, raw)
+    if watch_strategy:
+        return _blocked(
+            "auto_follow_watch_strategy_blocked",
+            "Auto-paper will not follow watch-list strategies; they must first become a fresh executable entry.",
+            strategy=watch_strategy,
+            **base_payload,
+        )
+
+    entry_reason = _entry_reason_text(item, details, raw)
+    if entry_reason and any(token in entry_reason.lower() for token in _WAIT_ENTRY_REASON_TOKENS):
+        return _blocked(
+            "auto_follow_entry_reason_not_buy_now",
+            "Auto-paper only follows buy-now entry reasons, not watch or confirmation-needed reasons.",
+            entry_reason=entry_reason,
+            **base_payload,
+        )
+
+    confidence = _confidence_score(item, details, raw)
+    if confidence is not None and confidence < AUTO_FOLLOW_MIN_CONFIDENCE:
+        return _blocked(
+            "auto_follow_confidence_below_minimum",
+            "Auto-paper requires enough confidence evidence before opening a position.",
+            confidence=round(confidence, 4),
+            **base_payload,
+        )
+
+    technical_score = _technical_score(item, details, raw)
+    if technical_score is not None and technical_score < AUTO_FOLLOW_MIN_TECHNICAL_SCORE:
+        return _blocked(
+            "auto_follow_technical_score_negative",
+            "Auto-paper will not enter when current technical evidence is negative.",
+            technical_score=round(technical_score, 4),
+            **base_payload,
+        )
+    return None
 
 
 def _auto_follow_execution_contract(
@@ -669,6 +762,16 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
                 auto_follow_ready=raw.get("auto_follow_ready"),
                 market_region=market_region,
             )
+        entry_reason_block = _raw_entry_reason_block(item, details, raw)
+        if entry_reason_block:
+            return _blocked(
+                "active_follow_raw_opportunity_entry_reason_not_ready",
+                "Active followed positions are no longer backed by a buy-now entry reason.",
+                entry_reason=entry_reason_block.get("entry_reason"),
+                raw_opportunity_version=raw.get("version"),
+                decision_label=decision_label or raw.get("decision_label"),
+                market_region=market_region,
+            )
 
     risk_flags = _risk_flags(item, details)
     severe_flags = _severe_risk_flags(risk_flags)
@@ -680,6 +783,17 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
             severe_risk_flags=severe_flags,
         )
     if mode == "PAPER":
+        raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
+        evidence_block = _auto_follow_evidence_contract(item, details, raw)
+        if evidence_block:
+            return _blocked(
+                "active_follow_auto_evidence_contract_failed",
+                "Active paper follow no longer meets the current auto-paper evidence contract; exit and wait.",
+                strict_failures=[evidence_block.get("reason")],
+                evidence_gate=evidence_block,
+                min_confidence=AUTO_FOLLOW_MIN_CONFIDENCE,
+                min_technical_score=AUTO_FOLLOW_MIN_TECHNICAL_SCORE,
+            )
         score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
         confluence = _number(item.get("confluence"), details.get("confluence"))
         strict_failures: list[str] = []
@@ -801,6 +915,89 @@ def _details_with_raw_trade_plan(details: dict[str, Any], raw: dict[str, Any]) -
     if "overall_grade" not in merged and raw.get("grade"):
         merged["overall_grade"] = raw.get("grade")
     return merged
+
+
+def _entry_reason_text(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> str:
+    for source in (raw, details, item):
+        if not isinstance(source, dict):
+            continue
+        for key in ("entry_reason", "reason", "raw_entry_reason", "action_reason"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                match = re.search(r"\bentry_reason\s*=\s*([A-Za-z0-9_\-]+)", value)
+                return match.group(1) if match else value
+    return ""
+
+
+def _watch_strategy_name(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> str:
+    best_strategy = details.get("best_strategy") if isinstance(details.get("best_strategy"), dict) else {}
+    candidates = (
+        item.get("strategy"),
+        item.get("plan_code"),
+        details.get("strategy"),
+        details.get("best_strategy_name"),
+        details.get("plan_code"),
+        best_strategy.get("name"),
+        raw.get("strategy"),
+        raw.get("setup"),
+    )
+    for candidate in candidates:
+        name = str(candidate or "").strip().lower()
+        if not name:
+            continue
+        if name in _WATCH_STRATEGY_NAMES or name.endswith("_watch"):
+            return name
+    return ""
+
+
+def _confidence_score(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> float | None:
+    value = _number(
+        item.get("confidence"),
+        item.get("confidence_score"),
+        details.get("confidence"),
+        details.get("confidence_score"),
+        raw.get("confidence"),
+        raw.get("confidence_score"),
+    )
+    if value is None:
+        value = _metric_from_text("confidence", item, details, raw)
+    if value is None:
+        return None
+    return value / 100.0 if value > 1.5 else value
+
+
+def _technical_score(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> float | None:
+    full = details.get("full_spectrum_analysis") if isinstance(details.get("full_spectrum_analysis"), dict) else {}
+    technical = full.get("technical") if isinstance(full.get("technical"), dict) else {}
+    value = _number(
+        item.get("technical_score"),
+        item.get("technical"),
+        details.get("technical_score"),
+        details.get("technical"),
+        raw.get("technical_score"),
+        raw.get("technical"),
+        technical.get("score"),
+        technical.get("technical_score"),
+    )
+    if value is not None:
+        return value
+    return _metric_from_text("technical", item, details, raw)
+
+
+def _metric_from_text(metric_name: str, *sources: dict[str, Any]) -> float | None:
+    labels = {metric_name, f"{metric_name}_score"}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("reason", "message", "entry_reason", "quality_reason", "audit_reason"):
+            text = str(source.get(key) or "")
+            if not text:
+                continue
+            for label in labels:
+                match = re.search(rf"\b{re.escape(label)}\s*[:=]\s*([-+]?\d+(?:\.\d+)?)", text, re.IGNORECASE)
+                if match:
+                    return _number(match.group(1))
+    return None
 
 
 def _entry_hard_veto(item: dict[str, Any], details: dict[str, Any]) -> dict[str, Any] | None:

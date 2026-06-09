@@ -112,6 +112,110 @@ class RawSignalQualityTests(unittest.TestCase):
         self.assertEqual(auto["reason"], "raw_opportunity_auto_follow_ready")
         self.assertEqual(auto["auto_follow_contract"], "raw_opportunity_strict_execution_v1")
 
+    def test_raw_entry_ready_watch_reason_is_not_trade_ready(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "latest_price": 100.0,
+            "overall_score_pct": 92,
+            "overall_grade": "A",
+            "confluence": 26,
+            "details": {
+                "market_region": "IN",
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "raw_score": 92,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "entry_reason": "raw_opportunity_watch",
+                    "setup_family": "live_momentum",
+                    "market_region": "IN",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                },
+            },
+        }
+
+        gate = fresh_buy_quality_gate(item)
+        auto = auto_follow_quality_gate(item)
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "raw_opportunity_entry_reason_not_ready")
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "raw_opportunity_entry_reason_not_ready")
+
+    def test_auto_follow_blocks_watch_strategy_even_when_raw_ready(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "strategy": "extended_momentum_watch",
+            "latest_price": 100.0,
+            "overall_score_pct": 94,
+            "overall_grade": "A",
+            "confluence": 28,
+            "confidence": 0.72,
+            "details": {
+                "market_region": "IN",
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "raw_score": 94,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "entry_reason": "raw_opportunity_ready",
+                    "setup_family": "live_momentum",
+                    "market_region": "IN",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                },
+            },
+        }
+
+        auto = auto_follow_quality_gate(item)
+
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "auto_follow_watch_strategy_blocked")
+
+    def test_auto_follow_blocks_negative_technical_evidence(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "strategy": "big_runner_ignition",
+            "latest_price": 100.0,
+            "overall_score_pct": 94,
+            "overall_grade": "A",
+            "confluence": 28,
+            "confidence": 0.72,
+            "reason": "tools technical=-0.26 entry_reason=raw_opportunity_ready",
+            "details": {
+                "market_region": "IN",
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "raw_score": 94,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "entry_reason": "raw_opportunity_ready",
+                    "setup_family": "live_momentum",
+                    "market_region": "IN",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                },
+            },
+        }
+
+        auto = auto_follow_quality_gate(item)
+
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "auto_follow_technical_score_negative")
+
     def test_active_buy_without_market_region_is_blocked(self) -> None:
         gate = fresh_buy_quality_gate(
             {
@@ -1187,6 +1291,14 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 for item in db.user_followed_signal_ideas(1, 20)
                 if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
             ]
+            with db.connect() as conn:
+                audits = conn.execute(
+                    """
+                    select symbol, event_type, side, status, reason
+                    from trade_audit_events
+                    order by id
+                    """
+                ).fetchall()
 
         self.assertEqual(len(exited), 3)
         self.assertEqual(active, [])
@@ -1195,6 +1307,10 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             {item["quality_gate"]["reason"] for item in exited},
             {"active_follow_watch_state_exit", "active_follow_hard_blocked", "active_follow_strict_auto_contract_failed"},
         )
+        self.assertEqual(len(audits), 3)
+        self.assertEqual({audit["event_type"] for audit in audits}, {"paper_follow_safety_exit"})
+        self.assertEqual({audit["side"] for audit in audits}, {"SELL"})
+        self.assertEqual({audit["status"] for audit in audits}, {"EXITED"})
 
     def test_legacy_subfloor_paper_follows_are_archived(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

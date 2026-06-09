@@ -4568,6 +4568,44 @@ class Database:
                         item["id"],
                     ),
                 )
+                conn.execute(
+                    """
+                    insert into trade_audit_events
+                        (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now,
+                        item.get("symbol"),
+                        "live_follow_safety_exit_request"
+                        if str(item.get("mode") or "").upper() == "LIVE"
+                        else "paper_follow_safety_exit",
+                        "SELL",
+                        qty,
+                        latest_price,
+                        next_status,
+                        reason,
+                        json.dumps(
+                            _bounded_for_storage(
+                                {
+                                    "user_id": item.get("user_id"),
+                                    "idea_id": item.get("idea_id"),
+                                    "mode": item.get("mode"),
+                                    "market_region": item.get("market_region"),
+                                    "entry_price": entry_price,
+                                    "exit_price": latest_price,
+                                    "realized_pnl": realized_pnl,
+                                    "return_pct": return_pct,
+                                    "quality_gate": quality_gate,
+                                    "economics": economics,
+                                },
+                                dict_limit=32,
+                            ),
+                            default=str,
+                            separators=(",", ":"),
+                        ),
+                    ),
+                )
                 item.update(
                     {
                         "status": next_status,
