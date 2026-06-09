@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.main import (
     WebSocketHub,
+    _compact_rally_plan,
     _compact_rally_plan_item,
     _effective_position_quote_refresh_seconds,
     _rally_plan_is_cached,
@@ -105,6 +106,25 @@ class DashboardJournalContractTests(unittest.TestCase):
         self.assertEqual(item["entry_plan"]["status"], "entry_check")
         self.assertEqual(item["exit_plan"]["stop_loss"], 88.4)
         self.assertNotIn("evidence", item)
+
+    def test_rally_plan_compact_avoids_duplicate_items_when_sections_exist(self) -> None:
+        plan = {
+            "market_region": "US",
+            "items": [{"symbol": f"SYM{i}", "section": "live_momentum", "why": "x" * 500} for i in range(30)],
+            "sections": {
+                "live_momentum": [
+                    {"symbol": f"SYM{i}", "section": "live_momentum", "why": "x" * 500}
+                    for i in range(30)
+                ]
+            },
+        }
+
+        compact = _compact_rally_plan(plan)
+
+        self.assertEqual(compact["item_count"], 30)
+        self.assertNotIn("items", compact)
+        self.assertEqual(len(compact["sections"]["live_momentum"]), 16)
+        self.assertLessEqual(len(compact["sections"]["live_momentum"][0]["why"]), 360)
 
     def test_position_quote_refresh_backs_off_for_large_books(self) -> None:
         self.assertEqual(_effective_position_quote_refresh_seconds(1, 0), 1.0)

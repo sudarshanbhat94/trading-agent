@@ -2094,7 +2094,7 @@ function render(payload) {
   byId("sentiment-count").textContent = `${filteredCountLabel(visibleSentiment.length, sentiment.length, "event")}`;
   byId("nav-positions-badge").textContent = String(openPositions.length);
   byId("nav-suggestions-badge").textContent = String(suggestions.length);
-  byId("nav-rally-badge").textContent = String((scopedRallyPlan(payload.rally_plan || {}, activeMarket).items || []).length || 0);
+  byId("nav-rally-badge").textContent = String(rallyPlanItemCount(scopedRallyPlan(payload.rally_plan || {}, activeMarket)));
   byId("nav-decisions-badge").textContent = String(latestDecisions.length);
   byId("nav-orders-badge").textContent = String(dayOrders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
@@ -5567,6 +5567,14 @@ function rallyPlanSectionRows(plan = {}, sectionKey = "") {
   return (plan.items || []).filter((item) => String(item.section || "") === sectionKey);
 }
 
+function rallyPlanItemCount(plan = {}) {
+  const explicit = Number(plan.item_count ?? plan.itemCount);
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  if (Array.isArray(plan.items)) return plan.items.length;
+  const sections = plan.sections && typeof plan.sections === "object" ? plan.sections : {};
+  return Object.values(sections).reduce((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
+}
+
 function readableRallyLabel(value = "") {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -5718,12 +5726,12 @@ function renderRallyPlan(rawPlan = {}) {
   if (!body) return;
   const market = normalizeUiMarket(state.activeMarket);
   const plan = scopedRallyPlan(rawPlan, market);
-  const items = Array.isArray(plan.items) ? plan.items : [];
+  const itemCount = rallyPlanItemCount(plan);
   const regime = plan.regime || {};
   if (title) title.textContent = `${activeMarketLabel()} Rally Plan`;
-  if (count) count.textContent = items.length ? `${items.length} items` : "not prepared";
+  if (count) count.textContent = itemCount ? `${itemCount} items` : "not prepared";
   const navBadge = byId("nav-rally-badge");
-  if (navBadge) navBadge.textContent = String(items.length || 0);
+  if (navBadge) navBadge.textContent = String(itemCount || 0);
   if (regimePanel) {
     const stateText = String(regime.state || "neutral_chop").replace(/_/g, " ");
     const allowed = Boolean(regime.momentum_allowed);
@@ -5739,7 +5747,7 @@ function renderRallyPlan(rawPlan = {}) {
       <button type="button" data-rally-regime-detail>Details</button>`;
     regimePanel.querySelector("[data-rally-regime-detail]")?.addEventListener("click", () => showDetails("Market Day Regime", regime));
   }
-  if (!items.length) {
+  if (!itemCount) {
     body.innerHTML = emptyBlock(
       `No ${activeMarketLabel()} rally plan yet`,
       "Run a market cycle or refresh the rally plan to populate pressure, pre-open, momentum, and avoid rows.",

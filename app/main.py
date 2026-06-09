@@ -1629,14 +1629,18 @@ def _compact_rally_plan(plan: Any) -> dict[str, Any]:
             if isinstance(raw, dict)
         }
         return output
-    items = [_compact_rally_plan_item(row, include_evidence=False) for row in (plan.get("items") or []) if isinstance(row, dict)]
-    output["items"] = items[:100]
+    raw_items = [row for row in (plan.get("items") or []) if isinstance(row, dict)]
+    output["item_count"] = len(raw_items)
     if isinstance(plan.get("sections"), dict):
+        if not output["item_count"]:
+            output["item_count"] = sum(len(rows) for rows in plan["sections"].values() if isinstance(rows, list))
         output["sections"] = {
             section: [_compact_rally_plan_item(row) for row in rows[:16] if isinstance(row, dict)]
             for section, rows in plan["sections"].items()
             if isinstance(rows, list)
         }
+    else:
+        output["items"] = [_compact_rally_plan_item(row, include_evidence=False) for row in raw_items[:100]]
     return output
 
 
