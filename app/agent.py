@@ -97,6 +97,7 @@ class TradingAgentService:
         self._news_probe_cursor = 0
         self._candle_backfill_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
+        self._post_cycle_callback_timeouts: dict[str, int] = {}
         self.opportunity_scanner = OpportunityScanner(strategy.settings)
         self.market_action_radar = MarketActionRadar(strategy.settings)
 
@@ -988,14 +989,23 @@ class TradingAgentService:
                 try:
                     result = await asyncio.wait_for(awaitable, timeout=timeout)
                 except asyncio.TimeoutError:
+                    timeout_count = self._post_cycle_callback_timeouts.get(name, 0) + 1
+                    self._post_cycle_callback_timeouts[name] = timeout_count
+                    level = "WARN" if timeout_count == 1 else "INFO"
                     self._log(
-                        "WARN",
+                        level,
                         "cycle",
                         f"{name}_timeout",
                         "Post-cycle callback timed out after the trading work had already completed.",
-                        {"timeout_seconds": timeout, "remaining_cycle_seconds": self._remaining_cycle_seconds()},
+                        {
+                            "timeout_seconds": timeout,
+                            "remaining_cycle_seconds": self._remaining_cycle_seconds(),
+                            "consecutive_timeout_count": timeout_count,
+                            "optional_callback": True,
+                        },
                     )
                     continue
+                self._post_cycle_callback_timeouts.pop(name, None)
                 if name == "openclaw_notifications" and isinstance(result, dict) and result.get("enabled"):
                     self._log(
                         "INFO",
