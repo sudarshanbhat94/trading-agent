@@ -18,7 +18,15 @@ from .market_regions import market_region_for_row
 from .models import Candle, Decision, Quote, utc_now
 from .raw_entry_model import RAW_ENTRY_MODEL_VERSION, evaluate_raw_entry
 from .sentiment import SentimentService
-from .signal_quality import FRESH_BUY_MIN_SCORE, OPPORTUNITY_PROBE_MIN_SCORE
+from .signal_quality import (
+    AUTO_FOLLOW_MIN_CONFIDENCE,
+    AUTO_FOLLOW_MIN_SCORE,
+    FRESH_BUY_MIN_SCORE,
+    OPPORTUNITY_PROBE_MIN_SCORE,
+)
+
+DECISION_BUY_MIN_RAW_SCORE = AUTO_FOLLOW_MIN_SCORE
+DECISION_BUY_MIN_CONFIDENCE = AUTO_FOLLOW_MIN_CONFIDENCE
 
 _WAIT_ONLY_TRADE_WINDOWS = {
     "confirm_before_entry",
@@ -52,6 +60,40 @@ def _llm_prefilter_reason(signal: dict[str, Any]) -> str | None:
     # when trade gates will force HOLD. Trade blockers are enforced again after
     # review by _llm_buy_block_reason, so analysis breadth does not weaken safety.
     return None
+
+
+def _raw_decision_buy_block(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if not bool(raw.get("passed")):
+        return None
+    try:
+        raw_score = float(raw.get("raw_score") or 0.0)
+    except (TypeError, ValueError):
+        raw_score = 0.0
+    if raw_score >= DECISION_BUY_MIN_RAW_SCORE:
+        return None
+    return {
+        "gate": "strict_buy_decision_floor",
+        "reason": "raw_score_below_strict_buy_decision_floor",
+        "value": round(raw_score, 4),
+        "minimum": DECISION_BUY_MIN_RAW_SCORE,
+    }
+
+
+def _decision_confidence_buy_block(action: str, confidence: float | None) -> dict[str, Any] | None:
+    if str(action or "").upper() != "BUY":
+        return None
+    try:
+        value = float(confidence or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= DECISION_BUY_MIN_CONFIDENCE:
+        return None
+    return {
+        "gate": "strict_buy_confidence_floor",
+        "reason": "confidence_below_strict_buy_decision_floor",
+        "value": round(value, 4),
+        "minimum": DECISION_BUY_MIN_CONFIDENCE,
+    }
 
 
 def _llm_buy_block_reason(context: dict[str, Any]) -> str | None:
@@ -545,6 +587,14 @@ class StrategyEngine:
                 reason = f"{reason}, {context['llm_primary_gate'].get('reason', 'llm_primary_required_no_unreviewed_trade')}"
             action = item["action"]
             confidence = item["confidence"]
+            confidence_block = _decision_confidence_buy_block(action, confidence)
+            if confidence_block:
+                action = "HOLD"
+                context["decision_confidence_gate"] = confidence_block
+                reason = (
+                    f"{reason}, {confidence_block['reason']}="
+                    f"{confidence_block['value']:.3f}<{confidence_block['minimum']:.3f}"
+                )
             decision_path = RAW_ENTRY_MODEL_VERSION
             if context.get("llm_primary_fallback"):
                 decision_path = "llm_primary_failed_safe_hold"
@@ -578,7 +628,7 @@ class StrategyEngine:
             if (
                 self.llm.enabled
                 and self.settings.llm_decision_mode == "review"
-                and item["action"] != "HOLD"
+                and action != "HOLD"
                 and llm_reviews < self.settings.llm_max_symbols_per_cycle
             ):
                 decision = await self.llm.review(decision, context)
@@ -695,6 +745,20 @@ class StrategyEngine:
             }
         else:
             raw = evaluate_raw_entry(context, self.settings)
+
+        raw_action_block = _raw_decision_buy_block(raw)
+        if raw_action_block:
+            raw = dict(raw)
+            raw["passed"] = False
+            raw["action"] = "HOLD"
+            raw["decision_label"] = "WATCH"
+            raw["auto_follow_ready"] = False
+            raw["strategy_action_block"] = raw_action_block
+            raw["reason"] = raw_action_block["reason"]
+            blockers = raw.get("entry_blockers") if isinstance(raw.get("entry_blockers"), list) else []
+            raw["entry_blockers"] = [*blockers, raw_action_block]
+            warnings = raw.get("warnings") if isinstance(raw.get("warnings"), list) else []
+            raw["warnings"] = [*warnings, raw_action_block["reason"]]
 
         truth_blocks = raw.get("truth_blocks") if isinstance(raw.get("truth_blocks"), list) else []
         entry_blockers = raw.get("entry_blockers") if isinstance(raw.get("entry_blockers"), list) else truth_blocks

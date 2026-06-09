@@ -24,7 +24,14 @@ from app.agent import _auto_follow_idea_fresh_enough
 from app.paper_broker import PaperBroker
 from app.raw_entry_model import evaluate_raw_entry
 from app.signal_quality import auto_follow_quality_gate, fresh_buy_quality_gate
-from app.strategy import StrategyEngine, _compact_context, _fresh_market_data_block_reason, _performance_feedback_block
+from app.strategy import (
+    StrategyEngine,
+    _compact_context,
+    _decision_confidence_buy_block,
+    _fresh_market_data_block_reason,
+    _performance_feedback_block,
+    _raw_decision_buy_block,
+)
 from app.strategy_presets import choose_best_strategy, evaluate_strategy_presets
 from app.trade_economics import auto_follow_sizing
 
@@ -67,6 +74,62 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertEqual(context["raw_entry_model"]["decision_label"], "ENTRY_READY")
         self.assertEqual(context["raw_entry_model"]["setup_family"], "live_momentum")
         self.assertEqual(context["raw_entry_model"]["entry_blockers"], [])
+
+    def test_strategy_demotes_entry_ready_below_strict_buy_floor(self) -> None:
+        context = _raw_entry_context(
+            price=91.37,
+            setup="smallcap_momentum",
+            market_region="US",
+            technical_score=0.684,
+            day_gain_pct=0.0,
+            volume_ratio=2.4241,
+            projected_volume_ratio=30.301,
+            day_range_position=0.0,
+            day_high_distance_pct=None,
+        )
+        context["opportunity_scan"].update(
+            {
+                "score": 0.4639,
+                "bucket": "Watch",
+                "turnover": 6_607_787.03,
+                "projected_turnover": 82_597_337.88,
+                "components": {"live_momentum": 0.0},
+                "rally_evidence": {
+                    "distance_to_sma20_pct": -11.3764,
+                    "distance_to_near_high_pct": 20.1379,
+                    "volume_support": True,
+                    "return_5d_pct": 6.7931,
+                },
+                "btst": {"evidence": {"rs_rank": 75.78}},
+            }
+        )
+        engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
+
+        action = engine._action_from_context("NUVL_STYLE_WATCH", 0.0, {}, context, {})
+
+        self.assertEqual(action, "HOLD")
+        self.assertEqual(context["raw_entry_model"]["decision_label"], "WATCH")
+        self.assertEqual(context["raw_entry_model"]["strategy_action_block"]["reason"], "raw_score_below_strict_buy_decision_floor")
+        self.assertGreater(context["raw_entry_model"]["strategy_action_block"]["value"], 70)
+        self.assertLess(context["raw_entry_model"]["strategy_action_block"]["value"], 85)
+
+    def test_decision_buy_contract_blocks_low_display_confidence(self) -> None:
+        block = _decision_confidence_buy_block("BUY", 0.203)
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["reason"], "confidence_below_strict_buy_decision_floor")
+        self.assertEqual(block["minimum"], 0.35)
+        self.assertIsNone(_decision_confidence_buy_block("HOLD", 0.1))
+        self.assertIsNone(_decision_confidence_buy_block("BUY", 0.72))
+
+    def test_raw_decision_buy_contract_blocks_subfloor_raw_score(self) -> None:
+        block = _raw_decision_buy_block({"passed": True, "raw_score": 79.27})
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["reason"], "raw_score_below_strict_buy_decision_floor")
+        self.assertEqual(block["minimum"], 85.0)
+        self.assertIsNone(_raw_decision_buy_block({"passed": True, "raw_score": 88.0}))
+        self.assertIsNone(_raw_decision_buy_block({"passed": False, "raw_score": 99.0}))
 
     def test_raw_opportunity_blocks_entry_ready_when_trade_decision_data_missing(self) -> None:
         context = _raw_entry_context(
