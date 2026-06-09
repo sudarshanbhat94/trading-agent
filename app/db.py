@@ -4589,6 +4589,7 @@ class Database:
                             _bounded_for_storage(
                                 {
                                     "user_id": item.get("user_id"),
+                                    "follow_id": item.get("id"),
                                     "idea_id": item.get("idea_id"),
                                     "mode": item.get("mode"),
                                     "market_region": item.get("market_region"),
@@ -4617,6 +4618,91 @@ class Database:
                 )
                 exited.append(item)
         return exited
+
+    def backfill_missing_follow_exit_audits(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """Write SELL audit rows for legacy exited follows that predated exit audit logging."""
+
+        repaired: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select
+                    f.*,
+                    i.symbol,
+                    i.signal_type,
+                    i.status as idea_status,
+                    i.details_json as idea_details_json
+                from user_idea_follows f
+                join signal_ideas i on i.id = f.idea_id
+                where upper(f.mode) in ('PAPER','LIVE')
+                  and f.status in ('EXITED','LIVE_EXIT_REQUESTED')
+                  and f.qty > 0
+                  and not exists (
+                      select 1
+                      from trade_audit_events e
+                      where e.side = 'SELL'
+                        and e.qty = f.qty
+                        and e.price = f.latest_price
+                        and e.details_json like '%"follow_id":' || f.id || '%'
+                  )
+                order by f.updated_at desc
+                limit ?
+                """,
+                (max(1, int(limit or 1)),),
+            ).fetchall()
+            for row in rows:
+                item = _row_dict(row)
+                follow_details = self._decode_json(item.get("details_json"))
+                safety_exit = follow_details.get("safety_exit") if isinstance(follow_details.get("safety_exit"), dict) else {}
+                if not safety_exit:
+                    continue
+                idea_details = self._decode_json(item.get("idea_details_json"))
+                market_region = _payload_market_region(idea_details) or _payload_market_region(follow_details)
+                mode = str(item.get("mode") or "").upper()
+                event_type = "live_follow_safety_exit_request" if mode == "LIVE" else "paper_follow_safety_exit"
+                reason = str(safety_exit.get("reason") or "legacy_follow_exit_audit_backfill")
+                updated_at = str(item.get("updated_at") or utc_now())
+                price = float(item.get("latest_price") or safety_exit.get("exit_price") or 0.0)
+                qty = int(item.get("qty") or safety_exit.get("qty") or 0)
+                details = _bounded_for_storage(
+                    {
+                        "follow_id": item.get("id"),
+                        "user_id": item.get("user_id"),
+                        "idea_id": item.get("idea_id"),
+                        "mode": item.get("mode"),
+                        "market_region": market_region,
+                        "entry_price": item.get("entry_price"),
+                        "exit_price": price,
+                        "realized_pnl": item.get("unrealized_pnl"),
+                        "return_pct": item.get("return_pct"),
+                        "quality_reason": safety_exit.get("quality_reason"),
+                        "quality_message": safety_exit.get("quality_message"),
+                        "economics": safety_exit.get("economics"),
+                        "backfilled": True,
+                    },
+                    dict_limit=32,
+                )
+                conn.execute(
+                    """
+                    insert into trade_audit_events
+                        (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        updated_at,
+                        item.get("symbol"),
+                        event_type,
+                        "SELL",
+                        qty,
+                        price,
+                        item.get("status"),
+                        reason,
+                        json.dumps(details, default=str, separators=(",", ":")),
+                    ),
+                )
+                item.update({"event_type": event_type, "reason": reason})
+                repaired.append(item)
+        return repaired
 
     def exit_subfloor_paper_follows(
         self,

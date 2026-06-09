@@ -1425,6 +1425,63 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER", "CURWATCH"})
         self.assertEqual(active, [])
 
+    def test_missing_follow_exit_audits_are_backfilled_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=84,
+                grade="A",
+            )
+            now = utc_now()
+            follow_details = {
+                "safety_exit": {
+                    "reason": "pre_auto_follow_strict_contract_cleanup",
+                    "quality_reason": "active_follow_strict_auto_contract_failed",
+                    "quality_message": "Legacy paper follow no longer meets strict contract.",
+                    "exit_price": 96,
+                    "qty": 10,
+                    "realized_pnl": -40,
+                    "return_pct": -4,
+                }
+            }
+            with db.connect() as conn:
+                conn.execute("update signal_ideas set symbol = 'BACKFILLX' where id = ?", (idea_id,))
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'EXITED', 10, 100, 96, 1000, -40, -4, ?, ?, ?)
+                    """,
+                    (idea_id, now, now, json.dumps(follow_details)),
+                )
+
+            repaired = db.backfill_missing_follow_exit_audits()
+            repaired_again = db.backfill_missing_follow_exit_audits()
+            with db.connect() as conn:
+                audits = conn.execute(
+                    """
+                    select symbol, event_type, side, status, reason, details_json
+                    from trade_audit_events
+                    order by id
+                    """
+                ).fetchall()
+
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired_again, [])
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0]["symbol"], "BACKFILLX")
+        self.assertEqual(audits[0]["event_type"], "paper_follow_safety_exit")
+        self.assertEqual(audits[0]["side"], "SELL")
+        self.assertEqual(audits[0]["status"], "EXITED")
+        self.assertEqual(audits[0]["reason"], "pre_auto_follow_strict_contract_cleanup")
+        self.assertIn('"follow_id":', audits[0]["details_json"])
+
     def test_strict_contract_failure_exits_even_when_profit_is_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
