@@ -1350,7 +1350,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                         user_id, idea_id, mode, status, qty, entry_price, latest_price,
                         invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
                     )
-                    values (1, ?, 'PAPER', 'ACTIVE', 80, 100, 101, 8000, 80, 1, ?, ?, '{}')
+                    values (1, ?, 'PAPER', 'ACTIVE', 200, 100, 101, 20000, 200, 1, ?, ?, '{}')
                     """,
                     (valid_id, now, now),
                 )
@@ -1620,7 +1620,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 grade="A",
             )
 
-            follow = db.follow_signal_idea(1, idea_id, mode="PAPER", amount=10_000)
+            follow = db.follow_signal_idea(1, idea_id, mode="PAPER", amount=20_000)
             latest = db.latest_signal_ideas(5, user_id=1)[0]
 
         self.assertEqual(follow["mode"], "PAPER")
