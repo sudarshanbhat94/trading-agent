@@ -98,6 +98,7 @@ class TradingAgentService:
         self._candle_backfill_cursor = 0
         self._last_candle_fetch_at: dict[str, datetime] = {}
         self._post_cycle_callback_timeouts: dict[str, int] = {}
+        self._optional_phase_timeouts: dict[str, int] = {}
         self.opportunity_scanner = OpportunityScanner(strategy.settings)
         self.market_action_radar = MarketActionRadar(strategy.settings)
 
@@ -189,6 +190,7 @@ class TradingAgentService:
                     self.market_action_radar.scan(scan_universe),
                     timeout=self._market_action_timeout_seconds(),
                 )
+                self._clear_optional_timeout("market_action_radar")
             except asyncio.TimeoutError:
                 timeout_error = f"market_action_radar_timeout_after_{self._market_action_timeout_seconds():g}s"
                 cached_market_action = self._recent_market_action_summary()
@@ -212,8 +214,9 @@ class TradingAgentService:
                     }
                     timeout_event = "market_action_radar_timeout"
                     timeout_message = "Market-action radar timed out; continuing with configured raw scan universe."
+                timeout_level, timeout_count = self._record_optional_timeout("market_action_radar")
                 self._log(
-                    "WARN",
+                    timeout_level,
                     "scanner",
                     timeout_event,
                     timeout_message,
@@ -222,6 +225,8 @@ class TradingAgentService:
                         "phase": self._cycle_phase,
                         "reused_cached_events": int(len((market_action_summary.get("events_by_symbol") or {}))),
                         "cache_age_seconds": market_action_summary.get("cache_age_seconds"),
+                        "consecutive_timeout_count": timeout_count,
+                        "optional_phase": True,
                     },
                 )
             except Exception as exc:
@@ -307,6 +312,7 @@ class TradingAgentService:
                             ),
                             timeout=self._news_probe_timeout_seconds(),
                         )
+                        self._clear_optional_timeout("news_probe")
                     except asyncio.TimeoutError:
                         news_probe_summary = {
                             "enabled": True,
@@ -317,13 +323,21 @@ class TradingAgentService:
                             "headlines_found": 0,
                             "timeout_seconds": self._news_probe_timeout_seconds(),
                         }
+                        timeout_level, timeout_count = self._record_optional_timeout("news_probe")
                         self._log(
-                            "WARN",
+                            timeout_level,
                             "sentiment",
                             "news_probe_timeout",
                             "Dynamic scan news probe timed out; continuing with cached sentiment.",
-                            {"timeout_seconds": self._news_probe_timeout_seconds(), "symbols_requested": len(news_probe_rows)},
+                            {
+                                "timeout_seconds": self._news_probe_timeout_seconds(),
+                                "symbols_requested": len(news_probe_rows),
+                                "consecutive_timeout_count": timeout_count,
+                                "optional_phase": True,
+                            },
                         )
+                else:
+                    self._clear_optional_timeout("news_probe")
                 sentiment_by_symbol = self.db.latest_sentiment_by_symbol(
                     [row["symbol"] for row in raw_universe],
                     max_age_days=max(1, int(getattr(self.strategy.settings, "news_lookback_days", 7) or 7)),
@@ -1147,19 +1161,28 @@ class TradingAgentService:
         default: dict[str, Any],
     ) -> dict[str, Any]:
         timeout = self._optional_phase_timeout_seconds()
+        timeout_key = f"{component}:{event}"
         try:
             result = await asyncio.wait_for(awaitable, timeout=timeout)
+            self._clear_optional_timeout(timeout_key)
             return result if isinstance(result, dict) else dict(default)
         except asyncio.TimeoutError:
+            timeout_level, timeout_count = self._record_optional_timeout(timeout_key)
             self._log(
-                "WARN",
+                timeout_level,
                 component,
                 f"{event}_timeout",
                 f"{description} timed out after {timeout:g}s; continuing with empty context.",
-                {"phase": self._cycle_phase, "timeout_seconds": timeout},
+                {
+                    "phase": self._cycle_phase,
+                    "timeout_seconds": timeout,
+                    "consecutive_timeout_count": timeout_count,
+                    "optional_phase": True,
+                },
             )
             return {**default, "status": "timeout", "timeout_seconds": timeout}
         except Exception as exc:
+            self._clear_optional_timeout(timeout_key)
             self._log(
                 "WARN",
                 component,
@@ -1168,6 +1191,20 @@ class TradingAgentService:
                 {"phase": self._cycle_phase, "error": f"{exc.__class__.__name__}: {str(exc)[:220]}"},
             )
             return {**default, "status": "error", "error": f"{exc.__class__.__name__}: {str(exc)[:220]}"}
+
+    def _record_optional_timeout(self, key: str) -> tuple[str, int]:
+        counts = getattr(self, "_optional_phase_timeouts", None)
+        if counts is None:
+            counts = {}
+            self._optional_phase_timeouts = counts
+        timeout_count = int(counts.get(key, 0)) + 1
+        counts[key] = timeout_count
+        return ("WARN" if timeout_count == 1 else "INFO", timeout_count)
+
+    def _clear_optional_timeout(self, key: str) -> None:
+        counts = getattr(self, "_optional_phase_timeouts", None)
+        if counts is not None:
+            counts.pop(key, None)
 
     async def _run_strategy_evaluation(
         self,
