@@ -284,6 +284,23 @@ class PreCatalystEngineTests(unittest.TestCase):
 
         self.assertEqual(review["items"][0]["status"], "correctly_watched_before_move")
 
+    def test_missed_move_review_uses_live_confirmations_when_market_action_is_empty(self) -> None:
+        review = review_missed_moves(
+            {"events": [], "events_by_symbol": {}},
+            previous_state={"candidate_pool": [{"symbol": "READY", "label": PRE_CATALYST_WATCH}]},
+            current_candidates=[{"symbol": "NEW", "label": PRE_CATALYST_WATCH}],
+            live_confirmations=[
+                {"symbol": "READY", "label": "LIVE_CONFIRMATION", "score": 0.88},
+                {"symbol": "NEW", "label": "LIVE_CONFIRMATION", "score": 0.81},
+            ],
+        )
+
+        by_symbol = {item["symbol"]: item for item in review["items"]}
+        self.assertEqual(review["reviewed_movers"], 2)
+        self.assertEqual(by_symbol["READY"]["status"], "correctly_watched_before_move")
+        self.assertEqual(by_symbol["NEW"]["status"], "caught_same_cycle")
+        self.assertIn("LIVE_CONFIRMATION", by_symbol["READY"]["event_types"])
+
     def test_candidate_limit_keeps_india_and_us_replay_coverage(self) -> None:
         candidates = [
             _candidate("US1", "US", 0.95),

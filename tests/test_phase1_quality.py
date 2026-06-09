@@ -181,6 +181,41 @@ class RawSignalQualityTests(unittest.TestCase):
         self.assertFalse(auto["passed"])
         self.assertEqual(auto["reason"], "auto_follow_watch_strategy_blocked")
 
+    def test_auto_follow_blocks_profitability_denied_strategy_family(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "strategy": "trend_momentum",
+            "latest_price": 100.0,
+            "overall_score_pct": 96,
+            "overall_grade": "A",
+            "confluence": 28,
+            "confidence": 0.72,
+            "details": {
+                "market_region": "US",
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "raw_score": 96,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "entry_reason": "raw_opportunity_ready",
+                    "setup_family": "trend_momentum",
+                    "market_region": "US",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                },
+            },
+        }
+
+        auto = auto_follow_quality_gate(item)
+
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "auto_follow_strategy_not_profitability_approved")
+        self.assertEqual(auto["strategy"], "trend_momentum")
+
     def test_auto_follow_blocks_negative_technical_evidence(self) -> None:
         item = {
             "signal_type": "BUY",
@@ -1245,7 +1280,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(latest["trade_state"], "WATCH")
         self.assertEqual(latest["execution_state"], "WATCH")
 
-    def test_safety_cleanup_exits_watch_invalid_or_weak_paper_follows(self) -> None:
+    def test_safety_cleanup_exits_hard_invalid_but_preserves_watch_or_weak_paper_follows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -1300,14 +1335,14 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                     """
                 ).fetchall()
 
-        self.assertEqual(len(exited), 3)
-        self.assertEqual(active, [])
+        self.assertEqual(len(exited), 1)
+        self.assertEqual({item["symbol"] for item in active}, {"WATCHA", "BUYD"})
         self.assertEqual({item["status"] for item in exited}, {"EXITED"})
         self.assertEqual(
             {item["quality_gate"]["reason"] for item in exited},
-            {"active_follow_watch_state_exit", "active_follow_hard_blocked", "active_follow_strict_auto_contract_failed"},
+            {"active_follow_hard_blocked"},
         )
-        self.assertEqual(len(audits), 3)
+        self.assertEqual(len(audits), 1)
         self.assertEqual({audit["event_type"] for audit in audits}, {"paper_follow_safety_exit"})
         self.assertEqual({audit["side"] for audit in audits}, {"SELL"})
         self.assertEqual({audit["status"] for audit in audits}, {"EXITED"})
@@ -1422,8 +1457,8 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 if item["follow_status"] == "ACTIVE" and item["mode"] == "PAPER" and item["qty"] > 0
             ]
 
-        self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER", "CURWATCH"})
-        self.assertEqual(active, [])
+        self.assertEqual({item["symbol"] for item in exited}, {"STALEPAPER", "REJECTPAPER"})
+        self.assertEqual({item["symbol"] for item in active}, {"CURWATCH"})
 
     def test_missing_follow_exit_audits_are_backfilled_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1482,7 +1517,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(audits[0]["reason"], "pre_auto_follow_strict_contract_cleanup")
         self.assertIn('"follow_id":', audits[0]["details_json"])
 
-    def test_strict_contract_failure_exits_even_when_profit_is_below_minimum(self) -> None:
+    def test_strict_entry_contract_failure_does_not_exit_existing_follow(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
             db.init()
@@ -1510,10 +1545,8 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             exited = db.exit_unsafe_active_follows()
             [history] = db.user_follow_history(1, 10)
 
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0]["symbol"], "STRICTEXIT")
-        self.assertEqual(exited[0]["quality_gate"]["reason"], "active_follow_strict_auto_contract_failed")
-        self.assertEqual(history["exit_reason"], "active_follow_strict_auto_contract_failed")
+        self.assertEqual(exited, [])
+        self.assertEqual(history["state"], "OPEN")
 
     def test_safety_cleanup_marks_exit_pending_after_market_close(self) -> None:
         closed_at = datetime(2026, 5, 28, 16, 0, tzinfo=timezone.utc)
@@ -1604,7 +1637,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(history["realized_pnl"], -40.0)
         self.assertEqual(history["exit_reason"], "active_follow_hard_blocked")
 
-    def test_active_follow_safety_blocks_legacy_raw_entry_contract(self) -> None:
+    def test_active_follow_safety_does_not_exit_on_legacy_entry_contract_alone(self) -> None:
         gate = active_follow_safety_gate(
             {
                 "mode": "PAPER",
@@ -1625,8 +1658,11 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(gate["passed"])
-        self.assertEqual(gate["reason"], "active_follow_raw_entry_model_missing")
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reason"], "active_follow_safety_passed")
+        self.assertTrue(
+            any("raw entry contract missing" in warning for warning in gate.get("risk_warnings", []))
+        )
 
     def test_stale_active_buy_with_follow_is_downgraded_to_watch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

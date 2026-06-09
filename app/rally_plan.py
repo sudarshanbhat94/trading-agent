@@ -17,6 +17,8 @@ RALLY_PLAN_SECTIONS = {
 
 RALLY_PLAN_ACTION_SECTIONS = {"opening_ignition", "live_momentum"}
 RALLY_PLAN_PROMOTION_ACTIONS = {"BUY CHECK", "BUY", "ENTRY_READY"}
+RALLY_PLAN_CONFIRM_ACTIONS = {*RALLY_PLAN_PROMOTION_ACTIONS, "CONFIRM"}
+RALLY_PLAN_LEVEL_SECTIONS = {"preopen_confirm", "opening_ignition", "live_momentum"}
 
 
 def build_rally_plan(
@@ -554,6 +556,15 @@ def _item(**kwargs: Any) -> dict[str, Any]:
         stop_loss=stop_loss,
         target1=target1,
     )
+    action = _normalized_rally_action(
+        action=action,
+        section=section,
+        blockers=blockers,
+        trigger_price=trigger_price,
+        max_entry=max_entry,
+        stop_loss=stop_loss,
+        target1=target1,
+    )
     invalidation = str(kwargs.get("invalidation") or "")[:600]
     return {
         "symbol": str(kwargs.get("symbol") or "").upper(),
@@ -610,7 +621,7 @@ def _complete_actionable_levels(
     target = _num(target1)
     action_text = str(action or "").strip().upper()
     section_key = str(section or "").strip().lower()
-    if action_text not in RALLY_PLAN_PROMOTION_ACTIONS or section_key not in RALLY_PLAN_ACTION_SECTIONS or trigger is None:
+    if action_text not in RALLY_PLAN_CONFIRM_ACTIONS or section_key not in RALLY_PLAN_LEVEL_SECTIONS or trigger is None:
         return trigger, max_price, stop, target
     market = str(market_region or "").strip().upper()
     if max_price is None or max_price <= trigger:
@@ -631,6 +642,31 @@ def _complete_actionable_levels(
         round(stop, 4),
         round(target, 4),
     )
+
+
+def _normalized_rally_action(
+    *,
+    action: Any,
+    section: Any,
+    blockers: list[Any],
+    trigger_price: Any,
+    max_entry: Any,
+    stop_loss: Any,
+    target1: Any,
+) -> str:
+    action_text = str(action or "WATCH").strip().upper()
+    section_key = str(section or "").strip().lower()
+    if action_text not in RALLY_PLAN_CONFIRM_ACTIONS:
+        return action_text
+    if blockers:
+        return "WATCH"
+    if action_text in RALLY_PLAN_CONFIRM_ACTIONS and section_key not in RALLY_PLAN_ACTION_SECTIONS:
+        return "WATCH"
+    if section_key not in RALLY_PLAN_LEVEL_SECTIONS:
+        return "WATCH" if action_text == "CONFIRM" else action_text
+    if any(_num(value) is None for value in (trigger_price, max_entry, stop_loss, target1)):
+        return "WATCH"
+    return action_text
 
 
 def _entry_plan(

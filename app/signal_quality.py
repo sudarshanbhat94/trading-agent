@@ -55,6 +55,25 @@ _WATCH_STRATEGY_NAMES = {
     "early_alpha_watch",
     "extended_momentum_watch",
 }
+_PROFITABILITY_BLOCKED_AUTO_FOLLOW_STRATEGIES = {
+    # OCI 30-day paper-follow audit showed these families had negative net P&L
+    # and should remain manual/watch-only until a proof pass re-enables them.
+    "52_week_high_volume_breakout",
+    "big_runner_watch",
+    "btst_buy_candidate",
+    "early_alpha_ignition",
+    "early_alpha_watch",
+    "extended_momentum_watch",
+    "near_breakout",
+    "opening_ignition",
+    "pre_rally_fuel",
+    "pullback_buy",
+    "smallcap_momentum",
+    "time_series_momentum_trend",
+    "trend_momentum",
+    "vwap_reclaim_order_flow",
+    "watchlist_candidate",
+}
 _WAIT_ENTRY_REASON_TOKENS = (
     "raw_opportunity_watch",
     "setup_requires_live_confirmation",
@@ -534,6 +553,16 @@ def _auto_follow_evidence_contract(
             strategy=watch_strategy,
             **base_payload,
         )
+    blocked_strategy = _profitability_blocked_strategy_name(item, details, raw)
+    if blocked_strategy:
+        return _blocked(
+            "auto_follow_strategy_not_profitability_approved",
+            "Auto-paper will not follow strategy families with negative forward paper evidence.",
+            strategy=blocked_strategy,
+            blocked_strategy_count=len(_PROFITABILITY_BLOCKED_AUTO_FOLLOW_STRATEGIES),
+            required_evidence="positive net paper expectancy before automation",
+            **base_payload,
+        )
 
     entry_reason = _entry_reason_text(item, details, raw)
     if entry_reason and any(token in entry_reason.lower() for token in _WAIT_ENTRY_REASON_TOKENS):
@@ -713,19 +742,13 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
     if status in {"STOP_HIT", "EXIT_SIGNAL", "EXPIRED", "TARGET_3_HIT", "REJECTED"}:
         return _blocked("active_follow_not_tradeable_state", "Followed position moved into a closed/exit lifecycle state.")
     if status == "WATCH" or signal_type == "WATCH":
-        if mode == "PAPER":
-            return _blocked(
-                "active_follow_watch_state_exit",
-                "Latest idea is watch-only; close the active paper follow and wait for a fresh clean BUY.",
-                risk_flags=_risk_flags(item, details),
-            )
         return {
             "passed": True,
             "fresh_buy_allowed": False,
             "reason": "active_follow_watch_state_hold",
             "risk_flags": _risk_flags(item, details),
             "risk_warnings": [
-                "latest idea is watch-only; keep the existing follow managed by stop, target, and hard invalidation"
+                "latest idea is watch-only; keep the existing follow managed by stop, target, fade protection, and hard invalidation"
             ],
         }
 
@@ -736,42 +759,29 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
     if hard_blocked or hard_blocks or phase3_blocks:
         return _blocked("active_follow_hard_blocked", "Followed position has explicit hard invalidation.")
 
+    risk_warnings: list[str] = []
     if mode in {"PAPER", "LIVE"}:
         raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
         market_region = _market_region(item, details, raw)
         if market_region not in {"IN", "US"}:
-            return _blocked(
-                "active_follow_market_region_missing",
-                "Active followed positions must retain a provable market before they can remain open.",
-                market_region=market_region or None,
+            risk_warnings.append(
+                f"market region missing on active follow ({market_region or 'unknown'}); do not add, but manage existing risk by stop/target"
             )
         if raw.get("version") not in _RAW_OPPORTUNITY_VERSIONS:
-            return _blocked(
-                "active_follow_raw_entry_model_missing",
-                "Active followed positions must remain tied to the raw opportunity execution contract.",
-                raw_opportunity_version=raw.get("version"),
-                market_region=market_region,
+            risk_warnings.append(
+                "raw entry contract missing on active follow; do not add, but do not exit solely on an entry-gate metadata gap"
             )
-        decision_label = _upper(raw.get("decision_label"))
-        if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
-            return _blocked(
-                "active_follow_raw_opportunity_not_entry_ready",
-                "Active followed positions are no longer ENTRY_READY; exit and wait for a fresh clean BUY.",
-                raw_opportunity_version=raw.get("version"),
-                decision_label=decision_label or raw.get("decision_label"),
-                auto_follow_ready=raw.get("auto_follow_ready"),
-                market_region=market_region,
-            )
-        entry_reason_block = _raw_entry_reason_block(item, details, raw)
-        if entry_reason_block:
-            return _blocked(
-                "active_follow_raw_opportunity_entry_reason_not_ready",
-                "Active followed positions are no longer backed by a buy-now entry reason.",
-                entry_reason=entry_reason_block.get("entry_reason"),
-                raw_opportunity_version=raw.get("version"),
-                decision_label=decision_label or raw.get("decision_label"),
-                market_region=market_region,
-            )
+        else:
+            decision_label = _upper(raw.get("decision_label"))
+            if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
+                risk_warnings.append(
+                    "raw entry authority is no longer ENTRY_READY; do not add, but manage the existing position by exit rules"
+                )
+            entry_reason_block = _raw_entry_reason_block(item, details, raw)
+            if entry_reason_block:
+                risk_warnings.append(
+                    "raw entry reason is now watch/wait; do not add, but manage the existing position by exit rules"
+                )
 
     risk_flags = _risk_flags(item, details)
     severe_flags = _severe_risk_flags(risk_flags)
@@ -786,13 +796,8 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
         raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
         evidence_block = _auto_follow_evidence_contract(item, details, raw)
         if evidence_block:
-            return _blocked(
-                "active_follow_auto_evidence_contract_failed",
-                "Active paper follow no longer meets the current auto-paper evidence contract; exit and wait.",
-                strict_failures=[evidence_block.get("reason")],
-                evidence_gate=evidence_block,
-                min_confidence=AUTO_FOLLOW_MIN_CONFIDENCE,
-                min_technical_score=AUTO_FOLLOW_MIN_TECHNICAL_SCORE,
+            risk_warnings.append(
+                f"fresh-entry evidence no longer passes ({evidence_block.get('reason')}); hold/add is blocked, exit is managed separately"
             )
         score = _number(item.get("overall_score_pct"), details.get("overall_score_pct"))
         confluence = _number(item.get("confluence"), details.get("confluence"))
@@ -804,23 +809,18 @@ def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
         if risk_flags:
             strict_failures.append("risk_flags_present")
         if strict_failures:
-            return _blocked(
-                "active_follow_strict_auto_contract_failed",
-                "Active paper follow no longer meets the strict auto-paper contract; exit and wait for a fresh clean BUY.",
-                overall_score_pct=score,
-                overall_grade=_upper(item.get("overall_grade") or details.get("overall_grade")) or None,
-                confluence=confluence,
-                strict_failures=strict_failures,
-                min_score=AUTO_FOLLOW_MIN_SCORE,
-                min_confluence=AUTO_FOLLOW_MIN_CONFLUENCE,
-                risk_flags=risk_flags,
+            risk_warnings.append(
+                "strict fresh-entry contract no longer passes: " + ", ".join(strict_failures)
             )
     return {
         "passed": True,
         "fresh_buy_allowed": False,
         "reason": "active_follow_safety_passed",
         "risk_flags": risk_flags,
-        "risk_warnings": ["fresh-entry score changes do not force exit; manage by stop, target, and invalidation"],
+        "risk_warnings": [
+            "fresh-entry score changes do not force exit; manage by stop, target, fade protection, and invalidation",
+            *risk_warnings,
+        ],
     }
 
 
@@ -930,24 +930,36 @@ def _entry_reason_text(item: dict[str, Any], details: dict[str, Any], raw: dict[
 
 
 def _watch_strategy_name(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> str:
-    best_strategy = details.get("best_strategy") if isinstance(details.get("best_strategy"), dict) else {}
-    candidates = (
-        item.get("strategy"),
-        item.get("plan_code"),
-        details.get("strategy"),
-        details.get("best_strategy_name"),
-        details.get("plan_code"),
-        best_strategy.get("name"),
-        raw.get("strategy"),
-        raw.get("setup"),
-    )
-    for candidate in candidates:
-        name = str(candidate or "").strip().lower()
-        if not name:
-            continue
+    for name in _strategy_name_candidates(item, details, raw):
         if name in _WATCH_STRATEGY_NAMES or name.endswith("_watch"):
             return name
     return ""
+
+
+def _profitability_blocked_strategy_name(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> str:
+    for name in _strategy_name_candidates(item, details, raw):
+        if name in _PROFITABILITY_BLOCKED_AUTO_FOLLOW_STRATEGIES:
+            return name
+    return ""
+
+
+def _strategy_name_candidates(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> list[str]:
+    best_strategy = details.get("best_strategy") if isinstance(details.get("best_strategy"), dict) else {}
+    candidates = [
+        item.get("strategy"),
+        details.get("strategy"),
+        details.get("best_strategy_name"),
+        best_strategy.get("name"),
+        raw.get("strategy"),
+        raw.get("setup"),
+        raw.get("setup_family"),
+    ]
+    names: list[str] = []
+    for candidate in candidates:
+        name = str(candidate or "").strip().lower()
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _confidence_score(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> float | None:

@@ -276,6 +276,62 @@ class RallyPlanBuilderTests(unittest.TestCase):
         self.assertEqual(promotion["symbol"], "LEVELS")
         self.assertEqual(promotion["stop_loss"], item["stop_loss"])
 
+    def test_preopen_confirm_row_is_watch_only_even_with_complete_levels(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_BROAD_RALLY, "score": 72.0},
+            tomorrow_plan={
+                "market_region": "IN",
+                "items": [
+                    {
+                        "symbol": "READY",
+                        "market_region": "IN",
+                        "section": "ready_at_open",
+                        "action": "CONFIRM",
+                        "score": 0.82,
+                        "rationale": "relative strength near breakout",
+                        "trigger_price": 200.0,
+                        "max_entry": 201.2,
+                        "stop_loss": 194.0,
+                        "target1": 206.0,
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["preopen_confirm"]
+        promotions = extract_rally_plan_promotions(plan, max_per_market=3)
+
+        self.assertEqual(item["action"], "WATCH")
+        self.assertEqual(item["entry_plan"]["status"], "watch_only")
+        self.assertEqual(promotions["by_market"]["IN"], [])
+        self.assertGreater(promotions["blocked_counts"]["not_action_section"], 0)
+
+    def test_opening_confirmation_missing_levels_is_watch_not_promotable(self) -> None:
+        plan = build_rally_plan(
+            market_region="IN",
+            market_day_regime={"state": REGIME_BROAD_RALLY, "score": 72.0},
+            pre_catalyst={
+                "market_region": "IN",
+                "live_confirmations": [
+                    {
+                        "symbol": "NOLVL",
+                        "market_region": "IN",
+                        "score": 0.88,
+                        "setup": "pre_catalyst_live_confirmation",
+                    }
+                ],
+            },
+        )
+
+        [item] = plan["sections"]["opening_ignition"]
+        promotions = extract_rally_plan_promotions(plan, max_per_market=3)
+
+        self.assertEqual(item["action"], "WATCH")
+        self.assertEqual(item["entry_plan"]["status"], "incomplete_levels")
+        self.assertEqual(promotions["by_market"]["IN"], [])
+        self.assertGreater(promotions["blocked_counts"]["not_buy_check_action"], 0)
+
     def test_early_alpha_candidate_renders_before_ignition_contract(self) -> None:
         plan = build_rally_plan(
             market_region="IN",

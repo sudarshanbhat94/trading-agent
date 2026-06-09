@@ -246,6 +246,7 @@ def build_pre_catalyst_watchlist(
         market_action_summary,
         previous_state=previous_state,
         current_candidates=all_candidate_dicts,
+        live_confirmations=live_confirmations,
         now=now,
         min_move_pct=_missed_move_min_pct_for_universe(settings, universe),
     )
@@ -462,6 +463,7 @@ def review_missed_moves(
     *,
     previous_state: dict[str, Any] | None = None,
     current_candidates: list[dict[str, Any]] | None = None,
+    live_confirmations: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
     min_move_pct: float = 5.0,
 ) -> dict[str, Any]:
@@ -475,6 +477,7 @@ def review_missed_moves(
     market_action_summary = market_action_summary or {}
     previous_state = previous_state or {}
     current_candidates = current_candidates or []
+    live_confirmations = live_confirmations or []
     previous_rows = [
         item
         for collection in (previous_state.get("candidates") or [], previous_state.get("candidate_pool") or [])
@@ -491,7 +494,28 @@ def review_missed_moves(
         if isinstance(item, dict) and str(item.get("symbol") or "").strip()
     }
     rows: list[dict[str, Any]] = []
-    for symbol, event in sorted(_events_by_symbol(market_action_summary).items()):
+    review_events = _events_by_symbol(market_action_summary)
+    for live in live_confirmations:
+        if not isinstance(live, dict):
+            continue
+        symbol = str(live.get("symbol") or "").strip().upper()
+        if not symbol or symbol in review_events:
+            continue
+        review_events[symbol] = {
+            **live,
+            "symbol": symbol,
+            "event_types": _unique([*(live.get("event_types") or []), "LIVE_CONFIRMATION"]),
+            "pct_change": (
+                live.get("pct_change")
+                or live.get("move_pct")
+                or live.get("current_return_pct")
+                or live.get("return_pct")
+            ),
+            "source": live.get("source") or "pre_catalyst_live_confirmation",
+            "strategy": live.get("setup") or live.get("strategy"),
+            "trade_window": live.get("trade_window") or "live_confirmation",
+        }
+    for symbol, event in sorted(review_events.items()):
         event_types = {str(item or "").upper() for item in event.get("event_types") or []}
         move_pct = _float_or_none(
             event.get("pct_change")
@@ -509,6 +533,7 @@ def review_missed_moves(
                 "ONLY_BUYERS",
                 "52_WEEK_HIGH",
                 "STRONG_INTRADAY_GAIN",
+                "LIVE_CONFIRMATION",
             }
         )
         if not top_mover:
