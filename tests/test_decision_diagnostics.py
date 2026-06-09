@@ -376,6 +376,27 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertIn("us_full_decision_target_missed", codes)
         self.assertIn("missed_move_review_not_persisted", codes)
 
+    def test_diagnostics_does_not_fail_target_when_hard_rejections_explain_shortfall(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {
+                "mode": "dynamic_opportunity_scan",
+                "raw_symbols": 1012,
+                "quoted_symbols": 1012,
+                "tradeable_screening_symbols": 115,
+                "selected_symbols": 115,
+                "target_decision_symbols": 200,
+                "rejected_counts": {"below_adaptive_liquidity": 649, "below_min_price": 248},
+            },
+            [_decision(f"US{index}", "HOLD") for index in range(129)],
+            shared_auto_trade={"users_checked": 1, "followed": 0, "skipped": []},
+            market_region="BOTH",
+            missed_move_review_row_id=1257,
+        )
+
+        codes = {flag["code"] for flag in diagnostics["health_flags"]}
+        self.assertEqual(diagnostics["funnel"]["decision_target_shortfall"], 71)
+        self.assertNotIn("market_full_decision_target_missed", codes)
+
     def test_diagnostics_separates_user_paper_follows_from_central_orders(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(
             {"raw_symbols": 2500, "quoted_symbols": 2500, "selected_symbols": 200, "target_decision_symbols": 200},

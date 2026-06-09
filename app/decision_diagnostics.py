@@ -11,6 +11,17 @@ LIVE_QUOTE_STALE_INTRADAY_OVERRIDES = {
     "live_quote_ohlcv_used_for_probe",
     "live_momentum_review_with_trade_ready_data",
 }
+HARD_SCANNER_REJECTION_GATES = {
+    "below_adaptive_liquidity",
+    "below_min_price",
+    "below_min_turnover",
+    "hard_liquidity",
+    "invalid_price",
+    "invalid_quote",
+    "missing_quote",
+    "not_tradeable",
+    "untradeable",
+}
 
 
 def build_cycle_decision_diagnostics(
@@ -415,7 +426,12 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "message": "Less than 5% of raw symbols reached full strategy decisions.",
             }
         )
-    if market_region in {"IN", "US", "BOTH"} and target >= 100 and decisions < target:
+    if (
+        market_region in {"IN", "US", "BOTH"}
+        and target >= 100
+        and decisions < target
+        and not _decision_target_shortfall_explained_by_hard_rejections(diagnostics, decisions, target)
+    ):
         code = (
             "nse_full_decision_target_missed"
             if market_region == "IN"
@@ -521,6 +537,22 @@ def _health_flags(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return flags
+
+
+def _decision_target_shortfall_explained_by_hard_rejections(
+    diagnostics: dict[str, Any],
+    decisions: int,
+    target: int,
+) -> bool:
+    if decisions <= 0 or target <= 0:
+        return False
+    rejections = diagnostics.get("scanner_rejections") if isinstance(diagnostics.get("scanner_rejections"), dict) else {}
+    hard_rejections = 0
+    for key, value in rejections.items():
+        gate = str(key or "").strip().lower()
+        if gate in HARD_SCANNER_REJECTION_GATES:
+            hard_rejections += _int(value)
+    return hard_rejections > 0 and decisions + hard_rejections >= target
 
 
 def _zero_buy_cycle_explained(diagnostics: dict[str, Any], decisions: int) -> bool:
