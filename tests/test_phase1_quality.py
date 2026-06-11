@@ -112,6 +112,86 @@ class RawSignalQualityTests(unittest.TestCase):
         self.assertEqual(auto["reason"], "raw_opportunity_auto_follow_ready")
         self.assertEqual(auto["auto_follow_contract"], "raw_opportunity_strict_execution_v1")
 
+    def test_fresh_buy_blocks_watch_strategy_even_when_raw_entry_ready(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "strategy": "extended_momentum_watch",
+            "latest_price": 100.0,
+            "overall_score_pct": 91,
+            "overall_grade": "A",
+            "confluence": 24,
+            "details": {
+                "market_region": "IN",
+                "strategy": "extended_momentum_watch",
+                "stop_loss": 96.0,
+                "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "legacy_decision_logic_removed": True,
+                    "raw_score": 91,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "setup_family": "live_momentum",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                    "market_region": "IN",
+                },
+            },
+        }
+
+        gate = fresh_buy_quality_gate(item)
+        auto = auto_follow_quality_gate(item)
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "missing_actionable_setup")
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "missing_actionable_setup")
+
+    def test_fresh_buy_blocks_severe_risk_flags_even_when_raw_entry_ready(self) -> None:
+        item = {
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "strategy": "big_runner_ignition",
+            "latest_price": 100.0,
+            "overall_score_pct": 91,
+            "overall_grade": "A",
+            "confluence": 24,
+            "details": {
+                "market_region": "IN",
+                "strategy": "big_runner_ignition",
+                "risk_flags": ["scorecard_phase3_price_extended_from_pivot_no_new_longs"],
+                "stop_loss": 96.0,
+                "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "legacy_decision_logic_removed": True,
+                    "raw_score": 91,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "setup_family": "live_momentum",
+                    "trade_plan": {
+                        "stop_loss": 96.0,
+                        "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+                    },
+                    "market_region": "IN",
+                },
+            },
+        }
+
+        gate = fresh_buy_quality_gate(item)
+        auto = auto_follow_quality_gate(item)
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["reason"], "severe_risk_flags_present")
+        self.assertIn("scorecard_phase3_price_extended_from_pivot_no_new_longs", gate["severe_risk_flags"])
+        self.assertFalse(auto["passed"])
+        self.assertEqual(auto["reason"], "severe_risk_flags_present")
+
     def test_raw_entry_ready_watch_reason_is_not_trade_ready(self) -> None:
         item = {
             "signal_type": "BUY",
@@ -1125,6 +1205,48 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         self.assertEqual(details["quality_downgrade"]["to"], "WATCH")
         self.assertEqual(details["quality_gate"]["reason"], "market_region_missing")
 
+    def test_watch_strategy_raw_buy_is_downgraded_before_signal_follow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            decision = self._raw_ready_decision("WATCHLEAK", strategy="extended_momentum_watch")
+
+            db.insert_decisions([decision])
+            db.upsert_signal_ideas_from_decisions([decision])
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where symbol = 'WATCHLEAK'").fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
+        details = json.loads(row["details_json"])
+        self.assertEqual(details["strategy"], "extended_momentum_watch")
+        self.assertEqual(details["quality_gate"]["reason"], "missing_actionable_setup")
+        self.assertEqual(details["quality_downgrade"]["reason"], "missing_actionable_setup")
+
+    def test_raw_buy_with_no_new_longs_risk_flag_is_downgraded_before_follow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            decision = self._raw_ready_decision(
+                "RISKLEAK",
+                strategy="big_runner_ignition",
+                risk_flags=["scorecard_phase3_price_extended_from_pivot_no_new_longs"],
+            )
+
+            db.insert_decisions([decision])
+            db.upsert_signal_ideas_from_decisions([decision])
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where symbol = 'RISKLEAK'").fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["signal_type"], "WATCH")
+        self.assertEqual(row["status"], "WATCH")
+        details = json.loads(row["details_json"])
+        self.assertEqual(details["risk_flags"], ["scorecard_phase3_price_extended_from_pivot_no_new_longs"])
+        self.assertEqual(details["quality_gate"]["reason"], "severe_risk_flags_present")
+        self.assertEqual(details["quality_downgrade"]["reason"], "severe_risk_flags_present")
+
     def test_hold_refresh_preserves_old_buy_as_monitor_not_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
@@ -1250,6 +1372,33 @@ class Phase1FollowSafetyTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "phase1_quality_gate:not_fresh_buy_signal"):
                 db.follow_signal_idea(1, idea_id, mode="PAPER", amount=10_000)
+
+    def test_existing_zero_qty_paper_follow_cannot_be_refreshed_as_active_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=91,
+                grade="A",
+            )
+            now = utc_now()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into user_idea_follows (
+                        user_id, idea_id, mode, status, qty, entry_price, latest_price,
+                        invested_amount, unrealized_pnl, return_pct, created_at, updated_at, details_json
+                    )
+                    values (1, ?, 'PAPER', 'ACTIVE', 0, 100, 100, 0, 0, 0, ?, ?, '{}')
+                    """,
+                    (idea_id, now, now),
+                )
+
+            with self.assertRaisesRegex(ValueError, "paper_live_follow_qty_invariant"):
+                db.follow_signal_idea(1, idea_id, mode="TRACK")
 
     def test_legacy_watch_follow_still_displays_as_watch_not_trade(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1934,6 +2083,73 @@ class Phase1FollowSafetyTests(unittest.TestCase):
             )
             row = conn.execute("select last_insert_rowid() as id").fetchone()
             return int(row["id"])
+
+    @staticmethod
+    def _raw_ready_decision(symbol: str, *, strategy: str, risk_flags: list[str] | None = None) -> Decision:
+        trade_plan = {
+            "entry_zone": [98.0, 101.0],
+            "stop_loss": 96.0,
+            "targets": [{"label": "T1", "price": 107.0, "distance_pct": 7.0}],
+        }
+        raw_entry = {
+            "version": "raw_opportunity_v1",
+            "passed": True,
+            "action": "BUY",
+            "reason": "raw_opportunity_ready",
+            "decision_label": "ENTRY_READY",
+            "auto_follow_ready": True,
+            "raw_score": 91.0,
+            "grade": "A",
+            "setup_family": "live_momentum",
+            "trade_plan": trade_plan,
+            "market_region": "IN",
+            "truth_blocks": [],
+            "entry_blockers": [],
+            "legacy_decision_logic_removed": True,
+        }
+        readiness = {"market_region": "IN", "trade_decision_ready": True, "hard_gaps": [], "soft_gaps": []}
+        details = {
+            "market_region": "IN",
+            "action_reason": "raw opportunity test buy",
+            "score_breakdown": {"combined": 0.55, "score_percent": 91.0},
+            "system_gate_audit": {
+                "hard_blocked": False,
+                "hard_blocks": [],
+                "overall_score_pct": 91.0,
+                "overall_grade": "A",
+                "data_readiness": readiness,
+            },
+            "context": {
+                "quote": {"price": 100.0, "source": "upstox-live"},
+                "data_readiness": readiness,
+                "raw_entry_model": raw_entry,
+                "decision_gate_context": {
+                    "raw_entry_model": raw_entry,
+                    "fresh_trade_authority": raw_entry,
+                    "failed_gates": [],
+                },
+                "full_spectrum_analysis": {
+                    "confluence_score": {"total": 24, "tier": "TRADE_SIGNAL"},
+                    "trade_plan": trade_plan,
+                    "risk_overrides": {"flags": risk_flags or []},
+                    "strategy_logic_filters": {"passed": True, "hard_blocks": []},
+                    "breakout_quality": {"breakout_quality": "not_breakout", "volume_confirmation": True},
+                    "entry_quality": {"entry_grade": "A"},
+                },
+            },
+        }
+        return Decision(
+            symbol=symbol,
+            action="BUY",
+            confidence=0.92,
+            price=100.0,
+            technical_score=0.90,
+            sentiment_score=0.0,
+            reason="raw opportunity test buy",
+            asof=utc_now(),
+            strategy=strategy,
+            details_json=json.dumps(details),
+        )
 
 
 if __name__ == "__main__":

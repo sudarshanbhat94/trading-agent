@@ -187,6 +187,18 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
         price=price,
         live_momentum_regime_allowed=True,
     )
+    watch_strategy_block = (
+        _watch_strategy_block(
+            setup=setup,
+            bucket=bucket,
+            scan=scan,
+            best_setup=best_setup,
+            rally_plan_promotion=rally_plan_promotion,
+            price=price,
+        )
+        if opportunity_ready_without_regime
+        else None
+    )
     quality_block = (
         _raw_opportunity_quality_block(
             market=market,
@@ -211,9 +223,11 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     )
     if quality_block:
         warnings.append(quality_block["reason"])
+    if watch_strategy_block:
+        warnings.append(watch_strategy_block["reason"])
     opportunity_ready = opportunity_ready_without_regime and (
         setup_family != "live_momentum" or live_momentum_regime_allowed
-    ) and quality_block is None
+    ) and quality_block is None and watch_strategy_block is None
     regime_block = (
         {
             "gate": "market_day_regime",
@@ -235,6 +249,9 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
     elif quality_block:
         decision_label = WATCH
         reason = quality_block["reason"]
+    elif watch_strategy_block:
+        decision_label = WATCH
+        reason = watch_strategy_block["reason"]
     elif regime_block:
         decision_label = WATCH
         reason = "market_day_regime_not_supportive_for_live_momentum"
@@ -270,6 +287,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             *([readiness_block] if readiness_block else []),
             *([confirmation_block] if confirmation_block else []),
             *([quality_block] if quality_block else []),
+            *([watch_strategy_block] if watch_strategy_block else []),
             *([regime_block] if regime_block else []),
         ],
         "warnings": warnings,
@@ -314,6 +332,7 @@ def evaluate_raw_entry(context: dict[str, Any], settings: Any = None) -> dict[st
             "candle_patterns": sorted(candle_patterns),
             "sentiment_event_types": sorted(sentiment_event_types),
             "raw_opportunity_quality_floor": quality_block,
+            "watch_strategy_block": watch_strategy_block,
             "market_day_regime": {
                 key: market_day_regime.get(key)
                 for key in (
@@ -428,6 +447,57 @@ def _raw_opportunity_quality_block(
             "constructive_patterns": constructive_patterns,
             "high_volatility": high_volatility,
             "override_policy": "requires rally-plan price readiness, strong market-action evidence, or strong catalyst/playbook confirmation",
+        },
+    }
+
+
+def _watch_strategy_block(
+    *,
+    setup: str,
+    bucket: str,
+    scan: dict[str, Any],
+    best_setup: dict[str, Any],
+    rally_plan_promotion: dict[str, Any],
+    price: float | None,
+) -> dict[str, Any] | None:
+    setup_key = str(setup or "").strip().lower()
+    family_key = str(best_setup.get("family") or "").strip().lower()
+    bucket_key = str(bucket or scan.get("label") or "").strip().lower()
+    explicit_watch_setup = bool(
+        setup_key
+        in {
+            "extended_momentum_watch",
+            "big_runner_watch",
+            "early_alpha_watch",
+            "watchlist_candidate",
+            "pre_rally_fuel",
+            "circuit_demand_lock",
+        }
+        or setup_key.endswith("_watch")
+    )
+    live_momentum_watch_bucket = family_key == "live_momentum" and bucket_key in {
+        "watch",
+        "actionable_watch",
+        "data_stale_watch",
+        "late_chase_avoid",
+        "low_quality_short_covering",
+    }
+    watch_like = bool(
+        explicit_watch_setup
+        or live_momentum_watch_bucket
+    )
+    if not watch_like:
+        return None
+    if best_setup.get("source") == "rally_plan" and _rally_plan_promotion_price_ready(rally_plan_promotion, price):
+        return None
+    return {
+        "gate": "watch_strategy",
+        "reason": "watch_strategy_requires_buy_now_confirmation",
+        "value": {
+            "setup": setup,
+            "bucket": bucket,
+            "label": scan.get("label"),
+            "required_confirmation": "rally_plan_buy_check_price_ready_or_fresh_ignition_setup",
         },
     }
 

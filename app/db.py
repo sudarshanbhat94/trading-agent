@@ -4145,6 +4145,7 @@ class Database:
                     "action": idea_details.get("action") or idea["signal_type"],
                     "signal_type": idea["signal_type"],
                     "status": idea["status"],
+                    "strategy": idea["strategy"],
                     "latest_price": latest_price,
                     "overall_score_pct": idea["overall_score_pct"],
                     "overall_grade": idea["overall_grade"],
@@ -4269,6 +4270,8 @@ class Database:
                 next_mode = previous_mode if mode == "TRACK" and previous_mode in {"PAPER", "LIVE"} else mode
                 next_status = "LIVE_REQUESTED" if next_mode == "LIVE" else "ACTIVE"
                 next_qty = qty or int(existing_follow["qty"] or 0)
+                if next_mode in {"PAPER", "LIVE"} and next_qty <= 0:
+                    raise ValueError("paper_live_follow_qty_invariant:qty_must_be_positive")
                 next_entry = (
                     float(existing_follow["entry_price"] or latest_price)
                     if int(existing_follow["qty"] or 0) > 0 and next_qty == int(existing_follow["qty"] or 0)
@@ -8013,7 +8016,6 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         overall_grade = raw_grade
         display_grade = raw_grade
         hard_blocked = False
-        details_risk_flags = []
         details_hard_blocks = []
         raw_plan = raw_entry_model.get("trade_plan") if isinstance(raw_entry_model.get("trade_plan"), dict) else {}
         if raw_plan:
@@ -8031,7 +8033,9 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
         overall_grade = fresh_grade
         display_grade = fresh_grade
         hard_blocked = False
-        details_risk_flags = fresh_authority.get("risk_flags") if isinstance(fresh_authority.get("risk_flags"), list) else []
+        fresh_risk_flags = fresh_authority.get("risk_flags")
+        if isinstance(fresh_risk_flags, list):
+            details_risk_flags = fresh_risk_flags
         details_hard_blocks = []
         fresh_plan = fresh_authority.get("trade_plan") if isinstance(fresh_authority.get("trade_plan"), dict) else {}
         if fresh_plan:
@@ -8040,6 +8044,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     details = {
         "action": action,
         "market_region": market_region,
+        "strategy": row.get("strategy"),
         "latest_system_action": action,
         "raw_decision_action": raw_action,
         "tier": confluence.get("tier"),
@@ -8095,6 +8100,7 @@ def _signal_idea_from_decision(row: dict[str, Any]) -> dict[str, Any] | None:
             "overall_grade": overall_grade,
             "confluence": confluence_total,
             "hard_blocked": hard_blocked,
+            "strategy": row.get("strategy"),
             "details": details,
         }
     )

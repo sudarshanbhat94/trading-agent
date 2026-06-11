@@ -38,7 +38,7 @@ from app.trade_economics import auto_follow_sizing
 
 class RawEntryModelSafetyTests(unittest.TestCase):
     def test_raw_opportunity_does_not_use_old_positive_setup_blocker(self) -> None:
-        context = _raw_entry_context(setup="watchlist_candidate")
+        context = _raw_entry_context(setup="opening_ignition")
         engine = StrategyEngine(_raw_opportunity_settings(), SimpleNamespace(), SimpleNamespace())
 
         action = engine._action_from_context("RAWBUY", 0.0, {}, context, {})
@@ -50,6 +50,35 @@ class RawEntryModelSafetyTests(unittest.TestCase):
             context["raw_entry_model"]["diagnostics"]["hard_block_policy"],
             "invalid_quote_untradeable_hard_liquidity_data_readiness_or_confirmation",
         )
+
+    def test_raw_opportunity_watch_bucket_requires_buy_now_confirmation(self) -> None:
+        context = _raw_entry_context(
+            price=148.0,
+            setup="opening_ignition",
+            market_region="IN",
+            technical_score=0.95,
+            day_gain_pct=5.2,
+            volume_ratio=3.0,
+            projected_volume_ratio=3.5,
+            day_range_position=0.94,
+            day_high_distance_pct=0.4,
+        )
+        context["opportunity_scan"]["bucket"] = "ACTIONABLE_WATCH"
+        context["opportunity_scan"]["score"] = 1.0
+        context["opportunity_scan"]["components"] = {"live_momentum": 1.0}
+        context["opportunity_scan"]["market_action"] = {
+            "available": True,
+            "event_types": ["TOP_GAINER", "VOLUME_SHOCKER"],
+            "score": 94.0,
+        }
+        context["market_day_regime"] = {"state": REGIME_BROAD_RALLY, "score": 72.0}
+
+        model = evaluate_raw_entry(context, _raw_opportunity_settings())
+
+        self.assertFalse(model["passed"], model)
+        self.assertEqual(model["decision_label"], "WATCH")
+        self.assertEqual(model["reason"], "watch_strategy_requires_buy_now_confirmation")
+        self.assertEqual(model["entry_blockers"][0]["gate"], "watch_strategy")
 
     def test_raw_opportunity_buys_live_india_momentum_without_price_3000_or_news_gate(self) -> None:
         context = _raw_entry_context(

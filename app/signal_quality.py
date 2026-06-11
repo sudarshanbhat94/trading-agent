@@ -136,6 +136,9 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
             market_region=market_region,
             raw_market_region=raw_market,
         )
+    hard_entry_veto = _entry_hard_veto(item, details)
+    if hard_entry_veto:
+        return hard_entry_veto
     decision_label = _upper(raw.get("decision_label"))
     if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
         return _blocked(
@@ -154,6 +157,17 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
     entry_reason_block = _raw_entry_reason_block(item, details, raw)
     if entry_reason_block:
         return entry_reason_block
+    risk_flags = _risk_flags(item, details)
+    severe_risk_flags = _severe_risk_flags(risk_flags)
+    if severe_risk_flags:
+        return _blocked(
+            "severe_risk_flags_present",
+            "Severe risk flags are present; this can stay watch-only but cannot become an active BUY.",
+            risk_flags=risk_flags,
+            severe_risk_flags=severe_risk_flags,
+            market_region=market_region,
+            raw_opportunity_version=raw.get("version"),
+        )
     raw_score = _number(raw.get("raw_score"), item.get("overall_score_pct"), details.get("overall_score_pct"))
     grade = _upper(raw.get("grade") or item.get("overall_grade") or details.get("overall_grade")) or "B"
     return {
@@ -172,7 +186,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         "min_score": None,
         "min_confluence": None,
         "allowed_grades": [],
-        "risk_flags": [],
+        "risk_flags": risk_flags,
         "risk_warnings": [],
         "missing_data": [],
         "opportunity_probe": False,
@@ -1225,12 +1239,27 @@ def _us_etf_or_fund_watch_only(item: dict[str, Any], details: dict[str, Any]) ->
 
 
 def _risk_flags(item: dict[str, Any], details: dict[str, Any]) -> list[str]:
-    flags = item.get("risk_flags")
-    if not isinstance(flags, list):
-        flags = details.get("risk_flags")
-    if not isinstance(flags, list):
-        return []
-    return [str(flag or "").strip().lower() for flag in flags if str(flag or "").strip()]
+    collected: list[str] = []
+
+    def add_flags(source: Any) -> None:
+        if isinstance(source, list):
+            collected.extend(str(flag or "").strip().lower() for flag in source if str(flag or "").strip())
+
+    add_flags(item.get("risk_flags"))
+    add_flags(details.get("risk_flags"))
+    add_flags(details.get("active_flags"))
+    for source in (item, details):
+        risk = source.get("risk_overrides") if isinstance(source, dict) and isinstance(source.get("risk_overrides"), dict) else {}
+        add_flags(risk.get("flags"))
+        full = source.get("full_spectrum_analysis") if isinstance(source, dict) and isinstance(source.get("full_spectrum_analysis"), dict) else {}
+        full_risk = full.get("risk_overrides") if isinstance(full.get("risk_overrides"), dict) else {}
+        add_flags(full_risk.get("flags"))
+        context = source.get("context") if isinstance(source, dict) and isinstance(source.get("context"), dict) else {}
+        context_full = context.get("full_spectrum_analysis") if isinstance(context.get("full_spectrum_analysis"), dict) else {}
+        context_risk = context_full.get("risk_overrides") if isinstance(context_full.get("risk_overrides"), dict) else {}
+        add_flags(context_risk.get("flags"))
+
+    return sorted(dict.fromkeys(collected))
 
 
 def _severe_risk_flags(
