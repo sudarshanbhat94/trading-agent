@@ -67,6 +67,8 @@ const SETTINGS_TAB_CATEGORIES = {
   advanced: new Set(["Global Intelligence", "Institutional Feeds"]),
 };
 
+const MOBILE_MORE_VIEWS = new Set(["overview", "analyze", "rally", "sentiment", "notifications", "settings", "logs", "users"]);
+
 const POSITION_MARK_IDLE_REFRESH_MS = 20000;
 const POSITION_MARK_ACTIVE_REFRESH_MS = 8000;
 const POSITION_MARK_CROSS_TAB_KEY = "openstocks-position-marks-last-fetch";
@@ -2098,6 +2100,8 @@ function render(payload) {
   byId("nav-decisions-badge").textContent = String(latestDecisions.length);
   byId("nav-orders-badge").textContent = String(dayOrders.length);
   byId("nav-sentiment-badge").textContent = String(sentiment.length);
+  const notificationBadge = byId("nav-notifications-badge");
+  if (notificationBadge) notificationBadge.textContent = state.auth?.user?.whatsapp?.subscribed ? "on" : "off";
   byId("nav-logs-badge").textContent = state.auth?.admin ? String(state.logs.length) : "admin";
   byId("nav-overview-badge").textContent = controlRunning ? "on" : "off";
   updateMarketWorkspaceLabels(payload);
@@ -2117,6 +2121,7 @@ function render(payload) {
   }
   renderMobileNativeHeader(payload, quotes, activeMarket);
   if (activeView === "sentiment") renderSentiment(visibleSentiment);
+  if (activeView === "notifications") renderNotifications(payload);
   if (isOverview || activeView === "analyze") {
     renderQuotes(quotes);
     renderMarketTape(quotes, activeMarket);
@@ -2886,6 +2891,7 @@ function updateMarketWorkspaceLabels(payload = state.latest || {}) {
   if (subtitle) {
     const adminSubtitles = {
       account: "Profile, broker connections, cash ledger, and personal signal controls",
+      notifications: "Alert delivery, scan notices, feed status, and execution mode",
       logs: "Scanner events, market feed messages, and runtime trace",
       users: "Admin users, roles, credits, and account access",
       settings: "Risk limits, broker setup, scan scope, and execution mode",
@@ -4100,6 +4106,99 @@ async function savePaperCash(event) {
   } catch (error) {
     if (status) status.textContent = "save failed";
   }
+}
+
+function renderNotifications(payload = state.latest || {}) {
+  const body = byId("notifications-body");
+  const delivery = byId("notification-delivery-body");
+  const status = byId("notification-status");
+  if (!body || !delivery) return;
+  const user = state.auth?.user || {};
+  const whatsapp = user.whatsapp || state.account?.whatsapp || {};
+  const session = payload.user_signal_session || {};
+  const activeMarket = normalizeUiMarket(state.activeMarket);
+  const feed = marketDataLabel(payload, activeMarket);
+  const feedPending = isFeedPending(payload);
+  const executionMode = String(payload.runtime?.execution_mode || "paper").toLowerCase();
+  const alertRows = [];
+
+  alertRows.push({
+    tone: whatsapp.subscribed ? "positive" : "neutral",
+    title: "Fresh BUY alerts",
+    meta: whatsapp.subscribed
+      ? `WhatsApp subscribed ${whatsapp.phone_masked || ""}`.trim()
+      : "No user alert subscription is active.",
+    action: "account",
+    actionLabel: whatsapp.subscribed ? "Manage" : "Subscribe",
+  });
+
+  alertRows.push({
+    tone: feedPending ? "warning" : "positive",
+    title: `${activeMarketLabel()} market feed`,
+    meta: feedPending ? "Quotes are waiting for a connected token or provider." : `${feed.title} available for this workspace.`,
+    action: state.auth?.admin ? "settings" : "account",
+    actionLabel: feedPending ? "Connect" : "View",
+  });
+
+  if (session.last_error || payload.last_error) {
+    alertRows.push({
+      tone: "negative",
+      title: "Latest scan issue",
+      meta: shortValue(session.last_error || payload.last_error, 140),
+      action: state.auth?.admin ? "logs" : "decisions",
+      actionLabel: state.auth?.admin ? "Open logs" : "Signals",
+    });
+  }
+
+  alertRows.push({
+    tone: executionMode.includes("live") ? "warning" : "neutral",
+    title: "Execution mode",
+    meta: executionMode.includes("live")
+      ? "Live mode is guarded by broker and risk checks."
+      : "Paper mode is active; no real orders are placed.",
+    action: state.auth?.admin ? "settings" : "account",
+    actionLabel: "Review",
+  });
+
+  body.innerHTML = `
+    <div class="notification-list">
+      ${alertRows.map((item) => `<article class="notification-row ${escapeHtml(item.tone)}">
+        <span aria-hidden="true"></span>
+        <div>
+          <strong>${escapeHtml(item.title)}</strong>
+          <small>${escapeHtml(item.meta)}</small>
+        </div>
+        <button type="button" data-view-jump="${escapeHtml(item.action)}">${escapeHtml(item.actionLabel)}</button>
+      </article>`).join("")}
+    </div>
+    <div class="empty-state product-empty notification-empty">
+      <strong>No separate notification event stream</strong>
+      <span>Delivery settings, feed warnings, scan errors, and execution mode are shown here from existing account and status data. Historical notification events will appear here once a backend event feed exists.</span>
+    </div>
+  `;
+
+  const signalMode = String(session.signal_execution_mode || user.signal_execution_mode || "SIGNAL_ONLY").toUpperCase();
+  delivery.innerHTML = `
+    <div class="notification-delivery-grid">
+      <button type="button" data-view-jump="account">
+        <span>WhatsApp</span>
+        <strong>${escapeHtml(whatsapp.subscribed ? "Subscribed" : "Off")}</strong>
+        <small>${escapeHtml(whatsapp.phone_masked || "Account controls")}</small>
+      </button>
+      <button type="button" data-view-jump="account">
+        <span>Signal action</span>
+        <strong>${escapeHtml(signalModeLabel(signalMode))}</strong>
+        <small>${escapeHtml(session.signal_execution_mode_message || "Configured per user")}</small>
+      </button>
+      <button type="button" data-view-jump="${state.auth?.admin ? "settings" : "account"}">
+        <span>Broker/feed</span>
+        <strong>${escapeHtml(feed.title)}</strong>
+        <small>${escapeHtml(feed.meta || "Market data status")}</small>
+      </button>
+    </div>
+  `;
+
+  if (status) status.textContent = whatsapp.subscribed ? "alerts on" : "alerts off";
 }
 
 function renderSentiment(rows) {
@@ -8833,8 +8932,23 @@ function bindControls() {
   }
   for (const button of document.querySelectorAll(".mobile-bottom-nav-item")) {
     button.addEventListener("click", () => {
+      if (button.classList.contains("mobile-more-trigger")) {
+        setSidebarOpen(false);
+        setMobileMoreOpen(!document.body.classList.contains("mobile-more-open"));
+        return;
+      }
       setSidebarOpen(false);
+      setMobileMoreOpen(false);
       setView(button.dataset.mobileView);
+    });
+  }
+  byId("mobile-more-close")?.addEventListener("click", () => setMobileMoreOpen(false));
+  byId("mobile-more-backdrop")?.addEventListener("click", () => setMobileMoreOpen(false));
+  for (const button of document.querySelectorAll("[data-mobile-more-view]")) {
+    button.addEventListener("click", () => {
+      setMobileMoreOpen(false);
+      setSidebarOpen(false);
+      setView(button.dataset.mobileMoreView);
     });
   }
   for (const button of document.querySelectorAll("[data-view-jump]")) {
@@ -8849,10 +8963,16 @@ function bindControls() {
     setView(button.dataset.viewJump);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") setSidebarOpen(false);
+    if (event.key === "Escape") {
+      setSidebarOpen(false);
+      setMobileMoreOpen(false);
+    }
   });
   window.addEventListener("resize", () => {
-    if (window.innerWidth > 767) setSidebarOpen(false);
+    if (window.innerWidth > 767) {
+      setSidebarOpen(false);
+      setMobileMoreOpen(false);
+    }
     syncSidebarControls();
     syncResponsiveShellControls();
   });
@@ -9011,6 +9131,32 @@ function setSidebarOpen(open) {
   syncSidebarControls();
 }
 
+function setMobileMoreOpen(open) {
+  const shouldOpen = Boolean(open) && isMobileSidebar();
+  document.body.classList.toggle("mobile-more-open", shouldOpen);
+  const sheet = byId("mobile-more-sheet");
+  const backdrop = byId("mobile-more-backdrop");
+  const button = byId("mobile-more-btn");
+  if (sheet) sheet.hidden = !shouldOpen;
+  if (backdrop) backdrop.hidden = !shouldOpen;
+  if (button) button.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  syncMobileMoreActive();
+}
+
+function syncMobileMoreActive(view = currentViewName()) {
+  const moreActive = MOBILE_MORE_VIEWS.has(view);
+  const moreButton = byId("mobile-more-btn");
+  if (moreButton) {
+    moreButton.classList.toggle("active", moreActive);
+    moreButton.setAttribute("aria-current", moreActive ? "page" : "false");
+  }
+  for (const button of document.querySelectorAll("[data-mobile-more-view]")) {
+    const active = button.dataset.mobileMoreView === view;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-current", active ? "page" : "false");
+  }
+}
+
 function syncSidebarControls() {
   const button = byId("sidebar-toggle-btn");
   const mobile = isMobileSidebar();
@@ -9033,15 +9179,17 @@ function syncResponsiveShellControls() {
 function setView(view) {
   const drawer = byId("detail-drawer");
   if (drawer) drawer.classList.remove("open");
+  setMobileMoreOpen(false);
   document.body.dataset.view = view;
   for (const item of document.querySelectorAll(".nav-item")) {
     item.classList.toggle("active", item.dataset.view === view);
   }
   for (const item of document.querySelectorAll(".mobile-bottom-nav-item")) {
-    const active = item.dataset.mobileView === view;
+    const active = item.dataset.mobileView ? item.dataset.mobileView === view : (item.id === "mobile-more-btn" && MOBILE_MORE_VIEWS.has(view));
     item.classList.toggle("active", active);
     item.setAttribute("aria-current", active ? "page" : "false");
   }
+  syncMobileMoreActive(view);
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("active", section.id === `${view}-view`);
   }

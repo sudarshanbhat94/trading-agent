@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>OpenStocks</title>
     <link rel="icon" href="/static/openstocks-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=mobile-ux-p0-20260607-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=terminal-redesign-20260612-1" />
   </head>
   <body data-theme="light">
     <section id="login-screen" class="login-screen">
@@ -64,6 +64,12 @@
         </symbol>
         <symbol id="icon-settings" viewBox="0 0 24 24">
           <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9.3l-.5.3-3.2-1.8-.1-.6a1.7 1.7 0 0 0-1.5-1.2h-.8L7.8 14l.4-.5a1.7 1.7 0 0 0 0-2l-.4-.5 1.8-3.2h.8A1.7 1.7 0 0 0 11.9 6l.1-.6 3.2-1.8.5.3a1.7 1.7 0 0 0 1.9.3l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9l.2.5V14Z"></path>
+        </symbol>
+        <symbol id="icon-bell" viewBox="0 0 24 24">
+          <path d="M18 9a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path>
+        </symbol>
+        <symbol id="icon-more" viewBox="0 0 24 24">
+          <circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle>
         </symbol>
         <symbol id="icon-search" viewBox="0 0 24 24">
           <circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M16 16l5 5"></path>
@@ -138,6 +144,7 @@
           <button class="nav-item" type="button" data-view="orders"><span class="nav-icon" aria-hidden="true" data-icon="OR"><svg><use href="#icon-orders"></use></svg></span><span>Journal</span><strong id="nav-orders-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="decisions"><span class="nav-icon" aria-hidden="true" data-icon="SG"><svg><use href="#icon-decisions"></use></svg></span><span>Signals</span><strong id="nav-decisions-badge">0</strong></button>
           <button class="nav-item" type="button" data-view="sentiment"><span class="nav-icon" aria-hidden="true" data-icon="NW"><svg><use href="#icon-sentiment"></use></svg></span><span>Sentiment</span><strong id="nav-sentiment-badge">0</strong></button>
+          <button class="nav-item" type="button" data-view="notifications"><span class="nav-icon" aria-hidden="true" data-icon="NT"><svg><use href="#icon-bell"></use></svg></span><span>Alerts</span><strong id="nav-notifications-badge">off</strong></button>
           <button class="nav-item" type="button" data-view="account"><span class="nav-icon" aria-hidden="true" data-icon="AC"><svg><use href="#icon-account"></use></svg></span><span>Account</span><strong>paper</strong></button>
           <span class="nav-section-label admin-only">Admin</span>
           <button class="nav-item admin-only" type="button" data-view="logs"><span class="nav-icon" aria-hidden="true" data-icon="LG"><svg><use href="#icon-logs"></use></svg></span><span>Logs</span><strong id="nav-logs-badge">admin</strong></button>
@@ -167,7 +174,33 @@
           <span aria-hidden="true"><svg><use href="#icon-account"></use></svg></span>
           <strong>Account</strong>
         </button>
+        <button id="mobile-more-btn" class="mobile-bottom-nav-item mobile-more-trigger" type="button" aria-label="More tabs" aria-haspopup="dialog" aria-expanded="false">
+          <span aria-hidden="true"><svg><use href="#icon-more"></use></svg></span>
+          <strong>More</strong>
+        </button>
       </nav>
+
+      <div id="mobile-more-backdrop" class="mobile-more-backdrop" hidden></div>
+      <section id="mobile-more-sheet" class="mobile-more-sheet" hidden aria-label="More navigation">
+        <div class="mobile-more-grabber" aria-hidden="true"></div>
+        <div class="mobile-more-head">
+          <div>
+            <strong>More</strong>
+            <span>Terminal screens and admin tools</span>
+          </div>
+          <button id="mobile-more-close" class="icon-button" type="button" aria-label="Close more navigation">×</button>
+        </div>
+        <div class="mobile-more-grid">
+          <button type="button" data-mobile-more-view="overview"><svg aria-hidden="true"><use href="#icon-dashboard"></use></svg><span>Dashboard</span></button>
+          <button type="button" data-mobile-more-view="analyze"><svg aria-hidden="true"><use href="#icon-analyze"></use></svg><span>Analyze</span></button>
+          <button type="button" data-mobile-more-view="rally"><svg aria-hidden="true"><use href="#icon-ideas"></use></svg><span>Rally Plan</span></button>
+          <button type="button" data-mobile-more-view="sentiment"><svg aria-hidden="true"><use href="#icon-sentiment"></use></svg><span>Sentiment</span></button>
+          <button type="button" data-mobile-more-view="notifications"><svg aria-hidden="true"><use href="#icon-bell"></use></svg><span>Alerts</span></button>
+          <button class="admin-only" type="button" data-mobile-more-view="settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg><span>Settings</span></button>
+          <button class="admin-only" type="button" data-mobile-more-view="logs"><svg aria-hidden="true"><use href="#icon-logs"></use></svg><span>Logs</span></button>
+          <button class="admin-only" type="button" data-mobile-more-view="users"><svg aria-hidden="true"><use href="#icon-users"></use></svg><span>Users</span></button>
+        </div>
+      </section>
 
       <section class="mobile-native-topbar" aria-label="Mobile market summary">
         <div class="mobile-native-indices">
@@ -611,6 +644,31 @@
             </div>
           </section>
 
+          <section id="notifications-view" class="view notifications-page">
+            <div class="notifications-grid">
+              <section class="panel notification-panel">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Alerts</h3>
+                    <p>Fresh BUY alerts, broker/feed connection notices, and user delivery settings.</p>
+                  </div>
+                  <span id="notification-status">checking</span>
+                </div>
+                <div id="notifications-body" class="notifications-body"></div>
+              </section>
+              <section class="panel notification-panel">
+                <div class="panel-head">
+                  <div class="panel-title-stack">
+                    <h3>Delivery</h3>
+                    <p>WhatsApp subscription and signal action controls are managed from Account.</p>
+                  </div>
+                  <button type="button" data-view-jump="account">Open Account</button>
+                </div>
+                <div id="notification-delivery-body" class="notifications-body"></div>
+              </section>
+            </div>
+          </section>
+
           <section id="account-view" class="view account-page">
             <div class="account-grid">
               <div class="panel account-profile-panel">
@@ -910,6 +968,6 @@
       </div>
     </section>
 
-    <script src="/static/dashboard.js?v=user-whatsapp-settings-20260608-1"></script>
+    <script src="/static/dashboard.js?v=terminal-redesign-20260612-1"></script>
   </body>
 </html>
