@@ -1543,14 +1543,29 @@ function humanLabel(value) {
 
 const OPPORTUNITY_STATE_COPY = {
   BUY_NOW: {
-    label: "Ready to buy",
+    label: "Executable buy",
     summary: "Fresh-entry checks are clear: score, grade, confirmation, data, and risk all passed.",
     next_step: "Use the entry zone, stop, targets, and position sizing shown in the trade plan.",
+  },
+  EXECUTABLE_BUY: {
+    label: "Executable buy",
+    summary: "All current tradeability checks passed for an entry request.",
+    next_step: "Use the shown entry zone, stop, targets, and sizing before placing any request.",
+  },
+  PAPER_PROBE_ELIGIBLE: {
+    label: "Paper validation only",
+    summary: "This setup is eligible for paper validation only. It is not a live BUY.",
+    next_step: "Track it with paper validation until the executable checks clear.",
+  },
+  WATCH_ONLY: {
+    label: "Watch only",
+    summary: "The idea is useful for monitoring, but it is not cleared for paper or live entry.",
+    next_step: "Keep it on the watchlist and wait for stronger confirmation.",
   },
   BUY_CANDIDATE: {
     label: "Buy candidate",
     summary: "Close to actionable, but one remaining confirmation or score/risk check is still missing.",
-    next_step: "Wait for the final check to clear; no paper/live entry until marked Ready to buy.",
+    next_step: "Wait for the final check to clear; no paper/live entry until marked Executable buy.",
   },
   PULLBACK_BUY_ZONE: {
     label: "Wait for pullback",
@@ -1583,9 +1598,14 @@ const OPPORTUNITY_STATE_COPY = {
     next_step: "Do not enter now; wait for a cleaner scan.",
   },
   BLOCKED: {
-    label: "Avoid for now",
+    label: "Blocked",
     summary: "One or more risk or quality checks blocks a fresh BUY.",
     next_step: "Do not enter now; wait for the blocking risk to clear.",
+  },
+  REJECTED: {
+    label: "Rejected",
+    summary: "The latest checks rejected this setup for entry.",
+    next_step: "Review diagnostics and wait for a cleaner setup.",
   },
 };
 
@@ -1619,6 +1639,54 @@ function cssToken(value, fallback = "neutral") {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return token || fallback;
+}
+
+function tradeStateCode(row = {}) {
+  const opportunity = opportunityStatePayload(row);
+  const signalState = row.signal_state && typeof row.signal_state === "object" ? row.signal_state : {};
+  const candidates = [
+    opportunity.state,
+    row.trade_state,
+    row.execution_state,
+    row.execution_state_code,
+    row.decision_readiness,
+    row.setup_bucket,
+    row.fresh_action,
+    row.latest_system_action,
+    signalState.state,
+    signalState.code,
+    signalState.trade_state,
+  ].map((value) => String(value || "").toUpperCase()).filter(Boolean);
+  const has = (pattern) => candidates.some((value) => value.includes(pattern));
+  if (has("PAPER_PROBE") || has("PAPER_VALIDATION")) return "PAPER_PROBE_ELIGIBLE";
+  if (has("EXECUTABLE_BUY") || candidates.includes("BUY_NOW")) return "EXECUTABLE_BUY";
+  if (has("BLOCKED") || has("NO_TRADE") || has("LIVE_BLOCKED")) return "BLOCKED";
+  if (has("WATCH_ONLY") || candidates.includes("WATCH") || has("MONITOR")) return "WATCH_ONLY";
+  if (has("REJECTED") || has("VETO")) return "REJECTED";
+  return opportunity.state || "";
+}
+
+function tradeStateLabel(row = {}, fallback = "") {
+  const code = tradeStateCode(row);
+  const mapped = OPPORTUNITY_STATE_COPY[code]?.label;
+  return mapped || fallback || OPPORTUNITY_STATE_COPY[row.opportunity_state]?.label || "";
+}
+
+function tradeStateCss(row = {}, fallback = "neutral") {
+  const code = tradeStateCode(row);
+  if (code === "EXECUTABLE_BUY") return "executable-buy";
+  if (code === "PAPER_PROBE_ELIGIBLE") return "paper-probe";
+  if (code === "WATCH_ONLY") return "watch-only";
+  if (code === "BLOCKED" || code === "REJECTED") return "blocked";
+  return cssToken(code || fallback);
+}
+
+function isExecutableTradeRow(row = {}) {
+  return tradeStateCode(row) === "EXECUTABLE_BUY";
+}
+
+function isPaperProbeRow(row = {}) {
+  return tradeStateCode(row) === "PAPER_PROBE_ELIGIBLE";
 }
 
 function compactSentence(text, fallback = "-") {
@@ -4801,6 +4869,7 @@ async function login(event) {
     }
     byId("login-password").value = "";
     renderAuth(payload);
+    defaultMobileViewAfterAuth();
     await loadAuthenticatedData();
     openSocket();
     startPositionMarkPolling();
@@ -5318,11 +5387,12 @@ function ideaWatchlistLevelsHtml(row = {}, market = rowMarket(row), compact = fa
 
 function ideaWatchlistSignalHtml(row = {}) {
   const opportunity = opportunityStatePayload(row);
-  const signal = row.display_signal || row.suggestion || row.signal_type || opportunity.label || "Watch";
+  const rawSignal = row.display_signal || row.suggestion || row.signal_type || opportunity.label || "Watch";
+  const signal = tradeStateLabel(row, rawSignal);
   const confidence = confidencePercent(row);
-  const action = rowActionText(row) || String(signal || "WATCH").toUpperCase();
+  const action = tradeStateCss(row, rowActionText(row) || String(signal || "WATCH").toUpperCase());
   return `<div class="watchlist-signal-cell">
-    <span class="watchlist-signal-pill ${escapeHtml(cssToken(action))}">${escapeHtml(signal)}</span>
+    <span class="watchlist-signal-pill ${escapeHtml(action)}">${escapeHtml(signal)}</span>
     <small>${confidence ? `${fmtNumber(confidence)}% confidence` : escapeHtml(opportunity.label || "scanner ranked")}</small>
   </div>`;
 }
@@ -5346,7 +5416,7 @@ function ideaWatchlistActionHtml(row = {}) {
   }
   if (!rowId) return `<button type="button" data-watchlist-open-detail>View</button>`;
   return `<span class="mobile-watchlist-actions">
-    <button type="button" data-watchlist-buy-row data-idea-id="${escapeHtml(rowId)}">${preferredManualTradeMode() === "LIVE" ? "Buy Live" : "Buy Paper"}</button>
+    <button type="button" data-watchlist-buy-row data-idea-id="${escapeHtml(rowId)}">${escapeHtml(preferredManualTradeLabel(row))}</button>
     <button type="button" data-watchlist-track data-idea-id="${escapeHtml(rowId)}">Track</button>
   </span>`;
 }
@@ -5393,7 +5463,8 @@ function watchlistDetailPanelHtml(row = {}) {
     const close = firstFinite(quote.prev_close, quote.previous_close, quote.close);
     return price !== null && close !== null ? price - close : null;
   })();
-  const signal = row.display_signal || row.suggestion || row.signal_type || lifecycle.label;
+  const rawSignal = row.display_signal || row.suggestion || row.signal_type || lifecycle.label;
+  const signal = tradeStateLabel(row, rawSignal);
   const setup = row.strategy || row.plan_name || row.plan_code || row.setup_bucket_label || "Watchlist setup";
   const reason = opportunity.summary || row.display_reason || row.setup_bucket_reason || readableDecisionReason(row);
   const nextStep = opportunity.next_step || lifecycle.note || ideaTimelineText(row);
@@ -5405,7 +5476,7 @@ function watchlistDetailPanelHtml(row = {}) {
         <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
         <p>${escapeHtml(shortValue(setup, 70))}</p>
       </div>
-      <span class="watchlist-signal-pill ${escapeHtml(cssToken(rowActionText(row) || signal))}">${escapeHtml(signal)}</span>
+      <span class="watchlist-signal-pill ${escapeHtml(tradeStateCss(row, rowActionText(row) || signal))}">${escapeHtml(signal)}</span>
     </header>
 
     <div class="watchlist-detail-price">
@@ -5438,7 +5509,7 @@ function watchlistDetailPanelHtml(row = {}) {
     </section>
 
     <div class="watchlist-detail-actions">
-      <button class="buy-action" type="button" data-watchlist-buy>${escapeHtml(preferredManualTradeLabel())}</button>
+      <button class="buy-action" type="button" data-watchlist-buy>${escapeHtml(preferredManualTradeLabel(row))}</button>
       <button type="button" data-watchlist-track-panel>Track</button>
       <button type="button" data-watchlist-open-detail>Full audit</button>
     </div>
@@ -6550,7 +6621,7 @@ function renderSuggestions(rows) {
         : [];
       const opportunity = opportunityStatePayload(row);
       const readiness = String(row.fresh_action || "").toUpperCase() === "BUY_NOW"
-        ? "Ready to buy"
+        ? "Executable buy"
         : opportunity.label || row.fresh_action_label || humanLabel(row.decision_readiness || "monitor_only");
       const latestSystemAction = row.latest_system_action ? String(row.latest_system_action).toUpperCase() : "";
       const followed = row.user_follow || null;
@@ -7153,7 +7224,7 @@ function ideaLifecycle(row = {}) {
   if (highest === "T1" || status === "target_1_hit") return { label: "T1 hit", className: "positive", note: "First target reached" };
   if (String(row.signal_type || "").toUpperCase() === "BUY" && ["active", "monitoring"].includes(status)) {
     return {
-      label: state.trade_state_label || row.display_signal || "Active Buy",
+      label: tradeStateLabel(row, state.trade_state_label || row.display_signal || "Executable buy"),
       className: state.class_name || "open",
       note: state.fresh_action_label || "Tracking toward targets",
     };
@@ -7656,17 +7727,25 @@ function preferredManualTradeMode() {
   return "PAPER";
 }
 
-function preferredManualTradeAction() {
-  return preferredManualTradeMode() === "LIVE" ? "live" : "paper";
+function preferredManualTradeAction(row = {}) {
+  return preferredManualTradeMode() === "LIVE" && isExecutableTradeRow(row) ? "live" : "paper";
 }
 
-function preferredManualTradeLabel() {
+function preferredManualTradeLabel(row = {}) {
+  if (isPaperProbeRow(row)) return "Paper Validate";
+  if (!isExecutableTradeRow(row) && tradeStateCode(row)) return "Paper Follow";
   return preferredManualTradeMode() === "LIVE" ? "Buy Live" : "Buy Paper";
 }
 
 function preferredManualTradeNote(row = {}) {
   const market = rowMarket(row);
-  if (preferredManualTradeMode() === "LIVE") {
+  if (isPaperProbeRow(row)) {
+    return "Paper validation only. This is not a live BUY and no broker order is placed.";
+  }
+  if (!isExecutableTradeRow(row) && tradeStateCode(row)) {
+    return "This starts a paper follow/watch workflow only. It is not labeled as an executable BUY.";
+  }
+  if (preferredManualTradeAction(row) === "live") {
     return "This creates a guarded live request only if your personal broker token, cash, and risk checks pass.";
   }
   return `This uses ${market === "US" ? "US" : "India"} paper cash. No real broker order is placed, and P&L is simulated in Positions.`;
@@ -7702,11 +7781,14 @@ async function buyWatchlistIdea(row = {}, button = null) {
     });
     return;
   }
-  const action = preferredManualTradeAction();
-  const modeLabel = preferredManualTradeMode() === "LIVE" ? "LIVE broker request" : "PAPER money";
+  const action = preferredManualTradeAction(row);
+  const modeLabel = action === "live"
+    ? "LIVE broker request"
+    : (isPaperProbeRow(row) ? "PAPER validation" : "PAPER follow");
   const symbol = String(row.symbol || "this stock").toUpperCase();
   const note = preferredManualTradeNote(row);
-  if (!window.confirm(`Buy ${symbol} using ${modeLabel}?\n\n${note}`)) return;
+  const verb = action === "live" ? "Buy" : (isPaperProbeRow(row) ? "Validate" : "Follow");
+  if (!window.confirm(`${verb} ${symbol} using ${modeLabel}?\n\n${note}`)) return;
   await followIdea(row, action, button, { manualOverride: action === "paper" });
 }
 
@@ -7735,7 +7817,7 @@ function watchlistStockDetailHtml(row = {}) {
   const sign = dayChange !== null && dayChange > 0 ? "+" : "";
   const exchange = row.exchange || quote.exchange || (market === "IN" ? "NSE" : "US");
   const eventTag = ideaHasEvent(row) ? `<span class="event-pill">EVENT</span>` : "";
-  const buyLabel = preferredManualTradeLabel();
+  const buyLabel = preferredManualTradeLabel(row);
   const tradeNote = preferredManualTradeNote(row);
   return `<section class="trade-sheet">
     <header class="trade-sheet-head">
@@ -7756,7 +7838,7 @@ function watchlistStockDetailHtml(row = {}) {
     <div class="trade-sheet-actions secondary-actions">
       <button type="button" data-watchlist-chart>View chart</button>
       <button type="button" data-watchlist-note-title="Option Chain" data-watchlist-note="Option chain is not wired for this symbol yet. OpenStocks will not pretend to route an unavailable option action.">Option chain</button>
-      <button type="button" data-watchlist-note-title="Set Alert" data-watchlist-note="Price alerts are not enabled yet. Use Buy Paper/Live or View chart for live actions today.">Set alert</button>
+      <button type="button" data-watchlist-note-title="Set Alert" data-watchlist-note="Price alerts are not enabled yet. Use the paper/live action shown for this row, or open the chart for context.">Set alert</button>
       <button type="button" data-watchlist-note-title="Add Notes" data-watchlist-note="Notes are not saved yet. This button is now explicit so it does not behave like a hidden dummy action.">Add notes</button>
       <button type="button" data-watchlist-note-title="Create GTT" data-watchlist-note="GTT creation needs broker-side order support. Use Buy Live only when your broker account is connected and guarded.">Create GTT</button>
     </div>
@@ -9176,6 +9258,12 @@ function syncResponsiveShellControls() {
   if (topbarUserMenu) topbarUserMenu.hidden = isMobileSidebar();
 }
 
+function defaultMobileViewAfterAuth() {
+  if (!isMobileSidebar()) return;
+  if (currentViewName() !== "overview") return;
+  setView("suggestions");
+}
+
 function setView(view) {
   const drawer = byId("detail-drawer");
   if (drawer) drawer.classList.remove("open");
@@ -9220,6 +9308,7 @@ async function loadInitial() {
     if (!auth.authenticated) {
       return;
     }
+    defaultMobileViewAfterAuth();
     await loadAuthenticatedData();
     openSocket();
     startPositionMarkPolling();
