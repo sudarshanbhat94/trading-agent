@@ -126,6 +126,14 @@ def build_cycle_decision_diagnostics(
     selected_symbols = _int(scan.get("selected_symbols"))
     target_decision_symbols = _int(scan.get("target_decision_symbols") or scan.get("slot_budget_target") or scan.get("candidate_limit"))
     decisions_created = len(decision_rows)
+    hard_scanner_rejections = _hard_scanner_rejection_count(scan.get("rejected_counts"))
+    target_shortfall = max(target_decision_symbols - decisions_created, 0) if target_decision_symbols else 0
+    target_shortfall_explained = bool(
+        target_decision_symbols
+        and target_shortfall > 0
+        and hard_scanner_rejections > 0
+        and decisions_created + hard_scanner_rejections >= target_decision_symbols
+    )
     buy_decisions = action_counts.get("BUY", 0)
     buy_symbols = {
         str(decision.symbol or "").upper()
@@ -157,7 +165,9 @@ def build_cycle_decision_diagnostics(
         "scanner_selected_symbols": selected_symbols,
         "decisions_created": decisions_created,
         "target_decision_symbols": target_decision_symbols,
-        "decision_target_shortfall": max(target_decision_symbols - decisions_created, 0) if target_decision_symbols else 0,
+        "decision_target_shortfall": target_shortfall,
+        "decision_target_shortfall_explained_by_hard_rejections": target_shortfall_explained,
+        "hard_scanner_rejection_count": hard_scanner_rejections,
         "buy_decisions": buy_decisions,
         "buy_symbols": len(buy_symbols),
         "buy_intent_decisions": buy_intent_decisions,
@@ -245,6 +255,12 @@ def build_cycle_decision_diagnostics(
             "sample_only_blocker_symbols": sorted(live_quote_stale_intraday_only_symbols)[:25],
         },
         "scanner_rejections": _top_mapping(scan.get("rejected_counts"), 15),
+        "decision_shortfall_explanation": {
+            "shortfall": target_shortfall,
+            "hard_scanner_rejection_count": hard_scanner_rejections,
+            "explained_by_hard_rejections": target_shortfall_explained,
+            "hard_rejection_gates": sorted(HARD_SCANNER_REJECTION_GATES),
+        },
         "scanner_setups": _top_mapping(scan.get("setup_counts"), 15),
         "rally_plan_promotion": scan.get("rally_plan_promotion")
         if isinstance(scan.get("rally_plan_promotion"), dict)
@@ -257,6 +273,7 @@ def build_cycle_decision_diagnostics(
             "safety_exited": len(safety_exited),
             "legacy_economics_exited": len(legacy_economics_exited),
             "skip_reasons": _skip_reason_counts(skipped),
+            "paper_probe": _paper_probe_skip_summary(skipped),
         },
         "top_hold_candidates": top_holds[:20],
     }
@@ -298,6 +315,56 @@ def _gate_names(value: Any) -> list[str]:
         if name:
             names.append(name)
     return names
+
+
+def _paper_probe_skip_summary(skipped: list[Any]) -> dict[str, Any]:
+    eligible_symbols: set[str] = set()
+    blocker_counts: Counter[str] = Counter()
+    recovered_counts: Counter[str] = Counter()
+    quote_source_counts: Counter[str] = Counter()
+    contract_counts: Counter[str] = Counter()
+    eligible_records = 0
+    audit_event_ids: list[int] = []
+    blocked_candidates = 0
+    for item in skipped:
+        if not isinstance(item, dict):
+            continue
+        if item.get("paper_probe_eligible") is True:
+            eligible_records += 1
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if symbol:
+                eligible_symbols.add(symbol)
+            recovered = str(item.get("paper_probe_recovered_blocker") or "").strip()
+            if recovered:
+                recovered_counts.update([recovered])
+            quote_source = str(item.get("paper_probe_quote_source") or "unknown").strip() or "unknown"
+            quote_source_counts.update([quote_source])
+            contract = str(item.get("paper_probe_contract") or "unknown").strip() or "unknown"
+            contract_counts.update([contract])
+            audit_id = _int(item.get("paper_probe_audit_event_id"))
+            if audit_id > 0:
+                audit_event_ids.append(audit_id)
+            continue
+        blockers = item.get("paper_probe_blockers")
+        if not isinstance(blockers, list) or not blockers:
+            continue
+        blocked_candidates += 1
+        for blocker in blockers:
+            blocker_name = str(blocker or "").strip()
+            if blocker_name:
+                blocker_counts.update([blocker_name])
+    return {
+        "eligible_skip_count": eligible_records,
+        "eligible_skip_symbols_count": len(eligible_symbols),
+        "eligible_skip_symbols": sorted(eligible_symbols)[:25],
+        "eligible_recovered_blockers": dict(recovered_counts.most_common(10)),
+        "eligible_quote_sources": dict(quote_source_counts.most_common(10)),
+        "eligible_contracts": dict(contract_counts.most_common(5)),
+        "eligible_audit_event_count": len(set(audit_event_ids)),
+        "eligible_audit_event_ids": sorted(set(audit_event_ids))[:25],
+        "blocked_candidate_skips": blocked_candidates,
+        "blocked_candidate_blockers": dict(blocker_counts.most_common(15)),
+    }
 
 
 def _primary_gate_name(gate_context: dict[str, Any], blocking_gates: list[str]) -> str:
@@ -546,13 +613,22 @@ def _decision_target_shortfall_explained_by_hard_rejections(
 ) -> bool:
     if decisions <= 0 or target <= 0:
         return False
-    rejections = diagnostics.get("scanner_rejections") if isinstance(diagnostics.get("scanner_rejections"), dict) else {}
+    explanation = diagnostics.get("decision_shortfall_explanation")
+    if isinstance(explanation, dict) and explanation.get("explained_by_hard_rejections") is True:
+        return True
+    hard_rejections = _hard_scanner_rejection_count(diagnostics.get("scanner_rejections"))
+    return hard_rejections > 0 and decisions + hard_rejections >= target
+
+
+def _hard_scanner_rejection_count(rejections: Any) -> int:
+    if not isinstance(rejections, dict):
+        return 0
     hard_rejections = 0
     for key, value in rejections.items():
         gate = str(key or "").strip().lower()
         if gate in HARD_SCANNER_REJECTION_GATES:
             hard_rejections += _int(value)
-    return hard_rejections > 0 and decisions + hard_rejections >= target
+    return hard_rejections
 
 
 def _zero_buy_cycle_explained(diagnostics: dict[str, Any], decisions: int) -> bool:

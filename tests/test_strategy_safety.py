@@ -13,6 +13,7 @@ from app.db import Database, _compact_decision_details, _paper_exit_action
 from app.full_spectrum import _strategy_confirmed_entry_quality
 from app.market_day_regime import (
     REGIME_BROAD_RALLY,
+    REGIME_NO_LIVE_DATA,
     REGIME_RISK_OFF,
     REGIME_SELECTIVE_RALLY,
     compute_market_day_regime,
@@ -235,6 +236,20 @@ class RawEntryModelSafetyTests(unittest.TestCase):
         self.assertIn("live_momentum", broad["allowed_setup_families"])
         self.assertEqual(risk_off["state"], REGIME_RISK_OFF)
         self.assertNotIn("live_momentum", risk_off["allowed_setup_families"])
+
+    def test_market_day_regime_with_no_checked_symbols_is_not_risk_off(self) -> None:
+        regime = compute_market_day_regime(
+            [{"symbol": "RELIANCE", "exchange": "NSE"}],
+            {},
+            {},
+            {"breadth_regime": "bear_confirmed", "advance_decline_ratio": 0.2},
+            market_region="IN",
+        )
+
+        self.assertFalse(regime["enabled"])
+        self.assertEqual(regime["state"], REGIME_NO_LIVE_DATA)
+        self.assertEqual(regime["checked_symbols"], 0)
+        self.assertEqual(regime["allowed_setup_families"], [])
 
     def test_market_day_regime_classifies_selective_rally(self) -> None:
         universe, quotes, candles = _market_regime_rows("selective")

@@ -9,10 +9,68 @@ from pathlib import Path
 from app.config import CONFIG_SCHEMA, Settings, settings_from_overrides
 from app.db import Database
 from app.models import Decision, utc_now
-from app.signal_quality import active_follow_safety_gate, auto_follow_quality_gate, fresh_buy_quality_gate
+from app.signal_quality import active_follow_safety_gate, auto_follow_quality_gate, fresh_buy_quality_gate, quality_skip_payload
 
 
 class RawSignalQualityTests(unittest.TestCase):
+    @staticmethod
+    def _us_probe_candidate(**overrides: object) -> dict[str, object]:
+        market = str(overrides.pop("market", "US"))
+        quote_source = str(overrides.pop("quote_source", "alpaca-iex-live"))
+        setup_family = str(overrides.pop("setup_family", "live_momentum"))
+        risk_flags = list(overrides.pop("risk_flags", ["phase3_repeated_failed_breakouts_reduce_size", "watch_entry_needs_confirmation_reduce_size"]))
+        regime = overrides.pop(
+            "market_day_regime",
+            {
+                "state": "broad_rally",
+                "checked_symbols": 200,
+                "momentum_allowed": True,
+                "selective_momentum_allowed": False,
+            },
+        )
+        item: dict[str, object] = {
+            "symbol": "USPROBE",
+            "signal_type": "BUY",
+            "status": "ACTIVE",
+            "strategy": "intraday_momentum",
+            "latest_price": 100.0,
+            "overall_score_pct": 96,
+            "overall_grade": "A",
+            "confluence": 22,
+            "confidence": 0.72,
+            "technical_score": 0.42,
+            "quote": {"price": 100.0, "source": quote_source},
+            "details": {
+                "market_region": market,
+                "quote": {"price": 100.0, "source": quote_source},
+                "data_readiness": {
+                    "market_region": market,
+                    "trade_decision_ready": True,
+                    "sources": {"quote": quote_source, "intraday": quote_source},
+                },
+                "market_day_regime": regime,
+                "risk_flags": risk_flags,
+                "stop_loss": 97.0,
+                "targets": [{"label": "T1", "price": 105.0, "distance_pct": 5.0}],
+                "raw_entry_model": {
+                    "version": "raw_opportunity_v1",
+                    "raw_score": 96,
+                    "grade": "A",
+                    "decision_label": "ENTRY_READY",
+                    "auto_follow_ready": True,
+                    "entry_reason": "raw_opportunity_ready",
+                    "setup_family": setup_family,
+                    "market_region": market,
+                    "trade_plan": {
+                        "stop_loss": 97.0,
+                        "targets": [{"label": "T1", "price": 105.0, "distance_pct": 5.0}],
+                    },
+                },
+            },
+        }
+        item.update(overrides)
+        return item
+
     def test_active_buy_without_raw_entry_ready_label_does_not_auto_follow(self) -> None:
         item = {
             "signal_type": "BUY",
@@ -330,6 +388,96 @@ class RawSignalQualityTests(unittest.TestCase):
 
         self.assertFalse(auto["passed"])
         self.assertEqual(auto["reason"], "auto_follow_technical_score_negative")
+
+    def test_us_live_momentum_probe_eligible_stays_non_executable(self) -> None:
+        gate = auto_follow_quality_gate(self._us_probe_candidate())
+
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "technical_score_below_0_50")
+        self.assertTrue(gate["paper_probe_eligible"], gate)
+        self.assertEqual(gate["paper_probe_state"], "PAPER_PROBE_ELIGIBLE")
+
+    def test_quality_skip_payload_preserves_paper_probe_contract(self) -> None:
+        gate = auto_follow_quality_gate(self._us_probe_candidate())
+        payload = quality_skip_payload(gate)
+
+        self.assertEqual(payload["reason"], "phase1_quality_gate")
+        self.assertEqual(payload["quality_reason"], "technical_score_below_0_50")
+        self.assertTrue(payload["paper_probe_eligible"], payload)
+        self.assertEqual(payload["paper_probe_state"], "PAPER_PROBE_ELIGIBLE")
+        self.assertEqual(payload["paper_probe_recovered_blocker"], "technical_score_below_0_50")
+        self.assertEqual(payload["paper_probe_quote_source"], "alpaca-iex-live")
+
+    def test_stored_paper_probe_fresh_action_preserves_probe_metadata_without_execution(self) -> None:
+        item = self._us_probe_candidate()
+        original_gate = auto_follow_quality_gate(item)
+        item["fresh_action"] = "PAPER_PROBE"
+        item["details"]["auto_follow_gate"] = original_gate
+
+        gate = auto_follow_quality_gate(item)
+        payload = quality_skip_payload(gate)
+
+        self.assertFalse(gate["passed"], gate)
+        self.assertTrue(gate["paper_probe_eligible"], gate)
+        self.assertEqual(gate["fresh_action"], "PAPER_PROBE")
+        self.assertEqual(gate["paper_probe_state"], "PAPER_PROBE_ELIGIBLE")
+        self.assertEqual(gate["paper_probe_recovered_blocker"], "technical_score_below_0_50")
+        self.assertEqual(payload["paper_probe_state"], "PAPER_PROBE_ELIGIBLE")
+
+    def test_us_probe_rejects_yahoo_reference_data(self) -> None:
+        gate = auto_follow_quality_gate(self._us_probe_candidate(quote_source="yahoo-delayed"))
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["paper_probe_eligible"])
+        self.assertIn("paper_probe_requires_realtime_us_quote", gate["paper_probe_blockers"])
+
+    def test_india_same_candidate_does_not_become_paper_probe(self) -> None:
+        gate = auto_follow_quality_gate(
+            self._us_probe_candidate(
+                market="IN",
+                quote_source="upstox-live",
+                market_day_regime={"state": "broad_rally", "checked_symbols": 200, "momentum_allowed": True},
+            )
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["paper_probe_eligible"])
+        self.assertIn("paper_probe_us_only", gate["paper_probe_blockers"])
+
+    def test_us_probe_rejects_thin_or_no_new_longs_risk(self) -> None:
+        gate = auto_follow_quality_gate(
+            self._us_probe_candidate(
+                risk_flags=[
+                    "thin_liquidity_reduce_size",
+                    "scorecard_illiquid_execution_no_new_longs",
+                    "watch_entry_needs_confirmation_reduce_size",
+                ]
+            )
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["paper_probe_eligible"])
+        self.assertIn("paper_probe_hard_risk_flags_present", gate["paper_probe_blockers"])
+        self.assertIn("thin_liquidity_reduce_size", gate["paper_probe_hard_risk_flags"])
+        self.assertIn("scorecard_illiquid_execution_no_new_longs", gate["paper_probe_hard_risk_flags"])
+
+    def test_us_probe_rejects_no_live_regime(self) -> None:
+        gate = auto_follow_quality_gate(
+            self._us_probe_candidate(
+                market_day_regime={"state": "no_live_regime", "checked_symbols": 0, "momentum_allowed": False}
+            )
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["paper_probe_eligible"])
+        self.assertIn("paper_probe_no_live_regime", gate["paper_probe_blockers"])
+
+    def test_breakout_does_not_use_live_momentum_probe_recovery(self) -> None:
+        gate = auto_follow_quality_gate(self._us_probe_candidate(setup_family="breakout"))
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["paper_probe_eligible"])
+        self.assertIn("paper_probe_live_momentum_only", gate["paper_probe_blockers"])
 
     def test_active_buy_without_market_region_is_blocked(self) -> None:
         gate = fresh_buy_quality_gate(
@@ -899,7 +1047,7 @@ class Phase1QualityGateTests(unittest.TestCase):
                 "fresh_action": "BUY_NOW",
                 "overall_score_pct": 100,
                 "overall_grade": "A",
-                "confluence": 6,
+                "confluence": 22,
                 "data_readiness": {"trade_decision_ready": True},
                 "details": {
                     "action": "BUY",
@@ -957,7 +1105,24 @@ class Phase1QualityGateTests(unittest.TestCase):
                     "latest_price": 4501.8,
                     "entry_zone": [4485.0, 4520.0],
                     "stop_loss": 4346.35,
-                    "targets": [{"price": 4727.0, "distance_pct": 5.0}],
+                    "targets": [{"price": 4800.0, "distance_pct": 6.62}],
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": True,
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": 100,
+                        "grade": "A",
+                        "setup_family": "live_momentum",
+                        "market_region": "IN",
+                        "trade_plan": {
+                            "stop_loss": 4346.35,
+                            "targets": [{"price": 4800.0, "distance_pct": 6.62}],
+                        },
+                        "truth_blocks": [],
+                        "entry_blockers": [],
+                        "legacy_decision_logic_removed": True,
+                    },
                     "risk_flags": [
                         "institutional_scorecard_below_entry_threshold",
                         "phase3_weak_volume_ratio_reduce_size",
@@ -980,10 +1145,12 @@ class Phase1QualityGateTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(gate["passed"], gate)
-        self.assertEqual(gate["reason"], "auto_follow_risk_flags_present")
+        self.assertTrue(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "raw_opportunity_auto_follow_ready")
         self.assertIn("institutional_scorecard_below_entry_threshold", gate["risk_flags"])
         self.assertIn("phase3_weak_volume_ratio_reduce_size", gate["risk_flags"])
+        self.assertGreaterEqual(gate["size_multiplier"], 0.75)
+        self.assertIn("institutional_scorecard_below_entry_threshold; diagnostic warning", gate["risk_warnings"])
 
     def test_auto_follow_allows_only_clean_strong_trade_plan(self) -> None:
         gate = auto_follow_quality_gate(
@@ -1008,6 +1175,51 @@ class Phase1QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["reason"], "fresh_buy_quality_passed")
         self.assertEqual(gate["auto_follow_contract"], "strict_clean_execution_v1")
         self.assertEqual(gate["min_score"], 85.0)
+
+    def test_auto_follow_blocks_repeated_failed_breakout_watch_confirmation_flag(self) -> None:
+        gate = auto_follow_quality_gate(
+            {
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "fresh_action": "BUY_NOW",
+                "overall_score_pct": 98,
+                "overall_grade": "A",
+                "confluence": 24,
+                "latest_price": 2370.0,
+                "data_readiness": {"market_region": "IN", "trade_decision_ready": True},
+                "details": {
+                    "action": "BUY",
+                    "market_region": "IN",
+                    "stop_loss": 2317.86,
+                    "targets": [{"price": 2485.0, "distance_pct": 4.85}],
+                    "risk_flags": [
+                        "watch_entry_needs_confirmation_reduce_size",
+                        "phase3_repeated_failed_breakouts_reduce_size",
+                    ],
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": True,
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": 98,
+                        "grade": "A",
+                        "setup_family": "live_momentum",
+                        "market_region": "IN",
+                        "trade_plan": {
+                            "stop_loss": 2317.86,
+                            "targets": [{"price": 2485.0, "distance_pct": 4.85}],
+                        },
+                        "truth_blocks": [],
+                        "entry_blockers": [],
+                        "legacy_decision_logic_removed": True,
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(gate["passed"], gate)
+        self.assertEqual(gate["reason"], "watch_only_risk_flags_present")
+        self.assertIn("phase3_repeated_failed_breakouts_reduce_size", gate["watch_only_flags"])
 
     def test_auto_follow_blocks_low_confluence_even_when_fresh_buy_passes(self) -> None:
         gate = auto_follow_quality_gate(
@@ -1358,6 +1570,101 @@ class Phase1FollowSafetyTests(unittest.TestCase):
         details = json.loads(row["details_json"])
         self.assertNotIn("quality_downgrade", details)
 
+    def test_tradeability_cleanup_preserves_paper_probe_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "agent.db")
+            db.init()
+            raw_entry = {
+                "version": "raw_opportunity_v1",
+                "passed": True,
+                "decision_label": "ENTRY_READY",
+                "auto_follow_ready": True,
+                "raw_score": 96,
+                "grade": "A",
+                "setup_family": "live_momentum",
+                "market_region": "US",
+                "technical_score": 0.42,
+                "trade_plan": {"stop_loss": 97, "targets": [{"price": 105, "distance_pct": 5.0}]},
+                "truth_blocks": [],
+                "entry_blockers": [],
+                "legacy_decision_logic_removed": True,
+            }
+            idea_id = self._insert_signal_idea(
+                db,
+                signal_type="BUY",
+                status="ACTIVE",
+                score=96,
+                grade="A",
+                details_extra={
+                    "action": "BUY",
+                    "market_region": "US",
+                    "technical_score": 0.42,
+                    "quote": {"price": 100, "source": "alpaca-iex-live"},
+                    "data_readiness": {
+                        "market_region": "US",
+                        "trade_decision_ready": True,
+                        "sources": {"quote": "alpaca-iex-live", "intraday": "alpaca-iex-live"},
+                    },
+                    "market_day_regime": {
+                        "state": "broad_rally",
+                        "checked_symbols": 200,
+                        "momentum_allowed": True,
+                        "selective_momentum_allowed": False,
+                    },
+                    "risk_flags": ["phase3_repeated_failed_breakouts_reduce_size"],
+                    "stop_loss": 97,
+                    "targets": [{"price": 105, "distance_pct": 5.0}],
+                    "raw_entry_model": raw_entry,
+                },
+            )
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    update signal_ideas set symbol = 'USPROBE' where id = ?
+                    """,
+                    (idea_id,),
+                )
+                conn.execute(
+                    """
+                    insert into universe (symbol, name, exchange, base_price, enabled)
+                    values ('USPROBE', 'US Probe Inc', 'NASDAQ', 100, 1)
+                    """,
+                )
+
+            downgraded = db.downgrade_non_tradeable_buy_ideas(reason="test_cleanup")
+            with db.connect() as conn:
+                row = conn.execute("select * from signal_ideas where id = ?", (idea_id,)).fetchone()
+            latest = db.latest_signal_ideas(5)[0]
+            gate = auto_follow_quality_gate(latest)
+            event_id = db.record_paper_probe_validation_event(user_id=1, idea=latest, gate=gate)
+            duplicate_id = db.record_paper_probe_validation_event(user_id=1, idea=latest, gate=gate)
+            audits = db.latest_trade_audit_events(5)
+            event = audits[0]
+            event_details = json.loads(event["details_json"])
+            with db.connect() as conn:
+                follow_count = conn.execute("select count(1) as count from user_idea_follows").fetchone()["count"]
+
+        self.assertEqual(downgraded, [])
+        self.assertEqual(row["signal_type"], "BUY")
+        self.assertEqual(row["status"], "ACTIVE")
+        details = json.loads(row["details_json"])
+        self.assertEqual(details["decision_readiness"], "paper_probe_only")
+        self.assertEqual(details["quality_downgrade"]["to"], "PAPER_PROBE")
+        self.assertTrue(details["quality_gate"]["paper_probe_eligible"], details["quality_gate"])
+        self.assertFalse(details["quality_gate"]["passed"])
+        self.assertEqual(latest["display_signal"], "Paper Probe")
+        self.assertEqual(latest["fresh_action"], "PAPER_PROBE")
+        self.assertTrue(latest["paper_probe_eligible"])
+        self.assertGreater(event_id, 0)
+        self.assertEqual(duplicate_id, event_id)
+        self.assertEqual(event["event_type"], "paper_probe_validation_candidate")
+        self.assertEqual(event["side"], "WATCH")
+        self.assertEqual(event["qty"], 0)
+        self.assertEqual(event["status"], "PAPER_PROBE_ELIGIBLE")
+        self.assertEqual(event_details["idea_id"], latest["id"])
+        self.assertIn("not an executable buy", event_details["policy"])
+        self.assertEqual(follow_count, 0)
+
     def test_manual_paper_follow_rejects_watch_or_weak_ideas(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "agent.db")
@@ -1582,7 +1889,7 @@ class Phase1FollowSafetyTests(unittest.TestCase):
                 grade="B",
             )
             now = datetime.now(timezone.utc)
-            stale_seen = (now - timedelta(hours=36)).isoformat()
+            stale_seen = (now - timedelta(hours=96)).isoformat()
             with db.connect() as conn:
                 conn.execute("update signal_ideas set symbol = 'STALEPAPER', last_seen_at = ? where id = ?", (stale_seen, stale_id))
                 conn.execute("update signal_ideas set symbol = 'REJECTPAPER' where id = ?", (rejected_id,))

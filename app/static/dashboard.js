@@ -67,7 +67,7 @@ const SETTINGS_TAB_CATEGORIES = {
   advanced: new Set(["Global Intelligence", "Institutional Feeds"]),
 };
 
-const MOBILE_MORE_VIEWS = new Set(["overview", "analyze", "rally", "sentiment", "notifications", "settings", "logs", "users"]);
+const MOBILE_MORE_VIEWS = new Set(["overview", "account", "orders", "analyze", "rally", "sentiment", "notifications", "settings", "logs", "users"]);
 
 const POSITION_MARK_IDLE_REFRESH_MS = 20000;
 const POSITION_MARK_ACTIVE_REFRESH_MS = 8000;
@@ -1562,6 +1562,26 @@ const OPPORTUNITY_STATE_COPY = {
     summary: "The idea is useful for monitoring, but it is not cleared for paper or live entry.",
     next_step: "Keep it on the watchlist and wait for stronger confirmation.",
   },
+  NO_LIVE_REGIME: {
+    label: "No live regime",
+    summary: "The market regime is not live-tradeable for this signal right now.",
+    next_step: "Keep this in review until regime, timing, and data checks are live again.",
+  },
+  REFERENCE_ONLY: {
+    label: "Reference only",
+    summary: "The signal is using delayed or reference-only data, so it is not executable.",
+    next_step: "Refresh provider data before treating this as a tradeable setup.",
+  },
+  STALE_DATA: {
+    label: "Stale data",
+    summary: "The provider data is stale and cannot support a fresh executable decision.",
+    next_step: "Wait for a fresh quote and re-check the signal state.",
+  },
+  UNKNOWN_STATE: {
+    label: "Review required",
+    summary: "The provider returned an unknown trade state. The UI treats it conservatively.",
+    next_step: "Inspect diagnostics before taking any paper or live action.",
+  },
   BUY_CANDIDATE: {
     label: "Buy candidate",
     summary: "Close to actionable, but one remaining confirmation or score/risk check is still missing.",
@@ -1658,6 +1678,9 @@ function tradeStateCode(row = {}) {
     signalState.trade_state,
   ].map((value) => String(value || "").toUpperCase()).filter(Boolean);
   const has = (pattern) => candidates.some((value) => value.includes(pattern));
+  if (has("NO_LIVE_REGIME") || has("NO LIVE REGIME") || has("REGIME_BLOCK")) return "NO_LIVE_REGIME";
+  if (has("STALE")) return "STALE_DATA";
+  if (has("DELAYED") || has("REFERENCE_ONLY") || has("REFERENCE ONLY")) return "REFERENCE_ONLY";
   if (has("PAPER_PROBE") || has("PAPER_VALIDATION")) return "PAPER_PROBE_ELIGIBLE";
   if (has("EXECUTABLE_BUY") || candidates.includes("BUY_NOW")) return "EXECUTABLE_BUY";
   if (has("BLOCKED") || has("NO_TRADE") || has("LIVE_BLOCKED")) return "BLOCKED";
@@ -1669,16 +1692,38 @@ function tradeStateCode(row = {}) {
 function tradeStateLabel(row = {}, fallback = "") {
   const code = tradeStateCode(row);
   const mapped = OPPORTUNITY_STATE_COPY[code]?.label;
-  return mapped || fallback || OPPORTUNITY_STATE_COPY[row.opportunity_state]?.label || "";
+  if (mapped) return mapped;
+  if (code) return code === "UNKNOWN" ? OPPORTUNITY_STATE_COPY.UNKNOWN_STATE.label : humanLabel(code);
+  return fallback || OPPORTUNITY_STATE_COPY[row.opportunity_state]?.label || "";
 }
 
 function tradeStateCss(row = {}, fallback = "neutral") {
   const code = tradeStateCode(row);
   if (code === "EXECUTABLE_BUY") return "executable-buy";
   if (code === "PAPER_PROBE_ELIGIBLE") return "paper-probe";
-  if (code === "WATCH_ONLY") return "watch-only";
+  if (code === "WATCH_ONLY" || code === "NO_LIVE_REGIME" || code === "REFERENCE_ONLY" || code === "STALE_DATA") return "watch-only";
   if (code === "BLOCKED" || code === "REJECTED") return "blocked";
+  if (code) return "state-review";
   return cssToken(code || fallback);
+}
+
+function decisionStatePresentation(row = {}) {
+  const rawAction = String(row.action || "HOLD").toUpperCase();
+  const stateCode = tradeStateCode(row);
+  if (stateCode) {
+    return {
+      label: tradeStateLabel(row, rawAction),
+      className: tradeStateCss(row, rawAction),
+      rawAction,
+      stateCode,
+    };
+  }
+  return {
+    label: rawAction,
+    className: cssToken(rawAction),
+    rawAction,
+    stateCode: "",
+  };
 }
 
 function isExecutableTradeRow(row = {}) {
@@ -7020,6 +7065,7 @@ function renderOverviewDecisions(rows, options = {}) {
 
 function decisionFeedCardHtml(row, index, compact = false) {
   const action = String(row.action || "HOLD").toLowerCase();
+  const tradeState = decisionStatePresentation(row);
   const score = decisionScorePercent(row);
   const tech = Number(row.technical_score || 0);
   const sentiment = Number(row.sentiment_score || 0);
@@ -7027,14 +7073,17 @@ function decisionFeedCardHtml(row, index, compact = false) {
   const reason = shortValue(opportunity.summary || readableDecisionReason(row), compact ? 150 : 240);
   const initials = symbolInitials(row.symbol);
   const scoreLabel = row.rank_reason || row.rank_score_source || "Score";
-  return `<article class="decision-feed-card action-${escapeHtml(action)}" role="button" tabindex="0" data-index="${index}">
+  const opportunityLabel = opportunity.label && opportunity.label !== tradeState.label
+    ? `<span class="tag neutral">${escapeHtml(opportunity.label)}</span>`
+    : "";
+  return `<article class="decision-feed-card action-${escapeHtml(action)} state-${escapeHtml(tradeState.className)}" role="button" tabindex="0" data-index="${index}">
     <div class="decision-logo">${escapeHtml(initials)}</div>
     <div class="decision-main">
       <div class="decision-title-row">
         <strong>${escapeHtml(displayValue(row.symbol, "Symbol"))}</strong>
         ${row.company_name ? `<small>${escapeHtml(row.company_name)}</small>` : ""}
-        <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
-        ${opportunity.label ? `<span class="tag neutral">${escapeHtml(opportunity.label)}</span>` : ""}
+        <span class="tag ${escapeHtml(tradeState.className)}">${escapeHtml(tradeState.label)}</span>
+        ${opportunityLabel}
         <span class="decision-time">${escapeHtml(fmtTime(row.ts))}</span>
       </div>
       <p>${escapeHtml(reason)}</p>
@@ -7059,6 +7108,7 @@ function renderDecisionDetailPanel(row = {}) {
   const full = decisionFullSpectrum(audit);
   const market = rowMarket(row);
   const action = String(row.action || audit.final_action || "HOLD").toLowerCase();
+  const tradeState = decisionStatePresentation(row);
   const opportunity = opportunityStatePayload(row);
   const confidence = Math.max(0, Math.min(100, Number(row.confidence || audit.confidence || 0) * 100));
   const score = audit.score_breakdown || {};
@@ -7075,7 +7125,7 @@ function renderDecisionDetailPanel(row = {}) {
     ["Quality", `${fmtPct(Number(score.combined ?? row.combined_score ?? 0) * 100)} signal quality · ${full.confluence_score?.total ?? row.confluence ?? "-"} confirmations`],
     ["Checks", failedGatesFromAudit(audit, context).length ? `${failedGatesFromAudit(audit, context).length} item(s) need improvement` : "trade checks clear"],
     ["Signal", audit.llm_error ? "completed safely with rules" : humanLabel(plainDecisionPath(audit.decision_path || "deterministic_audit"))],
-    ["Decision", `${row.action || "HOLD"} · ${fmtNumber(confidence)}% conviction`],
+    ["Decision", `${tradeState.label} · ${fmtNumber(confidence)}% conviction`],
   ];
   panel.innerHTML = `
     <section class="decision-detail-hero">
@@ -7085,7 +7135,7 @@ function renderDecisionDetailPanel(row = {}) {
         <h3>${escapeHtml(displayValue(row.symbol, "Symbol"))}</h3>
         <p>${fmtMarketMoney(row.price, market)} · ${escapeHtml(strategyLabel)} · ${escapeHtml(fmtTime(row.ts))}</p>
       </div>
-      <span class="tag ${escapeHtml(action)}">${escapeHtml(row.action || "HOLD")}</span>
+      <span class="tag ${escapeHtml(tradeState.className)}">${escapeHtml(tradeState.label)}</span>
       <div class="score-ring large decision-conviction-ring" style="--score:${confidence}"><strong>${fmtNumber(confidence)}</strong><small>%</small></div>
     </section>
     <section class="decision-radar-section">

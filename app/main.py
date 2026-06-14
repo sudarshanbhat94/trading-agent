@@ -4036,7 +4036,11 @@ async def opportunity_scan_snapshot(request: Request) -> dict[str, Any]:
 @app.get("/api/decision-diagnostics")
 async def decision_diagnostics_snapshot(request: Request) -> dict[str, Any]:
     require_user(request, settings, db)
-    return db.get_state("decision_diagnostics", {})
+    payload = db.get_state("decision_diagnostics", {})
+    by_market = db.get_state("decision_diagnostics_by_market", {})
+    if isinstance(payload, dict) and isinstance(by_market, dict) and by_market:
+        return {**payload, "by_market": by_market}
+    return payload
 
 
 @app.get("/api/sector-rotation")
@@ -5543,7 +5547,12 @@ def _auto_follow_buy_ideas_for_user(user: dict[str, Any], decisions: list[Any]) 
         seen_symbols.add(symbol)
         quality_gate = auto_follow_quality_gate(idea)
         if not quality_gate.get("passed"):
-            summary["skipped"].append({"symbol": symbol, **quality_skip_payload(quality_gate)})
+            skip_payload = quality_skip_payload(quality_gate)
+            if skip_payload.get("paper_probe_eligible"):
+                event_id = db.record_paper_probe_validation_event(user_id=user_id, idea=idea, gate=quality_gate)
+                if event_id:
+                    skip_payload["paper_probe_audit_event_id"] = event_id
+            summary["skipped"].append({"symbol": symbol, **skip_payload})
             continue
         reentry_block = db.recent_user_symbol_exit(
             user_id,
@@ -5708,7 +5717,8 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     grade = str(idea.get("overall_grade") or details.get("overall_grade") or "").upper()
     if score < 70 or grade not in {"A", "B"}:
         return False
-    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
+    fresh_action = str(idea.get("fresh_action") or "").upper()
+    if fresh_action not in {"BUY_NOW", "PAPER_PROBE"}:
         return False
     if symbol in fresh_buy_symbols:
         return True

@@ -11,6 +11,7 @@ REGIME_SELECTIVE_RALLY = "selective_rally"
 REGIME_NEUTRAL_CHOP = "neutral_chop"
 REGIME_FADE_RISK = "fade_risk"
 REGIME_RISK_OFF = "risk_off"
+REGIME_NO_LIVE_DATA = "no_live_regime"
 
 
 def compute_market_day_regimes(
@@ -115,6 +116,32 @@ def compute_market_day_regime(
             sector_counts[sector]["advancers"] += 1
         if day_change >= 3.0:
             sector_counts[sector]["strong"] += 1
+
+    if checked <= 0:
+        return {
+            "enabled": False,
+            "market_region": str(market_region or "IN").upper(),
+            "state": REGIME_NO_LIVE_DATA,
+            "score": 0.0,
+            "momentum_allowed": False,
+            "selective_momentum_allowed": False,
+            "reasons": ["no live quote evidence available for this market; do not classify as risk-off"],
+            "checked_symbols": 0,
+            "advancers": 0,
+            "decliners": 0,
+            "advancer_pct": 0.0,
+            "above_open_pct": 0.0,
+            "fade_pct": 0.0,
+            "strong_gain_pct": 0.0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "new_high_low_pressure": 0.0,
+            "breadth_regime": str(market_breadth.get("breadth_regime") or "unavailable").lower(),
+            "breadth_advance_decline_ratio": None,
+            "breadth_pct_above_50dma": None,
+            "sector_participation": {},
+            "allowed_setup_families": [],
+        }
 
     breadth_regime = str(market_breadth.get("breadth_regime") or "neutral").lower()
     breadth_ad_ratio = _num(market_breadth.get("advance_decline_ratio"))

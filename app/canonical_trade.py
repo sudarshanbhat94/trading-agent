@@ -8,6 +8,7 @@ from .signal_quality import (
     FRESH_BUY_ALLOWED_GRADES,
     FRESH_BUY_MIN_SCORE,
     FRESH_BUY_WINDOW_MINUTES,
+    PAPER_PROBE_ELIGIBLE,
     auto_follow_quality_gate,
     trade_readiness_gate,
 )
@@ -41,6 +42,9 @@ def canonical_trade_contract(item: dict[str, Any]) -> dict[str, Any]:
     """Return the complete trade contract for one idea/decision row."""
 
     normalized = _normalized_item(item)
+    details = _details(normalized)
+    stored_quality_gate = details.get("auto_follow_gate") if isinstance(details.get("auto_follow_gate"), dict) else details.get("quality_gate")
+    stored_quality_gate = stored_quality_gate if isinstance(stored_quality_gate, dict) else {}
     quality_gate = canonical_trade_readiness_gate(normalized)
     signal_state = canonical_signal_state_payload(normalized, quality_gate=quality_gate)
     setup_bucket = canonical_setup_bucket_payload(normalized, signal_state, quality_gate)
@@ -62,6 +66,10 @@ def canonical_trade_contract(item: dict[str, Any]) -> dict[str, Any]:
         "trade_state": signal_state.get("trade_state"),
         "setup_bucket_code": setup_bucket.get("bucket"),
         "paper_follow_eligible": bool(auto_follow_gate.get("passed")),
+        "paper_probe_eligible": bool(
+            quality_gate.get("paper_probe_eligible") or auto_follow_gate.get("paper_probe_eligible")
+            or stored_quality_gate.get("paper_probe_eligible")
+        ),
         "buy_now": signal_state.get("fresh_action") == "BUY_NOW" and bool(quality_gate.get("passed")),
     }
 
@@ -91,6 +99,9 @@ def canonical_signal_state_payload(
     follow_exited = follow_status in {"EXITED", "REJECTED", "CANCELLED", "CANCELED"}
     fresh_buy_recent = _recent_dt(item.get("last_seen_at"))
     readiness = quality_gate if isinstance(quality_gate, dict) else canonical_trade_readiness_gate(item)
+    stored_quality_gate = details.get("auto_follow_gate") if isinstance(details.get("auto_follow_gate"), dict) else details.get("quality_gate")
+    stored_quality_gate = stored_quality_gate if isinstance(stored_quality_gate, dict) else {}
+    paper_probe_gate = readiness if readiness.get("paper_probe_eligible") else stored_quality_gate
 
     if status == "STOP_HIT" or lifecycle == "stopped":
         display_signal = "Stopped"
@@ -129,6 +140,10 @@ def canonical_signal_state_payload(
             display_signal = "Already Active"
             fresh_action = "NO_FRESH_ADD"
             reason = why_changed.get("summary") or "Already active; repeated BUY is monitor/no fresh add during cooldown."
+        elif paper_probe_gate.get("paper_probe_eligible") and not paper_probe_gate.get("passed"):
+            display_signal = "Paper Probe"
+            fresh_action = "PAPER_PROBE"
+            reason = paper_probe_gate.get("paper_probe_reason") or "Candidate is eligible only for forward paper validation."
         elif not readiness.get("passed"):
             display_signal = "Watch"
             fresh_action = "WATCH"
@@ -156,8 +171,11 @@ def canonical_signal_state_payload(
             "Already Active": "POSITION_MONITOR",
             "Position Monitor": "POSITION_MONITOR",
             "Watch": "WATCH",
+            "Paper Probe": PAPER_PROBE_ELIGIBLE,
         }.get(display_signal, "POSITION_MONITOR")
         class_name = "warning" if display_signal == "Watch" else "open"
+        if display_signal == "Paper Probe":
+            class_name = "warning"
         if drawdown_review["risk_review"]:
             trade_state = "RISK_REVIEW"
             class_name = "warning"
@@ -198,6 +216,7 @@ def canonical_signal_state_payload(
         "fresh_action": fresh_action,
         "fresh_action_label": {
             "BUY_NOW": "Actionable",
+            "PAPER_PROBE": "Paper Probe",
             "NO_FRESH_ADD": "No Fresh Add",
             "WATCH": "Watch",
             "EXIT": "Exit",
@@ -238,6 +257,12 @@ def canonical_setup_bucket_payload(
         return {"bucket": "AVOID", "label": "Avoid", "reason": "Idea is closed, invalidated, or in exit mode."}
     if state.get("trade_state") == "RISK_REVIEW":
         return {"bucket": "RISK_REVIEW", "label": "Risk Review", "reason": "Adverse move is outside normal noise; do not add without review."}
+    if state.get("fresh_action") == "PAPER_PROBE" or state.get("trade_state") == PAPER_PROBE_ELIGIBLE:
+        return {
+            "bucket": "PAPER_PROBE",
+            "label": "Paper Probe",
+            "reason": "Forward paper-validation candidate only; not executable and not live-order eligible.",
+        }
     if state.get("fresh_action") == "WATCH" or state.get("trade_state") == "WATCH":
         return {"bucket": "WATCH", "label": "Watch", "reason": "Setup is not actionable yet."}
 
@@ -415,6 +440,8 @@ def _secondary_blockers(item: dict[str, Any], gate: dict[str, Any], *, exclude: 
     for value in gate.get("risk_flags") or []:
         blockers.append(str(value or "").strip().lower())
     for value in gate.get("missing_data") or []:
+        blockers.append(str(value or "").strip().lower())
+    for value in gate.get("paper_probe_blockers") or []:
         blockers.append(str(value or "").strip().lower())
     data_readiness = _field(item, "data_readiness")
     if isinstance(data_readiness, dict):

@@ -21,6 +21,12 @@ AUTO_FOLLOW_MIN_CONFLUENCE = ACTIONABLE_MIN_CONFLUENCE
 AUTO_FOLLOW_MIN_REWARD_RISK = 1.5
 AUTO_FOLLOW_MIN_CONFIDENCE = 0.35
 AUTO_FOLLOW_MIN_TECHNICAL_SCORE = 0.0
+PAPER_PROBE_ELIGIBLE = "PAPER_PROBE_ELIGIBLE"
+PAPER_PROBE_CONTRACT = "us_live_momentum_paper_probe_v1"
+PAPER_PROBE_MIN_SCORE = 94.0
+PAPER_PROBE_MIN_CONFLUENCE = 18.0
+PAPER_PROBE_MIN_CONFIDENCE = 0.35
+PAPER_PROBE_MIN_TECHNICAL_SCORE = 0.35
 CAUTION_STOP_RISK_PCT = 5.5
 HARD_STOP_RISK_PCT = 9.0
 CAUTION_T1_DISTANCE_PCT = 10.0
@@ -60,6 +66,7 @@ _PROFITABILITY_BLOCKED_AUTO_FOLLOW_STRATEGIES = {
     # and should remain manual/watch-only until a proof pass re-enables them.
     "52_week_high_volume_breakout",
     "big_runner_watch",
+    "breakout",
     "btst_buy_candidate",
     "early_alpha_ignition",
     "early_alpha_watch",
@@ -74,6 +81,21 @@ _PROFITABILITY_BLOCKED_AUTO_FOLLOW_STRATEGIES = {
     "vwap_reclaim_order_flow",
     "watchlist_candidate",
 }
+_RISK_FLAG_SIZE_REDUCER_TOKENS = (
+    "reduce_size",
+    "small_size",
+    "probe",
+    "weak_volume",
+    "supporting_market_data",
+)
+_RISK_FLAG_WATCH_ONLY_TOKENS = (
+    "watch_entry_needs_confirmation",
+    "repeated_failed_breakouts",
+    "timeframe_conflict_no_new_longs",
+    "stage_no_new_longs",
+    "delivery_conflict",
+    "distribution",
+)
 _WAIT_ENTRY_REASON_TOKENS = (
     "raw_opportunity_watch",
     "setup_requires_live_confirmation",
@@ -82,6 +104,28 @@ _WAIT_ENTRY_REASON_TOKENS = (
     "wait_for_",
     "avoid",
 )
+_PAPER_PROBE_RECOVERABLE_REASONS = {
+    "technical_score_below_0_50",
+    "watch_only_risk_flags_present",
+}
+_PAPER_PROBE_HARD_RISK_TOKENS = (
+    "hard_block",
+    "no_new_longs",
+    "illiquid",
+    "thin_liquidity",
+    "asm_surveillance",
+    "delivery_conflict",
+    "distribution",
+    "climax",
+    "circuit",
+    "earnings_lockout",
+    "corporate_event_risk",
+    "stale",
+    "delayed",
+    "reference_price_volume_only",
+)
+_US_REALTIME_QUOTE_TOKENS = ("alpaca", "iex", "polygon", "sip", "broker", "ibkr", "live")
+_DELAYED_OR_REFERENCE_TOKENS = ("yahoo", "delayed", "reference", "prior", "previous", "eod")
 
 
 def fresh_buy_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -138,7 +182,7 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         )
     hard_entry_veto = _entry_hard_veto(item, details)
     if hard_entry_veto:
-        return hard_entry_veto
+        return _with_paper_probe_eligibility(hard_entry_veto, item, details, raw)
     decision_label = _upper(raw.get("decision_label"))
     if decision_label != "ENTRY_READY" or raw.get("auto_follow_ready") is not True:
         return _blocked(
@@ -168,6 +212,16 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
             market_region=market_region,
             raw_opportunity_version=raw.get("version"),
         )
+    risk_policy = _risk_flag_policy(risk_flags)
+    if risk_policy["watch_only_flags"]:
+        return _with_paper_probe_eligibility(_blocked(
+            "watch_only_risk_flags_present",
+            "Watch-only risk flags are present; this idea needs a cleaner confirmation before it can become executable.",
+            risk_flags=risk_flags,
+            watch_only_flags=risk_policy["watch_only_flags"],
+            market_region=market_region,
+            raw_opportunity_version=raw.get("version"),
+        ), item, details, raw, risk_flags=risk_flags)
     raw_score = _number(raw.get("raw_score"), item.get("overall_score_pct"), details.get("overall_score_pct"))
     grade = _upper(raw.get("grade") or item.get("overall_grade") or details.get("overall_grade")) or "B"
     return {
@@ -187,10 +241,10 @@ def trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
         "min_confluence": None,
         "allowed_grades": [],
         "risk_flags": risk_flags,
-        "risk_warnings": [],
+        "risk_warnings": risk_policy["warnings"],
         "missing_data": [],
         "opportunity_probe": False,
-        "size_multiplier": 1.0,
+        "size_multiplier": risk_policy["size_multiplier"],
         "data_readiness": item.get("data_readiness") if isinstance(item.get("data_readiness"), dict) else details.get("data_readiness"),
         "legacy_entry_gates_removed": True,
         "raw_opportunity_version": raw.get("version") if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS else None,
@@ -422,12 +476,26 @@ def _legacy_trade_readiness_gate(item: dict[str, Any]) -> dict[str, Any]:
 def auto_follow_quality_gate(item: dict[str, Any]) -> dict[str, Any]:
     gate = trade_readiness_gate(item)
     if not gate.get("passed"):
+        fresh_action = _upper(item.get("fresh_action") or _details(item).get("fresh_action"))
+        if fresh_action == "PAPER_PROBE" and gate.get("paper_probe_eligible") is True:
+            return {**gate, "fresh_action": fresh_action}
         return gate
     details = _details(item)
     raw = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
     if raw.get("version") in _RAW_OPPORTUNITY_VERSIONS:
         fresh_action = _upper(item.get("fresh_action") or details.get("fresh_action"))
         if fresh_action and fresh_action != "BUY_NOW":
+            if fresh_action == "PAPER_PROBE":
+                stored_gate = details.get("auto_follow_gate") if isinstance(details.get("auto_follow_gate"), dict) else details.get("quality_gate")
+                if isinstance(stored_gate, dict) and stored_gate.get("paper_probe_eligible") is True:
+                    return {
+                        **stored_gate,
+                        "passed": False,
+                        "fresh_action": fresh_action,
+                        "message": stored_gate.get("paper_probe_reason")
+                        or stored_gate.get("message")
+                        or "Paper-probe validation candidate only; not executable.",
+                    }
             return _blocked(
                 "not_actionable_fresh_state",
                 "Auto-paper only follows ideas marked Actionable by the current tradeability state.",
@@ -638,10 +706,12 @@ def _auto_follow_execution_contract(
             **base_payload,
         )
 
-    if risk_flags:
+    severe_flags = _severe_risk_flags(risk_flags)
+    if severe_flags:
         return _blocked(
-            "auto_follow_risk_flags_present",
-            "Auto-paper only follows clean BUY ideas; risk-flagged ideas stay manual/watch only.",
+            "auto_follow_severe_risk_flags",
+            "Auto-paper will not enter ideas that the safety manager would immediately exit.",
+            severe_risk_flags=severe_flags,
             **base_payload,
         )
 
@@ -664,7 +734,7 @@ def _auto_follow_execution_contract(
     risk_warnings = [str(item or "").strip() for item in gate.get("risk_warnings") or [] if str(item or "").strip()]
     missing_data = [str(item or "").strip() for item in gate.get("missing_data") or [] if str(item or "").strip()]
     size_multiplier = _number(gate.get("size_multiplier")) or 1.0
-    if gate.get("opportunity_probe") or risk_warnings or missing_data or size_multiplier < 0.75:
+    if gate.get("opportunity_probe") or missing_data or size_multiplier < 0.75:
         return _blocked(
             "auto_follow_reduced_size_or_probe",
             "Auto-paper does not enter probe, reduced-size, or incomplete-data ideas without manual review.",
@@ -736,6 +806,204 @@ def _auto_follow_execution_contract(
         )
 
     return None
+
+
+def _with_paper_probe_eligibility(
+    gate: dict[str, Any],
+    item: dict[str, Any],
+    details: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    risk_flags: list[str] | None = None,
+) -> dict[str, Any]:
+    """Annotate strict blocks that are safe enough for paper-only validation."""
+
+    probe = _paper_probe_eligibility(gate, item, details, raw, risk_flags=risk_flags)
+    if probe.get("paper_probe_eligible"):
+        return {**gate, **probe}
+    if probe.get("paper_probe_blockers"):
+        return {
+            **gate,
+            **probe,
+            "paper_probe_eligible": False,
+            "paper_probe_contract": PAPER_PROBE_CONTRACT,
+        }
+    return gate
+
+
+def _paper_probe_eligibility(
+    gate: dict[str, Any],
+    item: dict[str, Any],
+    details: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    risk_flags: list[str] | None = None,
+) -> dict[str, Any]:
+    reason = str(gate.get("reason") or "").strip()
+    if reason not in _PAPER_PROBE_RECOVERABLE_REASONS:
+        return {}
+
+    blockers: list[str] = []
+    market_region = _market_region(item, details, raw)
+    if market_region != "US":
+        blockers.append("paper_probe_us_only")
+
+    setup_family = str(raw.get("setup_family") or "").strip().lower()
+    if setup_family != "live_momentum":
+        blockers.append("paper_probe_live_momentum_only")
+
+    if is_duplicate_active_buy_refresh(item):
+        blockers.append("duplicate_active_buy_cooldown")
+
+    if _us_etf_or_fund_watch_only(item, details):
+        blockers.append("us_etf_or_fund_watch_only")
+
+    scan = item.get("opportunity_scan") if isinstance(item.get("opportunity_scan"), dict) else details.get("opportunity_scan")
+    scan = scan if isinstance(scan, dict) else {}
+    stale_reason = _stale_data_reason(item, details, scan)
+    if stale_reason:
+        blockers.append(stale_reason)
+
+    quote_source = _quote_source_text(item, details, raw)
+    if not _us_realtime_quote_source(quote_source):
+        blockers.append("paper_probe_requires_realtime_us_quote")
+
+    regime = _market_day_regime_payload(item, details, raw)
+    regime_state = str(regime.get("state") or "").strip().lower()
+    if regime_state not in {"broad_rally", "selective_rally"}:
+        blockers.append("paper_probe_regime_not_supportive")
+    if regime_state == "no_live_regime" or int(_number(regime.get("checked_symbols")) or 0) <= 0:
+        blockers.append("paper_probe_no_live_regime")
+    if regime_state == "broad_rally":
+        regime_allowed = regime.get("momentum_allowed") is not False
+    else:
+        regime_allowed = bool(regime.get("selective_momentum_allowed") or regime.get("momentum_allowed"))
+    if not regime_allowed:
+        blockers.append("paper_probe_regime_momentum_not_allowed")
+
+    risk_flags = risk_flags if isinstance(risk_flags, list) else _risk_flags(item, details)
+    severe_flags = _severe_risk_flags(risk_flags)
+    if severe_flags:
+        blockers.append("severe_risk_flags_present")
+    hard_risk_flags = _paper_probe_hard_risk_flags(risk_flags)
+    if hard_risk_flags:
+        blockers.append("paper_probe_hard_risk_flags_present")
+
+    raw_score = _number(raw.get("raw_score"), item.get("overall_score_pct"), details.get("overall_score_pct")) or 0.0
+    if raw_score < PAPER_PROBE_MIN_SCORE:
+        blockers.append("paper_probe_score_below_minimum")
+
+    confluence = _number(item.get("confluence"), details.get("confluence"))
+    if confluence is None or confluence < PAPER_PROBE_MIN_CONFLUENCE:
+        blockers.append("paper_probe_confluence_below_minimum")
+
+    confidence = _confidence_score(item, details, raw)
+    if confidence is None or confidence < PAPER_PROBE_MIN_CONFIDENCE:
+        blockers.append("paper_probe_confidence_below_minimum")
+
+    technical_score = _technical_score(item, details, raw)
+    if technical_score is None or technical_score < PAPER_PROBE_MIN_TECHNICAL_SCORE:
+        blockers.append("paper_probe_technical_score_below_floor")
+
+    execution_details = _details_with_raw_trade_plan(details, raw)
+    execution_gate = {
+        "overall_score_pct": raw_score,
+        "overall_grade": _upper(raw.get("grade") or item.get("overall_grade") or details.get("overall_grade")) or "A",
+        "risk_warnings": [],
+        "missing_data": [],
+        "size_multiplier": 1.0,
+        "opportunity_probe": False,
+    }
+    execution_block = _auto_follow_execution_contract(item, execution_details, execution_gate, risk_flags)
+    if execution_block:
+        blockers.append(str(execution_block.get("reason") or "paper_probe_execution_plan_failed"))
+
+    if blockers:
+        return {
+            "paper_probe_eligible": False,
+            "paper_probe_blockers": list(dict.fromkeys(blockers)),
+            "paper_probe_contract": PAPER_PROBE_CONTRACT,
+            "paper_probe_market_region": market_region or None,
+            "paper_probe_severe_risk_flags": severe_flags,
+            "paper_probe_hard_risk_flags": hard_risk_flags,
+            "paper_probe_recovered_blocker": reason,
+            "paper_probe_quote_source": quote_source or None,
+        }
+
+    return {
+        "paper_probe_eligible": True,
+        "paper_probe_state": PAPER_PROBE_ELIGIBLE,
+        "paper_probe_contract": PAPER_PROBE_CONTRACT,
+        "paper_probe_reason": (
+            "US live momentum is blocked from executable auto-follow, but it passes the stricter paper-only "
+            "validation recovery contract."
+        ),
+        "paper_probe_market_region": market_region,
+        "paper_probe_min_score": PAPER_PROBE_MIN_SCORE,
+        "paper_probe_min_confluence": PAPER_PROBE_MIN_CONFLUENCE,
+        "paper_probe_min_confidence": PAPER_PROBE_MIN_CONFIDENCE,
+        "paper_probe_min_technical_score": PAPER_PROBE_MIN_TECHNICAL_SCORE,
+        "paper_probe_recovered_blocker": reason,
+        "paper_probe_quote_source": quote_source or None,
+    }
+
+
+def _paper_probe_hard_risk_flags(risk_flags: list[str]) -> list[str]:
+    hard: list[str] = []
+    for flag in risk_flags:
+        normalized = str(flag or "").strip().lower()
+        if not normalized:
+            continue
+        if any(token in normalized for token in _PAPER_PROBE_HARD_RISK_TOKENS):
+            hard.append(normalized)
+    return list(dict.fromkeys(hard))
+
+
+def _quote_source_text(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> str:
+    values: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip().lower()
+        if text and text not in values:
+            values.append(text)
+
+    for source in (item, details):
+        quote = source.get("quote") if isinstance(source, dict) and isinstance(source.get("quote"), dict) else {}
+        if quote.get("source"):
+            add(quote.get("source"))
+        readiness = source.get("data_readiness") if isinstance(source, dict) and isinstance(source.get("data_readiness"), dict) else {}
+        sources = readiness.get("sources") if isinstance(readiness.get("sources"), dict) else {}
+        for key in ("quote", "intraday", "minute", "daily"):
+            if sources.get(key):
+                add(sources.get(key))
+        scan = source.get("opportunity_scan") if isinstance(source, dict) and isinstance(source.get("opportunity_scan"), dict) else {}
+        quality = scan.get("data_quality") if isinstance(scan.get("data_quality"), dict) else {}
+        for key in ("quote_source", "source", "data_source"):
+            if quality.get(key):
+                add(quality.get(key))
+    inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
+    if inputs.get("quote_source"):
+        add(inputs.get("quote_source"))
+    return " ".join(values)
+
+
+def _us_realtime_quote_source(source_text: str) -> bool:
+    text = str(source_text or "").strip().lower()
+    if not text:
+        return False
+    if any(token in text for token in _DELAYED_OR_REFERENCE_TOKENS):
+        return False
+    return any(token in text for token in _US_REALTIME_QUOTE_TOKENS)
+
+
+def _market_day_regime_payload(item: dict[str, Any], details: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
+    for source in (item, details):
+        if isinstance(source.get("market_day_regime"), dict):
+            return source["market_day_regime"]
+    diagnostics = raw.get("diagnostics") if isinstance(raw.get("diagnostics"), dict) else {}
+    if isinstance(diagnostics.get("market_day_regime"), dict):
+        return diagnostics["market_day_regime"]
+    return {}
 
 
 def active_follow_safety_gate(item: dict[str, Any]) -> dict[str, Any]:
@@ -847,7 +1115,7 @@ def is_duplicate_active_buy_refresh(item: dict[str, Any]) -> bool:
 
 
 def quality_skip_payload(gate: dict[str, Any]) -> dict[str, Any]:
-    return {
+    payload = {
         "reason": "phase1_quality_gate",
         "quality_reason": gate.get("reason"),
         "quality_message": gate.get("message"),
@@ -863,6 +1131,22 @@ def quality_skip_payload(gate: dict[str, Any]) -> dict[str, Any]:
         "opportunity_probe": gate.get("opportunity_probe"),
         "fresh_action": gate.get("fresh_action"),
     }
+    paper_probe_keys = (
+        "paper_probe_eligible",
+        "paper_probe_state",
+        "paper_probe_contract",
+        "paper_probe_reason",
+        "paper_probe_blockers",
+        "paper_probe_hard_risk_flags",
+        "paper_probe_severe_risk_flags",
+        "paper_probe_recovered_blocker",
+        "paper_probe_quote_source",
+        "paper_probe_market_region",
+    )
+    for key in paper_probe_keys:
+        if key in gate:
+            payload[key] = gate.get(key)
+    return payload
 
 
 def quality_size_multiplier(gate: dict[str, Any], *, default: float = 1.0) -> float:
@@ -1298,6 +1582,29 @@ def _severe_risk_flags(
         if any(token in normalized for token in severe_tokens):
             severe.append(normalized)
     return severe
+
+
+def _risk_flag_policy(risk_flags: list[str]) -> dict[str, Any]:
+    warnings: list[str] = []
+    size_multiplier = 1.0
+    watch_only_flags: list[str] = []
+    for flag in risk_flags:
+        normalized = str(flag or "").strip().lower()
+        if not normalized:
+            continue
+        if any(token in normalized for token in _RISK_FLAG_WATCH_ONLY_TOKENS):
+            watch_only_flags.append(normalized)
+            continue
+        if any(token in normalized for token in _RISK_FLAG_SIZE_REDUCER_TOKENS):
+            size_multiplier = min(size_multiplier, 0.75)
+            warnings.append(f"{normalized}; use reduced size")
+            continue
+        warnings.append(f"{normalized}; diagnostic warning")
+    return {
+        "warnings": list(dict.fromkeys(warnings)),
+        "watch_only_flags": list(dict.fromkeys(watch_only_flags)),
+        "size_multiplier": round(max(size_multiplier, MIN_SIZE_MULTIPLIER), 4),
+    }
 
 
 def _opportunity_probe_hard_risk_tokens() -> tuple[str, ...]:

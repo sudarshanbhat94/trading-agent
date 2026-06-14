@@ -109,6 +109,7 @@ def build_pre_catalyst_watchlist(
         for item in (previous_state.get("candidates") if isinstance(previous_state, dict) else []) or []
         if isinstance(item, dict)
     }
+    missed_move_memory_by_symbol = _missed_move_memory_by_symbol(previous_state)
 
     candidates: list[OpportunityCandidate] = []
     log_events: list[dict[str, Any]] = []
@@ -166,6 +167,12 @@ def build_pre_catalyst_watchlist(
             sector_leader,
             market_action_history=action_history,
         )
+        missed_move_memory = missed_move_memory_by_symbol.get(symbol)
+        if missed_move_memory:
+            momentum_expansion = _apply_missed_move_memory_to_expansion(
+                momentum_expansion,
+                missed_move_memory,
+            )
         score_profile = _pre_catalyst_score(
             row=row,
             quote=quote,
@@ -282,11 +289,81 @@ def build_pre_catalyst_watchlist(
         "sector_rotation_leaders": list(sector_leaders.values())[:candidate_limit],
         "market_action_history": market_action_history,
         "missed_move_review": missed_move_review,
+        "missed_move_memory_count": len(missed_move_memory_by_symbol),
         "label_counts": _counts([candidate.label for candidate in candidates] + [item.get("label") for item in live_confirmations]),
         "data_gaps": data_gaps,
         "log_events": log_events[-80:],
     }
     return payload
+
+
+def _missed_move_memory_by_symbol(previous_state: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    previous_state = previous_state if isinstance(previous_state, dict) else {}
+    review = previous_state.get("missed_move_review") if isinstance(previous_state.get("missed_move_review"), dict) else {}
+    rows = review.get("items") if isinstance(review.get("items"), list) else []
+    output: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        status = str(row.get("status") or "").strip()
+        if status not in {"absent_from_prior_watchlist", "caught_same_cycle", "stale_watch_before_move"}:
+            continue
+        event_types = [str(item).upper() for item in row.get("event_types") or [] if str(item or "").strip()]
+        market_action = row.get("market_action") if isinstance(row.get("market_action"), dict) else {}
+        move_pct = _float_or_none(row.get("move_pct")) or 0.0
+        volume_multiplier = _float_or_none(market_action.get("volume_multiplier")) or 0.0
+        event_bonus = 0.0
+        if "TOP_GAINER" in event_types or move_pct >= 5.0:
+            event_bonus += 0.04
+        if "VOLUME_SHOCKER" in event_types or volume_multiplier >= 3.0:
+            event_bonus += 0.04
+        if {"52_WEEK_HIGH", "ALL_TIME_HIGH", "PRICE_SHOCKER"} & set(event_types):
+            event_bonus += 0.04
+        output[symbol] = {
+            "symbol": symbol,
+            "status": status,
+            "move_pct": _round(move_pct),
+            "event_types": event_types,
+            "volume_multiplier": _round(volume_multiplier),
+            "score_floor": round(_clamp(0.60 + event_bonus, 0.0, 0.74), 4),
+            "source": "missed_move_review_feedback",
+            "reason": row.get("reason") or "missed-move review flagged this symbol for earlier watchlist coverage",
+        }
+    return output
+
+
+def _apply_missed_move_memory_to_expansion(
+    momentum_expansion: dict[str, Any],
+    memory: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(memory, dict):
+        return momentum_expansion
+    base = dict(momentum_expansion) if isinstance(momentum_expansion, dict) else {}
+    score_floor = _float_or_none(memory.get("score_floor")) or 0.60
+    base_score = _float_or_none(base.get("score")) or 0.0
+    evidence = dict(base.get("evidence") or {}) if isinstance(base.get("evidence"), dict) else {}
+    evidence["missed_move_memory"] = {
+        "status": memory.get("status"),
+        "move_pct": memory.get("move_pct"),
+        "event_types": memory.get("event_types") or [],
+        "volume_multiplier": memory.get("volume_multiplier"),
+        "source": memory.get("source"),
+    }
+    reasons = [str(item) for item in base.get("reasons") or [] if str(item or "").strip()]
+    reasons.append("missed-move review feedback: similar symbol moved without prior watch coverage")
+    return {
+        **base,
+        "detected": True,
+        "score": round(max(base_score, score_floor), 4),
+        "source": "pre_move_expansion+missed_move_review_feedback",
+        "memory_boosted": True,
+        "memory_status": memory.get("status"),
+        "reasons": _unique(reasons)[:8],
+        "evidence": evidence,
+    }
 
 
 def _missed_move_min_pct_for_universe(settings: Any, universe: list[dict[str, Any]]) -> float:

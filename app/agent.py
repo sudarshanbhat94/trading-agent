@@ -931,7 +931,7 @@ class TradingAgentService:
             cycle_duration_seconds=round((datetime.now(timezone.utc) - started).total_seconds(), 3),
             missed_move_review_row_id=int(pre_catalyst_summary.get("missed_move_review_row_id") or 0),
         )
-        self.db.set_state("decision_diagnostics", decision_diagnostics)
+        self._store_decision_diagnostics(decision_diagnostics)
         self._log(
             "INFO",
             "diagnostics",
@@ -1459,13 +1459,14 @@ class TradingAgentService:
             {},
         )
         self.db.set_state("opportunity_scan", scan_summary)
-        self.db.set_state(
-            "decision_diagnostics",
+        self._store_decision_diagnostics(
             {
                 "generated_at": now,
                 "mode": "market_closed",
                 "scan_paused": True,
                 "market_region": self.market_region,
+                "open_regions": session_context.get("open_regions"),
+                "closed_regions": session_context.get("closed_regions"),
                 "raw_nse_count": 0,
                 "scanner_shortlist_count": 0,
                 "full_decision_count": 0,
@@ -1476,7 +1477,7 @@ class TradingAgentService:
                 "missed_move_review_row_id": 0,
                 "health_flags": [],
                 "summary": "Markets are closed; live scanner and execution checks are paused.",
-            },
+            }
         )
 
     async def _run_market_closed_prep(
@@ -1986,6 +1987,56 @@ class TradingAgentService:
             summary = {}
         self.db.set_state("shared_auto_trade", {**summary, "stored_at": utc_now()})
 
+    def _store_decision_diagnostics(self, diagnostics: dict[str, Any]) -> None:
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        self.db.set_state("decision_diagnostics", diagnostics)
+        markets = self._decision_diagnostic_markets(diagnostics)
+        if not markets:
+            return
+        get_state = getattr(self.db, "get_state", None)
+        previous = get_state("decision_diagnostics_by_market", {}) if callable(get_state) else {}
+        by_market = dict(previous) if isinstance(previous, dict) else {}
+        source_market = str(diagnostics.get("market_region") or "").upper()
+        for market in markets:
+            scoped = {
+                **diagnostics,
+                "market_region": market,
+                "source_market_region": source_market or market,
+            }
+            by_market[market] = scoped
+            self.db.set_state(f"decision_diagnostics_{market}", scoped)
+        self.db.set_state("decision_diagnostics_by_market", by_market)
+
+    def _decision_diagnostic_markets(self, diagnostics: dict[str, Any]) -> list[str]:
+        if not isinstance(diagnostics, dict):
+            return []
+        markets: set[str] = set()
+        for key in (
+            "target_decision_symbols_by_market",
+            "slot_fill_counts_by_market",
+            "slot_shortfalls_by_market",
+        ):
+            value = diagnostics.get(key)
+            if not isinstance(value, dict):
+                continue
+            for raw_market, raw_count in value.items():
+                market = normalize_market_region(raw_market, default="BOTH")
+                if market in {"IN", "US"} and (raw_count or key == "slot_shortfalls_by_market"):
+                    markets.add(market)
+        for key in ("open_regions", "closed_regions"):
+            value = diagnostics.get(key)
+            if not isinstance(value, list):
+                continue
+            for raw_market in value:
+                market = normalize_market_region(raw_market, default="BOTH")
+                if market in {"IN", "US"}:
+                    markets.add(market)
+        market_region = normalize_market_region(diagnostics.get("market_region") or "BOTH", default="BOTH")
+        if market_region in {"IN", "US"}:
+            markets.add(market_region)
+        return sorted(markets)
+
     def _persist_missed_move_review(self, summary: dict[str, Any]) -> None:
         settings = self.strategy.settings
         if not bool(getattr(settings, "missed_move_review_enabled", True)):
@@ -2258,7 +2309,16 @@ class TradingAgentService:
                 seen_symbols.add(symbol)
                 quality_gate = auto_follow_quality_gate(idea)
                 if not quality_gate.get("passed"):
-                    summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, **quality_skip_payload(quality_gate)})
+                    skip_payload = quality_skip_payload(quality_gate)
+                    if skip_payload.get("paper_probe_eligible"):
+                        event_id = self.db.record_paper_probe_validation_event(
+                            user_id=user_id,
+                            idea=idea,
+                            gate=quality_gate,
+                        )
+                        if event_id:
+                            skip_payload["paper_probe_audit_event_id"] = event_id
+                    summary["skipped"].append({"user_id": user.get("id"), "symbol": symbol, **skip_payload})
                     continue
                 reentry_block = self.db.recent_user_symbol_exit(
                     user_id,
@@ -3943,7 +4003,8 @@ def _auto_follow_idea_fresh_enough(idea: dict[str, Any], fresh_buy_symbols: set[
     current_return = _float_or_none(idea.get("current_return_pct")) or 0.0
     if current_return < -1.5:
         return False
-    if str(idea.get("fresh_action") or "").upper() != "BUY_NOW":
+    fresh_action = str(idea.get("fresh_action") or "").upper()
+    if fresh_action not in {"BUY_NOW", "PAPER_PROBE"}:
         return False
     if symbol in fresh_buy_symbols:
         return True

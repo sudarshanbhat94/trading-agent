@@ -24297,7 +24297,15 @@ td:nth-child(n + 3) {
   color: var(--sell) !important;
 }
 
-.watchlist-signal-pill:is(.executable-buy, .paper-probe, .watch-only, .blocked),
+.watchlist-signal-pill.state-review,
+.tag.state-review,
+.order-status-pill.state-review {
+  border-color: color-mix(in srgb, var(--text-3) 42%, var(--line-1)) !important;
+  background: color-mix(in srgb, var(--text-3) 10%, var(--surface-0)) !important;
+  color: var(--text-2) !important;
+}
+
+.watchlist-signal-pill:is(.executable-buy, .paper-probe, .watch-only, .blocked, .state-review),
 .decision-title-row .tag,
 .mobile-order-side,
 .order-status-pill {

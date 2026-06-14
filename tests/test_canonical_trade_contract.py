@@ -12,6 +12,69 @@ from app.signal_quality import auto_follow_quality_gate
 
 
 class CanonicalTradeContractTests(unittest.TestCase):
+    def test_paper_probe_is_labeled_but_not_executable_buy(self) -> None:
+        contract = canonical_trade_contract(
+            {
+                "symbol": "USPROBE",
+                "action": "BUY",
+                "signal_type": "BUY",
+                "status": "ACTIVE",
+                "last_seen_at": utc_now(),
+                "latest_price": 100.0,
+                "overall_score_pct": 96,
+                "overall_grade": "A",
+                "confluence": 22,
+                "confidence": 0.72,
+                "technical_score": 0.42,
+                "quote": {"price": 100.0, "source": "alpaca-iex-live"},
+                "details": {
+                    "action": "BUY",
+                    "market_region": "US",
+                    "quote": {"price": 100.0, "source": "alpaca-iex-live"},
+                    "data_readiness": {
+                        "market_region": "US",
+                        "trade_decision_ready": True,
+                        "sources": {"quote": "alpaca-iex-live", "intraday": "alpaca-iex-live"},
+                    },
+                    "market_day_regime": {
+                        "state": "broad_rally",
+                        "checked_symbols": 200,
+                        "momentum_allowed": True,
+                    },
+                    "risk_flags": [
+                        "phase3_repeated_failed_breakouts_reduce_size",
+                        "watch_entry_needs_confirmation_reduce_size",
+                    ],
+                    "stop_loss": 97.0,
+                    "targets": [{"label": "T1", "price": 105.0, "distance_pct": 5.0}],
+                    "raw_entry_model": {
+                        "version": "raw_opportunity_v1",
+                        "passed": True,
+                        "decision_label": "ENTRY_READY",
+                        "auto_follow_ready": True,
+                        "raw_score": 96,
+                        "grade": "A",
+                        "setup_family": "live_momentum",
+                        "market_region": "US",
+                        "trade_plan": {
+                            "stop_loss": 97.0,
+                            "targets": [{"label": "T1", "price": 105.0, "distance_pct": 5.0}],
+                        },
+                        "truth_blocks": [],
+                        "entry_blockers": [],
+                        "legacy_decision_logic_removed": True,
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(contract["quality_gate"]["passed"], contract)
+        self.assertFalse(contract["paper_follow_eligible"], contract)
+        self.assertTrue(contract["paper_probe_eligible"], contract)
+        self.assertEqual(contract["fresh_action"], "PAPER_PROBE")
+        self.assertEqual(contract["trade_state"], "PAPER_PROBE_ELIGIBLE")
+        self.assertEqual(contract["setup_bucket"]["bucket"], "PAPER_PROBE")
+
     def test_india_live_probe_uses_one_contract_for_entry_state_and_follow(self) -> None:
         contract = canonical_trade_contract(
             {
@@ -233,7 +296,7 @@ class CanonicalTradeContractTests(unittest.TestCase):
 
             row = db.latest_signal_ideas(1)[0]
 
-        self.assertEqual(row["canonical_trade"]["version"], "raw_opportunity_v1")
+        self.assertEqual(row["canonical_trade"]["version"], CANONICAL_TRADE_CONTRACT_VERSION)
         self.assertEqual(row["fresh_action"], "BUY_NOW")
         self.assertEqual(row["setup_bucket"], "ACTIONABLE")
         self.assertTrue(row["paper_follow_eligible"])

@@ -1734,6 +1734,7 @@ class Database:
                 "overall_score_pct": row["overall_score_pct"],
                 "overall_grade": row["overall_grade"],
                 "confluence": row["confluence"],
+                "confidence": row["confidence"],
                 "data_readiness": details.get("data_readiness"),
                 "hard_blocked": details.get("hard_blocked"),
                 "market_region": market_region,
@@ -1741,6 +1742,41 @@ class Database:
             }
             strict_gate = auto_follow_quality_gate(gate_item)
             if action == "BUY" and strict_gate.get("passed"):
+                continue
+            if action == "BUY" and strict_gate.get("paper_probe_eligible"):
+                details["quality_gate"] = strict_gate
+                details["auto_follow_gate"] = strict_gate
+                details["market_region"] = details.get("market_region") or market_region
+                details["decision_readiness"] = "paper_probe_only"
+                details["quality_downgrade"] = {
+                    "from": "BUY",
+                    "to": "PAPER_PROBE",
+                    "reason": strict_gate.get("paper_probe_recovered_blocker") or strict_gate.get("reason"),
+                    "message": strict_gate.get("paper_probe_reason") or strict_gate.get("message"),
+                }
+                details["latest_system_action"] = "BUY"
+                details["display_note"] = strict_gate.get("paper_probe_reason") or strict_gate.get("message")
+                conn.execute(
+                    """
+                    update signal_ideas
+                    set signal_type = 'BUY',
+                        status = 'ACTIVE',
+                        last_seen_at = ?,
+                        reason = ?,
+                        details_json = ?
+                    where id = ?
+                    """,
+                    (
+                        now,
+                        str(
+                            strict_gate.get("paper_probe_reason")
+                            or strict_gate.get("message")
+                            or "Paper-probe validation candidate."
+                        )[:1000],
+                        json.dumps(details, default=str, separators=(",", ":")),
+                        row["id"],
+                    ),
+                )
                 continue
             downgrade_reason = "latest_state_not_fresh_buy" if action != "BUY" else str(strict_gate.get("reason") or "strict_execution_contract_failed")
             reason = (
@@ -4150,6 +4186,7 @@ class Database:
                     "overall_score_pct": idea["overall_score_pct"],
                     "overall_grade": idea["overall_grade"],
                     "confluence": idea["confluence"],
+                    "confidence": idea["confidence"],
                     "data_readiness": idea_details.get("data_readiness"),
                     "hard_blocked": idea_details.get("hard_blocked"),
                     "market_region": strict_market_region,
@@ -4860,6 +4897,7 @@ class Database:
                     "overall_score_pct": item.get("overall_score_pct"),
                     "overall_grade": item.get("overall_grade"),
                     "confluence": item.get("confluence"),
+                    "confidence": item.get("confidence"),
                     "data_readiness": details.get("data_readiness"),
                     "hard_blocked": details.get("hard_blocked"),
                     "market_region": market_region,
@@ -4867,6 +4905,44 @@ class Database:
                 }
                 quality_gate = _buy_idea_stale_signal_gate(item, now_dt) or auto_follow_quality_gate(gate_item)
                 if quality_gate.get("passed"):
+                    continue
+                if quality_gate.get("paper_probe_eligible"):
+                    details["quality_gate"] = quality_gate
+                    details["auto_follow_gate"] = quality_gate
+                    details["market_region"] = details.get("market_region") or market_region
+                    details["decision_readiness"] = "paper_probe_only"
+                    details["quality_downgrade"] = {
+                        "from": "BUY",
+                        "to": "PAPER_PROBE",
+                        "reason": quality_gate.get("paper_probe_recovered_blocker") or quality_gate.get("reason"),
+                        "message": quality_gate.get("paper_probe_reason") or quality_gate.get("message"),
+                        "cleanup_reason": reason,
+                        "downgraded_at": now,
+                    }
+                    details["latest_system_action"] = details.get("latest_system_action") or "BUY"
+                    details["display_note"] = quality_gate.get("paper_probe_reason") or quality_gate.get("message")
+                    conn.execute(
+                        """
+                        update signal_ideas
+                        set signal_type = 'BUY',
+                            status = 'ACTIVE',
+                            last_seen_at = ?,
+                            reason = ?,
+                            details_json = ?
+                        where id = ?
+                        """,
+                        (
+                            now,
+                            str(
+                                quality_gate.get("paper_probe_reason")
+                                or quality_gate.get("message")
+                                or item.get("reason")
+                                or "Paper-probe validation candidate."
+                            )[:1000],
+                            json.dumps(details, default=str, separators=(",", ":")),
+                            item["id"],
+                        ),
+                    )
                     continue
                 readiness_gate = trade_readiness_gate(gate_item)
                 if readiness_gate.get("passed") and quality_gate.get("reason") != "raw_entry_model_missing":
@@ -5564,6 +5640,89 @@ class Database:
                     status,
                     reason,
                     json.dumps(_bounded_for_storage(details or {}, dict_limit=32), default=str, separators=(",", ":")),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def record_paper_probe_validation_event(
+        self,
+        *,
+        user_id: int | None,
+        idea: dict[str, Any],
+        gate: dict[str, Any],
+        dedupe_minutes: int = 15,
+    ) -> int:
+        """Persist a non-trade observation for forward paper-probe validation."""
+
+        if not isinstance(gate, dict) or gate.get("paper_probe_eligible") is not True:
+            return 0
+        symbol = str(idea.get("symbol") or "").strip().upper()
+        if not symbol:
+            return 0
+        idea_id = int(idea.get("id") or 0)
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max(int(dedupe_minutes or 15), 1))).isoformat()
+        like_idea = f'%"idea_id":{idea_id}%' if idea_id > 0 else ""
+        with self.connect() as conn:
+            params: list[Any] = [symbol, cutoff]
+            extra = ""
+            if like_idea:
+                extra = " and details_json like ?"
+                params.append(like_idea)
+            existing = conn.execute(
+                f"""
+                select id
+                from trade_audit_events
+                where symbol = ?
+                  and event_type = 'paper_probe_validation_candidate'
+                  and ts >= ?
+                  {extra}
+                order by id desc
+                limit 1
+                """,
+                tuple(params),
+            ).fetchone()
+            if existing:
+                return int(existing["id"] or 0)
+            details = idea.get("details") if isinstance(idea.get("details"), dict) else {}
+            raw_entry = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
+            trade_plan = raw_entry.get("trade_plan") if isinstance(raw_entry.get("trade_plan"), dict) else {}
+            price = _optional_float(idea.get("latest_price") or idea.get("entry_price") or details.get("latest_price")) or 0.0
+            payload = {
+                "user_id": int(user_id) if user_id is not None else None,
+                "idea_id": idea_id or None,
+                "market_region": normalize_market_region(idea.get("market_region") or details.get("market_region"), default=""),
+                "strategy": idea.get("strategy") or details.get("strategy"),
+                "paper_probe_contract": gate.get("paper_probe_contract"),
+                "paper_probe_state": gate.get("paper_probe_state"),
+                "paper_probe_reason": gate.get("paper_probe_reason"),
+                "paper_probe_recovered_blocker": gate.get("paper_probe_recovered_blocker"),
+                "paper_probe_quote_source": gate.get("paper_probe_quote_source"),
+                "quality_reason": gate.get("reason"),
+                "raw_score": raw_entry.get("raw_score") or idea.get("overall_score_pct"),
+                "grade": raw_entry.get("grade") or idea.get("overall_grade"),
+                "confidence": idea.get("confidence"),
+                "confluence": idea.get("confluence"),
+                "technical_score": idea.get("technical_score") or details.get("technical_score") or raw_entry.get("technical_score"),
+                "stop_loss": details.get("stop_loss") or trade_plan.get("stop_loss"),
+                "targets": details.get("targets") or trade_plan.get("targets"),
+                "policy": "paper-probe validation only; not an executable buy, not a paper follow, and never live routed",
+            }
+            cursor = conn.execute(
+                """
+                insert into trade_audit_events
+                    (ts, symbol, event_type, side, qty, price, status, reason, details_json)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    symbol,
+                    "paper_probe_validation_candidate",
+                    "WATCH",
+                    0,
+                    price,
+                    "PAPER_PROBE_ELIGIBLE",
+                    str(gate.get("paper_probe_recovered_blocker") or gate.get("reason") or "paper_probe_validation")[:1000],
+                    json.dumps(_bounded_for_storage(payload, dict_limit=32), default=str, separators=(",", ":")),
                 ),
             )
             return int(cursor.lastrowid or 0)
@@ -7782,13 +7941,12 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     if not opportunity:
         opportunity = opportunity_state_from_signal_details(details)
     raw_entry = details.get("raw_entry_model") if isinstance(details.get("raw_entry_model"), dict) else {}
-    raw_entry_item = bool(details.get("legacy_decision_logic_removed") or raw_entry.get("legacy_decision_logic_removed"))
-    contract = None if raw_entry_item else canonical_trade_contract({**item, "details": details})
-    state = _signal_state_payload(item, details) if raw_entry_item else contract["signal_state"]
+    contract = canonical_trade_contract({**item, "details": details})
+    state = contract["signal_state"]
     execution = _execution_state_payload(item)
-    setup_bucket = _setup_bucket_payload(item, details, state) if raw_entry_item else contract["setup_bucket"]
-    quality_gate = trade_readiness_gate({**item, "details": details}) if raw_entry_item else contract["quality_gate"]
-    auto_follow_gate = auto_follow_quality_gate({**item, "details": details}) if raw_entry_item else contract["auto_follow_gate"]
+    setup_bucket = contract["setup_bucket"]
+    quality_gate = contract["quality_gate"]
+    auto_follow_gate = contract["auto_follow_gate"]
     item["signal_state"] = state
     item["display_signal"] = state["display_signal"]
     item["fresh_action"] = state["fresh_action"]
@@ -7807,19 +7965,27 @@ def _decorate_signal_idea_item(item: dict[str, Any]) -> dict[str, Any]:
     item["why_changed"] = state["why_changed"]
     item["risk_review"] = state["risk_review"]
     item["canonical_trade"] = {
-        "version": str(raw_entry.get("version") or "raw_opportunity_v1") if raw_entry_item else contract["version"],
-        "primary_blocker": None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker"),
-        "secondary_blockers": [] if raw_entry_item else contract.get("secondary_blockers") or [],
-        "paper_follow_eligible": bool(auto_follow_gate.get("passed")) if raw_entry_item else contract.get("paper_follow_eligible"),
+        "version": contract["version"],
+        "primary_blocker": contract.get("primary_blocker"),
+        "secondary_blockers": contract.get("secondary_blockers") or [],
+        "paper_follow_eligible": bool(contract.get("paper_follow_eligible")),
+        "paper_probe_eligible": bool(contract.get("paper_probe_eligible")),
+        "paper_probe_reason": quality_gate.get("paper_probe_reason") or auto_follow_gate.get("paper_probe_reason"),
+        "paper_probe_blockers": quality_gate.get("paper_probe_blockers") or auto_follow_gate.get("paper_probe_blockers") or [],
         "quality_reason": quality_gate.get("reason"),
         "auto_follow_reason": auto_follow_gate.get("reason"),
-        "legacy_decision_logic_removed": raw_entry_item,
-        "decision_label": raw_entry.get("decision_label") if raw_entry_item else None,
-        "setup_family": raw_entry.get("setup_family") if raw_entry_item else None,
+        "legacy_decision_logic_removed": bool(details.get("legacy_decision_logic_removed") or raw_entry.get("legacy_decision_logic_removed")),
+        "decision_label": raw_entry.get("decision_label"),
+        "setup_family": raw_entry.get("setup_family"),
+        "trade_state": contract.get("trade_state"),
+        "fresh_action": contract.get("fresh_action"),
     }
-    item["primary_blocker"] = None if raw_entry_item and quality_gate.get("passed") else quality_gate.get("reason") if raw_entry_item else contract.get("primary_blocker")
-    item["secondary_blockers"] = [] if raw_entry_item else contract.get("secondary_blockers") or []
-    item["paper_follow_eligible"] = bool(auto_follow_gate.get("passed")) if raw_entry_item else bool(contract.get("paper_follow_eligible"))
+    item["primary_blocker"] = contract.get("primary_blocker")
+    item["secondary_blockers"] = contract.get("secondary_blockers") or []
+    item["paper_follow_eligible"] = bool(contract.get("paper_follow_eligible"))
+    item["paper_probe_eligible"] = bool(contract.get("paper_probe_eligible"))
+    item["paper_probe_reason"] = quality_gate.get("paper_probe_reason") or auto_follow_gate.get("paper_probe_reason")
+    item["paper_probe_blockers"] = quality_gate.get("paper_probe_blockers") or auto_follow_gate.get("paper_probe_blockers") or []
     item["paper_follow_quality_reason"] = auto_follow_gate.get("reason")
     item["opportunity_state"] = opportunity.get("state")
     item["opportunity_label"] = opportunity.get("label")

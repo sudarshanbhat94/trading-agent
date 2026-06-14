@@ -67,6 +67,10 @@ class DecisionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["scanner_shortlist_count"], 90)
         self.assertEqual(diagnostics["full_decision_count"], 2)
         self.assertEqual(diagnostics["target_decision_count"], 200)
+        self.assertEqual(diagnostics["funnel"]["hard_scanner_rejection_count"], 1400)
+        self.assertTrue(diagnostics["funnel"]["decision_target_shortfall_explained_by_hard_rejections"])
+        self.assertEqual(diagnostics["decision_shortfall_explanation"]["shortfall"], 198)
+        self.assertTrue(diagnostics["decision_shortfall_explanation"]["explained_by_hard_rejections"])
         self.assertEqual(diagnostics["paper_follow_conversion_count"], 0)
         self.assertEqual(diagnostics["top_blockers"][0]["gate"], "fresh_market_data_gate")
         self.assertEqual(diagnostics["live_quote_stale_intraday"]["only_blocker_symbols"], 1)
@@ -100,6 +104,52 @@ class DecisionDiagnosticsTests(unittest.TestCase):
             2,
         )
         self.assertNotIn("buy_decisions_not_followed", {flag["code"] for flag in diagnostics["health_flags"]})
+
+    def test_cycle_diagnostics_reports_paper_probe_skip_summary(self) -> None:
+        diagnostics = build_cycle_decision_diagnostics(
+            {"raw_symbols": 100, "quoted_symbols": 100, "selected_symbols": 40},
+            [_decision("USPROBE", "BUY")],
+            shared_auto_trade={
+                "users_checked": 2,
+                "followed": 0,
+                "active_buy_ideas_checked": 2,
+                "skipped": [
+                    {
+                        "symbol": "USPROBE",
+                        "reason": "phase1_quality_gate",
+                        "quality_reason": "technical_score_below_0_50",
+                        "paper_probe_eligible": True,
+                        "paper_probe_contract": "us_live_momentum_paper_probe_v1",
+                        "paper_probe_state": "PAPER_PROBE_ELIGIBLE",
+                        "paper_probe_recovered_blocker": "technical_score_below_0_50",
+                        "paper_probe_quote_source": "alpaca-iex-live",
+                        "paper_probe_audit_event_id": 77,
+                    },
+                    {
+                        "symbol": "USLATE",
+                        "reason": "phase1_quality_gate",
+                        "quality_reason": "watch_only_risk_flags_present",
+                        "paper_probe_eligible": False,
+                        "paper_probe_blockers": ["paper_probe_requires_realtime_us_quote"],
+                    },
+                ],
+            },
+            market_region="US",
+        )
+
+        self.assertEqual(diagnostics["auto_follow"]["skip_reasons"]["phase1_quality_gate"], 2)
+        probe = diagnostics["auto_follow"]["paper_probe"]
+        self.assertEqual(probe["eligible_skip_count"], 1)
+        self.assertEqual(probe["eligible_skip_symbols_count"], 1)
+        self.assertEqual(probe["eligible_skip_symbols"], ["USPROBE"])
+        self.assertEqual(probe["eligible_recovered_blockers"]["technical_score_below_0_50"], 1)
+        self.assertEqual(probe["eligible_quote_sources"]["alpaca-iex-live"], 1)
+        self.assertEqual(probe["eligible_contracts"]["us_live_momentum_paper_probe_v1"], 1)
+        self.assertEqual(probe["eligible_audit_event_count"], 1)
+        self.assertEqual(probe["eligible_audit_event_ids"], [77])
+        self.assertEqual(probe["blocked_candidate_skips"], 1)
+        self.assertEqual(probe["blocked_candidate_blockers"]["paper_probe_requires_realtime_us_quote"], 1)
+        json.dumps(diagnostics)
 
     def test_zero_buys_explained_by_confirmation_blocker_is_not_critical(self) -> None:
         diagnostics = build_cycle_decision_diagnostics(

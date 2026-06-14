@@ -773,7 +773,7 @@ class StrategyEngine:
         ]
         context["raw_entry_model"] = raw
         context["fresh_trade_authority"] = raw
-        context["decision_gate_context"] = {
+        decision_gate_context = {
             "decision_authority": RAW_ENTRY_MODEL_VERSION,
             "raw_entry_model": raw,
             "fresh_trade_authority": raw,
@@ -835,6 +835,52 @@ class StrategyEngine:
         }
         context["strategy_signals"] = [context["best_strategy"]]
         context["tomorrow_plan_decision"] = {"active": False, "reason": "raw_opportunity_model_controls_fresh_entries"}
+        canonical_gate = canonical_trade_readiness_gate(
+            {
+                "symbol": symbol,
+                "action": "BUY" if raw.get("passed") else "HOLD",
+                "signal_type": "BUY" if raw.get("passed") else "HOLD",
+                "status": "ACTIVE" if raw.get("passed") else "WATCH",
+                "latest_price": (context.get("quote") or {}).get("price") if isinstance(context.get("quote"), dict) else None,
+                "overall_score_pct": raw.get("raw_score"),
+                "overall_grade": raw.get("grade"),
+                "confluence": confluence.get("total"),
+                "market_region": raw.get("market_region"),
+                "data_readiness": context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else None,
+                "details": {
+                    "action": "BUY" if raw.get("passed") else "HOLD",
+                    "market_region": raw.get("market_region"),
+                    "latest_price": (context.get("quote") or {}).get("price") if isinstance(context.get("quote"), dict) else None,
+                    "raw_entry_model": raw,
+                    "data_readiness": context.get("data_readiness") if isinstance(context.get("data_readiness"), dict) else None,
+                    "stop_loss": trade_plan.get("stop_loss"),
+                    "targets": trade_plan.get("targets"),
+                    "risk_flags": (full.get("risk_overrides") or {}).get("flags", [])
+                    if isinstance(full.get("risk_overrides"), dict)
+                    else [],
+                },
+            }
+        )
+        decision_gate_context["canonical_trade_gate"] = canonical_gate
+        if not canonical_gate.get("passed"):
+            canonical_block = {
+                "gate": "canonical_trade_contract",
+                "reason": canonical_gate.get("primary_blocker") or canonical_gate.get("reason"),
+                "value": {
+                    "message": canonical_gate.get("message"),
+                    "market_region": canonical_gate.get("market_region"),
+                    "decision_label": canonical_gate.get("decision_label"),
+                    "setup_family": canonical_gate.get("setup_family"),
+                },
+            }
+            decision_gate_context["failed_gates"] = [*decision_gate_context.get("failed_gates", []), canonical_block]
+            decision_gate_context["blocking_failed_gates"] = [
+                *decision_gate_context.get("blocking_failed_gates", []),
+                canonical_block,
+            ]
+            if not decision_gate_context.get("primary_blocker"):
+                decision_gate_context["primary_blocker"] = canonical_block
+        context["decision_gate_context"] = decision_gate_context
         return "BUY" if raw.get("passed") else "HOLD"
 
     def _fresh_only_action_from_context(

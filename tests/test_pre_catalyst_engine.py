@@ -301,6 +301,48 @@ class PreCatalystEngineTests(unittest.TestCase):
         self.assertEqual(by_symbol["NEW"]["status"], "caught_same_cycle")
         self.assertIn("LIVE_CONFIRMATION", by_symbol["READY"]["event_types"])
 
+    def test_missed_move_review_feedback_promotes_next_watch_candidate(self) -> None:
+        candles = _trend_candles("AEGISLOG", start=92.0, end=104.0, volume=900_000)
+        result = build_pre_catalyst_watchlist(
+            [{"symbol": "AEGISLOG", "exchange": "NSE", "sector": "Energy"}],
+            {
+                "AEGISLOG": Quote(
+                    "AEGISLOG",
+                    104.0,
+                    "upstox-live",
+                    "2026-06-12T10:00:00+05:30",
+                    open=102.0,
+                    high=105.0,
+                    low=101.0,
+                    volume=1_400_000,
+                )
+            },
+            {"AEGISLOG": {"daily": candles, "analysis": candles}},
+            previous_state={
+                "missed_move_review": {
+                    "items": [
+                        {
+                            "symbol": "AEGISLOG",
+                            "status": "absent_from_prior_watchlist",
+                            "move_pct": 19.06,
+                            "event_types": ["52_WEEK_HIGH", "TOP_GAINER", "VOLUME_SHOCKER"],
+                            "market_action": {"volume_multiplier": 27.96},
+                        }
+                    ]
+                }
+            },
+            settings=_settings(pre_catalyst_min_score=0.56),
+        )
+
+        by_symbol = {item["symbol"]: item for item in result["candidates"]}
+
+        self.assertEqual(result["missed_move_memory_count"], 1)
+        self.assertIn("AEGISLOG", by_symbol)
+        self.assertEqual(by_symbol["AEGISLOG"]["label"], PRE_MOMENTUM_EXPANSION_WATCH)
+        memory = by_symbol["AEGISLOG"]["supporting_signals"]["pre_move_expansion"]["evidence"]["missed_move_memory"]
+        self.assertEqual(memory["status"], "absent_from_prior_watchlist")
+        self.assertIn("VOLUME_SHOCKER", memory["event_types"])
+
     def test_candidate_limit_keeps_india_and_us_replay_coverage(self) -> None:
         candidates = [
             _candidate("US1", "US", 0.95),
@@ -319,14 +361,16 @@ class PreCatalystEngineTests(unittest.TestCase):
         self.assertEqual(markets.count("US"), 2)
 
 
-def _settings() -> SimpleNamespace:
-    return SimpleNamespace(
-        pre_catalyst_engine_enabled=True,
-        pre_catalyst_candidate_limit=10,
-        pre_catalyst_min_score=0.50,
-        dynamic_scan_min_turnover_inr=40_000_000,
-        dynamic_scan_min_turnover_usd=2_000_000,
-    )
+def _settings(**overrides: object) -> SimpleNamespace:
+    values = {
+        "pre_catalyst_engine_enabled": True,
+        "pre_catalyst_candidate_limit": 10,
+        "pre_catalyst_min_score": 0.50,
+        "dynamic_scan_min_turnover_inr": 40_000_000,
+        "dynamic_scan_min_turnover_usd": 2_000_000,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def _candidate(symbol: str, market_region: str, score: float) -> OpportunityCandidate:

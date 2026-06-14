@@ -335,7 +335,10 @@ class IndiaRemediationTests(unittest.TestCase):
     def test_market_closed_cycle_state_clears_stale_open_diagnostics(self) -> None:
         states = {}
         agent = TradingAgentService.__new__(TradingAgentService)
-        agent.db = SimpleNamespace(set_state=lambda key, value: states.__setitem__(key, value))
+        agent.db = SimpleNamespace(
+            set_state=lambda key, value: states.__setitem__(key, value),
+            get_state=lambda key, default=None: states.get(key, default),
+        )
         agent.market_region = "BOTH"
 
         agent._write_market_closed_cycle_state(
@@ -350,6 +353,43 @@ class IndiaRemediationTests(unittest.TestCase):
         self.assertEqual(states["opportunity_scan"]["selected_symbols"], 0)
         self.assertEqual(states["decision_diagnostics"]["mode"], "market_closed")
         self.assertEqual(states["decision_diagnostics"]["health_flags"], [])
+        self.assertEqual(states["decision_diagnostics_IN"]["mode"], "market_closed")
+        self.assertEqual(states["decision_diagnostics_US"]["mode"], "market_closed")
+        self.assertEqual(set(states["decision_diagnostics_by_market"]), {"IN", "US"})
+
+    def test_decision_diagnostics_preserve_previous_market_snapshot(self) -> None:
+        states = {
+            "decision_diagnostics_by_market": {
+                "IN": {"market_region": "IN", "generated_at": "prior-india-open", "full_decision_count": 200}
+            }
+        }
+        agent = TradingAgentService.__new__(TradingAgentService)
+        agent.db = SimpleNamespace(
+            set_state=lambda key, value: states.__setitem__(key, value),
+            get_state=lambda key, default=None: states.get(key, default),
+        )
+
+        agent._store_decision_diagnostics(
+            {
+                "generated_at": "latest-us-cycle",
+                "market_region": "BOTH",
+                "target_decision_symbols_by_market": {"US": 200},
+                "slot_fill_counts_by_market": {"US": {"live_rally": 18}},
+                "full_decision_count": 130,
+            }
+        )
+
+        self.assertEqual(states["decision_diagnostics"]["generated_at"], "latest-us-cycle")
+        self.assertEqual(states["decision_diagnostics_US"]["market_region"], "US")
+        self.assertEqual(states["decision_diagnostics_US"]["source_market_region"], "BOTH")
+        self.assertEqual(
+            states["decision_diagnostics_by_market"]["IN"]["generated_at"],
+            "prior-india-open",
+        )
+        self.assertEqual(
+            states["decision_diagnostics_by_market"]["US"]["generated_at"],
+            "latest-us-cycle",
+        )
 
 
 if __name__ == "__main__":
