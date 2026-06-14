@@ -9473,6 +9473,27 @@ bindControls();
 initTheme();
 updateSessionPill();
 setInterval(updateSessionPill, 60_000);
+if (["127.0.0.1", "localhost", "::1"].includes(window.location.hostname)) {
+  window.__openstocksUiQa = {
+    renderPayload(payload = {}, extras = {}) {
+      if (extras.market) state.activeMarket = normalizeUiMarket(extras.market);
+      if (Array.isArray(extras.logs)) {
+        state.logs = extras.logs;
+        renderLogs(extras.logs);
+      }
+      if (Array.isArray(extras.users)) {
+        state.users = extras.users;
+        renderUsers(extras.users);
+      }
+      if (extras.account) {
+        state.account = extras.account;
+        renderAccount(extras.account);
+      }
+      render(payload);
+    },
+    setView,
+  };
+}
 loadInitial();
 window.addEventListener("resize", () => {
   if (state.latest && byId("equity-chart")) {
