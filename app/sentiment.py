@@ -54,46 +54,95 @@ EVENT_PRIORS = {
     "debt_liquidity": -0.2,
     "management": 0.0,
     "corporate_action": 0.02,
+    "partnership_expansion": 0.10,
+    "price_momentum": 0.06,
+    "price_weakness": -0.12,
     "macro_sector": 0.0,
     "neutral": 0.0,
 }
 
+# Ordered (label, regex) pairs for deterministic news classification.
+# Order matters: most-specific / most-severe events are checked first so that,
+# e.g., "analyst downgrade" is not swallowed by the broad debt pattern, and a
+# routine "company announced ..." headline is never mislabeled regulatory.
+# Covers both Indian (SEBI/CBI/ED/RBI) and US (SEC/DOJ/FTC/Fed) news because the
+# universe spans both markets. Patterns use \b boundaries to avoid substring
+# false positives (the previous "ed " token matched any past-tense verb).
+_EVENT_PATTERN_SOURCE: list[tuple[str, str]] = [
+    ("fraud_governance",
+     r"\bfraud\b|forensic audit|accounting (?:fraud|irregularit)|whistleblower|"
+     r"governance (?:lapse|concern)|misappropriat|embezzl|books? cooked|sec charges"),
+    ("legal_regulatory",
+     r"\bsebi\b|\bcbi\b|\bed\b|enforcement directorate|income tax (?:notice|raid)|"
+     r"tax notice|show cause|\bdoj\b|\bftc\b|antitrust|class action|lawsuit|sued\b|"
+     r"subpoena|\braid\b|\bprobe\b|penalt|\bfine[ds]?\b|regulat|investigation|recall"),
+    ("debt_liquidity",
+     r"\bdebt\b|\bdefault\b|insolvenc|bankrupt|liquidity (?:crisis|crunch)|"
+     r"(?:credit|rating) downgrade|pledge|moody'?s|fitch|s&p (?:cuts|downgrade)|writedown|impairment"),
+    ("analyst_downgrade",
+     r"\bdowngrade[ds]?\b|cuts? (?:target|to sell|to underweight)|lowers? target|"
+     r"sell rating|underperform|underweight|price target (?:cut|lowered)"),
+    ("analyst_upgrade",
+     r"\bupgrade[ds]?\b|raises? (?:target|to buy|to overweight)|buy rating|outperform|"
+     r"overweight|initiates? (?:buy|coverage)|price target (?:raised|hiked)|top pick"),
+    ("guidance",
+     r"\bguidance\b|outlook|forecast|guides? (?:higher|lower|up|down)|reaffirms?|"
+     r"raises? guidance|cuts? guidance|profit warning"),
+    ("earnings",
+     r"\bearnings\b|\bresults\b|net (?:profit|income|loss)|\brevenue\b|\bebitda\b|\beps\b|"
+     r"\bquarter\b|\bq[1-4]\b|beats? estimates|misses? estimates|margin|topline|bottomline"),
+    ("order_win",
+     r"wins? (?:order|contract|deal|bid)|bags? (?:order|contract)|secures? (?:order|contract|deal)|"
+     r"awarded|order worth|new contract|deal worth|purchase order|\bloi\b|letter of intent"),
+    ("corporate_action",
+     r"dividend|buyback|share repurchase|stock split|bonus (?:issue|share)|\bmerger\b|"
+     r"demerger|acquir|acquisition|buyout|\bstake\b|spin-?off|go(?:es)? public|"
+     r"business combination|\bipo\b|rights issue|distribution|special dividend|delisting"),
+    ("management",
+     r"\bceo\b|\bcfo\b|chief executive|steps? down|resign|appoint|\bnames?\b new|"
+     r"board (?:approves|reshuffl)|layoff|job cuts|restructur"),
+    ("partnership_expansion",
+     r"partnership|partners with|ties? up|tie-up|collaborat|joint venture|\bjv\b|"
+     r"\bexpands?\b|\bexpansion\b|new (?:plant|facility|capacity)|capacity expansion|"
+     r"launch|unveil|enters? (?:into|the)|signs? (?:pact|mou|agreement)"),
+    ("price_momentum",
+     r"hits? (?:fresh|record|new)? ?high|record high|52-?week high|all-?time high|"
+     r"surge|soar|jump|rall(?:y|ies)|spikes?|breakout|hits? upper circuit"),
+    ("price_weakness",
+     r"plunge|slump|tumble|sinks?|crashes?|sell-?off|hits? (?:fresh|new|52-?week)? ?low|"
+     r"hits? lower circuit|skids?|slides?"),
+    ("macro_sector",
+     r"\brbi\b|\bfed\b|\bfomc\b|inflation|\bcpi\b|jobs report|nonfarm|crude|oil price|"
+     r"\brupee\b|tariff|interest rate|treasury yield|\byields?\b|monetary policy|\bgdp\b"),
+]
+_EVENT_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    (label, re.compile(pattern)) for label, pattern in _EVENT_PATTERN_SOURCE
+]
+
 POSITIVE_TERMS = {
-    "beats",
-    "beat",
-    "profit",
-    "surge",
-    "surges",
-    "upgrade",
-    "record",
-    "growth",
-    "strong",
-    "rally",
-    "rises",
-    "wins",
-    "expands",
-    "order",
-    "contract",
-    "approval",
-    "dividend",
+    "beats", "beat", "tops", "topped", "profit", "profits", "surge", "surges", "surged",
+    "soars", "soared", "jumps", "jumped", "upgrade", "upgraded", "upgrades", "record",
+    "growth", "grows", "strong", "stronger", "rally", "rallies", "rallied", "rises",
+    "rose", "gains", "gained", "wins", "won", "win", "secures", "secured", "bags",
+    "awarded", "expands", "expansion", "order", "orders", "contract", "approval",
+    "approved", "approves", "dividend", "buyback", "raises", "raised", "outperform",
+    "overweight", "bullish", "high", "highs", "breakout", "acquire", "acquires",
+    "acquisition", "partnership", "launches", "launched", "unveils", "boost", "boosts",
+    "robust", "accelerates", "milestone", "wins order", "top pick", "buy rating",
+    "rising", "climbs", "advances", "outperforms", "higher", "rebounds", "recovers",
 }
 
 NEGATIVE_TERMS = {
-    "miss",
-    "falls",
-    "fall",
-    "loss",
-    "weak",
-    "downgrade",
-    "probe",
-    "penalty",
-    "slump",
-    "cuts",
-    "debt",
-    "fraud",
-    "concern",
-    "default",
-    "resigns",
+    "miss", "misses", "missed", "falls", "fall", "fell", "loss", "losses", "weak",
+    "weaker", "downgrade", "downgraded", "downgrades", "probe", "penalty", "fine",
+    "fined", "slump", "slumps", "slumped", "plunge", "plunges", "plunged", "tumble",
+    "tumbles", "tumbled", "sinks", "sank", "cuts", "cut", "debt", "fraud", "concern",
+    "concerns", "default", "defaults", "resigns", "resign", "resigned", "lawsuit",
+    "sued", "investigation", "recall", "recalls", "bankruptcy", "insolvency", "layoffs",
+    "warns", "warning", "halts", "halted", "delay", "delayed", "crash", "crashes",
+    "sell-off", "selloff", "underperform", "bearish", "low", "lows", "shortfall",
+    "scrutiny", "raid", "subpoena", "writedown", "impairment", "guidance cut",
+    "falling", "drops", "declines", "slips", "lower", "sliding", "dips", "pressure",
 }
 
 
@@ -774,21 +823,12 @@ class SentimentService:
 
     def _event_type(self, headline: str) -> str:
         text = headline.lower()
-        patterns = [
-            ("fraud_governance", r"fraud|forensic|governance|whistleblower"),
-            ("legal_regulatory", r"probe|penalty|sebi|ed |cbi|tax notice|regulator|lawsuit"),
-            ("debt_liquidity", r"debt|default|liquidity|pledge|downgrade"),
-            ("analyst_upgrade", r"upgrade|raises target|buy rating"),
-            ("analyst_downgrade", r"downgrade|cuts target|sell rating"),
-            ("order_win", r"order win|wins order|contract|deal|approval"),
-            ("earnings", r"profit|revenue|ebitda|quarter|q[1-4]|results|earnings"),
-            ("guidance", r"guidance|outlook|forecast"),
-            ("management", r"ceo|cfo|resign|appoint|management"),
-            ("corporate_action", r"dividend|buyback|split|bonus|merger|demerger"),
-            ("macro_sector", r"rbi|inflation|crude|rupee|tariff|policy"),
-        ]
-        for label, pattern in patterns:
-            if re.search(pattern, text):
+        # Ordered most-specific/severe first; first match wins.
+        # Word boundaries (\b) prevent substring false positives such as the old
+        # "ed " token matching "announced"/"raised" and mislabeling routine news
+        # as legal_regulatory.
+        for label, pattern in _EVENT_PATTERNS:
+            if pattern.search(text):
                 return label
         return "neutral"
 

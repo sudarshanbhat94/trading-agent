@@ -574,6 +574,49 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
+try:  # new v2 dashboard (self-contained, read-only; never break the main app)
+    from .v2_web import router as _v2_router, SPA_HTML as _V2_SPA
+
+    app.include_router(_v2_router)
+
+    @app.get("/", response_class=HTMLResponse)  # serve new UI at root for the domain
+    def _v2_root() -> HTMLResponse:
+        return HTMLResponse(_V2_SPA)
+
+    @app.get("/legacy", response_class=HTMLResponse)  # old dashboard preserved here
+    async def _legacy_dashboard(request: Request) -> HTMLResponse:
+        return await dashboard(request)
+
+    from .v2_live import start_background as _v2_live_start  # always-on live engine (in-process)
+
+    @app.on_event("startup")
+    async def _start_v2_live() -> None:
+        _v2_live_start(interval=45)
+except Exception as _v2_exc:  # pragma: no cover
+    import logging as _logging
+
+    _logging.getLogger("openstocks").warning("v2 web UI not mounted: %s", _v2_exc)
+
+
+@app.post("/api/users/{user_id}/paper-cash")
+async def admin_set_user_paper_cash(user_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Admin: allocate paper money (India/US cash) to any user."""
+    require_admin(request, settings, db)
+
+    def _opt(v):
+        if v in (None, ""):
+            return None
+        return float(v)
+
+    ci = _opt(payload.get("india_cash", payload.get("IN")))
+    cu = _opt(payload.get("us_cash", payload.get("US")))
+    if ci is None and cu is None:
+        raise HTTPException(status_code=400, detail="Provide india_cash or us_cash.")
+    updated = db.update_user_paper_cash(int(user_id), cash_in=ci, cash_us=cu)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True, "user": updated}
+
 
 COMMON_SYMBOL_ALIASES = {
     "SBI": "SBIN",
