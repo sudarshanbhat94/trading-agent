@@ -254,6 +254,33 @@ def api_trades(limit: int = 60):
     return JSONResponse(out)
 
 
+@router.get("/api/orders")
+def api_orders(limit: int = 120):
+    """Full order log: BUY fills (open positions + entries of closed trades) and
+    SELL fills (exits of closed trades), newest first."""
+    v2 = _ro(V2_DB)
+    orders = []
+    for market, sym, edate, oat, entry, shares, strat in v2.execute(
+            "SELECT market,symbol,entry_date,opened_at,entry_price,shares,strategy FROM v2_positions"):
+        ccy = "₹" if market == "IN" else "$"
+        orders.append(dict(side="BUY", status="open", symbol=sym, market=market, ccy=ccy, strategy=strat,
+                           qty=round(shares, 2), price=round(entry, 2), value=round(entry * shares),
+                           when=_ist(oat or edate), ts=str(oat or edate)))
+    for market, sym, edate, entry, xdate, exitp, shares, pnl, ret, reason, strat in v2.execute(
+            "SELECT market,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,strategy "
+            "FROM v2_trades ORDER BY id DESC LIMIT ?", (limit,)):
+        ccy = "₹" if market == "IN" else "$"
+        orders.append(dict(side="BUY", status="closed", symbol=sym, market=market, ccy=ccy, strategy=strat,
+                           qty=round(shares, 2), price=round(entry, 2), value=round(entry * shares),
+                           when=_ist(edate), ts=str(edate)))
+        orders.append(dict(side="SELL", status="closed", symbol=sym, market=market, ccy=ccy, strategy=strat,
+                           qty=round(shares, 2), price=round(exitp, 2), value=round(exitp * shares),
+                           pnl=round(ret, 2), pnl_amt=round(pnl), reason=reason, when=_ist(xdate), ts=str(xdate)))
+    v2.close()
+    orders.sort(key=lambda o: o["ts"], reverse=True)
+    return JSONResponse(orders[:limit])
+
+
 @router.post("/api/positions/{pid}/exit")
 def api_exit(pid: int):
     rw = _rw()
@@ -812,9 +839,10 @@ function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)'
  <div class=bar><i style="width:${p.headroom}%;background:${c}"></i></div>
  <div class=row style="margin-top:6px"><span class=mut style="font-size:10px">qty ${p.qty} · ${s}${(p.market=='IN'?INR:USD).format(p.value)} in · ${p.trail?'trail':'stop'} ${s}${p.stop}</span><button class="sm" onclick="exitPos(${p.id},'${p.symbol}')">Exit</button></div>
  <div class=mut style="font-size:10px;margin-top:3px">since ${p.since||''}</div></div>`}
-function ordRow(o){var s=o.market=='IN'?'₹':'$';var amt=(o.market=='IN'?INR:USD).format(Math.abs(o.pnl_amt));
- return `<div class=lrow style="cursor:default"><div><div style="display:flex;gap:7px;align-items:center"><b>${o.symbol}</b><span class="badge ${o.win?'bg-up':'bg-dn'}">${o.reason}</span></div><div class=mut style="font-size:11px;margin-top:2px">${o.bought} → ${o.sold} · ${o.strategy.indexOf('gap')>=0?'gap':'swing'}</div></div>
- <div style="text-align:right"><div class="${col(o.pnl)}">${sgn(o.pnl)}%</div><div class=mut style="font-size:11px">${o.pnl_amt<0?'-':'+'}${s}${amt}</div></div></div>`}
+function ordRow(o){var s=o.ccy,fmt=(o.ccy=='₹'?INR:USD);
+ var right=(o.side=='SELL'&&o.pnl!=null)?('<div class="'+col(o.pnl)+'">'+sgn(o.pnl)+'%</div><div class=mut style="font-size:11px">'+(o.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(o.pnl_amt))+'</div>'):('<div class=mut style="font-size:12px">'+s+fmt.format(o.value)+'</div>');
+ var tag=o.status=='open'?'<span class="badge bg-warn">open</span>':(o.reason?'<span class=mut style="font-size:10px">'+o.reason+'</span>':'');
+ return '<div class=lrow style="cursor:default" onclick="stock(\''+o.symbol+'\',\''+o.market+'\')"><div><div style="display:flex;gap:7px;align-items:center"><span class="badge '+(o.side=='BUY'?'bg-inf':'bg-mut')+'">'+o.side+'</span><b>'+o.symbol+'</b>'+tag+'</div><div class=mut style="font-size:11px;margin-top:2px">'+o.qty+' @ '+s+o.price+' · '+o.when+'</div></div><div style="text-align:right">'+right+'</div></div>';}
 function fmtc(ccy,n){return ccy+(ccy=='₹'?INR:USD).format(Math.round(n))}
 function pnlS(ccy,v,p){return '<span class="'+col(v)+'">'+(v<0?'-':'+')+fmtc(ccy,Math.abs(v))+' ('+sgn(p)+'%)</span>'}
 function mktCard(m){var nm=m.market=='IN'?'India ₹':'US $';return '<div class=card><div class=row><span class=mut style="font-size:12px">'+nm+'</span><span class=mut style="font-size:11px">'+m.deploy_pct+'% deployed</span></div>'
@@ -838,9 +866,10 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  document.getElementById('postot').innerHTML=(t||'—')+' P&L';
  document.getElementById('poslist').innerHTML=ps.map(posCard).join('')||'<div class=skel>'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>';}
 function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();})}
-function loadOrders(){api('/v2/api/trades?limit=80').then(r=>{var os=r.j.filter(o=>inMkt(o.market));var w=os.filter(o=>o.win).length;
- document.getElementById('ordtot').textContent=os.length?(os.length+' trades · '+Math.round(w/os.length*100)+'% win'):'';
- document.getElementById('ordlist').innerHTML=os.map(ordRow).join('')||'<div class=skel>no closed trades yet</div>';});}
+function loadOrders(){api('/v2/api/orders?limit=120').then(r=>{var os=r.j.filter(o=>inMkt(o.market));
+ var b=os.filter(o=>o.side=='BUY').length,sl=os.filter(o=>o.side=='SELL').length;
+ document.getElementById('ordtot').textContent=os.length?(b+' buys · '+sl+' sells'):'';
+ document.getElementById('ordlist').innerHTML=os.map(ordRow).join('')||'<div class=skel>no orders yet</div>';});}
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
