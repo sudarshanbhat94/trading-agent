@@ -591,7 +591,7 @@ try:  # new v2 dashboard (self-contained, read-only; never break the main app)
 
     @app.on_event("startup")
     async def _start_v2_live() -> None:
-        _v2_live_start(interval=45)
+        _v2_live_start(interval=8)
 except Exception as _v2_exc:  # pragma: no cover
     import logging as _logging
 

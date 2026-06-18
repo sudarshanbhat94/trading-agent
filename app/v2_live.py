@@ -242,10 +242,38 @@ def poll_market(market):
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=pl["trail"], peak=entry)
         traded.add(sym); fills += 1
     mcon.close()
-    # exits on live price/high/low
+    v2.commit(); v2.close()
+    _status[market] = f"signals {datetime.now(IST).strftime('%H:%M IST')} · +{fills} new · {vetoed} news-vetoed"
+
+
+HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20}
+
+
+def exit_monitor(market):
+    """Cheap, fast exit pass: checks open positions against LIVE price/high/low
+    for stop / target / trailing / time exit. No feature recompute, so it can
+    run every few seconds for near-instant exits."""
+    from datetime import date
+    live = _live(market)
+    if not live:
+        return
+    v2 = _rw()
+    row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
+    if not row:
+        v2.close(); return
+    budget = row[0]
+    cside = COST_SIDE[market]
+    today = datetime.now(IST).date()
+    today_s = today.isoformat()
+    positions = {}
+    for r in v2.execute("SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,entry_date "
+                        "FROM v2_positions WHERE market=?", (market,)):
+        positions[r[2]] = dict(id=r[0], strategy=r[1], entry=r[3], shares=r[4], stop=r[5],
+                               target=r[6], trail=r[7], peak=r[8], edate=r[9])
+    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+    cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
+    exits = 0
     for sym, p in list(positions.items()):
-        if p["id"] is None:
-            continue
         lq = live.get(sym)
         if not lq:
             continue
@@ -253,11 +281,17 @@ def poll_market(market):
         eff = p["stop"]
         if p["trail"]:
             eff = max(eff, peak * (1 - p["trail"]))
+        try:
+            held = (today - date.fromisoformat(str(p["edate"]))).days
+        except ValueError:
+            held = 0
         ex = reason = None
         if lq["low"] <= eff or lq["price"] <= eff:
             ex, reason = min(eff, lq["price"]), ("trail" if p["trail"] and eff > p["stop"] else "stop")
         elif p["target"] and (lq["high"] >= p["target"] or lq["price"] >= p["target"]):
             ex, reason = max(p["target"], lq["price"]), "target"
+        elif held >= HOLD_DAYS.get(p["strategy"], 10):
+            ex, reason = lq["price"], "time"
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)
             v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
@@ -271,8 +305,12 @@ def poll_market(market):
     v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
                (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], cash + pv, cash, pv, len(positions)))
     v2.commit(); v2.close()
-    _status[market] = (f"open · {datetime.now(IST).strftime('%H:%M IST')} · +{fills}/-{exits}"
-                       f" · {len(positions)} pos · {vetoed} news-vetoed")
+    if exits:
+        _status[market] = (_status.get(market, "") + f" · -{exits} exit").strip(" ·")
+
+
+_last_signal: dict = {}
+SIGNAL_INTERVAL = 60   # heavy signal recompute cadence (s)
 
 
 def loop(interval):
@@ -284,7 +322,10 @@ def loop(interval):
         for m in ("IN", "US"):
             try:
                 if market_open(m):
-                    poll_market(m)
+                    exit_monitor(m)                              # fast exits every cycle
+                    if time.time() - _last_signal.get(m, 0) >= SIGNAL_INTERVAL:
+                        poll_market(m)                           # heavy signal gen periodically
+                        _last_signal[m] = time.time()
                 else:
                     _status[m] = "closed"
             except Exception as exc:
@@ -292,7 +333,7 @@ def loop(interval):
         time.sleep(interval)
 
 
-def start_background(interval=45):
+def start_background(interval=8):
     global _started
     if _started:
         return
