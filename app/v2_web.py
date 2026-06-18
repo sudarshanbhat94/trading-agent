@@ -594,7 +594,7 @@ button.pri{background:var(--acc);color:var(--bg);border-color:var(--acc)}
   <a data-t=watch onclick="go('watch')"><svg viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx=12 cy=12 r=3/></svg>Watchlist</a>
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>Portfolio</a>
   <a data-t=stats onclick="go('stats')"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Performance</a>
-  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx=12 cy=8 r=4/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Account</a>
+  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Account</a>
  </nav>
  <div class=main>
   <div class=top>
@@ -605,7 +605,7 @@ button.pri{background:var(--acc);color:var(--bg);border-color:var(--acc)}
    </div>
   </div>
   <div id=pm class="menu hide">
-   <a onclick="go('account');document.getElementById('pm').classList.add('hide')"><svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.7><circle cx=12 cy=8 r=4/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg> Account & settings</a>
+   <a onclick="go('account');document.getElementById('pm').classList.add('hide')"><svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.7><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg> Account & settings</a>
    <a onclick=doLogout()><svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.7><path d="M16 17l5-5-5-5M21 12H9M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg> Log out</a>
   </div>
 
@@ -629,7 +629,7 @@ button.pri{background:var(--acc);color:var(--bg);border-color:var(--acc)}
 <a data-t=watch onclick="go('watch')"><svg viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx=12 cy=12 r=3/></svg>watch</a>
 <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>portfolio</a>
 <a data-t=stats onclick="go('stats')"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>stats</a>
-<a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx=12 cy=8 r=4/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>account</a>
+<a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>account</a>
 </nav>
 
 <script>
@@ -706,6 +706,7 @@ boot();setInterval(()=>{if(cur=='home'&&ME)load();},20000);
 SPA_HTML = r"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>OpenStocks — AI trading desk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%2315150f'/%3E%3Cpath d='M5 16l4-4 3 2 7-8' fill='none' stroke='%231D9E75' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root{--bg:#fff;--surf:#f6f6f3;--card:#fff;--line:#e8e8e3;--tx:#15150f;--mut:#75756d;--up:#0f8a5f;--upb:#e4f5ee;--dn:#c4362f;--dnb:#fbeceb;--inf:#185fa5;--infb:#e6f1fb;--warn:#946008;--warnb:#fbf0d8;--acc:#15150f}
 @media(prefers-color-scheme:dark){:root{--bg:#111110;--surf:#1c1c17;--card:#191915;--line:#33332c;--tx:#f2f0e9;--mut:#a2a298;--upb:#0e2a20;--dnb:#2c1413;--infb:#0c2438;--warnb:#2a2008;--acc:#f2f0e9}}
@@ -760,8 +761,8 @@ button.sm{padding:6px 12px;font-size:13px;border-radius:8px}
   <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>Home</a>
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>Portfolio</a>
   <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Orders</a>
-  <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx=11 cy=11 r=7/><path d="M21 21l-4-4"/></svg>Analyze</a>
-  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx=12 cy=8 r=4/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Account</a>
+  <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>Analyze</a>
+  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Account</a>
  </nav>
  <div class=main>
   <div class=top><span class=live><span class=dot></span><span id=clock>live</span></span>
@@ -805,8 +806,8 @@ button.sm{padding:6px 12px;font-size:13px;border-radius:8px}
 <a data-t=home class=on onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>home</a>
 <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>portfolio</a>
 <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>orders</a>
-<a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx=11 cy=11 r=7/><path d="M21 21l-4-4"/></svg>analyze</a>
-<a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx=12 cy=8 r=4/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>account</a>
+<a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>analyze</a>
+<a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>account</a>
 </nav>
 
 <script>

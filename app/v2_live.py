@@ -228,6 +228,10 @@ def poll_market(market):
             continue
         entry, atr = s["price"], s["atr"]
         shares = alloc / entry
+        if market == "IN":               # NSE: whole shares only, no fractions
+            shares = float(int(shares))
+            if shares < 1:               # stock too pricey for the per-position budget
+                continue
         cash -= shares * entry * (1 + cside)
         tgt = entry + pl["atr_target"] * atr if pl["atr_target"] else 0.0
         v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at)"
