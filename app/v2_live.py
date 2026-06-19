@@ -121,10 +121,16 @@ def _news_state(mcon, symbol):
     return score, (severe or score <= -0.35)
 
 
-def _live(market):
+def _live(market, symbols=None):
     con = _ro(MAIN_DB)
-    rows = con.execute("SELECT symbol,price,open,high,low,close,volume FROM latest_quotes WHERE source=?",
-                       (LIVE_SOURCE[market],)).fetchall()
+    if symbols:
+        syms = list(symbols)
+        rows = con.execute(
+            "SELECT symbol,price,open,high,low,close,volume FROM latest_quotes WHERE source=? AND symbol IN (%s)"
+            % ",".join("?" * len(syms)), (LIVE_SOURCE[market], *syms)).fetchall()
+    else:
+        rows = con.execute("SELECT symbol,price,open,high,low,close,volume FROM latest_quotes WHERE source=?",
+                           (LIVE_SOURCE[market],)).fetchall()
     con.close()
     out = {}
     for sym, p, o, h, l, c, v in rows:
@@ -254,9 +260,6 @@ def exit_monitor(market):
     for stop / target / trailing / time exit. No feature recompute, so it can
     run every few seconds for near-instant exits."""
     from datetime import date
-    live = _live(market)
-    if not live:
-        return
     v2 = _rw()
     row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
     if not row:
@@ -270,6 +273,9 @@ def exit_monitor(market):
                         "FROM v2_positions WHERE market=?", (market,)):
         positions[r[2]] = dict(id=r[0], strategy=r[1], entry=r[3], shares=r[4], stop=r[5],
                                target=r[6], trail=r[7], peak=r[8], edate=r[9])
+    if not positions:                            # nothing held -> nothing to monitor
+        v2.close(); return
+    live = _live(market, positions.keys())       # only held symbols (cheap, not all 10k)
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
     cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
     exits = 0
