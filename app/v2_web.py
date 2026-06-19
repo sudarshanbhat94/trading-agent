@@ -470,6 +470,30 @@ button.act{font-size:14px;padding:11px;border-radius:10px;border:1px solid var(-
 button.act.pri{background:var(--inf);color:#fff;border-color:var(--inf)}
 .back{font-size:14px;color:var(--inf);cursor:pointer;display:inline-flex;gap:5px;align-items:center;padding:10px 0}
 .vbox{border-radius:10px;padding:11px 13px;margin:10px 0}
+</style><style>
+:root{--surf:#f6f7f9;--line:#eaecf0;--tx:#0c0d10;--mut:#697586;--up:#06a35a;--upb:#e7f7ef;--dn:#df2f29;--inf:#2563eb;--infb:#eaf0fe;--sh:0 1px 2px rgba(16,24,40,.06)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b0c0e;--surf:#15171b;--card:#15171b;--line:#24262d;--tx:#f0f2f5;--mut:#8b919e;--up:#26c281;--dn:#ff5a52;--inf:#5b8def;--sh:0 1px 2px rgba(0,0,0,.4)}}
+body{line-height:1.45;-webkit-font-smoothing:antialiased}
+.hero{font-size:36px;font-weight:680;letter-spacing:-.03em;margin:4px 0 2px}
+.card{background:var(--card);border:1px solid var(--line);box-shadow:var(--sh);border-radius:14px;padding:13px 15px}
+.raise{border-radius:14px;box-shadow:var(--sh);padding:15px 16px}
+.pos{background:var(--card);border-radius:14px;box-shadow:var(--sh);padding:13px 15px;transition:border-color .15s}.pos:hover{border-color:var(--mut)}
+.sec{font-size:12.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin:22px 2px 10px}
+.seg{border-radius:11px;padding:3px}.seg b{border-radius:8px;padding:5px 12px}.seg b.on{background:var(--card);box-shadow:var(--sh)}
+.badge{border-radius:7px;font-weight:600;padding:2px 8px}
+.num{letter-spacing:-.01em}
+button{font-weight:500;border-radius:11px;transition:background .15s,transform .05s}button:hover{background:var(--surf)}button:active{transform:scale(.985)}
+button.pri:hover{opacity:.9;background:var(--acc)}
+input,select{border-radius:11px;padding:12px 13px;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3px var(--infb)}
+.tab.on{animation:fade .22s ease}@keyframes fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.lrow{border-radius:9px;padding:13px 8px;transition:background .12s}.lrow:hover{background:var(--surf)}
+.chip{border:1px solid var(--line);border-radius:9px;font-weight:500}
+.nav{padding-bottom:env(safe-area-inset-bottom)}.nav a.on{color:var(--inf)}.nav svg,.side svg{stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.modepill{text-transform:uppercase;font-weight:600;font-size:10px;letter-spacing:.05em;border-radius:7px;padding:3px 9px}
+.bar,.scorebar{border-radius:4px}.bar>i,.scorebar>i{border-radius:4px;transition:width .4s}
+@media(min-width:860px){.side{width:230px;padding:20px 14px;gap:2px}.side .b{font-size:19px;font-weight:680;letter-spacing:-.02em;padding:6px 12px 22px}.side a{padding:11px 13px;border-radius:11px;font-weight:500;transition:all .15s}.side a:hover{background:var(--surf);color:var(--tx)}.side a.on{background:var(--infb);color:var(--inf)}.main{padding:6px 32px 36px}}
+#login{max-width:380px;margin:11vh auto;padding:28px 26px;border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 20px rgba(16,24,40,.06)}#login h1{font-size:25px;font-weight:680;letter-spacing:-.02em}
 </style></head><body><div class=wrap>
 
 <div class=top><div class=brand>OpenStocks</div>
@@ -593,6 +617,30 @@ button.pri{background:var(--acc);color:var(--bg);border-color:var(--acc)}
  .side a.on{background:var(--surf);color:var(--tx)}
  .main{padding:0 26px 30px}
 }
+</style><style>
+:root{--surf:#f6f7f9;--line:#eaecf0;--tx:#0c0d10;--mut:#697586;--up:#06a35a;--upb:#e7f7ef;--dn:#df2f29;--inf:#2563eb;--infb:#eaf0fe;--sh:0 1px 2px rgba(16,24,40,.06)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b0c0e;--surf:#15171b;--card:#15171b;--line:#24262d;--tx:#f0f2f5;--mut:#8b919e;--up:#26c281;--dn:#ff5a52;--inf:#5b8def;--sh:0 1px 2px rgba(0,0,0,.4)}}
+body{line-height:1.45;-webkit-font-smoothing:antialiased}
+.hero{font-size:36px;font-weight:680;letter-spacing:-.03em;margin:4px 0 2px}
+.card{background:var(--card);border:1px solid var(--line);box-shadow:var(--sh);border-radius:14px;padding:13px 15px}
+.raise{border-radius:14px;box-shadow:var(--sh);padding:15px 16px}
+.pos{background:var(--card);border-radius:14px;box-shadow:var(--sh);padding:13px 15px;transition:border-color .15s}.pos:hover{border-color:var(--mut)}
+.sec{font-size:12.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin:22px 2px 10px}
+.seg{border-radius:11px;padding:3px}.seg b{border-radius:8px;padding:5px 12px}.seg b.on{background:var(--card);box-shadow:var(--sh)}
+.badge{border-radius:7px;font-weight:600;padding:2px 8px}
+.num{letter-spacing:-.01em}
+button{font-weight:500;border-radius:11px;transition:background .15s,transform .05s}button:hover{background:var(--surf)}button:active{transform:scale(.985)}
+button.pri:hover{opacity:.9;background:var(--acc)}
+input,select{border-radius:11px;padding:12px 13px;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3px var(--infb)}
+.tab.on{animation:fade .22s ease}@keyframes fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.lrow{border-radius:9px;padding:13px 8px;transition:background .12s}.lrow:hover{background:var(--surf)}
+.chip{border:1px solid var(--line);border-radius:9px;font-weight:500}
+.nav{padding-bottom:env(safe-area-inset-bottom)}.nav a.on{color:var(--inf)}.nav svg,.side svg{stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.modepill{text-transform:uppercase;font-weight:600;font-size:10px;letter-spacing:.05em;border-radius:7px;padding:3px 9px}
+.bar,.scorebar{border-radius:4px}.bar>i,.scorebar>i{border-radius:4px;transition:width .4s}
+@media(min-width:860px){.side{width:230px;padding:20px 14px;gap:2px}.side .b{font-size:19px;font-weight:680;letter-spacing:-.02em;padding:6px 12px 22px}.side a{padding:11px 13px;border-radius:11px;font-weight:500;transition:all .15s}.side a:hover{background:var(--surf);color:var(--tx)}.side a.on{background:var(--infb);color:var(--inf)}.main{padding:6px 32px 36px}}
+#login{max-width:380px;margin:11vh auto;padding:28px 26px;border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 20px rgba(16,24,40,.06)}#login h1{font-size:25px;font-weight:680;letter-spacing:-.02em}
 </style></head><body>
 
 <div id=login class=hide>
@@ -763,6 +811,30 @@ button.sm{padding:6px 12px;font-size:13px;border-radius:8px}
 .nav{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);display:flex;z-index:8}
 .nav a{flex:1;text-align:center;padding:8px 0 6px;color:var(--mut);font-size:10px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}.nav a.on{color:var(--tx)}.nav svg,.side svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7}
 @media(min-width:860px){.nav{display:none}.side{display:flex;flex-direction:column;width:212px;border-right:1px solid var(--line);padding:16px 12px;position:sticky;top:0;height:100vh}.side .b{font-size:18px;font-weight:600;padding:6px 10px 18px}.side a{display:flex;gap:11px;align-items:center;padding:10px 12px;border-radius:10px;color:var(--mut);cursor:pointer;font-size:14px}.side a.on{background:var(--surf);color:var(--tx)}.main{padding:0 28px 30px}}
+</style><style>
+:root{--surf:#f6f7f9;--line:#eaecf0;--tx:#0c0d10;--mut:#697586;--up:#06a35a;--upb:#e7f7ef;--dn:#df2f29;--inf:#2563eb;--infb:#eaf0fe;--sh:0 1px 2px rgba(16,24,40,.06)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b0c0e;--surf:#15171b;--card:#15171b;--line:#24262d;--tx:#f0f2f5;--mut:#8b919e;--up:#26c281;--dn:#ff5a52;--inf:#5b8def;--sh:0 1px 2px rgba(0,0,0,.4)}}
+body{line-height:1.45;-webkit-font-smoothing:antialiased}
+.hero{font-size:36px;font-weight:680;letter-spacing:-.03em;margin:4px 0 2px}
+.card{background:var(--card);border:1px solid var(--line);box-shadow:var(--sh);border-radius:14px;padding:13px 15px}
+.raise{border-radius:14px;box-shadow:var(--sh);padding:15px 16px}
+.pos{background:var(--card);border-radius:14px;box-shadow:var(--sh);padding:13px 15px;transition:border-color .15s}.pos:hover{border-color:var(--mut)}
+.sec{font-size:12.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin:22px 2px 10px}
+.seg{border-radius:11px;padding:3px}.seg b{border-radius:8px;padding:5px 12px}.seg b.on{background:var(--card);box-shadow:var(--sh)}
+.badge{border-radius:7px;font-weight:600;padding:2px 8px}
+.num{letter-spacing:-.01em}
+button{font-weight:500;border-radius:11px;transition:background .15s,transform .05s}button:hover{background:var(--surf)}button:active{transform:scale(.985)}
+button.pri:hover{opacity:.9;background:var(--acc)}
+input,select{border-radius:11px;padding:12px 13px;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3px var(--infb)}
+.tab.on{animation:fade .22s ease}@keyframes fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.lrow{border-radius:9px;padding:13px 8px;transition:background .12s}.lrow:hover{background:var(--surf)}
+.chip{border:1px solid var(--line);border-radius:9px;font-weight:500}
+.nav{padding-bottom:env(safe-area-inset-bottom)}.nav a.on{color:var(--inf)}.nav svg,.side svg{stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.modepill{text-transform:uppercase;font-weight:600;font-size:10px;letter-spacing:.05em;border-radius:7px;padding:3px 9px}
+.bar,.scorebar{border-radius:4px}.bar>i,.scorebar>i{border-radius:4px;transition:width .4s}
+@media(min-width:860px){.side{width:230px;padding:20px 14px;gap:2px}.side .b{font-size:19px;font-weight:680;letter-spacing:-.02em;padding:6px 12px 22px}.side a{padding:11px 13px;border-radius:11px;font-weight:500;transition:all .15s}.side a:hover{background:var(--surf);color:var(--tx)}.side a.on{background:var(--infb);color:var(--inf)}.main{padding:6px 32px 36px}}
+#login{max-width:380px;margin:11vh auto;padding:28px 26px;border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 20px rgba(16,24,40,.06)}#login h1{font-size:25px;font-weight:680;letter-spacing:-.02em}
 </style></head><body>
 
 <div id=login class=hide><h1>OpenStocks</h1><p class=mut style="margin:0 0 22px">AI trading desk · sign in</p>
