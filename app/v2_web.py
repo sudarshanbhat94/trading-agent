@@ -136,8 +136,12 @@ def api_overview():
     markets = []
     for market, budget in _markets(v2):
         s = _market_stats(v2, market, budget, live[market])
+        eq = [round(r[0]) for r in v2.execute(
+            "SELECT equity FROM v2_equity WHERE market=? ORDER BY date DESC LIMIT 40", (market,))][::-1]
+        if not eq:
+            eq = [round(budget)]
         markets.append({"market": s["market"], "ccy": "₹" if market == "IN" else "$",
-                        "budget": round(s["budget"]), "equity": round(s["equity"]),
+                        "budget": round(s["budget"]), "equity": round(s["equity"]), "equity_series": eq,
                         "cash": round(s["cash"]), "deployed": round(s["deployed"]), "deploy_pct": s["deploy_pct"],
                         "today_pnl": round(s["today_pnl"], 2), "overall_pnl": round(s["overall_pnl"], 2),
                         "today_pct": round(s["today_pnl"] / s["budget"] * 100, 2) if s["budget"] else 0,
@@ -387,10 +391,15 @@ def api_stock(symbol: str, market: str = "IN"):
                                   else f"target {round(htgt,2)} / stop {round(hstop,2)}"))
         except Exception:
             held = None
+        try:
+            closes = [round(float(x), 2) for x in g["close"].tail(60).tolist() if x == x]
+            closes.append(round(px, 2))     # end the line at the live price
+        except Exception:
+            closes = []
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
-                                 held=held, news=_news(symbol)))
+                                 held=held, chart=closes, news=_news(symbol)))
     except Exception as exc:
         return JSONResponse(dict(symbol=symbol, error=str(exc)[:120], news=_news(symbol)))
 
@@ -938,6 +947,7 @@ function mktCard(m){var nm=m.market=='IN'?'India ₹':'US $';return '<div class=
  +'<div style="font-size:20px;font-weight:600;margin-top:2px">'+fmtc(m.ccy,m.equity)+'</div>'
  +'<div style="font-size:12px;margin-top:4px">today '+pnlS(m.ccy,m.today_pnl,m.today_pct)+'</div>'
  +'<div style="font-size:12px">overall '+pnlS(m.ccy,m.overall_pnl,m.overall_pct)+'</div>'
+ +spark(m.equity_series,m.ccy)
  +'<div class=mut style="font-size:10px;margin-top:4px">budget '+fmtc(m.ccy,m.budget)+' · '+m.positions+' pos · cash '+fmtc(m.ccy,m.cash)+'</div></div>'}
 function loadHome(){api('/v2/api/overview').then(r=>{var d=r.j;document.getElementById('clock').textContent=d.as_of;
  var ms=(d.markets||[]).filter(m=>inMkt(m.market));
@@ -990,12 +1000,32 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
  var fb=Object.keys(d.factors||{}).map(k=>{var v=d.factors[k],c=v>=60?'var(--up)':(v>=40?'var(--warn)':'var(--dn)');return '<div style="margin:8px 0"><div class=row style="font-size:12px"><span class=mut>'+k.replace('_',' ')+'</span><span>'+v+'</span></div><div class=scorebar><i style="width:'+v+'%;background:'+c+'"></i></div></div>'}).join('');
  el.innerHTML=(target=='detail'?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">‹ back</div>':'')
  +'<div class=row><div><div class=sec style="margin:0">'+sym+'</div><div class=mut style="font-size:12px">'+mkt+' · live</div></div><div class=hero style="font-size:25px">'+s+d.live+'</div></div>'
+ +chartHtml(d.chart,[{v:d.entry,c:'#2563eb'},{v:d.stop,c:'#df2f29'},{v:d.target,c:'#06a35a'}])
  +'<div class=raise style="background:'+vb+';border:none;margin-top:8px"><div class=row><b style="color:'+vt+'">'+d.verdict+'</b><span style="color:'+vt+';font-size:12px">score '+d.score+(d.regime===false?' · regime risk-off':'')+'</span></div></div>'
  +(d.held?'<div class=raise style="margin-top:8px"><div class=row><b>you hold this · '+d.held.strategy+'</b><span class="'+col(d.held.pnl)+'">'+sgn(d.held.pnl)+'%</span></div><div class=mut style="font-size:12px;margin-top:4px">entry '+s+d.held.entry+' · qty '+d.held.qty+' · exits on '+d.held.rule+'</div></div>':'')
  +'<div class=sec style="font-size:13px">'+(d.held?'if you buy more — plan':'trade plan')+'</div>'
  +'<div class=grid><div class=card><div class=mut style="font-size:11px">entry</div><div style="font-size:17px;font-weight:600">'+s+d.entry+'</div></div><div class=card><div class=mut style="font-size:11px">reward:risk</div><div style="font-size:17px;font-weight:600">'+d.rr+':1</div></div><div class=card><div class=mut style="font-size:11px">stop</div><div class="dn" style="font-size:17px;font-weight:600">'+s+d.stop+'</div></div><div class=card><div class=mut style="font-size:11px">target</div><div class="up" style="font-size:17px;font-weight:600">'+s+d.target+'</div></div></div>'
  +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
  +'<div style="display:flex;gap:9px;margin:14px 0"><button style="flex:1" onclick="alert(\'Alerts coming next\')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>';});}
+function chartHtml(closes,levels){
+ if(!closes||closes.length<3)return '';
+ var w=300,h=92,n=closes.length,lo=Math.min.apply(null,closes),hi=Math.max.apply(null,closes);
+ (levels||[]).forEach(function(l){if(l.v){lo=Math.min(lo,l.v);hi=Math.max(hi,l.v)}});
+ var rng=(hi-lo)||1,pad=rng*0.08;lo-=pad;hi+=pad;rng=hi-lo;
+ function X(i){return (i/(n-1)*w).toFixed(1)}
+ function Y(v){return (h-(v-lo)/rng*h).toFixed(1)}
+ var pts=closes.map(function(v,i){return X(i)+','+Y(v)}).join(' ');
+ var up=closes[n-1]>=closes[0],col=up?'#06a35a':'#df2f29';
+ var lv=(levels||[]).filter(function(l){return l.v}).map(function(l){return '<line x1=0 y1='+Y(l.v)+' x2='+w+' y2='+Y(l.v)+' stroke="'+l.c+'" stroke-width=1 stroke-dasharray="2 3" opacity=".5" vector-effect="non-scaling-stroke"/>'}).join('');
+ return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:94px;display:block;margin:10px 0 4px"><polyline points="0,'+h+' '+pts+' '+w+','+h+'" fill="'+col+'" fill-opacity=".09" stroke="none"/><polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="2" vector-effect="non-scaling-stroke"/>'+lv+'</svg>';
+}
+function spark(series,ccy){
+ if(!series||series.length<3)return '';
+ var w=120,h=30,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series),rng=(hi-lo)||1;
+ var pts=series.map(function(v,i){return (i/(n-1)*w).toFixed(1)+','+(h-(v-lo)/rng*h).toFixed(1)}).join(' ');
+ var up=series[n-1]>=series[0],col=up?'#06a35a':'#df2f29';
+ return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:28px;display:block;margin-top:6px"><polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>';
+}
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 boot();setInterval(()=>{if(ME){if(cur=='home')loadHome();if(cur=='positions')loadPos()}},20000);
