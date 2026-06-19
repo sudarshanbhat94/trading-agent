@@ -360,7 +360,8 @@ def api_stock(symbol: str, market: str = "IN"):
         row = gf.iloc[-1]
         conv = eng.conviction(row)
         atr = float(row["atr14"]); close = float(row["close"])
-        entry = round(close * 1.005, 2); stop = round(entry - 2 * atr, 2); target = round(entry + 3.5 * atr, 2)
+        px = float(live.get("price") or close)             # plan off the LIVE price, not a stale close
+        entry = round(px, 2); stop = round(entry - 2 * atr, 2); target = round(entry + 3.5 * atr, 2)
         rr = round((target - entry) / (entry - stop), 1) if entry > stop else 0
         verdict = "BUY" if conv >= 0.6 else ("WATCH" if conv >= 0.4 else "AVOID")
         def sc(x): return int(max(4, min(96, round(x))))   # graded, never a flat 100
@@ -371,10 +372,25 @@ def api_stock(symbol: str, market: str = "IN"):
             volume=sc(28 + (float(row["rvol"]) - 1.0) * 52),
             pullback=sc(92 + float(row["dist_hi20"]) * 230),     # near a base high scores high, not 100
             volatility=sc(float(row["atr_pct"]) / 0.05 * 78))
-        return JSONResponse(dict(symbol=symbol, market=market, live=round(live.get("price", close), 2),
+        held = None
+        try:
+            v2 = _ro(V2_DB)
+            r = v2.execute("SELECT strategy,entry_price,shares,stop,target,trail,peak FROM v2_positions "
+                           "WHERE symbol=? AND market=?", (symbol, market)).fetchone()
+            v2.close()
+            if r:
+                hstrat, hentry, hsh, hstop, htgt, htrail, hpeak = r
+                tstop = max(hstop, hpeak * (1 - htrail)) if htrail else hstop
+                held = dict(strategy="gap" if "gap" in hstrat else "swing", entry=round(hentry, 2),
+                            qty=round(hsh, 2), pnl=round((px / hentry - 1) * 100, 2),
+                            rule=(f"trailing stop {round(htrail*100)}% (now {round(tstop,2)})" if htrail
+                                  else f"target {round(htgt,2)} / stop {round(hstop,2)}"))
+        except Exception:
+            held = None
+        return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
-                                 news=_news(symbol)))
+                                 held=held, news=_news(symbol)))
     except Exception as exc:
         return JSONResponse(dict(symbol=symbol, error=str(exc)[:120], news=_news(symbol)))
 
@@ -903,6 +919,8 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
  el.innerHTML=(target=='detail'?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">‹ back</div>':'')
  +'<div class=row><div><div class=sec style="margin:0">'+sym+'</div><div class=mut style="font-size:12px">'+mkt+' · live</div></div><div class=hero style="font-size:25px">'+s+d.live+'</div></div>'
  +'<div class=raise style="background:'+vb+';border:none;margin-top:8px"><div class=row><b style="color:'+vt+'">'+d.verdict+'</b><span style="color:'+vt+';font-size:12px">score '+d.score+(d.regime===false?' · regime risk-off':'')+'</span></div></div>'
+ +(d.held?'<div class=raise style="margin-top:8px"><div class=row><b>you hold this · '+d.held.strategy+'</b><span class="'+col(d.held.pnl)+'">'+sgn(d.held.pnl)+'%</span></div><div class=mut style="font-size:12px;margin-top:4px">entry '+s+d.held.entry+' · qty '+d.held.qty+' · exits on '+d.held.rule+'</div></div>':'')
+ +'<div class=sec style="font-size:13px">'+(d.held?'if you buy more — plan':'trade plan')+'</div>'
  +'<div class=grid><div class=card><div class=mut style="font-size:11px">entry</div><div style="font-size:17px;font-weight:600">'+s+d.entry+'</div></div><div class=card><div class=mut style="font-size:11px">reward:risk</div><div style="font-size:17px;font-weight:600">'+d.rr+':1</div></div><div class=card><div class=mut style="font-size:11px">stop</div><div class="dn" style="font-size:17px;font-weight:600">'+s+d.stop+'</div></div><div class=card><div class=mut style="font-size:11px">target</div><div class="up" style="font-size:17px;font-weight:600">'+s+d.target+'</div></div></div>'
  +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
  +'<div style="display:flex;gap:9px;margin:14px 0"><button style="flex:1" onclick="alert(\'Alerts coming next\')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>';});}
