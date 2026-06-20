@@ -195,6 +195,43 @@ def api_positions():
     return JSONResponse(out)
 
 
+_ticker_cache: dict = {}
+
+
+@router.get("/api/ticker")
+def api_ticker():
+    """Live ticker-tape feed: held names first, then biggest day movers per
+    market. Reads latest_quotes (price + prev close) only; cached 12s."""
+    now = time.time()
+    c = _ticker_cache.get("v")
+    if c is not None and now - _ticker_cache.get("t", 0) < 12:
+        return JSONResponse(c)
+    held = {"IN": set(), "US": set()}
+    try:
+        v2 = _ro(V2_DB)
+        for market, sym in v2.execute("SELECT market,symbol FROM v2_positions"):
+            held.setdefault(market, set()).add(sym)
+        v2.close()
+    except Exception:
+        pass
+    out = []
+    for market in ("IN", "US"):
+        ccy = "₹" if market == "IN" else "$"
+        rows = []
+        for sym, q in _live_map(market).items():
+            prev = q.get("prev") or q["price"]
+            chg = (q["price"] / prev - 1) * 100 if prev else 0.0
+            rows.append((sym, q["price"], chg))
+        hl = [r for r in rows if r[0] in held.get(market, set())]
+        movers = sorted((r for r in rows if r[0] not in held.get(market, set())),
+                        key=lambda r: -abs(r[2]))[:10]
+        for sym, price, chg in hl + movers:
+            out.append(dict(symbol=sym, market=market, ccy=ccy,
+                            price=round(price, 2), chg=round(chg, 2)))
+    _ticker_cache.update(t=now, v=out)
+    return JSONResponse(out)
+
+
 @router.get("/api/engine-status")
 def api_engine_status():
     try:
@@ -895,10 +932,17 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 .sec{color:var(--mut)}
 #login{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.015));border:1px solid var(--line);box-shadow:var(--sh)}
 .skel{color:var(--mut)}
+.ticker{overflow:hidden;white-space:nowrap;align-items:center;height:34px;margin:0 -16px 4px;padding:0;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
+.ticker .track{display:inline-flex;gap:24px;padding-left:16px;animation:tick 70s linear infinite;will-change:transform}
+.ticker:hover .track{animation-play-state:paused}
+.tk{display:inline-flex;gap:6px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums;cursor:pointer}
+.tk b{font-weight:600;letter-spacing:.01em}.tk .mk{font-size:9px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 3px}
+@keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 /* ============ responsive layout: real desktop dashboard ============ */
 #engines.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(min-width:860px){
  .main{max-width:1280px;padding:12px 40px 52px}
+ .ticker{margin:0 -40px 8px;height:36px}
  .top{padding:18px 2px 12px}
  .hero{font-size:40px}
  #engines{gap:16px}
@@ -936,6 +980,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Account</a>
  </nav>
  <div class=main>
+  <div class=ticker id=ticker style="display:none"></div>
   <div class=top><span class=live><span class=dot></span><span id=clock>live</span></span>
    <div style="display:flex;align-items:center;gap:10px"><div class=seg id=mkt><b data-m=BOTH class=on onclick="setMkt('BOTH')">Both</b><b data-m=IN onclick="setMkt('IN')">India</b><b data-m=US onclick="setMkt('US')">US</b></div>
     <div class=prof id=avatar onclick="document.getElementById('pm').classList.toggle('hide')">U</div></div></div>
@@ -991,7 +1036,10 @@ function go(t){cur=t;['home','positions','orders','analyze','account','detail'].
  document.querySelectorAll('.nav a,.side a').forEach(a=>a.classList.toggle('on',a.dataset.t==t));
  if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();window.scrollTo(0,0)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
-function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadAccountData();refresh();startStream();}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
+function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadAccountData();refresh();startStream();loadTicker();}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
+function loadTicker(){api('/v2/api/ticker').then(r=>{var it=(r.j||[]);var el=document.getElementById('ticker');if(!el)return;if(!it.length){el.style.display='none';return;}
+ el.style.display='flex';var h=it.map(t=>'<span class=tk onclick="stock(\''+t.symbol+'\',\''+t.market+'\')"><b>'+t.symbol+'</b><span class=mk>'+t.market+'</span><span class=num>'+t.ccy+(t.ccy=='₹'?INR:USD).format(t.price)+'</span><span class="'+(t.chg>=0?'up':'dn')+'">'+(t.chg>=0?'▲':'▼')+Math.abs(t.chg).toFixed(2)+'%</span></span>').join('');
+ el.innerHTML='<div class=track>'+h+h+'</div>';}).catch(()=>{});}
 var ES=null;
 function startStream(){if(ES)return;try{ES=new EventSource('/v2/api/stream');ES.onmessage=function(e){try{applyStream(JSON.parse(e.data||'{}'))}catch(x){}};ES.onerror=function(){};}catch(e){}}
 function applyStream(d){if(!d||!d.markets)return;document.getElementById('clock').textContent=d.as_of||document.getElementById('clock').textContent;
@@ -1103,4 +1151,5 @@ function spark(series,ccy){
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 boot();setInterval(()=>{if(ME){if(cur=='home')loadHome();if(cur=='positions')loadPos()}},20000);
+setInterval(()=>{if(ME)loadTicker()},15000);
 </script></body></html>"""
