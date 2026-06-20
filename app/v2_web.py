@@ -433,10 +433,18 @@ def api_stock(symbol: str, market: str = "IN"):
             closes.append(round(px, 2))     # end the line at the live price
         except Exception:
             closes = []
+        try:
+            tail = g.tail(90)
+            candles = [[round(float(o), 2), round(float(h), 2), round(float(lo), 2),
+                        round(float(cl), 2), int(float(vv)) if vv == vv else 0]
+                       for o, h, lo, cl, vv in zip(tail["open"], tail["high"], tail["low"],
+                                                   tail["close"], tail["volume"]) if cl == cl]
+        except Exception:
+            candles = []
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
-                                 held=held, chart=closes, news=_news(symbol)))
+                                 held=held, chart=closes, candles=candles, news=_news(symbol)))
     except Exception as exc:
         return JSONResponse(dict(symbol=symbol, error=str(exc)[:120], news=_news(symbol)))
 
@@ -922,7 +930,9 @@ body{color:var(--tx);background:
 .bar,.scorebar{background:rgba(255,255,255,.06)}
 .lrow{border-bottom:1px solid var(--line)}.lrow:hover{background:rgba(255,255,255,.03)}
 .modepill{box-shadow:0 0 14px rgba(246,178,74,.12)}
-#detail svg,#ares svg,#engines svg{filter:drop-shadow(0 0 5px rgba(0,224,138,.26))}
+#engines svg{filter:drop-shadow(0 0 5px rgba(0,224,138,.26))}
+.rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
+.rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 button{background:rgba(255,255,255,.045);border:1px solid var(--line);color:var(--tx)}
 button:hover{background:rgba(255,255,255,.09)}
 button.pri{background:var(--acc);color:#04130d;border-color:var(--acc);font-weight:600;box-shadow:0 0 20px rgba(0,224,138,.22)}
@@ -1122,13 +1132,41 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
  var fb=Object.keys(d.factors||{}).map(k=>{var v=d.factors[k],c=v>=60?'var(--up)':(v>=40?'var(--warn)':'var(--dn)');return '<div style="margin:8px 0"><div class=row style="font-size:12px"><span class=mut>'+k.replace('_',' ')+'</span><span>'+v+'</span></div><div class=scorebar><i style="width:'+v+'%;background:'+c+'"></i></div></div>'}).join('');
  el.innerHTML=(target=='detail'?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">‹ back</div>':'')
  +'<div class=row><div><div class=sec style="margin:0">'+sym+'</div><div class=mut style="font-size:12px">'+mkt+' · live</div></div><div class=hero style="font-size:25px">'+s+d.live+'</div></div>'
- +chartHtml(d.chart,[{v:d.entry,c:'#2563eb'},{v:d.stop,c:'#df2f29'},{v:d.target,c:'#06a35a'}])
+ +'<div id=candleWrap class=raise style="padding:10px 12px"></div>'
  +'<div class=raise style="background:'+vb+';border:none;margin-top:8px"><div class=row><b style="color:'+vt+'">'+d.verdict+'</b><span style="color:'+vt+';font-size:12px">score '+d.score+(d.regime===false?' · regime risk-off':'')+'</span></div></div>'
  +(d.held?'<div class=raise style="margin-top:8px"><div class=row><b>you hold this · '+d.held.strategy+'</b><span class="'+col(d.held.pnl)+'">'+sgn(d.held.pnl)+'%</span></div><div class=mut style="font-size:12px;margin-top:4px">entry '+s+d.held.entry+' · qty '+d.held.qty+' · exits on '+d.held.rule+'</div></div>':'')
  +'<div class=sec style="font-size:13px">'+(d.held?'if you buy more — plan':'trade plan')+'</div>'
  +'<div class=grid><div class=card><div class=mut style="font-size:11px">entry</div><div style="font-size:17px;font-weight:600">'+s+d.entry+'</div></div><div class=card><div class=mut style="font-size:11px">reward:risk</div><div style="font-size:17px;font-weight:600">'+d.rr+':1</div></div><div class=card><div class=mut style="font-size:11px">stop</div><div class="dn" style="font-size:17px;font-weight:600">'+s+d.stop+'</div></div><div class=card><div class=mut style="font-size:11px">target</div><div class="up" style="font-size:17px;font-weight:600">'+s+d.target+'</div></div></div>'
  +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
- +'<div style="display:flex;gap:9px;margin:14px 0"><button style="flex:1" onclick="alert(\'Alerts coming next\')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>';});}
+ +'<div style="display:flex;gap:9px;margin:14px 0"><button style="flex:1" onclick="alert(\'Alerts coming next\')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>';
+ var cd=d.candles||[];CHART={candles:cd,ccy:s,levels:[{v:d.entry,c:'#38bdf8',t:'entry'},{v:d.stop,c:'#ff5d6c',t:'stop'},{v:d.target,c:'#00e08a',t:'target'}],range:Math.min(66,cd.length)};drawCandles();});}
+var CHART=null;
+function setRange(n){if(CHART){CHART.range=n;drawCandles()}}
+function drawCandles(){var wrap=document.getElementById('candleWrap');if(!wrap||!CHART)return;
+ var all=CHART.candles;if(!all||all.length<2){wrap.innerHTML='<div class=skel style="padding:18px 0">no chart data yet</div>';return;}
+ var c=all.slice(Math.max(0,all.length-(CHART.range||all.length)));
+ wrap.innerHTML=candleSVG(c,CHART.levels,CHART.ccy)+rangeBar(all.length);}
+function rangeBar(total){var opts=[['1M',22],['3M',66],['6M',132]].filter(o=>o[1]<total);opts.push(['All',total]);
+ return '<div style="display:flex;gap:6px;margin:8px 0 0">'+opts.map(o=>'<b class="rgb'+(CHART.range==o[1]?' on':'')+'" onclick="setRange('+o[1]+')">'+o[0]+'</b>').join('')+'</div>';}
+function candleSVG(c,levels,ccy){
+ var W=600,PH=168,GAP=12,VH=44,H=PH+GAP+VH,n=c.length;
+ var lo=1e18,hi=-1e18,vmax=0;
+ c.forEach(function(k){if(k[2]<lo)lo=k[2];if(k[1]>hi)hi=k[1];if(k[4]>vmax)vmax=k[4]});
+ var rng=(hi-lo)||1,pad=rng*0.06;lo-=pad;hi+=pad;rng=hi-lo;
+ var step=W/n,bw=Math.max(1.4,step*0.62);
+ function X(i){return i*step+step/2}
+ function Y(p){return (PH-(p-lo)/rng*PH)}
+ var body='',i,k,up,col;
+ for(i=0;i<n;i++){k=c[i];up=k[3]>=k[0];col=up?'#00e08a':'#ff5d6c';var cx=X(i),yo=Y(k[0]),yc=Y(k[3]),yt=Math.min(yo,yc),hb=Math.max(1,Math.abs(yc-yo));
+  body+='<line x1="'+cx.toFixed(1)+'" y1="'+Y(k[1]).toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+Y(k[2]).toFixed(1)+'" stroke="'+col+'" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  body+='<rect x="'+(cx-bw/2).toFixed(1)+'" y="'+yt.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+hb.toFixed(1)+'" fill="'+col+'" rx="0.4"/>';
+  var vh=vmax?k[4]/vmax*VH:0;body+='<rect x="'+(cx-bw/2).toFixed(1)+'" y="'+(H-vh).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+vh.toFixed(1)+'" fill="'+col+'" opacity="0.32"/>';}
+ var ma='',pts=[];for(i=0;i<n;i++){if(i<19)continue;var sm=0;for(var j=i-19;j<=i;j++)sm+=c[j][3];pts.push(X(i).toFixed(1)+','+Y(sm/20).toFixed(1))}
+ if(pts.length>1)ma='<polyline points="'+pts.join(' ')+'" fill="none" stroke="#38bdf8" stroke-width="1.4" opacity="0.85" vector-effect="non-scaling-stroke"/>';
+ var grid='',lab='';[0.5,0.0,1.0].forEach(function(f){var p=lo+rng*f,y=Y(p);grid+='<line x1="0" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'" stroke="rgba(255,255,255,.06)" stroke-width="1" vector-effect="non-scaling-stroke"/>';lab+='<text x="'+(W-2)+'" y="'+(y-2).toFixed(1)+'" text-anchor="end" font-size="9" fill="#7e8ca1">'+(ccy||'')+(p>=1000?Math.round(p):p.toFixed(1))+'</text>'});
+ var lv=(levels||[]).filter(function(l){return l.v&&l.v>=lo&&l.v<=hi}).map(function(l){var y=Y(l.v);return '<line x1="0" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'" stroke="'+l.c+'" stroke-width="1" stroke-dasharray="3 3" opacity="0.7" vector-effect="non-scaling-stroke"/><text x="3" y="'+(y-2).toFixed(1)+'" font-size="9" fill="'+l.c+'">'+l.t+'</text>'}).join('');
+ return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block;overflow:visible">'+grid+lv+body+ma+lab+'</svg>';
+}
 function chartHtml(closes,levels){
  if(!closes||closes.length<3)return '';
  var w=300,h=92,n=closes.length,lo=Math.min.apply(null,closes),hi=Math.max.apply(null,closes);
