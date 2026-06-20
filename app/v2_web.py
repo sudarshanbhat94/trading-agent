@@ -897,10 +897,11 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
  --acc:#00e08a;--sh:0 2px 24px rgba(0,0,0,.45)
 }
 html{background:#0a0e15}
-body{color:var(--tx);background:
+body{color:var(--tx);overflow-x:hidden;background:
  radial-gradient(900px 520px at 80% -10%,rgba(56,189,248,.07),transparent 60%),
  radial-gradient(720px 520px at -5% -5%,rgba(0,224,138,.05),transparent 55%),
  #0a0e15}
+.app{min-width:0}.main{min-width:0}
 .num,.hero,#pv{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .hero{font-weight:700;text-shadow:0 0 26px rgba(0,224,138,.10)}
 .card,.raise,.pos{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.014));border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),var(--sh)}
@@ -965,7 +966,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  #ordlist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:36px}
  #account{max-width:860px}
  #analyze,#detail{max-width:1280px}
- .detail-grid{display:grid;grid-template-columns:1.7fr 1fr;gap:22px;align-items:start}
+ .detail-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:22px;align-items:start}
+ .detail-main,.detail-side{min-width:0}
  .detail-side{position:sticky;top:70px}
  .sec{margin-top:28px}
 }
