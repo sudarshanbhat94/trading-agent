@@ -844,6 +844,29 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
 .bar,.scorebar{border-radius:4px}.bar>i,.scorebar>i{border-radius:4px;transition:width .4s}
 @media(min-width:860px){.side{width:230px;padding:20px 14px;gap:2px}.side .b{font-size:19px;font-weight:680;letter-spacing:-.02em;padding:6px 12px 22px}.side a{padding:11px 13px;border-radius:11px;font-weight:500;transition:all .15s}.side a:hover{background:var(--surf);color:var(--tx)}.side a.on{background:var(--infb);color:var(--inf)}.main{padding:6px 32px 36px}}
 #login{max-width:380px;margin:11vh auto;padding:28px 26px;border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 20px rgba(16,24,40,.06)}#login h1{font-size:25px;font-weight:680;letter-spacing:-.02em}
+/* ============ responsive layout: real desktop dashboard ============ */
+#engines.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(min-width:860px){
+ .main{max-width:1280px;padding:12px 40px 52px}
+ .top{padding:18px 2px 12px}
+ .hero{font-size:40px}
+ #engines{gap:16px}
+ #engines .card{padding:17px 19px}
+ #homepos,#poslist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+ #homepos>.pos,#poslist>.pos{margin-bottom:0}
+ #ordlist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:36px}
+ #analyze,#account,#detail{max-width:860px}
+ .sec{margin-top:28px}
+}
+@media(min-width:1400px){
+ .main{max-width:1520px}
+ #homepos,#poslist{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:859px){
+ .hero{font-size:28px;line-height:1.18}
+ .main{padding:0 14px 94px}
+ #engines{gap:9px}
+}
 </style></head><body>
 
 <div id=login class=hide><h1>OpenStocks</h1><p class=mut style="margin:0 0 22px">AI trading desk · sign in</p>
