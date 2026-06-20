@@ -223,7 +223,7 @@ def poll_market(market):
     mcon = _ro(MAIN_DB)
     fills = exits = vetoed = 0
     for _, _, s, pl in cand:
-        if len(positions) >= max_pos or alloc > cash:
+        if len(positions) >= max_pos or alloc * (1 + cside) > cash:   # leave cost headroom; never overdraw the pool
             break
         sym = s["symbol"]
         if sym in positions or sym in traded:
