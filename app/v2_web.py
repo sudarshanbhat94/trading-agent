@@ -844,6 +844,57 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
 .bar,.scorebar{border-radius:4px}.bar>i,.scorebar>i{border-radius:4px;transition:width .4s}
 @media(min-width:860px){.side{width:230px;padding:20px 14px;gap:2px}.side .b{font-size:19px;font-weight:680;letter-spacing:-.02em;padding:6px 12px 22px}.side a{padding:11px 13px;border-radius:11px;font-weight:500;transition:all .15s}.side a:hover{background:var(--surf);color:var(--tx)}.side a.on{background:var(--infb);color:var(--inf)}.main{padding:6px 32px 36px}}
 #login{max-width:380px;margin:11vh auto;padding:28px 26px;border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 20px rgba(16,24,40,.06)}#login h1{font-size:25px;font-weight:680;letter-spacing:-.02em}
+/* ============ OpenStocks — pro dark terminal theme ============ */
+:root{
+ --bg:#0a0e15;--surf:#10161f;--card:#0e141d;--line:#1c2633;--tx:#e7eef7;--mut:#7e8ca1;
+ --up:#00e08a;--upb:rgba(0,224,138,.12);--dn:#ff5d6c;--dnb:rgba(255,93,108,.12);
+ --inf:#38bdf8;--infb:rgba(56,189,248,.14);--warn:#f6b24a;--warnb:rgba(246,178,74,.14);
+ --acc:#00e08a;--sh:0 2px 24px rgba(0,0,0,.45)
+}
+html{background:#0a0e15}
+body{color:var(--tx);background:
+ radial-gradient(900px 520px at 80% -10%,rgba(56,189,248,.07),transparent 60%),
+ radial-gradient(720px 520px at -5% -5%,rgba(0,224,138,.05),transparent 55%),
+ #0a0e15}
+.num,.hero,#pv{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.hero{font-weight:700;text-shadow:0 0 26px rgba(0,224,138,.10)}
+.card,.raise,.pos{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.014));border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),var(--sh)}
+.pos{transition:border-color .15s,transform .15s,box-shadow .15s}
+.pos:hover{border-color:rgba(0,224,138,.42);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 0 1px rgba(0,224,138,.18),var(--sh);transform:translateY(-1px)}
+.side{background:linear-gradient(180deg,rgba(255,255,255,.022),transparent);border-right:1px solid var(--line);backdrop-filter:blur(8px)}
+.side .b{color:var(--tx);letter-spacing:.01em}
+.side a{transition:all .15s;border:1px solid transparent}
+.side a:hover{background:rgba(255,255,255,.045);color:var(--tx)}
+.side a.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.25);box-shadow:0 0 18px rgba(56,189,248,.10)}
+.nav{background:rgba(10,14,21,.86);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
+.nav a.on{color:var(--up)}
+.top{background:rgba(10,14,21,.72);backdrop-filter:blur(14px)}
+.live{background:var(--upb);color:var(--up);border:1px solid rgba(0,224,138,.25);box-shadow:0 0 14px rgba(0,224,138,.10)}
+.dot{box-shadow:0 0 8px var(--up)}
+.seg{background:rgba(255,255,255,.04);border:1px solid var(--line)}
+.seg b.on{background:rgba(255,255,255,.08);color:var(--tx);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)}
+.prof{background:var(--infb);color:var(--inf);border:1px solid rgba(56,189,248,.3)}
+.menu{background:#0e141d;border:1px solid var(--line);box-shadow:var(--sh)}
+.badge{border:1px solid transparent;font-weight:600}
+.bg-inf{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.25)}
+.bg-up{background:var(--upb);color:var(--up);border-color:rgba(0,224,138,.25)}
+.bg-dn{background:var(--dnb);color:var(--dn);border-color:rgba(255,93,108,.25)}
+.bg-warn{background:var(--warnb);color:var(--warn);border-color:rgba(246,178,74,.25)}
+.bg-mut{background:rgba(255,255,255,.05);color:var(--mut)}
+.chip{background:rgba(255,255,255,.04);border:1px solid var(--line)}
+.bar,.scorebar{background:rgba(255,255,255,.06)}
+.lrow{border-bottom:1px solid var(--line)}.lrow:hover{background:rgba(255,255,255,.03)}
+.modepill{box-shadow:0 0 14px rgba(246,178,74,.12)}
+#detail svg,#ares svg,#engines svg{filter:drop-shadow(0 0 5px rgba(0,224,138,.26))}
+button{background:rgba(255,255,255,.045);border:1px solid var(--line);color:var(--tx)}
+button:hover{background:rgba(255,255,255,.09)}
+button.pri{background:var(--acc);color:#04130d;border-color:var(--acc);font-weight:600;box-shadow:0 0 20px rgba(0,224,138,.22)}
+button.pri:hover{background:var(--acc);box-shadow:0 0 28px rgba(0,224,138,.38)}
+input,select{background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--tx)}
+input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb)}
+.sec{color:var(--mut)}
+#login{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.015));border:1px solid var(--line);box-shadow:var(--sh)}
+.skel{color:var(--mut)}
 /* ============ responsive layout: real desktop dashboard ============ */
 #engines.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(min-width:860px){
