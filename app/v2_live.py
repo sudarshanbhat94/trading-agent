@@ -27,9 +27,21 @@ MAXPOS = {"IN": 10, "US": 10}                # max concurrent positions per mark
 COST_SIDE = {"IN": 0.30 / 200, "US": 0.12 / 200}
 # per-strategy trade plan; both draw from the shared market pool
 PLAN = {
-    "gap_momentum":  dict(regime_gated=False, threshold=0.20, atr_stop=1.5, atr_target=0.0, trail=0.10, priority=0),
+    "gap_momentum":  dict(regime_gated=False, threshold=0.38, atr_stop=1.5, atr_target=0.0, trail=0.10, priority=0),
     "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=1),
 }
+# Index/sector/leveraged ETFs - never traded by the single-stock strategies. They
+# don't behave like gap/mean-reversion setups and create correlated, duplicate
+# exposure (e.g. holding QQQ + QQQM, both Nasdaq-100, at the same time).
+ETF_EXCLUDE = {
+    "QQQ", "QQQM", "ONEQ", "SPY", "VOO", "IVV", "SPLG", "DIA", "IWM", "IWB", "VTI", "VEA", "VWO",
+    "SMH", "SOXX", "SOXL", "SOXS", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLC", "XLRE",
+    "TQQQ", "SQQQ", "UPRO", "SPXL", "SPXU", "ARKK", "ARKG", "VUG", "VTV", "SCHD", "JEPI", "JEPQ",
+    "GLD", "SLV", "USO", "TLT", "HYG", "LQD", "VXX", "UVXY", "XBI", "KRE", "KWEB", "FXI", "EEM", "EFA", "VIG",
+}
+MIN_PRICE = {"IN": 50.0, "US": 5.0}     # quality/liquidity floor - skip the cheapest, most manipulable names
+SLOT_MIN_UTIL = 0.55                    # IN whole-share fill must use >= this fraction of its slot (else capital waste)
+GAP_SLOT_CAP = 7                        # cap gap_momentum slots so it can't monopolize the book (reserve up to MAXPOS-cap for swing)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS v2_book(market TEXT PRIMARY KEY, budget REAL, max_pos INTEGER, started_at TEXT);
 CREATE TABLE IF NOT EXISTS v2_positions(id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, strategy TEXT, symbol TEXT,
@@ -218,8 +230,20 @@ def poll_market(market):
             continue
         if pl["regime_gated"] and not regime:
             continue
+        if s["symbol"] in ETF_EXCLUDE:                  # no index/sector/leveraged ETFs
+            continue
+        if s["price"] < MIN_PRICE.get(market, 0.0):     # quality/liquidity floor
+            continue
         cand.append((pl["priority"], -s["score"], s, pl))
     cand.sort(key=lambda x: (x[0], x[1]))
+    # strategy balance: hold back slots for swing ONLY when swing actually has
+    # eligible candidates, so we never leave cash idle in a gap-only (risk-off) tape
+    strat_count = {}
+    for p in positions.values():
+        strat_count[p["strategy"]] = strat_count.get(p["strategy"], 0) + 1
+    swing_avail = sum(1 for _, _, s, _ in cand
+                      if s["strategy"] == "swing_meanrev" and s["symbol"] not in positions and s["symbol"] not in traded)
+    gap_cap = max_pos - min(max_pos - GAP_SLOT_CAP, swing_avail)
     mcon = _ro(MAIN_DB)
     fills = exits = vetoed = 0
     for _, _, s, pl in cand:
@@ -228,6 +252,8 @@ def poll_market(market):
         sym = s["symbol"]
         if sym in positions or sym in traded:
             continue
+        if s["strategy"] == "gap_momentum" and strat_count.get("gap_momentum", 0) >= gap_cap:
+            continue                      # don't let gap_momentum monopolize the book
         nscore, severe = _news_state(mcon, sym)
         if severe:                       # pro check: never buy into bad news
             vetoed += 1
@@ -238,6 +264,8 @@ def poll_market(market):
             shares = float(int(shares))
             if shares < 1:               # stock too pricey for the per-position budget
                 continue
+            if shares * entry < SLOT_MIN_UTIL * alloc:   # 1-share fill wastes the slot (e.g. a 5,400 stock in a 10,000 slot)
+                continue
         cash -= shares * entry * (1 + cside)
         tgt = entry + pl["atr_target"] * atr if pl["atr_target"] else 0.0
         v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at)"
@@ -246,6 +274,7 @@ def poll_market(market):
                     s["score"], datetime.now(timezone.utc).isoformat()))
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=pl["trail"], peak=entry)
+        strat_count[s["strategy"]] = strat_count.get(s["strategy"], 0) + 1
         traded.add(sym); fills += 1
     mcon.close()
     v2.commit(); v2.close()
