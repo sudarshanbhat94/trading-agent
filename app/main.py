@@ -592,20 +592,12 @@ try:  # new v2 dashboard (self-contained, read-only; never break the main app)
     @app.on_event("startup")
     async def _start_v2_live() -> None:
         _v2_live_start(interval=8)
-        # lean quote feeder as a SEPARATE child process (replaces the old agent's
-        # feed; runs in its own process so it can never block the web app)
-        try:
-            import subprocess as _sp
-            import sys as _sys
-            _sp.run(["pkill", "-f", "v2_quote_feed.py"], check=False)
-            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            _sp.Popen([_sys.executable, "-u", os.path.join("scripts", "v2_quote_feed.py"),
-                       "--loop", "--interval", "10"], cwd=_root,
-                      stdout=open(os.path.join(_root, "var", "v2_feed.log"), "a"),
-                      stderr=_sp.STDOUT, start_new_session=True)
-        except Exception as _feed_exc:  # pragma: no cover
-            import logging as _lg
-            _lg.getLogger("openstocks").warning("v2 quote feeder not started: %s", _feed_exc)
+        # The lean quote feeder runs as its OWN supervised systemd service
+        # (opentrade-feed.service) so it survives web-app restarts, auto-restarts
+        # on failure, and never blocks the event loop. Nothing to launch here.
+        # (Previously launched as an in-app child process, but that died with the
+        #  app's cgroup on every restart and its pre-launch pkill could even kill
+        #  a healthy feeder.)
 except Exception as _v2_exc:  # pragma: no cover
     import logging as _logging
 

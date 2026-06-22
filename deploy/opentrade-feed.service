@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenTrade live quote feeder (v2)
+After=network-online.target opentrade.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/v2_quote_feed.py --loop --interval 10
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
