@@ -9,7 +9,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/opentrade
 EnvironmentFile=/opt/opentrade/.env
-ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/v2_quote_feed.py --loop --interval 10
+ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/v2_quote_feed.py --loop --interval 1 --full-interval 12
 Restart=always
 RestartSec=5
 

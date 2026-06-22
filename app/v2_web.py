@@ -31,11 +31,23 @@ def _ro(path):
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
 
 
-def _live_map(market):
+def _live_map(market, symbols=None):
+    """Live price snapshot for a market. Pass `symbols` (an iterable) to read
+    only those rows — the per-second stream uses this so it never scans the whole
+    quote table just to value a handful of held positions."""
     try:
         con = _ro(MAIN_DB)
-        rows = con.execute("SELECT symbol,price,open,high,low,close FROM latest_quotes WHERE source=?",
-                           (LIVE_SOURCE[market],)).fetchall()
+        if symbols:
+            syms = [s for s in symbols]
+            if not syms:
+                con.close()
+                return {}
+            q = ("SELECT symbol,price,open,high,low,close FROM latest_quotes WHERE source=? AND symbol IN (%s)"
+                 % ",".join("?" * len(syms)))
+            rows = con.execute(q, [LIVE_SOURCE[market], *syms]).fetchall()
+        else:
+            rows = con.execute("SELECT symbol,price,open,high,low,close FROM latest_quotes WHERE source=?",
+                               (LIVE_SOURCE[market],)).fetchall()
         con.close()
     except Exception:
         return {}
@@ -251,7 +263,11 @@ def api_engine_status():
 
 def _stream_payload():
     v2 = _ro(V2_DB)
-    live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    held = {"IN": set(), "US": set()}
+    for m, sym in v2.execute("SELECT market,symbol FROM v2_positions"):
+        held.setdefault(m, set()).add(sym)
+    # only read the prices we actually need (held names) — keeps the 1s stream cheap
+    live = {"IN": _live_map("IN", held["IN"]), "US": _live_map("US", held["US"])}
     markets = []
     for market, budget in _markets(v2):
         s = _market_stats(v2, market, budget, live[market])
@@ -277,7 +293,7 @@ async def api_stream():
                 yield "data: " + _jsonmod.dumps(payload) + "\n\n"
             except Exception:
                 yield "data: {}\n\n"
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(1.0)   # per-second live updates
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
