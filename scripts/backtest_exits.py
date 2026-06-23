@@ -124,7 +124,8 @@ def swing(con, market, mode, k=2.5, be_atr=1.0, topn=700, thresh=0.55, hold=8,
 
 
 # ---------------------------------------------------------------- gap per-trade
-def gap(con, market, mode, trail=0.10, k=3.0, be_atr=1.0, min_turn=2e7,
+def gap(con, market, mode, trail=0.10, k=3.0, be_atr=1.0, atr_target=0.0,
+        g_thr=0.08, t_tight=0.04, min_turn=2e7,
         gap_min=0.03, gap_max=0.15, rvol_min=1.5, atr_stop=1.5, max_days=20):
     syms, mcum = gm.load(con, market, min_turn)
     reg = mcum > mcum.rolling(50).mean()
@@ -151,23 +152,28 @@ def gap(con, market, mode, trail=0.10, k=3.0, be_atr=1.0, min_turn=2e7,
                 continue
             a = atr.iloc[i]
             stop = entry - atr_stop * a
+            target = entry * (1 + atr_target) if atr_target else None   # % target (e.g. 0.08 = +8%)
             peak = entry
             expx = None
             j = i + 1
             while j < min(i + 1 + max_days, len(g)):
-                hi, lo = h.iloc[j], l.iloc[j]
+                hi, lo, op = h.iloc[j], l.iloc[j], o.iloc[j]
                 peak = max(peak, hi)
+                gain = peak / entry - 1
                 if mode == "cur":
                     eff = max(stop, peak * (1 - trail))
-                elif mode == "betrail":          # keep 10% trail, add a breakeven floor
+                elif mode == "tiered":           # wide trail early, tight once it's a real winner
+                    eff = max(stop, peak * (1 - (t_tight if gain >= g_thr else trail)))
+                elif mode == "target":           # take profit at a % target, else 10% trail
                     eff = max(stop, peak * (1 - trail))
-                    if peak >= entry + be_atr * a:
-                        eff = max(eff, entry)
-                else:  # new: breakeven + chandelier
+                else:                            # new: breakeven + chandelier
                     eff = stop
                     if peak >= entry + be_atr * a:
                         eff = max(eff, entry)
                     eff = max(eff, peak - k * a)
+                if target and hi >= target:      # profit target hit first (conservative: fill at target or gap-open)
+                    expx = max(target, op) if op > target else target
+                    break
                 if lo <= eff:
                     expx = eff
                     break
@@ -201,13 +207,22 @@ def main():
             print(f"[{mkt}] NEW k={k:>3}    ret={nw['ret']:+7.1f}%  win={nw['win']:4.1f}%  n={nw['n']:4d}  maxDD={nw['dd']:4.1f}%  med_giveback={nw['giveback']:4.1f}pp")
     print()
     print("=" * 78)
-    print("GAP (momentum) — CUR 10% trail  vs  NEW breakeven+chandelier (per-trade)")
+    print("GAP (momentum) — profit-protection sweep: target & tiered (give room early, lock late)")
     print("=" * 78)
+
+    def show(mkt, label, r):
+        print(f"[{mkt}] {label:18s} exp={r['exp']:+5.2f}%/trade  win={r['win']:4.1f}%  PF={r['pf']:.2f}  n={r['n']:5d}  med_giveback={r['giveback']:4.1f}pp")
+
     for mkt in ("IN", "US"):
-        cur = gap(con, mkt, "cur", trail=0.10)
-        print(f"[{mkt}] CUR trail10%      exp={cur['exp']:+5.2f}%/trade  win={cur['win']:4.1f}%  PF={cur['pf']:.2f}  n={cur['n']:5d}  med_giveback={cur['giveback']:4.1f}pp")
-        bt2 = gap(con, mkt, "betrail", trail=0.10, be_atr=3.0)
-        print(f"[{mkt}] trail10%+BE@3ATR exp={bt2['exp']:+5.2f}%/trade  win={bt2['win']:4.1f}%  PF={bt2['pf']:.2f}  n={bt2['n']:5d}  med_giveback={bt2['giveback']:4.1f}pp")
+        show(mkt, "CUR trail10%", gap(con, mkt, "cur", trail=0.10))
+        # tiered: 10% trail until +G, then tighten to T (locks PARAS-type runners)
+        for g_thr, t_tight in ((0.06, 0.03), (0.08, 0.04), (0.10, 0.05)):
+            show(mkt, f"tiered {int(g_thr*100)}->{int(t_tight*100)}%",
+                 gap(con, mkt, "tiered", trail=0.10, g_thr=g_thr, t_tight=t_tight))
+        # fixed % profit target (+ keep 10% trail underneath)
+        for tg in (0.08, 0.12, 0.15):
+            show(mkt, f"target +{int(tg*100)}%", gap(con, mkt, "target", trail=0.10, atr_target=tg))
+        print()
     con.close()
 
 

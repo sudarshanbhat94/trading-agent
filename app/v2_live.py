@@ -42,6 +42,9 @@ ETF_EXCLUDE = {
 MIN_PRICE = {"IN": 50.0, "US": 5.0}     # quality/liquidity floor - skip the cheapest, most manipulable names
 SLOT_MIN_UTIL = 0.55                    # IN whole-share fill must use >= this fraction of its slot (else capital waste)
 GAP_SLOT_CAP = 7                        # cap gap_momentum slots so it can't monopolize the book (reserve up to MAXPOS-cap for swing)
+GAP_TARGET = {"IN": 0.10, "US": 0.0}    # gap_momentum profit target by market: IN momentum mean-reverts,
+                                        # so take profit at +10% (backtested: less give-back, edge intact,
+                                        # win rate 37%->46%); US trends, a target chops the big runners -> trail only.
 BE_TRIGGER_ATR = 3.0                    # once a trade is up >= this many ATR, lock the stop at breakeven.
                                         # Backtested NEUTRAL (only arms on rare big winners, so it never cuts
                                         # normal trades that would recover) - protects against a monster winner
@@ -272,6 +275,8 @@ def poll_market(market):
                 continue
         cash -= shares * entry * (1 + cside)
         tgt = entry + pl["atr_target"] * atr if pl["atr_target"] else 0.0
+        if s["strategy"] == "gap_momentum" and GAP_TARGET.get(market):   # per-market gap profit target
+            tgt = entry * (1 + GAP_TARGET[market])
         v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at)"
                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                    (market, s["strategy"], sym, today_s, entry, shares, entry - pl["atr_stop"] * atr, tgt, pl["trail"], entry,
@@ -329,11 +334,17 @@ def exit_monitor(market):
             held = (today - date.fromisoformat(str(p["edate"]))).days
         except ValueError:
             held = 0
+        # IN gap names spike then mean-revert -> take profit at a fixed target
+        # (validated: cuts give-back, holds the edge). US gap trends -> trail only.
+        # Computed dynamically so it also protects positions opened before this rule.
+        eff_tgt = p["target"] or 0.0
+        if p["strategy"] == "gap_momentum" and GAP_TARGET.get(market):
+            eff_tgt = max(eff_tgt, p["entry"] * (1 + GAP_TARGET[market]))
         ex = reason = None
         if lq["low"] <= eff or lq["price"] <= eff:
             ex, reason = min(eff, lq["price"]), ("trail" if p["trail"] and eff > p["stop"] else "stop")
-        elif p["target"] and (lq["high"] >= p["target"] or lq["price"] >= p["target"]):
-            ex, reason = max(p["target"], lq["price"]), "target"
+        elif eff_tgt and (lq["high"] >= eff_tgt or lq["price"] >= eff_tgt):
+            ex, reason = max(eff_tgt, lq["price"]), "target"
         elif held >= HOLD_DAYS.get(p["strategy"], 10):
             ex, reason = lq["price"], "time"
         if ex is not None:
