@@ -42,6 +42,10 @@ ETF_EXCLUDE = {
 MIN_PRICE = {"IN": 50.0, "US": 5.0}     # quality/liquidity floor - skip the cheapest, most manipulable names
 SLOT_MIN_UTIL = 0.55                    # IN whole-share fill must use >= this fraction of its slot (else capital waste)
 GAP_SLOT_CAP = 7                        # cap gap_momentum slots so it can't monopolize the book (reserve up to MAXPOS-cap for swing)
+BE_TRIGGER_ATR = 3.0                    # once a trade is up >= this many ATR, lock the stop at breakeven.
+                                        # Backtested NEUTRAL (only arms on rare big winners, so it never cuts
+                                        # normal trades that would recover) - protects against a monster winner
+                                        # round-tripping below entry without harming the edge.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS v2_book(market TEXT PRIMARY KEY, budget REAL, max_pos INTEGER, started_at TEXT);
 CREATE TABLE IF NOT EXISTS v2_positions(id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, strategy TEXT, symbol TEXT,
@@ -316,6 +320,11 @@ def exit_monitor(market):
         eff = p["stop"]
         if p["trail"]:
             eff = max(eff, peak * (1 - p["trail"]))
+        # breakeven lock on a big winner only (recover ATR from the initial stop)
+        atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
+        atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
+        if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
+            eff = max(eff, p["entry"])
         try:
             held = (today - date.fromisoformat(str(p["edate"]))).days
         except ValueError:
