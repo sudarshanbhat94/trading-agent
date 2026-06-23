@@ -208,38 +208,57 @@ def api_positions():
 
 
 _ticker_cache: dict = {}
+# liquid large-caps shown on the tape alongside held names (the live feed only
+# sends `price`, no prev close, so day-change is computed against the candle DB)
+WATCH = {
+    "IN": ["RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN", "BHARTIARTL",
+           "ITC", "LT", "HINDUNILVR", "AXISBANK", "KOTAKBANK"],
+    "US": ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "AVGO", "JPM"],
+}
 
 
 @router.get("/api/ticker")
 def api_ticker():
-    """Live ticker-tape feed: held names first, then biggest day movers per
-    market. Reads latest_quotes (price + prev close) only; cached 12s."""
+    """Ticker-tape feed, OPEN markets first. Held names carry a live P&L since
+    entry (the feed has no prev-close and the candle history is stale, so a true
+    day-change isn't available); watchlist large-caps show live price only.
+    Cached 5s."""
     now = time.time()
     c = _ticker_cache.get("v")
-    if c is not None and now - _ticker_cache.get("t", 0) < 12:
+    if c is not None and now - _ticker_cache.get("t", 0) < 5:
         return JSONResponse(c)
-    held = {"IN": set(), "US": set()}
+    held = {"IN": {}, "US": {}}
     try:
         v2 = _ro(V2_DB)
-        for market, sym in v2.execute("SELECT market,symbol FROM v2_positions"):
-            held.setdefault(market, set()).add(sym)
+        for market, sym, entry in v2.execute("SELECT market,symbol,entry_price FROM v2_positions"):
+            held.setdefault(market, {})[sym] = entry
         v2.close()
     except Exception:
         pass
+    try:
+        from . import market_regions
+        openm = {m: bool(market_regions.market_session_for_region(m).get("is_open")) for m in ("IN", "US")}
+    except Exception:
+        openm = {"IN": False, "US": False}
+    order = sorted(("IN", "US"), key=lambda m: not openm.get(m))   # open markets first
     out = []
-    for market in ("IN", "US"):
+    for market in order:
         ccy = "₹" if market == "IN" else "$"
-        rows = []
-        for sym, q in _live_map(market).items():
-            prev = q.get("prev") or q["price"]
-            chg = (q["price"] / prev - 1) * 100 if prev else 0.0
-            rows.append((sym, q["price"], chg))
-        hl = [r for r in rows if r[0] in held.get(market, set())]
-        movers = sorted((r for r in rows if r[0] not in held.get(market, set())),
-                        key=lambda r: -abs(r[2]))[:10]
-        for sym, price, chg in hl + movers:
-            out.append(dict(symbol=sym, market=market, ccy=ccy,
-                            price=round(price, 2), chg=round(chg, 2)))
+        hsyms = list(held.get(market, {}).keys())
+        wsyms = [s for s in WATCH.get(market, []) if s not in held.get(market, {})]
+        live = _live_map(market, hsyms + wsyms)
+        for s in hsyms:
+            if s not in live:
+                continue
+            price = live[s]["price"]; entry = held[market][s]
+            pnl = round((price / entry - 1) * 100, 2) if entry else None
+            out.append(dict(symbol=s, market=market, ccy=ccy, price=round(price, 2),
+                            pnl=pnl, held=True, open=openm.get(market, False)))
+        for s in wsyms:
+            if s not in live:
+                continue
+            out.append(dict(symbol=s, market=market, ccy=ccy, price=round(live[s]["price"], 2),
+                            pnl=None, held=False, open=openm.get(market, False)))
     _ticker_cache.update(t=now, v=out)
     return JSONResponse(out)
 
@@ -1072,7 +1091,7 @@ function go(t){cur=t;['home','positions','orders','analyze','account','detail'].
 function inMkt(m){return MKT=='BOTH'||m==MKT}
 function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadAccountData();refresh();startStream();loadTicker();}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
 function loadTicker(){api('/v2/api/ticker').then(r=>{var it=(r.j||[]);var el=document.getElementById('ticker');if(!el)return;if(!it.length){el.style.display='none';return;}
- el.style.display='flex';var h=it.map(t=>{var a=t.chg>0?'▲':(t.chg<0?'▼':''),cl=t.chg>0?'up':(t.chg<0?'dn':'mut');return '<span class=tk onclick="stock(\''+t.symbol+'\',\''+t.market+'\')"><b>'+t.symbol+'</b><span class=mk>'+t.market+'</span><span class=num>'+t.ccy+(t.ccy=='₹'?INR:USD).format(t.price)+'</span><span class="'+cl+'">'+a+Math.abs(t.chg).toFixed(2)+'%</span></span>'}).join('');
+ el.style.display='flex';var h=it.map(t=>{var pnl='';if(t.pnl!=null){var a=t.pnl>0?'▲':(t.pnl<0?'▼':''),cl=t.pnl>0?'up':(t.pnl<0?'dn':'mut');pnl='<span class="'+cl+'">'+a+Math.abs(t.pnl).toFixed(2)+'%</span>';}return '<span class=tk onclick="stock(\''+t.symbol+'\',\''+t.market+'\')"><b>'+t.symbol+'</b><span class=mk>'+t.market+'</span><span class=num>'+t.ccy+(t.ccy=='₹'?INR:USD).format(t.price)+'</span>'+pnl+'</span>'}).join('');
  el.innerHTML='<div class=track>'+h+h+'</div>';}).catch(()=>{});}
 var ES=null;
 function startStream(){if(ES)return;try{ES=new EventSource('/v2/api/stream');ES.onmessage=function(e){try{applyStream(JSON.parse(e.data||'{}'))}catch(x){}};ES.onerror=function(){};}catch(e){}}
@@ -1216,5 +1235,5 @@ function spark(series,ccy){
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 boot();setInterval(()=>{if(ME){if(cur=='home')loadHome();if(cur=='positions')loadPos()}},20000);
-setInterval(()=>{if(ME)loadTicker()},15000);
+setInterval(()=>{if(ME)loadTicker()},6000);
 </script></body></html>"""

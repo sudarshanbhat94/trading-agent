@@ -1084,9 +1084,15 @@ class Database:
     @contextmanager
     def connect(self):
         with self._lock:
-            conn = sqlite3.connect(self.path)
+            conn = sqlite3.connect(self.path, timeout=30)
             conn.row_factory = sqlite3.Row
             try:
+                # WAL lets the per-second quote feed write while readers and the
+                # other feed worker proceed; busy_timeout makes a writer wait for
+                # the lock instead of failing with "database is locked".
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=30000")
+                conn.execute("PRAGMA synchronous=NORMAL")
                 yield conn
                 conn.commit()
             finally:
