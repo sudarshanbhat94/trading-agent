@@ -132,8 +132,9 @@ def _reasons(s: pd.Series, f: pd.Series, strategy: str) -> list[str]:
 
 
 def investigate(symbol: str, fp: pd.DataFrame, sc: pd.DataFrame, market: str, strategy: str,
-                regime_ok: bool, news_severe: bool, held_sectors: dict, sector_map: dict) -> dict:
-    """Full pre-trade report for one candidate: composite, hard gates, sizing, reasons."""
+                regime_state: str, news_severe: bool, held_sectors: dict, sector_map: dict) -> dict:
+    """Full pre-trade report for one candidate: composite, hard gates, sizing, reasons.
+    `regime_state` is "ON"/"NEUTRAL"/"OFF" (see v2_engine.regime_state)."""
     base = dict(symbol=symbol, market=market, strategy=strategy)
     if symbol not in fp.index:
         return {**base, "verdict": "AVOID", "composite": 0.0, "gates_failed": ["no_fresh_data"], "size_mult": 0.0}
@@ -147,9 +148,11 @@ def investigate(symbol: str, fp: pd.DataFrame, sc: pd.DataFrame, market: str, st
         gates.append("news_veto")
     if f["dd252"] < MAX_DRAWDOWN:
         gates.append("deep_drawdown")
-    if strategy == "swing_meanrev" and not regime_ok:
+    if strategy == "swing_meanrev" and regime_state == "OFF":
         gates.append("regime_risk_off")
     sector = sector_map.get(symbol) or "unknown"
+    if sector == "ETF":                      # never trade ETFs/funds as single-stock picks
+        gates.append("is_etf")
     if held_sectors.get(sector, 0) >= MAX_PER_SECTOR:
         gates.append("sector_full")
     w = WEIGHTS[strategy]
@@ -158,7 +161,9 @@ def investigate(symbol: str, fp: pd.DataFrame, sc: pd.DataFrame, market: str, st
         w["trend"] * s["trend"] + w["momentum"] * s["momentum"] + w["rel_strength"] * s["rel_strength"]
         + w["volume"] * s["volume"] + w["vol_quality"] * s["vol_quality"] + w["setup"] * setup
         + w["liquidity"] * s["liquidity"])
-    verdict = "AVOID" if gates else ("BUY" if composite >= BUY_MIN else ("WATCH" if composite >= WATCH_MIN else "AVOID"))
+    # choppy/neutral market: only the very best dip-buys clear the bar
+    buy_min = BUY_MIN + (8.0 if strategy == "swing_meanrev" and regime_state == "NEUTRAL" else 0.0)
+    verdict = "AVOID" if gates else ("BUY" if composite >= buy_min else ("WATCH" if composite >= WATCH_MIN else "AVOID"))
     return {**base, "composite": round(composite, 1), "verdict": verdict, "gates_failed": gates,
             "size_mult": round(_size_multiplier(f["atr_pct"]), 2), "sector": sector,
             "factors": {k: round(float(s[k])) for k in ("trend", "momentum", "rel_strength",

@@ -227,7 +227,8 @@ def poll_market(market):
         return
     tails, mdf = _hist(market)
     sigs, mdf_live, today = _signals(tails, mdf, live)
-    regime = eng.regime_ok(mdf_live, today, eng.DEFAULTS["regime_lookback"])
+    rstate = eng.regime_state(mdf_live, today, eng.DEFAULTS["regime_lookback"])
+    regime = rstate != "OFF"   # allow dip-buys unless the market is genuinely weak
     v2 = _rw()
     book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
     if not book:
@@ -306,10 +307,19 @@ def poll_market(market):
         # ---- THE GATE: full multi-factor investigation must say BUY ----
         size_mult = 1.0
         if fscores is not None:
-            rep = fi.investigate(sym, fpanel, fscores, market, s["strategy"], regime, severe, held_sectors, sector_map)
+            rep = fi.investigate(sym, fpanel, fscores, market, s["strategy"], rstate, severe, held_sectors, sector_map)
             if rep["verdict"] != "BUY":
                 investig += 1
                 continue
+            # defensive: don't trade if the live entry price diverges wildly from
+            # the last candle close (a feed glitch / wrong instrument)
+            try:
+                cclose = float(fpanel.loc[sym, "close"])
+                if cclose > 0 and abs(s["price"] / cclose - 1) > 0.30:
+                    investig += 1
+                    continue
+            except Exception:
+                pass
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
         shares = (alloc * size_mult) / entry   # volatility-scaled position size

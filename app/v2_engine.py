@@ -107,6 +107,31 @@ def regime_ok(market_df: pd.DataFrame, asof, lookback: int = 50) -> bool:
     return bool(mc.loc[asof] > ref.mean())
 
 
+def regime_state(market_df: pd.DataFrame, asof, lookback: int = 50,
+                 band: float = 0.02, trend_floor: float = -0.03) -> str:
+    """Graded market regime so a market a hair below its mean isn't treated like
+    one that's crashing:
+      ON      - above its mean and not downtrending -> trade normally
+      NEUTRAL - choppy/flat (within `band` below mean, not falling) -> best setups only
+      OFF     - clearly below mean OR a >|trend_floor| 20d decline -> block dip-buys
+    """
+    mc = market_df["mkt_cum"]
+    if asof not in mc.index:
+        return "OFF"
+    ref = mc.loc[:asof].tail(lookback)
+    if len(ref) < lookback:
+        return "OFF"
+    cur, mean = float(mc.loc[asof]), float(ref.mean())
+    ratio = cur / mean - 1 if mean else 0.0
+    idx = mc.loc[:asof]
+    trend = (float(idx.iloc[-1]) / float(idx.iloc[-21]) - 1) if len(idx) > 21 else 0.0
+    if ratio > 0 and trend > trend_floor:
+        return "ON"
+    if ratio < -band or trend < trend_floor:
+        return "OFF"
+    return "NEUTRAL"
+
+
 def signals_for_date(syms: dict, market_df: pd.DataFrame, asof,
                      threshold: float, atr_stop: float, atr_target: float) -> list[dict]:
     """Ranked conviction signals for `asof`'s close. Each carries the trade plan
