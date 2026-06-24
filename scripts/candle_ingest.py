@@ -76,15 +76,28 @@ def _market_settings(settings, market, prov):
 def ingest(market, prov, db, settings, limit=0, fetch_batch=150, pause=2.0):
     provider = build_market_data_provider(_market_settings(settings, market, prov))
     rows = db.get_universe(enabled_only=True, market_region=market)
-    # held symbols first (always refreshed), then the rest of the universe
     held = _held(market)
+    t0 = time.time()
+    syms_done = candles_done = 0
+
+    # 1) GUARANTEED held pass: positions we hold must be fresh. Small dedicated
+    # batch with a retry, since large universe runs drop ~30-50% of symbols.
+    held_rows = [r for r in rows if str(r.get("symbol", "")).upper() in held]
+    if held_rows:
+        for attempt in range(2):
+            daily = _daily_only(asyncio.run(provider.get_candles(held_rows)))
+            if daily:
+                db.upsert_candles(daily)
+                print(f"[{market}] held pass: {len(daily)}/{len(held_rows)} held symbols fresh", flush=True)
+                break
+            time.sleep(3)
+
+    # 2) broad universe pass (held first so any partial coverage still favours them)
     rows.sort(key=lambda r: 0 if str(r.get("symbol", "")).upper() in held else 1)
     rows = rows[: (limit or TOPN)]
     if not rows:
         print(f"[{market}] no universe rows", flush=True)
         return 0
-    t0 = time.time()
-    syms_done = candles_done = 0
     # Fetch in batches with a short pause so the historical API doesn't rate-limit
     # the whole burst (Upstox capped a 1600-symbol burst at ~70 symbols).
     for b in range(0, len(rows), fetch_batch):
