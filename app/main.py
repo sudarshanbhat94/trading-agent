@@ -591,6 +591,11 @@ try:  # new v2 dashboard (self-contained, read-only; never break the main app)
 
     @app.on_event("startup")
     async def _start_v2_live() -> None:
+        # Engine runs in-process in a thread; its heavy pandas poll holds the GIL.
+        # Gated by env so it can be disabled fast if it ever starves the web loop.
+        import os as _os
+        if _os.environ.get("OPENSTOCKS_DISABLE_ENGINE") == "1":
+            return
         _v2_live_start(interval=8)
         # The lean quote feeder runs as its OWN supervised systemd service
         # (opentrade-feed.service) so it survives web-app restarts, auto-restarts
@@ -841,6 +846,12 @@ async def _maintenance_loop() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     global maintenance_task, position_mark_task
+    # Minimal/read-only mode: skip ALL background loops so the dashboard binds and
+    # serves immediately (quotes are fed by the separate opentrade-feed service).
+    # Used to recover from / isolate a background-loop CPU starvation.
+    import os as _os
+    if _os.environ.get("OPENSTOCKS_DISABLE_ENGINE") == "1":
+        return
     await universe_service.refresh_if_enabled()
     delivery_service.start_background_task()
     maintenance_task = asyncio.create_task(_maintenance_loop())

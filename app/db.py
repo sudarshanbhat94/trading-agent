@@ -1087,12 +1087,11 @@ class Database:
             conn = sqlite3.connect(self.path, timeout=30)
             conn.row_factory = sqlite3.Row
             try:
-                # WAL lets the per-second quote feed write while readers and the
-                # other feed worker proceed; busy_timeout makes a writer wait for
-                # the lock instead of failing with "database is locked".
-                conn.execute("PRAGMA journal_mode=WAL")
+                # NOTE: WAL was tried here but with the per-second feed + an always-open
+                # SSE reader the WAL never checkpointed and ballooned to ~900MB, making
+                # every query churn through it (startup CPU-pegged). Reverted to the
+                # default rollback journal; busy_timeout avoids instant lock errors.
                 conn.execute("PRAGMA busy_timeout=30000")
-                conn.execute("PRAGMA synchronous=NORMAL")
                 yield conn
                 conn.commit()
             finally:
