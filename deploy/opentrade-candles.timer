@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh OpenTrade daily candles after each market close
+
+[Timer]
+# ~30min after IN close (10:00 UTC) and after US close (20:00 UTC), weekdays
+OnCalendar=Mon..Fri 10:30 UTC
+OnCalendar=Mon..Fri 20:30 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

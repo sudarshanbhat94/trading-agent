@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenTrade daily candle ingestion (v2 engine signal data)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python3 scripts/candle_ingest.py
+TimeoutStartSec=1800
