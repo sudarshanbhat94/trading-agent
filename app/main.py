@@ -846,11 +846,12 @@ async def _maintenance_loop() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     global maintenance_task, position_mark_task
-    # Minimal/read-only mode: skip ALL background loops so the dashboard binds and
-    # serves immediately (quotes are fed by the separate opentrade-feed service).
-    # Used to recover from / isolate a background-loop CPU starvation.
+    # Legacy background loops (universe refresh, delivery, maintenance, the 1s
+    # position-quote refresh). Redundant with the standalone feeder + the v2
+    # engine's own exit_monitor, and they added event-loop load — gated OFF by
+    # default now (separate flag from the v2 engine).
     import os as _os
-    if _os.environ.get("OPENSTOCKS_DISABLE_ENGINE") == "1":
+    if _os.environ.get("OPENSTOCKS_DISABLE_LEGACY", "1") == "1":
         return
     await universe_service.refresh_if_enabled()
     delivery_service.start_background_task()

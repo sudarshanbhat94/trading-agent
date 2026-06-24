@@ -365,7 +365,9 @@ def exit_monitor(market):
 
 
 _last_signal: dict = {}
-SIGNAL_INTERVAL = 60   # heavy signal recompute cadence (s)
+SIGNAL_INTERVAL = 300   # heavy signal recompute cadence (s) — daily signals barely
+                        # change intraday, so 5min keeps the GIL-heavy panel/feature
+                        # compute from starving the web event loop (exits still run every cycle)
 
 
 def loop(interval):
