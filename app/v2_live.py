@@ -17,6 +17,7 @@ import pandas as pd
 
 from . import v2_engine as eng
 from . import market_regions
+from . import factor_investigation as fi
 
 MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
@@ -96,7 +97,9 @@ def _hist(market):
     con = _ro(MAIN_DB)
     syms, mdf = eng.load_panel(con, market, topn=eng.DEFAULTS["topn"])
     con.close()
-    tails = {s: g.tail(90).copy() for s, g in syms.items() if len(g) >= 70}
+    # keep ~1y of bars so the pre-trade factor investigation has enough history
+    # (drawdown-from-252d-high, RSI, 50d-slope, etc.); signals only need the tail.
+    tails = {s: g.tail(300).copy() for s, g in syms.items() if len(g) >= 70}
     _HIST[market] = (time.time(), tails, mdf)
     return tails, mdf
 
@@ -107,6 +110,28 @@ def _f(v, d):
         return x if x > 0 else d
     except (TypeError, ValueError):
         return d
+
+
+_SECTOR_CACHE: dict = {}
+
+
+def _sector_map(market):
+    """symbol -> sector, cached 6h. Used for the concentration cap. Best-effort:
+    if the universe table has no sector data the cap simply doesn't bind."""
+    c = _SECTOR_CACHE.get(market)
+    if c and time.time() - c[0] < 6 * 3600:
+        return c[1]
+    out = {}
+    try:
+        con = _ro(MAIN_DB)
+        for sym, sec in con.execute("SELECT symbol, sector FROM universe"):
+            if sym:
+                out[str(sym).upper()] = str(sec).strip() if sec else "unknown"
+        con.close()
+    except Exception:
+        pass
+    _SECTOR_CACHE[market] = (time.time(), out)
+    return out
 
 
 # severe-negative catalysts a pro would NOT buy into
@@ -251,8 +276,21 @@ def poll_market(market):
     swing_avail = sum(1 for _, _, s, _ in cand
                       if s["strategy"] == "swing_meanrev" and s["symbol"] not in positions and s["symbol"] not in traded)
     gap_cap = max_pos - min(max_pos - GAP_SLOT_CAP, swing_avail)
+    # ---- pre-trade factor investigation: score the whole universe once ----
+    sector_map = _sector_map(market)
+    held_sectors = {}
+    for psym in positions:
+        sec = sector_map.get(str(psym).upper(), "unknown")
+        held_sectors[sec] = held_sectors.get(sec, 0) + 1
+    try:
+        fasof = eng.complete_trading_dates(tails, 0.5)[-1]
+        fpanel = fi.build_factor_panel(tails, mdf, fasof)
+        fscores = fi.score_panel(fpanel) if len(fpanel) else None
+    except Exception as _fexc:
+        fpanel = fscores = None
+        _status[market] = f"factor panel err: {str(_fexc)[:30]}"
     mcon = _ro(MAIN_DB)
-    fills = exits = vetoed = 0
+    fills = exits = vetoed = investig = 0
     for _, _, s, pl in cand:
         if len(positions) >= max_pos or alloc * (1 + cside) > cash:   # leave cost headroom; never overdraw the pool
             break
@@ -265,8 +303,16 @@ def poll_market(market):
         if severe:                       # pro check: never buy into bad news
             vetoed += 1
             continue
+        # ---- THE GATE: full multi-factor investigation must say BUY ----
+        size_mult = 1.0
+        if fscores is not None:
+            rep = fi.investigate(sym, fpanel, fscores, market, s["strategy"], regime, severe, held_sectors, sector_map)
+            if rep["verdict"] != "BUY":
+                investig += 1
+                continue
+            size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
-        shares = alloc / entry
+        shares = (alloc * size_mult) / entry   # volatility-scaled position size
         if market == "IN":               # NSE: whole shares only, no fractions
             shares = float(int(shares))
             if shares < 1:               # stock too pricey for the per-position budget
@@ -284,10 +330,13 @@ def poll_market(market):
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=pl["trail"], peak=entry)
         strat_count[s["strategy"]] = strat_count.get(s["strategy"], 0) + 1
+        sec = sector_map.get(sym, "unknown")
+        held_sectors[sec] = held_sectors.get(sec, 0) + 1
         traded.add(sym); fills += 1
     mcon.close()
     v2.commit(); v2.close()
-    _status[market] = f"signals {datetime.now(IST).strftime('%H:%M IST')} · +{fills} new · {vetoed} news-vetoed"
+    _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · +{fills} new · "
+                       f"{vetoed} news-vetoed · {investig} investigation-rejected")
 
 
 HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20}
