@@ -304,11 +304,14 @@ def poll_market(market):
         if severe:                       # pro check: never buy into bad news
             vetoed += 1
             continue
-        # ---- THE GATE: full multi-factor investigation must say BUY ----
+        # ---- THE GATE: investigation HARD GATES must clear (liquidity, drawdown,
+        # regime, sector, news). Ranking stays with the proven conviction score and
+        # position size comes from the investigation. This HYBRID backtested best
+        # (US Sharpe 1.80 vs 1.37, max-DD 10% vs 27%); composite-RANKING was worse.
         size_mult = 1.0
         if fscores is not None:
             rep = fi.investigate(sym, fpanel, fscores, market, s["strategy"], rstate, severe, held_sectors, sector_map)
-            if rep["verdict"] != "BUY":
+            if rep["gates_failed"]:
                 investig += 1
                 continue
             # defensive: don't trade if the live entry price diverges wildly from
