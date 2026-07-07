@@ -229,6 +229,197 @@ def api_positions():
     return JSONResponse(out)
 
 
+# ---------------- watchlist · alerts · search · movers ----------------
+def _uwl(v2):
+    v2.executescript(
+        "CREATE TABLE IF NOT EXISTS v2_watch_user(symbol TEXT, market TEXT, added_at TEXT, PRIMARY KEY(symbol,market));"
+        "CREATE TABLE IF NOT EXISTS v2_alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, market TEXT,"
+        " kind TEXT, value REAL, created_at TEXT, triggered_at TEXT, triggered_price REAL, active INTEGER DEFAULT 1);")
+
+
+def _daychg(market, symbols):
+    """live price + day-change vs the last daily close, from the cached engine
+    panel (no extra DB scan). If today's bar is already ingested, use the prior."""
+    if not symbols:
+        return {}
+    try:
+        syms, _ = _panel(market)
+    except Exception:
+        return {}
+    live = _live_map(market, symbols)
+    today = datetime.now(IST).date()
+    out = {}
+    for s in symbols:
+        g, lq = syms.get(s), live.get(s)
+        if g is None or lq is None or len(g) < 2:
+            continue
+        prev = float(g["close"].iloc[-2] if g.index[-1].date() >= today else g["close"].iloc[-1])
+        out[s] = dict(price=lq["price"], chg=(lq["price"] / prev - 1) * 100 if prev > 0 else 0.0)
+    return out
+
+
+@router.get("/api/watchlist")
+def api_watchlist():
+    v2 = _rw()
+    _uwl(v2)
+    rows = v2.execute("SELECT symbol,market FROM v2_watch_user ORDER BY added_at DESC").fetchall()
+    alerts = v2.execute("SELECT id,symbol,market,kind,value,active,triggered_at,triggered_price "
+                        "FROM v2_alerts ORDER BY id DESC LIMIT 60").fetchall()
+    v2.close()
+    chg = {m: _daychg(m, [r[0] for r in rows if r[1] == m]) for m in ("IN", "US")}
+    watch = []
+    for sym, m in rows:
+        d = chg.get(m, {}).get(sym) or {}
+        watch.append(dict(symbol=sym, market=m, ccy="₹" if m == "IN" else "$",
+                          price=round(d.get("price", 0), 2), chg=round(d.get("chg", 0), 2)))
+    al = [dict(id=a[0], symbol=a[1], market=a[2], ccy="₹" if a[2] == "IN" else "$", kind=a[3],
+               value=a[4], active=bool(a[5]), triggered_at=_ist(a[6]) if a[6] else None,
+               triggered_price=a[7]) for a in alerts]
+    return JSONResponse(dict(watch=watch, alerts=al))
+
+
+@router.post("/api/watchlist")
+def api_watchlist_add(payload: dict):
+    sym = str(payload.get("symbol", "")).upper().strip()
+    market = payload.get("market", "IN")
+    if not sym:
+        return JSONResponse({"error": "symbol required"}, status_code=400)
+    v2 = _rw()
+    _uwl(v2)
+    v2.execute("INSERT OR IGNORE INTO v2_watch_user VALUES(?,?,?)",
+               (sym, market, datetime.now(timezone.utc).isoformat()))
+    v2.commit(); v2.close()
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/watchlist/{symbol}")
+def api_watchlist_del(symbol: str, market: str = "IN"):
+    v2 = _rw()
+    _uwl(v2)
+    v2.execute("DELETE FROM v2_watch_user WHERE symbol=? AND market=?", (symbol.upper(), market))
+    v2.commit(); v2.close()
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/alerts")
+def api_alerts_add(payload: dict):
+    sym = str(payload.get("symbol", "")).upper().strip()
+    kind = payload.get("kind")
+    try:
+        value = float(payload.get("value"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "bad value"}, status_code=400)
+    if not sym or kind not in ("above", "below", "pct"):
+        return JSONResponse({"error": "bad alert"}, status_code=400)
+    v2 = _rw()
+    _uwl(v2)
+    v2.execute("INSERT INTO v2_alerts(symbol,market,kind,value,created_at,active) VALUES(?,?,?,?,?,1)",
+               (sym, payload.get("market", "IN"), kind, value, datetime.now(timezone.utc).isoformat()))
+    v2.commit(); v2.close()
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/alerts/{aid}")
+def api_alerts_del(aid: int):
+    v2 = _rw()
+    _uwl(v2)
+    v2.execute("DELETE FROM v2_alerts WHERE id=?", (aid,))
+    v2.commit(); v2.close()
+    return JSONResponse({"ok": True})
+
+
+_alert_last_check = [0.0]
+
+
+def _check_alerts():
+    """Fire due alerts against live prices; returns newly triggered (for toasts).
+    Called from the SSE loop, throttled to every ~5s."""
+    now = time.time()
+    if now - _alert_last_check[0] < 5:
+        return []
+    _alert_last_check[0] = now
+    fired = []
+    try:
+        v2 = _rw()
+        _uwl(v2)
+        rows = v2.execute("SELECT id,symbol,market,kind,value FROM v2_alerts WHERE active=1").fetchall()
+        by_m: dict = {}
+        for _, sym, m, _, _ in rows:
+            by_m.setdefault(m, set()).add(sym)
+        live = {m: _live_map(m, s) for m, s in by_m.items()}
+        chg = {m: (_daychg(m, list(s)) if any(r[3] == "pct" and r[2] == m for r in rows) else {})
+               for m, s in by_m.items()}
+        for aid, sym, m, kind, value in rows:
+            lq = live.get(m, {}).get(sym)
+            if not lq:
+                continue
+            p = lq["price"]
+            hit = ((kind == "above" and p >= value) or (kind == "below" and p <= value)
+                   or (kind == "pct" and abs(chg.get(m, {}).get(sym, {}).get("chg", 0)) >= value))
+            if hit:
+                v2.execute("UPDATE v2_alerts SET active=0, triggered_at=?, triggered_price=? WHERE id=?",
+                           (datetime.now(timezone.utc).isoformat(), round(p, 2), aid))
+                fired.append(dict(id=aid, symbol=sym, market=m, kind=kind, value=value, price=round(p, 2)))
+        if fired:
+            v2.commit()
+        v2.close()
+    except Exception:
+        return []
+    return fired
+
+
+@router.get("/api/search")
+def api_search(q: str = ""):
+    q = q.strip().upper()
+    if len(q) < 2:
+        return JSONResponse([])
+    con = _ro(MAIN_DB)
+    rows = con.execute(
+        "SELECT symbol,name,exchange FROM universe WHERE enabled=1 AND (symbol LIKE ? OR upper(name) LIKE ?) "
+        "ORDER BY CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END, length(symbol) LIMIT 8",
+        (q + "%", "%" + q + "%", q + "%")).fetchall()
+    con.close()
+    return JSONResponse([dict(symbol=r[0], name=(r[1] or "")[:40],
+                              market="IN" if str(r[2]).upper() in ("NSE", "BSE") else "US") for r in rows])
+
+
+_movers_cache: dict = {}
+_movers_loading: set = set()
+
+
+def _movers_bg():
+    """Compute movers per market in the background — cold panel loads take
+    10-60s and must never block a request."""
+    try:
+        out = {}
+        for m in ("IN", "US"):
+            try:
+                syms, _ = _panel(m)
+                d = _daychg(m, list(syms.keys()))
+                rows = sorted(((s, v["price"], v["chg"]) for s, v in d.items() if abs(v["chg"]) > 0.01),
+                              key=lambda r: -r[2])
+                fmt = lambda r: dict(symbol=r[0], price=round(r[1], 2), chg=round(r[2], 2),
+                                     ccy="₹" if m == "IN" else "$")
+                out[m] = dict(up=[fmt(r) for r in rows[:6]], down=[fmt(r) for r in rows[-6:]][::-1])
+            except Exception:
+                out[m] = dict(up=[], down=[])
+        _movers_cache.update(t=time.time(), v=out)
+    finally:
+        _movers_loading.discard("x")
+
+
+@router.get("/api/movers")
+def api_movers():
+    """Top gainers/losers per market (live price vs panel prev-close). Instant:
+    serves the cache; refreshes it in a background thread (60s TTL)."""
+    c = _movers_cache.get("v")
+    if (c is None or time.time() - _movers_cache.get("t", 0) > 60) and "x" not in _movers_loading:
+        _movers_loading.add("x")
+        import threading
+        threading.Thread(target=_movers_bg, daemon=True).start()
+    return JSONResponse(c or {"IN": dict(up=[], down=[]), "US": dict(up=[], down=[]), "warming": True})
+
+
 @router.get("/api/attribution")
 def api_attribution():
     """P&L attribution by market x strategy (closed + open) and a daily equity
@@ -361,7 +552,8 @@ def _stream_payload():
         positions.append(dict(id=pid, ccy="₹" if market == "IN" else "$", live=round(p, 2),
                               pnl=round((p / entry - 1) * 100, 2), pnl_amt=round((p - entry) * shares, 2)))
     v2.close()
-    return dict(markets=markets, positions=positions, as_of=datetime.now(IST).strftime("%H:%M:%S IST"))
+    return dict(markets=markets, positions=positions, alerts_fired=_check_alerts(),
+                as_of=datetime.now(IST).strftime("%H:%M:%S IST"))
 
 
 @router.get("/api/stream")
@@ -1042,6 +1234,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 .sec{color:var(--mut)}
 #login{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.015));border:1px solid var(--line);box-shadow:var(--sh)}
 .skel{color:var(--mut)}
+.toastmsg{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid rgba(0,224,138,.45);box-shadow:0 0 26px rgba(0,224,138,.22);padding:11px 20px;border-radius:12px;z-index:99;font-size:13px;animation:fade .3s}
 .ticker{overflow:hidden;white-space:nowrap;align-items:center;height:34px;margin:0 -16px 4px;padding:0;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
 .ticker .track{display:inline-flex;gap:24px;padding-left:16px;animation:tick 70s linear infinite;will-change:transform}
 .ticker:hover .track{animation-play-state:paused}
@@ -1109,7 +1302,12 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <div class=sec><span>engine performance</span><span class=mut style="font-size:12px;font-weight:400">house strategies</span></div>
    <div class=grid id=engines></div>
    <div class=sec><span>open positions</span><span class=mut style="font-size:12px;font-weight:400" id=posn></span></div>
-   <div id=homepos></div></div>
+   <div id=homepos></div>
+   <div class=sec><span>watchlist</span><span style="position:relative"><input id=wlq placeholder="+ add symbol" style="width:170px;padding:6px 11px;font-size:12px" oninput="wlSearch()" autocomplete=off><div id=wlsug class="menu hide" style="position:absolute;right:0;top:36px;min-width:250px;z-index:30"></div></span></div>
+   <div id=wl></div>
+   <div style="margin-top:8px"><span class=mut style="font-size:11px">alerts&nbsp;</span><span id=alerts></span></div>
+   <div class=sec><span>movers</span><span class=mut style="font-size:12px;font-weight:400">day change vs prev close</span></div>
+   <div class=grid2 id=movers></div></div>
 
   <div id=positions class=tab>
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
@@ -1161,6 +1359,7 @@ function loadTicker(){api('/v2/api/ticker').then(r=>{var it=(r.j||[]);var el=doc
 var ES=null;
 function startStream(){if(ES)return;try{ES=new EventSource('/v2/api/stream');ES.onmessage=function(e){try{applyStream(JSON.parse(e.data||'{}'))}catch(x){}};ES.onerror=function(){};}catch(e){}}
 function applyStream(d){if(!d||!d.markets)return;document.getElementById('clock').textContent=d.as_of||document.getElementById('clock').textContent;
+ (d.alerts_fired||[]).forEach(a=>{toast('\ud83d\udd14 '+a.symbol+' hit '+a.price+' ('+a.kind+' '+a.value+')');});
  if(cur=='home'){var ms=d.markets.filter(m=>inMkt(m.market));var pv=document.getElementById('pv');if(pv)pv.innerHTML=ms.map(m=>fmtc(m.ccy,m.equity)).join('  ·  ')||'—';var pp=document.getElementById('ppnl');if(pp)pp.innerHTML=ms.map(m=>'today '+pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' &nbsp;·&nbsp; ');}
  (d.positions||[]).forEach(p=>{var el=document.getElementById('px_'+p.id);if(el){var old=parseFloat(el.getAttribute('data-v'));el.textContent=p.ccy+p.live;if(old&&old!=p.live){el.style.color=(p.live>old?'var(--up)':'var(--dn)');setTimeout(function(){el.style.color=''},450)}el.setAttribute('data-v',p.live)}
   var pe=document.getElementById('pl_'+p.id);if(pe){pe.firstChild&&(pe.textContent=sgn(p.pnl)+'% · '+(p.pnl_amt<0?'-':'+')+p.ccy+(p.ccy=='₹'?INR:USD).format(Math.abs(p.pnl_amt)));pe.className=col(p.pnl);pe.style.fontSize='12px';}});}
@@ -1169,7 +1368,7 @@ function doLogout(){api('/api/auth/logout',{method:'POST'}).then(()=>{ME=null;sh
 function loadAccountData(){api('/api/account').then(r=>{ACC=r.j;renderBalance()})}
 function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.paper_cash_by_market||{};var IN=cb.IN!=null?cb.IN:(p.india_cash||0),US=cb.US!=null?cb.US:(p.us_cash||0);return {IN:+IN||0,US:+US||0}}catch(e){return{IN:0,US:0}}}
 function renderBalance(){document.getElementById('modeb').textContent=MODE;document.getElementById('modeb').className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}
-function refresh(){renderBalance();if(cur=='home')loadHome();if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
+function refresh(){renderBalance();if(cur=='home'){loadHome();loadWL();loadMovers()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
 function stratTag(st){return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
 function whyLine(p){if(!p.why)return '';var w=p.why,f=w.factors||{};var bits=(w.reasons||[]).slice(0,2);
@@ -1262,7 +1461,7 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
  +'</div><div class=detail-side>'
   +'<div class=sec style="margin-top:0;font-size:13px">'+(d.held?'if you buy more — plan':'trade plan')+'</div>'
   +'<div class=grid2><div class=card><div class=mut style="font-size:11px">entry</div><div style="font-size:17px;font-weight:600">'+s+d.entry+'</div></div><div class=card><div class=mut style="font-size:11px">reward:risk</div><div style="font-size:17px;font-weight:600">'+d.rr+':1</div></div><div class=card><div class=mut style="font-size:11px">stop</div><div class="dn" style="font-size:17px;font-weight:600">'+s+d.stop+'</div></div><div class=card><div class=mut style="font-size:11px">target</div><div class="up" style="font-size:17px;font-weight:600">'+s+d.target+'</div></div></div>'
-  +'<div style="display:flex;gap:9px;margin:14px 0 4px"><button style="flex:1" onclick="alert(\'Alerts coming next\')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>'
+  +'<div style="display:flex;gap:9px;margin:14px 0 4px"><button style="flex:1" onclick="setAlert(\''+sym+'\',\''+mkt+'\','+d.live+')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>'
   +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
  +'</div></div>';
  var cd=d.candles||[];CHART={candles:cd,ccy:s,levels:[{v:d.entry,c:'#38bdf8',t:'entry'},{v:d.stop,c:'#ff5d6c',t:'stop'},{v:d.target,c:'#00e08a',t:'target'}],range:Math.min(66,cd.length)};drawCandles();});}
@@ -1314,6 +1513,27 @@ function spark(series,ccy){
 }
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
-boot();setInterval(()=>{if(ME){if(cur=='home')loadHome();if(cur=='positions')loadPos()}},20000);
+var WLT=null;
+function wlSearch(){clearTimeout(WLT);var q=document.getElementById('wlq').value.trim();if(q.length<2){hide('wlsug');return}
+ WLT=setTimeout(function(){api('/v2/api/search?q='+encodeURIComponent(q)).then(r=>{var h=(r.j||[]).map(x=>'<a onclick="addWL(\''+x.symbol+'\',\''+x.market+'\')"><b>'+x.symbol+'</b>&nbsp;<span class=mut style="font-size:11px">'+x.market+' · '+x.name+'</span></a>').join('');
+ document.getElementById('wlsug').innerHTML=h||'<a class=mut>no match</a>';show('wlsug');})},250)}
+function addWL(sym,mkt){hide('wlsug');document.getElementById('wlq').value='';api('/v2/api/watchlist',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(loadWL)}
+function delWL(sym,mkt){api('/v2/api/watchlist/'+sym+'?market='+mkt,{method:'DELETE'}).then(loadWL)}
+function setAlert(sym,mkt,px){var v=prompt('Alert when '+sym+' crosses price (now '+px+'):',(px*1.05).toFixed(2));if(!v)return;var val=parseFloat(v);if(!(val>0))return;
+ api('/v2/api/alerts',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,kind:(val>=px?'above':'below'),value:val})}).then(function(){loadWL();toast('⏰ alert set: '+sym+' '+(val>=px?'above':'below')+' '+val)})}
+function delAlert(id){api('/v2/api/alerts/'+id,{method:'DELETE'}).then(loadWL)}
+function loadWL(){api('/v2/api/watchlist').then(r=>{var d=r.j||{};
+ var h=(d.watch||[]).filter(w=>inMkt(w.market)).map(w=>{var a=w.chg>0?'▲':(w.chg<0?'▼':''),cl=w.chg>0?'up':(w.chg<0?'dn':'mut');
+  return '<div class=lrow><div style="cursor:pointer" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><b>'+w.symbol+'</b> <span class=mk style="font-size:9px;border:1px solid var(--line);border-radius:4px;padding:0 3px;color:var(--mut)">'+w.market+'</span></div><div style="display:flex;gap:11px;align-items:center"><span class=num>'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</span><span class="'+cl+'" style="font-size:12px;min-width:62px;text-align:right">'+a+Math.abs(w.chg).toFixed(2)+'%</span><button class=sm title="set alert" onclick="setAlert(\''+w.symbol+'\',\''+w.market+'\','+w.price+')">⏰</button><button class=sm title="remove" onclick="delWL(\''+w.symbol+'\',\''+w.market+'\')">✕</button></div></div>'}).join('');
+ document.getElementById('wl').innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing watched yet — search a symbol above</div>';
+ var al=(d.alerts||[]).filter(a=>inMkt(a.market)).slice(0,10);
+ document.getElementById('alerts').innerHTML=al.length?al.map(a=>'<span class=chip style="font-size:11px;'+(a.active?'':'opacity:.55')+'">'+(a.active?'⏳':'✅')+' '+a.symbol+' '+(a.kind=='pct'?('±'+a.value+'%'):(a.kind+' '+a.ccy+a.value))+(a.triggered_price?(' → hit '+a.triggered_price):'')+' <b style="cursor:pointer;padding-left:3px" onclick="delAlert('+a.id+')">✕</b></span>').join(' '):'<span class=mut style="font-size:11px">none — use ⏰ on any stock</span>';});}
+function loadMovers(){api('/v2/api/movers').then(r=>{var d=r.j||{};
+ var row=(x,m)=>'<div class=row style="padding:5px 0;border-bottom:1px solid var(--line)"><b style="cursor:pointer;font-size:12px" onclick="stock(\''+x.symbol+'\',\''+m+'\')">'+x.symbol+'</b><span style="font-size:12px"><span class=num style="margin-right:8px">'+x.ccy+(x.ccy=='₹'?INR:USD).format(x.price)+'</span><span class="'+(x.chg>=0?'up':'dn')+'">'+sgn(x.chg)+'%</span></span></div>';
+ document.getElementById('movers').innerHTML=['IN','US'].filter(inMkt).map(m=>{var v=d[m]||{};if(!(v.up||[]).length&&!(v.down||[]).length)return '';
+  return '<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top gainers</div>'+(v.up||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'
+       +'<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top losers</div>'+(v.down||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'}).join('');});}
+function toast(t){var e=document.createElement('div');e.className='toastmsg';e.textContent=t;document.body.appendChild(e);setTimeout(function(){e.remove()},6500)}
+boot();setInterval(()=>{if(ME){if(cur=='home'){loadHome();loadWL();loadMovers()}if(cur=='positions')loadPos()}},20000);
 setInterval(()=>{if(ME)loadTicker()},6000);
 </script></body></html>"""
