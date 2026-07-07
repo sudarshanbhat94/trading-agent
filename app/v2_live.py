@@ -24,7 +24,10 @@ V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
 IST = timezone(timedelta(hours=5, minutes=30))
 LIVE_SOURCE = {"IN": "upstox-live", "US": "alpaca-iex-live"}
 BUDGET = {"IN": 100000.0, "US": 20000.0}     # TOTAL paper capital per market
-MAXPOS = {"IN": 10, "US": 10}                # max concurrent positions per market
+MAXPOS = {"IN": 14, "US": 14}                # max concurrent positions per market.
+                                             # Backtested 10 vs 14 (2024->now): IN ret -13.1->-7.1%,
+                                             # maxDD 13.6->9.6%; US equal Sharpe. More names, not
+                                             # bigger bets -> better capital use at same risk.
 COST_SIDE = {"IN": 0.30 / 200, "US": 0.12 / 200}
 # per-strategy trade plan; both draw from the shared market pool
 PLAN = {
@@ -42,7 +45,7 @@ ETF_EXCLUDE = {
 }
 MIN_PRICE = {"IN": 50.0, "US": 5.0}     # quality/liquidity floor - skip the cheapest, most manipulable names
 SLOT_MIN_UTIL = 0.55                    # IN whole-share fill must use >= this fraction of its slot (else capital waste)
-GAP_SLOT_CAP = 7                        # cap gap_momentum slots so it can't monopolize the book (reserve up to MAXPOS-cap for swing)
+GAP_SLOT_CAP = 10                       # cap gap_momentum slots so it can't monopolize the book (reserve up to MAXPOS-cap for swing; scaled with MAXPOS=14)
 GAP_TARGET = {"IN": 0.10, "US": 0.0}    # gap_momentum profit target by market: IN momentum mean-reverts,
                                         # so take profit at +10% (backtested: less give-back, edge intact,
                                         # win rate 37%->46%); US trends, a target chops the big runners -> trail only.

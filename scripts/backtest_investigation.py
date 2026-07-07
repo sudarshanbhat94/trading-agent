@@ -109,7 +109,7 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
     dates = [d for d in M["close"].index if d >= pd.Timestamp(START)]
@@ -120,13 +120,13 @@ def run(market, mode, M, mdf):
     for di, d in enumerate(dates):
         # execute pending at open
         for sym, sz in pending:
-            if len(pos) >= MAXPOS or sym in pos:
+            if len(pos) >= maxpos or sym in pos:
                 continue
             o = M["open"][sym].get(d, np.nan)
             atr = M["atr14"][sym].get(d, np.nan)
             if not (o > 0 and atr > 0):
                 continue
-            alloc = min(equity / MAXPOS * sz, cash)
+            alloc = min(equity / maxpos * sz, cash)
             if alloc <= 0:
                 continue
             sh = alloc / o
@@ -144,13 +144,20 @@ def run(market, mode, M, mdf):
             eff = p["stop"]
             if p["peak"] >= p["entry"] + 3.0 * p["atr"]:   # breakeven lock (matches live)
                 eff = max(eff, p["entry"])
+            if p.get("ext"):                               # extended winner: trail it
+                eff = max(eff, p["peak"] - 2.5 * p["atr"])
             px = None
             if lo <= eff:
                 px = min(eff, M["open"][sym].get(d, eff))
             elif hi >= p["tgt"]:
                 px = max(p["tgt"], M["open"][sym].get(d, p["tgt"]))
             elif di - p["eday"] >= HOLD:
-                px = cl
+                # winner-extension: at the clock, keep winners (>1 ATR up) on a
+                # trail instead of force-selling; stagnant trades still exit.
+                if extend and cl >= p["entry"] + 1.0 * p["atr"] and di - p["eday"] < 20:
+                    p["ext"] = True
+                else:
+                    px = cl
             if px is not None:
                 cash += p["sh"] * px * (1 - cside)
                 n += 1; wins += px > p["entry"]
@@ -168,7 +175,7 @@ def run(market, mode, M, mdf):
             continue
         ratio = mc / rm - 1
         state = "ON" if (ratio > 0 and rt > -0.03) else ("OFF" if (ratio < -0.02 or rt < -0.03) else "NEUTRAL")
-        slots = MAXPOS - len(pos)
+        slots = maxpos - len(pos)
         if slots <= 0:
             continue
         if mode == "NEW":
@@ -226,9 +233,9 @@ def main():
         mret = (mkt.iloc[-1] / mkt.iloc[0] - 1) * 100
         print(f"===== {market} (universe={len(M['close'].columns)}) =====")
         print(f"  MARKET buy&hold: {mret:+.1f}%")
-        for mode in ("OLD", "NEW", "HYBRID"):
-            m, _ = run(market, mode, M, mdf)
-            print(f"  {mode:4s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
+        for label, mode, ext, mp in (("HYBRID mp10", "HYBRID", False, 10), ("HYBRID mp14", "HYBRID", False, 14)):
+            m, _ = run(market, mode, M, mdf, extend=ext, maxpos=mp)
+            print(f"  {label:14s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
                   f"Sharpe={m['sharpe']:.2f}  trades={m['n']:4d}  win={m['win']:.0f}%")
         print()
     con.close()
