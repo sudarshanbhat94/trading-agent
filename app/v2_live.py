@@ -215,7 +215,9 @@ def _signals(tails, mdf, live):
         prevc = t["close"].iloc[-1]
         g = lq["open"] / prevc - 1 if prevc > 0 else 0
         rv = float(row["rvol"]) if not pd.isna(row["rvol"]) else 0
-        if 0.03 <= g <= 0.15 and rv >= 1.5:
+        # gap must be HOLDING (price at/above the open): gap-and-go, not gap-and-fade.
+        # All 3 same-day -5% stop-outs on Jul 2 were fades bought below the open.
+        if 0.03 <= g <= 0.15 and rv >= 1.5 and lq["price"] >= lq["open"]:
             out.append(dict(symbol=s, strategy="gap_momentum", score=round(min(g / 0.15, 1.0), 4), atr=atr, price=lq["price"]))
     return out, mdf_live, today
 

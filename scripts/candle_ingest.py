@@ -73,52 +73,92 @@ def _market_settings(settings, market, prov):
     return s
 
 
-def ingest(market, prov, db, settings, limit=0, fetch_batch=150, pause=2.0):
+DAILY_SRC = {"IN": "upstox-live:day", "US": "alpaca-iex-live:day"}
+
+
+def _fresh_symbols(db, market, days=4):
+    """Symbols whose daily candles are already current (a bar within `days`).
+    Lets reruns/retry passes target only the stale tail."""
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    out = set()
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(f"file:{db.path}?mode=ro", uri=True, timeout=30)
+        for sym, mx in con.execute("SELECT symbol, MAX(ts) FROM candles WHERE source=? GROUP BY symbol",
+                                   (DAILY_SRC[market],)):
+            if mx and str(mx)[:10] >= cutoff:
+                out.add(str(sym).upper())
+        con.close()
+    except Exception:
+        pass
+    return out
+
+
+def _fetch_upsert(provider, db, batch):
+    """One batch: fetch, keep :day, chunked upsert. Returns set of covered symbols
+    and the candle count."""
+    fetched = asyncio.run(provider.get_candles(batch))
+    daily = _daily_only(fetched)
+    items = list(daily.items())
+    n = 0
+    for i in range(0, len(items), 40):     # chunked upsert -> short DB locks
+        part = dict(items[i:i + 40])
+        db.upsert_candles(part)
+        n += sum(len(v) for v in part.values())
+        time.sleep(0.05)
+    return {str(s).upper() for s in daily}, n
+
+
+def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_passes=3):
+    """Provider bursts get silently truncated (a 150-symbol batch returns ~70), so:
+    small batches + skip already-fresh symbols + RETRY PASSES over the stale tail
+    until coverage converges. Held positions are always done first."""
     provider = build_market_data_provider(_market_settings(settings, market, prov))
-    rows = db.get_universe(enabled_only=True, market_region=market)
+    rows = db.get_universe(enabled_only=True, market_region=market)[: (limit or TOPN)]
     held = _held(market)
-    t0 = time.time()
-    syms_done = candles_done = 0
-
-    # 1) GUARANTEED held pass: positions we hold must be fresh. Small dedicated
-    # batch with a retry, since large universe runs drop ~30-50% of symbols.
-    held_rows = [r for r in rows if str(r.get("symbol", "")).upper() in held]
-    if held_rows:
-        for attempt in range(2):
-            daily = _daily_only(asyncio.run(provider.get_candles(held_rows)))
-            if daily:
-                db.upsert_candles(daily)
-                print(f"[{market}] held pass: {len(daily)}/{len(held_rows)} held symbols fresh", flush=True)
-                break
-            time.sleep(3)
-
-    # 2) broad universe pass (held first so any partial coverage still favours them)
-    rows.sort(key=lambda r: 0 if str(r.get("symbol", "")).upper() in held else 1)
-    rows = rows[: (limit or TOPN)]
     if not rows:
         print(f"[{market}] no universe rows", flush=True)
         return 0
-    # Fetch in batches with a short pause so the historical API doesn't rate-limit
-    # the whole burst (Upstox capped a 1600-symbol burst at ~70 symbols).
-    for b in range(0, len(rows), fetch_batch):
-        batch = rows[b:b + fetch_batch]
-        try:
-            fetched = asyncio.run(provider.get_candles(batch))
-        except Exception as exc:
-            print(f"[{market}] batch {b} fetch error: {exc}", flush=True)
-            continue
-        daily = _daily_only(fetched)
-        items = list(daily.items())
-        for i in range(0, len(items), 40):   # chunked upsert -> short DB locks
-            part = dict(items[i:i + 40])
-            db.upsert_candles(part)
-            candles_done += sum(len(v) for v in part.values())
-            time.sleep(0.05)
-        syms_done += len(daily)
-        print(f"[{market}] {b + len(batch)}/{len(rows)} fetched -> {syms_done} symbols so far", flush=True)
-        time.sleep(pause)
-    print(f"[{market}] DONE {candles_done} daily candles for {syms_done}/{len(rows)} symbols in {time.time()-t0:.1f}s", flush=True)
-    return syms_done
+    t0 = time.time()
+    candles_done = 0
+
+    held_rows = [r for r in rows if str(r.get("symbol", "")).upper() in held]
+    if held_rows:
+        for attempt in range(2):
+            got, n = _fetch_upsert(provider, db, held_rows)
+            candles_done += n
+            if len(got) == len(held_rows):
+                break
+            time.sleep(3)
+        print(f"[{market}] held pass: {len(got)}/{len(held_rows)} held symbols fresh", flush=True)
+
+    fresh = _fresh_symbols(db, market)
+    todo = [r for r in rows if str(r.get("symbol", "")).upper() not in fresh]
+    print(f"[{market}] universe={len(rows)} already-fresh={len(rows)-len(todo)} to-fetch={len(todo)}", flush=True)
+    covered = set()
+    for pass_no in range(1, max_passes + 1):
+        if not todo:
+            break
+        missed = []
+        for b in range(0, len(todo), fetch_batch):
+            batch = todo[b:b + fetch_batch]
+            try:
+                got, n = _fetch_upsert(provider, db, batch)
+            except Exception as exc:
+                print(f"[{market}] pass{pass_no} batch {b} error: {exc}", flush=True)
+                got, n = set(), 0
+            candles_done += n
+            covered |= got
+            missed.extend(r for r in batch if str(r.get("symbol", "")).upper() not in got)
+            if (b // fetch_batch) % 10 == 0:
+                print(f"[{market}] pass{pass_no} {b + len(batch)}/{len(todo)} -> covered {len(covered)}", flush=True)
+            time.sleep(pause)
+        print(f"[{market}] pass{pass_no} done: covered {len(covered)}/{len(todo) if pass_no == 1 else '-'} · missed {len(missed)}", flush=True)
+        todo = missed
+        pause = min(pause * 1.5, 6.0)      # back off between retry passes
+    print(f"[{market}] DONE {candles_done} candles · covered {len(covered)} · unrecoverable {len(todo)} · {time.time()-t0:.1f}s", flush=True)
+    return len(covered)
 
 
 def main():

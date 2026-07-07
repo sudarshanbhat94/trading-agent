@@ -29,6 +29,11 @@ LIQ_FLOOR = {"IN": 1.0e7, "US": 5.0e6}     # min median 20d turnover (₹ / $)
 MIN_PRICE = {"IN": 50.0, "US": 5.0}
 MAX_DRAWDOWN = -0.55                         # skip names down >55% from 1y high (falling knife)
 MAX_PER_SECTOR = 3                           # portfolio concentration cap
+# catch-all labels in the universe metadata that are NOT real sectors — applying
+# the concentration cap to these freezes the whole book (e.g. 3 positions tagged
+# "NSE Listed Equity" blocked 70 candidates). Exempt them from the cap.
+GENERIC_SECTORS = {"", "unknown", "n/a", "none", "nse listed equity", "bse listed equity",
+                   "us listed equity", "listed equity", "equity", "misc", "others", "other"}
 
 # composite weights by strategy (sum ~1.0)
 WEIGHTS = {
@@ -65,8 +70,8 @@ def build_factor_panel(syms: dict, market_df: pd.DataFrame, asof) -> pd.DataFram
         if asof not in g.index:
             continue
         gi = g.loc[:asof]
-        if len(gi) < 120:
-            continue
+        if len(gi) < 70:      # match the signal path's minimum — a 120-bar floor here
+            continue          # made 62% of valid candidates invisible (auto-rejected)
         gf = eng.compute_features(gi, market_df)
         row = gf.iloc[-1]
         if any(pd.isna(row.get(k)) for k in ("sma50", "atr14", "rs20", "rvol", "atr_pct")):
@@ -153,7 +158,7 @@ def investigate(symbol: str, fp: pd.DataFrame, sc: pd.DataFrame, market: str, st
     sector = sector_map.get(symbol) or "unknown"
     if sector == "ETF":                      # never trade ETFs/funds as single-stock picks
         gates.append("is_etf")
-    if held_sectors.get(sector, 0) >= MAX_PER_SECTOR:
+    if sector.strip().lower() not in GENERIC_SECTORS and held_sectors.get(sector, 0) >= MAX_PER_SECTOR:
         gates.append("sector_full")
     w = WEIGHTS[strategy]
     setup = float(s["setup_mom"] if strategy == "gap_momentum" else s["setup_mr"])
