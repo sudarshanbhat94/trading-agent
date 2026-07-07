@@ -32,8 +32,13 @@ COST_SIDE = {"IN": 0.30 / 200, "US": 0.12 / 200}
 # per-strategy trade plan; both draw from the shared market pool
 PLAN = {
     "gap_momentum":  dict(regime_gated=False, threshold=0.38, atr_stop=1.5, atr_target=0.0, trail=0.10, priority=0),
-    "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=1),
+    # 52w-high breakout sleeve: STRONG uptrend only (see eng.regime_strong), ATR
+    # trail set per-entry, 40d hold. Backtested: US +26.5->+51.4%, Sharpe 2.19,
+    # maxDD down; IN improves even in the bear window.
+    "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=0.0, trail=0.0,  priority=1),
+    "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
 }
+MOM_SLOT_CAP = 5                        # momentum sleeve: at most 5 of the book
 # Index/sector/leveraged ETFs - never traded by the single-stock strategies. They
 # don't behave like gap/mean-reversion setups and create correlated, duplicate
 # exposure (e.g. holding QQQ + QQQM, both Nasdaq-100, at the same time).
@@ -222,6 +227,13 @@ def _signals(tails, mdf, live):
         # All 3 same-day -5% stop-outs on Jul 2 were fades bought below the open.
         if 0.03 <= g <= 0.15 and rv >= 1.5 and lq["price"] >= lq["open"]:
             out.append(dict(symbol=s, strategy="gap_momentum", score=round(min(g / 0.15, 1.0), 4), atr=atr, price=lq["price"]))
+        # 52w-high breakout: near the 1y high on volume with strong 3m momentum
+        # (George & Hwang factor; entry only in a STRONG market regime)
+        ch = t["close"]
+        hi252 = float(ch.tail(252).max()) if len(ch) >= 60 else 0.0
+        mom63 = (lq["price"] / float(ch.iloc[-63]) - 1) if len(ch) >= 63 and float(ch.iloc[-63]) > 0 else 0.0
+        if hi252 > 0 and lq["price"] >= 0.98 * hi252 and rv >= 1.5 and mom63 > 0.10:
+            out.append(dict(symbol=s, strategy="mom_breakout", score=round(min(mom63, 2.0), 4), atr=atr, price=lq["price"]))
     return out, mdf_live, today
 
 
@@ -234,6 +246,7 @@ def poll_market(market):
     sigs, mdf_live, today = _signals(tails, mdf, live)
     rstate = eng.regime_state(mdf_live, today, eng.DEFAULTS["regime_lookback"])
     regime = rstate != "OFF"   # allow dip-buys unless the market is genuinely weak
+    strong = eng.regime_strong(mdf_live, today, eng.DEFAULTS["regime_lookback"])
     v2 = _rw()
     book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
     if not book:
@@ -267,6 +280,8 @@ def poll_market(market):
         if s["score"] < pl["threshold"]:
             continue
         if pl["regime_gated"] and not regime:
+            continue
+        if s["strategy"] == "mom_breakout" and not strong:   # boosters need a STRONG uptrend
             continue
         if s["symbol"] in ETF_EXCLUDE:                  # no index/sector/leveraged ETFs
             continue
@@ -305,6 +320,8 @@ def poll_market(market):
             continue
         if s["strategy"] == "gap_momentum" and strat_count.get("gap_momentum", 0) >= gap_cap:
             continue                      # don't let gap_momentum monopolize the book
+        if s["strategy"] == "mom_breakout" and strat_count.get("mom_breakout", 0) >= MOM_SLOT_CAP:
+            continue                      # momentum sleeve capped at 5 slots
         nscore, severe = _news_state(mcon, sym)
         if severe:                       # pro check: never buy into bad news
             vetoed += 1
@@ -341,12 +358,15 @@ def poll_market(market):
         tgt = entry + pl["atr_target"] * atr if pl["atr_target"] else 0.0
         if s["strategy"] == "gap_momentum" and GAP_TARGET.get(market):   # per-market gap profit target
             tgt = entry * (1 + GAP_TARGET[market])
+        trail = pl["trail"]
+        if s["strategy"] == "mom_breakout":              # ATR-proportional trail (2.5x entry ATR)
+            trail = min(0.20, max(0.04, 2.5 * atr / entry))
         v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at)"
                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, s["strategy"], sym, today_s, entry, shares, entry - pl["atr_stop"] * atr, tgt, pl["trail"], entry,
+                   (market, s["strategy"], sym, today_s, entry, shares, entry - pl["atr_stop"] * atr, tgt, trail, entry,
                     s["score"], datetime.now(timezone.utc).isoformat()))
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
-                              stop=entry - pl["atr_stop"] * atr, target=tgt, trail=pl["trail"], peak=entry)
+                              stop=entry - pl["atr_stop"] * atr, target=tgt, trail=trail, peak=entry)
         strat_count[s["strategy"]] = strat_count.get(s["strategy"], 0) + 1
         sec = sector_map.get(sym, "unknown")
         held_sectors[sec] = held_sectors.get(sec, 0) + 1
@@ -357,7 +377,7 @@ def poll_market(market):
                        f"{vetoed} news-vetoed · {investig} investigation-rejected")
 
 
-HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20}
+HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40}
 
 
 def exit_monitor(market):

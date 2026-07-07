@@ -109,7 +109,7 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
     dates = [d for d in M["close"].index if d >= pd.Timestamp(START)]
@@ -117,9 +117,11 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
     pos, pending, curve = {}, [], []
     n = wins = 0
     cside = COST[market] / 200.0
+    MOM_CAP = 5                          # momentum sleeve: at most 5 of the book
+    last_state = "OFF"                   # yesterday's regime, for the sweep gate
     for di, d in enumerate(dates):
         # execute pending at open
-        for sym, sz in pending:
+        for sym, sz, strat in pending:
             if len(pos) >= maxpos or sym in pos:
                 continue
             o = M["open"][sym].get(d, np.nan)
@@ -131,8 +133,9 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
                 continue
             sh = alloc / o
             cash -= sh * o * (1 + cside)
-            pos[sym] = dict(sh=sh, entry=o, stop=o - ATR_STOP * atr, tgt=o + ATR_TARGET * atr,
-                            atr=atr, eday=di, peak=o)
+            pos[sym] = dict(sh=sh, entry=o, stop=o - ATR_STOP * atr,
+                            tgt=(0.0 if strat == "mom" else o + ATR_TARGET * atr),
+                            atr=atr, eday=di, peak=o, strat=strat)
         pending = []
         # exits
         for sym in list(pos):
@@ -144,17 +147,18 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
             eff = p["stop"]
             if p["peak"] >= p["entry"] + 3.0 * p["atr"]:   # breakeven lock (matches live)
                 eff = max(eff, p["entry"])
-            if p.get("ext"):                               # extended winner: trail it
+            if p.get("ext") or p.get("strat") == "mom":    # momentum / extended: trail
                 eff = max(eff, p["peak"] - 2.5 * p["atr"])
             px = None
+            hold_cap = 40 if p.get("strat") == "mom" else HOLD
             if lo <= eff:
                 px = min(eff, M["open"][sym].get(d, eff))
-            elif hi >= p["tgt"]:
+            elif p["tgt"] and hi >= p["tgt"]:
                 px = max(p["tgt"], M["open"][sym].get(d, p["tgt"]))
-            elif di - p["eday"] >= HOLD:
+            elif di - p["eday"] >= hold_cap:
                 # winner-extension: at the clock, keep winners (>1 ATR up) on a
                 # trail instead of force-selling; stagnant trades still exit.
-                if extend and cl >= p["entry"] + 1.0 * p["atr"] and di - p["eday"] < 20:
+                if extend and p.get("strat") != "mom" and cl >= p["entry"] + 1.0 * p["atr"] and di - p["eday"] < 20:
                     p["ext"] = True
                 else:
                     px = cl
@@ -162,6 +166,16 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
                 cash += p["sh"] * px * (1 - cside)
                 n += 1; wins += px > p["entry"]
                 del pos[sym]
+        # cash equitization: idle cash above a one-slot reserve earns the index
+        # return instead of zero (paper equivalent of sweeping into NIFTYBEES/VOO).
+        # REGIME-GATED: only while the market is trending up — in OFF/NEUTRAL the
+        # cash IS the defense (an always-on sweep turned IN -7% into -20%).
+        if sweep and last_state == "STRONG":
+            mret_d = mdf["mkt_ret1"].get(d, 0.0)
+            if mret_d == mret_d:
+                reserve = equity / maxpos
+                idle = max(0.0, cash - reserve)
+                cash += idle * mret_d
         def _px(s, fb):
             x = M["close"][s].get(d, fb)
             return fb if (x is None or x != x or x <= 0) else x
@@ -175,6 +189,10 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
             continue
         ratio = mc / rm - 1
         state = "ON" if (ratio > 0 and rt > -0.03) else ("OFF" if (ratio < -0.02 or rt < -0.03) else "NEUTRAL")
+        # boosters (momentum sleeve, cash sweep) demand STRONG trend confirmation:
+        # comfortably above the mean AND rising - regular ON was full of bull traps
+        strong = ratio > 0.02 and rt > 0.01
+        last_state = "STRONG" if strong else state
         slots = maxpos - len(pos)
         if slots <= 0:
             continue
@@ -189,36 +207,53 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS):
                       & (cp["dd252"] >= fi.MAX_DRAWDOWN)]
             elig = elig.sort_values("composite", ascending=False)
             for sym, r in elig.head(slots).iterrows():
-                if sym not in pos and sym not in dict(pending):
-                    pending.append((sym, float(np.clip(0.025 / max(r["atr_pct"], 0.005), 0.4, 1.4))))
+                if sym not in pos and sym not in {t[0] for t in pending}:
+                    pending.append((sym, float(np.clip(0.025 / max(r["atr_pct"], 0.005), 0.4, 1.4)), "mr"))
         elif mode == "HYBRID":
+            # momentum-breakout sleeve FIRST (it was starved when meanrev filled
+            # every slot): confirmed uptrend only — near 52w high on volume with
+            # positive 3m momentum, trail-exit.
+            if mom and strong:
+                mom_open = sum(1 for p in pos.values() if p.get("strat") == "mom")
+                room = min(MOM_CAP - mom_open, slots)
+                if room > 0:
+                    dd = M["dd252"].loc[d]; rv = M["rvol"].loc[d]; m63 = M["mom63"].loc[d]
+                    ap = M["atr_pct"].loc[d]; to = M["turnover"].loc[d]
+                    elig = (dd >= -0.02) & (rv >= 1.5) & (m63 > 0.10) & (to >= fi.LIQ_FLOOR[market])
+                    cands = m63[elig].dropna().sort_values(ascending=False)
+                    for sym in cands.index:
+                        if room <= 0:
+                            break
+                        if sym in pos or sym in {t[0] for t in pending}:
+                            continue
+                        sz = float(np.clip(0.025 / max(float(ap.get(sym, 0.025)) or 0.025, 0.005), 0.4, 1.4))
+                        pending.append((sym, sz, "mom")); room -= 1
             # PROVEN conviction ranking + the investigation's gates + vol sizing
-            if state == "OFF":
-                continue
-            conv = M["conv"].loc[d].dropna()
-            ranked = conv[conv >= 0.55].sort_values(ascending=False)
-            cp = composite(M, d)
-            added = 0
-            for sym in ranked.index:
-                if added >= slots:
-                    break
-                if sym in pos or sym in dict(pending):
-                    continue
-                sz = 1.0
-                if cp is not None and sym in cp.index:
-                    row = cp.loc[sym]
-                    if row["turnover"] < fi.LIQ_FLOOR[market] or row["dd252"] < fi.MAX_DRAWDOWN:
+            if state != "OFF":
+                conv = M["conv"].loc[d].dropna()
+                ranked = conv[conv >= 0.55].sort_values(ascending=False)
+                cp = composite(M, d)
+                added = len(pending)
+                for sym in ranked.index:
+                    if added >= slots:
+                        break
+                    if sym in pos or sym in {t[0] for t in pending}:
                         continue
-                    sz = float(np.clip(0.025 / max(row["atr_pct"], 0.005), 0.4, 1.4))
-                pending.append((sym, sz)); added += 1
+                    sz = 1.0
+                    if cp is not None and sym in cp.index:
+                        row = cp.loc[sym]
+                        if row["turnover"] < fi.LIQ_FLOOR[market] or row["dd252"] < fi.MAX_DRAWDOWN:
+                            continue
+                        sz = float(np.clip(0.025 / max(row["atr_pct"], 0.005), 0.4, 1.4))
+                    pending.append((sym, sz, "mr")); added += 1
         else:  # OLD: conviction-ranked, simple regime on
             if not (ratio > 0):
                 continue
             conv = M["conv"].loc[d].dropna()
             elig = conv[conv >= 0.55].sort_values(ascending=False)
             for sym in elig.head(slots).index:
-                if sym not in pos and sym not in dict(pending):
-                    pending.append((sym, 1.0))
+                if sym not in pos and sym not in {t[0] for t in pending}:
+                    pending.append((sym, 1.0, "mr"))
     return _metrics(curve, n, wins), curve[-1][1]
 
 
@@ -233,9 +268,12 @@ def main():
         mret = (mkt.iloc[-1] / mkt.iloc[0] - 1) * 100
         print(f"===== {market} (universe={len(M['close'].columns)}) =====")
         print(f"  MARKET buy&hold: {mret:+.1f}%")
-        for label, mode, ext, mp in (("HYBRID mp10", "HYBRID", False, 10), ("HYBRID mp14", "HYBRID", False, 14)):
-            m, _ = run(market, mode, M, mdf, extend=ext, maxpos=mp)
-            print(f"  {label:14s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
+        for label, kw in (("HYBRID base", {}),
+                          ("+cash sweep", dict(sweep=True)),
+                          ("+mom sleeve", dict(mom=True)),
+                          ("+mom+sweep", dict(mom=True, sweep=True))):
+            m, _ = run(market, "HYBRID", M, mdf, maxpos=14, **kw)
+            print(f"  {label:12s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
                   f"Sharpe={m['sharpe']:.2f}  trades={m['n']:4d}  win={m['win']:.0f}%")
         print()
     con.close()

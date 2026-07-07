@@ -41,6 +41,8 @@ WEIGHTS = {
                           vol_quality=0.14, setup=0.28, liquidity=0.10),
     "gap_momentum":  dict(trend=0.20, momentum=0.22, rel_strength=0.16, volume=0.20,
                           vol_quality=0.06, setup=0.06, liquidity=0.10),
+    "mom_breakout":  dict(trend=0.22, momentum=0.24, rel_strength=0.18, volume=0.18,
+                          vol_quality=0.04, setup=0.06, liquidity=0.08),
 }
 BUY_MIN = 58.0      # composite >= this AND all gates pass -> eligible to buy
 WATCH_MIN = 45.0
@@ -161,7 +163,7 @@ def investigate(symbol: str, fp: pd.DataFrame, sc: pd.DataFrame, market: str, st
     if sector.strip().lower() not in GENERIC_SECTORS and held_sectors.get(sector, 0) >= MAX_PER_SECTOR:
         gates.append("sector_full")
     w = WEIGHTS[strategy]
-    setup = float(s["setup_mom"] if strategy == "gap_momentum" else s["setup_mr"])
+    setup = float(s["setup_mom"] if strategy in ("gap_momentum", "mom_breakout") else s["setup_mr"])
     composite = float(
         w["trend"] * s["trend"] + w["momentum"] * s["momentum"] + w["rel_strength"] * s["rel_strength"]
         + w["volume"] * s["volume"] + w["vol_quality"] * s["vol_quality"] + w["setup"] * setup
