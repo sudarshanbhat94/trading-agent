@@ -7,6 +7,7 @@ background thread inside opentrade.service, only during real market hours.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -78,6 +79,10 @@ def ensure_schema(v2):
         if not v2.execute("SELECT 1 FROM v2_book WHERE market=?", (m,)).fetchone():
             v2.execute("INSERT INTO v2_book(market,budget,max_pos,started_at) VALUES(?,?,?,?)",
                        (m, b, MAXPOS[m], datetime.now(timezone.utc).isoformat()))
+    try:  # additive migration: entry-time investigation snapshot ("why we bought")
+        v2.execute("ALTER TABLE v2_positions ADD COLUMN why TEXT")
+    except Exception:
+        pass
     v2.commit()
 
 
@@ -331,11 +336,16 @@ def poll_market(market):
         # position size comes from the investigation. This HYBRID backtested best
         # (US Sharpe 1.80 vs 1.37, max-DD 10% vs 27%); composite-RANKING was worse.
         size_mult = 1.0
+        why = None
         if fscores is not None:
             rep = fi.investigate(sym, fpanel, fscores, market, s["strategy"], rstate, severe, held_sectors, sector_map)
             if rep["gates_failed"]:
                 investig += 1
                 continue
+            why = json.dumps(dict(composite=rep.get("composite"), factors=rep.get("factors"),
+                                  setup=rep.get("setup"), reasons=rep.get("reasons"),
+                                  size_mult=rep.get("size_mult"), regime=rstate,
+                                  signal_score=s["score"]))
             # defensive: don't trade if the live entry price diverges wildly from
             # the last candle close (a feed glitch / wrong instrument)
             try:
@@ -361,10 +371,10 @@ def poll_market(market):
         trail = pl["trail"]
         if s["strategy"] == "mom_breakout":              # ATR-proportional trail (2.5x entry ATR)
             trail = min(0.20, max(0.04, 2.5 * atr / entry))
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at)"
-                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
+                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (market, s["strategy"], sym, today_s, entry, shares, entry - pl["atr_stop"] * atr, tgt, trail, entry,
-                    s["score"], datetime.now(timezone.utc).isoformat()))
+                    s["score"], datetime.now(timezone.utc).isoformat(), why))
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=trail, peak=entry)
         strat_count[s["strategy"]] = strat_count.get(s["strategy"], 0) + 1

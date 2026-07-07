@@ -90,17 +90,23 @@ def _regime_bg(market):
     try:
         syms, mdf = _panel(market)
         d = eng.complete_trading_dates(syms, 0.5)
-        val = bool(eng.regime_ok(mdf, d[-1], eng.DEFAULTS["regime_lookback"])) if d else False
-        _regime_cache[market] = (time.time(), val)
+        if d:
+            state = eng.regime_state(mdf, d[-1], eng.DEFAULTS["regime_lookback"])
+            if state == "ON" and eng.regime_strong(mdf, d[-1], eng.DEFAULTS["regime_lookback"]):
+                state = "STRONG"
+        else:
+            state = "OFF"
+        _regime_cache[market] = (time.time(), state)
     except Exception:
-        _regime_cache[market] = (time.time(), False)
+        _regime_cache[market] = (time.time(), "OFF")
     finally:
         _regime_loading.discard(market)
 
 
-def _regime(market):
-    """Non-blocking: return cached regime instantly; refresh in a background
-    thread so the dashboard never waits on the heavy panel load."""
+def _regime_state(market):
+    """Non-blocking graded regime ("STRONG"/"ON"/"NEUTRAL"/"OFF" or None while
+    warming): cached, refreshed in a background thread so the dashboard never
+    waits on the heavy panel load."""
     c = _regime_cache.get(market)
     if c and time.time() - c[0] < 1800:
         return c[1]
@@ -109,6 +115,12 @@ def _regime(market):
         import threading
         threading.Thread(target=_regime_bg, args=(market,), daemon=True).start()
     return c[1] if c else None
+
+
+def _regime(market):
+    """Back-compat bool view of the graded regime (True = dip-buys allowed)."""
+    s = _regime_state(market)
+    return None if s is None else s != "OFF"
 
 
 def _markets(v2):
@@ -161,6 +173,7 @@ def api_overview():
                         "positions": s["positions"], "trades": s["trades"], "win": round(s["win"]), "pf": s["pf"]})
     v2.close()
     return JSONResponse(dict(markets=markets, regime={"IN": _regime("IN"), "US": _regime("US")},
+                             regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
                              as_of=datetime.now(IST).strftime("%H:%M:%S IST")))
 
 
@@ -191,20 +204,68 @@ def api_positions():
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
     out = []
     today_s = datetime.now(IST).date().isoformat()
-    for pid, market, strat, sym, entry, shares, stop, target, trail, peak, edate, oat in v2.execute(
+    try:
+        rows = v2.execute("SELECT id,market,strategy,symbol,entry_price,shares,stop,target,trail,peak,"
+                          "entry_date,opened_at,why FROM v2_positions").fetchall()
+    except Exception:   # why column not migrated yet
+        rows = [(*r, None) for r in v2.execute(
             "SELECT id,market,strategy,symbol,entry_price,shares,stop,target,trail,peak,entry_date,opened_at "
-            "FROM v2_positions"):
+            "FROM v2_positions")]
+    for pid, market, strat, sym, entry, shares, stop, target, trail, peak, edate, oat, why in rows:
         p = live.get(market, {}).get(sym, {}).get("price", entry)
         tstop = max(stop, peak * (1 - trail)) if trail else stop
         head = (p - tstop) / (peak - tstop) if peak > tstop else 0
+        try:
+            why_d = _jsonmod.loads(why) if why else None
+        except Exception:
+            why_d = None
         out.append(dict(id=pid, market=market, ccy="₹" if market == "IN" else "$", strategy=strat, symbol=sym,
                         entry=round(entry, 2), live=round(p, 2), qty=round(shares, 2), value=round(p * shares, 2),
                         pnl=round((p / entry - 1) * 100, 2), pnl_amt=round((p - entry) * shares, 2),
                         stop=round(tstop, 2), trail=bool(trail), today=str(edate) == today_s,
-                        since=_ist(oat or edate), headroom=round(max(0, min(1, head)) * 100)))
+                        since=_ist(oat or edate), headroom=round(max(0, min(1, head)) * 100), why=why_d))
     v2.close()
     out.sort(key=lambda x: -x["pnl"])
     return JSONResponse(out)
+
+
+@router.get("/api/attribution")
+def api_attribution():
+    """P&L attribution by market x strategy (closed + open) and a daily equity
+    curve with max drawdown per market — the 'is the engine actually working'
+    view."""
+    v2 = _ro(V2_DB)
+    live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    agg = {}
+    for m, strat, n, w, pnl, avg in v2.execute(
+            "SELECT market,strategy,COUNT(*),SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),"
+            "COALESCE(SUM(pnl),0),COALESCE(AVG(return_pct),0) FROM v2_trades GROUP BY market,strategy"):
+        agg[(m, strat)] = dict(market=m, ccy="₹" if m == "IN" else "$", strategy=strat, closed=n,
+                               win=round(w / n * 100) if n else 0, realized=round(pnl, 2),
+                               avg_ret=round(avg, 2), open=0, unrealized=0.0)
+    for m, strat, sym, entry, shares in v2.execute(
+            "SELECT market,strategy,symbol,entry_price,shares FROM v2_positions"):
+        p = live.get(m, {}).get(sym, {}).get("price", entry)
+        a = agg.setdefault((m, strat), dict(market=m, ccy="₹" if m == "IN" else "$", strategy=strat,
+                                            closed=0, win=0, realized=0.0, avg_ret=0.0, open=0, unrealized=0.0))
+        a["open"] += 1
+        a["unrealized"] = round(a["unrealized"] + (p - entry) * shares, 2)
+    equity = {}
+    for m in ("IN", "US"):
+        daily = {}
+        for d, e in v2.execute("SELECT substr(date,6,10), equity FROM v2_equity "
+                               "WHERE market=? AND date LIKE 'LIVE_%' ORDER BY date", (m,)):
+            daily[d] = e                       # last snapshot of each day wins
+        ser = sorted(daily.items())
+        peak = mdd = 0.0
+        for _, e in ser:
+            peak = max(peak, e)
+            if peak:
+                mdd = max(mdd, (peak - e) / peak * 100)
+        equity[m] = dict(days=[d for d, _ in ser], equity=[round(e) for _, e in ser], maxdd=round(mdd, 2))
+    v2.close()
+    return JSONResponse(dict(strategies=sorted(agg.values(), key=lambda x: (x["market"], x["strategy"])),
+                             equity=equity))
 
 
 _ticker_cache: dict = {}
@@ -1053,7 +1114,11 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <div id=positions class=tab>
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
    <div class=seg style="margin-bottom:10px"><b id=sbpos class=on onclick="subPos('pos')">Positions · today</b><b id=sbhold onclick="subPos('hold')">Holdings</b></div>
-   <div id=poslist class=skel>loading…</div></div>
+   <div id=poslist class=skel>loading…</div>
+   <div class=sec><span>strategy performance</span><span class=mut style="font-size:12px;font-weight:400">realized + open</span></div>
+   <div class=grid id=attrib></div>
+   <div class=sec><span>equity curve</span><span id=eqdd class=mut style="font-size:12px;font-weight:400"></span></div>
+   <div class=grid2 id=eqcurves></div></div>
 
   <div id=orders class=tab>
    <div class=sec><span>orders &amp; activity</span><span id=ordtot class=mut style="font-size:12px;font-weight:400"></span></div>
@@ -1106,12 +1171,16 @@ function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.pap
 function renderBalance(){document.getElementById('modeb').textContent=MODE;document.getElementById('modeb').className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}
 function refresh(){renderBalance();if(cur=='home')loadHome();if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
-function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)':'var(--dn)');var s=p.market=='IN'?'₹':'$';var amt=(p.market=='IN'?'₹':'$')+(p.market=='IN'?INR:USD).format(Math.abs(p.pnl_amt));
- return `<div class=pos><div class=row><div style="display:flex;gap:8px;align-items:center;cursor:pointer" onclick="stock('${p.symbol}','${p.market}')"><b>${p.symbol}</b><span class="badge ${p.strategy.indexOf('gap')>=0?'bg-inf':'bg-mut'}">${p.strategy.indexOf('gap')>=0?'gap':'swing'}</span></div>
+function stratTag(st){return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
+function whyLine(p){if(!p.why)return '';var w=p.why,f=w.factors||{};var bits=(w.reasons||[]).slice(0,2);
+ if(!bits.length)bits=['RS '+(f.rel_strength||'-')+' · vol '+(f.volume||'-')];
+ return '<div class=mut style="font-size:10px;margin-top:3px" title="entry investigation">why: comp '+(w.composite||'-')+' · '+bits.join(' · ')+'</div>'}
+function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)':'var(--dn)');var s=p.market=='IN'?'₹':'$';var amt=(p.market=='IN'?'₹':'$')+(p.market=='IN'?INR:USD).format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
+ return `<div class=pos><div class=row><div style="display:flex;gap:8px;align-items:center;cursor:pointer" onclick="stock('${p.symbol}','${p.market}')"><b>${p.symbol}</b><span class="badge ${st[1]}">${st[0]}</span></div>
  <div style="text-align:right"><div class=num id=px_${p.id} data-v="${p.live}">${s}${p.live}</div><div id=pl_${p.id} style="font-size:12px" class="${col(p.pnl)}">${sgn(p.pnl)}% · ${p.pnl_amt<0?'-':'+'}${amt}</div></div></div>
  <div class=bar><i style="width:${p.headroom}%;background:${c}"></i></div>
  <div class=row style="margin-top:6px"><span class=mut style="font-size:10px">qty ${p.qty} · ${s}${(p.market=='IN'?INR:USD).format(p.value)} in · ${p.trail?'trail':'stop'} ${s}${p.stop}</span><button class="sm" onclick="exitPos(${p.id},'${p.symbol}')">Exit</button></div>
- <div class=mut style="font-size:10px;margin-top:3px">since ${p.since||''}</div></div>`}
+ <div class=mut style="font-size:10px;margin-top:3px">since ${p.since||''}</div>${whyLine(p)}</div>`}
 function ordRow(o){var s=o.ccy,fmt=(o.ccy=='₹'?INR:USD);
  var right=(o.side=='SELL'&&o.pnl!=null)?('<div class="'+col(o.pnl)+'">'+sgn(o.pnl)+'%</div><div class=mut style="font-size:11px">'+(o.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(o.pnl_amt))+'</div>'):('<div class=mut style="font-size:12px">'+s+fmt.format(o.value)+'</div>');
  var tag=o.status=='open'?'<span class="badge bg-warn">open</span>':(o.reason?'<span class=mut style="font-size:10px">'+o.reason+'</span>':'');
@@ -1128,7 +1197,8 @@ function loadHome(){api('/v2/api/overview').then(r=>{var d=r.j;document.getEleme
  var ms=(d.markets||[]).filter(m=>inMkt(m.market));
  document.getElementById('pv').innerHTML=ms.map(m=>fmtc(m.ccy,m.equity)).join('  ·  ')||'—';
  document.getElementById('ppnl').innerHTML=ms.map(m=>'today '+pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' &nbsp;·&nbsp; ');
- document.getElementById('regime').innerHTML=['IN','US'].filter(inMkt).map(m=>'<span class=chip><span style="color:'+(d.regime[m]?'var(--up)':'var(--warn)')+'">●</span> '+m+(d.regime[m]==null?' …':(d.regime[m]?' risk-on':' risk-off'))+'</span>').join('');
+ var RS={STRONG:['var(--up)','strong trend · full throttle'],ON:['var(--up)','risk-on'],NEUTRAL:['var(--warn)','neutral · best setups only'],OFF:['var(--dn)','risk-off · dip-buys blocked']};
+ document.getElementById('regime').innerHTML=['IN','US'].filter(inMkt).map(m=>{var st=(d.regime_state||{})[m];var v=RS[st]||['var(--mut)','…'];return '<span class=chip title="market regime"><span style="color:'+v[0]+'">●</span> '+m+' '+v[1]+'</span>'}).join('');
  document.getElementById('engines').innerHTML=ms.map(mktCard).join('');});
  api('/v2/api/positions').then(r=>{var ps=r.j.filter(p=>inMkt(p.market));document.getElementById('posn').textContent=ps.length+' open';document.getElementById('homepos').innerHTML=ps.slice(0,5).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function load(){loadHome()}
@@ -1139,7 +1209,17 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  var t=Object.keys(byc).map(cc=>'<span class="'+col(byc[cc])+'">'+(byc[cc]<0?'-':'+')+cc+(cc=='₹'?INR:USD).format(Math.abs(Math.round(byc[cc])))+'</span>').join(' · ');
  document.getElementById('postot').innerHTML=(t||'—')+' P&L';
  document.getElementById('poslist').innerHTML=ps.map(posCard).join('')||'<div class=skel>'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>';}
-function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();})}
+function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();});loadAttrib();}
+function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
+ var rows=(d.strategies||[]).filter(s=>inMkt(s.market));
+ document.getElementById('attrib').innerHTML=rows.map(s=>{var st=stratTag(s.strategy);var tot=s.realized+s.unrealized;
+  return '<div class=card><div class=row><span class="badge '+st[1]+'">'+s.market+' '+st[0]+'</span><span class="'+col(tot)+'" style="font-size:13px;font-weight:600">'+(tot<0?'-':'+')+s.ccy+(s.ccy=='₹'?INR:USD).format(Math.abs(Math.round(tot)))+'</span></div>'
+  +'<div class=mut style="font-size:11px;margin-top:6px">'+s.closed+' closed · win '+s.win+'% · avg '+sgn(s.avg_ret)+'%</div>'
+  +'<div class=mut style="font-size:11px">'+s.open+' open · unrl '+(s.unrealized<0?'-':'+')+s.ccy+(s.ccy=='₹'?INR:USD).format(Math.abs(Math.round(s.unrealized)))+'</div></div>'}).join('')||'<div class=skel>no trades yet</div>';
+ var eq=d.equity||{};var dd=[];
+ document.getElementById('eqcurves').innerHTML=['IN','US'].filter(inMkt).map(m=>{var e=eq[m]||{};if((e.equity||[]).length<3)return '';dd.push(m+' maxDD '+(e.maxdd||0)+'%');
+  return '<div class=card><div class=mut style="font-size:11px">'+(m=='IN'?'India ₹':'US $')+' · '+(e.days||[]).length+'d</div>'+spark(e.equity,m=='IN'?'₹':'$')+'</div>'}).join('');
+ document.getElementById('eqdd').textContent=dd.join(' · ');});}
 function loadOrders(){api('/v2/api/orders?limit=120').then(r=>{var os=r.j.filter(o=>inMkt(o.market));
  var b=os.filter(o=>o.side=='BUY').length,sl=os.filter(o=>o.side=='SELL').length;
  document.getElementById('ordtot').textContent=os.length?(b+' buys · '+sl+' sells'):'';
