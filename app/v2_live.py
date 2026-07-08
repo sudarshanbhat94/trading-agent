@@ -200,7 +200,30 @@ def _live(market, symbols=None):
     return out
 
 
-def _signals(tails, mdf, live):
+_SESS_OPEN: dict = {}
+
+
+def _session_opens(market, live):
+    """First price seen per symbol this session. The IN feed carries a true quote
+    open; the US feed sends only `price` (open is NULL -> coalesced), so without
+    this the US 'gap' was really intraday day-change (chase entries that faded).
+    Keyed by IST date for IN and UTC date for US (neither session crosses its
+    key's midnight). If the engine restarts mid-session, opens re-baseline to the
+    restart price -> gap ~0 -> conservatively no gap entries that day."""
+    key = datetime.now(IST).date().isoformat() if market == "IN" else datetime.now(timezone.utc).date().isoformat()
+    st = _SESS_OPEN.get(market)
+    if not st or st[0] != key:
+        st = (key, {})
+        _SESS_OPEN[market] = st
+    opens = st[1]
+    for s, lq in live.items():
+        if s not in opens:
+            opens[s] = lq["open"]      # true open (IN) or first-seen price (US)
+    return opens
+
+
+def _signals(tails, mdf, live, opens=None):
+    opens = opens or {}
     today = pd.Timestamp(datetime.now(IST).date())
     rets = [live[s]["price"] / t["close"].iloc[-1] - 1 for s, t in tails.items()
             if s in live and t["close"].iloc[-1] > 0]
@@ -212,8 +235,9 @@ def _signals(tails, mdf, live):
         lq = live.get(s)
         if not lq:
             continue
+        sess_open = opens.get(s) or lq["open"]
         tl = t.copy()
-        tl.loc[today] = {"open": lq["open"], "high": lq["high"], "low": lq["low"],
+        tl.loc[today] = {"open": sess_open, "high": lq["high"], "low": lq["low"],
                          "close": lq["price"], "volume": lq["vol"] or t["volume"].iloc[-1]}
         try:
             row = eng.compute_features(tl, mdf_live).iloc[-1]
@@ -226,11 +250,12 @@ def _signals(tails, mdf, live):
         if c > 0:
             out.append(dict(symbol=s, strategy="swing_meanrev", score=round(c, 4), atr=atr, price=lq["price"]))
         prevc = t["close"].iloc[-1]
-        g = lq["open"] / prevc - 1 if prevc > 0 else 0
+        g = sess_open / prevc - 1 if prevc > 0 else 0
         rv = float(row["rvol"]) if not pd.isna(row["rvol"]) else 0
-        # gap must be HOLDING (price at/above the open): gap-and-go, not gap-and-fade.
-        # All 3 same-day -5% stop-outs on Jul 2 were fades bought below the open.
-        if 0.03 <= g <= 0.15 and rv >= 1.5 and lq["price"] >= lq["open"]:
+        # gap must be HOLDING (price at/above the session open): gap-and-go, not
+        # gap-and-fade. Session open comes from _session_opens (the US feed has no
+        # quote open, which silently turned 'gap' into intraday chase before).
+        if 0.03 <= g <= 0.15 and rv >= 1.5 and lq["price"] >= sess_open:
             out.append(dict(symbol=s, strategy="gap_momentum", score=round(min(g / 0.15, 1.0), 4), atr=atr, price=lq["price"]))
         # 52w-high breakout: near the 1y high on volume with strong 3m momentum
         # (George & Hwang factor; entry only in a STRONG market regime)
@@ -248,7 +273,7 @@ def poll_market(market):
         _status[market] = "no quotes"
         return
     tails, mdf = _hist(market)
-    sigs, mdf_live, today = _signals(tails, mdf, live)
+    sigs, mdf_live, today = _signals(tails, mdf, live, _session_opens(market, live))
     rstate = eng.regime_state(mdf_live, today, eng.DEFAULTS["regime_lookback"])
     regime = rstate != "OFF"   # allow dip-buys unless the market is genuinely weak
     strong = eng.regime_strong(mdf_live, today, eng.DEFAULTS["regime_lookback"])
@@ -428,7 +453,11 @@ def exit_monitor(market):
         if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
             eff = max(eff, p["entry"])
         try:
-            held = (today - date.fromisoformat(str(p["edate"]))).days
+            # TRADING days, not calendar days — the backtest validated an 8
+            # trading-bar hold; calendar counting was force-selling ~2 sessions
+            # early around weekends, truncating the bounce.
+            import numpy as _np
+            held = int(_np.busday_count(str(p["edate"])[:10], today.isoformat()))
         except ValueError:
             held = 0
         # IN gap names spike then mean-revert -> take profit at a fixed target

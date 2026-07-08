@@ -229,6 +229,55 @@ def api_positions():
     return JSONResponse(out)
 
 
+@router.get("/api/health")
+def api_health():
+    """Pipeline self-check: quote freshness, daily-candle freshness, engine
+    heartbeat. The UI shows a red banner when anything is unhealthy — so a silent
+    stall (like the 2-week candle starvation) can never go unnoticed again."""
+    checks = []
+    now = datetime.now(timezone.utc)
+    try:
+        from . import market_regions
+        openm = {m: bool(market_regions.market_session_for_region(m).get("is_open")) for m in ("IN", "US")}
+    except Exception:
+        openm = {"IN": False, "US": False}
+    con = _ro(MAIN_DB)
+    for m, src in LIVE_SOURCE.items():
+        ts = con.execute("SELECT MAX(ts) FROM latest_quotes WHERE source=?", (src,)).fetchone()[0]
+        age = 1e9
+        if ts:
+            try:
+                age = (now - datetime.fromisoformat(str(ts).replace("Z", "+00:00"))).total_seconds()
+            except ValueError:
+                pass
+        ok = age < 180 if openm.get(m) else True
+        checks.append(dict(name=f"{m} live feed", ok=ok,
+                           detail=(f"{age:.0f}s old" if openm.get(m) else "market closed")))
+    for m, src in (("IN", "upstox-live:day"), ("US", "alpaca-iex-live:day")):
+        ts = con.execute("SELECT MAX(ts) FROM candles WHERE source=?", (src,)).fetchone()[0]
+        days = 99
+        if ts:
+            try:
+                days = (now - datetime.fromisoformat(str(ts).replace("Z", "+00:00"))).days
+            except ValueError:
+                pass
+        checks.append(dict(name=f"{m} daily candles", ok=days <= 5, detail=f"{days}d old"))
+    con.close()
+    try:
+        v2 = _ro(V2_DB)
+        last = v2.execute("SELECT MAX(date) FROM v2_equity WHERE date LIKE 'LIVE_%'").fetchone()[0]
+        v2.close()
+        hb = 1e9
+        if last:
+            hb = (now - datetime.fromisoformat(str(last)[5:]).replace(tzinfo=timezone.utc)).total_seconds()
+        any_open = any(openm.values())
+        checks.append(dict(name="engine heartbeat", ok=(hb < 600 if any_open else True),
+                           detail=(f"{hb/60:.0f}min ago" if hb < 1e9 else "no data") if any_open else "markets closed"))
+    except Exception:
+        checks.append(dict(name="engine heartbeat", ok=False, detail="unreadable"))
+    return JSONResponse(dict(ok=all(c["ok"] for c in checks), checks=checks))
+
+
 # ---------------- watchlist · alerts · search · movers ----------------
 def _uwl(v2):
     v2.executescript(
@@ -636,7 +685,7 @@ def api_watch():
     held = {r[0] for r in v2.execute("SELECT symbol FROM v2_positions")}
     out, seen = [], set()
     for market, _ in _markets(v2):
-        for strat in ("gap_momentum", "swing_meanrev"):
+        for strat in ("gap_momentum", "mom_breakout", "swing_meanrev"):
             d = v2.execute("SELECT MAX(date) FROM v2_signals WHERE market=? AND strategy=?",
                            (market, strat)).fetchone()[0]
             if not d:
@@ -647,7 +696,8 @@ def api_watch():
                     continue
                 seen.add(sym)
                 lq = live[market].get(sym, {})
-                badge = f"gap {round(conv*15)}%" if strat == "gap_momentum" else f"dip · {conv:.2f}"
+                badge = (f"gap {round(conv*15)}%" if strat == "gap_momentum"
+                         else (f"breakout +{round(conv*100)}%" if strat == "mom_breakout" else f"dip · {conv:.2f}"))
                 chg = ((lq.get("price", 0) / lq["prev"] - 1) * 100) if lq.get("prev") else 0
                 out.append(dict(symbol=sym, market=market, ccy="₹" if market == "IN" else "$", strategy=strat,
                                 badge=badge, live=round(lq.get("price", 0), 2), chg=round(chg, 2)))
@@ -1288,6 +1338,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  </nav>
  <div class=main>
   <div class=ticker id=ticker style="display:none"></div>
+  <div id=healthbar class=hide style="background:var(--dnb);border:1px solid rgba(255,93,108,.45);color:var(--dn);padding:8px 14px;border-radius:10px;margin:8px 0;font-size:12px"></div>
   <div class=top><span class=live><span class=dot></span><span id=clock>live</span></span>
    <div style="display:flex;align-items:center;gap:10px"><div class=seg id=mkt><b data-m=BOTH class=on onclick="setMkt('BOTH')">Both</b><b data-m=IN onclick="setMkt('IN')">India</b><b data-m=US onclick="setMkt('US')">US</b></div>
     <div class=prof id=avatar onclick="document.getElementById('pm').classList.toggle('hide')">U</div></div></div>
@@ -1307,7 +1358,9 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <div id=wl></div>
    <div style="margin-top:8px"><span class=mut style="font-size:11px">alerts&nbsp;</span><span id=alerts></span></div>
    <div class=sec><span>movers</span><span class=mut style="font-size:12px;font-weight:400">day change vs prev close</span></div>
-   <div class=grid2 id=movers></div></div>
+   <div class=grid2 id=movers></div>
+   <div class=sec><span>engine radar</span><span class=mut style="font-size:12px;font-weight:400">what it may buy next</span></div>
+   <div id=radar class=mut style="font-size:12px">quiet</div></div>
 
   <div id=positions class=tab>
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
@@ -1368,7 +1421,7 @@ function doLogout(){api('/api/auth/logout',{method:'POST'}).then(()=>{ME=null;sh
 function loadAccountData(){api('/api/account').then(r=>{ACC=r.j;renderBalance()})}
 function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.paper_cash_by_market||{};var IN=cb.IN!=null?cb.IN:(p.india_cash||0),US=cb.US!=null?cb.US:(p.us_cash||0);return {IN:+IN||0,US:+US||0}}catch(e){return{IN:0,US:0}}}
 function renderBalance(){document.getElementById('modeb').textContent=MODE;document.getElementById('modeb').className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}
-function refresh(){renderBalance();if(cur=='home'){loadHome();loadWL();loadMovers()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
+function refresh(){renderBalance();loadHealth();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
 function stratTag(st){return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
 function whyLine(p){if(!p.why)return '';var w=p.why,f=w.factors||{};var bits=(w.reasons||[]).slice(0,2);
@@ -1533,7 +1586,13 @@ function loadMovers(){api('/v2/api/movers').then(r=>{var d=r.j||{};
  document.getElementById('movers').innerHTML=['IN','US'].filter(inMkt).map(m=>{var v=d[m]||{};if(!(v.up||[]).length&&!(v.down||[]).length)return '';
   return '<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top gainers</div>'+(v.up||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'
        +'<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top losers</div>'+(v.down||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'}).join('');});}
+function loadHealth(){api('/v2/api/health').then(r=>{var d=r.j||{};var el=document.getElementById('healthbar');
+ if(d.ok){el.classList.add('hide');return}
+ var bad=(d.checks||[]).filter(c=>!c.ok).map(c=>c.name+' ('+c.detail+')');
+ el.textContent='⚠ system check: '+bad.join(' · ');el.classList.remove('hide');});}
+function loadRadar(){api('/v2/api/watch').then(r=>{var it=(r.j||[]).filter(x=>inMkt(x.market)).slice(0,10);
+ document.getElementById('radar').innerHTML=it.length?it.map(x=>'<span class=chip style="cursor:pointer;margin:2px" onclick="stock(\''+x.symbol+'\',\''+x.market+'\')"><b>'+x.symbol+'</b> <span class=mut style="font-size:10px">'+x.market+' · '+x.badge+'</span></span>').join(' '):'<span class=mut style="font-size:12px">no candidates on the radar right now</span>';});}
 function toast(t){var e=document.createElement('div');e.className='toastmsg';e.textContent=t;document.body.appendChild(e);setTimeout(function(){e.remove()},6500)}
-boot();setInterval(()=>{if(ME){if(cur=='home'){loadHome();loadWL();loadMovers()}if(cur=='positions')loadPos()}},20000);
+boot();setInterval(()=>{if(ME){loadHealth();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar()}if(cur=='positions')loadPos()}},20000);
 setInterval(()=>{if(ME)loadTicker()},6000);
 </script></body></html>"""
