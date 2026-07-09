@@ -1322,6 +1322,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 }
 #wl .lrow{padding:11px 2px}#wl .lrow:last-child{border-bottom:none}
 .mvrow:last-child{border-bottom:none!important}
+.pill{display:inline-block;min-width:66px;text-align:center;font-size:11px;font-weight:600;padding:3px 7px;border-radius:7px;font-variant-numeric:tabular-nums}
+.pup{background:var(--upb);color:var(--up)}.pdn{background:var(--dnb);color:var(--dn)}.pmut{background:rgba(255,255,255,.05);color:var(--mut)}
 .icb{padding:5px 8px;font-size:11px;line-height:1;border-radius:7px;color:var(--mut)}
 .icb:hover{color:var(--tx)}
 .icb svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;display:block}
@@ -1340,7 +1342,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  <p class=mut style="font-size:13px;margin-top:18px">No account? <b style="cursor:pointer;color:var(--inf)" onclick="alert('Ask an admin to create your account — sign-up with approval is coming next.')">Request access</b></p></div>
 
 <div id=app class="app hide">
- <nav class=side><div class=b>OpenStocks</div>
+ <nav class=side><div class=b>OpenStocks<span style="color:var(--up)">.</span></div>
   <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>Home</a>
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>Portfolio</a>
   <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Orders</a>
@@ -1447,8 +1449,12 @@ function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)'
  return `<div class=pos><div class=row><div style="display:flex;gap:8px;align-items:center;cursor:pointer" onclick="stock('${p.symbol}','${p.market}')"><b>${p.symbol}</b><span class="badge ${st[1]}">${st[0]}</span></div>
  <div style="text-align:right"><div class=num id=px_${p.id} data-v="${p.live}">${s}${p.live}</div><div id=pl_${p.id} style="font-size:12px" class="${col(p.pnl)}">${sgn(p.pnl)}% · ${p.pnl_amt<0?'-':'+'}${amt}</div></div></div>
  <div class=bar><i style="width:${p.headroom}%;background:${c}"></i></div>
- <div class=row style="margin-top:6px"><span class=mut style="font-size:10px">qty ${p.qty} · ${s}${(p.market=='IN'?INR:USD).format(p.value)} in · ${p.trail?'trail':'stop'} ${s}${p.stop}</span><button class="sm" onclick="exitPos(${p.id},'${p.symbol}')">Exit</button></div>
- <div class=mut style="font-size:10px;margin-top:3px">since ${p.since||''}</div>${whyLine(p)}</div>`}
+ <div style="display:flex;gap:18px;margin-top:9px;align-items:flex-end"><span style="flex:1;display:flex;gap:18px">
+  <span><span class=mut style="font-size:9px;text-transform:uppercase;letter-spacing:.05em">qty</span><br><b class=num style="font-size:12.5px">${p.qty}</b></span>
+  <span><span class=mut style="font-size:9px;text-transform:uppercase;letter-spacing:.05em">value</span><br><b class=num style="font-size:12.5px">${s}${(p.market=='IN'?INR:USD).format(p.value)}</b></span>
+  <span><span class=mut style="font-size:9px;text-transform:uppercase;letter-spacing:.05em">${p.trail?'trail':'stop'}</span><br><b class=num style="font-size:12.5px">${s}${p.stop}</b></span></span>
+  <button class="sm" onclick="exitPos(${p.id},'${p.symbol}')">Exit</button></div>
+ <div class=mut style="font-size:10px;margin-top:5px">since ${p.since||''}</div>${whyLine(p)}</div>`}
 function ordRow(o){var s=o.ccy,fmt=(o.ccy=='₹'?INR:USD);
  var right=(o.side=='SELL'&&o.pnl!=null)?('<div class="'+col(o.pnl)+'">'+sgn(o.pnl)+'%</div><div class=mut style="font-size:11px">'+(o.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(o.pnl_amt))+'</div>'):('<div class=mut style="font-size:12px">'+s+fmt.format(o.value)+'</div>');
  var tag=o.status=='open'?'<span class="badge bg-warn">open</span>':(o.reason?'<span class=mut style="font-size:10px">'+o.reason+'</span>':'');
@@ -1575,11 +1581,16 @@ function chartHtml(closes,levels){
 }
 function spark(series,ccy){
  if(!series||series.length<3)return '';
- var w=120,h=30,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series),rng=(hi-lo)||1;
- var pts=series.map(function(v,i){return (i/(n-1)*w).toFixed(1)+','+(h-(v-lo)/rng*h).toFixed(1)}).join(' ');
- var up=series[n-1]>=series[0],col=up?'#06a35a':'#df2f29';
- return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:28px;display:block;margin-top:6px"><polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>';
+ var w=120,h=34,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series),rng=(hi-lo)||1;
+ var pts=series.map(function(v,i){return (i/(n-1)*w).toFixed(1)+','+(h-3-(v-lo)/rng*(h-6)).toFixed(1)}).join(' ');
+ var up=series[n-1]>=series[0],col=up?'#00e08a':'#ff5d6c',id='sg'+(SPARKN++);
+ return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:38px;display:block;margin-top:8px">'
+ +'<defs><linearGradient id="'+id+'" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="'+col+'" stop-opacity=".30"/><stop offset="1" stop-color="'+col+'" stop-opacity="0"/></linearGradient></defs>'
+ +'<polygon points="0,'+h+' '+pts+' '+w+','+h+'" fill="url(#'+id+')"/>'
+ +'<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.8" vector-effect="non-scaling-stroke"/></svg>';
 }
+var SPARKN=0;
+function pill(v){var fl=Math.abs(v)<0.005,up=v>0;return '<span class="pill '+(fl?'pmut':(up?'pup':'pdn'))+'">'+(fl?'0.00%':((up?'\u25b2 ':'\u25bc ')+Math.abs(v).toFixed(2)+'%'))+'</span>'}
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 var WLT=null;
@@ -1593,12 +1604,12 @@ function setAlert(sym,mkt,px){var v=prompt('Alert when '+sym+' crosses price (no
 function delAlert(id){api('/v2/api/alerts/'+id,{method:'DELETE'}).then(loadWL)}
 function loadWL(){api('/v2/api/watchlist').then(r=>{var d=r.j||{};
  var h=(d.watch||[]).filter(w=>inMkt(w.market)).map(w=>{var a=w.chg>0?'▲':(w.chg<0?'▼':''),cl=w.chg>0?'up':(w.chg<0?'dn':'mut');
-  return '<div class=lrow><div style="cursor:pointer" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><b>'+w.symbol+'</b> <span class=mk style="font-size:9px;border:1px solid var(--line);border-radius:4px;padding:0 3px;color:var(--mut)">'+w.market+'</span></div><div style="display:flex;gap:11px;align-items:center"><span class=num>'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</span><span class="'+cl+'" style="font-size:12px;min-width:62px;text-align:right">'+a+Math.abs(w.chg).toFixed(2)+'%</span><button class="sm icb" title="set alert" onclick="setAlert(\''+w.symbol+'\',\''+w.market+'\','+w.price+')"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button><button class="sm icb" title="remove" onclick="delWL(\''+w.symbol+'\',\''+w.market+'\')">×</button></div></div>'}).join('');
+  return '<div class=lrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto auto auto;gap:9px;align-items:center"><div style="cursor:pointer;overflow:hidden;text-overflow:ellipsis" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><b>'+w.symbol+'</b> <span class=mk style="font-size:9px;border:1px solid var(--line);border-radius:4px;padding:0 3px;color:var(--mut)">'+w.market+'</span></div><span class=num style="font-size:13px">'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</span>'+pill(w.chg)+'<button class="sm icb" title="set alert" onclick="setAlert(\''+w.symbol+'\',\''+w.market+'\','+w.price+')"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button><button class="sm icb" title="remove" onclick="delWL(\''+w.symbol+'\',\''+w.market+'\')">×</button></div></div>'}).join('');
  document.getElementById('wl').innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing watched yet — search a symbol above</div>';
  var al=(d.alerts||[]).filter(a=>inMkt(a.market)).slice(0,10);
  document.getElementById('alerts').innerHTML=al.length?al.map(a=>'<span class=chip style="font-size:11px;'+(a.active?'':'opacity:.55')+'">'+(a.active?'●':'✓')+' '+a.symbol+' '+(a.kind=='pct'?('±'+a.value+'%'):(a.kind+' '+a.ccy+a.value))+(a.triggered_price?(' → hit '+a.triggered_price):'')+' <b style="cursor:pointer;padding-left:3px" onclick="delAlert('+a.id+')">✕</b></span>').join(' '):'<span class=mut style="font-size:11px">none — use ⏰ on any stock</span>';});}
 function loadMovers(){api('/v2/api/movers').then(r=>{var d=r.j||{};
- var row=(x,m)=>'<div class="row mvrow" style="padding:6px 0;border-bottom:1px solid var(--line)"><b style="cursor:pointer;font-size:12px" onclick="stock(\''+x.symbol+'\',\''+m+'\')">'+x.symbol+'</b><span style="font-size:12px"><span class=num style="margin-right:8px">'+x.ccy+(x.ccy=='₹'?INR:USD).format(x.price)+'</span><span class="'+(x.chg>=0?'up':'dn')+'">'+sgn(x.chg)+'%</span></span></div>';
+ var row=(x,m)=>'<div class=mvrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:9px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"><b style="cursor:pointer;font-size:12px;overflow:hidden;text-overflow:ellipsis" onclick="stock(\''+x.symbol+'\',\''+m+'\')">'+x.symbol+'</b><span class=num style="font-size:12px;color:var(--mut)">'+x.ccy+(x.ccy=='₹'?INR:USD).format(x.price)+'</span>'+pill(x.chg)+'</div>';
  document.getElementById('movers').innerHTML=['IN','US'].filter(inMkt).map(m=>{var v=d[m]||{};if(!(v.up||[]).length&&!(v.down||[]).length)return '';
   return '<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top gainers</div>'+(v.up||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'
        +'<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top losers</div>'+(v.down||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'}).join('');});}
