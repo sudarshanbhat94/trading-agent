@@ -109,10 +109,12 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
-    dates = [d for d in M["close"].index if d >= pd.Timestamp(START)]
+    lo = pd.Timestamp(start or START)
+    hi = pd.Timestamp(end) if end else None
+    dates = [d for d in M["close"].index if d >= lo and (hi is None or d <= hi)]
     cash = equity = 100000.0
     pos, pending, curve = {}, [], []
     n = wins = 0

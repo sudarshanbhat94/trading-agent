@@ -12,7 +12,7 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -29,7 +29,18 @@ MAXPOS = {"IN": 14, "US": 14}                # max concurrent positions per mark
                                              # Backtested 10 vs 14 (2024->now): IN ret -13.1->-7.1%,
                                              # maxDD 13.6->9.6%; US equal Sharpe. More names, not
                                              # bigger bets -> better capital use at same risk.
-COST_SIDE = {"IN": 0.30 / 200, "US": 0.12 / 200}
+COST_SIDE = {"IN": 0.40 / 200, "US": 0.20 / 200}   # round-trip cost incl. ~5bps/side slippage
+                                                    # (paper fills at the poll price flatter reality;
+                                                    #  this keeps the P&L honest vs a live broker)
+EARNINGS_BLOCK_DAYS = 3                             # no NEW entries within this many days of earnings
+# Exchange holidays the busday hold-clock should skip (weekends it already knows).
+# US 2026 is deterministic; IN lists the fixed-date holidays (movable festival
+# dates omitted rather than guessed - a partial list still fixes those weeks).
+MARKET_HOLIDAYS = {
+    "IN": ["2026-01-26", "2026-04-03", "2026-04-14", "2026-05-01", "2026-10-02", "2026-12-25"],
+    "US": ["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+           "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"],
+}
 # per-strategy trade plan; both draw from the shared market pool
 PLAN = {
     "gap_momentum":  dict(regime_gated=False, threshold=0.38, atr_stop=1.5, atr_target=0.0, trail=0.10, priority=0),
@@ -201,6 +212,48 @@ def _live(market, symbols=None):
 
 
 _SESS_OPEN: dict = {}
+_SESS_FILE = os.path.join(os.path.dirname(V2_DB), "v2_session.json")
+_SESS_SAVED = [0.0]
+
+
+def _sess_load():
+    """Restore session opens/hi/lo across engine restarts — otherwise a mid-session
+    restart re-baselines 'open' to the restart price and blinds US gap detection
+    for the rest of the day."""
+    if _SESS_OPEN:
+        return
+    try:
+        with open(_SESS_FILE) as f:
+            raw = json.load(f)
+        for m, (key, d) in raw.items():
+            _SESS_OPEN[m] = (key, {s: list(v) for s, v in d.items()})
+    except Exception:
+        pass
+
+
+def _sess_save():
+    now = time.time()
+    if now - _SESS_SAVED[0] < 30:
+        return
+    _SESS_SAVED[0] = now
+    try:
+        with open(_SESS_FILE, "w") as f:
+            json.dump({m: [st[0], st[1]] for m, st in _SESS_OPEN.items()}, f)
+    except Exception:
+        pass
+
+
+def _earnings_soon(v2, sym, today_s, days=None):
+    """True if the symbol reports earnings within `days` days — a technical setup
+    has no edge against an earnings surprise, so entries are blocked."""
+    try:
+        r = v2.execute("SELECT next_earnings FROM earnings_calendar WHERE symbol=?", (sym,)).fetchone()
+        if not r or not r[0]:
+            return False
+        delta = (date.fromisoformat(str(r[0])[:10]) - date.fromisoformat(today_s)).days
+        return 0 <= delta <= (days if days is not None else EARNINGS_BLOCK_DAYS)
+    except Exception:
+        return False
 
 
 def _session_opens(market, live):
@@ -210,6 +263,7 @@ def _session_opens(market, live):
     Keyed by IST date for IN and UTC date for US (neither session crosses its
     key's midnight). If the engine restarts mid-session, opens re-baseline to the
     restart price -> gap ~0 -> conservatively no gap entries that day."""
+    _sess_load()
     key = datetime.now(IST).date().isoformat() if market == "IN" else datetime.now(timezone.utc).date().isoformat()
     st = _SESS_OPEN.get(market)
     if not st or st[0] != key:
@@ -226,6 +280,7 @@ def _session_opens(market, live):
         else:
             r[1] = max(r[1], lq["high"], lq["price"])
             r[2] = min(r[2], lq["low"], lq["price"])
+    _sess_save()
     return sess
 
 
@@ -386,6 +441,9 @@ def poll_market(market):
         if severe:                       # pro check: never buy into bad news
             vetoed += 1
             continue
+        if _earnings_soon(v2, sym, today_s):   # no fresh entries into an earnings print
+            vetoed += 1
+            continue
         # ---- THE GATE: investigation HARD GATES must clear (liquidity, drawdown,
         # regime, sector, news). Ranking stays with the proven conviction score and
         # position size comes from the investigation. This HYBRID backtested best
@@ -489,7 +547,8 @@ def exit_monitor(market):
             # trading-bar hold; calendar counting was force-selling ~2 sessions
             # early around weekends, truncating the bounce.
             import numpy as _np
-            held = int(_np.busday_count(str(p["edate"])[:10], today.isoformat()))
+            held = int(_np.busday_count(str(p["edate"])[:10], today.isoformat(),
+                                        holidays=MARKET_HOLIDAYS.get(market, [])))
         except ValueError:
             held = 0
         # IN gap names spike then mean-revert -> take profit at a fixed target
