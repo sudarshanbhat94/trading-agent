@@ -29,6 +29,7 @@ addEventListener('DOMContentLoaded',function(){
     if(window.refresh)refresh();if(window.loadTicker)loadTicker();
     var v=location.search;
     if(v.indexOf('detail')>=0){setTimeout(function(){stock('PARAS','IN')},250);}
+    else if(v.indexOf('positions')>=0){setTimeout(function(){go('positions')},250);}
     else if(window.go)go('home');
     if(v.indexOf('metrics')>=0){setTimeout(function(){
       var vw=document.documentElement.clientWidth,bad=[];
@@ -100,7 +101,8 @@ def _market(mkt):
                 positions=5, trades=11, win=64, pf=1.7)
 
 
-OVERVIEW = dict(as_of="20 Jun, 13:45 IST", regime={"IN": False, "US": True},
+OVERVIEW = dict(as_of="10 Jul, 13:45 IST", regime={"IN": True, "US": True},
+                regime_state={"IN": "NEUTRAL", "US": "STRONG"},
                 markets=[_market("IN"), _market("US")])
 
 NEWS = [
@@ -153,10 +155,39 @@ class H(BaseHTTPRequestHandler):
             "/v2/api/positions": POSITIONS,
             "/v2/api/orders": ORDERS,
             "/v2/api/ticker": [dict(symbol=p2["symbol"], market=p2["market"], ccy=p2["ccy"],
-                                    price=p2["live"], chg=round((random.random() - 0.4) * 3, 2)) for p2 in POSITIONS],
+                                    price=p2["live"], pnl=p2["pnl"], held=True, open=True) for p2 in POSITIONS],
             "/v2/api/stats": [],
             "/v2/api/engine-status": dict(engine=dict(running=True), market_open=dict(IN=False, US=True)),
-            "/v2/api/watch": [],
+            "/v2/api/watch": [
+                dict(symbol="NAUKRI", market="IN", ccy="\u20b9", strategy="gap_momentum", badge="gap 9%", live=1159.3, chg=13.09),
+                dict(symbol="KERNEX", market="IN", ccy="\u20b9", strategy="mom_breakout", badge="breakout +34%", live=412.1, chg=2.4),
+                dict(symbol="WABAG", market="IN", ccy="\u20b9", strategy="swing_meanrev", badge="dip \u00b7 0.81", live=2206.3, chg=-1.2),
+                dict(symbol="ENTG", market="US", ccy="$", strategy="swing_meanrev", badge="dip \u00b7 0.93", live=104.6, chg=-2.8),
+                dict(symbol="JBL", market="US", ccy="$", strategy="gap_momentum", badge="gap 6%", live=385.3, chg=4.1),
+            ],
+            "/v2/api/health": dict(ok=True, checks=[]),
+            "/v2/api/watchlist": dict(
+                watch=[dict(symbol="RELIANCE", market="IN", ccy="\u20b9", price=1304.9, chg=-1.24),
+                       dict(symbol="TCS", market="IN", ccy="\u20b9", price=3128.4, chg=0.62),
+                       dict(symbol="NVDA", market="US", ccy="$", price=208.9, chg=1.85)],
+                alerts=[dict(id=1, symbol="RELIANCE", market="IN", ccy="\u20b9", kind="above", value=1350.0, active=True, triggered_at=None, triggered_price=None),
+                        dict(id=2, symbol="NVDA", market="US", ccy="$", kind="below", value=195.0, active=False, triggered_at="09 Jul 21:12 IST", triggered_price=194.6)]),
+            "/v2/api/movers": {
+                "IN": dict(up=[dict(symbol="NAUKRI", price=1159.3, chg=13.09, ccy="\u20b9"), dict(symbol="GUJGASLTD", price=327.5, chg=10.7, ccy="\u20b9"),
+                              dict(symbol="PWL", price=148.35, chg=9.81, ccy="\u20b9"), dict(symbol="WABAG", price=2206.3, chg=7.35, ccy="\u20b9"), dict(symbol="RITES", price=231.6, chg=7.15, ccy="\u20b9")],
+                           down=[dict(symbol="E2E", price=432.2, chg=-8.4, ccy="\u20b9"), dict(symbol="TEJASNET", price=612.0, chg=-6.1, ccy="\u20b9"),
+                                dict(symbol="INOXWIND", price=141.2, chg=-4.9, ccy="\u20b9"), dict(symbol="SYRMA", price=512.3, chg=-4.2, ccy="\u20b9"), dict(symbol="KAYNES", price=4980.0, chg=-3.8, ccy="\u20b9")]),
+                "US": dict(up=[dict(symbol="SNDK", price=2101.0, chg=6.2, ccy="$"), dict(symbol="WDC", price=641.0, chg=5.1, ccy="$"),
+                              dict(symbol="MU", price=142.2, chg=4.4, ccy="$"), dict(symbol="JBL", price=385.3, chg=4.1, ccy="$"), dict(symbol="STX", price=148.9, chg=3.2, ccy="$")],
+                          down=[dict(symbol="ENPH", price=38.2, chg=-5.6, ccy="$"), dict(symbol="SEDG", price=22.1, chg=-4.8, ccy="$"),
+                               dict(symbol="PLUG", price=2.8, chg=-4.1, ccy="$"), dict(symbol="RUN", price=11.9, chg=-3.7, ccy="$"), dict(symbol="FSLR", price=261.0, chg=-3.1, ccy="$")])},
+            "/v2/api/attribution": dict(
+                strategies=[dict(market="IN", ccy="\u20b9", strategy="swing_meanrev", closed=10, win=80, realized=2217.0, avg_ret=2.64, open=9, unrealized=571.0),
+                            dict(market="IN", ccy="\u20b9", strategy="gap_momentum", closed=0, win=0, realized=0.0, avg_ret=0.0, open=2, unrealized=310.0),
+                            dict(market="US", ccy="$", strategy="swing_meanrev", closed=4, win=50, realized=-71.0, avg_ret=-2.29, open=1, unrealized=44.0),
+                            dict(market="US", ccy="$", strategy="gap_momentum", closed=5, win=0, realized=-451.0, avg_ret=-5.8, open=0, unrealized=0.0)],
+                equity={"IN": dict(days=["07-0%d" % i for i in range(1, 8)], equity=[100000, 100400, 101100, 100900, 101800, 102400, 102790], maxdd=1.2),
+                        "US": dict(days=["07-0%d" % i for i in range(1, 8)], equity=[20000, 19900, 19750, 19600, 19700, 19560, 19520], maxdd=2.4)}),
         }
         for k, v in routes.items():
             if p.startswith(k):

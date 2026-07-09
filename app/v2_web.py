@@ -1312,8 +1312,19 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 }
 @media(min-width:1400px){
  .main{max-width:1520px}
- #homepos,#poslist{grid-template-columns:repeat(3,minmax(0,1fr))}
+ #poslist{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
+@media(min-width:1080px){
+ .home-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:34px;align-items:start}
+ .home-main{min-width:0}.home-rail{min-width:0}
+ .home-rail>.sec:first-child{margin-top:6px}
+ .home-main #homepos{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+#wl .lrow{padding:11px 2px}#wl .lrow:last-child{border-bottom:none}
+.mvrow:last-child{border-bottom:none!important}
+.icb{padding:5px 8px;font-size:11px;line-height:1;border-radius:7px;color:var(--mut)}
+.icb:hover{color:var(--tx)}
+.icb svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;display:block}
 @media(max-width:859px){
  .hero{font-size:28px;line-height:1.18}
  .main{padding:0 14px 94px}
@@ -1346,21 +1357,26 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <a onclick="go('account');document.getElementById('pm').classList.add('hide')">Account &amp; settings</a>
    <a onclick=doLogout()>Log out</a></div>
 
-  <div id=home class="tab on">
-   <div class=row><div class=mut style="font-size:12px">your paper balance</div><span id=modeb class="modepill bg-warn">paper</span></div>
-   <div class=hero id=pv>—</div><div id=ppnl style="font-size:13px" class=mut>&nbsp;</div>
-   <div class=chips id=regime></div>
-   <div class=sec><span>engine performance</span><span class=mut style="font-size:12px;font-weight:400">house strategies</span></div>
-   <div class=grid id=engines></div>
-   <div class=sec><span>open positions</span><span class=mut style="font-size:12px;font-weight:400" id=posn></span></div>
-   <div id=homepos></div>
-   <div class=sec><span>watchlist</span><span style="position:relative"><input id=wlq placeholder="+ add symbol" style="width:170px;padding:6px 11px;font-size:12px" oninput="wlSearch()" autocomplete=off><div id=wlsug class="menu hide" style="position:absolute;right:0;top:36px;min-width:250px;z-index:30"></div></span></div>
-   <div id=wl></div>
-   <div style="margin-top:8px"><span class=mut style="font-size:11px">alerts&nbsp;</span><span id=alerts></span></div>
-   <div class=sec><span>movers</span><span class=mut style="font-size:12px;font-weight:400">day change vs prev close</span></div>
-   <div class=grid2 id=movers></div>
-   <div class=sec><span>engine radar</span><span class=mut style="font-size:12px;font-weight:400">what it may buy next</span></div>
-   <div id=radar class=mut style="font-size:12px">quiet</div></div>
+  <div id=home class="tab on"><div class=home-grid>
+   <div class=home-main>
+    <div class=row><div class=mut style="font-size:12px">your paper balance</div><span id=modeb class="modepill bg-warn">paper</span></div>
+    <div class=hero id=pv>—</div><div id=ppnl style="font-size:13px" class=mut>&nbsp;</div>
+    <div class=chips id=regime></div>
+    <div class=sec><span>engine performance</span><span class=mut style="font-size:12px;font-weight:400">house strategies</span></div>
+    <div class=grid id=engines></div>
+    <div class=sec><span>open positions</span><span class=mut style="font-size:12px;font-weight:400" id=posn></span></div>
+    <div id=homepos></div>
+   </div>
+   <div class=home-rail>
+    <div class=sec><span>watchlist</span><span style="position:relative"><input id=wlq placeholder="+ add symbol" style="width:150px;padding:6px 11px;font-size:12px" oninput="wlSearch()" autocomplete=off><div id=wlsug class="menu hide" style="position:absolute;right:0;top:36px;min-width:250px;z-index:30"></div></span></div>
+    <div class=card id=wl style="padding:4px 14px"></div>
+    <div style="margin-top:8px"><span class=mut style="font-size:11px">alerts&nbsp;</span><span id=alerts></span></div>
+    <div class=sec><span>movers</span><span class=mut style="font-size:12px;font-weight:400">vs prev close</span></div>
+    <div class=grid2 id=movers></div>
+    <div class=sec><span>engine radar</span><span class=mut style="font-size:12px;font-weight:400">may buy next</span></div>
+    <div id=radar class=mut style="font-size:12px">quiet</div>
+   </div>
+  </div></div>
 
   <div id=positions class=tab>
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
@@ -1577,12 +1593,12 @@ function setAlert(sym,mkt,px){var v=prompt('Alert when '+sym+' crosses price (no
 function delAlert(id){api('/v2/api/alerts/'+id,{method:'DELETE'}).then(loadWL)}
 function loadWL(){api('/v2/api/watchlist').then(r=>{var d=r.j||{};
  var h=(d.watch||[]).filter(w=>inMkt(w.market)).map(w=>{var a=w.chg>0?'▲':(w.chg<0?'▼':''),cl=w.chg>0?'up':(w.chg<0?'dn':'mut');
-  return '<div class=lrow><div style="cursor:pointer" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><b>'+w.symbol+'</b> <span class=mk style="font-size:9px;border:1px solid var(--line);border-radius:4px;padding:0 3px;color:var(--mut)">'+w.market+'</span></div><div style="display:flex;gap:11px;align-items:center"><span class=num>'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</span><span class="'+cl+'" style="font-size:12px;min-width:62px;text-align:right">'+a+Math.abs(w.chg).toFixed(2)+'%</span><button class=sm title="set alert" onclick="setAlert(\''+w.symbol+'\',\''+w.market+'\','+w.price+')">⏰</button><button class=sm title="remove" onclick="delWL(\''+w.symbol+'\',\''+w.market+'\')">✕</button></div></div>'}).join('');
+  return '<div class=lrow><div style="cursor:pointer" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><b>'+w.symbol+'</b> <span class=mk style="font-size:9px;border:1px solid var(--line);border-radius:4px;padding:0 3px;color:var(--mut)">'+w.market+'</span></div><div style="display:flex;gap:11px;align-items:center"><span class=num>'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</span><span class="'+cl+'" style="font-size:12px;min-width:62px;text-align:right">'+a+Math.abs(w.chg).toFixed(2)+'%</span><button class="sm icb" title="set alert" onclick="setAlert(\''+w.symbol+'\',\''+w.market+'\','+w.price+')"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button><button class="sm icb" title="remove" onclick="delWL(\''+w.symbol+'\',\''+w.market+'\')">×</button></div></div>'}).join('');
  document.getElementById('wl').innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing watched yet — search a symbol above</div>';
  var al=(d.alerts||[]).filter(a=>inMkt(a.market)).slice(0,10);
- document.getElementById('alerts').innerHTML=al.length?al.map(a=>'<span class=chip style="font-size:11px;'+(a.active?'':'opacity:.55')+'">'+(a.active?'⏳':'✅')+' '+a.symbol+' '+(a.kind=='pct'?('±'+a.value+'%'):(a.kind+' '+a.ccy+a.value))+(a.triggered_price?(' → hit '+a.triggered_price):'')+' <b style="cursor:pointer;padding-left:3px" onclick="delAlert('+a.id+')">✕</b></span>').join(' '):'<span class=mut style="font-size:11px">none — use ⏰ on any stock</span>';});}
+ document.getElementById('alerts').innerHTML=al.length?al.map(a=>'<span class=chip style="font-size:11px;'+(a.active?'':'opacity:.55')+'">'+(a.active?'●':'✓')+' '+a.symbol+' '+(a.kind=='pct'?('±'+a.value+'%'):(a.kind+' '+a.ccy+a.value))+(a.triggered_price?(' → hit '+a.triggered_price):'')+' <b style="cursor:pointer;padding-left:3px" onclick="delAlert('+a.id+')">✕</b></span>').join(' '):'<span class=mut style="font-size:11px">none — use ⏰ on any stock</span>';});}
 function loadMovers(){api('/v2/api/movers').then(r=>{var d=r.j||{};
- var row=(x,m)=>'<div class=row style="padding:5px 0;border-bottom:1px solid var(--line)"><b style="cursor:pointer;font-size:12px" onclick="stock(\''+x.symbol+'\',\''+m+'\')">'+x.symbol+'</b><span style="font-size:12px"><span class=num style="margin-right:8px">'+x.ccy+(x.ccy=='₹'?INR:USD).format(x.price)+'</span><span class="'+(x.chg>=0?'up':'dn')+'">'+sgn(x.chg)+'%</span></span></div>';
+ var row=(x,m)=>'<div class="row mvrow" style="padding:6px 0;border-bottom:1px solid var(--line)"><b style="cursor:pointer;font-size:12px" onclick="stock(\''+x.symbol+'\',\''+m+'\')">'+x.symbol+'</b><span style="font-size:12px"><span class=num style="margin-right:8px">'+x.ccy+(x.ccy=='₹'?INR:USD).format(x.price)+'</span><span class="'+(x.chg>=0?'up':'dn')+'">'+sgn(x.chg)+'%</span></span></div>';
  document.getElementById('movers').innerHTML=['IN','US'].filter(inMkt).map(m=>{var v=d[m]||{};if(!(v.up||[]).length&&!(v.down||[]).length)return '';
   return '<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top gainers</div>'+(v.up||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'
        +'<div class=card><div class=mut style="font-size:11px;margin-bottom:3px">'+(m=='IN'?'India':'US')+' · top losers</div>'+(v.down||[]).slice(0,5).map(x=>row(x,m)).join('')+'</div>'}).join('');});}
