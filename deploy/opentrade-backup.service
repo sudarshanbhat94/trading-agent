@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenTrade paper-book backup
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/backup_db.py

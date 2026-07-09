@@ -1,0 +1,11 @@
+[Unit]
+Description=OpenTrade news/sentiment ingestion (v2 news veto)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/news_ingest.py

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run news/sentiment ingestion every 45 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

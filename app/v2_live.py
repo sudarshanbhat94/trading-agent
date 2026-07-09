@@ -215,11 +215,18 @@ def _session_opens(market, live):
     if not st or st[0] != key:
         st = (key, {})
         _SESS_OPEN[market] = st
-    opens = st[1]
+    sess = st[1]
     for s, lq in live.items():
-        if s not in opens:
-            opens[s] = lq["open"]      # true open (IN) or first-seen price (US)
-    return opens
+        r = sess.get(s)
+        if r is None:
+            # [open, session_high, session_low] — the US feed has no OHLC, so we
+            # accumulate the session range from our own samples (feeds features
+            # a real today-bar and lets trails ratchet within a session).
+            sess[s] = [lq["open"], max(lq["high"], lq["price"]), min(lq["low"], lq["price"])]
+        else:
+            r[1] = max(r[1], lq["high"], lq["price"])
+            r[2] = min(r[2], lq["low"], lq["price"])
+    return sess
 
 
 def _signals(tails, mdf, live, opens=None):
@@ -235,9 +242,12 @@ def _signals(tails, mdf, live, opens=None):
         lq = live.get(s)
         if not lq:
             continue
-        sess_open = opens.get(s) or lq["open"]
+        sr = opens.get(s)
+        sess_open = sr[0] if sr else lq["open"]
+        sess_hi = max(sr[1], lq["price"]) if sr else lq["high"]
+        sess_lo = min(sr[2], lq["price"]) if sr else lq["low"]
         tl = t.copy()
-        tl.loc[today] = {"open": sess_open, "high": lq["high"], "low": lq["low"],
+        tl.loc[today] = {"open": sess_open, "high": sess_hi, "low": sess_lo,
                          "close": lq["price"], "volume": lq["vol"] or t["volume"].iloc[-1]}
         try:
             row = eng.compute_features(tl, mdf_live).iloc[-1]
@@ -303,6 +313,26 @@ def poll_market(market):
     traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
     cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
+    # ---- portfolio circuit breaker: risk guard, exits always keep running ----
+    # No NEW entries when today is badly red (>3% of budget) or the book is in a
+    # deep drawdown (>15% off its equity peak). A feed glitch / crash day should
+    # stop the buying, not grind through every stop with fresh capital.
+    try:
+        pv_now = sum(p["shares"] * live.get(sym, {}).get("price", p["entry"]) for sym, p in positions.items())
+        equity_now = cash + pv_now
+        prev = v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' "
+                          "AND substr(date,6,10) < ? ORDER BY date DESC LIMIT 1",
+                          (market, today_s)).fetchone()
+        peak_eq = v2.execute("SELECT MAX(equity) FROM v2_equity WHERE market=?", (market,)).fetchone()
+        day_pnl = (equity_now - prev[0]) / budget if prev and prev[0] else 0.0
+        dd = (equity_now / peak_eq[0] - 1) if peak_eq and peak_eq[0] else 0.0
+        if day_pnl < -0.03 or dd < -0.15:
+            v2.commit(); v2.close()
+            _status[market] = (f"CIRCUIT BREAKER {datetime.now(IST).strftime('%H:%M IST')} · "
+                               f"day {day_pnl*100:+.1f}% dd {dd*100:+.1f}% · entries paused")
+            return
+    except Exception:
+        pass
     # candidate ordering: catalysts (gap) first, then swing; each must clear its own gate
     cand = []
     for s in sigs:
@@ -436,6 +466,7 @@ def exit_monitor(market):
     if not positions:                            # nothing held -> nothing to monitor
         v2.close(); return
     live = _live(market, positions.keys())       # only held symbols (cheap, not all 10k)
+    sess = _session_opens(market, live)          # session high ratchets US trails between samples
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
     cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
     exits = 0
@@ -443,7 +474,8 @@ def exit_monitor(market):
         lq = live.get(sym)
         if not lq:
             continue
-        peak = max(p["peak"], lq["high"], lq["price"])
+        sr = sess.get(sym)
+        peak = max(p["peak"], lq["high"], lq["price"], sr[1] if sr else 0.0)
         eff = p["stop"]
         if p["trail"]:
             eff = max(eff, peak * (1 - p["trail"]))
