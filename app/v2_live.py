@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS v2_equity(market TEXT, date TEXT, equity REAL, cash R
 CREATE TABLE IF NOT EXISTS v2_signals(market TEXT, strategy TEXT, date TEXT, symbol TEXT, conviction REAL, ref_close REAL, rank INTEGER);
 """
 _HIST: dict = {}
+_EQ_SNAP: dict = {}
 _started = False
 _status: dict = {"IN": "init", "US": "init"}
 
@@ -111,6 +112,7 @@ def _ro(p):
 def _rw():
     c = sqlite3.connect(V2_DB, timeout=30)
     c.execute("PRAGMA busy_timeout=8000")
+    c.execute("PRAGMA journal_mode=WAL")   # readers never queue behind engine writes
     return c
 
 
@@ -574,8 +576,11 @@ def exit_monitor(market):
         else:
             v2.execute("UPDATE v2_positions SET peak=? WHERE id=?", (peak, p["id"]))
     pv = sum(p["shares"] * (live[s]["price"] if s in live else p["entry"]) for s, p in positions.items())
-    v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
-               (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], cash + pv, cash, pv, len(positions)))
+    # snapshot at most once/min (was every 8s -> 57k rows bloating every query)
+    if time.time() - _EQ_SNAP.get(market, 0) >= 60:
+        _EQ_SNAP[market] = time.time()
+        v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
+                   (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], cash + pv, cash, pv, len(positions)))
     v2.commit(); v2.close()
     if exits:
         _status[market] = (_status.get(market, "") + f" · -{exits} exit").strip(" ·")
