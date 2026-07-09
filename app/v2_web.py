@@ -286,16 +286,34 @@ def _uwl(v2):
         " kind TEXT, value REAL, created_at TEXT, triggered_at TEXT, triggered_price REAL, active INTEGER DEFAULT 1);")
 
 
+def _panel_warm(market):
+    """True if the candle panel cache is warm. When cold, kicks the shared
+    background loader and returns False — callers must degrade gracefully
+    instead of blocking a request for 30-90s (this froze the watchlist and
+    movers after every restart)."""
+    c = _panel_cache.get(market)
+    if c and time.time() - c[0] < 900:
+        return True
+    if market not in _regime_loading:
+        _regime_loading.add(market)
+        import threading
+        threading.Thread(target=_regime_bg, args=(market,), daemon=True).start()
+    return False
+
+
 def _daychg(market, symbols):
     """live price + day-change vs the last daily close, from the cached engine
-    panel (no extra DB scan). If today's bar is already ingested, use the prior."""
+    panel (no extra DB scan). NON-BLOCKING: while the panel is cold, returns
+    live prices with chg=None and lets the background loader warm it."""
     if not symbols:
         return {}
+    live = _live_map(market, symbols)
+    if not _panel_warm(market):
+        return {s: dict(price=lq["price"], chg=None) for s, lq in live.items()}
     try:
         syms, _ = _panel(market)
     except Exception:
         return {}
-    live = _live_map(market, symbols)
     today = datetime.now(IST).date()
     out = {}
     for s in symbols:
@@ -319,8 +337,9 @@ def api_watchlist():
     watch = []
     for sym, m in rows:
         d = chg.get(m, {}).get(sym) or {}
+        c = d.get("chg")
         watch.append(dict(symbol=sym, market=m, ccy="₹" if m == "IN" else "$",
-                          price=round(d.get("price", 0), 2), chg=round(d.get("chg", 0), 2)))
+                          price=round(d.get("price", 0), 2), chg=(round(c, 2) if c is not None else None)))
     al = [dict(id=a[0], symbol=a[1], market=a[2], ccy="₹" if a[2] == "IN" else "$", kind=a[3],
                value=a[4], active=bool(a[5]), triggered_at=_ist(a[6]) if a[6] else None,
                triggered_price=a[7]) for a in alerts]
@@ -404,7 +423,7 @@ def _check_alerts():
                 continue
             p = lq["price"]
             hit = ((kind == "above" and p >= value) or (kind == "below" and p <= value)
-                   or (kind == "pct" and abs(chg.get(m, {}).get(sym, {}).get("chg", 0)) >= value))
+                   or (kind == "pct" and abs(chg.get(m, {}).get(sym, {}).get("chg") or 0) >= value))
             if hit:
                 v2.execute("UPDATE v2_alerts SET active=0, triggered_at=?, triggered_price=? WHERE id=?",
                            (datetime.now(timezone.utc).isoformat(), round(p, 2), aid))
@@ -445,7 +464,7 @@ def _movers_bg():
             try:
                 syms, _ = _panel(m)
                 d = _daychg(m, list(syms.keys()))
-                rows = sorted(((s, v["price"], v["chg"]) for s, v in d.items() if abs(v["chg"]) > 0.01),
+                rows = sorted(((s, v["price"], v["chg"]) for s, v in d.items() if v["chg"] is not None and abs(v["chg"]) > 0.01),
                               key=lambda r: -r[2])
                 fmt = lambda r: dict(symbol=r[0], price=round(r[1], 2), chg=round(r[2], 2),
                                      ccy="₹" if m == "IN" else "$")
@@ -1265,7 +1284,7 @@ body{color:var(--tx);overflow-x:hidden;background:
 .bg-dn{background:var(--dnb);color:var(--dn);border-color:rgba(255,93,108,.25)}
 .bg-warn{background:var(--warnb);color:var(--warn);border-color:rgba(246,178,74,.25)}
 .bg-mut{background:rgba(255,255,255,.05);color:var(--mut)}
-.chip{background:rgba(255,255,255,.04);border:1px solid var(--line)}
+.chip{background:rgba(255,255,255,.04);border:1px solid var(--line);white-space:nowrap;display:inline-block;margin:2px 0}
 .bar,.scorebar{background:rgba(255,255,255,.06)}
 .lrow{border-bottom:1px solid var(--line)}.lrow:hover{background:rgba(255,255,255,.03)}
 .modepill{box-shadow:0 0 14px rgba(246,178,74,.12)}
@@ -1590,7 +1609,7 @@ function spark(series,ccy){
  +'<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.8" vector-effect="non-scaling-stroke"/></svg>';
 }
 var SPARKN=0;
-function pill(v){var fl=Math.abs(v)<0.005,up=v>0;return '<span class="pill '+(fl?'pmut':(up?'pup':'pdn'))+'">'+(fl?'0.00%':((up?'\u25b2 ':'\u25bc ')+Math.abs(v).toFixed(2)+'%'))+'</span>'}
+function pill(v){if(v==null)return '<span class="pill pmut">\u2026</span>';var fl=Math.abs(v)<0.005,up=v>0;return '<span class="pill '+(fl?'pmut':(up?'pup':'pdn'))+'">'+(fl?'0.00%':((up?'\u25b2 ':'\u25bc ')+Math.abs(v).toFixed(2)+'%'))+'</span>'}
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 var WLT=null;
