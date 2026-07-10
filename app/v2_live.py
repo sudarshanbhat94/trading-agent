@@ -150,10 +150,18 @@ def _sector_map(market):
     out = {}
     try:
         con = _ro(MAIN_DB)
-        for sym, sec in con.execute("SELECT symbol, sector FROM universe"):
-            if sym:
-                out[str(sym).upper()] = str(sec).strip() if sec else "unknown"
+        rows = con.execute("SELECT symbol, sector FROM universe").fetchall()
         con.close()
+        # catch-all labels ('US Equity' covers 5,212 names) are not sectors —
+        # counting them freezes the whole book via the concentration cap. Any
+        # label covering >5% of the universe is treated as no-sector.
+        from collections import Counter
+        counts = Counter(str(sec).strip() for _, sec in rows if sec)
+        generic = {lab for lab, n in counts.items() if n > max(50, len(rows) * 0.05)}
+        for sym, sec in rows:
+            if sym:
+                lab = str(sec).strip() if sec else "unknown"
+                out[str(sym).upper()] = "unknown" if lab in generic else lab
     except Exception:
         pass
     _SECTOR_CACHE[market] = (time.time(), out)
@@ -374,9 +382,9 @@ def poll_market(market):
     # No NEW entries when today is badly red (>3% of budget) or the book is in a
     # deep drawdown (>15% off its equity peak). A feed glitch / crash day should
     # stop the buying, not grind through every stop with fresh capital.
+    pv_now = sum(p["shares"] * live.get(sym, {}).get("price", p["entry"]) for sym, p in positions.items())
+    equity_now = cash + pv_now
     try:
-        pv_now = sum(p["shares"] * live.get(sym, {}).get("price", p["entry"]) for sym, p in positions.items())
-        equity_now = cash + pv_now
         prev = v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' "
                           "AND substr(date,6,10) < ? ORDER BY date DESC LIMIT 1",
                           (market, today_s)).fetchone()
@@ -430,7 +438,7 @@ def poll_market(market):
     mcon = _ro(MAIN_DB)
     fills = exits = vetoed = investig = 0
     for _, _, s, pl in cand:
-        if len(positions) >= max_pos or alloc * (1 + cside) > cash:   # leave cost headroom; never overdraw the pool
+        if len(positions) >= max_pos or cash < 0.25 * alloc:   # stop when only crumbs remain
             break
         sym = s["symbol"]
         if sym in positions or sym in traded:
@@ -472,7 +480,9 @@ def poll_market(market):
                 pass
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
-        shares = (alloc * size_mult) / entry   # volatility-scaled position size
+        remaining = max(1, max_pos - len(positions))
+        base_alloc = max(equity_now / max_pos, cash / remaining)   # dynamic: idle cash flows to open slots
+        shares = min(base_alloc * size_mult, cash / (1 + cside)) / entry   # volatility-scaled, never overdraws
         if market == "IN":               # NSE: whole shares only, no fractions
             shares = float(int(shares))
             if shares < 1:               # stock too pricey for the per-position budget

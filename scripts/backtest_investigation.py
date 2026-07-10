@@ -109,7 +109,7 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
     lo = pd.Timestamp(start or START)
@@ -132,7 +132,10 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
                 continue
             if maxatr and atr / o > maxatr:      # cap worst-case stop distance
                 continue
-            alloc = min(equity / maxpos * sz, cash)
+            base_alloc = equity / maxpos
+            if dyn:                          # recycle vol-sizing savings into open slots
+                base_alloc = max(base_alloc, cash / max(1, maxpos - len(pos)))
+            alloc = min(base_alloc * sz, cash)
             if alloc <= 0:
                 continue
             sh = alloc / o
@@ -272,9 +275,8 @@ def main():
         mret = (mkt.iloc[-1] / mkt.iloc[0] - 1) * 100
         print(f"===== {market} (universe={len(M['close'].columns)}) =====")
         print(f"  MARKET buy&hold: {mret:+.1f}%")
-        for label, kw in (("mom base", dict(mom=True)),
-                          ("mom atr<4.5%", dict(mom=True, maxatr=0.045)),
-                          ("mom atr<3.5%", dict(mom=True, maxatr=0.035))):
+        for label, kw in (("base alloc", dict(mom=True)),
+                          ("dyn alloc", dict(mom=True, dyn=True))):
             m, _ = run(market, "HYBRID", M, mdf, maxpos=14, **kw)
             print(f"  {label:12s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
                   f"Sharpe={m['sharpe']:.2f}  trades={m['n']:4d}  win={m['win']:.0f}%")
