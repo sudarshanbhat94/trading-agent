@@ -1181,7 +1181,7 @@ function load(){api('/v2/api/overview').then(r=>{var d=r.j;
  api('/v2/api/positions').then(r=>{document.getElementById('homepos').innerHTML=r.j.filter(p=>inMkt(p.market)).slice(0,5).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function loadPos(){api('/v2/api/positions').then(r=>{document.getElementById('poslist').innerHTML=r.j.filter(p=>inMkt(p.market)).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function loadWatch(){api('/v2/api/watch').then(r=>{document.getElementById('watchlist').innerHTML=r.j.filter(w=>inMkt(w.market)).map(w=>{var s=w.market=='IN'?'₹':'$';return `<div class=lrow onclick="stock('${w.symbol}','${w.market}')"><div style="display:flex;gap:8px;align-items:center"><b>${w.symbol}</b><span class="badge ${w.strategy.indexOf('gap')>=0?'bg-inf':'bg-warn'}">${w.badge}</span></div><div><span class=num>${s}${w.live}</span> <span class="${col(w.chg)}" style="font-size:13px">${sgn(w.chg)}%</span></div></div>`}).join('')||'<div class=skel>no candidates</div>';});}
-function loadStats(){api('/v2/api/stats').then(r=>{document.getElementById('statlist').innerHTML=r.j.filter(s=>inMkt(s.market)).map(s=>`<div class=raise><div class=row><b>${s.market} · ${s.strategy.indexOf('gap')>=0?'gap':'swing'}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div style="font-size:18px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div style="font-size:18px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:17px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:17px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div></div>`).join('')||'<div class=skel>no data</div>';});}
+function loadStats(){api('/v2/api/stats').then(r=>{document.getElementById('statlist').innerHTML=r.j.filter(s=>inMkt(s.market)).map(s=>`<div class=raise><div class=row><b>${s.market} · ${s.strategy.indexOf('gap')>=0?'gap':'swing'}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div style="font-size:18px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div style="font-size:18px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:17px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:17px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});}
 /* account + settings */
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};
  el.innerHTML=`<div class=sec>account</div>
@@ -1282,7 +1282,7 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
 .modepill{text-transform:uppercase;font-weight:600;font-size:10px;letter-spacing:.05em;border-radius:7px;padding:3px 9px}
 .bar,.scorebar{border-radius:4px}.bar>i,.scorebar>i{border-radius:4px;transition:width .4s}
 @media(min-width:860px){.side{width:230px;padding:20px 14px;gap:2px}.side .b{font-size:19px;font-weight:680;letter-spacing:-.02em;padding:6px 12px 22px}.side a{padding:11px 13px;border-radius:11px;font-weight:500;transition:all .15s}.side a:hover{background:var(--surf);color:var(--tx)}.side a.on{background:var(--infb);color:var(--inf)}.main{padding:6px 32px 36px}}
-#login{max-width:380px;margin:11vh auto;padding:28px 26px;border:1px solid var(--line);border-radius:18px;box-shadow:0 4px 20px rgba(16,24,40,.06)}#login h1{font-size:25px;font-weight:680;letter-spacing:-.02em}
+#login{max-width:380px;margin:16vh auto;padding:30px 28px;border:1px solid var(--line);border-radius:18px;box-shadow:0 0 0 1px rgba(0,224,138,.06),0 18px 50px rgba(0,0,0,.5)}#login h1{font-size:26px;font-weight:680;letter-spacing:-.02em}
 /* ============ OpenStocks — pro dark terminal theme ============ */
 :root{
  --bg:#0a0e15;--surf:#10161f;--card:#0e141d;--line:#1c2633;--tx:#e7eef7;--mut:#7e8ca1;
@@ -1291,7 +1291,7 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
  --acc:#00e08a;--sh:0 2px 24px rgba(0,0,0,.45)
 }
 html{background:#0a0e15}
-body{color:var(--tx);overflow-x:hidden;background:
+body{color:var(--tx);overflow-x:hidden;min-height:100vh;display:flow-root;background:
  radial-gradient(900px 520px at 80% -10%,rgba(56,189,248,.07),transparent 60%),
  radial-gradient(720px 520px at -5% -5%,rgba(0,224,138,.05),transparent 55%),
  #0a0e15}
@@ -1358,7 +1358,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  #engines .card{padding:17px 19px}
  #homepos,#poslist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
  #homepos>.pos,#poslist>.pos{margin-bottom:0}
- #ordlist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:36px}
+ #ordlist{column-count:1;max-width:860px}
+ #ordlist .lrow:last-child{border-bottom:none}
  #account{max-width:860px}
  #analyze,#detail{max-width:1280px}
  .detail-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:22px;align-items:start}
@@ -1390,7 +1391,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 }
 </style></head><body>
 
-<div id=login class=hide><h1>OpenStocks</h1><p class=mut style="margin:0 0 22px">AI trading desk · sign in</p>
+<div id=login class=hide><h1>OpenStocks<span style="color:var(--up)">.</span></h1><p class=mut style="margin:0 0 22px">AI trading desk · sign in</p>
  <div class=field><label>username</label><input id=u autocomplete=username></div>
  <div class=field><label>password</label><input id=pw type=password autocomplete=current-password></div>
  <button class=pri style="width:100%;margin-top:8px" onclick=doLogin()>Sign in</button>
@@ -1449,7 +1450,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=orders class=tab>
    <div class=sec><span>orders &amp; activity</span><span id=ordtot class=mut style="font-size:12px;font-weight:400"></span></div>
-   <div id=ordlist class=skel>loading…</div></div>
+   <div class=card id=ordlist style="padding:4px 16px"><div class=skel>loading…</div></div></div>
 
   <div id=analyze class=tab>
    <div class=sec>analyse a stock</div>
@@ -1515,9 +1516,9 @@ function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)'
   <button class="sm" onclick="exitPos(${p.id},'${p.symbol}')">Exit</button></div>
  <div class=mut style="font-size:10px;margin-top:5px">since ${p.since||''}</div>${whyLine(p)}</div>`}
 function ordRow(o){var s=o.ccy,fmt=(o.ccy=='₹'?INR:USD);
- var right=(o.side=='SELL'&&o.pnl!=null)?('<div class="'+col(o.pnl)+'">'+sgn(o.pnl)+'%</div><div class=mut style="font-size:11px">'+(o.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(o.pnl_amt))+'</div>'):('<div class=mut style="font-size:12px">'+s+fmt.format(o.value)+'</div>');
- var tag=o.status=='open'?'<span class="badge bg-warn">open</span>':(o.reason?'<span class=mut style="font-size:10px">'+o.reason+'</span>':'');
- return '<div class=lrow style="cursor:default" onclick="stock(\''+o.symbol+'\',\''+o.market+'\')"><div><div style="display:flex;gap:7px;align-items:center"><span class="badge '+(o.side=='BUY'?'bg-inf':'bg-mut')+'">'+o.side+'</span><b>'+o.symbol+'</b>'+tag+'</div><div class=mut style="font-size:11px;margin-top:2px">'+o.qty+' @ '+s+o.price+' · '+o.when+'</div></div><div style="text-align:right">'+right+'</div></div>';}
+ var right=(o.side=='SELL'&&o.pnl!=null)?('<span style="display:inline-flex;gap:10px;align-items:center"><span class=mut style="font-size:11px">'+(o.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(o.pnl_amt))+'</span>'+pill(o.pnl)+'</span>'):('<span class="num mut" style="font-size:12.5px">'+s+fmt.format(o.value)+'</span>');
+ var tag=o.status=='open'?'<span class="badge bg-warn">open</span>':(o.reason?'<span class=mut style="font-size:10px;border:1px solid var(--line);border-radius:5px;padding:1px 6px">'+o.reason+'</span>':'');
+ return '<div class=lrow style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:center;cursor:pointer" onclick="stock(\''+o.symbol+'\',\''+o.market+'\')"><span class="badge '+(o.side=='BUY'?'bg-inf':'bg-mut')+'">'+o.side+'</span><span style="min-width:0"><b>'+o.symbol+'</b> '+tag+'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+o.qty+' @ '+s+o.price+' · '+o.when+'</span></span>'+right+'</div>';}
 function fmtc(ccy,n){return ccy+(ccy=='₹'?INR:USD).format(Math.round(n))}
 function pnlS(ccy,v,p){return '<span class="'+col(v)+'">'+(v<0?'-':'+')+fmtc(ccy,Math.abs(v))+' ('+sgn(p)+'%)</span>'}
 function mktCard(m){var nm=m.market=='IN'?'India ₹':'US $';return '<div class=card><div class=row><span class=mut style="font-size:12px">'+nm+'</span><span class=mut style="font-size:11px">'+m.deploy_pct+'% deployed</span></div>'
@@ -1567,12 +1568,12 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
   <div class=toggle><b id=mp class="${MODE!='live'?'on':''}" onclick="setMode('paper')">Paper</b><b id=ml class="${MODE=='live'?'on':''}" onclick="setMode('live')">Live</b></div>
   <div id=modemsg class=mut style="font-size:12px;margin-top:9px"></div></div>
  <div class=sec>paper allocation</div>
- <div class=raise><div class=field><label>India cash (₹)</label><input id=cin type=number value="${Math.round(b.IN)||''}"></div><div class=field><label>US cash ($)</label><input id=cus type=number value="${Math.round(b.US)||''}"></div>
+ <div class=raise><div style="display:flex;gap:16px;flex-wrap:wrap"><div class=field style="flex:0 1 240px"><label>India cash (₹)</label><input id=cin type=number value="${Math.round(b.IN)||''}"></div><div class=field style="flex:0 1 240px"><label>US cash ($)</label><input id=cus type=number value="${Math.round(b.US)||''}"></div></div>
   <button class=pri onclick=saveCash()>Save allocation</button><div id=cashmsg class=mut style="font-size:12px;margin-top:9px"></div></div>
  <div class=sec>engine performance</div><div id=acctstats class=skel>loading…</div>
  ${(u.role=='admin')?'<div class=sec>admin · allocate paper money</div><div id=adminbox class=raise><div class=skel>loading users…</div></div>':''}
  <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>`;
- api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=skel>no data</div>';});
+ api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});
  if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><input id="au_${x.id}" type=number placeholder="US $" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});}
 function setMode(m){api('/api/me/signal-execution-mode',{method:'POST',body:JSON.stringify({signal_execution_mode:m})}).then(r=>{if(r.ok){MODE=(r.j.signal_execution_mode||m);document.getElementById('mp').className=(MODE!='live'?'on':'');document.getElementById('ml').className=(MODE=='live'?'on':'');document.getElementById('modemsg').textContent=r.j.message||('Mode: '+MODE);renderBalance();}else{document.getElementById('modemsg').textContent=r.j.detail||'Failed';}})}
 function saveCash(){var b={},i=document.getElementById('cin').value,u=document.getElementById('cus').value;if(i)b.india_cash=+i;if(u)b.us_cash=+u;

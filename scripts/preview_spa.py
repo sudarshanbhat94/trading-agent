@@ -30,6 +30,10 @@ addEventListener('DOMContentLoaded',function(){
     var v=location.search;
     if(v.indexOf('detail')>=0){setTimeout(function(){stock('PARAS','IN')},250);}
     else if(v.indexOf('positions')>=0){setTimeout(function(){go('positions')},250);}
+    else if(v.indexOf('orders')>=0){setTimeout(function(){go('orders')},250);}
+    else if(v.indexOf('analyze')>=0){setTimeout(function(){go('analyze');setTimeout(function(){document.getElementById('qsym').value='PARAS';doAnalyze()},200)},250);}
+    else if(v.indexOf('account')>=0){setTimeout(function(){go('account')},250);}
+    else if(v.indexOf('login')>=0){setTimeout(function(){document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide')},150);}
     else if(window.go)go('home');
     if(v.indexOf('metrics')>=0){setTimeout(function(){
       var vw=document.documentElement.clientWidth,bad=[];
