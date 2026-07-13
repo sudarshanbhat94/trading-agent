@@ -109,7 +109,7 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False, corr=0.0, dailycap=0, cooldown=0):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
     lo = pd.Timestamp(start or START)
@@ -121,11 +121,30 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
     cside = COST[market] / 200.0
     MOM_CAP = 5                          # momentum sleeve: at most 5 of the book
     last_state = "OFF"                   # yesterday's regime, for the sweep gate
+    last_stop = {}                       # symbol -> bar index of last stop-out (cooldown)
+    rets = M["close"].pct_change() if corr else None
     for di, d in enumerate(dates):
         # execute pending at open
+        filled_today = 0
         for sym, sz, strat in pending:
             if len(pos) >= maxpos or sym in pos:
                 continue
+            if dailycap and filled_today >= dailycap:
+                break
+            if cooldown and sym in last_stop and di - last_stop[sym] < cooldown:
+                continue
+            if corr and pos:
+                w = rets[sym].loc[:d].tail(60)
+                nhi = 0
+                for held_sym in pos:
+                    try:
+                        c_ = w.corr(rets[held_sym].loc[:d].tail(60))
+                    except Exception:
+                        continue
+                    if c_ == c_ and c_ > corr:
+                        nhi += 1
+                if nhi >= 3:
+                    continue
             o = M["open"][sym].get(d, np.nan)
             atr = M["atr14"][sym].get(d, np.nan)
             if not (o > 0 and atr > 0):
@@ -143,6 +162,7 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
             pos[sym] = dict(sh=sh, entry=o, stop=o - ATR_STOP * atr,
                             tgt=(0.0 if strat == "mom" else o + ATR_TARGET * atr),
                             atr=atr, eday=di, peak=o, strat=strat)
+            filled_today += 1
         pending = []
         # exits
         for sym in list(pos):
@@ -172,6 +192,8 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
             if px is not None:
                 cash += p["sh"] * px * (1 - cside)
                 n += 1; wins += px > p["entry"]
+                if px <= p["stop"] * 1.001:
+                    last_stop[sym] = di
                 del pos[sym]
         # cash equitization: idle cash above a one-slot reserve earns the index
         # return instead of zero (paper equivalent of sweeping into NIFTYBEES/VOO).
@@ -275,8 +297,11 @@ def main():
         mret = (mkt.iloc[-1] / mkt.iloc[0] - 1) * 100
         print(f"===== {market} (universe={len(M['close'].columns)}) =====")
         print(f"  MARKET buy&hold: {mret:+.1f}%")
-        for label, kw in (("base alloc", dict(mom=True)),
-                          ("dyn alloc", dict(mom=True, dyn=True))):
+        for label, kw in (("dyn base", dict(mom=True, dyn=True)),
+                          ("+corr .75/3", dict(mom=True, dyn=True, corr=0.75)),
+                          ("+cap5/day", dict(mom=True, dyn=True, dailycap=5)),
+                          ("+cooldown5", dict(mom=True, dyn=True, cooldown=5)),
+                          ("+all three", dict(mom=True, dyn=True, corr=0.75, dailycap=5, cooldown=5))):
             m, _ = run(market, "HYBRID", M, mdf, maxpos=14, **kw)
             print(f"  {label:12s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
                   f"Sharpe={m['sharpe']:.2f}  trades={m['n']:4d}  win={m['win']:.0f}%")

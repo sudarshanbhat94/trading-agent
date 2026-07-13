@@ -51,6 +51,12 @@ PLAN = {
     "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
 }
 MOM_SLOT_CAP = 5                        # momentum sleeve: at most 5 of the book
+# Risk profile per market. Dynamic allocation (idle cash flows into open slots)
+# roughly doubles both return AND drawdown (US backtest: +110%/16.7%DD vs
+# +50%/9.1%DD). The user's demonstrated tolerance for US drawdowns is low ->
+# US runs the conservative profile; IN keeps dynamic (tested better there and
+# the IN book is a fraction of the US book in real-money terms).
+DYN_ALLOC = {"IN": True, "US": False}
 # Index/sector/leveraged ETFs - never traded by the single-stock strategies. They
 # don't behave like gap/mean-reversion setups and create correlated, duplicate
 # exposure (e.g. holding QQQ + QQQM, both Nasdaq-100, at the same time).
@@ -481,7 +487,9 @@ def poll_market(market):
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
         remaining = max(1, max_pos - len(positions))
-        base_alloc = max(equity_now / max_pos, cash / remaining)   # dynamic: idle cash flows to open slots
+        base_alloc = equity_now / max_pos
+        if DYN_ALLOC.get(market, True):
+            base_alloc = max(base_alloc, cash / remaining)   # dynamic: idle cash flows to open slots
         shares = min(base_alloc * size_mult, cash / (1 + cside)) / entry   # volatility-scaled, never overdraws
         if market == "IN":               # NSE: whole shares only, no fractions
             shares = float(int(shares))
