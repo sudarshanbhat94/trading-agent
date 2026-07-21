@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS v2_signals(market TEXT, strategy TEXT, date TEXT, sym
 """
 _HIST: dict = {}
 _EQ_SNAP: dict = {}
+_SESSION_OPENED_AT: dict = {}            # market -> ts when the session last transitioned open
+ENTRY_WINDOW_SEC = 30 * 60               # fills only within 30 min of the open (backtest buys AT the open)
 _started = False
 _status: dict = {"IN": "init", "US": "init"}
 
@@ -348,16 +350,59 @@ def _signals(tails, mdf, live, opens=None):
     return out, mdf_live, today
 
 
+def _signals_completed(tails, mdf, asof, live):
+    """Signals from COMPLETED daily bars only — exactly the validated backtest
+    convention (signal at day-t close, entry at t+1 open). The old path
+    synthesized a live intraday bar and bought mid-session: an unvalidated
+    timing that live results exposed as materially worse (US gap 0/10 wins,
+    swing 23% vs 54% expected)."""
+    out = []
+    for s in eng.signals_for_date(tails, mdf, asof, threshold=PLAN["swing_meanrev"]["threshold"],
+                                  atr_stop=PLAN["swing_meanrev"]["atr_stop"],
+                                  atr_target=PLAN["swing_meanrev"]["atr_target"]):
+        lq = live.get(s["symbol"])
+        out.append(dict(symbol=s["symbol"], strategy="swing_meanrev", score=s["conviction"],
+                        atr=s["atr"], price=(lq["price"] if lq else s["ref_close"])))
+    for s in eng.gap_signals_for_date(tails, mdf, asof):
+        lq = live.get(s["symbol"])
+        out.append(dict(symbol=s["symbol"], strategy="gap_momentum", score=s["conviction"],
+                        atr=s["atr"], price=(lq["price"] if lq else s["ref_close"])))
+    for sym, g in tails.items():
+        gi = g.loc[:asof]
+        if len(gi) < 70 or asof not in gi.index:
+            continue
+        ch, vv = gi["close"], gi["volume"]
+        c0 = float(ch.iloc[-1])
+        hi252 = float(ch.tail(252).max())
+        v20 = float(vv.tail(20).mean()) if len(vv) >= 20 else 0.0
+        rvol = float(vv.iloc[-1]) / v20 if v20 > 0 else 0.0
+        mom63 = c0 / float(ch.iloc[-63]) - 1 if len(ch) >= 63 and float(ch.iloc[-63]) > 0 else 0.0
+        tr = (gi["high"] - gi["low"]).tail(14).mean()
+        atr = float(tr) if tr == tr else 0.0
+        if hi252 > 0 and c0 >= 0.98 * hi252 and rvol >= 1.5 and mom63 > 0.10 and atr > 0:
+            lq = live.get(sym)
+            out.append(dict(symbol=sym, strategy="mom_breakout", score=round(min(mom63, 2.0), 4),
+                            atr=atr, price=(lq["price"] if lq else c0)))
+    return out
+
+
 def poll_market(market):
     live = _live(market)
     if not live:
         _status[market] = "no quotes"
         return
     tails, mdf = _hist(market)
-    sigs, mdf_live, today = _signals(tails, mdf, live, _session_opens(market, live))
-    rstate = eng.regime_state(mdf_live, today, eng.DEFAULTS["regime_lookback"])
+    _session_opens(market, live)                     # keep session open/hi/lo tracking fresh
+    dates = eng.complete_trading_dates(tails, 0.5)
+    if not dates:
+        _status[market] = "no history"
+        return
+    asof = dates[-1]                                 # last COMPLETED trading day
+    sigs = _signals_completed(tails, mdf, asof, live)
+    today = pd.Timestamp(datetime.now(IST).date())
+    rstate = eng.regime_state(mdf, asof, eng.DEFAULTS["regime_lookback"])
     regime = rstate != "OFF"   # allow dip-buys unless the market is genuinely weak
-    strong = eng.regime_strong(mdf_live, today, eng.DEFAULTS["regime_lookback"])
+    strong = eng.regime_strong(mdf, asof, eng.DEFAULTS["regime_lookback"])
     v2 = _rw()
     book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
     if not book:
@@ -441,6 +486,15 @@ def poll_market(market):
     except Exception as _fexc:
         fpanel = fscores = None
         _status[market] = f"factor panel err: {str(_fexc)[:30]}"
+    # ---- ENTRY WINDOW: the validated strategy buys at the session OPEN from
+    # prior-close signals. Outside the window, signals/radar refresh but no fills.
+    opened_at = _SESSION_OPENED_AT.get(market, 0)
+    in_window = opened_at and (time.time() - opened_at) <= ENTRY_WINDOW_SEC
+    if not in_window:
+        v2.commit(); v2.close()
+        _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · "
+                           f"{len(cand)} candidates · entries at next open")
+        return
     mcon = _ro(MAIN_DB)
     fills = exits = vetoed = investig = 0
     for _, _, s, pl in cand:
@@ -615,10 +669,17 @@ def loop(interval):
         v2 = _rw(); ensure_schema(v2); v2.close()
     except Exception:
         pass
+    prev_open = {"IN": None, "US": None}   # None = unknown (fresh start); arm the
+                                           # entry window ONLY on a real closed->open
+                                           # flip, never on a mid-session restart
     while True:
         for m in ("IN", "US"):
             try:
-                if market_open(m):
+                is_open = market_open(m)
+                if is_open and prev_open[m] is False:
+                    _SESSION_OPENED_AT[m] = time.time()          # session just opened
+                prev_open[m] = is_open
+                if is_open:
                     exit_monitor(m)                              # fast exits every cycle
                     if time.time() - _last_signal.get(m, 0) >= SIGNAL_INTERVAL:
                         poll_market(m)                           # heavy signal gen periodically
