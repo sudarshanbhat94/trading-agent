@@ -76,19 +76,28 @@ def _market_settings(settings, market, prov):
 DAILY_SRC = {"IN": "upstox-live:day", "US": "alpaca-iex-live:day"}
 
 
-def _fresh_symbols(db, market, days=4):
-    """Symbols whose daily candles are already current (a bar within `days`).
-    Lets reruns/retry passes target only the stale tail."""
-    import datetime as _dt
-    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+def _fresh_symbols(db, market):
+    """Symbols already current to the latest trading day this source has published.
+
+    Was: 'has a bar within 4 CALENDAR days' — which perpetually lagged. On a
+    Tuesday the 4-day window reaches back to Friday, so every symbol still
+    holding Friday's bar counted as fresh and was NEVER re-fetched for Mon/Tue.
+    The engine's signals then sat on stale closes for days. Now the cutoff is
+    the newest trading day ANY symbol in this source has (self-calibrating:
+    held symbols are force-fetched first, so the target tracks the real latest
+    session), and a symbol is fresh only if it reaches that exact day."""
     out = set()
     try:
         import sqlite3 as _sq
         con = _sq.connect(f"file:{db.path}?mode=ro", uri=True, timeout=30)
-        for sym, mx in con.execute("SELECT symbol, MAX(ts) FROM candles WHERE source=? GROUP BY symbol",
-                                   (DAILY_SRC[market],)):
-            if mx and str(mx)[:10] >= cutoff:
-                out.add(str(sym).upper())
+        gmax = con.execute("SELECT MAX(ts) FROM candles WHERE source=?",
+                           (DAILY_SRC[market],)).fetchone()[0]
+        target = str(gmax)[:10] if gmax else None
+        if target:
+            for sym, mx in con.execute("SELECT symbol, MAX(ts) FROM candles WHERE source=? GROUP BY symbol",
+                                       (DAILY_SRC[market],)):
+                if mx and str(mx)[:10] >= target:
+                    out.add(str(sym).upper())
         con.close()
     except Exception:
         pass
