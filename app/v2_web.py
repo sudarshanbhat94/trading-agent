@@ -1770,7 +1770,8 @@ function loadTelegram(){var el=document.getElementById('tgbox');if(!el)return;
     +'<div style="border-top:1px solid var(--line);padding-top:12px"><div class=mut style="font-size:12px;margin-bottom:9px">Alert me on Telegram when the AI:</div>'
     +'<label class=tgopt><input type=checkbox id=tgbuy '+(t.alerts_buy?'checked':'')+' onchange="tgSavePrefs()"> Buys a stock</label>'
     +'<label class=tgopt><input type=checkbox id=tgsell '+(t.alerts_sell?'checked':'')+' onchange="tgSavePrefs()"> Sells a stock</label>'
-    +'<div id=tgmsg class=mut style="font-size:12px;margin-top:8px"></div></div>';
+    +'<div style="margin-top:12px"><button class=sm onclick="tgTest(this)">Send a test alert</button></div>'
+    +'<div id=tgmsg class=mut style="font-size:12px;margin-top:9px"></div></div>';
   } else if(t.has_token){
    el.innerHTML='<div class=mut style="font-size:13px;margin-bottom:11px">Last step — open your bot <b>@'+t.bot+'</b>, press <b>Start</b>, then tap Verify.</div>'
     +'<a href="'+t.deep_link+'" target=_blank class=pri style="display:inline-block;text-decoration:none;padding:10px 15px">Open @'+t.bot+' in Telegram →</a>'
@@ -1794,6 +1795,9 @@ function tgVerify(btn){btn.disabled=true;btn.textContent='Checking…';
  api('/api/me/telegram/verify',{method:'POST'}).then(function(r){
   if(r.ok){loadTelegram();}else{btn.disabled=false;btn.textContent='I’ve pressed Start';document.getElementById('tgmsg').innerHTML='<span class=dn>'+((r.j&&r.j.detail)||'Open your bot and press Start, then try again.')+'</span>';}});}
 function tgReset(){api('/api/me/telegram/unlink',{method:'POST'}).then(loadTelegram);}
+function tgTest(btn){btn.disabled=true;btn.textContent='Sending…';var m=document.getElementById('tgmsg');
+ api('/api/me/telegram/test',{method:'POST'}).then(function(r){btn.disabled=false;btn.textContent='Send a test alert';
+  m.innerHTML=r.ok?'<span class=up>Sent ✓ — check your Telegram</span>':'<span class=dn>'+((r.j&&r.j.detail)||'Failed to send')+'</span>';});}
 function tgSavePrefs(){var b=document.getElementById('tgbuy').checked,s=document.getElementById('tgsell').checked;
  api('/api/me/telegram/prefs',{method:'POST',body:JSON.stringify({alerts_buy:b,alerts_sell:s})}).then(function(r){document.getElementById('tgmsg').textContent=r.ok?'Saved ✓':'Failed';});}
 function tgUnlink(){if(!confirm('Disconnect Telegram alerts?'))return;api('/api/me/telegram/unlink',{method:'POST'}).then(loadTelegram);}

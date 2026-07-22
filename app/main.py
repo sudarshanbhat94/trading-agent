@@ -2927,6 +2927,15 @@ async def my_telegram_verify(request: Request) -> dict[str, Any]:
     return {"ok": True, "linked": True}
 
 
+@app.post("/api/me/telegram/test")
+async def my_telegram_test(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    from . import telegram_bot
+    if not telegram_bot.send_test(int(user["id"])):
+        raise HTTPException(status_code=400, detail="Couldn't send. Make sure Telegram is connected (press Start in your bot).")
+    return {"ok": True}
+
+
 @app.post("/api/me/telegram/prefs")
 async def my_telegram_prefs(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)

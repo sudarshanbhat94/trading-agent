@@ -130,6 +130,19 @@ def status(user_id: int) -> dict:
                 alerts_sell=(bool(row[4]) if row else True))
 
 
+def send_test(user_id: int) -> bool:
+    """Send a test alert to the user's linked Telegram."""
+    ensure_schema()
+    c = _db()
+    row = c.execute("SELECT bot_token, chat_id FROM telegram_accounts WHERE user_id=?", (user_id,)).fetchone()
+    c.close()
+    if not row or not row[0] or not row[1]:
+        return False
+    r = send(row[0], row[1], "\U0001f514 <b>Test alert from OpenStocks</b>\nYour Telegram is connected. "
+                             "You'll get a message here whenever the AI buys or sells.")
+    return bool(r and r.get("ok"))
+
+
 def set_prefs(user_id: int, buy: bool, sell: bool):
     c = _db()
     c.execute("UPDATE telegram_accounts SET alerts_buy=?, alerts_sell=? WHERE user_id=?",
