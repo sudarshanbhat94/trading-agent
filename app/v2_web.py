@@ -1363,6 +1363,29 @@ b,strong,.pos b,.card b,.raise b{font-weight:600}
 .ticker{background:#fff;border-bottom:1px solid var(--line)}
 input,select{border-radius:9px}
 button{border-radius:9px}
+/* ---- Kite-style dense layout ---- */
+.k-hero{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+.k-herotop{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.k-hero .hero{font-size:31px;margin:3px 0 0}
+.k-lbl{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.k-sub{font-size:13px;margin-top:4px}
+.k-metrics{display:flex;gap:14px;margin-top:16px;padding-top:15px;border-top:1px solid var(--line);flex-wrap:wrap}
+.k-metric{display:flex;flex-direction:column;gap:4px;flex:1;min-width:78px}
+.k-metric .num{font-size:15px;font-weight:600;color:#242a31}
+.k-listhead{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#9aa1ac;font-weight:600;margin:22px 3px 8px}
+.k-list{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.prow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.prow:last-child{border-bottom:none}
+.prow:hover{background:#f8f9fb}
+.prow-l{min-width:0}
+.prow-sym{font-size:14.5px;font-weight:600;color:#242a31;display:flex;align-items:center}
+.prow-sub{font-size:12px;color:var(--mut);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prow-r{text-align:right;white-space:nowrap;flex-shrink:0}
+.prow-ltp{font-size:14px;font-weight:600;color:#242a31}
+.prow-pnl{font-size:12.5px;margin-top:4px;font-weight:600}
+.prow .exitbtn{font-size:11px;padding:5px 12px;margin-left:12px}
+.home-main #homepos,.home-main #activity{display:block!important}
+@media(max-width:560px){.k-metrics{display:grid;grid-template-columns:1fr 1fr;gap:14px 10px}.k-metric{min-width:0}.k-hero .hero{font-size:28px}}
 .rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
 .rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 .detail-grid{display:flex;flex-direction:column;gap:0}
@@ -1460,15 +1483,23 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=home class="tab on"><div class=home-grid>
    <div class=home-main>
-    <div class=row><div class=mut style="font-size:12px">your paper balance</div><span id=modeb class="modepill bg-warn">paper</span></div>
-    <div class=hero id=pv>—</div><div id=ppnl style="font-size:13px" class=mut>&nbsp;</div>
-    <div class=chips id=regime></div>
-    <div class=sec><span>engine performance</span><span class=mut style="font-size:12px;font-weight:400">your India paper book</span></div>
-    <div class=grid id=engines></div>
-    <div class=sec><span>open positions</span><span class=mut style="font-size:12px;font-weight:400" id=posn></span></div>
-    <div id=homepos></div>
-    <div class=sec><span>today's activity</span><span class=mut style="font-size:12px;font-weight:400">bought &amp; sold today</span></div>
-    <div class=card id=activity style="padding:4px 14px"><div class=mut style="font-size:12px;padding:8px 0">nothing yet today</div></div>
+    <div class=k-hero>
+     <div class=k-herotop>
+      <div style="min-width:0"><div class=k-lbl>portfolio value</div><div class=hero id=pv>—</div><div id=ppnl class=k-sub>&nbsp;</div></div>
+      <span id=modeb class="modepill bg-warn">paper</span>
+     </div>
+     <div class=k-metrics>
+      <div class=k-metric><span class=k-lbl>invested</span><span class=num id=kinv>—</span></div>
+      <div class=k-metric><span class=k-lbl>today's p&amp;l</span><span class=num id=ktoday>—</span></div>
+      <div class=k-metric><span class=k-lbl>positions</span><span class=num id=knpos>—</span></div>
+      <div class=k-metric><span class=k-lbl>win rate</span><span class=num id=kwin>—</span></div>
+     </div>
+    </div>
+    <div class=chips id=regime style="margin:14px 0 2px"></div>
+    <div class=k-listhead><span>positions</span><span class=mut id=posn style="letter-spacing:0;text-transform:none;font-weight:400"></span></div>
+    <div id=homepos class=k-list></div>
+    <div class=k-listhead style="margin-top:22px"><span>today's activity</span><span class=mut style="letter-spacing:0;text-transform:none;font-weight:400">bought &amp; sold</span></div>
+    <div id=activity class=k-list><div class=mut style="font-size:12px;padding:13px 16px">nothing yet today</div></div>
    </div>
    <div class=home-rail>
     <div class=sec><span>watchlist</span><span style="position:relative"><input id=wlq placeholder="+ add symbol" style="width:150px;padding:6px 11px;font-size:12px" oninput="wlSearch()" autocomplete=off><div id=wlsug class="menu hide" style="position:absolute;right:0;top:36px;min-width:250px;z-index:30"></div></span></div>
@@ -1573,14 +1604,21 @@ function mktCard(m){var nm=m.market=='IN'?'India · NSE':'US · equities';
    +'<div class=engchart>'+spark(m.equity_series,m.ccy)+'</div>'
  +'</div>'
  +'<div class=engstats>'+stat('positions',m.positions)+stat('budget',fmtc(m.ccy,m.budget))+extra+'</div></div>'}
+function posRow(p){var s=p.market=='IN'?'₹':'$',fmt=(p.market=='IN'?INR:USD);
+ var amt=(p.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
+ return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry} · exit at ${s}${p.stop}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
 function loadHome(){api('/v2/api/overview').then(r=>{var d=r.j;document.getElementById('clock').textContent=d.as_of;
  var ms=(d.markets||[]).filter(m=>inMkt(m.market));
  document.getElementById('pv').innerHTML=ms.map(m=>fmtc(m.ccy,m.equity)).join('  ·  ')||'—';
  document.getElementById('ppnl').innerHTML=ms.map(m=>'today '+pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' &nbsp;·&nbsp; ');
  var RS={STRONG:['var(--up)','strong trend · full throttle'],ON:['var(--up)','risk-on'],NEUTRAL:['var(--warn)','neutral · best setups only'],OFF:['var(--dn)','risk-off · dip-buys blocked']};
  document.getElementById('regime').innerHTML=['IN','US'].filter(inMkt).map(m=>{var st=(d.regime_state||{})[m];var v=RS[st]||['var(--mut)','…'];return '<span class=chip title="market regime"><span style="color:'+v[0]+'">●</span> '+m+' '+v[1]+'</span>'}).join('');
- document.getElementById('engines').innerHTML=ms.map(mktCard).join('');});
- api('/v2/api/positions').then(r=>{var ps=r.j.filter(p=>inMkt(p.market));document.getElementById('posn').textContent=ps.length+' open';document.getElementById('homepos').innerHTML=ps.slice(0,5).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
+ var m0=ms[0]||{};
+ document.getElementById('kinv').innerHTML=ms.map(m=>fmtc(m.ccy,m.deployed)).join(' · ')||'—';
+ document.getElementById('ktoday').innerHTML=ms.map(m=>pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' · ')||'—';
+ document.getElementById('knpos').textContent=ms.reduce((a,m)=>a+(m.positions||0),0);
+ document.getElementById('kwin').textContent=(m0.win!=null?m0.win+'%':'—');});
+ api('/v2/api/positions').then(r=>{var ps=r.j.filter(p=>inMkt(p.market));document.getElementById('posn').textContent=ps.length+' open';document.getElementById('homepos').innerHTML=ps.map(posRow).join('')||'<div class=mut style="font-size:12px;padding:14px 16px">no open positions</div>';});}
 function load(){loadHome()}
 var POS=[],SUBPOS='pos';
 function subPos(v){SUBPOS=v;document.getElementById('sbpos').className=(v=='pos'?'on':'');document.getElementById('sbhold').className=(v=='hold'?'on':'');renderPos();}
@@ -1588,7 +1626,8 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  var byc={};ps.forEach(p=>{byc[p.ccy]=(byc[p.ccy]||0)+p.pnl_amt});
  var t=Object.keys(byc).map(cc=>'<span class="'+col(byc[cc])+'">'+(byc[cc]<0?'-':'+')+cc+(cc=='₹'?INR:USD).format(Math.abs(Math.round(byc[cc])))+'</span>').join(' · ');
  document.getElementById('postot').innerHTML=(t||'—')+' P&L';
- document.getElementById('poslist').innerHTML=ps.map(posCard).join('')||'<div class=skel>'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>';}
+ var rows=ps.map(posRow).join('');
+ document.getElementById('poslist').innerHTML=rows?('<div class=k-list>'+rows+'</div>'):('<div class=mut style="font-size:12px;padding:14px 16px">'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>');}
 function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();});loadAttrib();}
 function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
  var rows=(d.strategies||[]).filter(s=>inMkt(s.market));
