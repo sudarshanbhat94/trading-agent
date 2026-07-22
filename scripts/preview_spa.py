@@ -63,20 +63,21 @@ def _candles(n=90, start=900.0):
 
 def _pos(sym, mkt, strat, live, pnl, head, qty, val, stop, since):
     ccy = "₹" if mkt == "IN" else "$"
+    entry = round(live / (1 + pnl / 100), 2)
     return dict(id=abs(hash(sym)) % 9999, symbol=sym, market=mkt, strategy=strat, ccy=ccy,
-                live=live, pnl=pnl, pnl_amt=round(val * pnl / 100, 2), headroom=head, qty=qty,
+                live=live, entry=entry, pnl=pnl, pnl_amt=round(val * pnl / 100, 2), headroom=head, qty=qty,
                 value=val, trail=(strat == "gap_momentum"), stop=stop, since=since, today=(since == "today"))
 
 
 POSITIONS = [
-    _pos("PARAS", "IN", "gap_momentum", 1401.95, 7.87, 78, 7, 9098, 1298.7, "18 Jun 09:15 IST"),
-    _pos("HCC", "IN", "gap_momentum", 27.1, 0.82, 60, 372, 10008, 25.55, "18 Jun 09:15 IST"),
-    _pos("ZENTEC", "IN", "gap_momentum", 1998.6, 5.89, 70, 5, 9437, 1812.15, "18 Jun 09:15 IST"),
-    _pos("JKCEMENT", "IN", "swing_meanrev", 5529.5, 1.79, 48, 1, 5432, 5301.0, "18 Jun 09:15 IST"),
-    _pos("PGEL", "IN", "gap_momentum", 563.0, 3.11, 64, 18, 9828, 513.33, "18 Jun 09:15 IST"),
-    _pos("NVDA", "US", "gap_momentum", 178.4, 7.1, 84, 18, 3100, 169.0, "today"),
-    _pos("AAPL", "US", "swing_meanrev", 232.1, 1.8, 55, 12, 2780, 226.0, "4d ago"),
-    _pos("SMH", "US", "gap_momentum", 662.0, 4.3, 70, 4, 2640, 631.0, "1d ago"),
+    _pos("PARAS", "IN", "gap_momentum", 1401.95, 7.87, 78, 7, 9098, 1298.7, "today"),
+    _pos("AEGISVOPAK", "IN", "swing_meanrev", 299.11, 7.11, 74, 19, 5683, 279.25, "2d ago"),
+    _pos("ZENTEC", "IN", "gap_momentum", 1998.6, 5.89, 70, 5, 9437, 1812.15, "1d ago"),
+    _pos("PGEL", "IN", "gap_momentum", 563.0, 3.11, 64, 18, 9828, 513.33, "3d ago"),
+    _pos("JKCEMENT", "IN", "swing_meanrev", 5529.5, 1.79, 48, 1, 5432, 5301.0, "4d ago"),
+    _pos("HCC", "IN", "gap_momentum", 27.1, 0.82, 60, 372, 10008, 25.55, "today"),
+    _pos("KPRMILL", "IN", "swing_meanrev", 1142.0, -1.34, 34, 8, 9136, 1157.5, "5d ago"),
+    _pos("SWIGGY", "IN", "gap_momentum", 448.2, -2.10, 22, 20, 8964, 457.8, "1d ago"),
 ]
 
 
@@ -87,10 +88,10 @@ def _order(side, sym, mkt, qty, price, when, pnl=None, val=0, status="filled", r
 
 
 ORDERS = [
-    _order("BUY", "PARAS", "IN", 7, 1298.7, "18 Jun 09:15", val=9091),
-    _order("BUY", "NVDA", "US", 18, 169.0, "19:02 IST", val=3042),
-    _order("SELL", "WIPRO", "IN", 80, 542.0, "Yest 15:10", pnl=2.6, val=43000, reason="target"),
-    _order("SELL", "TSLA", "US", 9, 248.0, "Yest 22:30", pnl=-1.9, val=2230, reason="stop"),
+    _order("BUY", "PARAS", "IN", 7, 1298.7, "Today 09:15", val=9091),
+    _order("BUY", "HCC", "IN", 372, 25.55, "Today 09:15", val=9505),
+    _order("SELL", "WIPRO", "IN", 80, 542.0, "Yest 15:10", pnl=2.6, val=43360, reason="target"),
+    _order("SELL", "TATAPOWER", "IN", 24, 412.0, "Yest 14:22", pnl=-1.9, val=9888, reason="stop"),
 ]
 
 
@@ -105,9 +106,9 @@ def _market(mkt):
                 positions=5, trades=11, win=64, pf=1.7)
 
 
-OVERVIEW = dict(as_of="10 Jul, 13:45 IST", regime={"IN": True, "US": True},
-                regime_state={"IN": "NEUTRAL", "US": "STRONG"},
-                markets=[_market("IN"), _market("US")])
+OVERVIEW = dict(as_of="22 Jul, 13:45 IST", regime={"IN": True},
+                regime_state={"IN": "NEUTRAL"},
+                markets=[_market("IN")])
 
 NEWS = [
     dict(label="price_momentum", title="Paras Defence hits fresh 52-week high on order-book optimism", when="2h ago", score=0.4),
@@ -161,37 +162,30 @@ class H(BaseHTTPRequestHandler):
             "/v2/api/ticker": [dict(symbol=p2["symbol"], market=p2["market"], ccy=p2["ccy"],
                                     price=p2["live"], pnl=p2["pnl"], held=True, open=True) for p2 in POSITIONS],
             "/v2/api/stats": [],
-            "/v2/api/engine-status": dict(engine=dict(running=True), market_open=dict(IN=False, US=True)),
+            "/v2/api/engine-status": dict(engine=dict(running=True), market_open=dict(IN=True)),
             "/v2/api/watch": [
                 dict(symbol="NAUKRI", market="IN", ccy="\u20b9", strategy="gap_momentum", badge="gap 9%", live=1159.3, chg=13.09),
                 dict(symbol="KERNEX", market="IN", ccy="\u20b9", strategy="mom_breakout", badge="breakout +34%", live=412.1, chg=2.4),
                 dict(symbol="WABAG", market="IN", ccy="\u20b9", strategy="swing_meanrev", badge="dip \u00b7 0.81", live=2206.3, chg=-1.2),
-                dict(symbol="ENTG", market="US", ccy="$", strategy="swing_meanrev", badge="dip \u00b7 0.93", live=104.6, chg=-2.8),
-                dict(symbol="JBL", market="US", ccy="$", strategy="gap_momentum", badge="gap 6%", live=385.3, chg=4.1),
+                dict(symbol="TEJASNET", market="IN", ccy="\u20b9", strategy="swing_meanrev", badge="dip \u00b7 0.77", live=612.0, chg=-2.1),
+                dict(symbol="RITES", market="IN", ccy="\u20b9", strategy="gap_momentum", badge="gap 7%", live=231.6, chg=7.15),
             ],
             "/v2/api/health": dict(ok=True, checks=[]),
             "/v2/api/watchlist": dict(
                 watch=[dict(symbol="RELIANCE", market="IN", ccy="\u20b9", price=1304.9, chg=-1.24),
                        dict(symbol="TCS", market="IN", ccy="\u20b9", price=3128.4, chg=0.62),
-                       dict(symbol="NVDA", market="US", ccy="$", price=208.9, chg=1.85)],
+                       dict(symbol="INFY", market="IN", ccy="\u20b9", price=1598.2, chg=0.94)],
                 alerts=[dict(id=1, symbol="RELIANCE", market="IN", ccy="\u20b9", kind="above", value=1350.0, active=True, triggered_at=None, triggered_price=None),
-                        dict(id=2, symbol="NVDA", market="US", ccy="$", kind="below", value=195.0, active=False, triggered_at="09 Jul 21:12 IST", triggered_price=194.6)]),
+                        dict(id=2, symbol="TCS", market="IN", ccy="\u20b9", kind="below", value=3050.0, active=False, triggered_at="21 Jul 14:12 IST", triggered_price=3044.6)]),
             "/v2/api/movers": {
                 "IN": dict(up=[dict(symbol="NAUKRI", price=1159.3, chg=13.09, ccy="\u20b9"), dict(symbol="GUJGASLTD", price=327.5, chg=10.7, ccy="\u20b9"),
                               dict(symbol="PWL", price=148.35, chg=9.81, ccy="\u20b9"), dict(symbol="WABAG", price=2206.3, chg=7.35, ccy="\u20b9"), dict(symbol="RITES", price=231.6, chg=7.15, ccy="\u20b9")],
                            down=[dict(symbol="E2E", price=432.2, chg=-8.4, ccy="\u20b9"), dict(symbol="TEJASNET", price=612.0, chg=-6.1, ccy="\u20b9"),
-                                dict(symbol="INOXWIND", price=141.2, chg=-4.9, ccy="\u20b9"), dict(symbol="SYRMA", price=512.3, chg=-4.2, ccy="\u20b9"), dict(symbol="KAYNES", price=4980.0, chg=-3.8, ccy="\u20b9")]),
-                "US": dict(up=[dict(symbol="SNDK", price=2101.0, chg=6.2, ccy="$"), dict(symbol="WDC", price=641.0, chg=5.1, ccy="$"),
-                              dict(symbol="MU", price=142.2, chg=4.4, ccy="$"), dict(symbol="JBL", price=385.3, chg=4.1, ccy="$"), dict(symbol="STX", price=148.9, chg=3.2, ccy="$")],
-                          down=[dict(symbol="ENPH", price=38.2, chg=-5.6, ccy="$"), dict(symbol="SEDG", price=22.1, chg=-4.8, ccy="$"),
-                               dict(symbol="PLUG", price=2.8, chg=-4.1, ccy="$"), dict(symbol="RUN", price=11.9, chg=-3.7, ccy="$"), dict(symbol="FSLR", price=261.0, chg=-3.1, ccy="$")])},
+                                dict(symbol="INOXWIND", price=141.2, chg=-4.9, ccy="\u20b9"), dict(symbol="SYRMA", price=512.3, chg=-4.2, ccy="\u20b9"), dict(symbol="KAYNES", price=4980.0, chg=-3.8, ccy="\u20b9")])},
             "/v2/api/attribution": dict(
                 strategies=[dict(market="IN", ccy="\u20b9", strategy="swing_meanrev", closed=10, win=80, realized=2217.0, avg_ret=2.64, open=9, unrealized=571.0),
-                            dict(market="IN", ccy="\u20b9", strategy="gap_momentum", closed=0, win=0, realized=0.0, avg_ret=0.0, open=2, unrealized=310.0),
-                            dict(market="US", ccy="$", strategy="swing_meanrev", closed=4, win=50, realized=-71.0, avg_ret=-2.29, open=1, unrealized=44.0),
-                            dict(market="US", ccy="$", strategy="gap_momentum", closed=5, win=0, realized=-451.0, avg_ret=-5.8, open=0, unrealized=0.0)],
-                equity={"IN": dict(days=["07-0%d" % i for i in range(1, 8)], equity=[100000, 100400, 101100, 100900, 101800, 102400, 102790], maxdd=1.2),
-                        "US": dict(days=["07-0%d" % i for i in range(1, 8)], equity=[20000, 19900, 19750, 19600, 19700, 19560, 19520], maxdd=2.4)}),
+                            dict(market="IN", ccy="\u20b9", strategy="gap_momentum", closed=3, win=67, realized=418.0, avg_ret=1.9, open=2, unrealized=310.0)],
+                equity={"IN": dict(days=["07-1%d" % i for i in range(5, 8)] + ["07-2%d" % i for i in range(0, 3)], equity=[100000, 100400, 101100, 100900, 101800, 102790], maxdd=1.2)}),
         }
         for k, v in routes.items():
             if p.startswith(k):

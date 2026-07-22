@@ -1355,7 +1355,11 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 .tk b{font-weight:600;letter-spacing:.01em}.tk .mk{font-size:9px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 3px}
 @keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 /* ============ responsive layout: real desktop dashboard ============ */
-#engines.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+#engines.grid{grid-template-columns:1fr}
+.engwrap{display:grid;grid-template-columns:minmax(0,190px) minmax(0,1fr);gap:24px;align-items:center;margin-top:12px}
+.engchart svg{height:60px!important;margin-top:0!important}
+.engstats{display:flex;gap:28px;flex-wrap:wrap;margin-top:12px;border-top:1px solid var(--line);padding-top:11px}
+@media(max-width:640px){.engwrap{grid-template-columns:1fr;gap:12px}}
 @media(min-width:860px){
  .main{max-width:1280px;padding:12px 40px 52px}
  .ticker{margin:0 -40px 8px;height:36px}
@@ -1428,7 +1432,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
     <div class=row><div class=mut style="font-size:12px">your paper balance</div><span id=modeb class="modepill bg-warn">paper</span></div>
     <div class=hero id=pv>—</div><div id=ppnl style="font-size:13px" class=mut>&nbsp;</div>
     <div class=chips id=regime></div>
-    <div class=sec><span>engine performance</span><span class=mut style="font-size:12px;font-weight:400">house strategies</span></div>
+    <div class=sec><span>engine performance</span><span class=mut style="font-size:12px;font-weight:400">your India paper book</span></div>
     <div class=grid id=engines></div>
     <div class=sec><span>open positions</span><span class=mut style="font-size:12px;font-weight:400" id=posn></span></div>
     <div id=homepos></div>
@@ -1528,12 +1532,16 @@ function ordRow(o){var s=o.ccy,fmt=(o.ccy=='₹'?INR:USD);
  return '<div class=lrow style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:center;cursor:pointer" onclick="stock(\''+o.symbol+'\',\''+o.market+'\')"><span class="badge '+(o.side=='BUY'?'bg-inf':'bg-mut')+'">'+o.side+'</span><span style="min-width:0"><b>'+o.symbol+'</b> '+tag+'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+o.qty+' @ '+s+o.price+' · '+o.when+'</span></span>'+right+'</div>';}
 function fmtc(ccy,n){return ccy+(ccy=='₹'?INR:USD).format(Math.round(n))}
 function pnlS(ccy,v,p){return '<span class="'+col(v)+'">'+(v<0?'-':'+')+fmtc(ccy,Math.abs(v))+' ('+sgn(p)+'%)</span>'}
-function mktCard(m){var nm=m.market=='IN'?'India ₹':'US $';return '<div class=card><div class=row><span class=mut style="font-size:12px">'+nm+'</span><span class=mut style="font-size:11px">'+m.deploy_pct+'% deployed</span></div>'
- +'<div style="font-size:20px;font-weight:600;margin-top:2px">'+fmtc(m.ccy,m.equity)+'</div>'
- +'<div style="font-size:12px;margin-top:4px">today '+pnlS(m.ccy,m.today_pnl,m.today_pct)+'</div>'
- +'<div style="font-size:12px">overall '+pnlS(m.ccy,m.overall_pnl,m.overall_pct)+'</div>'
- +spark(m.equity_series,m.ccy)
- +'<div class=mut style="font-size:10px;margin-top:4px">budget '+fmtc(m.ccy,m.budget)+' · '+m.positions+' pos · cash '+fmtc(m.ccy,m.cash)+'</div></div>'}
+function mktCard(m){var nm=m.market=='IN'?'India · NSE':'US · equities';
+ var stat=function(lab,val){return '<div><div class=mut style="font-size:10px;text-transform:uppercase;letter-spacing:.04em">'+lab+'</div><div class=num style="font-size:14px;font-weight:600;margin-top:2px">'+val+'</div></div>'};
+ var extra=(m.win!=null?stat('win rate',m.win+'%')+stat('profit factor',m.pf):'');
+ return '<div class=card><div class=row><span class=mut style="font-size:12px">'+nm+' · paper book</span><span class=mut style="font-size:11px">'+m.deploy_pct+'% deployed · '+fmtc(m.ccy,m.cash)+' cash</span></div>'
+ +'<div class=engwrap>'
+   +'<div class=engpnl><div><div class=mut style="font-size:11px">today</div><div style="font-size:19px;font-weight:650">'+pnlS(m.ccy,m.today_pnl,m.today_pct)+'</div></div>'
+     +'<div style="margin-top:12px"><div class=mut style="font-size:11px">overall</div><div style="font-size:19px;font-weight:650">'+pnlS(m.ccy,m.overall_pnl,m.overall_pct)+'</div></div></div>'
+   +'<div class=engchart>'+spark(m.equity_series,m.ccy)+'</div>'
+ +'</div>'
+ +'<div class=engstats>'+stat('positions',m.positions)+stat('budget',fmtc(m.ccy,m.budget))+extra+'</div></div>'}
 function loadHome(){api('/v2/api/overview').then(r=>{var d=r.j;document.getElementById('clock').textContent=d.as_of;
  var ms=(d.markets||[]).filter(m=>inMkt(m.market));
  document.getElementById('pv').innerHTML=ms.map(m=>fmtc(m.ccy,m.equity)).join('  ·  ')||'—';
@@ -1575,18 +1583,18 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
   <div class=toggle><b id=mp class="${MODE!='live'?'on':''}" onclick="setMode('paper')">Paper</b><b id=ml class="${MODE=='live'?'on':''}" onclick="setMode('live')">Live</b></div>
   <div id=modemsg class=mut style="font-size:12px;margin-top:9px"></div></div>
  <div class=sec>paper allocation</div>
- <div class=raise><div style="display:flex;gap:16px;flex-wrap:wrap"><div class=field style="flex:0 1 240px"><label>India cash (₹)</label><input id=cin type=number value="${Math.round(b.IN)||''}"></div><div class=field style="flex:0 1 240px"><label>US cash ($)</label><input id=cus type=number value="${Math.round(b.US)||''}"></div></div>
+ <div class=raise><div style="display:flex;gap:16px;flex-wrap:wrap"><div class=field style="flex:0 1 260px"><label>India cash (₹)</label><input id=cin type=number value="${Math.round(b.IN)||''}"></div></div>
   <button class=pri onclick=saveCash()>Save allocation</button><div id=cashmsg class=mut style="font-size:12px;margin-top:9px"></div></div>
  <div class=sec>engine performance</div><div id=acctstats class=skel>loading…</div>
  ${(u.role=='admin')?'<div class=sec>admin · allocate paper money</div><div id=adminbox class=raise><div class=skel>loading users…</div></div>':''}
  <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>`;
  api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});
- if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><input id="au_${x.id}" type=number placeholder="US $" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});}
+ if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});}
 function setMode(m){api('/api/me/signal-execution-mode',{method:'POST',body:JSON.stringify({signal_execution_mode:m})}).then(r=>{if(r.ok){MODE=(r.j.signal_execution_mode||m);document.getElementById('mp').className=(MODE!='live'?'on':'');document.getElementById('ml').className=(MODE=='live'?'on':'');document.getElementById('modemsg').textContent=r.j.message||('Mode: '+MODE);renderBalance();}else{document.getElementById('modemsg').textContent=r.j.detail||'Failed';}})}
-function saveCash(){var b={},i=document.getElementById('cin').value,u=document.getElementById('cus').value;if(i)b.india_cash=+i;if(u)b.us_cash=+u;
+function saveCash(){var b={},i=document.getElementById('cin').value;if(i)b.india_cash=+i;
  var url=(ME&&ME.role=='admin'&&ME.id)?('/api/users/'+ME.id+'/paper-cash'):'/api/me/paper-cash';
  api(url,{method:'POST',body:JSON.stringify(b)}).then(r=>{document.getElementById('cashmsg').textContent=r.ok?'Saved ✓':(r.j.detail||'Failed');if(r.ok)loadAccountData();})}
-function allocUser(id){var b={},i=document.getElementById('ai_'+id).value,u=document.getElementById('au_'+id).value;if(i)b.india_cash=+i;if(u)b.us_cash=+u;api('/api/users/'+id+'/paper-cash',{method:'POST',body:JSON.stringify(b)}).then(r=>{alert(r.ok?'Allocated to user.':(r.j.detail||'Failed'))})}
+function allocUser(id){var b={},i=document.getElementById('ai_'+id).value;if(i)b.india_cash=+i;api('/api/users/'+id+'/paper-cash',{method:'POST',body:JSON.stringify(b)}).then(r=>{alert(r.ok?'Allocated to user.':(r.j.detail||'Failed'))})}
 function openBroker(w){api(w=='upstox'?'/api/me/upstox/auth-url':'/api/alpaca/connect').then(r=>{if(r.j.auth_url)location.href=r.j.auth_url;else alert('Connect '+w+' from settings.')})}
 function stock(sym,mkt){go('detail');renderStock(sym,mkt,'detail')}
 function renderStock(sym,mkt,target){var el=document.getElementById(target);if(target=='detail')el.innerHTML='<div class=skel>analysing '+sym+'…</div>';
