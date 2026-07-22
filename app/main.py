@@ -2940,7 +2940,8 @@ async def my_telegram_test(request: Request) -> dict[str, Any]:
 async def my_telegram_prefs(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     from . import telegram_bot
-    telegram_bot.set_prefs(int(user["id"]), bool(payload.get("alerts_buy", True)), bool(payload.get("alerts_sell", True)))
+    telegram_bot.set_prefs(int(user["id"]), bool(payload.get("alerts_buy", True)), bool(payload.get("alerts_sell", True)),
+                           bool(payload.get("alerts_radar", True)), bool(payload.get("alerts_summary", True)))
     return {"ok": True}
 
 

@@ -389,6 +389,71 @@ def _signals_completed(tails, mdf, asof, live):
     return out
 
 
+_TG_DAILY: dict = {}   # (kind, market) -> date string already alerted, so each fires once/day
+
+
+def _tg_radar_digest(market, today, cand, positions):
+    """Once/day, Telegram the top candidates the engine is watching to buy next."""
+    try:
+        ds = today.date().isoformat()
+        if not cand or _TG_DAILY.get(("radar", market)) == ds:
+            return
+        items = []
+        for _, _, s, _pl in cand:
+            if s["symbol"] in positions:
+                continue
+            items.append({"symbol": s["symbol"], "note": s["strategy"].replace("_", " ")})
+            if len(items) >= 6:
+                break
+        if not items:
+            return
+        _TG_DAILY[("radar", market)] = ds
+        from . import telegram_bot
+        telegram_bot.notify_radar(items, market)
+    except Exception:
+        pass
+
+
+def _tg_daily_summary(market):
+    """Once/day at market close, Telegram how the book is progressing."""
+    try:
+        ds = datetime.now(IST).date().isoformat()
+        if _TG_DAILY.get(("summary", market)) == ds:
+            return
+        _TG_DAILY[("summary", market)] = ds
+        from . import telegram_bot
+        v2 = _ro(V2_DB)
+        budget = (v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone() or [BUDGET.get(market, 0.0)])[0]
+        rows = v2.execute("SELECT symbol, entry_price, shares FROM v2_positions WHERE market=?", (market,)).fetchall()
+        realized_all = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+        realized_today = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND substr(exit_date,1,10)=?",
+                                    (market, ds)).fetchone()[0] or 0.0
+        total_tr = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0
+        wins = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=? AND pnl>0", (market,)).fetchone()[0] or 0
+        v2.close()
+        live = _live(market)
+        cost = sum(ep * sh for _, ep, sh in rows)
+        unreal = sum((live.get(sym, {}).get("price", ep) - ep) * sh for sym, ep, sh in rows)
+        equity = budget + realized_all + unreal
+        ccy = "₹" if market == "IN" else "$"
+        win = round(wins / total_tr * 100) if total_tr else 0
+        deploy = round(cost / budget * 100) if budget else 0
+        overall_pct = (equity / budget - 1) * 100 if budget else 0.0
+        tsign = "+" if realized_today >= 0 else ""
+        osign = "+" if overall_pct >= 0 else ""
+        nm = "India" if market == "IN" else "US"
+        txt = ("\U0001f4ca <b>OpenStocks — daily update (%s)</b>\n"
+               "Portfolio: <b>%s%s</b>  (%s%.2f%% overall)\n"
+               "Today: %s%s%s realized\n"
+               "Holding %d stocks · %d%% deployed\n"
+               "Win rate %d%% over %d trades") % (
+            nm, ccy, "{:,.0f}".format(equity), osign, overall_pct,
+            tsign, ccy, "{:,.0f}".format(realized_today), len(rows), deploy, win, total_tr)
+        telegram_bot.notify_summary(txt)
+    except Exception:
+        pass
+
+
 def poll_market(market):
     live = _live(market)
     if not live:
@@ -468,6 +533,7 @@ def poll_market(market):
             continue
         cand.append((pl["priority"], -s["score"], s, pl))
     cand.sort(key=lambda x: (x[0], x[1]))
+    _tg_radar_digest(market, today, cand, positions)   # once/day: what the AI is watching
     # strategy balance: hold back slots for swing ONLY when swing actually has
     # eligible candidates, so we never leave cash idle in a gap-only (risk-off) tape
     strat_count = {}
@@ -693,6 +759,8 @@ def loop(interval):
                 is_open = market_open(m)
                 if is_open and prev_open[m] is False:
                     _SESSION_OPENED_AT[m] = time.time()          # session just opened
+                if prev_open[m] is True and not is_open:
+                    _tg_daily_summary(m)                         # session just closed -> daily digest
                 prev_open[m] = is_open
                 if is_open:
                     exit_monitor(m)                              # fast exits every cycle

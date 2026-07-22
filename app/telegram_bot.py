@@ -36,8 +36,9 @@ def ensure_schema():
     c.execute("""CREATE TABLE IF NOT EXISTS telegram_accounts(
         user_id INTEGER PRIMARY KEY, bot_token TEXT, bot_username TEXT, chat_id TEXT,
         alerts_buy INTEGER DEFAULT 1, alerts_sell INTEGER DEFAULT 1, linked_at TEXT)""")
-    # additive migration for older single-token installs
-    for col, decl in (("bot_token", "TEXT"), ("bot_username", "TEXT")):
+    # additive migrations (older installs / new alert types)
+    for col, decl in (("bot_token", "TEXT"), ("bot_username", "TEXT"),
+                      ("alerts_radar", "INTEGER DEFAULT 1"), ("alerts_summary", "INTEGER DEFAULT 1")):
         try:
             c.execute("ALTER TABLE telegram_accounts ADD COLUMN %s %s" % (col, decl))
         except Exception:
@@ -119,7 +120,7 @@ def verify(user_id: int):
 def status(user_id: int) -> dict:
     ensure_schema()
     c = _db()
-    row = c.execute("SELECT bot_token, bot_username, chat_id, alerts_buy, alerts_sell "
+    row = c.execute("SELECT bot_token, bot_username, chat_id, alerts_buy, alerts_sell, alerts_radar, alerts_summary "
                     "FROM telegram_accounts WHERE user_id=?", (user_id,)).fetchone()
     c.close()
     has_token = bool(row and row[0])
@@ -127,7 +128,9 @@ def status(user_id: int) -> dict:
     return dict(has_token=has_token, bot=bot, linked=bool(row and row[2]),
                 deep_link=("https://t.me/%s" % bot) if bot else None,
                 alerts_buy=(bool(row[3]) if row else True),
-                alerts_sell=(bool(row[4]) if row else True))
+                alerts_sell=(bool(row[4]) if row else True),
+                alerts_radar=(bool(row[5]) if row else True),
+                alerts_summary=(bool(row[6]) if row else True))
 
 
 def send_test(user_id: int) -> bool:
@@ -143,12 +146,52 @@ def send_test(user_id: int) -> bool:
     return bool(r and r.get("ok"))
 
 
-def set_prefs(user_id: int, buy: bool, sell: bool):
+def set_prefs(user_id: int, buy: bool, sell: bool, radar: bool = True, summary: bool = True):
     c = _db()
-    c.execute("UPDATE telegram_accounts SET alerts_buy=?, alerts_sell=? WHERE user_id=?",
-              (1 if buy else 0, 1 if sell else 0, user_id))
+    c.execute("UPDATE telegram_accounts SET alerts_buy=?, alerts_sell=?, alerts_radar=?, alerts_summary=? WHERE user_id=?",
+              (1 if buy else 0, 1 if sell else 0, 1 if radar else 0, 1 if summary else 0, user_id))
     c.commit()
     c.close()
+
+
+def _recipients(pref_col):
+    ensure_schema()
+    c = _db()
+    rows = c.execute("SELECT bot_token, chat_id FROM telegram_accounts "
+                     "WHERE bot_token IS NOT NULL AND chat_id IS NOT NULL AND %s=1" % pref_col).fetchall()
+    c.close()
+    return rows
+
+
+def notify_radar(items, market="IN"):
+    """items: list of {'symbol','note'} the engine is watching to buy next."""
+    try:
+        rows = _recipients("alerts_radar")
+    except Exception:
+        return
+    if not rows or not items:
+        return
+    lines = "\n".join("• <b>%s</b>%s" % (it["symbol"], ("  ·  " + it["note"]) if it.get("note") else "")
+                      for it in items)
+    txt = "\U0001f440 <b>On the AI's radar</b> — stocks it's watching to buy next:\n%s" % lines
+    for token, chat_id in rows:
+        try:
+            send(token, chat_id, txt)
+        except Exception:
+            pass
+
+
+def notify_summary(text):
+    """text: pre-formatted daily progress summary (HTML)."""
+    try:
+        rows = _recipients("alerts_summary")
+    except Exception:
+        return
+    for token, chat_id in rows:
+        try:
+            send(token, chat_id, text)
+        except Exception:
+            pass
 
 
 def unlink(user_id: int):

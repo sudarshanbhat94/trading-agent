@@ -156,7 +156,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/me/telegram":
             return self._send(json.dumps(dict(has_token=True, bot="pavithra_alerts_bot", linked=True,
                                                deep_link="https://t.me/pavithra_alerts_bot",
-                                               alerts_buy=True, alerts_sell=True)))
+                                               alerts_buy=True, alerts_sell=True, alerts_radar=True, alerts_summary=True)))
         if p == "/api/auth/me":
             return self._send(json.dumps(dict(ok=True, user=dict(id=1, username="demo", role="admin", signal_execution_mode="paper"))))
         if p.startswith("/v2/api/stock/"):
