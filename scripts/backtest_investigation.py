@@ -109,9 +109,17 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False, corr=0.0, dailycap=0, cooldown=0, derisk=None, derisk_confirm=3):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False, corr=0.0, dailycap=0, cooldown=0, derisk=None, derisk_confirm=3, voltarget=0.0):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
+    # Volatility targeting: scale each new position DOWN (never up) when the
+    # market's recent realized vol exceeds `voltarget` (annualized). Uses a fast
+    # 10d window so it reacts to crashes; caps at 1.0 so we never lever. Unlike
+    # go-to-cash it keeps trading (still catches mean-reversion bounces), just
+    # smaller when it's dangerous. voltarget=0 disables.
+    _mret = mdf["mkt_ret1"] if "mkt_ret1" in mdf else mdf["mkt_cum"].pct_change()
+    _rv = _mret.rolling(10).std() * (252 ** 0.5)
+    vol_scalar = (voltarget / _rv).clip(upper=1.0) if voltarget else None
     # Phase-1 de-risking overlay (research-backed "go to cash"): when the index
     # is below its long trend for `derisk_confirm` consecutive days -> risk-off-
     # deep. Unlike the existing 50d gate (which only pauses NEW buys), this cuts
@@ -162,6 +170,9 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
             base_alloc = equity / maxpos
             if dyn:                          # recycle vol-sizing savings into open slots
                 base_alloc = max(base_alloc, cash / max(1, maxpos - len(pos)))
+            if vol_scalar is not None:       # size down when the market is turbulent
+                vs = vol_scalar.get(d, 1.0)
+                base_alloc *= (vs if vs == vs else 1.0)
             alloc = min(base_alloc * sz, cash)
             if alloc <= 0:
                 continue
@@ -324,10 +335,10 @@ def main():
         # worst peak-to-trough of the market itself in-sample (the stress window)
         peak = mkt.cummax(); ddw = (mkt - peak) / peak
         print(f"  MARKET worst drawdown in-sample: {ddw.min()*100:+.1f}%")
-        for label, kw in (("baseline (no derisk)", dict(mom=True, dyn=True)),
-                          ("+derisk->cash",        dict(mom=True, dyn=True, derisk=0.0)),
-                          ("+derisk->keep 50%",    dict(mom=True, dyn=True, derisk=0.5)),
-                          ("+derisk->cash conf5",  dict(mom=True, dyn=True, derisk=0.0, derisk_confirm=5))):
+        for label, kw in (("baseline",              dict(mom=True, dyn=True)),
+                          ("+voltarget 15%",       dict(mom=True, dyn=True, voltarget=0.15)),
+                          ("+voltarget 20%",       dict(mom=True, dyn=True, voltarget=0.20)),
+                          ("+voltarget 25%",       dict(mom=True, dyn=True, voltarget=0.25))):
             m, _ = run(market, "HYBRID", M, mdf, maxpos=14, **kw)
             print(f"  {label:22s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
                   f"Sharpe={m['sharpe']:.2f}  trades={m['n']:4d}  win={m['win']:.0f}%")
