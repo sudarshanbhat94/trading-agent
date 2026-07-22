@@ -1432,6 +1432,15 @@ button{border-radius:9px}
 .fd-trade:last-child{border-bottom:none}
 .fd-holds{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 @media(max-width:560px){.fd-scored{grid-template-columns:repeat(2,1fr);gap:15px 10px}}
+@media(min-width:1080px){
+ #homefeed{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+ #homefeed .fd-card{margin-top:0}
+ #homefeed>#fdPerf{grid-column:1 / -1}
+ #homefeed>div:empty{display:none}
+}
+.fd-trade{gap:10px}
+.fd-trade .fd-tsym{flex:1;min-width:0;display:flex;gap:8px;align-items:baseline;overflow:hidden}
+.fd-trade .fd-tsym .mut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
 .rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 .detail-grid{display:flex;flex-direction:column;gap:0}
@@ -1679,8 +1688,9 @@ function loadHome(){
  api('/v2/api/orders?limit=60').then(function(r){var os=(r.j||[]).filter(function(o){return o.today&&inMkt(o.market)});
   if(!os.length){fdSet('fdTrades','','');return;}
   var nb=os.filter(function(o){return o.side=='BUY'}).length;
-  var rows=os.map(function(o){var s=o.ccy;var right=(o.side=='SELL'&&o.pnl!=null)?('<span class="'+col(o.pnl)+'" style="font-weight:600;font-size:12.5px">'+sgn(o.pnl)+'%</span>'):('<span class=mut style="font-size:12px">'+s+o.price+'</span>');
-   return '<div class=fd-trade><span class="badge '+(o.side=='BUY'?'bg-inf':(o.pnl>0?'bg-up':'bg-dn'))+'">'+o.side+'</span><b style="font-size:13.5px">'+o.symbol+'</b><span class=mut style="font-size:11.5px;flex:1">'+o.qty+' @ '+s+o.price+'</span>'+right+'</div>';}).join('');
+  var rows=os.map(function(o){var s=o.ccy,f=(o.ccy=='₹'?INR:USD);
+   var right=(o.side=='SELL'&&o.pnl!=null)?('<span class="'+col(o.pnl)+'" style="font-weight:600;font-size:12.5px">'+sgn(o.pnl)+'%</span>'):('<span class="num mut" style="font-size:12px">'+s+f.format(o.value||Math.round(o.qty*o.price))+'</span>');
+   return '<div class=fd-trade><span class="badge '+(o.side=='BUY'?'bg-inf':(o.pnl>0?'bg-up':'bg-dn'))+'">'+o.side+'</span><span class=fd-tsym><b style="font-size:13.5px">'+o.symbol+'</b><span class="mut num" style="font-size:11.5px">'+o.qty+' @ '+s+o.price+'</span></span>'+right+'</div>';}).join('');
   fdSet('fdTrades','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--warnb);color:var(--warn)">⇄</span><div><div class=fd-title>Today’s moves</div><div class=fd-meta>'+nb+' bought · '+(os.length-nb)+' sold</div></div></div><div class=fd-trades>'+rows+'</div>');
  });
  api('/v2/api/positions').then(function(r){var ps=r.j.filter(function(p){return inMkt(p.market)});
