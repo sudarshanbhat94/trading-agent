@@ -567,6 +567,12 @@ def poll_market(market):
                     s["score"], datetime.now(timezone.utc).isoformat(), why))
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=trail, peak=entry)
+        try:
+            from . import telegram_bot
+            telegram_bot.notify_trade("BUY", sym, (int(shares) if float(shares).is_integer() else round(shares, 2)),
+                                      round(entry, 2), market, strategy=s["strategy"])
+        except Exception:
+            pass
         strat_count[s["strategy"]] = strat_count.get(s["strategy"], 0) + 1
         sec = sector_map.get(sym, "unknown")
         held_sectors[sec] = held_sectors.get(sec, 0) + 1
@@ -647,6 +653,12 @@ def exit_monitor(market):
                        " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction FROM v2_positions WHERE id=?",
                        (today_s, ex, p["shares"], p["shares"] * (ex - p["entry"]), (ex / p["entry"] - 1) * 100, reason, p["id"]))
             v2.execute("DELETE FROM v2_positions WHERE id=?", (p["id"],))
+            try:
+                from . import telegram_bot
+                telegram_bot.notify_trade("SELL", sym, (int(p["shares"]) if float(p["shares"]).is_integer() else round(p["shares"], 2)),
+                                          round(ex, 2), market, pnl_pct=(ex / p["entry"] - 1) * 100, strategy=p["strategy"])
+            except Exception:
+                pass
             del positions[sym]; exits += 1
         else:
             v2.execute("UPDATE v2_positions SET peak=? WHERE id=?", (peak, p["id"]))

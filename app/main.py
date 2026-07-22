@@ -594,6 +594,11 @@ try:  # new v2 dashboard (self-contained, read-only; never break the main app)
         # Engine runs in-process in a thread; its heavy pandas poll holds the GIL.
         # Gated by env so it can be disabled fast if it ever starves the web loop.
         import os as _os
+        try:  # Telegram alerts poll loop (no-op unless TELEGRAM_BOT_TOKEN is set)
+            from . import telegram_bot
+            telegram_bot.start_background()
+        except Exception:
+            pass
         if _os.environ.get("OPENSTOCKS_DISABLE_ENGINE") == "1":
             return
         _v2_live_start(interval=8)
@@ -2890,6 +2895,41 @@ async def cancel_order(order_id: int, request: Request) -> dict[str, Any]:
     if user.get("role") != "admin":
         row = _sanitize_order_row_for_user(row)
     return {"ok": True, "order": row}
+
+
+@app.get("/api/me/telegram")
+async def my_telegram_status(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    from . import telegram_bot
+    return telegram_bot.status(int(user["id"]))
+
+
+@app.post("/api/me/telegram/link")
+async def my_telegram_link(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    from . import telegram_bot
+    if not telegram_bot.enabled():
+        raise HTTPException(status_code=503, detail="Telegram bot is not configured yet. Ask the admin to set it up.")
+    code, link = telegram_bot.start_link(int(user["id"]))
+    if not link:
+        raise HTTPException(status_code=503, detail="Telegram bot is unreachable. Try again in a moment.")
+    return {"ok": True, "link": link, "code": code, "bot": telegram_bot.bot_username()}
+
+
+@app.post("/api/me/telegram/prefs")
+async def my_telegram_prefs(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    from . import telegram_bot
+    telegram_bot.set_prefs(int(user["id"]), bool(payload.get("alerts_buy", True)), bool(payload.get("alerts_sell", True)))
+    return {"ok": True}
+
+
+@app.post("/api/me/telegram/unlink")
+async def my_telegram_unlink(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    from . import telegram_bot
+    telegram_bot.unlink(int(user["id"]))
+    return {"ok": True}
 
 
 @app.post("/api/positions/{symbol}/exit")

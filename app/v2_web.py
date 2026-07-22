@@ -1456,6 +1456,8 @@ button{border-radius:9px}
  #eqcurves{grid-template-columns:1fr!important}
 }
 .mvrow>b{white-space:nowrap}
+.tgopt{display:flex;align-items:center;gap:10px;font-size:13.5px;padding:7px 0;cursor:pointer}
+.tgopt input{width:auto;margin:0;accent-color:var(--inf)}
 .fd-trade{gap:10px}
 .fd-trade .fd-tsym{flex:1;min-width:0;display:flex;gap:8px;align-items:baseline;overflow:hidden}
 .fd-trade .fd-tsym .mut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1750,6 +1752,8 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
  <div class=raise><div class=mut style="font-size:13px;margin-bottom:9px">Paper = simulated cash. Live = real orders via your broker.</div>
   <div class=toggle><b id=mp class="${MODE!='live'?'on':''}" onclick="setMode('paper')">Paper</b><b id=ml class="${MODE=='live'?'on':''}" onclick="setMode('live')">Live</b></div>
   <div id=modemsg class=mut style="font-size:12px;margin-top:9px"></div></div>
+ <div class=sec>telegram alerts</div>
+ <div id=tgbox class=raise><div class=skel>loading…</div></div>
  <div class=sec>paper allocation</div>
  <div class=raise><div style="display:flex;gap:16px;flex-wrap:wrap"><div class=field style="flex:0 1 260px"><label>India cash (₹)</label><input id=cin type=number value="${Math.round(b.IN)||''}"></div></div>
   <button class=pri onclick=saveCash()>Save allocation</button><div id=cashmsg class=mut style="font-size:12px;margin-top:9px"></div></div>
@@ -1757,7 +1761,30 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
  ${(u.role=='admin')?'<div class=sec>admin · allocate paper money</div><div id=adminbox class=raise><div class=skel>loading users…</div></div>':''}
  <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>`;
  api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});
- if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});}
+ if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});
+ loadTelegram();}
+function loadTelegram(){var el=document.getElementById('tgbox');if(!el)return;
+ api('/api/me/telegram').then(function(r){var t=r.j||{};
+  if(!t.configured){el.innerHTML='<div class=mut style="font-size:13px">Telegram alerts aren’t set up on this server yet. An admin needs to add the bot token.</div>';return;}
+  if(t.linked){
+   el.innerHTML='<div class=row style="padding:2px 0 12px"><span style="font-size:13px"><b style="color:var(--up)">● Connected</b>'+(t.username?' as @'+t.username:'')+'</span><button class=sm onclick="tgUnlink()">Disconnect</button></div>'
+    +'<div style="border-top:1px solid var(--line);padding-top:12px"><div class=mut style="font-size:12px;margin-bottom:9px">Send me a Telegram message when the AI:</div>'
+    +'<label class=tgopt><input type=checkbox id=tgbuy '+(t.alerts_buy?'checked':'')+' onchange="tgSavePrefs()"> Buys a stock</label>'
+    +'<label class=tgopt><input type=checkbox id=tgsell '+(t.alerts_sell?'checked':'')+' onchange="tgSavePrefs()"> Sells a stock</label>'
+    +'<div id=tgmsg class=mut style="font-size:12px;margin-top:8px"></div></div>';
+  } else {
+   el.innerHTML='<div class=mut style="font-size:13px;margin-bottom:12px">Get a Telegram message the moment the AI buys or sells for you.</div>'
+    +'<button class=pri onclick="tgConnect(this)">Connect Telegram</button>'
+    +'<div id=tglink style="margin-top:12px"></div>';
+  }});}
+function tgConnect(btn){btn.disabled=true;btn.textContent='Generating link…';
+ api('/api/me/telegram/link',{method:'POST'}).then(function(r){
+  if(r.ok&&r.j.link){document.getElementById('tglink').innerHTML='<a href="'+r.j.link+'" target=_blank class=pri style="display:inline-block;text-decoration:none;padding:11px 16px">Open Telegram to finish →</a><div class=mut style="font-size:12px;margin-top:9px">Tap the link, press <b>Start</b> in Telegram, then come back — it’ll show as connected.</div>';
+   btn.style.display='none';setTimeout(loadTelegram,15000);}
+  else{btn.disabled=false;btn.textContent='Connect Telegram';document.getElementById('tglink').innerHTML='<div class=dn style="font-size:12px">'+((r.j&&r.j.detail)||'Could not start. Try again.')+'</div>';}});}
+function tgSavePrefs(){var b=document.getElementById('tgbuy').checked,s=document.getElementById('tgsell').checked;
+ api('/api/me/telegram/prefs',{method:'POST',body:JSON.stringify({alerts_buy:b,alerts_sell:s})}).then(function(r){document.getElementById('tgmsg').textContent=r.ok?'Saved ✓':'Failed';});}
+function tgUnlink(){if(!confirm('Disconnect Telegram alerts?'))return;api('/api/me/telegram/unlink',{method:'POST'}).then(loadTelegram);}
 function setMode(m){api('/api/me/signal-execution-mode',{method:'POST',body:JSON.stringify({signal_execution_mode:m})}).then(r=>{if(r.ok){MODE=(r.j.signal_execution_mode||m);document.getElementById('mp').className=(MODE!='live'?'on':'');document.getElementById('ml').className=(MODE=='live'?'on':'');document.getElementById('modemsg').textContent=r.j.message||('Mode: '+MODE);renderBalance();}else{document.getElementById('modemsg').textContent=r.j.detail||'Failed';}})}
 function saveCash(){var b={},i=document.getElementById('cin').value;if(i)b.india_cash=+i;
  var url=(ME&&ME.role=='admin'&&ME.id)?('/api/users/'+ME.id+'/paper-cash'):'/api/me/paper-cash';
