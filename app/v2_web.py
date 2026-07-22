@@ -265,12 +265,18 @@ def api_health():
     checks = []
     now = datetime.now(timezone.utc)
     try:
-        from . import market_regions
-        openm = {m: bool(market_regions.market_session_for_region(m).get("is_open")) for m in ("IN", "US")}
+        from . import v2_live
+        mkts = list(v2_live.ENABLED_MARKETS)
     except Exception:
-        openm = {"IN": False, "US": False}
+        mkts = ["IN"]
+    try:
+        from . import market_regions
+        openm = {m: bool(market_regions.market_session_for_region(m).get("is_open")) for m in mkts}
+    except Exception:
+        openm = {m: False for m in mkts}
     con = _ro(MAIN_DB)
-    for m, src in LIVE_SOURCE.items():
+    for m in mkts:
+        src = LIVE_SOURCE[m]
         ts = con.execute("SELECT MAX(ts) FROM latest_quotes WHERE source=?", (src,)).fetchone()[0]
         age = 1e9
         if ts:
@@ -281,7 +287,9 @@ def api_health():
         ok = age < 180 if openm.get(m) else True
         checks.append(dict(name=f"{m} live feed", ok=ok,
                            detail=(f"{age:.0f}s old" if openm.get(m) else "market closed")))
-    for m, src in (("IN", "upstox-live:day"), ("US", "alpaca-iex-live:day")):
+    _daily = {"IN": "upstox-live:day", "US": "alpaca-iex-live:day"}
+    for m in mkts:
+        src = _daily[m]
         ts = con.execute("SELECT MAX(ts) FROM candles WHERE source=?", (src,)).fetchone()[0]
         days = 99
         if ts:
@@ -1334,6 +1342,27 @@ body{color:var(--tx);overflow-x:hidden;min-height:100vh;display:flow-root;backgr
 input,select{background:#ffffff}
 button.pri{color:#fff}
 #engines svg{filter:none}
+/* ---- design polish: calmer type weight, precise cards, real hierarchy ---- */
+b,strong,.pos b,.card b,.raise b{font-weight:600}
+.hero{color:#242a31;font-weight:600;letter-spacing:-.022em;font-size:33px}
+.num{color:#2b3139}
+.mut{color:#8b929c}
+.card,.raise,.pos{border-radius:10px;border-color:#e8eaee}
+.pos{padding:14px 16px}
+.bar{height:3px;background:#eef0f3;margin-top:10px}
+.bar>i{border-radius:3px}
+.badge{font-weight:500;font-size:10.5px;padding:2px 8px;border-radius:6px;letter-spacing:.01em}
+.sec{font-size:11.5px;letter-spacing:.07em;color:#9aa1ac;font-weight:600}
+.side a{font-weight:500}
+.live{font-weight:500;font-size:11px}
+.chip{border-radius:8px}
+.seg{border-radius:9px}.seg b{border-radius:7px}
+.prof{font-weight:600}
+.modepill{font-weight:600}
+#healthbar{background:#fef4f3!important;border:1px solid #f8d3ce!important;color:#c23b30!important;border-radius:8px!important;font-weight:500}
+.ticker{background:#fff;border-bottom:1px solid var(--line)}
+input,select{border-radius:9px}
+button{border-radius:9px}
 .rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
 .rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 .detail-grid{display:flex;flex-direction:column;gap:0}
