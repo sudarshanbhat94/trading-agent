@@ -1385,7 +1385,30 @@ button{border-radius:9px}
 .prow-pnl{font-size:12.5px;margin-top:4px;font-weight:600}
 .prow .exitbtn{font-size:11px;padding:5px 12px;margin-left:12px}
 .home-main #homepos,.home-main #activity{display:block!important}
-@media(max-width:560px){.k-metrics{display:grid;grid-template-columns:1fr 1fr;gap:14px 10px}.k-metric{min-width:0}.k-hero .hero{font-size:28px}}
+/* ---- retail hero: bold, colorful, AI-forward ---- */
+.hp-hero{position:relative;overflow:hidden;border-radius:20px;padding:22px 22px 15px;color:#fff;background:linear-gradient(135deg,#6a4bff 0%,#8257ff 48%,#9d5cff 100%)}
+.hp-glow{position:absolute;top:-60px;right:-40px;width:220px;height:220px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.22),transparent 70%);pointer-events:none}
+.hp-herotop{position:relative;display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.hp-hlbl{font-size:12px;color:rgba(255,255,255,.82);font-weight:500}
+.hp-tag{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;background:rgba(255,255,255,.22);padding:2px 7px;border-radius:6px;margin-left:5px;vertical-align:middle}
+.hp-hero .hero{color:#fff!important;font-size:37px;font-weight:700;margin:5px 0 3px;text-shadow:none}
+.hp-hchg{font-size:13.5px;color:#fff;font-weight:600}
+.hp-ailive{display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);color:#fff;font-size:11px;font-weight:600;padding:6px 12px;border-radius:20px;white-space:nowrap}
+.hp-pulse{width:7px;height:7px;border-radius:50%;background:#4dffc4;box-shadow:0 0 0 0 rgba(77,255,196,.7);animation:hppulse 1.9s infinite}
+@keyframes hppulse{0%{box-shadow:0 0 0 0 rgba(77,255,196,.6)}70%{box-shadow:0 0 0 8px rgba(77,255,196,0)}100%{box-shadow:0 0 0 0 rgba(77,255,196,0)}}
+.hp-chartwrap{position:relative;margin:10px -22px 0}
+.hp-chart svg{width:100%;height:96px;display:block}
+.hp-ranges{position:relative;display:flex;gap:6px;margin-top:6px}
+.hp-ranges b{font-size:12px;font-weight:600;color:rgba(255,255,255,.72);padding:4px 13px;border-radius:20px;cursor:pointer;transition:all .15s}
+.hp-ranges b.on{background:#fff;color:#7a4bff}
+.hp-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}
+.hp-stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 13px}
+.hp-slbl{font-size:11px;color:var(--mut);font-weight:500}
+.hp-sval{font-size:16px;font-weight:700;color:#242a31;margin-top:6px}
+.hp-sval .up,.hp-sval .dn{font-weight:700}
+.hp-sechead{display:flex;justify-content:space-between;align-items:baseline;font-size:15px;font-weight:700;color:#1c2128;margin:22px 3px 10px}
+.hp-sechead .mut{font-size:12px;font-weight:500}
+@media(max-width:560px){.hp-stats{grid-template-columns:1fr 1fr}.hp-hero .hero{font-size:33px}}
 .rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
 .rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 .detail-grid{display:flex;flex-direction:column;gap:0}
@@ -1483,22 +1506,20 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=home class="tab on"><div class=home-grid>
    <div class=home-main>
-    <div class=k-hero>
-     <div class=k-herotop>
-      <div style="min-width:0"><div class=k-lbl>portfolio value</div><div class=hero id=pv>—</div><div id=ppnl class=k-sub>&nbsp;</div></div>
-      <span id=modeb class="modepill bg-warn">paper</span>
+    <div class=hp-hero>
+     <div class=hp-glow></div>
+     <div class=hp-herotop>
+      <div style="min-width:0"><div class=hp-hlbl>Portfolio value <span id=modeb class=hp-tag>paper</span></div><div class=hero id=pv>—</div><div class=hp-hchg id=ppnl>&nbsp;</div></div>
+      <span class=hp-ailive><span class=hp-pulse></span> AI live</span>
      </div>
-     <div class=k-metrics>
-      <div class=k-metric><span class=k-lbl>invested</span><span class=num id=kinv>—</span></div>
-      <div class=k-metric><span class=k-lbl>today's p&amp;l</span><span class=num id=ktoday>—</span></div>
-      <div class=k-metric><span class=k-lbl>positions</span><span class=num id=knpos>—</span></div>
-      <div class=k-metric><span class=k-lbl>win rate</span><span class=num id=kwin>—</span></div>
-     </div>
+     <div class=hp-chartwrap><div id=hpchart class=hp-chart></div></div>
+     <div class=hp-ranges id=hpranges><b class=on>1M</b><b>3M</b><b>ALL</b></div>
     </div>
-    <div class=chips id=regime style="margin:14px 0 2px"></div>
-    <div class=k-listhead><span>positions</span><span class=mut id=posn style="letter-spacing:0;text-transform:none;font-weight:400"></span></div>
-    <div id=homepos class=k-list></div>
-    <div class=k-listhead style="margin-top:22px"><span>today's activity</span><span class=mut style="letter-spacing:0;text-transform:none;font-weight:400">bought &amp; sold</span></div>
+    <div class=hp-stats id=hpstats></div>
+    <div class=chips id=regime style="margin:16px 0 2px"></div>
+    <div class=hp-sechead><span>Your AI's holdings</span><span class=mut id=posn></span></div>
+    <div id=homepos></div>
+    <div class=hp-sechead style="margin-top:22px"><span>Today's activity</span><span class=mut>bought &amp; sold</span></div>
     <div id=activity class=k-list><div class=mut style="font-size:12px;padding:13px 16px">nothing yet today</div></div>
    </div>
    <div class=home-rail>
@@ -1607,18 +1628,28 @@ function mktCard(m){var nm=m.market=='IN'?'India · NSE':'US · equities';
 function posRow(p){var s=p.market=='IN'?'₹':'$',fmt=(p.market=='IN'?INR:USD);
  var amt=(p.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
  return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry} · exit at ${s}${p.stop}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
+function heroChart(series){
+ if(!series||series.length<2)return '';
+ var w=340,h=96,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series),rng=(hi-lo)||1,pad=9;
+ var pts=series.map(function(v,i){return (i/(n-1)*w).toFixed(1)+','+(h-pad-(v-lo)/rng*(h-2*pad)).toFixed(1)}).join(' ');
+ return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><defs><linearGradient id="hgrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".34"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>'
+  +'<polygon points="0,'+h+' '+pts+' '+w+','+h+'" fill="url(#hgrad)"/>'
+  +'<polyline points="'+pts+'" fill="none" stroke="#fff" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>';}
 function loadHome(){api('/v2/api/overview').then(r=>{var d=r.j;document.getElementById('clock').textContent=d.as_of;
  var ms=(d.markets||[]).filter(m=>inMkt(m.market));
  document.getElementById('pv').innerHTML=ms.map(m=>fmtc(m.ccy,m.equity)).join('  ·  ')||'—';
- document.getElementById('ppnl').innerHTML=ms.map(m=>'today '+pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' &nbsp;·&nbsp; ');
+ document.getElementById('ppnl').innerHTML=ms.map(function(m){var f=(m.ccy=='₹'?INR:USD),up=m.today_pnl>=0;return (up?'▲ ':'▼ ')+(up?'+':'-')+m.ccy+f.format(Math.abs(Math.round(m.today_pnl)))+' ('+(up?'+':'')+m.today_pct+'%) today';}).join(' · ')||'&nbsp;';
  var RS={STRONG:['var(--up)','strong trend · full throttle'],ON:['var(--up)','risk-on'],NEUTRAL:['var(--warn)','neutral · best setups only'],OFF:['var(--dn)','risk-off · dip-buys blocked']};
  document.getElementById('regime').innerHTML=['IN','US'].filter(inMkt).map(m=>{var st=(d.regime_state||{})[m];var v=RS[st]||['var(--mut)','…'];return '<span class=chip title="market regime"><span style="color:'+v[0]+'">●</span> '+m+' '+v[1]+'</span>'}).join('');
  var m0=ms[0]||{};
- document.getElementById('kinv').innerHTML=ms.map(m=>fmtc(m.ccy,m.deployed)).join(' · ')||'—';
- document.getElementById('ktoday').innerHTML=ms.map(m=>pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' · ')||'—';
- document.getElementById('knpos').textContent=ms.reduce((a,m)=>a+(m.positions||0),0);
- document.getElementById('kwin').textContent=(m0.win!=null?m0.win+'%':'—');});
- api('/v2/api/positions').then(r=>{var ps=r.j.filter(p=>inMkt(p.market));document.getElementById('posn').textContent=ps.length+' open';document.getElementById('homepos').innerHTML=ps.map(posRow).join('')||'<div class=mut style="font-size:12px;padding:14px 16px">no open positions</div>';});}
+ document.getElementById('hpchart').innerHTML=heroChart(m0.equity_series||[]);
+ document.getElementById('hpstats').innerHTML=[
+  ['invested',ms.map(m=>fmtc(m.ccy,m.deployed)).join(' · ')||'—'],
+  ["today's gain",ms.map(m=>pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' · ')||'—'],
+  ['win rate',(m0.win!=null?m0.win+'%':'—')],
+  ['deployed',(m0.deploy_pct!=null?m0.deploy_pct+'%':'—')]
+ ].map(s=>'<div class=hp-stat><div class=hp-slbl>'+s[0]+'</div><div class=hp-sval>'+s[1]+'</div></div>').join('');});
+ api('/v2/api/positions').then(r=>{var ps=r.j.filter(p=>inMkt(p.market));document.getElementById('posn').textContent=ps.length+' held';var pr=ps.map(posRow).join('');document.getElementById('homepos').innerHTML=pr?('<div class=k-list>'+pr+'</div>'):'<div class=mut style="font-size:12px;padding:14px 16px">no open positions</div>';});}
 function load(){loadHome()}
 var POS=[],SUBPOS='pos';
 function subPos(v){SUBPOS=v;document.getElementById('sbpos').className=(v=='pos'?'on':'');document.getElementById('sbhold').className=(v=='hold'?'on':'');renderPos();}
