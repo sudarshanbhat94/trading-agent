@@ -1440,7 +1440,16 @@ button{border-radius:9px}
  #fdTrades .fd-trades,#fdHold .fd-holds{column-count:2;column-gap:22px}
  #fdTrades .fd-trade{break-inside:avoid}
  #fdHold .fd-holds .prow{break-inside:avoid}
+ /* rail: stack movers full-width (readable names) + keep it in view while scrolling */
+ #movers{grid-template-columns:1fr}
+ .home-rail{position:sticky;top:14px;align-self:start}
+ /* other pages: 2-col lists so they fill the width too */
+ #poslist>.k-list{column-count:2;column-gap:20px}
+ #poslist>.k-list>.prow{break-inside:avoid}
+ #ordlist{column-count:2;column-gap:26px}
+ #ordlist>.lrow{break-inside:avoid}
 }
+.mvrow>b{white-space:nowrap}
 .fd-trade{gap:10px}
 .fd-trade .fd-tsym{flex:1;min-width:0;display:flex;gap:8px;align-items:baseline;overflow:hidden}
 .fd-trade .fd-tsym .mut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
