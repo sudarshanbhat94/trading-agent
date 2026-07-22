@@ -25,6 +25,9 @@ V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
 IST = timezone(timedelta(hours=5, minutes=30))
 LIVE_SOURCE = {"IN": "upstox-live", "US": "alpaca-iex-live"}
 BUDGET = {"IN": 100000.0, "US": 20000.0}     # TOTAL paper capital per market
+# Markets the engine actually trades. US is parked while we stabilise India first
+# (add "US" back here to re-enable it — all US config/code below stays intact).
+ENABLED_MARKETS = ["IN"]
 MAXPOS = {"IN": 14, "US": 14}                # max concurrent positions per market.
                                              # Backtested 10 vs 14 (2024->now): IN ret -13.1->-7.1%,
                                              # maxDD 13.6->9.6%; US equal Sharpe. More names, not
@@ -90,15 +93,15 @@ _EQ_SNAP: dict = {}
 _SESSION_OPENED_AT: dict = {}            # market -> ts when the session last transitioned open
 ENTRY_WINDOW_SEC = 30 * 60               # fills only within 30 min of the open (backtest buys AT the open)
 _started = False
-_status: dict = {"IN": "init", "US": "init"}
+_status: dict = {m: "init" for m in ENABLED_MARKETS}
 
 
 def ensure_schema(v2):
     v2.executescript(SCHEMA)
-    for m, b in BUDGET.items():
+    for m in ENABLED_MARKETS:
         if not v2.execute("SELECT 1 FROM v2_book WHERE market=?", (m,)).fetchone():
             v2.execute("INSERT INTO v2_book(market,budget,max_pos,started_at) VALUES(?,?,?,?)",
-                       (m, b, MAXPOS[m], datetime.now(timezone.utc).isoformat()))
+                       (m, BUDGET[m], MAXPOS[m], datetime.now(timezone.utc).isoformat()))
     try:  # additive migration: entry-time investigation snapshot ("why we bought")
         v2.execute("ALTER TABLE v2_positions ADD COLUMN why TEXT")
     except Exception:
@@ -669,11 +672,11 @@ def loop(interval):
         v2 = _rw(); ensure_schema(v2); v2.close()
     except Exception:
         pass
-    prev_open = {"IN": None, "US": None}   # None = unknown (fresh start); arm the
-                                           # entry window ONLY on a real closed->open
-                                           # flip, never on a mid-session restart
+    prev_open = {m: None for m in ENABLED_MARKETS}   # None = unknown (fresh start);
+                                           # arm the entry window ONLY on a real
+                                           # closed->open flip, never on a restart
     while True:
-        for m in ("IN", "US"):
+        for m in ENABLED_MARKETS:
             try:
                 is_open = market_open(m)
                 if is_open and prev_open[m] is False:

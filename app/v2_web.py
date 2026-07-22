@@ -585,6 +585,11 @@ def api_ticker():
     c = _ticker_cache.get("v")
     if c is not None and now - _ticker_cache.get("t", 0) < 5:
         return JSONResponse(c)
+    try:
+        from . import v2_live
+        mkts = list(v2_live.ENABLED_MARKETS)
+    except Exception:
+        mkts = ["IN"]
     held = {"IN": {}, "US": {}}
     try:
         v2 = _ro(V2_DB)
@@ -595,10 +600,10 @@ def api_ticker():
         pass
     try:
         from . import market_regions
-        openm = {m: bool(market_regions.market_session_for_region(m).get("is_open")) for m in ("IN", "US")}
+        openm = {m: bool(market_regions.market_session_for_region(m).get("is_open")) for m in mkts}
     except Exception:
-        openm = {"IN": False, "US": False}
-    order = sorted(("IN", "US"), key=lambda m: not openm.get(m))   # open markets first
+        openm = {m: False for m in mkts}
+    order = sorted(mkts, key=lambda m: not openm.get(m))   # open markets first
     out = []
     for market in order:
         ccy = "₹" if market == "IN" else "$"
@@ -622,10 +627,12 @@ def api_engine_status():
     try:
         from . import v2_live
         st = v2_live.status()
+        markets = list(v2_live.ENABLED_MARKETS)
     except Exception:
         st = {}
+        markets = ["IN"]
     sessions = {}
-    for m in ("IN", "US"):
+    for m in markets:
         try:
             from . import market_regions
             sessions[m] = market_regions.market_session_for_region(m).get("is_open", False)
@@ -1112,7 +1119,7 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
   <div class=top>
    <div class=brand><span class=live><span class=dot></span><span id=clock>live</span></span></div>
    <div style="display:flex;align-items:center;gap:10px">
-    <div class=seg id=mkt><b data-m=BOTH class=on onclick="setMkt('BOTH')">Both</b><b data-m=IN onclick="setMkt('IN')">India</b><b data-m=US onclick="setMkt('US')">US</b></div>
+    <div class=seg id=mkt><b data-m=IN class=on>India</b></div>
     <div class=prof id=avatar onclick="document.getElementById('pm').classList.toggle('hide')">U</div>
    </div>
   </div>
@@ -1410,7 +1417,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <div class=ticker id=ticker style="display:none"></div>
   <div id=healthbar class=hide style="background:var(--dnb);border:1px solid rgba(255,93,108,.45);color:var(--dn);padding:8px 14px;border-radius:10px;margin:8px 0;font-size:12px"></div>
   <div class=top><span class=live><span class=dot></span><span id=clock>live</span></span>
-   <div style="display:flex;align-items:center;gap:10px"><div class=seg id=mkt><b data-m=BOTH class=on onclick="setMkt('BOTH')">Both</b><b data-m=IN onclick="setMkt('IN')">India</b><b data-m=US onclick="setMkt('US')">US</b></div>
+   <div style="display:flex;align-items:center;gap:10px"><div class=seg id=mkt><b data-m=IN class=on>India</b></div>
     <div class=prof id=avatar onclick="document.getElementById('pm').classList.toggle('hide')">U</div></div></div>
   <div id=pm class="menu hide">
    <a onclick="go('account');document.getElementById('pm').classList.add('hide')">Account &amp; settings</a>
@@ -1455,7 +1462,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <div id=analyze class=tab>
    <div class=sec>analyse a stock</div>
    <div style="display:flex;gap:8px;margin-bottom:8px"><input id=qsym placeholder="symbol e.g. RELIANCE / AAPL" style="flex:1" onkeydown="if(event.key=='Enter')doAnalyze()">
-    <select id=qmkt style="width:88px"><option value=IN>India</option><option value=US>US</option></select>
+    <select id=qmkt style="width:88px"><option value=IN>India</option></select>
     <button class=pri onclick=doAnalyze()>Go</button></div>
    <div id=ares></div></div>
 
@@ -1473,7 +1480,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 </nav>
 
 <script>
-var INR=new Intl.NumberFormat('en-IN'),USD=new Intl.NumberFormat('en-US'),cur='home',MKT='BOTH',ME=null,MODE='paper',ACC=null;
+var INR=new Intl.NumberFormat('en-IN'),USD=new Intl.NumberFormat('en-US'),cur='home',MKT='IN',ME=null,MODE='paper',ACC=null;
 function sgn(x){return (x>0?'+':'')+x}function col(x){return x>0?'up':(x<0?'dn':'mut')}
 function show(i){document.getElementById(i).classList.remove('hide')}function hide(i){document.getElementById(i).classList.add('hide')}
 function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'application/json'}},o||{})).then(r=>r.json().catch(()=>({})).then(j=>({ok:r.ok,j:j})))}
