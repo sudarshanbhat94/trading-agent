@@ -23,11 +23,14 @@ from app.config import Settings, settings_from_overrides   # noqa: E402
 from app.db import Database                                 # noqa: E402
 from app.market_data import build_market_data_provider      # noqa: E402
 from app import market_regions                              # noqa: E402
+from app.v2_live import ENABLED_MARKETS                     # noqa: E402
 
 import sqlite3
 import threading
 
-MARKETS = {"IN": "upstox", "US": "alpaca"}
+# Only fetch quotes for markets the engine actually trades (US parked -> no US
+# data pulled at all). Re-enable US in one place: v2_live.ENABLED_MARKETS.
+MARKETS = {m: p for m, p in {"IN": "upstox", "US": "alpaca"}.items() if m in ENABLED_MARKETS}
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
 
 

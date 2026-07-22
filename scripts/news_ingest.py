@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import Settings, settings_from_overrides   # noqa: E402
 from app.db import Database                                 # noqa: E402
 from app.sentiment import SentimentService                  # noqa: E402
+from app.v2_live import ENABLED_MARKETS                     # noqa: E402
 
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
 
@@ -118,7 +119,10 @@ def main():
     settings = replace(settings, enable_news_sentiment=True)
     svc = SentimentService(settings, db)
     want = target_symbols()
-    rows = [r for r in db.get_universe(enabled_only=True) if str(r.get("symbol", "")).upper() in want]
+    # only enabled markets (US parked -> no US news/earnings fetched)
+    rows = [r for m in ENABLED_MARKETS
+            for r in db.get_universe(enabled_only=True, market_region=m)
+            if str(r.get("symbol", "")).upper() in want]
     if a.limit:
         rows = rows[: a.limit]
     print(f"news ingest: {len(rows)} symbols (held+radar+watchlist)", flush=True)
