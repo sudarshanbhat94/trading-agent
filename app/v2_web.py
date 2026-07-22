@@ -1437,17 +1437,18 @@ button{border-radius:9px}
  #homefeed .fd-card{margin-top:0}
  #homefeed>#fdPerf,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
  #homefeed>div:empty{display:none}
- #fdTrades .fd-trades,#fdHold .fd-holds{column-count:2;column-gap:22px}
- #fdTrades .fd-trade{break-inside:avoid}
- #fdHold .fd-holds .prow{break-inside:avoid}
+ /* make the list CONTAINERS full-width (override old per-card grid/width rules) */
+ #poslist{display:block!important}
+ #ordlist{max-width:none!important;column-count:auto!important}
+ /* then flow the ROWS into 2 columns (grid is robust for flex rows) */
+ #fdTrades .fd-trades,#fdHold .fd-holds,#poslist>.k-list,#ordlist{display:grid!important;grid-template-columns:1fr 1fr;align-items:start;gap:0}
+ #fdTrades>.fd-trade,#fdHold .fd-holds>.prow,#poslist>.k-list>.prow,#ordlist>.lrow{min-width:0}
  /* rail: stack movers full-width (readable names) + keep it in view while scrolling */
  #movers{grid-template-columns:1fr}
  .home-rail{position:sticky;top:14px;align-self:start}
- /* other pages: 2-col lists so they fill the width too */
- #poslist>.k-list{column-count:2;column-gap:20px}
- #poslist>.k-list>.prow{break-inside:avoid}
- #ordlist{column-count:2;column-gap:26px}
- #ordlist>.lrow{break-inside:avoid}
+ /* portfolio: strategy cards + equity curve stretch to fill (were half-width) */
+ #attrib{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))!important}
+ #eqcurves{grid-template-columns:1fr!important}
 }
 .mvrow>b{white-space:nowrap}
 .fd-trade{gap:10px}
