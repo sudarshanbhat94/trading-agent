@@ -1433,10 +1433,13 @@ button{border-radius:9px}
 .fd-holds{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 @media(max-width:560px){.fd-scored{grid-template-columns:repeat(2,1fr);gap:15px 10px}}
 @media(min-width:1080px){
- #homefeed{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+ #homefeed{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px;align-items:start}
  #homefeed .fd-card{margin-top:0}
- #homefeed>#fdPerf{grid-column:1 / -1}
+ #homefeed>#fdPerf,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
  #homefeed>div:empty{display:none}
+ #fdTrades .fd-trades,#fdHold .fd-holds{column-count:2;column-gap:22px}
+ #fdTrades .fd-trade{break-inside:avoid}
+ #fdHold .fd-holds .prow{break-inside:avoid}
 }
 .fd-trade{gap:10px}
 .fd-trade .fd-tsym{flex:1;min-width:0;display:flex;gap:8px;align-items:baseline;overflow:hidden}
