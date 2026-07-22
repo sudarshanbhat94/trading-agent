@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -3086,13 +3087,20 @@ class Database:
                 """,
                 safe_rows,
             )
-            conn.executemany(
-                """
-                insert into market_ticks (ts, symbol, price, source)
-                values (:asof, :symbol, :price, :source)
-                """,
-                safe_rows,
-            )
+            # market_ticks: a per-quote tick log from the legacy agentic system.
+            # NOTHING reads it (the v2 engine trades off candles + latest_quotes),
+            # yet it grew to 169M rows / ~30GB at ~24M rows/day and the janitor
+            # that was meant to prune it had been dead since Jun-16 — on track to
+            # fill the disk. Disabled: the candle upsert + latest_quotes above are
+            # the data the system actually uses; ticks add cost and zero value.
+            if os.environ.get("OPENSTOCKS_LOG_TICKS") == "1":
+                conn.executemany(
+                    """
+                    insert into market_ticks (ts, symbol, price, source)
+                    values (:asof, :symbol, :price, :source)
+                    """,
+                    safe_rows,
+                )
 
     def insert_decisions(self, decisions: Iterable[Decision]) -> None:
         rows = [decision.to_dict() for decision in decisions]
