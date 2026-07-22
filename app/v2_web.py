@@ -1428,6 +1428,11 @@ button{border-radius:9px}
 .fd-sn.up{color:var(--up)}.fd-sn.dn{color:var(--dn)}
 .fd-sl{font-size:11px;color:var(--mut);margin-top:3px}
 .fd-trades{margin-top:12px}
+.fd-movegrid{margin-top:14px}
+.fd-movecol+.fd-movecol{margin-top:20px}
+.fd-movelbl{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:2px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.fd-movecol .fd-trade:last-child{border-bottom:none}
+@media(min-width:1080px){.fd-movegrid{display:grid;grid-template-columns:1fr 1fr;gap:0 30px;align-items:start}.fd-movecol+.fd-movecol{margin-top:0}}
 .fd-trade{display:flex;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
 .fd-trade:last-child{border-bottom:none}
 .fd-holds{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
@@ -1441,8 +1446,8 @@ button{border-radius:9px}
  #poslist{display:block!important}
  #ordlist{max-width:none!important;column-count:auto!important}
  /* then flow the ROWS into 2 columns (grid is robust for flex rows) */
- #fdTrades .fd-trades,#fdHold .fd-holds,#poslist>.k-list,#ordlist{display:grid!important;grid-template-columns:1fr 1fr;align-items:start;gap:0}
- #fdTrades>.fd-trade,#fdHold .fd-holds>.prow,#poslist>.k-list>.prow,#ordlist>.lrow{min-width:0}
+ #fdHold .fd-holds,#poslist>.k-list,#ordlist{display:grid!important;grid-template-columns:1fr 1fr;align-items:start;gap:0}
+ #fdHold .fd-holds>.prow,#poslist>.k-list>.prow,#ordlist>.lrow{min-width:0}
  /* rail: stack movers full-width (readable names) + keep it in view while scrolling */
  #movers{grid-template-columns:1fr}
  .home-rail{position:sticky;top:14px;align-self:start}
@@ -1700,11 +1705,12 @@ function loadHome(){
  });
  api('/v2/api/orders?limit=60').then(function(r){var os=(r.j||[]).filter(function(o){return o.today&&inMkt(o.market)});
   if(!os.length){fdSet('fdTrades','','');return;}
-  var nb=os.filter(function(o){return o.side=='BUY'}).length;
-  var rows=os.map(function(o){var s=o.ccy,f=(o.ccy=='₹'?INR:USD);
+  var buys=os.filter(function(o){return o.side=='BUY'}),sells=os.filter(function(o){return o.side=='SELL'});
+  var trow=function(o){var s=o.ccy,f=(o.ccy=='₹'?INR:USD);
    var right=(o.side=='SELL'&&o.pnl!=null)?('<span class="'+col(o.pnl)+'" style="font-weight:600;font-size:12.5px">'+sgn(o.pnl)+'%</span>'):('<span class="num mut" style="font-size:12px">'+s+f.format(o.value||Math.round(o.qty*o.price))+'</span>');
-   return '<div class=fd-trade><span class="badge '+(o.side=='BUY'?'bg-inf':(o.pnl>0?'bg-up':'bg-dn'))+'">'+o.side+'</span><span class=fd-tsym><b style="font-size:13.5px">'+o.symbol+'</b><span class="mut num" style="font-size:11.5px">'+o.qty+' @ '+s+o.price+'</span></span>'+right+'</div>';}).join('');
-  fdSet('fdTrades','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--warnb);color:var(--warn)">⇄</span><div><div class=fd-title>Today’s moves</div><div class=fd-meta>'+nb+' bought · '+(os.length-nb)+' sold</div></div></div><div class=fd-trades>'+rows+'</div>');
+   return '<div class=fd-trade><span class="badge '+(o.side=='BUY'?'bg-inf':'bg-dn')+'">'+o.side+'</span><span class=fd-tsym><b style="font-size:13.5px">'+o.symbol+'</b><span class="mut num" style="font-size:11.5px">'+o.qty+' @ '+s+o.price+'</span></span>'+right+'</div>';};
+  var mk=function(lbl,arr){return arr.length?('<div class=fd-movecol><div class=fd-movelbl>'+lbl+' · '+arr.length+'</div>'+arr.map(trow).join('')+'</div>'):'';};
+  fdSet('fdTrades','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--warnb);color:var(--warn)">⇄</span><div><div class=fd-title>Today’s moves</div><div class=fd-meta>'+buys.length+' bought · '+sells.length+' sold</div></div></div><div class=fd-movegrid>'+mk('Bought',buys)+mk('Sold',sells)+'</div>');
  });
  api('/v2/api/positions').then(function(r){var ps=r.j.filter(function(p){return inMkt(p.market)});
   var pr=ps.map(posRow).join('');

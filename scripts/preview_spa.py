@@ -84,12 +84,16 @@ POSITIONS = [
 def _order(side, sym, mkt, qty, price, when, pnl=None, val=0, status="filled", reason=""):
     ccy = "₹" if mkt == "IN" else "$"
     return dict(side=side, symbol=sym, market=mkt, ccy=ccy, qty=qty, price=price, when=when,
-                pnl=pnl, pnl_amt=(round(val * (pnl or 0) / 100, 2)), value=val, status=status, reason=reason)
+                pnl=pnl, pnl_amt=(round(val * (pnl or 0) / 100, 2)), value=val, status=status, reason=reason,
+                today=("Today" in when))
 
 
 ORDERS = [
-    _order("BUY", "PARAS", "IN", 7, 1298.7, "Today 09:15", val=9091),
-    _order("BUY", "HCC", "IN", 372, 25.55, "Today 09:15", val=9505),
+    _order("BUY", "NEWGEN", "IN", 12, 533.3, "Today 09:26", val=6400),
+    _order("BUY", "MAPMYINDIA", "IN", 4, 1054.4, "Today 09:20", val=4218),
+    _order("BUY", "J&KBANK", "IN", 44, 186.0, "Today 09:15", val=8184),
+    _order("SELL", "AVANTIFEED", "IN", 9, 984.9, "Today 14:10", pnl=-5.1, val=8864, reason="stop"),
+    _order("SELL", "KIRLOSENG", "IN", 2, 2165.7, "Today 13:40", pnl=-11.06, val=4331, reason="stop"),
     _order("SELL", "WIPRO", "IN", 80, 542.0, "Yest 15:10", pnl=2.6, val=43360, reason="target"),
     _order("SELL", "TATAPOWER", "IN", 24, 412.0, "Yest 14:22", pnl=-1.9, val=9888, reason="stop"),
 ]
