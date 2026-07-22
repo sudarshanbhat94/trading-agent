@@ -1409,6 +1409,29 @@ button{border-radius:9px}
 .hp-sechead{display:flex;justify-content:space-between;align-items:baseline;font-size:15px;font-weight:700;color:#1c2128;margin:22px 3px 10px}
 .hp-sechead .mut{font-size:12px;font-weight:500}
 @media(max-width:560px){.hp-stats{grid-template-columns:1fr 1fr}.hp-hero .hero{font-size:33px}}
+/* ---- AI report feed ---- */
+.fd-greet{padding:8px 2px 2px}
+.fd-hi{font-size:23px;font-weight:700;color:var(--hd);letter-spacing:-.02em}
+.fd-sub{font-size:14px;color:var(--mut);margin-top:4px}
+#homefeed .fd-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-top:12px}
+.fd-hd{display:flex;gap:12px;align-items:center}
+.fd-dot{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;font-weight:700}
+.fd-title{font-size:15px;font-weight:600;color:#1c2128}
+.fd-meta{font-size:12px;color:var(--mut);margin-top:2px}
+.fd-big{font-size:33px;font-weight:700;color:var(--hd);margin:14px 0 3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.fd-chg{font-size:14px;font-weight:600}
+.fd-chart{margin:14px -6px 0}.fd-chart svg{width:100%;height:150px;display:block}
+.fd-text{font-size:13.5px;color:var(--tx);line-height:1.6;margin-top:12px}
+.fd-text b{font-weight:600}
+.fd-scored{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}
+.fd-sn{font-size:19px;font-weight:700;color:var(--hd);font-variant-numeric:tabular-nums}
+.fd-sn.up{color:var(--up)}.fd-sn.dn{color:var(--dn)}
+.fd-sl{font-size:11px;color:var(--mut);margin-top:3px}
+.fd-trades{margin-top:12px}
+.fd-trade{display:flex;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+.fd-trade:last-child{border-bottom:none}
+.fd-holds{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+@media(max-width:560px){.fd-scored{grid-template-columns:repeat(2,1fr);gap:15px 10px}}
 .rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
 .rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 .detail-grid{display:flex;flex-direction:column;gap:0}
@@ -1506,21 +1529,11 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=home class="tab on"><div class=home-grid>
    <div class=home-main>
-    <div class=hp-hero>
-     <div class=hp-glow></div>
-     <div class=hp-herotop>
-      <div style="min-width:0"><div class=hp-hlbl>Portfolio value <span id=modeb class=hp-tag>paper</span></div><div class=hero id=pv>—</div><div class=hp-hchg id=ppnl>&nbsp;</div></div>
-      <span class=hp-ailive><span class=hp-pulse></span> AI live</span>
-     </div>
-     <div class=hp-chartwrap><div id=hpchart class=hp-chart></div></div>
-     <div class=hp-ranges id=hpranges><b class=on>1M</b><b>3M</b><b>ALL</b></div>
+    <div class=fd-greet>
+     <div style="display:flex;justify-content:space-between;align-items:center"><div class=fd-hi id=fd-hi>Your AI desk</div><span class=hp-ailive><span class=hp-pulse></span> AI live</span></div>
+     <div class=fd-sub id=fd-sub>&nbsp;</div>
     </div>
-    <div class=hp-stats id=hpstats></div>
-    <div class=chips id=regime style="margin:16px 0 2px"></div>
-    <div class=hp-sechead><span>Your AI's holdings</span><span class=mut id=posn></span></div>
-    <div id=homepos></div>
-    <div class=hp-sechead style="margin-top:22px"><span>Today's activity</span><span class=mut>bought &amp; sold</span></div>
-    <div id=activity class=k-list><div class=mut style="font-size:12px;padding:13px 16px">nothing yet today</div></div>
+    <div id=homefeed></div>
    </div>
    <div class=home-rail>
     <div class=sec><span>watchlist</span><span style="position:relative"><input id=wlq placeholder="+ add symbol" style="width:150px;padding:6px 11px;font-size:12px" oninput="wlSearch()" autocomplete=off><div id=wlsug class="menu hide" style="position:absolute;right:0;top:36px;min-width:250px;z-index:30"></div></span></div>
@@ -1639,21 +1652,42 @@ function heroChart(series){
   +'<polygon points="0,'+h+' '+pts+' '+w+','+h+'" fill="url(#'+id+')"/>'
   +'<line x1="0" y1="'+base+'" x2="'+w+'" y2="'+base+'" stroke="#c8cdd6" stroke-width="1" stroke-dasharray="2 4" vector-effect="non-scaling-stroke"/>'
   +'<polyline points="'+pts+'" fill="none" stroke="'+c+'" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>';}
-function loadHome(){api('/v2/api/overview').then(r=>{var d=r.j;document.getElementById('clock').textContent=d.as_of;
- var ms=(d.markets||[]).filter(m=>inMkt(m.market));
- document.getElementById('pv').innerHTML=ms.map(m=>fmtc(m.ccy,m.equity)).join('  ·  ')||'—';
- document.getElementById('ppnl').innerHTML=ms.map(function(m){var f=(m.ccy=='₹'?INR:USD),up=m.today_pnl>=0;return '<span class="'+(up?'up':'dn')+'">'+(up?'▲ +':'▼ -')+m.ccy+f.format(Math.abs(Math.round(m.today_pnl)))+' ('+(up?'+':'')+m.today_pct+'%)</span> <span class=mut style="font-weight:400">today</span>';}).join(' · ')||'&nbsp;';
- var RS={STRONG:['var(--up)','strong trend · full throttle'],ON:['var(--up)','risk-on'],NEUTRAL:['var(--warn)','neutral · best setups only'],OFF:['var(--dn)','risk-off · dip-buys blocked']};
- document.getElementById('regime').innerHTML=['IN','US'].filter(inMkt).map(m=>{var st=(d.regime_state||{})[m];var v=RS[st]||['var(--mut)','…'];return '<span class=chip title="market regime"><span style="color:'+v[0]+'">●</span> '+m+' '+v[1]+'</span>'}).join('');
- var m0=ms[0]||{};
- document.getElementById('hpchart').innerHTML=heroChart(m0.equity_series||[]);
- document.getElementById('hpstats').innerHTML=[
-  ['invested',ms.map(m=>fmtc(m.ccy,m.deployed)).join(' · ')||'—'],
-  ["today's gain",ms.map(m=>pnlS(m.ccy,m.today_pnl,m.today_pct)).join(' · ')||'—'],
-  ['win rate',(m0.win!=null?m0.win+'%':'—')],
-  ['deployed',(m0.deploy_pct!=null?m0.deploy_pct+'%':'—')]
- ].map(s=>'<div class=hp-stat><div class=hp-slbl>'+s[0]+'</div><div class=hp-sval>'+s[1]+'</div></div>').join('');});
- api('/v2/api/positions').then(r=>{var ps=r.j.filter(p=>inMkt(p.market));document.getElementById('posn').textContent=ps.length+' held';var pr=ps.map(posRow).join('');document.getElementById('homepos').innerHTML=pr?('<div class=k-list>'+pr+'</div>'):'<div class=mut style="font-size:12px;padding:14px 16px">no open positions</div>';});}
+function fdSet(id,cls,html){var el=document.getElementById(id);if(!el)return;el.className=cls;el.innerHTML=html;}
+function loadHome(){
+ if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div id=fdPerf></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
+ api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;
+  var ms=(d.markets||[]).filter(function(m){return inMkt(m.market)});var m=ms[0]||{},f=(m.ccy=='₹'?INR:USD);
+  var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
+  document.getElementById('fd-hi').textContent=greet;
+  document.getElementById('fd-sub').innerHTML='Your AI is managing <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stocks';
+  fdSet('fdPerf','fd-card',
+   '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')+';color:'+(up?'var(--up)':'var(--dn)')+'">'+(up?'▲':'▼')+'</span>'
+   +'<div><div class=fd-title>'+(up?"You're up today":"Down today")+'</div><div class=fd-meta>live paper book · '+(m.market||'IN')+'</div></div></div>'
+   +'<div class=fd-big>'+fmtc(m.ccy,m.equity)+'</div>'
+   +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ -')+m.ccy+f.format(Math.abs(Math.round(m.today_pnl)))+' ('+(up?'+':'')+m.today_pct+'%) today</div>'
+   +'<div class=fd-chart>'+heroChart(m.equity_series||[])+'</div>');
+  var RS={STRONG:['deploying into strength','the market is trending up hard, so the engine is adding momentum names'],
+          ON:['in risk-on mode','conditions look healthy, so the engine is buying dips and breakouts'],
+          NEUTRAL:['being selective','the market is choppy, so the engine is only taking its highest-scoring setups'],
+          OFF:['playing defense','the market is weak, so the engine has paused new dip-buys to protect your capital']};
+  var rg=(d.regime_state||{})[m.market]||'NEUTRAL',rv=RS[rg]||RS.NEUTRAL;
+  fdSet('fdBrain','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--infb);color:var(--inf)">◆</span><div><div class=fd-title>Your AI is '+rv[0]+'</div><div class=fd-meta>market read</div></div></div>'
+   +'<div class=fd-text>'+rv[1].charAt(0).toUpperCase()+rv[1].slice(1)+'. Right now <b>'+(m.deploy_pct||0)+'%</b> of your capital is working across <b>'+(m.positions||0)+' stocks</b>, with <b>'+fmtc(m.ccy,m.cash)+'</b> kept in reserve.</div>');
+  fdSet('fdScore','fd-card','<div class=fd-hd><span class=fd-dot style="background:#efe9ff;color:#7a4bff">★</span><div><div class=fd-title>Track record</div><div class=fd-meta>this book, all-time</div></div></div>'
+   +'<div class=fd-scored><div><div class=fd-sn>'+(m.win!=null?m.win+'%':'—')+'</div><div class=fd-sl>win rate</div></div><div><div class=fd-sn>'+(m.pf!=null?m.pf:'—')+'</div><div class=fd-sl>profit factor</div></div><div><div class=fd-sn>'+(m.trades||0)+'</div><div class=fd-sl>trades</div></div><div><div class="fd-sn '+(m.overall_pnl>=0?'up':'dn')+'">'+(m.overall_pnl>=0?'+':'')+(m.overall_pct||0)+'%</div><div class=fd-sl>overall</div></div></div>');
+ });
+ api('/v2/api/orders?limit=60').then(function(r){var os=(r.j||[]).filter(function(o){return o.today&&inMkt(o.market)});
+  if(!os.length){fdSet('fdTrades','','');return;}
+  var nb=os.filter(function(o){return o.side=='BUY'}).length;
+  var rows=os.map(function(o){var s=o.ccy;var right=(o.side=='SELL'&&o.pnl!=null)?('<span class="'+col(o.pnl)+'" style="font-weight:600;font-size:12.5px">'+sgn(o.pnl)+'%</span>'):('<span class=mut style="font-size:12px">'+s+o.price+'</span>');
+   return '<div class=fd-trade><span class="badge '+(o.side=='BUY'?'bg-inf':(o.pnl>0?'bg-up':'bg-dn'))+'">'+o.side+'</span><b style="font-size:13.5px">'+o.symbol+'</b><span class=mut style="font-size:11.5px;flex:1">'+o.qty+' @ '+s+o.price+'</span>'+right+'</div>';}).join('');
+  fdSet('fdTrades','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--warnb);color:var(--warn)">⇄</span><div><div class=fd-title>Today’s moves</div><div class=fd-meta>'+nb+' bought · '+(os.length-nb)+' sold</div></div></div><div class=fd-trades>'+rows+'</div>');
+ });
+ api('/v2/api/positions').then(function(r){var ps=r.j.filter(function(p){return inMkt(p.market)});
+  var pr=ps.map(posRow).join('');
+  fdSet('fdHold','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--upb);color:var(--up)">▤</span><div><div class=fd-title>What your AI is holding</div><div class=fd-meta>'+ps.length+' stocks</div></div></div>'+(pr?'<div class=fd-holds>'+pr+'</div>':'<div class=fd-text>No open positions right now.</div>'));
+ });}
+function load(){loadHome()}
 function load(){loadHome()}
 var POS=[],SUBPOS='pos';
 function subPos(v){SUBPOS=v;document.getElementById('sbpos').className=(v=='pos'?'on':'');document.getElementById('sbhold').className=(v=='hold'?'on':'');renderPos();}
@@ -1800,7 +1834,7 @@ function loadHealth(){api('/v2/api/health').then(r=>{var d=r.j||{};var el=docume
 function loadActivity(){api('/v2/api/orders?limit=80').then(r=>{var os=(r.j||[]).filter(o=>o.today&&inMkt(o.market));
  var h=os.map(o=>{var right=o.side=='SELL'?('<span style="display:inline-flex;gap:10px;align-items:center"><span class=mut style="font-size:11px">'+(o.entry?o.ccy+o.entry+' → ':'')+o.ccy+o.price+'</span>'+pill(o.pnl!=null?o.pnl:0)+'</span>'):('<span class=mut style="font-size:11px">@ '+o.ccy+o.price+'</span>');
   return '<div class=lrow style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;cursor:pointer" onclick="stock(\''+o.symbol+'\',\''+o.market+'\')"><span class="badge '+(o.side=='BUY'?'bg-inf':(o.pnl>0?'bg-up':'bg-dn'))+'">'+o.side+'</span><b style="overflow:hidden;text-overflow:ellipsis">'+o.symbol+'</b>'+right+'</div>'}).join('');
- document.getElementById('activity').innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing bought or sold yet today</div>';});}
+ var _a=document.getElementById('activity');if(_a)_a.innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing bought or sold yet today</div>';});}
 function loadRadar(){api('/v2/api/watch').then(r=>{var it=(r.j||[]).filter(x=>inMkt(x.market)).slice(0,10);
  document.getElementById('radar').innerHTML=it.length?it.map(x=>'<span class=chip style="cursor:pointer;margin:2px" onclick="stock(\''+x.symbol+'\',\''+x.market+'\')"><b>'+x.symbol+'</b> <span class=mut style="font-size:10px">'+x.market+' · '+x.badge+'</span></span>').join(' '):'<span class=mut style="font-size:12px">no candidates on the radar right now</span>';});}
 function toast(t){var e=document.createElement('div');e.className='toastmsg';e.textContent=t;document.body.appendChild(e);setTimeout(function(){e.remove()},6500)}
