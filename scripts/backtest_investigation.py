@@ -109,9 +109,17 @@ def _metrics(curve, n_trades, wins):
                 win=(wins / n_trades * 100 if n_trades else 0))
 
 
-def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False, corr=0.0, dailycap=0, cooldown=0):
+def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=False, maxatr=0.0, start=None, end=None, dyn=False, corr=0.0, dailycap=0, cooldown=0, derisk=None, derisk_confirm=3):
     reg_mean = mdf["mkt_cum"].rolling(50).mean()
     reg_trend = mdf["mkt_cum"] / mdf["mkt_cum"].shift(21) - 1
+    # Phase-1 de-risking overlay (research-backed "go to cash"): when the index
+    # is below its long trend for `derisk_confirm` consecutive days -> risk-off-
+    # deep. Unlike the existing 50d gate (which only pauses NEW buys), this cuts
+    # EXISTING exposure toward a target book fraction. derisk=None disables it;
+    # derisk=0.0 = full cash, 0.5 = keep half. Multi-day confirm curbs whipsaw.
+    ma_long = mdf["mkt_cum"].rolling(200, min_periods=120).mean()
+    below_long = mdf["mkt_cum"] < ma_long
+    deep_series = below_long.rolling(derisk_confirm).sum() >= derisk_confirm
     lo = pd.Timestamp(start or START)
     hi = pd.Timestamp(end) if end else None
     dates = [d for d in M["close"].index if d >= lo and (hi is None or d <= hi)]
@@ -195,6 +203,20 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
                 if px <= p["stop"] * 1.001:
                     last_stop[sym] = di
                 del pos[sym]
+        # de-risking overlay: in a confirmed downtrend, reduce the book toward the
+        # target fraction (sell the weakest positions first) and sit in cash.
+        if derisk is not None and bool(deep_series.get(d, False)):
+            cap = int(round(maxpos * derisk))
+            if len(pos) > cap:
+                def _cur(s):
+                    x = M["close"][s].get(d, pos[s]["entry"])
+                    return x if (x == x and x > 0) else pos[s]["entry"]
+                weakest = sorted(pos, key=lambda s: _cur(s) / pos[s]["entry"])[:len(pos) - cap]
+                for sym in weakest:
+                    px = _cur(sym)
+                    cash += pos[sym]["sh"] * px * (1 - cside)
+                    n += 1; wins += px > pos[sym]["entry"]
+                    del pos[sym]
         # cash equitization: idle cash above a one-slot reserve earns the index
         # return instead of zero (paper equivalent of sweeping into NIFTYBEES/VOO).
         # REGIME-GATED: only while the market is trending up — in OFF/NEUTRAL the
@@ -222,6 +244,8 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
         # comfortably above the mean AND rising - regular ON was full of bull traps
         strong = ratio > 0.02 and rt > 0.01
         last_state = "STRONG" if strong else state
+        if derisk is not None and bool(deep_series.get(d, False)):
+            continue   # risk-off-deep: hold cash, generate no new entries
         slots = maxpos - len(pos)
         if slots <= 0:
             continue
@@ -297,13 +321,15 @@ def main():
         mret = (mkt.iloc[-1] / mkt.iloc[0] - 1) * 100
         print(f"===== {market} (universe={len(M['close'].columns)}) =====")
         print(f"  MARKET buy&hold: {mret:+.1f}%")
-        for label, kw in (("dyn base", dict(mom=True, dyn=True)),
-                          ("+corr .75/3", dict(mom=True, dyn=True, corr=0.75)),
-                          ("+cap5/day", dict(mom=True, dyn=True, dailycap=5)),
-                          ("+cooldown5", dict(mom=True, dyn=True, cooldown=5)),
-                          ("+all three", dict(mom=True, dyn=True, corr=0.75, dailycap=5, cooldown=5))):
+        # worst peak-to-trough of the market itself in-sample (the stress window)
+        peak = mkt.cummax(); ddw = (mkt - peak) / peak
+        print(f"  MARKET worst drawdown in-sample: {ddw.min()*100:+.1f}%")
+        for label, kw in (("baseline (no derisk)", dict(mom=True, dyn=True)),
+                          ("+derisk->cash",        dict(mom=True, dyn=True, derisk=0.0)),
+                          ("+derisk->keep 50%",    dict(mom=True, dyn=True, derisk=0.5)),
+                          ("+derisk->cash conf5",  dict(mom=True, dyn=True, derisk=0.0, derisk_confirm=5))):
             m, _ = run(market, "HYBRID", M, mdf, maxpos=14, **kw)
-            print(f"  {label:12s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
+            print(f"  {label:22s}: ret={m['ret']:+7.1f}%  CAGR={m['cagr']:+6.1f}%  maxDD={m['maxdd']:4.1f}%  "
                   f"Sharpe={m['sharpe']:.2f}  trades={m['n']:4d}  win={m['win']:.0f}%")
         print()
     con.close()
