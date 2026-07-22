@@ -38,7 +38,8 @@ def ensure_schema():
         alerts_buy INTEGER DEFAULT 1, alerts_sell INTEGER DEFAULT 1, linked_at TEXT)""")
     # additive migrations (older installs / new alert types)
     for col, decl in (("bot_token", "TEXT"), ("bot_username", "TEXT"),
-                      ("alerts_radar", "INTEGER DEFAULT 1"), ("alerts_summary", "INTEGER DEFAULT 1")):
+                      ("alerts_radar", "INTEGER DEFAULT 1"), ("alerts_summary", "INTEGER DEFAULT 1"),
+                      ("alerts_price", "INTEGER DEFAULT 1")):
         try:
             c.execute("ALTER TABLE telegram_accounts ADD COLUMN %s %s" % (col, decl))
         except Exception:
@@ -120,7 +121,7 @@ def verify(user_id: int):
 def status(user_id: int) -> dict:
     ensure_schema()
     c = _db()
-    row = c.execute("SELECT bot_token, bot_username, chat_id, alerts_buy, alerts_sell, alerts_radar, alerts_summary "
+    row = c.execute("SELECT bot_token, bot_username, chat_id, alerts_buy, alerts_sell, alerts_radar, alerts_summary, alerts_price "
                     "FROM telegram_accounts WHERE user_id=?", (user_id,)).fetchone()
     c.close()
     has_token = bool(row and row[0])
@@ -130,7 +131,8 @@ def status(user_id: int) -> dict:
                 alerts_buy=(bool(row[3]) if row else True),
                 alerts_sell=(bool(row[4]) if row else True),
                 alerts_radar=(bool(row[5]) if row else True),
-                alerts_summary=(bool(row[6]) if row else True))
+                alerts_summary=(bool(row[6]) if row else True),
+                alerts_price=(bool(row[7]) if row else True))
 
 
 def send_test(user_id: int) -> bool:
@@ -146,12 +148,33 @@ def send_test(user_id: int) -> bool:
     return bool(r and r.get("ok"))
 
 
-def set_prefs(user_id: int, buy: bool, sell: bool, radar: bool = True, summary: bool = True):
+def set_prefs(user_id: int, buy: bool, sell: bool, radar: bool = True, summary: bool = True, price: bool = True):
     c = _db()
-    c.execute("UPDATE telegram_accounts SET alerts_buy=?, alerts_sell=?, alerts_radar=?, alerts_summary=? WHERE user_id=?",
-              (1 if buy else 0, 1 if sell else 0, 1 if radar else 0, 1 if summary else 0, user_id))
+    c.execute("UPDATE telegram_accounts SET alerts_buy=?, alerts_sell=?, alerts_radar=?, alerts_summary=?, alerts_price=? WHERE user_id=?",
+              (1 if buy else 0, 1 if sell else 0, 1 if radar else 0, 1 if summary else 0, 1 if price else 0, user_id))
     c.commit()
     c.close()
+
+
+def notify_alert(symbol, market, kind, value, price):
+    """A user-set watchlist price alert fired — fan out to opted-in users."""
+    try:
+        rows = _recipients("alerts_price")
+    except Exception:
+        return
+    if not rows:
+        return
+    ccy = "₹" if market == "IN" else "$"
+    if kind == "pct":
+        txt = "\U0001f514 <b>%s alert</b>\n%s moved %s%% or more — now %s%s" % (symbol, symbol, value, ccy, price)
+    else:
+        dirn = "rose above" if kind == "above" else "fell below"
+        txt = "\U0001f514 <b>%s alert</b>\n%s %s %s%s — now %s%s" % (symbol, symbol, dirn, ccy, value, ccy, price)
+    for token, chat_id in rows:
+        try:
+            send(token, chat_id, txt)
+        except Exception:
+            pass
 
 
 def _recipients(pref_col):

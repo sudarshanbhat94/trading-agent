@@ -477,6 +477,13 @@ def _check_alerts():
                 fired.append(dict(id=aid, symbol=sym, market=m, kind=kind, value=value, price=round(p, 2)))
         if v2 is not None:
             v2.commit(); v2.close()
+        if fired:
+            try:
+                from . import telegram_bot
+                for f in fired:
+                    telegram_bot.notify_alert(f["symbol"], f["market"], f["kind"], f["value"], f["price"])
+            except Exception:
+                pass
     except Exception:
         return []
     return fired
@@ -1771,6 +1778,7 @@ function loadTelegram(){var el=document.getElementById('tgbox');if(!el)return;
     +'<label class=tgopt><input type=checkbox id=tgbuy '+(t.alerts_buy?'checked':'')+' onchange="tgSavePrefs()"> The AI buys a stock</label>'
     +'<label class=tgopt><input type=checkbox id=tgsell '+(t.alerts_sell?'checked':'')+' onchange="tgSavePrefs()"> The AI sells a stock</label>'
     +'<label class=tgopt><input type=checkbox id=tgradar '+(t.alerts_radar?'checked':'')+' onchange="tgSavePrefs()"> Stocks the AI is watching to buy</label>'
+    +'<label class=tgopt><input type=checkbox id=tgprice '+(t.alerts_price?'checked':'')+' onchange="tgSavePrefs()"> My watchlist price alerts trigger</label>'
     +'<label class=tgopt><input type=checkbox id=tgsummary '+(t.alerts_summary?'checked':'')+' onchange="tgSavePrefs()"> Daily progress summary</label>'
     +'<div style="margin-top:12px"><button class=sm onclick="tgTest(this)">Send a test alert</button></div>'
     +'<div id=tgmsg class=mut style="font-size:12px;margin-top:9px"></div></div>';
@@ -1801,8 +1809,8 @@ function tgTest(btn){btn.disabled=true;btn.textContent='Sending…';var m=docume
  api('/api/me/telegram/test',{method:'POST'}).then(function(r){btn.disabled=false;btn.textContent='Send a test alert';
   m.innerHTML=r.ok?'<span class=up>Sent ✓ — check your Telegram</span>':'<span class=dn>'+((r.j&&r.j.detail)||'Failed to send')+'</span>';});}
 function tgSavePrefs(){var b=document.getElementById('tgbuy').checked,s=document.getElementById('tgsell').checked,
- rd=document.getElementById('tgradar').checked,su=document.getElementById('tgsummary').checked;
- api('/api/me/telegram/prefs',{method:'POST',body:JSON.stringify({alerts_buy:b,alerts_sell:s,alerts_radar:rd,alerts_summary:su})}).then(function(r){document.getElementById('tgmsg').textContent=r.ok?'Saved ✓':'Failed';});}
+ rd=document.getElementById('tgradar').checked,su=document.getElementById('tgsummary').checked,pr=document.getElementById('tgprice').checked;
+ api('/api/me/telegram/prefs',{method:'POST',body:JSON.stringify({alerts_buy:b,alerts_sell:s,alerts_radar:rd,alerts_summary:su,alerts_price:pr})}).then(function(r){document.getElementById('tgmsg').textContent=r.ok?'Saved ✓':'Failed';});}
 function tgUnlink(){if(!confirm('Disconnect Telegram alerts?'))return;api('/api/me/telegram/unlink',{method:'POST'}).then(loadTelegram);}
 function setMode(m){api('/api/me/signal-execution-mode',{method:'POST',body:JSON.stringify({signal_execution_mode:m})}).then(r=>{if(r.ok){MODE=(r.j.signal_execution_mode||m);document.getElementById('mp').className=(MODE!='live'?'on':'');document.getElementById('ml').className=(MODE=='live'?'on':'');document.getElementById('modemsg').textContent=r.j.message||('Mode: '+MODE);renderBalance();}else{document.getElementById('modemsg').textContent=r.j.detail||'Failed';}})}
 function saveCash(){var b={},i=document.getElementById('cin').value;if(i)b.india_cash=+i;
