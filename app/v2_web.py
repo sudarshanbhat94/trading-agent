@@ -1604,7 +1604,7 @@ function doLogin(){document.getElementById('lerr').textContent='';api('/api/auth
 function doLogout(){api('/api/auth/logout',{method:'POST'}).then(()=>{ME=null;show('login');hide('app')})}
 function loadAccountData(){api('/api/account').then(r=>{ACC=r.j;renderBalance()})}
 function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.paper_cash_by_market||{};var IN=cb.IN!=null?cb.IN:(p.india_cash||0),US=cb.US!=null?cb.US:(p.us_cash||0);return {IN:+IN||0,US:+US||0}}catch(e){return{IN:0,US:0}}}
-function renderBalance(){document.getElementById('modeb').textContent=MODE;document.getElementById('modeb').className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}
+function renderBalance(){var mb=document.getElementById('modeb');if(mb){mb.textContent=MODE;mb.className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}}
 function refresh(){renderBalance();loadHealth();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
 function stratTag(st){return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
