@@ -154,8 +154,8 @@ class H(BaseHTTPRequestHandler):
         if p in ("/", "/index.html"):
             return self._send(SPA_HTML.replace("</body>", BOOT, 1), "text/html; charset=utf-8")
         if p == "/api/me/telegram":
-            return self._send(json.dumps(dict(configured=True, bot="OpenStocksAlertsBot", linked=True,
-                                               username="pavithra", alerts_buy=True, alerts_sell=True)))
+            return self._send(json.dumps(dict(has_token=False, bot=None, linked=False, deep_link=None,
+                                               alerts_buy=True, alerts_sell=True)))
         if p == "/api/auth/me":
             return self._send(json.dumps(dict(ok=True, user=dict(id=1, username="demo", role="admin", signal_execution_mode="paper"))))
         if p.startswith("/v2/api/stock/"):

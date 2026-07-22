@@ -1765,23 +1765,35 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
  loadTelegram();}
 function loadTelegram(){var el=document.getElementById('tgbox');if(!el)return;
  api('/api/me/telegram').then(function(r){var t=r.j||{};
-  if(!t.configured){el.innerHTML='<div class=mut style="font-size:13px">Telegram alerts aren’t set up on this server yet. An admin needs to add the bot token.</div>';return;}
   if(t.linked){
-   el.innerHTML='<div class=row style="padding:2px 0 12px"><span style="font-size:13px"><b style="color:var(--up)">● Connected</b>'+(t.username?' as @'+t.username:'')+'</span><button class=sm onclick="tgUnlink()">Disconnect</button></div>'
-    +'<div style="border-top:1px solid var(--line);padding-top:12px"><div class=mut style="font-size:12px;margin-bottom:9px">Send me a Telegram message when the AI:</div>'
+   el.innerHTML='<div class=row style="padding:2px 0 12px"><span style="font-size:13px"><b style="color:var(--up)">● Connected</b> · @'+(t.bot||'your bot')+'</span><button class=sm onclick="tgUnlink()">Disconnect</button></div>'
+    +'<div style="border-top:1px solid var(--line);padding-top:12px"><div class=mut style="font-size:12px;margin-bottom:9px">Alert me on Telegram when the AI:</div>'
     +'<label class=tgopt><input type=checkbox id=tgbuy '+(t.alerts_buy?'checked':'')+' onchange="tgSavePrefs()"> Buys a stock</label>'
     +'<label class=tgopt><input type=checkbox id=tgsell '+(t.alerts_sell?'checked':'')+' onchange="tgSavePrefs()"> Sells a stock</label>'
     +'<div id=tgmsg class=mut style="font-size:12px;margin-top:8px"></div></div>';
+  } else if(t.has_token){
+   el.innerHTML='<div class=mut style="font-size:13px;margin-bottom:11px">Last step — open your bot <b>@'+t.bot+'</b>, press <b>Start</b>, then tap Verify.</div>'
+    +'<a href="'+t.deep_link+'" target=_blank class=pri style="display:inline-block;text-decoration:none;padding:10px 15px">Open @'+t.bot+' in Telegram →</a>'
+    +' <button class=sm style="margin-left:6px" onclick="tgVerify(this)">I’ve pressed Start</button>'
+    +'<div id=tgmsg class=mut style="font-size:12px;margin-top:10px"></div>'
+    +'<div style="margin-top:10px"><span class=mut style="font-size:12px;cursor:pointer;text-decoration:underline" onclick="tgReset()">use a different bot</span></div>';
   } else {
-   el.innerHTML='<div class=mut style="font-size:13px;margin-bottom:12px">Get a Telegram message the moment the AI buys or sells for you.</div>'
-    +'<button class=pri onclick="tgConnect(this)">Connect Telegram</button>'
-    +'<div id=tglink style="margin-top:12px"></div>';
+   el.innerHTML='<div class=mut style="font-size:13px;line-height:1.6;margin-bottom:13px">Get buy/sell alerts on your own Telegram. Make your personal bot — takes a minute:<br>'
+    +'1. In Telegram, open <b><a href="https://t.me/BotFather" target=_blank style="color:var(--inf)">@BotFather</a></b> and send <b>/newbot</b><br>'
+    +'2. Pick a name and a username, then copy the <b>token</b> it gives you<br>'
+    +'3. Paste the token below</div>'
+    +'<div class=field><input id=tgtok type=text placeholder="paste bot token — e.g. 8123456789:AAH…" autocomplete=off spellcheck=false></div>'
+    +'<button class=pri onclick="tgSaveToken(this)">Save token</button>'
+    +'<div id=tgmsg class=mut style="font-size:12px;margin-top:10px"></div>';
   }});}
-function tgConnect(btn){btn.disabled=true;btn.textContent='Generating link…';
- api('/api/me/telegram/link',{method:'POST'}).then(function(r){
-  if(r.ok&&r.j.link){document.getElementById('tglink').innerHTML='<a href="'+r.j.link+'" target=_blank class=pri style="display:inline-block;text-decoration:none;padding:11px 16px">Open Telegram to finish →</a><div class=mut style="font-size:12px;margin-top:9px">Tap the link, press <b>Start</b> in Telegram, then come back — it’ll show as connected.</div>';
-   btn.style.display='none';setTimeout(loadTelegram,15000);}
-  else{btn.disabled=false;btn.textContent='Connect Telegram';document.getElementById('tglink').innerHTML='<div class=dn style="font-size:12px">'+((r.j&&r.j.detail)||'Could not start. Try again.')+'</div>';}});}
+function tgSaveToken(btn){var tok=(document.getElementById('tgtok').value||'').trim();if(!tok){document.getElementById('tgmsg').innerHTML='<span class=dn>Paste your bot token first.</span>';return;}
+ btn.disabled=true;btn.textContent='Checking…';
+ api('/api/me/telegram/token',{method:'POST',body:JSON.stringify({token:tok})}).then(function(r){
+  if(r.ok){loadTelegram();}else{btn.disabled=false;btn.textContent='Save token';document.getElementById('tgmsg').innerHTML='<span class=dn>'+((r.j&&r.j.detail)||'That token didn’t work.')+'</span>';}});}
+function tgVerify(btn){btn.disabled=true;btn.textContent='Checking…';
+ api('/api/me/telegram/verify',{method:'POST'}).then(function(r){
+  if(r.ok){loadTelegram();}else{btn.disabled=false;btn.textContent='I’ve pressed Start';document.getElementById('tgmsg').innerHTML='<span class=dn>'+((r.j&&r.j.detail)||'Open your bot and press Start, then try again.')+'</span>';}});}
+function tgReset(){api('/api/me/telegram/unlink',{method:'POST'}).then(loadTelegram);}
 function tgSavePrefs(){var b=document.getElementById('tgbuy').checked,s=document.getElementById('tgsell').checked;
  api('/api/me/telegram/prefs',{method:'POST',body:JSON.stringify({alerts_buy:b,alerts_sell:s})}).then(function(r){document.getElementById('tgmsg').textContent=r.ok?'Saved ✓':'Failed';});}
 function tgUnlink(){if(!confirm('Disconnect Telegram alerts?'))return;api('/api/me/telegram/unlink',{method:'POST'}).then(loadTelegram);}

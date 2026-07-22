@@ -2904,16 +2904,27 @@ async def my_telegram_status(request: Request) -> dict[str, Any]:
     return telegram_bot.status(int(user["id"]))
 
 
-@app.post("/api/me/telegram/link")
-async def my_telegram_link(request: Request) -> dict[str, Any]:
+@app.post("/api/me/telegram/token")
+async def my_telegram_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
     from . import telegram_bot
-    if not telegram_bot.enabled():
-        raise HTTPException(status_code=503, detail="Telegram bot is not configured yet. Ask the admin to set it up.")
-    code, link = telegram_bot.start_link(int(user["id"]))
-    if not link:
-        raise HTTPException(status_code=503, detail="Telegram bot is unreachable. Try again in a moment.")
-    return {"ok": True, "link": link, "code": code, "bot": telegram_bot.bot_username()}
+    token = str(payload.get("token", "")).strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Paste your bot token from @BotFather.")
+    uname = telegram_bot.save_token(int(user["id"]), token)
+    if not uname:
+        raise HTTPException(status_code=400, detail="That token didn't work. Copy it exactly from @BotFather.")
+    return {"ok": True, "bot": uname, "deep_link": "https://t.me/%s" % uname}
+
+
+@app.post("/api/me/telegram/verify")
+async def my_telegram_verify(request: Request) -> dict[str, Any]:
+    user = require_user(request, settings, db)
+    from . import telegram_bot
+    chat_id = telegram_bot.verify(int(user["id"]))
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="Not seeing a message yet — open your bot and press Start, then try again.")
+    return {"ok": True, "linked": True}
 
 
 @app.post("/api/me/telegram/prefs")
