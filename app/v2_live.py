@@ -636,7 +636,9 @@ def poll_market(market):
         try:
             from . import telegram_bot
             telegram_bot.notify_trade("BUY", sym, (int(shares) if float(shares).is_integer() else round(shares, 2)),
-                                      round(entry, 2), market, strategy=s["strategy"])
+                                      round(entry, 2), market, strategy=s["strategy"],
+                                      stop=round(entry - pl["atr_stop"] * atr, 2),
+                                      target=(round(tgt, 2) if tgt else 0), trail=trail)
         except Exception:
             pass
         strat_count[s["strategy"]] = strat_count.get(s["strategy"], 0) + 1

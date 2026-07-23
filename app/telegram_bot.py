@@ -237,7 +237,7 @@ def unlink(user_id: int):
     c.close()
 
 
-def notify_trade(side, symbol, qty, price, market, pnl_pct=None, strategy=None):
+def notify_trade(side, symbol, qty, price, market, pnl_pct=None, strategy=None, stop=None, target=None, trail=None):
     """Fan a buy/sell alert out to every linked user via their own bot."""
     try:
         ensure_schema()
@@ -254,10 +254,21 @@ def notify_trade(side, symbol, qty, price, market, pnl_pct=None, strategy=None):
     nm = "India" if market == "IN" else "US"
     pr = _money(price)
     if str(side).upper() == "BUY":
-        strat = ("\n<b>Strategy:</b> %s" % strategy.replace("_", " ").title()) if strategy else ""
-        txt = ("\U0001f7e2 <b>OpenStocks</b> · Buy\n"
-               "<b>%s</b> · %s\n"
-               "<b>Qty:</b> %s @ %s%s%s") % (symbol, nm, qty, ccy, pr, strat)
+        lines = "<b>Buy price:</b> %s%s  ×  %s" % (ccy, pr, qty)
+        try:
+            if stop:
+                sl_pct = (float(stop) / float(price) - 1) * 100
+                lines += "\n<b>Stop loss:</b> %s%s  (%.1f%%)" % (ccy, _money(stop), sl_pct)
+            if target:
+                tg_pct = (float(target) / float(price) - 1) * 100
+                lines += "\n<b>Target:</b> %s%s  (+%.1f%%)" % (ccy, _money(target), tg_pct)
+            elif trail:
+                lines += "\n<b>Exit:</b> trailing stop %d%%" % round(float(trail) * 100)
+        except Exception:
+            pass
+        if strategy:
+            lines += "\n<b>Strategy:</b> %s" % strategy.replace("_", " ").title()
+        txt = "\U0001f7e2 <b>OpenStocks</b> · Buy\n<b>%s</b> · %s\n%s" % (symbol, nm, lines)
     else:
         pnl = ("\n<b>Return:</b> %s%.2f%%" % ("+" if (pnl_pct or 0) >= 0 else "", pnl_pct)) if pnl_pct is not None else ""
         txt = ("\U0001f534 <b>OpenStocks</b> · Sell\n"
