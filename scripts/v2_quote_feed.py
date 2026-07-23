@@ -63,9 +63,14 @@ def _held():
     return out
 
 
+_cooldown: dict = {}   # market -> unix time to resume after a rate-limit (429)
+
+
 def _poll(db, providers, rows_for, label):
     for m, rws in rows_for.items():
         if m not in providers or not rws:
+            continue
+        if time.time() < _cooldown.get(m, 0):   # backing off after a 429 — don't burn more quota
             continue
         try:
             if not market_regions.market_session_for_region(m).get("is_open"):
@@ -76,7 +81,12 @@ def _poll(db, providers, rows_for, label):
             if label:
                 print(f"  [{m}/{label}] {len(quotes)} quotes @ {datetime.now(timezone.utc).strftime('%H:%M:%S')}", flush=True)
         except Exception as exc:
-            print(f"  [{m}] fetch error: {exc}", flush=True)
+            msg = str(exc)
+            if "429" in msg or "Too Many Request" in msg or "UDAPI10005" in msg:
+                _cooldown[m] = time.time() + 45   # Upstox rate-limited us: pause both lanes ~45s
+                print(f"  [{m}] rate-limited by broker (429) — backing off 45s", flush=True)
+            else:
+                print(f"  [{m}] fetch error: {msg[:180]}", flush=True)
 
 
 def main():
