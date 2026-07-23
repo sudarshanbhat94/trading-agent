@@ -72,6 +72,13 @@ def send(token, chat_id, text):
                                        "disable_web_page_preview": "true"}, timeout=10)
 
 
+def _money(v):
+    try:
+        return "{:,.2f}".format(float(v)).rstrip("0").rstrip(".")
+    except Exception:
+        return str(v)
+
+
 def save_token(user_id: int, token: str):
     """Validate the user's bot token and store it. Returns bot username or None."""
     ensure_schema()
@@ -143,8 +150,9 @@ def send_test(user_id: int) -> bool:
     c.close()
     if not row or not row[0] or not row[1]:
         return False
-    r = send(row[0], row[1], "\U0001f514 <b>Test alert from OpenStocks</b>\nYour Telegram is connected. "
-                             "You'll get a message here whenever the AI buys or sells.")
+    r = send(row[0], row[1], "\U0001f514 <b>OpenStocks</b> · Test alert\n"
+                             "Your Telegram is connected. You'll receive buy, sell, radar, "
+                             "price-alert and daily-summary messages here.")
     return bool(r and r.get("ok"))
 
 
@@ -165,11 +173,14 @@ def notify_alert(symbol, market, kind, value, price):
     if not rows:
         return
     ccy = "₹" if market == "IN" else "$"
+    nm = "India" if market == "IN" else "US"
     if kind == "pct":
-        txt = "\U0001f514 <b>%s alert</b>\n%s moved %s%% or more — now %s%s" % (symbol, symbol, value, ccy, price)
+        line = "<b>Moved:</b> %s%% or more\n<b>Now:</b> %s%s" % (value, ccy, _money(price))
     else:
-        dirn = "rose above" if kind == "above" else "fell below"
-        txt = "\U0001f514 <b>%s alert</b>\n%s %s %s%s — now %s%s" % (symbol, symbol, dirn, ccy, value, ccy, price)
+        dirn = "Rose above" if kind == "above" else "Fell below"
+        line = "<b>%s:</b> %s%s\n<b>Now:</b> %s%s" % (dirn, ccy, _money(value), ccy, _money(price))
+    txt = ("\U0001f514 <b>OpenStocks</b> · Price alert\n"
+           "<b>%s</b> · %s\n%s") % (symbol, nm, line)
     for token, chat_id in rows:
         try:
             send(token, chat_id, txt)
@@ -194,9 +205,11 @@ def notify_radar(items, market="IN"):
         return
     if not rows or not items:
         return
-    lines = "\n".join("• <b>%s</b>%s" % (it["symbol"], ("  ·  " + it["note"]) if it.get("note") else "")
+    lines = "\n".join("• <b>%s</b>%s" % (it["symbol"], (" — " + it["note"].title()) if it.get("note") else "")
                       for it in items)
-    txt = "\U0001f440 <b>On the AI's radar</b> — stocks it's watching to buy next:\n%s" % lines
+    nm = "India" if market == "IN" else "US"
+    txt = ("\U0001f440 <b>OpenStocks</b> · Radar — %s\n"
+           "Stocks the AI is watching to buy next:\n%s") % (nm, lines)
     for token, chat_id in rows:
         try:
             send(token, chat_id, txt)
@@ -238,16 +251,18 @@ def notify_trade(side, symbol, qty, price, market, pnl_pct=None, strategy=None):
     if not rows:
         return
     ccy = "₹" if market == "IN" else "$"
-    try:
-        pr = ("%.2f" % float(price)).rstrip("0").rstrip(".")
-    except Exception:
-        pr = str(price)
+    nm = "India" if market == "IN" else "US"
+    pr = _money(price)
     if str(side).upper() == "BUY":
-        tag = ("  ·  " + strategy) if strategy else ""
-        txt = "\U0001f7e2 <b>Bought %s</b>\n%s @ %s%s%s" % (symbol, qty, ccy, pr, tag)
+        strat = ("\n<b>Strategy:</b> %s" % strategy.replace("_", " ").title()) if strategy else ""
+        txt = ("\U0001f7e2 <b>OpenStocks</b> · Buy\n"
+               "<b>%s</b> · %s\n"
+               "<b>Qty:</b> %s @ %s%s%s") % (symbol, nm, qty, ccy, pr, strat)
     else:
-        pnl = ("  ·  %s%.2f%%" % ("+" if (pnl_pct or 0) >= 0 else "", pnl_pct)) if pnl_pct is not None else ""
-        txt = "\U0001f534 <b>Sold %s</b>\n%s @ %s%s%s" % (symbol, qty, ccy, pr, pnl)
+        pnl = ("\n<b>Return:</b> %s%.2f%%" % ("+" if (pnl_pct or 0) >= 0 else "", pnl_pct)) if pnl_pct is not None else ""
+        txt = ("\U0001f534 <b>OpenStocks</b> · Sell\n"
+               "<b>%s</b> · %s\n"
+               "<b>Qty:</b> %s @ %s%s%s") % (symbol, nm, qty, ccy, pr, pnl)
     for token, chat_id in rows:
         try:
             send(token, chat_id, txt)

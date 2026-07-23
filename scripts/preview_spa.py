@@ -83,9 +83,12 @@ POSITIONS = [
 
 def _order(side, sym, mkt, qty, price, when, pnl=None, val=0, status="filled", reason=""):
     ccy = "₹" if mkt == "IN" else "$"
+    import datetime as _dt
+    _t = _dt.date.today()
+    ts = (_t if "Today" in when else _t - _dt.timedelta(days=1)).isoformat()
     return dict(side=side, symbol=sym, market=mkt, ccy=ccy, qty=qty, price=price, when=when,
                 pnl=pnl, pnl_amt=(round(val * (pnl or 0) / 100, 2)), value=val, status=status, reason=reason,
-                today=("Today" in when))
+                today=("Today" in when), ts=ts)
 
 
 ORDERS = [

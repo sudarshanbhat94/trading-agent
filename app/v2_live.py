@@ -442,11 +442,11 @@ def _tg_daily_summary(market):
         tsign = "+" if realized_today >= 0 else ""
         osign = "+" if overall_pct >= 0 else ""
         nm = "India" if market == "IN" else "US"
-        txt = ("\U0001f4ca <b>OpenStocks — daily update (%s)</b>\n"
-               "Portfolio: <b>%s%s</b>  (%s%.2f%% overall)\n"
-               "Today: %s%s%s realized\n"
-               "Holding %d stocks · %d%% deployed\n"
-               "Win rate %d%% over %d trades") % (
+        txt = ("\U0001f4ca <b>OpenStocks</b> · Daily summary — %s\n"
+               "<b>Portfolio:</b> %s%s (%s%.2f%%)\n"
+               "<b>Today:</b> %s%s%s realized\n"
+               "<b>Positions:</b> %d · %d%% deployed\n"
+               "<b>Win rate:</b> %d%% (%d trades)") % (
             nm, ccy, "{:,.0f}".format(equity), osign, overall_pct,
             tsign, ccy, "{:,.0f}".format(realized_today), len(rows), deploy, win, total_tr)
         telegram_bot.notify_summary(txt)

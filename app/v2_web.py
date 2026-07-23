@@ -1453,8 +1453,9 @@ button{border-radius:9px}
  #poslist{display:block!important}
  #ordlist{max-width:none!important;column-count:auto!important}
  /* then flow the ROWS into 2 columns (grid is robust for flex rows) */
- #fdHold .fd-holds,#poslist>.k-list,#ordlist{display:grid!important;grid-template-columns:1fr 1fr;align-items:start;gap:0}
- #fdHold .fd-holds>.prow,#poslist>.k-list>.prow,#ordlist>.lrow{min-width:0}
+ #fdHold .fd-holds,#poslist>.k-list{display:grid!important;grid-template-columns:1fr 1fr;align-items:start;gap:0}
+ #fdHold .fd-holds>.prow,#poslist>.k-list>.prow{min-width:0}
+ #ordlist .ordgrid{grid-template-columns:1fr 1fr}
  /* rail: stack movers full-width (readable names) + keep it in view while scrolling */
  #movers{grid-template-columns:1fr}
  .home-rail{position:sticky;top:14px;align-self:start}
@@ -1465,6 +1466,13 @@ button{border-radius:9px}
 .mvrow>b{white-space:nowrap}
 .tgopt{display:flex;align-items:center;gap:10px;font-size:13.5px;padding:7px 0;cursor:pointer}
 .tgopt input{width:auto;margin:0;accent-color:var(--inf)}
+.ordbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 2px 14px}
+#ordcustom{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=date]{width:auto;padding:8px 11px}
+.ordgrid{display:grid;gap:16px}
+.ordlbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#9aa1ac;font-weight:600;margin:0 2px 8px}
+.ordcol+.ordcol{margin-top:20px}
+@media(min-width:1080px){.ordcol+.ordcol{margin-top:0}}
 .fd-trade{gap:10px}
 .fd-trade .fd-tsym{flex:1;min-width:0;display:flex;gap:8px;align-items:baseline;overflow:hidden}
 .fd-trade .fd-tsym .mut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1593,7 +1601,11 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=orders class=tab>
    <div class=sec><span>orders &amp; activity</span><span id=ordtot class=mut style="font-size:12px;font-weight:400"></span></div>
-   <div class=card id=ordlist style="padding:4px 16px"><div class=skel>loading…</div></div></div>
+   <div class=ordbar>
+    <div class=seg id=ordrange><b data-d=1 class=on onclick="setOrdRange(this)">Today</b><b data-d=3 onclick="setOrdRange(this)">3 days</b><b data-d=7 onclick="setOrdRange(this)">7 days</b><b data-d=custom onclick="setOrdRange(this)">Custom</b></div>
+    <div id=ordcustom class=hide><input type=date id=ordfrom> <span class=mut style="font-size:12px">to</span> <input type=date id=ordto> <button class=sm onclick=applyOrdCustom()>Apply</button></div>
+   </div>
+   <div id=ordlist><div class=skel>loading…</div></div></div>
 
   <div id=analyze class=tab>
    <div class=sec>analyse a stock</div>
@@ -1746,10 +1758,20 @@ function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
  document.getElementById('eqcurves').innerHTML=['IN','US'].filter(inMkt).map(m=>{var e=eq[m]||{};if((e.equity||[]).length<3)return '';dd.push(m+' maxDD '+(e.maxdd||0)+'%');
   return '<div class=card><div class=mut style="font-size:11px">'+(m=='IN'?'India ₹':'US $')+' · '+(e.days||[]).length+'d</div>'+spark(e.equity,m=='IN'?'₹':'$')+'</div>'}).join('');
  document.getElementById('eqdd').textContent=dd.join(' · ');});}
-function loadOrders(){api('/v2/api/orders?limit=120').then(r=>{var os=r.j.filter(o=>inMkt(o.market));
- var b=os.filter(o=>o.side=='BUY').length,sl=os.filter(o=>o.side=='SELL').length;
- document.getElementById('ordtot').textContent=os.length?(b+' buys · '+sl+' sells'):'';
- document.getElementById('ordlist').innerHTML=os.map(ordRow).join('')||'<div class=skel>no orders yet</div>';});}
+var ORD_RANGE={days:1,from:null,to:null};
+function setOrdRange(el){var d=el.dataset.d;document.querySelectorAll('#ordrange b').forEach(function(b){b.classList.toggle('on',b===el)});
+ if(d=='custom'){document.getElementById('ordcustom').classList.remove('hide');return;}
+ document.getElementById('ordcustom').classList.add('hide');ORD_RANGE={days:+d,from:null,to:null};loadOrders();}
+function applyOrdCustom(){var f=document.getElementById('ordfrom').value,t=document.getElementById('ordto').value;
+ if(!f&&!t){document.getElementById('ordtot').textContent='pick a date';return;}ORD_RANGE={days:null,from:f||null,to:t||null};loadOrders();}
+function ordInRange(o){var d=(o.ts||'').slice(0,10);if(!d)return false;
+ if(ORD_RANGE.days!=null){var c=new Date(Date.now()-(ORD_RANGE.days-1)*86400000).toISOString().slice(0,10);return d>=c;}
+ if(ORD_RANGE.from&&d<ORD_RANGE.from)return false;if(ORD_RANGE.to&&d>ORD_RANGE.to)return false;return true;}
+function loadOrders(){api('/v2/api/orders?limit=500').then(r=>{var os=r.j.filter(o=>inMkt(o.market)).filter(ordInRange);
+ var buys=os.filter(o=>o.side=='BUY'),sells=os.filter(o=>o.side=='SELL');
+ document.getElementById('ordtot').textContent=(buys.length+sells.length)?(buys.length+' bought · '+sells.length+' sold'):'';
+ var col=function(lbl,arr){return '<div class=ordcol><div class=ordlbl>'+lbl+' · '+arr.length+'</div>'+(arr.length?('<div class=card style="padding:2px 15px">'+arr.map(ordRow).join('')+'</div>'):'<div class=card style="padding:15px 16px"><span class=mut style="font-size:12px">nothing in this range</span></div>')+'</div>';};
+ document.getElementById('ordlist').innerHTML='<div class=ordgrid>'+col('Bought',buys)+col('Sold',sells)+'</div>';});}
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
