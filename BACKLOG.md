@@ -114,6 +114,7 @@ doing. It is not a promise that the brief converges.
   requirements.txt only. Verified by simulating CI locally: clean venv +
   shallow clone, 600 tests pass, and the secret-hygiene guard runs rather
   than silently skipping.
+- `74d8200` Exit rules extracted + tested (differential-proven identical)
 - `a389407` Engine decision-logic tests + hold-clock extraction
 - `e66caa4` Stats tab crash fixed; per-lane performance breakdown
 - `94725af` Catalyst ingest backfill window + IST timezone correctness
