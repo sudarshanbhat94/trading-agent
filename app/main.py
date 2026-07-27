@@ -4661,8 +4661,15 @@ async def auth_me(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/auth/login")
-async def auth_login(payload: dict[str, Any], response: Response) -> dict[str, Any]:
-    return login_user(str(payload.get("username", "")), str(payload.get("password", "")), response, settings, db)
+async def auth_login(payload: dict[str, Any], response: Response, request: Request) -> dict[str, Any]:
+    return login_user(
+        str(payload.get("username", "")),
+        str(payload.get("password", "")),
+        response,
+        settings,
+        db,
+        request,
+    )
 
 
 @app.post("/api/auth/logout")

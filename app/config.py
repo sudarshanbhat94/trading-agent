@@ -151,6 +151,10 @@ class Settings:
     admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
     auth_session_secret: str = os.getenv("AUTH_SESSION_SECRET", "")
     admin_session_hours: int = _int("ADMIN_SESSION_HOURS", 12)
+    # "auto" sets the Secure cookie flag when the request arrived over HTTPS
+    # (honouring X-Forwarded-Proto from nginx). Force with true/false; false is
+    # what local plain-HTTP development needs.
+    session_cookie_secure: str = os.getenv("SESSION_COOKIE_SECURE", "auto")
     credit_tokens_per_credit: int = _int("CREDIT_TOKENS_PER_CREDIT", 10)
     credit_platform_margin_pct: float = _float("CREDIT_PLATFORM_MARGIN_PCT", 0.20)
     openclaw_bridge_enabled: bool = _bool("OPENCLAW_BRIDGE_ENABLED", True)

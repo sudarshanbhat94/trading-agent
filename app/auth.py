@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -17,6 +18,79 @@ from .whatsapp import DEFAULT_ALERT_TYPES, mask_whatsapp_phone, normalize_alert_
 
 SESSION_COOKIE = "openstocks_session"
 PASSWORD_ITERATIONS = 260_000
+
+_LOGGER = logging.getLogger("openstocks.auth")
+
+# runtime_settings key holding the auto-generated session secret.
+_GENERATED_SECRET_KEY = "auth_session_secret_generated"
+_SECRET_CACHE: dict[str, bytes] = {}
+
+# Login throttling. In-process only: this app runs as a single uvicorn worker,
+# so a shared store is unnecessary today. Scaling to multiple workers or hosts
+# means moving this to Redis or the database, otherwise the limit multiplies by
+# the worker count.
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 300
+LOGIN_LOCKOUT_SECONDS = 900
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_LOCKED_UNTIL: dict[str, float] = {}
+
+
+def _client_key(request: Request | None, username: str) -> str:
+    """Throttle per (client IP, username) so one attacker cannot lock out
+    every account, and one account cannot be sprayed from a single host."""
+    host = ""
+    if request is not None:
+        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        host = forwarded or (request.client.host if request.client else "")
+    return f"{host}|{username}"
+
+
+def _login_blocked_for(key: str, now: float) -> int:
+    """Seconds remaining on a lockout, or 0 when the caller may try again."""
+    until = _LOGIN_LOCKED_UNTIL.get(key, 0.0)
+    if until > now:
+        return int(until - now) + 1
+    if until:
+        _LOGIN_LOCKED_UNTIL.pop(key, None)
+        _LOGIN_ATTEMPTS.pop(key, None)
+    return 0
+
+
+def _record_failed_login(key: str, now: float) -> None:
+    recent = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < LOGIN_WINDOW_SECONDS]
+    recent.append(now)
+    _LOGIN_ATTEMPTS[key] = recent
+    if len(recent) >= LOGIN_MAX_ATTEMPTS:
+        _LOGIN_LOCKED_UNTIL[key] = now + LOGIN_LOCKOUT_SECONDS
+        _LOGGER.warning(
+            "Login locked for %ss after %s failed attempts (%s)",
+            LOGIN_LOCKOUT_SECONDS, len(recent), key,
+        )
+
+
+def _clear_login_attempts(key: str) -> None:
+    _LOGIN_ATTEMPTS.pop(key, None)
+    _LOGIN_LOCKED_UNTIL.pop(key, None)
+
+
+def _cookie_is_secure(request: Request | None, settings: Settings) -> bool:
+    """Whether to set the Secure flag on the session cookie.
+
+    Default is adaptive: on when the request arrived over HTTPS. nginx
+    terminates TLS and proxies to plain HTTP, so trust X-Forwarded-Proto. An
+    explicit SESSION_COOKIE_SECURE of true/false overrides, which keeps plain
+    HTTP local development working.
+    """
+    configured = (getattr(settings, "session_cookie_secure", "auto") or "auto").strip().lower()
+    if configured in {"1", "true", "yes", "on"}:
+        return True
+    if configured in {"0", "false", "no", "off"}:
+        return False
+    if request is None:
+        return False
+    forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return (forwarded or request.url.scheme or "").lower() == "https"
 
 
 def normalize_username(value: str) -> str:
@@ -111,7 +185,7 @@ def current_user(request: Request, settings: Settings, db: Any) -> dict[str, Any
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    payload = _verify_token(token, settings)
+    payload = _verify_token(token, settings, db)
     if not payload:
         return None
     user = db.user_by_id(int(payload.get("uid") or 0))
@@ -145,24 +219,48 @@ def require_admin(request: Request, settings: Settings, db: Any) -> dict[str, An
     return user
 
 
-def login_user(username: str, password: str, response: Response, settings: Settings, db: Any) -> dict[str, Any]:
+def login_user(
+    username: str,
+    password: str,
+    response: Response,
+    settings: Settings,
+    db: Any,
+    request: Request | None = None,
+) -> dict[str, Any]:
     if not auth_available(db, settings):
         raise HTTPException(status_code=403, detail="Create an admin password before login.")
     normalized = normalize_username(username)
+
+    # Throttle before touching the password hash: PBKDF2 at 260k iterations is
+    # deliberately expensive, so unthrottled attempts are also a CPU DoS.
+    now = time.time()
+    throttle_key = _client_key(request, normalized)
+    blocked_for = _login_blocked_for(throttle_key, now)
+    if blocked_for:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(blocked_for)},
+        )
+
     user = db.user_by_username(normalized)
     if not user and settings.admin_password and hmac.compare_digest(normalized, normalize_username(settings.admin_username)):
         db.ensure_default_admin_user(normalized, hash_password(settings.admin_password))
         user = db.user_by_username(normalized)
     if not user or not user.get("active") or not verify_password(password, user.get("password_hash") or ""):
+        _record_failed_login(throttle_key, now)
         raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    _clear_login_attempts(throttle_key)
     db.mark_user_login(int(user["id"]))
     public_user = _public_user(db.user_by_id(int(user["id"])) or user)
     response.set_cookie(
         SESSION_COOKIE,
-        _make_token(public_user, settings),
+        _make_token(public_user, settings, db),
         max_age=settings.admin_session_hours * 3600,
         httponly=True,
         samesite="lax",
+        secure=_cookie_is_secure(request, settings),
     )
     return {
         "authenticated": True,
@@ -188,12 +286,64 @@ def auth_status(request: Request, settings: Settings, db: Any) -> dict[str, Any]
     }
 
 
-def _secret(settings: Settings) -> bytes:
-    material = settings.auth_session_secret or settings.admin_password or "openstocks-local-session"
-    return material.encode("utf-8")
+def _secret(settings: Settings, db: Any = None) -> bytes:
+    """Return the HMAC key used to sign session cookies.
+
+    Precedence matters for safe migration:
+
+    1. ``AUTH_SESSION_SECRET`` when configured. Deployments that already set it
+       keep the same key, so existing sessions stay valid across this change.
+    2. Otherwise a random 32-byte secret generated once and persisted in
+       ``runtime_settings``, so a fresh install is secure by default and the
+       key survives restarts.
+
+    This deliberately no longer falls back to ``admin_password`` (a weak,
+    guessable HMAC key) or to a hardcoded literal. The previous literal was
+    published in this public repository, which meant any deployment that set
+    neither value would accept a session cookie forged by anyone who had read
+    the source — including ``{"uid": 1, "role": "admin"}``.
+    """
+    configured = (settings.auth_session_secret or "").strip()
+    if configured:
+        return configured.encode("utf-8")
+
+    if db is None:
+        raise RuntimeError(
+            "No AUTH_SESSION_SECRET is configured and no database is available "
+            "to load a generated one. Refusing to sign sessions with a "
+            "predictable key — set AUTH_SESSION_SECRET."
+        )
+
+    cached = _SECRET_CACHE.get("value")
+    if cached:
+        return cached
+
+    stored = ""
+    try:
+        stored = str((db.runtime_settings() or {}).get(_GENERATED_SECRET_KEY) or "").strip()
+    except Exception:
+        _LOGGER.exception("Could not read the generated session secret")
+
+    if not stored:
+        stored = secrets.token_urlsafe(32)
+        try:
+            db.update_runtime_settings({_GENERATED_SECRET_KEY: stored})
+            _LOGGER.warning(
+                "AUTH_SESSION_SECRET is not set. Generated and stored a random "
+                "session secret. Set AUTH_SESSION_SECRET explicitly to keep "
+                "sessions valid across database resets."
+            )
+        except Exception:
+            # Still better than a predictable key: sessions will not survive a
+            # restart, but they cannot be forged.
+            _LOGGER.exception("Could not persist the generated session secret")
+
+    material = stored.encode("utf-8")
+    _SECRET_CACHE["value"] = material
+    return material
 
 
-def _make_token(user: dict[str, Any], settings: Settings) -> str:
+def _make_token(user: dict[str, Any], settings: Settings, db: Any = None) -> str:
     payload = {
         "uid": int(user["id"]),
         "role": user["role"],
@@ -201,14 +351,14 @@ def _make_token(user: dict[str, Any], settings: Settings) -> str:
         "nonce": secrets.token_urlsafe(12),
     }
     body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
-    signature = hmac.new(_secret(settings), body.encode("ascii"), hashlib.sha256).hexdigest()
+    signature = hmac.new(_secret(settings, db), body.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{body}.{signature}"
 
 
-def _verify_token(token: str, settings: Settings) -> dict[str, Any] | None:
+def _verify_token(token: str, settings: Settings, db: Any = None) -> dict[str, Any] | None:
     try:
         body, signature = token.split(".", 1)
-        expected = hmac.new(_secret(settings), body.encode("ascii"), hashlib.sha256).hexdigest()
+        expected = hmac.new(_secret(settings, db), body.encode("ascii"), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             return None
         payload = json.loads(base64.urlsafe_b64decode(body.encode("ascii")).decode("utf-8"))
