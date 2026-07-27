@@ -20,7 +20,7 @@ import argparse
 import os
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -77,11 +77,31 @@ def classify(subject: str, text: str) -> str:
     return "other"
 
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# How many days back to re-query on every poll. The endpoint is queried by date
+# range, so a poller that only ever asks for TODAY loses a whole day of filings
+# for good if it is down when they publish — there is no backfill, and the
+# 7-day prune means the hole is invisible a week later. Re-asking for the last
+# few days is cheap (INSERT OR IGNORE dedupes on the primary key) and makes a
+# restart or an outage self-healing. Kept at 3 to match the engine's 3-trading-
+# session catalyst window.
+BACKFILL_DAYS = int(os.environ.get("NSE_ANN_BACKFILL_DAYS", "3"))
+
+
 def _epoch(an_dt: str) -> int:
-    # "23-Jul-2026 17:00:07" (IST) -> unix epoch
+    """"23-Jul-2026 17:00:07" (IST) -> unix epoch.
+
+    The timestamp is attached to IST explicitly. The previous version parsed a
+    naive datetime and called .timestamp(), which interprets it in the HOST's
+    local timezone, then subtracted 5.5h to compensate. That is only correct
+    while the box happens to run UTC — setting the box to IST would have
+    shifted every catalyst by 5.5 hours and silently corrupted the freshness
+    window the volume_surge and btst gates depend on.
+    """
     try:
         dt = datetime.strptime(an_dt.strip(), "%d-%b-%Y %H:%M:%S")
-        return int(dt.timestamp()) - int(5.5 * 3600)  # naive parse is IST -> to UTC epoch
+        return int(dt.replace(tzinfo=IST).timestamp())
     except Exception:
         return 0
 
@@ -95,18 +115,36 @@ def ensure_schema(c):
     c.commit()
 
 
-def fetch(client):
+def fetch(client, backfill_days: int | None = None):
+    """Pull the announcement feed for the last `backfill_days` IST days.
+
+    The date range (rather than the bare endpoint) is what returns every filing
+    — the bare endpoint caps at the latest 20, which drops filings during a
+    results-hour burst. The range now starts a few days back rather than today
+    so a restart or outage backfills instead of leaving a permanent hole.
+
+    Dates are IST: the exchange's day, not the host's.
+    """
     client.get("https://www.nseindia.com")   # bootstrap cookies
     time.sleep(1)
-    # today's FULL range (the bare endpoint returns only the latest 20, which
-    # drops filings during a results-hour burst; the date range returns them all)
-    today = datetime.now().strftime("%d-%m-%Y")
-    r = client.get(URL + "&from_date=%s&to_date=%s" % (today, today))
+    days = BACKFILL_DAYS if backfill_days is None else backfill_days
+    now_ist = datetime.now(IST)
+    to_date = now_ist.strftime("%d-%m-%Y")
+    from_date = (now_ist - timedelta(days=max(0, days))).strftime("%d-%m-%Y")
+    r = client.get(URL + "&from_date=%s&to_date=%s" % (from_date, to_date))
     if r.status_code != 200:
-        r = client.get(URL)   # fallback to latest-20 if the range query is rejected
+        # Fall back to a single day before giving up on the range entirely.
+        r = client.get(URL + "&from_date=%s&to_date=%s" % (to_date, to_date))
         if r.status_code != 200:
-            return []
-    d = r.json()
+            r = client.get(URL)   # last resort: latest-20
+            if r.status_code != 200:
+                print("NSE fetch failed: HTTP %s" % r.status_code, flush=True)
+                return []
+    try:
+        d = r.json()
+    except Exception as exc:
+        print("NSE response was not JSON: %s" % str(exc)[:120], flush=True)
+        return []
     return d if isinstance(d, list) else (d.get("data") or [])
 
 
