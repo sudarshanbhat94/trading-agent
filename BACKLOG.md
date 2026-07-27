@@ -124,7 +124,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Narrative layer + hallucination guard (evidence-constrained,
+- `7154717` Narrative layer + hallucination guard (evidence-constrained,
   deterministic fallback)
 - `5ede852` Structured evidence-grounded recommendations (7-level call,
   confidence, bull/bear, risks, catalysts, levels, targets, horizon)
