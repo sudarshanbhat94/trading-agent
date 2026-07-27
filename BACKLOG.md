@@ -45,9 +45,6 @@ doing. It is not a promise that the brief converges.
       opinion with evidence, combined by a CIO aggregator that reconciles
       disagreement and produces the final call. Build on `analysis_tools.py`
       and `llm_brain.py`; do not start a parallel stack.
-- [ ] **Render portfolio analytics in the UI.** `/v2/api/portfolio` now
-      returns allocation, concentration, drawdown and per-lane curves; nothing
-      displays them yet.
 - [ ] `BLOCKED (sector data)` **Sector exposure.** `universe.sector` is a
       catch-all — "NSE Listed Equity" covers 2,594 Indian names — so a
       breakdown built on it would be a single 100% bar. Needs a real
@@ -130,6 +127,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Allocation & risk card in the portfolio tab
 - `4de242c` Portfolio analytics: allocation, concentration, drawdown,
   per-lane realised-P&L curves (`/v2/api/portfolio`)
 - `b9ecc7d` Recommendation card in the SPA + HTML escaping (first XSS fix)

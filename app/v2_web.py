@@ -2229,6 +2229,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
    <div class=seg style="margin-bottom:10px"><b id=sbpos class=on onclick="subPos('pos')">Positions · today</b><b id=sbhold onclick="subPos('hold')">Holdings</b></div>
    <div id=poslist class=skel>loading…</div>
+   <div class=sec><span>allocation &amp; risk</span><span id=pfnote class=mut style="font-size:12px;font-weight:400"></span></div>
+   <div id=pfrisk class=skel>loading…</div>
    <div class=sec><span>strategy performance</span><span class=mut style="font-size:12px;font-weight:400">realized + open</span></div>
    <div class=grid id=attrib></div>
    <div class=sec><span>equity curve</span><span id=eqdd class=mut style="font-size:12px;font-weight:400"></span></div>
@@ -2434,7 +2436,7 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  document.getElementById('postot').innerHTML=(t||'—')+' P&L';
  var rows=ps.map(posRow).join('');
  document.getElementById('poslist').innerHTML=rows?('<div class=k-list>'+rows+'</div>'):('<div class=mut style="font-size:12px;padding:14px 16px">'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>');}
-function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();});loadAttrib();}
+function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();});loadAttrib();loadPortfolio();}
 function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
  var rows=(d.strategies||[]).filter(s=>inMkt(s.market));
  document.getElementById('attrib').innerHTML=rows.map(s=>{var st=stratTag(s.strategy);var tot=s.realized+s.unrealized;
@@ -2608,6 +2610,33 @@ function spark(series,ccy){
 var SPARKN=0;
 function pill(v){if(v==null)return '<span class="pill pmut">\u2026</span>';var fl=Math.abs(v)<0.005,up=v>0;return '<span class="pill '+(fl?'pmut':(up?'pup':'pdn'))+'">'+(fl?'0.00%':((up?'\u25b2 ':'\u25bc ')+Math.abs(v).toFixed(2)+'%'))+'</span>'}
 function esc(x){if(x==null)return '';return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function pfTile(label,value,tone){return '<div class=card><div class=mut style="font-size:11px">'+esc(label)+'</div><div style="font-size:17px;font-weight:600'+(tone?';color:'+tone:'')+'">'+esc(value)+'</div></div>';}
+function pfHtml(d){
+ if(!d||d.error)return '<div class=mut style="font-size:13px">allocation data unavailable</div>';
+ var s=d.ccy||'₹',c=d.concentration||{},dd=d.drawdown||{};
+ var conc=c.largest_pct>=30?'var(--dn)':(c.largest_pct>=20?'var(--warn)':'var(--up)');
+ var h='<div class=grid>';
+ h+=pfTile('deployed',(c.deployed_pct!=null?c.deployed_pct:0)+'%');
+ h+=pfTile('largest position',(c.largest_pct!=null?c.largest_pct:0)+'%',conc);
+ h+=pfTile('top 3',(c.top3_pct!=null?c.top3_pct:0)+'%');
+ h+=pfTile('positions',c.n_positions!=null?c.n_positions:0);
+ h+=pfTile('max drawdown',(dd.max_drawdown_pct!=null?dd.max_drawdown_pct:0)+'%',dd.max_drawdown_pct<0?'var(--dn)':'');
+ h+=pfTile('below high-water',(dd.current_drawdown_pct!=null?dd.current_drawdown_pct:0)+'%',dd.current_drawdown_pct<0?'var(--dn)':'');
+ h+='</div>';
+ var a=d.allocations||[];
+ if(!a.length)return h+'<div class=mut style="font-size:13px;margin-top:10px">no open positions</div>';
+ h+='<div style="margin-top:12px">';
+ for(var i=0;i<a.length;i++){var p=a[i],w=Math.max(1,Math.min(100,p.pct_of_equity||0));
+  var uc=p.unrealised_pct>0?'var(--up)':(p.unrealised_pct<0?'var(--dn)':'var(--mut)');
+  h+='<div style="margin:9px 0"><div class=row style="font-size:12.5px"><span><b>'+esc(p.symbol)+'</b> <span class=mut>'+esc(p.strategy)+'</span></span>';
+  h+='<span>'+s+(p.value!=null?p.value.toLocaleString():'0')+' <span class=mut>'+(p.pct_of_equity!=null?p.pct_of_equity:0)+'%</span> <span style="color:'+uc+'">'+(p.unrealised_pct>0?'+':'')+(p.unrealised_pct!=null?p.unrealised_pct:0)+'%</span></span></div>';
+  h+='<div style="height:5px;border-radius:3px;background:var(--line);margin-top:4px"><div style="height:5px;border-radius:3px;width:'+w+'%;background:var(--ac)"></div></div></div>';}
+ return h+'</div>';}
+function loadPortfolio(){api('/v2/api/portfolio?market='+(typeof MKT!=='undefined'?MKT:'IN')).then(r=>{
+ var el=document.getElementById('pfrisk');if(!el)return;
+ el.innerHTML=pfHtml(r.j);
+ var n=document.getElementById('pfnote');
+ if(n&&r.j&&r.j.sector_exposure===null)n.textContent='sector breakdown unavailable';});}
 function recBadge(score){var m=[['Strong Sell','var(--dn)'],['Sell','var(--dn)'],['Reduce','var(--warn)'],['Hold','var(--mut)'],['Accumulate','var(--warn)'],['Buy','var(--up)'],['Strong Buy','var(--up)']];return m[score]||m[3];}
 function recHtml(r,s){
  if(!r)return '';
