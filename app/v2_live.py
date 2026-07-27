@@ -1475,6 +1475,73 @@ def sector_watch_pass(market):
 HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intraday_news": 1, "volume_surge": 1}
 
 
+def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
+    """Decide whether one open position exits, and at what price.
+
+    Extracted VERBATIM from exit_monitor's loop so the exit rules can be tested
+    without a live book. Same comparisons, same ordering, same precedence — the
+    caller keeps every side effect (trade insert, position delete, Telegram).
+
+    Returns (peak, eff_stop, exit_price, reason); exit_price and reason are None
+    when the position is held. `now_hhmm` is injectable for testing the intraday
+    square-off; production omits it.
+
+    Precedence matters and is deliberate: stop is checked BEFORE the btst
+    next-open exit, so a bad overnight down-gap is booked as a stop rather than
+    a gap capture.
+    """
+    peak = max(p["peak"], lq["high"], lq["price"], sess_row[1] if sess_row else 0.0)
+    eff = p["stop"]
+    if p["trail"]:
+        eff = max(eff, peak * (1 - p["trail"]))
+    # breakeven lock on a big winner only (recover ATR from the initial stop)
+    atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
+    atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
+    if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
+        eff = max(eff, p["entry"])
+    # intraday lanes: once up >= lock%, stop rises to breakeven — a green
+    # trade is never allowed to go red (user spec, matches the backtest)
+    if p["strategy"] in INTRADAY_STRATS and peak >= p["entry"] * (1 + INTRA["lock"]):
+        eff = max(eff, p["entry"] * 1.001)
+    # TRADING days, not calendar days — the backtest validated an 8
+    # trading-bar hold; calendar counting was force-selling ~2 sessions
+    # early around weekends, truncating the bounce.
+    held = trading_days_held(p["edate"], today, market)
+    # IN gap names spike then mean-revert -> take profit at a fixed target
+    # (validated: cuts give-back, holds the edge). US gap trends -> trail only.
+    # Computed dynamically so it also protects positions opened before this rule.
+    eff_tgt = p["target"] or 0.0
+    if p["strategy"] == "gap_momentum" and GAP_TARGET.get(market):
+        eff_tgt = max(eff_tgt, p["entry"] * (1 + GAP_TARGET[market]))
+    ex = reason = None
+    # mid-session entries (intraday lanes AND manual buys, on their ENTRY day)
+    # happen after the day's low/high are already set — those extremes predate
+    # the entry, so using them would instantly "trigger" a stop/target the trade
+    # never touched after entry. Use the LIVE price as the only valid reference
+    # in that case; on later held days the day low/high are legitimate.
+    same_day = str(p.get("edate"))[:10] == today_s
+    # intraday lanes always enter mid-session; a manual buy enters mid-session on
+    # its ENTRY day. swing/gap enter at the OPEN so their day low/high are valid.
+    use_live = (p["strategy"] in INTRADAY_STRATS) or (p["strategy"] in ("manual", "btst") and same_day)
+    lo_ref = lq["price"] if use_live else lq["low"]
+    hi_ref = lq["price"] if use_live else lq["high"]
+    if lo_ref <= eff or lq["price"] <= eff:
+        ex, reason = min(eff, lq["price"]), ("trail" if p["trail"] and eff > p["stop"] else "stop")
+    elif eff_tgt and (hi_ref >= eff_tgt or lq["price"] >= eff_tgt):
+        ex, reason = max(eff_tgt, lq["price"]), "target"
+    elif p["strategy"] == "btst" and not same_day:
+        # BTST: sell the morning after entry. exit_monitor first runs at the
+        # 09:15 open, so this fills at ~the open — the overnight gap is the whole
+        # edge; holding into the day gives it back (validated). Stop above still
+        # protects a bad down-gap (checked first, off the live open price).
+        ex, reason = lq["price"], "btst"
+    elif p["strategy"] in INTRADAY_STRATS and (now_hhmm or datetime.now(IST).strftime("%H:%M")) >= INTRA["squareoff"]:
+        ex, reason = lq["price"], "eod"           # intraday lanes are NEVER held overnight
+    elif held >= HOLD_DAYS.get(p["strategy"], 10):
+        ex, reason = lq["price"], "time"
+    return peak, eff, ex, reason
+
+
 def exit_monitor(market):
     """Cheap, fast exit pass: checks open positions against LIVE price/high/low
     for stop / target / trailing / time exit. No feature recompute, so it can
@@ -1519,56 +1586,7 @@ def exit_monitor(market):
             continue
         if sym in frozen:                        # frozen quote (e.g. GUJGASLTD): a stale
             continue                             # HIGH price would phantom-hit stop/target
-        sr = sess.get(sym)
-        peak = max(p["peak"], lq["high"], lq["price"], sr[1] if sr else 0.0)
-        eff = p["stop"]
-        if p["trail"]:
-            eff = max(eff, peak * (1 - p["trail"]))
-        # breakeven lock on a big winner only (recover ATR from the initial stop)
-        atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
-        atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
-        if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
-            eff = max(eff, p["entry"])
-        # intraday lanes: once up >= lock%, stop rises to breakeven — a green
-        # trade is never allowed to go red (user spec, matches the backtest)
-        if p["strategy"] in INTRADAY_STRATS and peak >= p["entry"] * (1 + INTRA["lock"]):
-            eff = max(eff, p["entry"] * 1.001)
-        # TRADING days, not calendar days — the backtest validated an 8
-        # trading-bar hold; calendar counting was force-selling ~2 sessions
-        # early around weekends, truncating the bounce.
-        held = trading_days_held(p["edate"], today, market)
-        # IN gap names spike then mean-revert -> take profit at a fixed target
-        # (validated: cuts give-back, holds the edge). US gap trends -> trail only.
-        # Computed dynamically so it also protects positions opened before this rule.
-        eff_tgt = p["target"] or 0.0
-        if p["strategy"] == "gap_momentum" and GAP_TARGET.get(market):
-            eff_tgt = max(eff_tgt, p["entry"] * (1 + GAP_TARGET[market]))
-        ex = reason = None
-        # mid-session entries (intraday lanes AND manual buys, on their ENTRY day)
-        # happen after the day's low/high are already set — those extremes predate
-        # the entry, so using them would instantly "trigger" a stop/target the trade
-        # never touched after entry. Use the LIVE price as the only valid reference
-        # in that case; on later held days the day low/high are legitimate.
-        same_day = str(p.get("edate"))[:10] == today_s
-        # intraday lanes always enter mid-session; a manual buy enters mid-session on
-        # its ENTRY day. swing/gap enter at the OPEN so their day low/high are valid.
-        use_live = (p["strategy"] in INTRADAY_STRATS) or (p["strategy"] in ("manual", "btst") and same_day)
-        lo_ref = lq["price"] if use_live else lq["low"]
-        hi_ref = lq["price"] if use_live else lq["high"]
-        if lo_ref <= eff or lq["price"] <= eff:
-            ex, reason = min(eff, lq["price"]), ("trail" if p["trail"] and eff > p["stop"] else "stop")
-        elif eff_tgt and (hi_ref >= eff_tgt or lq["price"] >= eff_tgt):
-            ex, reason = max(eff_tgt, lq["price"]), "target"
-        elif p["strategy"] == "btst" and not same_day:
-            # BTST: sell the morning after entry. exit_monitor first runs at the
-            # 09:15 open, so this fills at ~the open — the overnight gap is the whole
-            # edge; holding into the day gives it back (validated). Stop above still
-            # protects a bad down-gap (checked first, off the live open price).
-            ex, reason = lq["price"], "btst"
-        elif p["strategy"] in INTRADAY_STRATS and datetime.now(IST).strftime("%H:%M") >= INTRA["squareoff"]:
-            ex, reason = lq["price"], "eod"       # intraday lanes are NEVER held overnight
-        elif held >= HOLD_DAYS.get(p["strategy"], 10):
-            ex, reason = lq["price"], "time"
+        peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)
             v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"

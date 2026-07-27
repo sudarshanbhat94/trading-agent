@@ -28,12 +28,16 @@ doing. It is not a promise that the brief converges.
   biggest functions are DB-coupled, so this is several cycles.
   - [x] Decision logic: catalyst window, hold clock, volume curve, lane
         configuration invariants. Done, `a389407`.
-  - [ ] **Exit evaluation against a temp SQLite book.** Stop, target, trailing
-        stop, breakeven arming, the intraday 15:12 square-off and the BTST
-        next-open exit. `exit_monitor` reads and writes the book, so build a
-        throwaway DB fixture — never touch the live one. Expect to extract the
-        per-position decision out of the loop first; keep the extraction
-        behaviour-identical and say so.
+  - [x] Exit **decision rules**: stop, trailing stop, breakeven arming, target,
+        BTST next-open, intraday square-off, time exit, and the precedence
+        between them. Done, see Done log, via an `evaluate_exit()` extraction
+        proven identical by differential test.
+  - [ ] **Exit side effects against a temp SQLite book.** The decision is now
+        covered; the write path is not. Assert that an exit inserts one
+        `v2_trades` row with the right pnl/return_pct/reason, deletes the
+        position, updates `peak` when holding, and that the equity snapshot is
+        throttled to 60s. Build a throwaway DB fixture — never touch the live
+        one.
   - [ ] **Entry gating per lane.** That each lane's `*_pass` refuses to open a
         position when its own gate fails (regime, catalyst freshness, rvol,
         near-high, earnings block, risk halt), and that `DISABLED_LANES` is
