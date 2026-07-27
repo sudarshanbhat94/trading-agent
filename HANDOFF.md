@@ -50,7 +50,7 @@ Each of these was tested and closed:
 1. **BTST needs ongoing evaluation** — for each basket, compare entry (prior close) against the next open, net of costs. As of 2026-07-27 the first live basket (KFINTECH, RKFORGE, RRKABEL) was held overnight for a 2026-07-28 open sell.
 2. **Catalyst ingestion gap** — at least one filing (CarTrade results) was never *ingested*, which is a separate failure from being ingested and misclassified. Worth finding out why filings are missed.
 3. **BTST overlap decision (open)** — the lane currently skips symbols `volume_surge` already traded that day, which excludes some of the best overnight candidates. Decide whether to allow the double exposure.
-4. **Overnight sizing cap** — the one data-supported risk lever still unbuilt: a hard per-position size cap on the swing lane, to bound the rare catastrophic gap.
+4. ~~**Overnight sizing cap**~~ — **done 2026-07-27.** `OVERNIGHT_MAX_POS_FRAC` (0.30 of equity) in `v2_live.py`, applied via `cap_overnight_shares()` to every lane that holds through the close; intraday lanes are exempt and already size off a fixed slot. It is a guardrail, not a re-tuning: normal sizing spans 9.2–26.7% of equity, the largest position in the live book's history was 26.6%, and none of the closed trades would have been resized. It only clips the case where `DYN_ALLOC` hands nearly all free cash to the last open slot. **Do not lower it below ~0.27 without a backtest** — that would start re-sizing normal trades.
 5. **News feed + performance-analytics tab** — never built.
 6. **Mobile polish** — Analyse-tab empty state (recent/suggested symbols); ticker should list held names first.
 

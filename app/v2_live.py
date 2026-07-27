@@ -8,6 +8,7 @@ background thread inside opentrade.service, only during real market hours.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -173,6 +174,53 @@ GAP_TARGET = {"IN": 0.10, "US": 0.0}    # gap_momentum profit target by market: 
 # up to VOL_SIZE_MAX. Clamped so no single position gets wildly over/under-sized.
 VOL_TARGET_ATR = 0.030
 VOL_SIZE_MIN, VOL_SIZE_MAX = 0.55, 1.60
+# Hard ceiling on what ONE overnight-held position may be worth, as a fraction
+# of equity. This is a guardrail, NOT a re-tuning of the sizing model.
+#
+# Why it exists: the exit audit showed the killer is oversized losses from
+# overnight GAP-THROUGH, and the stop-cap A/B proved tightening the stop makes
+# things worse (+0.63 -> +0.14%/trade at a -4% cap) while the worst single
+# trade stayed identical at every cap, because a gap opens below any level.
+# Tail risk on overnight holds is therefore a SIZING problem, not a stop-level
+# problem, and a notional cap is the only lever the data supports.
+#
+# Why 0.30: normal 6-slot sizing puts 9.2%-26.7% of equity in a name
+# (equity/MAXPOS x vol_mult, vol_mult in [0.55, 1.60]), so 0.30 NEVER binds in
+# normal operation and leaves every backtested result untouched. It only clips
+# the pathological case where DYN_ALLOC hands nearly all free cash to the last
+# open slot. Tightening below ~0.27 would start re-sizing normal trades and is
+# a tuning decision that needs its own backtest — do not lower it casually.
+# Set to 0.0 to disable.
+OVERNIGHT_MAX_POS_FRAC = {"IN": 0.30, "US": 0.30}
+
+_LOG = logging.getLogger("openstocks.v2_live")
+
+
+def cap_overnight_shares(shares: float, entry: float, equity: float, market: str,
+                         strategy: str, symbol: str = "") -> float:
+    """Clip a position that would hold too much of the book overnight.
+
+    Only applies to strategies that carry risk through the close. Intraday
+    lanes square off the same session, so they are not exposed to the overnight
+    gap this guards against, and they already size off a fixed slot allocation.
+
+    Returns the share count unchanged whenever the cap does not bind, so the
+    normal path is untouched.
+    """
+    if strategy in INTRADAY_STRATS:
+        return shares
+    frac = OVERNIGHT_MAX_POS_FRAC.get(market, 0.0)
+    if frac <= 0 or equity <= 0 or entry <= 0 or shares <= 0:
+        return shares
+    max_shares = (frac * equity) / entry
+    if shares <= max_shares:
+        return shares
+    _LOG.warning(
+        "Overnight size cap: %s %s %.0f -> %.0f shares (%.1f%% -> %.1f%% of equity)",
+        market, symbol or strategy, shares, max_shares,
+        shares * entry / equity * 100.0, frac * 100.0,
+    )
+    return max_shares
 BE_TRIGGER_ATR = 3.0                    # once a trade is up >= this many ATR, lock the stop at breakeven.
                                         # Backtested NEUTRAL (only arms on rare big winners, so it never cuts
                                         # normal trades that would recover) - protects against a monster winner
@@ -757,6 +805,10 @@ def poll_market(market):
         if DYN_ALLOC.get(market, True):
             base_alloc = max(base_alloc, (cash - reserve) / remaining)   # dynamic: idle cash flows to open slots
         shares = min(base_alloc * size_mult * vol_mult, (cash - reserve) / (1 + cside)) / entry   # risk-scaled, never overdraws
+        # Bound the rare catastrophic overnight gap. DYN_ALLOC can otherwise
+        # hand nearly all free cash to the last open slot, putting the whole
+        # book in one name through the close.
+        shares = cap_overnight_shares(shares, entry, equity_now, market, s["strategy"], sym)
         if market == "IN":               # NSE: whole shares only, no fractions
             shares = float(int(shares))
             if shares < 1:               # stock too pricey for the per-position budget
