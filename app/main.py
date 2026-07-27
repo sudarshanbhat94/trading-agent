@@ -629,7 +629,14 @@ try:  # new v2 dashboard (self-contained, read-only; never break the main app)
 except Exception as _v2_exc:  # pragma: no cover
     import logging as _logging
 
-    _logging.getLogger("openstocks").warning("v2 web UI not mounted: %s", _v2_exc)
+    # This is not a cosmetic degradation: without the v2 mount there is no
+    # trading engine and no v2 UI, yet the app still boots and serves pages.
+    # Log at ERROR with the traceback so it is visible in journalctl instead of
+    # scrolling past as a warning (a missing numpy/pandas hid exactly this).
+    _logging.getLogger("openstocks").error(
+        "v2 trading engine and web UI NOT mounted — the app is running without "
+        "the trading system: %s", _v2_exc, exc_info=True,
+    )
 
 
 @app.post("/api/users/{user_id}/paper-cash")

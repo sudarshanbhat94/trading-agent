@@ -3,3 +3,19 @@ uvicorn[standard]>=0.30,<1
 jinja2>=3.1,<4
 httpx>=0.27,<1
 python-dotenv>=1.0,<2
+
+# Required by the v2 trading engine (app/v2_engine.py, app/v2_live.py) and the
+# meta-filter. These were undeclared: a clean install from this file produced a
+# box where the entire v2 engine and web UI failed to import, and app/main.py
+# swallowed the ImportError, so the app booted "healthy" with no trading system.
+# Floors are deliberately low so `pip install -r` does not upgrade a working
+# deploy across a major version; the engine only uses long-stable APIs
+# (DataFrame, isna, concat, to_numeric, busday_offset).
+numpy>=1.24,<3
+pandas>=1.5,<4
+
+# app/meta_filter.py loads the P(win) model bundle with joblib. Its import is
+# wrapped in try/except and the filter fails open (scores None, engine trades
+# unfiltered), so a missing joblib does not crash — it silently disables the
+# meta-filter gate. Declared so the gate is actually present in a deploy.
+joblib>=1.2,<2
