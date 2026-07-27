@@ -2,10 +2,10 @@
 
 ## Scope
 
-- Host: `ubuntu@161.118.168.72`
+- Host: production VM (address redacted — this repository is public)
 - Service: `opentrade.service` active
 - Deployed commit: `dd8b92c`
-- DB: `/opt/opentrade/var/trading_agent.db`
+- DB: the candles/quotes SQLite database on the deploy host
 - Check time: `2026-06-11T16:52:58Z`
 
 ## How Signals Are Made
