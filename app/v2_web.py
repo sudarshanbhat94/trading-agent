@@ -6,6 +6,7 @@ responsive page + JSON APIs. Zero coupling to the legacy dashboard.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -17,7 +18,10 @@ import json as _jsonmod
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from . import indicators as ta
 from . import v2_engine as eng
+
+_LOG = logging.getLogger("openstocks.v2_web")
 
 MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
@@ -1128,8 +1132,26 @@ def api_stock(symbol: str, market: str = "IN"):
                 cdates.append(str(ts)[:10])
         except Exception:
             candles, cdates = [], []
-        # ---- plain-English insight so a user can actually decide ----
         ccy = "₹" if market == "IN" else "$"
+        # ---- extra technicals (VWAP/SuperTrend/Ichimoku/pivots/patterns) ----
+        # Isolated: these are informational, so a failure here must degrade to an
+        # empty block rather than turning the whole stock page into an error.
+        technicals, tech_summary = {}, ""
+        try:
+            hist = g.tail(160)
+            o_, h_, l_, c_, v_ = [], [], [], [], []
+            for o, h, lo, cl, vv in zip(hist["open"], hist["high"], hist["low"],
+                                        hist["close"], hist["volume"]):
+                if cl != cl or o != o or h != h or lo != lo:   # skip NaN bars
+                    continue
+                o_.append(float(o)); h_.append(float(h)); l_.append(float(lo))
+                c_.append(float(cl)); v_.append(float(vv) if vv == vv else 0.0)
+            last_bar = str(hist.index[-1])[:10] if len(hist.index) else None
+            technicals, tech_summary = _technical_block(o_, h_, l_, c_, v_, px, ccy, last_bar)
+        except Exception:
+            _LOG.exception("technical block failed for %s", symbol)
+            technicals, tech_summary = {}, ""
+        # ---- plain-English insight so a user can actually decide ----
         rs = float(row["rs20"]); rvol = float(row["rvol"]); dist = float(row["dist_hi20"])
         trend_txt = ("in a clear uptrend (above its 20- and 50-day averages)" if (a20 and a50)
                      else "holding above its 20-day average" if a20
@@ -1146,13 +1168,112 @@ def api_stock(symbol: str, market: str = "IN"):
                    "If you buy: enter around %s%s, stop %s%s (%.1f%%), target %s%s (+%.1f%%) — about %s:1 reward-to-risk."
                    % (symbol, trend_txt, rs_txt, loc_txt, vol_txt, vmap.get(verdict, ""), conv, reg_txt,
                       ccy, entry, ccy, stop, (stop / entry - 1) * 100, ccy, target, (target / entry - 1) * 100, rr))
+        if tech_summary:
+            insight = f"{insight} {tech_summary}"
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
                                  insight=insight, held=held, chart=closes, candles=candles,
-                                 dates=cdates, news=_news(symbol)))
+                                 dates=cdates, technicals=technicals, news=_news(symbol)))
     except Exception as exc:
         return JSONResponse(dict(symbol=symbol, error=str(exc)[:120], news=_news(symbol)))
+
+
+_PATTERN_LABELS = {
+    "doji": ("indecision", "neutral"),
+    "hammer": ("a hammer (possible bottom)", "bullish"),
+    "hanging_man": ("a hanging man (possible top)", "bearish"),
+    "inverted_hammer": ("an inverted hammer", "bullish"),
+    "shooting_star": ("a shooting star (rejection of higher prices)", "bearish"),
+    "bullish_marubozu": ("a strong full-bodied up day", "bullish"),
+    "bearish_marubozu": ("a strong full-bodied down day", "bearish"),
+    "bullish_engulfing": ("a bullish engulfing pattern", "bullish"),
+    "bearish_engulfing": ("a bearish engulfing pattern", "bearish"),
+    "morning_star": ("a morning star (reversal up)", "bullish"),
+    "evening_star": ("an evening star (reversal down)", "bearish"),
+}
+
+
+VWAP_WINDOW = 20
+
+
+def _technical_block(opens, highs, lows, closes, volumes, price, ccy="₹", as_of=None):
+    """Compute the extra indicators plus a plain-English summary.
+
+    Pure and list-based so it can be tested without a DataFrame or a database.
+    Returns (payload, summary). Every field is independently None/empty when its
+    own data requirement is not met, so a short history degrades gracefully
+    rather than dropping the whole block.
+    """
+    payload: dict = {}
+    if not closes:
+        return payload, ""
+
+    snap = ta.advanced_snapshot(opens, highs, lows, closes, volumes)
+
+    def _r(value, digits=2):
+        return round(float(value), digits) if isinstance(value, (int, float)) else None
+
+    st = snap.get("supertrend") or {}
+    ichi = snap.get("ichimoku") or {}
+    # Pin the VWAP lookback. advanced_snapshot() averages every bar it is given,
+    # which would make the number depend on how much history the panel happened
+    # to return. A fixed window is a stable, comparable figure.
+    windowed_vwap = ta.vwap(highs, lows, closes, volumes, window=VWAP_WINDOW)
+    if windowed_vwap is None:
+        windowed_vwap = snap.get("vwap")
+    payload = {
+        "atr": _r(snap.get("atr")),
+        "vwap": _r(windowed_vwap),
+        "vwap_window": VWAP_WINDOW if windowed_vwap is not None else None,
+        "supertrend": {"value": _r(st.get("value")), "direction": st.get("direction")},
+        "ichimoku": {k: _r(v) for k, v in ichi.items()},
+        "pivot_points": {k: _r(v) for k, v in (snap.get("pivot_points") or {}).items()},
+        "fibonacci": {k: _r(v) for k, v in (snap.get("fibonacci") or {}).items()},
+        "patterns": list(snap.get("candlestick_patterns") or []),
+        # Date of the last candle these were computed from. The daily candle
+        # feed can lag the live quote by a session, in which case every value
+        # here is as-of that date and NOT the live price — say so rather than
+        # letting the UI imply otherwise.
+        "as_of": as_of,
+        "stale": bool(as_of and closes and price and abs(price - closes[-1]) / closes[-1] > 0.02),
+    }
+
+    # ---- plain English, in the voice the rest of this endpoint already uses ----
+    parts: list[str] = []
+    vwap = payload["vwap"]
+    if vwap and price:
+        side = "above" if price >= vwap else "below"
+        label = f"{payload['vwap_window']}-day" if payload.get("vwap_window") else "average"
+        parts.append(f"trading {side} its {label} volume-weighted price of {ccy}{vwap}")
+    direction = payload["supertrend"]["direction"]
+    st_value = payload["supertrend"]["value"]
+    if direction and st_value:
+        parts.append(
+            f"the SuperTrend is {direction} with the line at {ccy}{st_value}"
+            + (" (support)" if direction == "up" else " (resistance)")
+        )
+    kijun = payload["ichimoku"].get("kijun")
+    if kijun and price:
+        parts.append(f"{'above' if price >= kijun else 'below'} the Ichimoku baseline {ccy}{kijun}")
+    pivots = payload["pivot_points"]
+    if pivots.get("s1") and pivots.get("r1"):
+        parts.append(f"today's pivot support is {ccy}{pivots['s1']} and resistance {ccy}{pivots['r1']}")
+
+    named = [_PATTERN_LABELS[p][0] for p in payload["patterns"] if p in _PATTERN_LABELS]
+    if named:
+        parts.append("the last candle shows " + " and ".join(named[:2]))
+
+    if not parts:
+        return payload, ""
+    summary = "Technicals: " + "; ".join(parts) + "."
+    if payload["stale"]:
+        drift = (price / closes[-1] - 1) * 100
+        summary += (f" (Computed from candles up to {as_of}; the live price is "
+                    f"{drift:+.1f}% away from that close, so treat these as stale.)")
+    elif as_of:
+        summary += f" (as of {as_of})"
+    return payload, summary
 
 
 def _news(symbol):
