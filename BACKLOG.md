@@ -130,7 +130,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Portfolio analytics: allocation, concentration, drawdown,
+- `4de242c` Portfolio analytics: allocation, concentration, drawdown,
   per-lane realised-P&L curves (`/v2/api/portfolio`)
 - `b9ecc7d` Recommendation card in the SPA + HTML escaping (first XSS fix)
 - `7154717` Narrative layer + hallucination guard (evidence-constrained,
