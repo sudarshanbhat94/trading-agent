@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import secrets
+import sqlite3
 import time
 from typing import Any
 
@@ -254,6 +255,20 @@ def login_user(
     _clear_login_attempts(throttle_key)
     db.mark_user_login(int(user["id"]))
     public_user = _public_user(db.user_by_id(int(user["id"])) or user)
+    return _issue_session(public_user, response, settings, db, request)
+
+
+def _issue_session(
+    public_user: dict[str, Any],
+    response: Response,
+    settings: Settings,
+    db: Any,
+    request: Request | None,
+) -> dict[str, Any]:
+    """Set the session cookie and build the auth payload.
+
+    Shared by login and signup so the two cannot drift apart on cookie flags.
+    """
     response.set_cookie(
         SESSION_COOKIE,
         _make_token(public_user, settings, db),
@@ -271,6 +286,78 @@ def login_user(
     }
 
 
+def signup_user(
+    username: str,
+    password: str,
+    response: Response,
+    settings: Settings,
+    db: Any,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Self-service registration.
+
+    Disabled unless SIGNUP_ENABLED is set. This deployment already has users and
+    a single admin; silently opening public registration on the next deploy
+    would be a security regression, so it is opt-in.
+
+    The new account is always role "user" and active, with no credits, paper
+    cash or LLM assignment. Those are admin grants and are deliberately not
+    readable from the request payload — accepting a "role" field here would be
+    a privilege-escalation hole.
+    """
+    if not signup_enabled(settings):
+        raise HTTPException(status_code=403, detail="Self-registration is disabled.")
+
+    normalized = validate_username(username)
+    validated_password = validate_password(password)
+
+    # Throttle per IP: without this, registration is an open door to mass
+    # account creation. The username is not part of the key here — the account
+    # does not exist yet, so keying on it would let an attacker create
+    # unlimited accounts by varying the name.
+    now = time.time()
+    throttle_key = _client_key(request, "<signup>")
+    blocked_for = _login_blocked_for(throttle_key, now)
+    if blocked_for:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many sign-up attempts. Try again later.",
+            headers={"Retry-After": str(blocked_for)},
+        )
+    _record_failed_login(throttle_key, now)
+
+    if db.user_by_username(normalized):
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    try:
+        created = db.create_user(normalized, hash_password(validated_password), role="user", active=True)
+    except sqlite3.IntegrityError:
+        # Lost the race against a concurrent signup for the same name. The
+        # UNIQUE constraint on users.username is what actually guarantees
+        # uniqueness; the check above is only a friendlier fast path.
+        raise HTTPException(status_code=409, detail="Username already exists") from None
+
+    user_id = int(created["id"])
+    _LOGGER.info("New account registered: id=%s username=%s", user_id, normalized)
+    try:
+        db.insert_agent_log(
+            "info", "auth", "signup", f"New account registered: {normalized}",
+            {"user_id": user_id},
+        )
+    except Exception:
+        # An audit-log failure must not lose the account that was just created.
+        _LOGGER.exception("Could not write the signup audit log")
+
+    public_user = _public_user(db.user_by_id(user_id) or created)
+    return _issue_session(public_user, response, settings, db, request)
+
+
+def signup_enabled(settings: Settings) -> bool:
+    return str(getattr(settings, "signup_enabled", "") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def logout_user(response: Response) -> dict[str, bool]:
     response.delete_cookie(SESSION_COOKIE)
     return {"authenticated": False, "admin": False}
@@ -282,6 +369,7 @@ def auth_status(request: Request, settings: Settings, db: Any) -> dict[str, Any]
         "authenticated": bool(user),
         "admin": bool(user and user.get("role") == "admin"),
         "admin_configured": auth_available(db, settings),
+        "signup_enabled": signup_enabled(settings),
         "user": user,
     }
 

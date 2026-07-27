@@ -155,6 +155,9 @@ class Settings:
     # (honouring X-Forwarded-Proto from nginx). Force with true/false; false is
     # what local plain-HTTP development needs.
     session_cookie_secure: str = os.getenv("SESSION_COOKIE_SECURE", "auto")
+    # Self-service registration. Off by default: this deployment already has
+    # users, and opening public sign-up must be a deliberate decision.
+    signup_enabled: str = os.getenv("SIGNUP_ENABLED", "false")
     credit_tokens_per_credit: int = _int("CREDIT_TOKENS_PER_CREDIT", 10)
     credit_platform_margin_pct: float = _float("CREDIT_PLATFORM_MARGIN_PCT", 0.20)
     openclaw_bridge_enabled: bool = _bool("OPENCLAW_BRIDGE_ENABLED", True)

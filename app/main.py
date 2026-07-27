@@ -25,6 +25,7 @@ from .auth import (
     current_user,
     hash_password,
     login_user,
+    signup_user,
     logout_user,
     normalize_role,
     require_admin,
@@ -4663,6 +4664,18 @@ async def auth_me(request: Request) -> dict[str, Any]:
 @app.post("/api/auth/login")
 async def auth_login(payload: dict[str, Any], response: Response, request: Request) -> dict[str, Any]:
     return login_user(
+        str(payload.get("username", "")),
+        str(payload.get("password", "")),
+        response,
+        settings,
+        db,
+        request,
+    )
+
+
+@app.post("/api/auth/signup")
+async def auth_signup(payload: dict[str, Any], response: Response, request: Request) -> dict[str, Any]:
+    return signup_user(
         str(payload.get("username", "")),
         str(payload.get("password", "")),
         response,
