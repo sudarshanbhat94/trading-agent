@@ -97,7 +97,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `9a10138` CI on every push — matrix 3.12 (prod) + 3.14 (dev), deps from
+- `8f57348` CI on every push — matrix 3.12 (prod) + 3.14 (dev), deps from
   requirements.txt only. Verified by simulating CI locally: clean venv +
   shallow clone, 600 tests pass, and the secret-hygiene guard runs rather
   than silently skipping.
