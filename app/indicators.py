@@ -180,6 +180,306 @@ def _cmf(highs: list[float], lows: list[float], closes: list[float], volumes: li
     return sum(mfv) / volume_sum if volume_sum else None
 
 
+# ---------------------------------------------------------------------------
+# Additional indicators.
+#
+# These are public and additive: technical_snapshot() and the TechnicalSnapshot
+# model are deliberately untouched, so nothing the engine currently scores on
+# changes. Everything is computed locally from OHLCV — no indicator APIs.
+#
+# House conventions kept from the functions above: return None (or an empty
+# result) when there is not enough data rather than raising or guessing, and
+# use a simple mean for ATR rather than Wilder smoothing, matching _atr_pct.
+# ---------------------------------------------------------------------------
+
+
+def _true_ranges(highs: list[float], lows: list[float], closes: list[float]) -> list[float]:
+    """True range series, one shorter than closes (needs a previous close)."""
+    return [
+        max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        for i in range(1, len(closes))
+    ]
+
+
+def atr(highs: list[float], lows: list[float], closes: list[float], window: int = 14) -> float | None:
+    """Average true range in price terms (_atr_pct returns it as a percentage)."""
+    if len(closes) <= window or len(highs) != len(closes) or len(lows) != len(closes):
+        return None
+    ranges = _true_ranges(highs, lows, closes)
+    return _mean(ranges[-window:]) if len(ranges) >= window else None
+
+
+def vwap(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+    window: int | None = None,
+) -> float | None:
+    """Volume-weighted average price over `window` bars (all bars if None).
+
+    Uses the typical price (H+L+C)/3. Intraday VWAP is normally anchored to the
+    session open, so pass the session's bars.
+    """
+    if not closes or len(highs) != len(closes) or len(lows) != len(closes) or len(volumes) != len(closes):
+        return None
+    if window is not None:
+        if window <= 0 or len(closes) < window:
+            return None
+        highs, lows, closes, volumes = highs[-window:], lows[-window:], closes[-window:], volumes[-window:]
+    total_volume = sum(volumes)
+    if total_volume <= 0:
+        return None
+    weighted = sum(((h + l + c) / 3) * v for h, l, c, v in zip(highs, lows, closes, volumes))
+    return weighted / total_volume
+
+
+def supertrend(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> dict[str, float | str | None]:
+    """SuperTrend line and its direction.
+
+    Bands are built from a rolling ATR around the median price, then carried
+    forward: a band only moves in the direction that tightens it, unless price
+    has closed through it. Direction flips when close crosses the active band.
+    """
+    empty: dict[str, float | str | None] = {"value": None, "direction": None, "upper": None, "lower": None}
+    if len(closes) <= period or len(highs) != len(closes) or len(lows) != len(closes) or period <= 0:
+        return empty
+
+    ranges = _true_ranges(highs, lows, closes)
+    if len(ranges) < period:
+        return empty
+
+    # ranges[i] corresponds to bar i+1, so bar index = offset + period.
+    final_upper: list[float] = []
+    final_lower: list[float] = []
+    trend_up: list[bool] = []
+    line: list[float] = []
+
+    for offset in range(period - 1, len(ranges)):
+        bar = offset + 1
+        band_atr = _mean(ranges[offset - period + 1 : offset + 1])
+        median = (highs[bar] + lows[bar]) / 2
+        basic_upper = median + multiplier * band_atr
+        basic_lower = median - multiplier * band_atr
+
+        if not final_upper:
+            upper, lower = basic_upper, basic_lower
+            up = closes[bar] > upper
+        else:
+            prev_upper, prev_lower = final_upper[-1], final_lower[-1]
+            upper = basic_upper if (basic_upper < prev_upper or closes[bar - 1] > prev_upper) else prev_upper
+            lower = basic_lower if (basic_lower > prev_lower or closes[bar - 1] < prev_lower) else prev_lower
+            if trend_up[-1]:
+                up = closes[bar] >= lower
+            else:
+                up = closes[bar] > upper
+
+        final_upper.append(upper)
+        final_lower.append(lower)
+        trend_up.append(up)
+        line.append(lower if up else upper)
+
+    if not line:
+        return empty
+    return {
+        "value": line[-1],
+        "direction": "up" if trend_up[-1] else "down",
+        "upper": final_upper[-1],
+        "lower": final_lower[-1],
+    }
+
+
+def ichimoku(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    conversion: int = 9,
+    base: int = 26,
+    span_b: int = 52,
+) -> dict[str, float | None]:
+    """Ichimoku Kinko Hyo components at the latest bar.
+
+    senkou_a/senkou_b are returned unshifted — they are the values that would be
+    plotted `base` bars ahead. chikou is the latest close, plotted `base` bars
+    back. Shifting is a charting concern, so it is left to the caller.
+    """
+    result: dict[str, float | None] = {
+        "tenkan": None, "kijun": None, "senkou_a": None, "senkou_b": None, "chikou": None,
+    }
+    if not closes or len(highs) != len(closes) or len(lows) != len(closes):
+        return result
+
+    def _midpoint(window: int) -> float | None:
+        if window <= 0 or len(closes) < window:
+            return None
+        return (max(highs[-window:]) + min(lows[-window:])) / 2
+
+    tenkan = _midpoint(conversion)
+    kijun = _midpoint(base)
+    result["tenkan"] = tenkan
+    result["kijun"] = kijun
+    result["senkou_a"] = (tenkan + kijun) / 2 if tenkan is not None and kijun is not None else None
+    result["senkou_b"] = _midpoint(span_b)
+    result["chikou"] = closes[-1] if len(closes) >= base else None
+    return result
+
+
+def pivot_points(high: float, low: float, close: float, method: str = "classic") -> dict[str, float | None]:
+    """Classic or Fibonacci pivot levels from one completed period's H/L/C.
+
+    Feed the previous session's bar to get today's levels.
+    """
+    if high < low:
+        return {}
+    span = high - low
+    pivot = (high + low + close) / 3
+
+    if method == "fibonacci":
+        return {
+            "pivot": pivot,
+            "r1": pivot + 0.382 * span, "r2": pivot + 0.618 * span, "r3": pivot + span,
+            "s1": pivot - 0.382 * span, "s2": pivot - 0.618 * span, "s3": pivot - span,
+        }
+    if method != "classic":
+        raise ValueError(f"unknown pivot method: {method!r}")
+    return {
+        "pivot": pivot,
+        "r1": 2 * pivot - low,
+        "r2": pivot + span,
+        "r3": high + 2 * (pivot - low),
+        "s1": 2 * pivot - high,
+        "s2": pivot - span,
+        "s3": low - 2 * (high - pivot),
+    }
+
+
+FIBONACCI_RATIOS = (0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+
+
+def fibonacci_levels(high: float, low: float, uptrend: bool = True) -> dict[str, float]:
+    """Retracement levels between a swing low and swing high.
+
+    uptrend=True measures the pullback down from the high (0% at the high);
+    uptrend=False measures the bounce up from the low.
+    """
+    if high < low:
+        return {}
+    span = high - low
+    levels: dict[str, float] = {}
+    for ratio in FIBONACCI_RATIOS:
+        price = high - span * ratio if uptrend else low + span * ratio
+        levels[f"{ratio * 100:.1f}%"] = price
+    return levels
+
+
+def _body(open_: float, close: float) -> float:
+    return abs(close - open_)
+
+
+def candlestick_patterns(
+    opens: list[float],
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    doji_body_ratio: float = 0.1,
+    shadow_ratio: float = 2.0,
+) -> list[str]:
+    """Patterns present on the most recent bar.
+
+    Returns every pattern that matches, since single- and multi-bar patterns can
+    legitimately coincide. Empty list when nothing matches or data is short.
+    """
+    n = len(closes)
+    if n == 0 or len(opens) != n or len(highs) != n or len(lows) != n:
+        return []
+
+    found: list[str] = []
+    o, h, l, c = opens[-1], highs[-1], lows[-1], closes[-1]
+    span = h - l
+    if span <= 0:
+        return []
+    body = _body(o, c)
+    upper_shadow = h - max(o, c)
+    lower_shadow = min(o, c) - l
+    bullish = c > o
+
+    # --- single bar ---
+    if body <= span * doji_body_ratio:
+        found.append("doji")
+    if body > 0 and lower_shadow >= body * shadow_ratio and upper_shadow <= body:
+        found.append("hammer" if bullish else "hanging_man")
+    if body > 0 and upper_shadow >= body * shadow_ratio and lower_shadow <= body:
+        found.append("inverted_hammer" if bullish else "shooting_star")
+    if body >= span * 0.95:
+        found.append("bullish_marubozu" if bullish else "bearish_marubozu")
+
+    # --- two bar ---
+    if n >= 2:
+        po, pc = opens[-2], closes[-2]
+        prev_body = _body(po, pc)
+        prev_bullish = pc > po
+        if prev_body > 0 and body > prev_body:
+            if bullish and not prev_bullish and c >= po and o <= pc:
+                found.append("bullish_engulfing")
+            elif not bullish and prev_bullish and c <= po and o >= pc:
+                found.append("bearish_engulfing")
+
+    # --- three bar ---
+    if n >= 3:
+        first_o, first_c = opens[-3], closes[-3]
+        mid_o, mid_c = opens[-2], closes[-2]
+        first_body = _body(first_o, first_c)
+        mid_body = _body(mid_o, mid_c)
+        small_middle = first_body > 0 and mid_body <= first_body * 0.5
+        if small_middle and body > 0:
+            midpoint = (first_o + first_c) / 2
+            if first_c < first_o and bullish and c > midpoint and max(mid_o, mid_c) < first_c:
+                found.append("morning_star")
+            elif first_c > first_o and not bullish and c < midpoint and min(mid_o, mid_c) > first_c:
+                found.append("evening_star")
+
+    return found
+
+
+def advanced_snapshot(
+    opens: list[float],
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+) -> dict[str, object]:
+    """Every additional indicator in one call, for scanners and AI context.
+
+    Each entry is independently None/empty when its own data requirement is not
+    met, so a short history degrades field by field instead of all at once.
+    """
+    result: dict[str, object] = {
+        "atr": atr(highs, lows, closes),
+        "vwap": vwap(highs, lows, closes, volumes),
+        "supertrend": supertrend(highs, lows, closes),
+        "ichimoku": ichimoku(highs, lows, closes),
+        "candlestick_patterns": candlestick_patterns(opens, highs, lows, closes),
+        "pivot_points": {},
+        "fibonacci": {},
+    }
+    if len(closes) >= 2:
+        result["pivot_points"] = pivot_points(highs[-2], lows[-2], closes[-2])
+    if len(closes) >= 20:
+        window_high, window_low = max(highs[-20:]), min(lows[-20:])
+        result["fibonacci"] = fibonacci_levels(window_high, window_low)
+    return result
+
+
 def technical_snapshot(
     prices: list[float],
     highs: list[float] | None = None,
