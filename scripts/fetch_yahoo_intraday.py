@@ -79,6 +79,8 @@ def main():
     ap.add_argument("--range", default="60d")
     ap.add_argument("--delay", type=float, default=0.8)
     ap.add_argument("--limit", type=int, default=0, help="cap symbols (test)")
+    ap.add_argument("--prune-days", type=int, default=0,
+                    help="janitor: delete bars older than N days, cap fetch_log, VACUUM")
     args = ap.parse_args()
     main_con = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True, timeout=60)
     out = sqlite3.connect(OUT_DB, timeout=60)
@@ -114,6 +116,14 @@ def main():
                 time.sleep(args.delay)
             out.commit()
             print(f"[{market}] DONE ok={ok}/{len(syms)} total_bars={total:,}")
+    if args.prune_days > 0:
+        # janitor: keep the DB bounded (retention window + capped log + vacuum)
+        cutoff = int(time.time()) - args.prune_days * 86400
+        n1 = out.execute("DELETE FROM bars WHERE ts < ?", (cutoff,)).rowcount
+        n2 = out.execute("DELETE FROM fetch_log WHERE at < datetime('now','-30 days')").rowcount
+        out.commit()
+        out.execute("VACUUM")
+        print(f"janitor: pruned {n1:,} old bars, {n2:,} log rows, vacuumed")
     out.close()
     main_con.close()
     print("FETCH_COMPLETE")

@@ -19,6 +19,7 @@ import pandas as pd
 from . import v2_engine as eng
 from . import market_regions
 from . import factor_investigation as fi
+from . import meta_filter
 
 MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
@@ -28,7 +29,11 @@ BUDGET = {"IN": 100000.0, "US": 20000.0}     # TOTAL paper capital per market
 # Markets the engine actually trades. US is parked while we stabilise India first
 # (add "US" back here to re-enable it — all US config/code below stays intact).
 ENABLED_MARKETS = ["IN"]
-MAXPOS = {"IN": 14, "US": 14}                # max concurrent positions per market.
+MAXPOS = {"IN": 6, "US": 14}                 # max concurrent positions per market.
+                                             # IN 14->6 (user call): the meta filter already
+                                             # keeps only the top few signals/day, so fewer,
+                                             # BIGGER positions (~16.6k vs 7.1k) make each win
+                                             # meaningful without changing which trades we take.
                                              # Backtested 10 vs 14 (2024->now): IN ret -13.1->-7.1%,
                                              # maxDD 13.6->9.6%; US equal Sharpe. More names, not
                                              # bigger bets -> better capital use at same risk.
@@ -52,8 +57,96 @@ PLAN = {
     # maxDD down; IN improves even in the bear window.
     "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=0.0, trail=0.0,  priority=1),
     "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
+    # -- DISABLED_LANES defined just below the dict; gap_momentum is quarantined --
+    # intraday news-momentum sleeve — entered by intraday_news_pass, never by the
+    # daily signal path. atr_stop=1.0 so exit_monitor's atr_est reconstruction
+    # ((entry-stop)/atr_stop) stays consistent with the % stop set at entry.
+    "intraday_news": dict(regime_gated=False, threshold=0.0, atr_stop=1.0, atr_target=0.0, trail=0.0, priority=0),
+    # volume-surge + NSE-catalyst lane (see VOLSURGE). atr_stop=1.0 like intraday_news
+    # so exit_monitor's atr_est reconstruction stays consistent with the % stop.
+    "volume_surge": dict(regime_gated=False, threshold=0.0, atr_stop=1.0, atr_target=0.0, trail=0.0, priority=0),
 }
-MOM_SLOT_CAP = 5                        # momentum sleeve: at most 5 of the book
+# Lanes quarantined from live trading (signals still compute for radar, but they
+# never open a position). gap_momentum disabled 2026-07-27: proven net LOSER —
+# the gap/premove signal ran -0.506%/trade, PF 0.81 over 44,585 backtested trades
+# (win 39%, non-monotonic conviction), matching its live record (0/6, -Rs2,336)
+# and the meta-filter's own "net loser OOS even after meta" note. A stop-cap A/B
+# also showed tightening the stop HURTS (exp +0.63->+0.14%/trade at a -4% cap) and
+# doesn't fix the rare overnight gap tail — so the swing stop is left as-is. Re-enable
+# gap_momentum only if a reworked signal beats baseline out-of-sample.
+DISABLED_LANES = {"gap_momentum"}
+MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
+# ---- intraday news-momentum sleeve (user spec: trade TODAY's tape, take the
+# money fast, flat by the close). 5-min-bar backtest (150 syms, 58 days):
+# intraday momentum ALONE loses (PF ~0.70 every config); the ONLY positive
+# variants require a fresh news catalyst (PF 1.3-1.4) — small sample (news feed
+# starts 2026-05-17), so this runs as a small capped sleeve to prove itself
+# live before it gets more capital.
+INTRA = dict(
+    move_min=0.02,     # up >= 2% vs TODAY's open (not yesterday's close)
+    move_max=0.12,     # >12% intraday = circuit-limit chase risk, skip
+    rvol_min=2.0,      # day volume so far >= 2x its usual pace for this time of day
+    news_min=0.30,     # fresh positive catalyst (<=24h) REQUIRED — no news, no trade
+    min_turnover=2e8,  # >= Rs.20cr avg daily turnover — the backtest evidence is from
+                       # liquid names only; micro-cap "fills" in paper are fantasy
+    slots=3,           # max concurrent intraday positions (capped paper trial)
+    start="09:20", last_entry="11:00",   # backtest: early entries were the best variant;
+                                         # afternoon entries LOSE even on fresh news
+                                         # (all-day PF 0.97, fresh-6h PF 0.70 vs morning 1.41)
+    watch_until="14:30",                 # after last_entry: watch-only Telegram radar, no buys
+    squareoff="15:12", # hard flat before the 15:30 close — NO overnight risk
+    tp=0.035,          # take +3.5% and get out
+    sl=0.0175,         # hard stop -1.75%
+    lock=0.015,        # once up +1.5%, stop moves to breakeven: green never goes red
+)
+# ---- volume-surge + catalyst lane: the "day-1 mover" catcher ----
+# Validation (Jul 21-22 movers) showed the intraday edge needs a REAL catalyst,
+# and our Bing-RSS news feed was too late/incomplete (tagged only 1 of 4 movers
+# same-day). This lane instead gates on NSE's OWN real-time corporate-
+# announcements (results / orders / board outcomes) joined with a big volume
+# surge + price strength. Full send: competes for the whole book (MAXPOS-bound).
+VOLSURGE = dict(
+    move_min=0.04,       # up >= 4% vs PREV CLOSE (a real day move, not noise)
+    move_max=0.19,       # >19% => likely upper-circuit locked / un-fillable — skip
+    rvol_min=3.0,        # >= 3x usual volume pace for this time of day
+    near_high=0.985,     # price within 1.5% of day's high (holding strong, not fading)
+    min_turnover=2.5e8,  # >= Rs.25cr avg daily turnover — liquid, fillable names only
+    catalyst_sessions=3, # a material NSE filing within this many TRADING sessions
+                         # is REQUIRED (weekend/holiday-aware — a Friday result is
+                         # still fresh Monday; a flat 48h window used to expire it
+                         # over the weekend and miss Monday movers like Dr Lal/KFin)
+    slots=6,             # full send: may use the whole book (still MAXPOS-bound)
+    start="09:20", last_entry="14:00",   # results/orders drop all day -> wide window
+    squareoff="15:12",   # hard flat before the close — no overnight risk
+    tp=0.035, sl=0.0175, lock=0.015,
+)
+# BTST (Buy Today, Sell Tomorrow): near the close, buy a strong-CLOSING catalyst
+# momentum name and hold ONE overnight to capture the gap-up. Validated on 2mo of
+# real daily data (scripts/btst_bt.py): catalyst names -> ~64% win, +0.20%/trade
+# after cost, PF ~1.6, tight tail (p05 -1.6%). The edge is the OVERNIGHT GAP only,
+# so the lane MUST sell at the next open — holding into the next day gives it back.
+BTST = dict(
+    move_min=0.03,        # up >= 3% on the day (real momentum, not noise)
+    close_pos_min=0.70,   # closed in the top 30% of the day's range (strong into close)
+    rvol_min=1.5,         # >= 1.5x usual volume
+    min_turnover=2.5e8,   # >= Rs.25cr liquidity floor
+    catalyst_sessions=3,  # fresh NSE catalyst REQUIRED — the edge is catalyst-only
+    sl=0.02,              # hard stop for a bad overnight down-gap
+    slots=5, size_frac=0.6,   # small size, several names (the per-trade edge is thin)
+    entry_start="15:05", entry_last="15:25",   # buy near the close
+)
+INTRADAY_STRATS = ("intraday_news", "volume_surge")   # share exit_monitor's intraday handling
+# Freqtrade-style protections: temporarily HALT new entries when the book is
+# bleeding, so a bad tape can't chew through the whole book. Pure safety — only
+# ever reduces trading. Both reset next session.
+RISK = dict(
+    maxdd_halt=0.06,     # pause new buys if equity is >6% below TODAY's peak
+    stopguard_n=4,       # pause new buys after this many stop/trail exits today
+)
+STALE_QUOTE_SEC = 600        # a symbol whose quote lags the market's freshest by > this is FROZEN.
+                             # 10min (not tighter): the full universe repolls every ~300s, so a
+                             # tighter bar would false-block names merely mid-refresh; real freezes
+                             # (e.g. GUJGASLTD stuck since Jun 30) lag by hours/days and still trip it.
 # Risk profile per market. Dynamic allocation (idle cash flows into open slots)
 # roughly doubles both return AND drawdown (US backtest: +110%/16.7%DD vs
 # +50%/9.1%DD). The user's demonstrated tolerance for US drawdowns is low ->
@@ -71,10 +164,15 @@ ETF_EXCLUDE = {
 }
 MIN_PRICE = {"IN": 50.0, "US": 5.0}     # quality/liquidity floor - skip the cheapest, most manipulable names
 SLOT_MIN_UTIL = 0.55                    # IN whole-share fill must use >= this fraction of its slot (else capital waste)
-GAP_SLOT_CAP = 10                       # cap gap_momentum slots so it can't monopolize the book (reserve up to MAXPOS-cap for swing; scaled with MAXPOS=14)
+GAP_SLOT_CAP = 3                        # cap gap_momentum slots so it can't monopolize the book (scaled with MAXPOS IN=6)
 GAP_TARGET = {"IN": 0.10, "US": 0.0}    # gap_momentum profit target by market: IN momentum mean-reverts,
                                         # so take profit at +10% (backtested: less give-back, edge intact,
                                         # win rate 37%->46%); US trends, a target chops the big runners -> trail only.
+# volatility-normalized sizing (equalize risk per position). Reference ATR% ~=
+# a typical IN swing name; a name at 2x that ATR gets ~half size, at 0.5x gets
+# up to VOL_SIZE_MAX. Clamped so no single position gets wildly over/under-sized.
+VOL_TARGET_ATR = 0.030
+VOL_SIZE_MIN, VOL_SIZE_MAX = 0.55, 1.60
 BE_TRIGGER_ATR = 3.0                    # once a trade is up >= this many ATR, lock the stop at breakeven.
                                         # Backtested NEUTRAL (only arms on rare big winners, so it never cuts
                                         # normal trades that would recover) - protects against a monster winner
@@ -517,9 +615,18 @@ def poll_market(market):
             return
     except Exception:
         pass
+    # hold back cash for the intraday sleeve while its entry window is open —
+    # otherwise DYN_ALLOC lets the daily book consume the whole budget at the
+    # 09:15 open, starving the sleeve before it can find anything (IN only).
+    reserve = 0.0
+    if market == "IN" and datetime.now(IST).strftime("%H:%M") <= INTRA["last_entry"]:
+        n_intra_open = sum(1 for p in positions.values() if p["strategy"] == "intraday_news")
+        reserve = min(max(0, INTRA["slots"] - n_intra_open) * alloc, budget / 3.0)
     # candidate ordering: catalysts (gap) first, then swing; each must clear its own gate
     cand = []
     for s in sigs:
+        if s["strategy"] in DISABLED_LANES:              # quarantined lanes never trade
+            continue
         pl = PLAN[s["strategy"]]
         if s["score"] < pl["threshold"]:
             continue
@@ -532,6 +639,29 @@ def poll_market(market):
         if s["price"] < MIN_PRICE.get(market, 0.0):     # quality/liquidity floor
             continue
         cand.append((pl["priority"], -s["score"], s, pl))
+    # ---- meta-label gate: secondary P(win) model on top of the primary engine
+    # (proven OOS on 15mo of real data to turn the net-losing raw signal set into
+    # a positive-expectancy one by trading only higher-confidence setups). Wrapped
+    # so any failure or a missing model leaves the engine exactly as before.
+    try:
+        mp = meta_filter.score(sigs, tails, mdf, asof, rstate, strong, market)
+        mfloor = meta_filter.floor(market)
+        if mfloor is not None:
+            kept = []
+            for pr, negscore, s, pl in cand:
+                p = mp.get(s["symbol"])
+                s["meta_p"] = p
+                # gap_momentum was a net loser OOS even after meta -> hold it to a
+                # stricter confidence bar than the swing sleeve where meta works.
+                thr = mfloor + (0.07 if s["strategy"] == "gap_momentum" else 0.0)
+                if p is not None and p < thr:
+                    continue                       # drop low-confidence swing/gap signals
+                # rank primarily by model confidence when we have it, else by conviction
+                rankkey = -p if p is not None else negscore
+                kept.append((pr, rankkey, s, pl))
+            cand = kept
+    except Exception as _mexc:
+        pass
     cand.sort(key=lambda x: (x[0], x[1]))
     _tg_radar_digest(market, today, cand, positions)   # once/day: what the AI is watching
     # strategy balance: hold back slots for swing ONLY when swing actually has
@@ -564,10 +694,15 @@ def poll_market(market):
         _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · "
                            f"{len(cand)} candidates · entries at next open")
         return
+    halt, hreason = _risk_halt(v2, market)         # protections: don't add risk while bleeding
+    if halt:
+        v2.commit(); v2.close()
+        _status[market] = "entries paused · " + hreason
+        return
     mcon = _ro(MAIN_DB)
     fills = exits = vetoed = investig = 0
     for _, _, s, pl in cand:
-        if len(positions) >= max_pos or cash < 0.25 * alloc:   # stop when only crumbs remain
+        if len(positions) >= max_pos or (cash - reserve) < 0.25 * alloc:   # stop when only crumbs remain
             break
         sym = s["symbol"]
         if sym in positions or sym in traded:
@@ -609,11 +744,19 @@ def poll_market(market):
                 pass
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
+        # volatility-normalized sizing: equal RISK per position, not equal rupees
+        # — calmer names get more, jumpier names less. Backtested at MAXPOS=6 this
+        # lifted Sharpe 0.50->0.69 and cut max drawdown 8.1%->6.8% vs equal-weight
+        # (probability-weighted and rank-by-P were tested too and did NOT help).
+        atr_pct = (atr / entry) if entry > 0 else 0.0
+        vol_mult = 1.0
+        if atr_pct > 0:
+            vol_mult = max(VOL_SIZE_MIN, min(VOL_SIZE_MAX, VOL_TARGET_ATR / atr_pct))
         remaining = max(1, max_pos - len(positions))
         base_alloc = equity_now / max_pos
         if DYN_ALLOC.get(market, True):
-            base_alloc = max(base_alloc, cash / remaining)   # dynamic: idle cash flows to open slots
-        shares = min(base_alloc * size_mult, cash / (1 + cside)) / entry   # volatility-scaled, never overdraws
+            base_alloc = max(base_alloc, (cash - reserve) / remaining)   # dynamic: idle cash flows to open slots
+        shares = min(base_alloc * size_mult * vol_mult, (cash - reserve) / (1 + cside)) / entry   # risk-scaled, never overdraws
         if market == "IN":               # NSE: whole shares only, no fractions
             shares = float(int(shares))
             if shares < 1:               # stock too pricey for the per-position budget
@@ -651,7 +794,612 @@ def poll_market(market):
                        f"{vetoed} news-vetoed · {investig} investigation-rejected")
 
 
-HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40}
+_INTRA_AVGVOL: dict = {}   # market -> (date, {sym: 20d avg daily volume}) refreshed daily
+_INTRA_WATCHED: dict = {}  # date -> symbols already radar-alerted (watch-only mode dedupe)
+
+# NSE intraday volume is U-shaped (heavy open, quiet lunch, heavy close), NOT
+# linear. Points = (minutes since 09:15 open, approx cumulative fraction of the
+# day's volume). A linear pace overstated rvol late morning (fake "surges") and
+# understated it right after the open (missed real ones).
+_VOL_CURVE = [(0, 0.02), (5, 0.05), (15, 0.10), (30, 0.16), (60, 0.25),
+              (105, 0.35), (165, 0.46), (225, 0.57), (285, 0.70), (345, 0.88), (375, 1.0)]
+
+
+def _vol_frac(mins):
+    """Piecewise-linear cumulative volume fraction for `mins` after the open."""
+    if mins <= 0:
+        return 0.04
+    for (m0, f0), (m1, f1) in zip(_VOL_CURVE, _VOL_CURVE[1:]):
+        if mins <= m1:
+            return max(0.04, f0 + (f1 - f0) * (mins - m0) / (m1 - m0))
+    return 1.0
+
+
+# sentiment_events / latest_quotes store ISO timestamps with a 'T' separator;
+# sqlite's datetime('now') emits a space. A plain string >= comparison therefore
+# passed EVERY event on the boundary date, silently widening a "24h" window to
+# 24-48h. strftime with an explicit 'T' makes the comparison correct.
+FRESH_NEWS_SQL = ("SELECT MAX(score) FROM sentiment_events WHERE symbol=? "
+                  "AND ts>=strftime('%Y-%m-%dT%H:%M:%S','now','-1 day')")
+
+
+def _intra_avgvol(market, tails):
+    today_s = datetime.now(IST).date().isoformat()
+    c = _INTRA_AVGVOL.get(market)
+    if c and c[0] == today_s:
+        return c[1]
+    av = {}
+    for sym, g in tails.items():
+        try:
+            v = float(g["volume"].tail(20).mean())
+            if v > 0:
+                av[sym] = v
+        except Exception:
+            pass
+    _INTRA_AVGVOL[market] = (today_s, av)
+    return av
+
+
+def intraday_news_pass(market):
+    """Intraday news-momentum sleeve (user spec): buy a stock that is up vs
+    TODAY's open, pressing its intraday high on a genuine volume surge, WITH a
+    fresh positive news catalyst. Exits: +3.5% target / -1.75% stop / breakeven
+    lock at +1.5% / hard square-off 15:12 IST (handled in exit_monitor).
+    Runs every engine cycle inside the entry window; cheap (one quotes read)."""
+    if market != "IN":
+        return
+    now = datetime.now(IST)
+    hm = now.strftime("%H:%M")
+    if hm < INTRA["start"] or hm > INTRA["watch_until"]:
+        return
+    # after the proven entry window: keep scanning ALL day, but alert-only —
+    # afternoon entries backtested as losers even on fresh news, so the book
+    # never buys them; the user still sees every qualified mover on Telegram.
+    watch_only = hm > INTRA["last_entry"]
+    # stale-feed guard: if the quote feed has stalled, "fills" would happen at
+    # frozen prices — fantasy trades that would corrupt the live trial.
+    try:
+        con = _ro(MAIN_DB)
+        age = con.execute("SELECT (julianday('now')-julianday(MAX(ts)))*86400 FROM latest_quotes WHERE source=?",
+                          (LIVE_SOURCE[market],)).fetchone()[0]
+        con.close()
+        if age is not None and age > 120:
+            return
+    except Exception:
+        pass
+    live = _live(market)
+    if not live:
+        return
+    tails, _mdf = _hist(market)
+    av = _intra_avgvol(market, tails)
+    # cumulative volume expected by now — U-shaped session curve, not linear
+    mins = (now.hour * 60 + now.minute) - (9 * 60 + 15)
+    frac = _vol_frac(mins)
+    v2 = _rw()
+    book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
+    if not book:
+        v2.close(); return
+    budget, max_pos = book[0], int(book[1])
+    positions = {r[0]: r[1] for r in v2.execute("SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
+    n_intra = sum(1 for st in positions.values() if st == "intraday_news")
+    if n_intra >= INTRA["slots"] and not watch_only:
+        v2.close(); return
+    today_s = now.date().isoformat()
+    # daily churn cap: slots + one refill. 3 stop-outs then 3 more losers would
+    # otherwise be possible in a single bad tape.
+    n_today = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=? AND strategy='intraday_news' AND entry_date=?",
+                         (market, today_s)).fetchone()[0] or 0
+    if n_intra + n_today >= 2 * INTRA["slots"] and not watch_only:
+        v2.close(); return
+    traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
+    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+    invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0.0
+    cash = budget - invested + realised
+    alloc = budget / max_pos
+    cside = COST_SIDE[market]
+    cands = []
+    for sym, lq in live.items():
+        if sym in positions or sym in traded or sym in ETF_EXCLUDE:
+            continue
+        if sym not in av:
+            continue
+        if lq["price"] < MIN_PRICE.get(market, 0.0):
+            continue
+        if av[sym] * lq["price"] < INTRA["min_turnover"]:   # liquid names only
+            continue
+        o = lq.get("open") or 0.0
+        if o <= 0:
+            continue
+        move = lq["price"] / o - 1
+        if not (INTRA["move_min"] <= move <= INTRA["move_max"]):
+            continue
+        if lq["price"] < 0.998 * lq["high"]:      # must be pressing today's high NOW
+            continue
+        rvol = (lq.get("vol") or 0.0) / (av[sym] * frac)
+        if rvol < INTRA["rvol_min"]:
+            continue
+        cands.append((move * min(rvol, 6.0), move, rvol, sym, lq))
+    if not cands:
+        v2.close(); return
+    cands.sort(key=lambda x: -x[0])
+    mcon = _ro(MAIN_DB)
+    if watch_only:
+        # afternoon: alert qualified movers (all gates incl news), never buy.
+        for k in list(_INTRA_WATCHED):
+            if k != today_s:
+                del _INTRA_WATCHED[k]
+        seen = _INTRA_WATCHED.setdefault(today_s, set())
+        items = []
+        for _, move, rvol, sym, lq in cands:
+            if len(items) >= 3:
+                break
+            if sym in seen:
+                continue
+            try:
+                row = mcon.execute(FRESH_NEWS_SQL, (sym,)).fetchone()
+                ns = float(row[0]) if row and row[0] is not None else 0.0
+            except Exception:
+                ns = 0.0
+            if ns < INTRA["news_min"]:
+                continue
+            _sc, severe = _news_state(mcon, sym)
+            if severe:
+                continue
+            seen.add(sym)
+            items.append({"symbol": sym,
+                          "note": "intraday mover %+.1f%% on news — watch only, outside entry window" % (move * 100)})
+        mcon.close(); v2.close()
+        if items:
+            try:
+                from . import telegram_bot
+                telegram_bot.notify_radar(items, market)
+            except Exception:
+                pass
+        return
+    fills = 0
+    for _, move, rvol, sym, lq in cands:
+        if n_intra + fills >= INTRA["slots"] or cash < 0.25 * alloc:
+            break
+        # the backtested edge REQUIRES a fresh (<=24h) positive catalyst
+        try:
+            row = mcon.execute(FRESH_NEWS_SQL, (sym,)).fetchone()
+            ns = float(row[0]) if row and row[0] is not None else 0.0
+        except Exception:
+            ns = 0.0
+        if ns < INTRA["news_min"]:
+            continue
+        _sc, severe = _news_state(mcon, sym)
+        if severe:                                 # never buy into bad news
+            continue
+        entry = lq["price"]
+        shares = float(int(min(alloc, cash / (1 + cside)) / entry))
+        if shares < 1 or shares * entry < SLOT_MIN_UTIL * alloc:
+            continue
+        cash -= shares * entry * (1 + cside)
+        stop, tgt = entry * (1 - INTRA["sl"]), entry * (1 + INTRA["tp"])
+        why = json.dumps(dict(setup="intraday_news", move_pct=round(move * 100, 2),
+                              rvol=round(rvol, 1), news=round(ns, 2)))
+        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
+                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (market, "intraday_news", sym, today_s, entry, shares, stop, tgt, 0.0, entry,
+                    round(min(move / 0.05, 1.0), 4), datetime.now(timezone.utc).isoformat(), why))
+        try:
+            from . import telegram_bot
+            telegram_bot.notify_trade("BUY", sym, int(shares), round(entry, 2), market,
+                                      strategy="intraday_news", stop=round(stop, 2), target=round(tgt, 2))
+        except Exception:
+            pass
+        traded.add(sym); fills += 1
+    mcon.close()
+    v2.commit(); v2.close()
+    if fills:
+        _status[market] = f"intraday +{fills} @ {hm} IST · " + _status.get(market, "")
+
+
+_PREVCLOSE: dict = {}   # market -> (date, {sym: last daily-candle close}) refreshed daily
+
+
+def _prev_close(market):
+    """Last COMPLETED daily-candle close per symbol (= the reference the day's %
+    move is measured against). Cached per day."""
+    today_s = datetime.now(IST).date().isoformat()
+    c = _PREVCLOSE.get(market)
+    if c and c[0] == today_s:
+        return c[1]
+    out = {}
+    try:
+        con = _ro(MAIN_DB)
+        src = eng.DAILY_SOURCE.get(market, "upstox-live:day")
+        for sym, cl in con.execute(
+            "SELECT symbol, close FROM (SELECT symbol, close, ROW_NUMBER() OVER "
+            "(PARTITION BY symbol ORDER BY ts DESC) rn FROM candles WHERE source=?) WHERE rn=1", (src,)):
+            try:
+                v = float(cl)
+                if v > 0:
+                    out[str(sym).upper()] = v
+            except (TypeError, ValueError):
+                pass
+        con.close()
+    except Exception:
+        pass
+    _PREVCLOSE[market] = (today_s, out)
+    return out
+
+
+def _stale_symbols(market, lag=STALE_QUOTE_SEC):
+    """Symbols whose latest_quotes timestamp lags the market's FRESHEST quote by
+    more than `lag` seconds — i.e. frozen (e.g. GUJGASLTD stuck since Jun 30).
+    Used to skip entries on frozen data AND to avoid marking/exiting positions
+    off a stale price (a frozen HIGH quote would phantom-hit a target)."""
+    out = set()
+    try:
+        con = _ro(MAIN_DB)
+        rows = con.execute("SELECT symbol, ts FROM latest_quotes WHERE source=?",
+                           (LIVE_SOURCE[market],)).fetchall()
+        con.close()
+        eps = {}
+        for sym, ts in rows:
+            try:
+                eps[str(sym).upper()] = datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                pass
+        if not eps:
+            return out
+        fresh = max(eps.values())
+        out = {s for s, e in eps.items() if fresh - e > lag}
+    except Exception:
+        pass
+    return out
+
+
+CATALYST_DB = os.environ.get("CATALYST_DB", "/opt/opentrade/var/catalysts.db")
+
+
+def _catalyst_cutoff_epoch(sessions):
+    """Epoch of 00:00 IST on the trading day `sessions` sessions before today, so
+    the catalyst-freshness window bridges weekends/holidays instead of a flat 48
+    wall-clock hours (which expired Friday results before Monday's move)."""
+    today = datetime.now(IST).date()
+    try:
+        import numpy as _np
+        hol = _np.array(MARKET_HOLIDAYS.get("IN", []), dtype="datetime64[D]")
+        cd = _np.busday_offset(_np.datetime64(today, "D"), -sessions,
+                               roll="backward", holidays=hol)
+        d = cd.astype("datetime64[D]").astype(object)   # -> datetime.date
+        return int(datetime(d.year, d.month, d.day, tzinfo=IST).timestamp())
+    except Exception:
+        return int(time.time()) - (sessions + 2) * 24 * 3600   # weekend-padded fallback
+
+
+def _nse_catalyst_symbols(sessions=VOLSURGE["catalyst_sessions"]):
+    """Symbols with a MATERIAL NSE filing (results/order/corp_action) within the
+    last `sessions` TRADING sessions (weekend/holiday-aware). Real-time source
+    (scripts/nse_announcements.py), replacing the late/incomplete Bing-RSS score
+    gate for the volume_surge lane. Reads its OWN WAL db so it never contends with
+    the trading_agent.db. Returns {symbol: category} — the freshest material
+    catalyst type per symbol (so each buy can record WHY, e.g. 'results' / 'order').
+    The lane still requires a SAME-DAY volume+price surge before buying, so an
+    older-but-in-window catalyst only makes the name eligible, never buys it stale."""
+    out = {}
+    try:
+        con = _ro(CATALYST_DB)
+        cutoff = _catalyst_cutoff_epoch(sessions)
+        for sym, cat in con.execute(
+            "SELECT symbol, category FROM nse_announcements WHERE an_epoch >= ? "
+            "AND category IN ('results','order','corp_action') ORDER BY an_epoch DESC", (cutoff,)):
+            out.setdefault(str(sym).upper(), cat)   # first seen = freshest (DESC order)
+        con.close()
+    except Exception:
+        pass
+    return out
+
+
+def _risk_halt(v2, market):
+    """Freqtrade-style protections. Returns (halt_bool, reason). Halts NEW entries
+    (never touches open positions) when:
+      - StoplossGuard: >= RISK[stopguard_n] stop/trail exits already today, OR
+      - MaxDrawdown:   book equity is > RISK[maxdd_halt] below today's peak."""
+    today = datetime.now(IST).date().isoformat()
+    try:
+        n_stops = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=? AND substr(exit_date,1,10)=? "
+                             "AND reason IN ('stop','trail')", (market, today)).fetchone()[0] or 0
+        if n_stops >= RISK["stopguard_n"]:
+            return True, "stoploss-guard (%d stops today)" % n_stops
+    except Exception:
+        pass
+    try:
+        utc_d = datetime.now(timezone.utc).date().isoformat()
+        eqs = [r[0] for r in v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date LIKE ? ORDER BY date",
+                                        (market, "LIVE_" + utc_d + "%"))]
+        if len(eqs) >= 3:
+            peak, cur = max(eqs), eqs[-1]
+            if peak > 0 and (peak - cur) / peak > RISK["maxdd_halt"]:
+                return True, "max-drawdown halt (%.1f%% off today's peak)" % ((peak - cur) / peak * 100)
+    except Exception:
+        pass
+    return False, ""
+
+
+def volume_surge_pass(market):
+    """The day-1 mover catcher: buy a LIQUID stock up >= 4% vs prev close, holding
+    near its day high on a >= 3x volume surge, WITH a fresh material NSE catalyst
+    (results/order/board-outcome). Skips frozen quotes and circuit-locked names.
+    Exits handled by exit_monitor (TP/stop/breakeven-lock/square-off 15:12)."""
+    if market != "IN":
+        return
+    now = datetime.now(IST)
+    hm = now.strftime("%H:%M")
+    if hm < VOLSURGE["start"] or hm > VOLSURGE["last_entry"]:
+        return
+    live = _live(market)
+    if not live:
+        return
+    catalysts = _nse_catalyst_symbols()
+    if not catalysts:
+        return                               # no catalyst => nothing this lane trades
+    stale = _stale_symbols(market)
+    tails, _mdf = _hist(market)
+    av = _intra_avgvol(market, tails)
+    prevc = _prev_close(market)
+    mins = (now.hour * 60 + now.minute) - (9 * 60 + 15)
+    frac = _vol_frac(mins)
+    v2 = _rw()
+    book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
+    if not book:
+        v2.close(); return
+    budget, max_pos = book[0], int(book[1])
+    halt, hreason = _risk_halt(v2, market)         # protections: don't add risk while bleeding
+    if halt:
+        _status[market] = "volsurge paused · " + hreason
+        v2.close(); return
+    positions = {r[0]: r[1] for r in v2.execute("SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
+    n_vs = sum(1 for st in positions.values() if st == "volume_surge")
+    if n_vs >= VOLSURGE["slots"] or len(positions) >= max_pos:
+        v2.close(); return
+    today_s = now.date().isoformat()
+    traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
+    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+    invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0.0
+    cash = budget - invested + realised
+    alloc = budget / max_pos
+    cside = COST_SIDE[market]
+    cands = []
+    for sym in catalysts:                    # iterate the SHORT catalyst list, not 2600 quotes
+        if sym in positions or sym in traded or sym in ETF_EXCLUDE or sym in stale:
+            continue
+        lq = live.get(sym)
+        if not lq or sym not in av or sym not in prevc:
+            continue
+        if lq["price"] < MIN_PRICE.get(market, 0.0):
+            continue
+        if av[sym] * lq["price"] < VOLSURGE["min_turnover"]:
+            continue
+        pc = prevc[sym]
+        move = lq["price"] / pc - 1
+        if not (VOLSURGE["move_min"] <= move <= VOLSURGE["move_max"]):
+            continue
+        if lq["price"] < VOLSURGE["near_high"] * lq["high"]:   # holding near day high, not fading
+            continue
+        rvol = (lq.get("vol") or 0.0) / (av[sym] * frac)
+        if rvol < VOLSURGE["rvol_min"]:
+            continue
+        cands.append((move * min(rvol, 8.0), move, rvol, sym, lq))
+    if not cands:
+        v2.close(); return
+    cands.sort(key=lambda x: -x[0])
+    fills = 0
+    for _, move, rvol, sym, lq in cands:
+        if n_vs + fills >= VOLSURGE["slots"] or len(positions) + fills >= max_pos or cash < 0.25 * alloc:
+            break
+        entry = lq["price"]
+        atr_pct = 0.0175                      # % stop drives sizing (no ATR for intraday)
+        vol_mult = max(VOL_SIZE_MIN, min(VOL_SIZE_MAX, VOL_TARGET_ATR / max(atr_pct, 0.005)))
+        shares = float(int(min(alloc * vol_mult, cash / (1 + cside)) / entry))
+        if shares < 1 or shares * entry < SLOT_MIN_UTIL * alloc:
+            continue
+        cash -= shares * entry * (1 + cside)
+        stop, tgt = entry * (1 - VOLSURGE["sl"]), entry * (1 + VOLSURGE["tp"])
+        cat_label = {"results": "Q results", "order": "new order",
+                     "corp_action": "corporate action"}.get(catalysts.get(sym), "NSE filing")
+        why = json.dumps(dict(setup="volume_surge", move_pct=round(move * 100, 2),
+                              rvol=round(rvol, 1), catalyst=cat_label))
+        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
+                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (market, "volume_surge", sym, today_s, entry, shares, stop, tgt, 0.0, entry,
+                    round(min(move / 0.10, 1.0), 4), datetime.now(timezone.utc).isoformat(), why))
+        try:
+            from . import telegram_bot
+            telegram_bot.notify_trade("BUY", sym, int(shares), round(entry, 2), market,
+                                      strategy="volume_surge", stop=round(stop, 2), target=round(tgt, 2))
+        except Exception:
+            pass
+        traded.add(sym); fills += 1
+    v2.commit(); v2.close()
+    if fills:
+        _status[market] = f"volsurge +{fills} @ {hm} IST · " + _status.get(market, "")
+
+
+def btst_pass(market, force=False):
+    """BTST lane: near the close, buy strong-closing catalyst momentum names to hold
+    ONE overnight for the gap-up. Sells at the next open (handled in exit_monitor).
+    `force` bypasses the close-time window for a one-off seed. Mirrors
+    volume_surge_pass' structure/guards; the only differences are the close-position
+    filter, the overnight hold, and no intraday square-off."""
+    if market != "IN":
+        return
+    now = datetime.now(IST)
+    hm = now.strftime("%H:%M")
+    if not force and not (BTST["entry_start"] <= hm <= BTST["entry_last"]):
+        return
+    live = _live(market)
+    if not live:
+        return
+    catalysts = _nse_catalyst_symbols(BTST["catalyst_sessions"])
+    if not catalysts:
+        return
+    stale = _stale_symbols(market)
+    tails, _mdf = _hist(market)
+    av = _intra_avgvol(market, tails)
+    prevc = _prev_close(market)
+    mins = (now.hour * 60 + now.minute) - (9 * 60 + 15)
+    frac = _vol_frac(mins)
+    v2 = _rw()
+    book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
+    if not book:
+        v2.close(); return
+    budget, max_pos = book[0], int(book[1])
+    halt, hreason = _risk_halt(v2, market)         # don't add overnight risk while bleeding
+    if halt:
+        _status[market] = "btst paused · " + hreason
+        v2.close(); return
+    positions = {r[0]: r[1] for r in v2.execute("SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
+    n_bt = sum(1 for st in positions.values() if st == "btst")
+    if n_bt >= BTST["slots"] or len(positions) >= max_pos:
+        v2.close(); return
+    today_s = now.date().isoformat()
+    traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
+    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+    invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0.0
+    cash = budget - invested + realised
+    alloc = budget / max_pos
+    cside = COST_SIDE[market]
+    cands = []
+    for sym in catalysts:
+        if sym in positions or sym in traded or sym in ETF_EXCLUDE or sym in stale:
+            continue
+        lq = live.get(sym)
+        if not lq or sym not in av or sym not in prevc:
+            continue
+        if lq["price"] < MIN_PRICE.get(market, 0.0):
+            continue
+        if av[sym] * lq["price"] < BTST["min_turnover"]:
+            continue
+        move = lq["price"] / prevc[sym] - 1
+        if move < BTST["move_min"]:
+            continue
+        hi = lq.get("high") or lq["price"]
+        lo = lq.get("low") or lq["price"]
+        rng = hi - lo
+        cpos = (lq["price"] - lo) / rng if rng > 0 else 1.0
+        if cpos < BTST["close_pos_min"]:                # must close near the day high
+            continue
+        rvol = (lq.get("vol") or 0.0) / (av[sym] * frac) if (av[sym] and frac) else 0.0
+        if rvol < BTST["rvol_min"]:
+            continue
+        cands.append((move * min(rvol, 8.0), move, rvol, cpos, sym, lq))
+    if not cands:
+        v2.close(); return
+    cands.sort(key=lambda x: -x[0])
+    fills = 0
+    for _, move, rvol, cpos, sym, lq in cands:
+        if n_bt + fills >= BTST["slots"] or len(positions) + fills >= max_pos or cash < 0.25 * alloc:
+            break
+        entry = lq["price"]
+        shares = float(int(min(alloc * BTST["size_frac"], cash / (1 + cside)) / entry))
+        if shares < 1:
+            continue
+        cash -= shares * entry * (1 + cside)
+        stop = entry * (1 - BTST["sl"])
+        cat_label = {"results": "Q results", "order": "new order",
+                     "corp_action": "corporate action"}.get(catalysts.get(sym), "NSE filing")
+        why = json.dumps(dict(setup="btst", move_pct=round(move * 100, 2), rvol=round(rvol, 1),
+                              close_pos=round(cpos, 2), catalyst=cat_label, exit="next open"))
+        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
+                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (market, "btst", sym, today_s, entry, shares, stop, 0.0, 0.0, entry,
+                    round(min(move / 0.10, 1.0), 4), datetime.now(timezone.utc).isoformat(), why))
+        try:
+            from . import telegram_bot
+            telegram_bot.notify_trade("BUY", sym, int(shares), round(entry, 2), market,
+                                      strategy="btst", stop=round(stop, 2))
+        except Exception:
+            pass
+        fills += 1
+    v2.commit(); v2.close()
+    if fills:
+        _status[market] = f"btst +{fills} @ {hm} IST (sell at open) · " + _status.get(market, "")
+
+
+_SECTOR_ALERTED: dict = {}   # date -> set of sectors already radar-alerted (dedupe)
+
+
+def sector_watch_pass(market):
+    """WATCH-ONLY (no auto-trade — unvalidated): surface two patterns the engine
+    otherwise ignores, as Telegram radar alerts —
+      1. sector co-movement: >= 2 liquid names in one sector up >= 3% on volume
+         (e.g. HEG + Graphite India; TVS + Bajaj) -> the theme + its laggards.
+      2. NSE 'Spurt in Volume' notices -> names the exchange itself flagged.
+    Deduped once per sector / once per symbol per day."""
+    if market != "IN":
+        return
+    now = datetime.now(IST)
+    hm = now.strftime("%H:%M")
+    if not ("09:30" <= hm <= "15:00"):
+        return
+    live = _live(market)
+    if not live:
+        return
+    prevc = _prev_close(market)
+    tails, _mdf = _hist(market)
+    av = _intra_avgvol(market, tails)
+    smap = _sector_map(market)
+    stale = _stale_symbols(market)
+    mins = (now.hour * 60 + now.minute) - (9 * 60 + 15)
+    frac = _vol_frac(mins)
+    today = now.date().isoformat()
+    for d in list(_SECTOR_ALERTED):          # prune old days
+        if d != today:
+            del _SECTOR_ALERTED[d]
+    alerted = _SECTOR_ALERTED.setdefault(today, set())
+    # group liquid movers by sector
+    by_sector = {}
+    for sym, lq in live.items():
+        if sym in ETF_EXCLUDE or sym in stale or sym not in prevc or sym not in av:
+            continue
+        if av[sym] * lq["price"] < 1.5e8:    # >= Rs.15cr turnover
+            continue
+        move = lq["price"] / prevc[sym] - 1
+        if move < 0.03:
+            continue
+        rvol = (lq.get("vol") or 0.0) / (av[sym] * frac)
+        if rvol < 2.0:
+            continue
+        sec = smap.get(sym, "unknown")
+        if sec in ("unknown", "NSE Listed Equity", ""):
+            continue
+        by_sector.setdefault(sec, []).append((move, sym))
+    for sec, movers in by_sector.items():
+        key = "sec:" + sec
+        if len(movers) < 2 or key in alerted:
+            continue
+        alerted.add(key)
+        movers.sort(reverse=True)
+        items = [{"symbol": s, "note": "%s +%.1f%% (sector on the move)" % (sec, m * 100)}
+                 for m, s in movers[:4]]
+        try:
+            from . import telegram_bot
+            telegram_bot.notify_radar(items, market)
+        except Exception:
+            pass
+    # NSE 'Spurt in Volume' notices (exchange-flagged movers) -> radar
+    try:
+        con = _ro(CATALYST_DB)
+        cutoff = int(time.time()) - 6 * 3600
+        spurts = [r[0] for r in con.execute(
+            "SELECT DISTINCT symbol FROM nse_announcements WHERE an_epoch>=? "
+            "AND (lower(subject) LIKE '%spurt%' OR lower(text) LIKE '%spurt in volume%')", (cutoff,))]
+        con.close()
+        fresh = [s for s in spurts if ("spurt:" + s) not in alerted and s in live]
+        for s in fresh:
+            alerted.add("spurt:" + s)
+        if fresh:
+            from . import telegram_bot
+            telegram_bot.notify_radar([{"symbol": s, "note": "NSE flagged a volume spurt"} for s in fresh[:5]], market)
+    except Exception:
+        pass
+
+
+HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intraday_news": 1, "volume_surge": 1}
 
 
 def exit_monitor(market):
@@ -672,10 +1420,23 @@ def exit_monitor(market):
                         "FROM v2_positions WHERE market=?", (market,)):
         positions[r[2]] = dict(id=r[0], strategy=r[1], entry=r[3], shares=r[4], stop=r[5],
                                target=r[6], trail=r[7], peak=r[8], edate=r[9])
-    if not positions:                            # nothing held -> nothing to monitor
+    if not positions:                            # nothing held -> nothing to monitor,
+        # but still write a heartbeat snapshot (throttled) so the health check knows
+        # the engine is ALIVE on an empty/fresh book (equity = cash = budget+realized).
+        if time.time() - _EQ_SNAP.get(market, 0) >= 60:
+            _EQ_SNAP[market] = time.time()
+            realized = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+            eqv = budget + realized
+            try:
+                v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
+                           (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], eqv, eqv, 0.0, 0))
+                v2.commit()
+            except Exception:
+                pass
         v2.close(); return
     live = _live(market, positions.keys())       # only held symbols (cheap, not all 10k)
     sess = _session_opens(market, live)          # session high ratchets US trails between samples
+    frozen = _stale_symbols(market)              # don't mark/exit off a stale (frozen) quote
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
     cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
     exits = 0
@@ -683,6 +1444,8 @@ def exit_monitor(market):
         lq = live.get(sym)
         if not lq:
             continue
+        if sym in frozen:                        # frozen quote (e.g. GUJGASLTD): a stale
+            continue                             # HIGH price would phantom-hit stop/target
         sr = sess.get(sym)
         peak = max(p["peak"], lq["high"], lq["price"], sr[1] if sr else 0.0)
         eff = p["stop"]
@@ -693,6 +1456,10 @@ def exit_monitor(market):
         atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
         if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
             eff = max(eff, p["entry"])
+        # intraday lanes: once up >= lock%, stop rises to breakeven — a green
+        # trade is never allowed to go red (user spec, matches the backtest)
+        if p["strategy"] in INTRADAY_STRATS and peak >= p["entry"] * (1 + INTRA["lock"]):
+            eff = max(eff, p["entry"] * 1.001)
         try:
             # TRADING days, not calendar days — the backtest validated an 8
             # trading-bar hold; calendar counting was force-selling ~2 sessions
@@ -709,10 +1476,29 @@ def exit_monitor(market):
         if p["strategy"] == "gap_momentum" and GAP_TARGET.get(market):
             eff_tgt = max(eff_tgt, p["entry"] * (1 + GAP_TARGET[market]))
         ex = reason = None
-        if lq["low"] <= eff or lq["price"] <= eff:
+        # mid-session entries (intraday lanes AND manual buys, on their ENTRY day)
+        # happen after the day's low/high are already set — those extremes predate
+        # the entry, so using them would instantly "trigger" a stop/target the trade
+        # never touched after entry. Use the LIVE price as the only valid reference
+        # in that case; on later held days the day low/high are legitimate.
+        same_day = str(p.get("edate"))[:10] == today_s
+        # intraday lanes always enter mid-session; a manual buy enters mid-session on
+        # its ENTRY day. swing/gap enter at the OPEN so their day low/high are valid.
+        use_live = (p["strategy"] in INTRADAY_STRATS) or (p["strategy"] in ("manual", "btst") and same_day)
+        lo_ref = lq["price"] if use_live else lq["low"]
+        hi_ref = lq["price"] if use_live else lq["high"]
+        if lo_ref <= eff or lq["price"] <= eff:
             ex, reason = min(eff, lq["price"]), ("trail" if p["trail"] and eff > p["stop"] else "stop")
-        elif eff_tgt and (lq["high"] >= eff_tgt or lq["price"] >= eff_tgt):
+        elif eff_tgt and (hi_ref >= eff_tgt or lq["price"] >= eff_tgt):
             ex, reason = max(eff_tgt, lq["price"]), "target"
+        elif p["strategy"] == "btst" and not same_day:
+            # BTST: sell the morning after entry. exit_monitor first runs at the
+            # 09:15 open, so this fills at ~the open — the overnight gap is the whole
+            # edge; holding into the day gives it back (validated). Stop above still
+            # protects a bad down-gap (checked first, off the live open price).
+            ex, reason = lq["price"], "btst"
+        elif p["strategy"] in INTRADAY_STRATS and datetime.now(IST).strftime("%H:%M") >= INTRA["squareoff"]:
+            ex, reason = lq["price"], "eod"       # intraday lanes are NEVER held overnight
         elif held >= HOLD_DAYS.get(p["strategy"], 10):
             ex, reason = lq["price"], "time"
         if ex is not None:
@@ -741,10 +1527,88 @@ def exit_monitor(market):
         _status[market] = (_status.get(market, "") + f" · -{exits} exit").strip(" ·")
 
 
+def _equity_janitor(market):
+    """At session close: persist ONE compact daily equity row, then prune LIVE_
+    minute snapshots older than 7 days. Keeps v2_equity bounded (~375 rows/day
+    would otherwise grow forever) while the hero chart keeps a clean daily
+    history and a full week of intraday detail."""
+    try:
+        v2 = _rw()
+        row = v2.execute("SELECT equity,cash,positions_value,n_positions FROM v2_equity "
+                         "WHERE market=? AND date LIKE 'LIVE_%' ORDER BY date DESC LIMIT 1",
+                         (market,)).fetchone()
+        if row:
+            ds = datetime.now(IST).date().isoformat()
+            v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions)"
+                       " VALUES(?,?,?,?,?,?)", (market, ds, row[0], row[1], row[2], row[3]))
+        cutoff = "LIVE_" + (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()[:19]
+        v2.execute("DELETE FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' AND date < ?",
+                   (market, cutoff))
+        v2.commit(); v2.close()
+    except Exception:
+        pass
+
+
 _last_signal: dict = {}
+_last_vs: dict = {}          # volume_surge throttle
+_last_sw: dict = {}          # sector_watch throttle
+_last_btst: dict = {}        # btst throttle
+VOLSURGE_INTERVAL = 20       # scan for intraday movers every 20s (not every 8s cycle)
+BTST_INTERVAL = 60           # btst only fires in the 15:05-15:25 window; check once/min
+SECTOR_WATCH_INTERVAL = 180  # watch-only radar every 3min
 SIGNAL_INTERVAL = 300   # heavy signal recompute cadence (s) — daily signals barely
                         # change intraday, so 5min keeps the GIL-heavy panel/feature
                         # compute from starving the web event loop (exits still run every cycle)
+
+
+_WATCHDOG_DONE: dict = {}
+
+
+def _market_open_watchdog(market):
+    """Once, ~5-20 min after the 09:15 IST open, verify the system is actually
+    working (feed fresh, entry window armed, catalysts loaded) and TELEGRAM-alert
+    if anything is broken — so outages surface automatically instead of the user
+    finding them. Wall-clock gated (not on _SESSION_OPENED_AT, since a mid-session
+    restart leaves that empty — which is itself something to flag)."""
+    if market != "IN":
+        return
+    now = datetime.now(IST)
+    hm = now.strftime("%H:%M")
+    if not ("09:20" <= hm <= "09:35") or not market_open(market):
+        return
+    today = now.date().isoformat()
+    if _WATCHDOG_DONE.get(market) == today:
+        return
+    _WATCHDOG_DONE[market] = today
+    problems = []
+    try:
+        con = _ro(MAIN_DB)
+        age = con.execute("SELECT (julianday('now')-julianday(MAX(ts)))*86400 FROM latest_quotes WHERE source=?",
+                          (LIVE_SOURCE[market],)).fetchone()[0]
+        con.close()
+        if age is None or age > 180:
+            problems.append("live price feed is STALE (%ss old)" % int(age or -1))
+    except Exception:
+        problems.append("price feed unreadable")
+    if not _SESSION_OPENED_AT.get(market):
+        problems.append("entry window did NOT arm (daily lane won't buy today — engine likely restarted mid-session)")
+    try:
+        if not _nse_catalyst_symbols():
+            problems.append("no NSE catalysts loaded (volume_surge lane blind)")
+    except Exception:
+        pass
+    try:
+        from . import telegram_bot
+        if problems:
+            telegram_bot.notify_summary("⚠️ <b>OpenStocks · morning check FAILED</b>\n"
+                                        + "\n".join("• " + p for p in problems)
+                                        + "\n\nSome auto-trading may not work today.")
+        else:
+            telegram_bot.notify_summary("✅ <b>OpenStocks · morning check OK</b>\n"
+                                        "Feed live, engine armed, catalysts loaded. Hunting for setups.")
+    except Exception:
+        pass
+    _status[market] = ("watchdog: " + ("; ".join(problems) if problems else "all systems go")) + " · " + _status.get(market, "")
 
 
 def loop(interval):
@@ -761,11 +1625,37 @@ def loop(interval):
                 is_open = market_open(m)
                 if is_open and prev_open[m] is False:
                     _SESSION_OPENED_AT[m] = time.time()          # session just opened
+                elif is_open and prev_open[m] is None and m not in _SESSION_OPENED_AT:
+                    # fresh process start while the market is ALREADY open (a
+                    # mid-session restart): arm from the REAL session-open time,
+                    # not the restart time — so the 30-min daily entry window is
+                    # honored correctly (still open if we restarted near the open,
+                    # correctly closed if we restarted later) instead of a restart
+                    # silently disarming the daily lanes for the whole day.
+                    try:
+                        ot = market_regions.market_session_for_region(m).get("open_time")
+                        _SESSION_OPENED_AT[m] = datetime.fromisoformat(ot).timestamp()
+                    except Exception:
+                        _SESSION_OPENED_AT[m] = time.time()
                 if prev_open[m] is True and not is_open:
                     _tg_daily_summary(m)                         # session just closed -> daily digest
+                    _equity_janitor(m)                           # compact daily row + prune old minute rows
                 prev_open[m] = is_open
                 if is_open:
-                    exit_monitor(m)                              # fast exits every cycle
+                    exit_monitor(m)                              # fast exits every cycle (held symbols only — cheap)
+                    _market_open_watchdog(m)                     # once ~09:20 IST: alert if feed/engine/catalysts broken
+                    # These scan the WHOLE universe (heavy: full latest_quotes read),
+                    # so they must NOT run every 8s — that pegged the CPU and starved
+                    # the web app. Throttled: movers caught within 20s, radar every 3min.
+                    if time.time() - _last_vs.get(m, 0) >= VOLSURGE_INTERVAL:
+                        volume_surge_pass(m)                     # day-1 mover catcher (NSE catalyst + volume)
+                        _last_vs[m] = time.time()
+                    if time.time() - _last_btst.get(m, 0) >= BTST_INTERVAL:
+                        btst_pass(m)                             # buy-today-sell-tomorrow (near close, catalyst gap)
+                        _last_btst[m] = time.time()
+                    if time.time() - _last_sw.get(m, 0) >= SECTOR_WATCH_INTERVAL:
+                        sector_watch_pass(m)                     # watch-only radar (sector co-move + NSE spurt)
+                        _last_sw[m] = time.time()
                     if time.time() - _last_signal.get(m, 0) >= SIGNAL_INTERVAL:
                         poll_market(m)                           # heavy signal gen periodically
                         _last_signal[m] = time.time()

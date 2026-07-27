@@ -106,10 +106,18 @@ def _market(mkt):
     ccy = "₹" if mkt == "IN" else "$"
     budget = 100000 if mkt == "IN" else 20000
     eq = [round(budget * (1 + 0.0009 * i + (0.012 if i % 6 == 0 else -0.004))) for i in range(40)]
-    return dict(market=mkt, ccy=ccy, budget=budget, equity=eq[-1], equity_series=eq,
+    # hero mock: a DOWN day (today dips below yesterday's close) over an UP
+    # month — exercises the exact contradiction the redesign fixes
+    prev_eq = round(budget * 1.025)
+    today = [round(prev_eq * (1 + 0.004 * (i / 60.0) - 0.018 * (i / 75.0) ** 0.7 + 0.006 * (1 if i % 17 == 0 else 0))) for i in range(75)]
+    daily = [round(budget * (1 + 0.0012 * i + (0.008 if i % 7 == 0 else -0.002))) for i in range(55)] + [today[-1]]
+    return dict(market=mkt, ccy=ccy, budget=budget, equity=today[-1], equity_series=eq,
+                today_series=today, prev_equity=prev_eq, daily_series=daily, daily_start="2026-05-12",
                 cash=round(budget * 0.07), deployed=round(budget * 0.93), deploy_pct=93,
-                today_pnl=round(budget * 0.012), overall_pnl=round(eq[-1] - budget),
-                today_pct=1.2, overall_pct=round((eq[-1] - budget) / budget * 100, 2),
+                today_pnl=today[-1] - prev_eq, overall_pnl=round(today[-1] - budget),
+                today_pct=round((today[-1] - prev_eq) / prev_eq * 100, 2),
+                overall_pct=round((today[-1] - budget) / budget * 100, 2),
+                sharpe=1.84, maxdd=-4.2,
                 positions=5, trades=11, win=64, pf=1.7)
 
 
@@ -188,6 +196,30 @@ class H(BaseHTTPRequestHandler):
                        dict(symbol="INFY", market="IN", ccy="\u20b9", price=1598.2, chg=0.94)],
                 alerts=[dict(id=1, symbol="RELIANCE", market="IN", ccy="\u20b9", kind="above", value=1350.0, active=True, triggered_at=None, triggered_price=None),
                         dict(id=2, symbol="TCS", market="IN", ccy="\u20b9", kind="below", value=3050.0, active=False, triggered_at="21 Jul 14:12 IST", triggered_price=3044.6)]),
+            "/v2/api/ticker": [dict(symbol=s, market="IN", ccy="₹", price=p, pnl=c) for s, p, c in [
+                ("RELIANCE", 1268.6, -0.8), ("TCS", 2250.0, 0.4), ("HDFCBANK", 739.6, -0.3),
+                ("ICICIBANK", 1422.9, 0.6), ("INFY", 1038.8, -1.1), ("SBIN", 1005.9, 0.2),
+                ("BHARTIARTL", 1886.8, 0.9), ("ITC", 280.7, -0.4), ("LT", 3612.6, 1.2)]],
+            "/v2/api/indices": [
+                dict(name="Nifty 50", last=23645.2, chg=-0.94),
+                dict(name="Bank Nifty", last=56079.2, chg=-0.91),
+                dict(name="Sensex", last=75726.0, chg=-0.87),
+            ],
+            "/v2/api/sectors": {"IN": [
+                dict(sector="Automobiles", chg=2.8, n=14, top=["TVSMOTOR", "BAJAJ-AUTO", "EICHERMOT"]),
+                dict(sector="Technology & Telecom", chg=1.4, n=22, top=["INFY", "COFORGE", "CYIENT"]),
+                dict(sector="Financial Services", chg=0.9, n=31, top=["KARURVYSYA", "M&MFIN", "CSBBANK"]),
+                dict(sector="Healthcare", chg=0.3, n=18, top=["CIPLA", "SUNPHARMA", "LUPIN"]),
+                dict(sector="Energy & Utilities", chg=-0.6, n=16, top=["NTPC", "POWERGRID", "COALINDIA"]),
+                dict(sector="Consumer", chg=-1.1, n=20, top=["ITC", "NESTLEIND", "BRITANNIA"]),
+                dict(sector="Infrastructure", chg=-1.9, n=12, top=["LT", "ADANIPORTS", "GMRINFRA"]),
+            ]},
+            "/v2/api/catalysts": [
+                dict(symbol="TVSMOTOR", kind="Q results", cat="results", subject="Outcome of Board Meeting — Q1 FY27 results", when="23-Jul-2026 17:00"),
+                dict(symbol="DATAPATTNS", kind="New order", cat="order", subject="Receipt of order — defence contract", when="23-Jul-2026 16:41"),
+                dict(symbol="KARURVYSYA", kind="Q results", cat="results", subject="Financial Results for quarter ended June 2026", when="23-Jul-2026 15:58"),
+                dict(symbol="CIPLA", kind="Corp action", cat="corp_action", subject="Board approves buyback of equity shares", when="23-Jul-2026 15:10"),
+            ],
             "/v2/api/movers": {
                 "IN": dict(up=[dict(symbol="NAUKRI", price=1159.3, chg=13.09, ccy="\u20b9"), dict(symbol="GUJGASLTD", price=327.5, chg=10.7, ccy="\u20b9"),
                               dict(symbol="PWL", price=148.35, chg=9.81, ccy="\u20b9"), dict(symbol="WABAG", price=2206.3, chg=7.35, ccy="\u20b9"), dict(symbol="RITES", price=231.6, chg=7.15, ccy="\u20b9")],
@@ -198,9 +230,13 @@ class H(BaseHTTPRequestHandler):
                             dict(market="IN", ccy="\u20b9", strategy="gap_momentum", closed=3, win=67, realized=418.0, avg_ret=1.9, open=2, unrealized=310.0)],
                 equity={"IN": dict(days=["07-1%d" % i for i in range(5, 8)] + ["07-2%d" % i for i in range(0, 3)], equity=[100000, 100400, 101100, 100900, 101800, 102790], maxdd=1.2)}),
         }
+        # longest-prefix match so /v2/api/watchlist isn't shadowed by /v2/api/watch
+        best = None
         for k, v in routes.items():
-            if p.startswith(k):
-                return self._send(json.dumps(v))
+            if p.startswith(k) and (best is None or len(k) > len(best[0])):
+                best = (k, v)
+        if best:
+            return self._send(json.dumps(best[1]))
         return self._send(json.dumps([]))
 
 

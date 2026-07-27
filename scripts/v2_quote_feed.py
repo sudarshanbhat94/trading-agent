@@ -65,6 +65,16 @@ def _held():
 
 _cooldown: dict = {}   # market -> unix time to resume after a rate-limit (429)
 
+# The hot lane always keeps this small liquid base fresh (every `interval`s) even
+# when the book is EMPTY — otherwise latest_quotes only refreshes on the slow full
+# poll, so MAX(ts) drifts to ~full-interval and the "live feed" health check + the
+# tape/movers go stale on a fresh book. Held symbols are polled on top of these.
+WATCH_HOT = {
+    "IN": ["RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN", "BHARTIARTL",
+           "ITC", "LT", "AXISBANK", "KOTAKBANK", "HINDUNILVR", "BAJFINANCE", "MARUTI", "SUNPHARMA"],
+    "US": [],
+}
+
 
 def _poll(db, providers, rows_for, label):
     for m, rws in rows_for.items():
@@ -113,7 +123,9 @@ def main():
         while True:
             t0 = time.time()
             held = _held()
-            hot = {m: [symmap[m][s] for s in held.get(m, ()) if s in symmap.get(m, {})] for m in MARKETS}
+            # held symbols + the always-fresh liquid base set (dedup)
+            hot = {m: [symmap[m][s] for s in (set(held.get(m, ())) | set(WATCH_HOT.get(m, [])))
+                       if s in symmap.get(m, {})] for m in MARKETS}
             if any(hot.values()):
                 _poll(db, providers, hot, "")
             time.sleep(max(0.2, a.interval - (time.time() - t0)))

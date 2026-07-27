@@ -602,6 +602,24 @@ try:  # new v2 dashboard (self-contained, read-only; never break the main app)
         if _os.environ.get("OPENSTOCKS_DISABLE_ENGINE") == "1":
             return
         _v2_live_start(interval=8)
+        # Warm the candle panel in the background right after boot so the first
+        # /api/stock, /movers, /overview hit a WARM cache instead of blocking
+        # ~2 min on the cold 12GB-DB load (which made those endpoints hang after
+        # every restart). Non-blocking; degrades to whatever's cached meanwhile.
+        def _warm_panels() -> None:
+            import time as _t
+            _t.sleep(2)
+            try:
+                from .v2_web import _panel
+                for _m in ("IN",):
+                    try:
+                        _panel(_m)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_warm_panels, daemon=True, name="panel-warmup").start()
         # The lean quote feeder runs as its OWN supervised systemd service
         # (opentrade-feed.service) so it survives web-app restarts, auto-restarts
         # on failure, and never blocks the event loop. Nothing to launch here.
@@ -3735,7 +3753,7 @@ async def set_my_paper_cash(payload: dict[str, Any], request: Request) -> dict[s
 
     paper_cash_by_market = _user_paper_cash_by_market(updated_user)
     tracked_ideas = db.user_followed_signal_ideas(int(user["id"]), 100)
-    follow_history = _follow_history_for_user(int(user["id"]), 500, monitor_symbols=monitor_symbols)
+    follow_history = _follow_history_for_user(int(user["id"]), 500)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))
     account_payload = await account.snapshot()
     user_portfolio = _user_follow_portfolio(
@@ -5038,7 +5056,7 @@ async def follow_idea(idea_id: int, payload: dict[str, Any], request: Request) -
     )
     monitor_symbols = db.user_monitor_symbols(int(user["id"]))
     tracked_ideas = _followed_signal_ideas_for_user(int(user["id"]), 100, monitor_symbols=monitor_symbols)
-    follow_history = _follow_history_for_user(int(user["id"]), 500, monitor_symbols=monitor_symbols)
+    follow_history = _follow_history_for_user(int(user["id"]), 500)
     paper_orders = _follow_history_order_events(follow_history)
     paper_cash_by_market = _user_paper_cash_by_market(user)
     realized_pnl_by_market = db.user_follow_realized_pnl_by_market(int(user["id"]))

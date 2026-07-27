@@ -169,7 +169,8 @@ def _market_stats(v2, market, budget, live):
     rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?", (market,))]
     wins = [r for r in rets if r > 0]
     loss = [r for r in rets if r <= 0]
-    pf = (sum(wins) / abs(sum(loss))) if loss else (len(wins) and 9.9)
+    loss_sum = abs(sum(loss))
+    pf = (sum(wins) / loss_sum) if loss_sum > 0 else (9.9 if wins else 0.0)
     return dict(market=market, budget=budget, equity=cash + mtm, cash=cash, deployed=mtm,
                 deploy_pct=round(mtm / budget * 100) if budget else 0,
                 today_pnl=realised_today + unreal_today, overall_pnl=realised + unreal,
@@ -188,7 +189,27 @@ def api_overview():
             "SELECT equity FROM v2_equity WHERE market=? ORDER BY date DESC LIMIT 40", (market,))][::-1]
         if not eq:
             eq = [round(budget)]
+        # hero chart data — series with a MEANING, not "last 40 rows in whatever
+        # order": today's minute equity vs yesterday's close, plus daily closes.
+        utc_d = datetime.now(timezone.utc).date().isoformat()
+        today_eq = [round(r[0]) for r in v2.execute(
+            "SELECT equity FROM v2_equity WHERE market=? AND date LIKE ? ORDER BY date",
+            (market, "LIVE_" + utc_d + "%"))]
+        prev_row = v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date < ? ORDER BY date DESC LIMIT 1",
+                              (market, "LIVE_" + utc_d)).fetchone()
+        prev_eq = round(prev_row[0]) if prev_row else round(budget)
+        dd = {r[0]: round(r[1]) for r in v2.execute(
+            "SELECT date, equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%'", (market,))}
+        for r in v2.execute("SELECT substr(date,6,10) d, equity, MAX(date) FROM v2_equity "
+                            "WHERE market=? AND date LIKE 'LIVE_%' GROUP BY substr(date,6,10)", (market,)):
+            dd[r[0]] = round(r[1])   # per-day close from the last LIVE snapshot wins
+        days = sorted(dd)[-90:]
+        dser = [dd[k] for k in days]
+        sharpe, maxdd = _risk_metrics(dser)     # institutional risk metrics (borrowed idea)
         markets.append({"market": s["market"], "ccy": "₹" if market == "IN" else "$",
+                        "today_series": today_eq, "prev_equity": prev_eq,
+                        "daily_series": dser, "sharpe": sharpe, "maxdd": maxdd,
+                        "daily_start": (days[0] if days else None),
                         "budget": round(s["budget"]), "equity": round(s["equity"]), "equity_series": eq,
                         "cash": round(s["cash"]), "deployed": round(s["deployed"]), "deploy_pct": s["deploy_pct"],
                         "today_pnl": round(s["today_pnl"], 2), "overall_pnl": round(s["overall_pnl"], 2),
@@ -199,6 +220,26 @@ def api_overview():
     return JSONResponse(dict(markets=markets, regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
                              as_of=datetime.now(IST).strftime("%H:%M:%S IST")))
+
+
+def _risk_metrics(eq):
+    """Annualized Sharpe + max drawdown % from a daily equity series (borrowed
+    from institutional terminals). None until there's enough history."""
+    if not eq or len(eq) < 5:
+        return None, None
+    rets = [eq[i] / eq[i - 1] - 1 for i in range(1, len(eq)) if eq[i - 1] > 0]
+    if len(rets) < 4:
+        return None, None
+    import statistics
+    mu = statistics.mean(rets)
+    sd = statistics.pstdev(rets)
+    sharpe = round((mu / sd) * (252 ** 0.5), 2) if sd > 0 else None
+    peak, mdd = eq[0], 0.0
+    for v in eq:
+        peak = max(peak, v)
+        if peak > 0:
+            mdd = min(mdd, (v - peak) / peak)
+    return sharpe, round(mdd * 100, 1)
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -426,6 +467,107 @@ def api_alerts_add(payload: dict):
     return JSONResponse({"ok": True})
 
 
+@router.post("/api/buy")
+def api_buy(payload: dict):
+    """Manual paper buy into the v2 book — user-initiated, bypasses the engine's
+    entry gates so the user can act on their own read."""
+    sym = str(payload.get("symbol", "")).upper().strip()
+    market = payload.get("market", "IN")
+    if not sym:
+        return JSONResponse({"error": "no symbol"}, status_code=400)
+    px = float((_live_map(market).get(sym) or {}).get("price") or 0)
+    if px <= 0:
+        return JSONResponse({"error": "no live price for " + sym}, status_code=400)
+    v2 = _rw()
+    try:
+        book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
+        if not book:
+            return JSONResponse({"error": "no book"}, status_code=400)
+        budget, max_pos = book[0], int(book[1])
+        if v2.execute("SELECT 1 FROM v2_positions WHERE market=? AND symbol=?", (market, sym)).fetchone():
+            return JSONResponse({"error": "already holding " + sym}, status_code=400)
+        n = v2.execute("SELECT COUNT(*) FROM v2_positions WHERE market=?", (market,)).fetchone()[0]
+        if n >= max_pos:
+            return JSONResponse({"error": "book full (%d/%d slots) — sell something first" % (n, max_pos)}, status_code=400)
+        realized = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0
+        invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0
+        cash = budget - invested + realized
+        qty = int(min(budget / max_pos, cash * 0.98) / px)
+        if qty < 1:
+            return JSONResponse({"error": "not enough cash for 1 share (₹%.0f free, ₹%.0f/share)" % (cash, px)}, status_code=400)
+        stop, target = round(px * 0.94, 2), round(px * 1.06, 2)
+        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
+                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (market, "manual", sym, datetime.now(IST).date().isoformat(), px, qty, stop, target, 0.0, px, 1.0,
+                    datetime.now(timezone.utc).isoformat(), '{"setup":"manual buy"}'))
+        v2.commit()
+    finally:
+        v2.close()
+    try:
+        from . import telegram_bot
+        telegram_bot.notify_trade("BUY", sym, qty, round(px, 2), market, strategy="manual", stop=stop, target=target)
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "symbol": sym, "qty": qty, "entry": round(px, 2)})
+
+
+@router.post("/api/reset")
+def api_reset():
+    """Self-serve paper-book reset — clean ₹1,00,000, clears positions/trades/
+    equity/signals. Keeps telegram_accounts. Paper only."""
+    v2 = _rw()
+    try:
+        for t in ("v2_positions", "v2_trades", "v2_equity", "v2_signals"):
+            try:
+                v2.execute("DELETE FROM %s" % t)
+            except Exception:
+                pass
+        now_utc = datetime.now(timezone.utc).isoformat()
+        for market, budget, mp in (("IN", 100000.0, 6), ("US", 20000.0, 6)):
+            if v2.execute("SELECT 1 FROM v2_book WHERE market=?", (market,)).fetchone():
+                v2.execute("UPDATE v2_book SET budget=?, max_pos=?, started_at=? WHERE market=?",
+                           (budget, mp, now_utc, market))
+        v2.commit()
+    finally:
+        v2.close()
+    # reset in-engine throttles/session so it re-arms cleanly next open
+    try:
+        from . import v2_live
+        v2_live._EQ_SNAP.clear()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "budget": 100000})
+
+
+@router.post("/api/sell")
+def api_sell(payload: dict):
+    """Manual paper sell — close a held position at the live price."""
+    sym = str(payload.get("symbol", "")).upper().strip()
+    market = payload.get("market", "IN")
+    v2 = _rw()
+    try:
+        r = v2.execute("SELECT id,entry_price,shares,strategy FROM v2_positions WHERE market=? AND symbol=?",
+                       (market, sym)).fetchone()
+        if not r:
+            return JSONResponse({"error": "not holding " + sym}, status_code=400)
+        pid, entry, shares, strat = r
+        px = float((_live_map(market).get(sym) or {}).get("price") or entry)
+        pnl = shares * (px - entry); ret = (px / entry - 1) * 100
+        v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
+                   " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,'manual',conviction FROM v2_positions WHERE id=?",
+                   (datetime.now(IST).date().isoformat(), round(px, 2), shares, round(pnl, 2), round(ret, 2), pid))
+        v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
+        v2.commit()
+    finally:
+        v2.close()
+    try:
+        from . import telegram_bot
+        telegram_bot.notify_trade("SELL", sym, shares, round(px, 2), market, pnl_pct=round(ret, 2), strategy="manual")
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "symbol": sym, "pnl_pct": round(ret, 2)})
+
+
 @router.delete("/api/alerts/{aid}")
 def api_alerts_del(aid: int):
     v2 = _rw()
@@ -539,6 +681,121 @@ def api_movers():
         import threading
         threading.Thread(target=_movers_bg, daemon=True).start()
     return JSONResponse(c or {"IN": dict(up=[], down=[]), "US": dict(up=[], down=[]), "warming": True})
+
+
+_sector_cache = {}
+_sector_loading = set()
+
+
+def _sectors_bg():
+    """Average intraday % change per sector across the liquid panel — a terminal-
+    style sector heatmap. Cached; refreshed in the background (cold panel = slow)."""
+    try:
+        con = _ro(MAIN_DB)
+        secmap = {s: (sec or "Other") for s, sec in con.execute("SELECT symbol, sector FROM universe")}
+        con.close()
+        out = {}
+        for m in ("IN",):
+            try:
+                syms, _ = _panel(m)
+                d = _daychg(m, list(syms.keys()))
+                agg = {}
+                for s, v in d.items():
+                    if v.get("chg") is None:
+                        continue
+                    sec = secmap.get(s, "Other")
+                    if sec in ("NSE Listed Equity", "", None):
+                        sec = "Other"
+                    agg.setdefault(sec, []).append((v["chg"], s))
+                rows = []
+                for sec, lst in agg.items():
+                    if len(lst) < 3 or sec == "Other":
+                        continue
+                    lst.sort(reverse=True)
+                    rows.append(dict(sector=sec, chg=round(sum(x[0] for x in lst) / len(lst), 2),
+                                     n=len(lst), top=[x[1] for x in lst[:3]]))
+                rows.sort(key=lambda r: -r["chg"])
+                out[m] = rows
+            except Exception:
+                out[m] = []
+        _sector_cache.update(t=time.time(), v=out)
+    finally:
+        _sector_loading.discard("x")
+
+
+@router.get("/api/sectors")
+def api_sectors():
+    """Sector heatmap data (avg day change per sector). Serves cache, refreshes 90s."""
+    c = _sector_cache.get("v")
+    if (c is None or time.time() - _sector_cache.get("t", 0) > 90) and "x" not in _sector_loading:
+        _sector_loading.add("x")
+        import threading
+        threading.Thread(target=_sectors_bg, daemon=True).start()
+    return JSONResponse(c or {"IN": [], "warming": True})
+
+
+_index_cache = {}
+_index_loading = set()
+_INDEX_SYMS = [("^NSEI", "Nifty 50"), ("^NSEBANK", "Bank Nifty"), ("^BSESN", "Sensex")]
+
+
+def _indices_bg():
+    """Fetch Nifty 50 / Bank Nifty / Sensex from Yahoo (has all three incl BSE)."""
+    try:
+        import httpx
+        H = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124 Safari/537.36"}
+        out = []
+        with httpx.Client(headers=H, timeout=8, follow_redirects=True) as cl:
+            for sym, nm in _INDEX_SYMS:
+                try:
+                    m = cl.get("https://query1.finance.yahoo.com/v8/finance/chart/" + sym).json()["chart"]["result"][0]["meta"]
+                    px = m.get("regularMarketPrice")
+                    pc = m.get("chartPreviousClose") or m.get("previousClose")
+                    if px and pc:
+                        out.append(dict(name=nm, last=round(px, 2), chg=round((px / pc - 1) * 100, 2)))
+                except Exception:
+                    pass
+        if out:
+            _index_cache.update(t=time.time(), v=out)
+    finally:
+        _index_loading.discard("x")
+
+
+@router.get("/api/indices")
+def api_indices():
+    """Nifty 50 / Bank Nifty / Sensex for the top index bar. Cache + 30s bg refresh."""
+    c = _index_cache.get("v")
+    if (c is None or time.time() - _index_cache.get("t", 0) > 30) and "x" not in _index_loading:
+        _index_loading.add("x")
+        import threading
+        threading.Thread(target=_indices_bg, daemon=True).start()
+    return JSONResponse(c or [])
+
+
+CATALYST_DB = os.environ.get("CATALYST_DB", "/opt/opentrade/var/catalysts.db")
+_CAT_LABEL = {"results": "Q results", "order": "New order", "corp_action": "Corp action"}
+
+
+@router.get("/api/catalysts")
+def api_catalysts():
+    """Today's material NSE corporate filings (results / orders / corp actions) —
+    the real-time news that drives price+volume buying. Powers the dashboard
+    Catalysts panel (borrowed 'news feed' component idea)."""
+    out = []
+    try:
+        con = _ro(CATALYST_DB)
+        cutoff = int(time.time()) - 30 * 3600
+        for sym, cat, subj, an_dt in con.execute(
+                "SELECT symbol, category, subject, an_dt FROM nse_announcements "
+                "WHERE an_epoch >= ? AND category IN ('results','order','corp_action') "
+                "ORDER BY an_epoch DESC LIMIT 40", (cutoff,)):
+            out.append(dict(symbol=sym, kind=_CAT_LABEL.get(cat, cat),
+                            cat=cat, subject=subj, when=(an_dt or "")[:17]))
+        con.close()
+    except Exception:
+        pass
+    return JSONResponse(out)
 
 
 @router.get("/api/attribution")
@@ -807,6 +1064,10 @@ def api_stats():
 def api_stock(symbol: str, market: str = "IN"):
     symbol = symbol.upper()
     live = _live_map(market).get(symbol, {})
+    if not _panel_warm(market):     # cold 12GB panel -> never block the request; kick the loader and degrade
+        return JSONResponse(dict(symbol=symbol, warming=True,
+                                 live=round(live.get("price", 0), 2),
+                                 error="analysis warming up — try again in a few seconds"))
     try:
         syms, mdf = _panel(market)
         g = syms.get(symbol)
@@ -818,7 +1079,13 @@ def api_stock(symbol: str, market: str = "IN"):
         conv = eng.conviction(row)
         atr = float(row["atr14"]); close = float(row["close"])
         px = float(live.get("price") or close)             # plan off the LIVE price, not a stale close
-        entry = round(px, 2); stop = round(entry - 2 * atr, 2); target = round(entry + 3.5 * atr, 2)
+        # realistic swing plan: stop = 1.5x ATR (capped -6%), target = 2x ATR but
+        # CAPPED at +6% — a mean-reversion swing rarely runs 3.5x ATR in an ~8-day
+        # hold, so the old +10%+ targets were misleading.
+        entry = round(px, 2)
+        atr_pct = (atr / entry) if entry > 0 else 0.02
+        stop = round(entry * (1 - min(1.5 * atr_pct, 0.06)), 2)
+        target = round(entry * (1 + min(2.0 * atr_pct, 0.06)), 2)
         rr = round((target - entry) / (entry - stop), 1) if entry > stop else 0
         verdict = "BUY" if conv >= 0.6 else ("WATCH" if conv >= 0.4 else "AVOID")
         def sc(x): return int(max(4, min(96, round(x))))   # graded, never a flat 100
@@ -851,16 +1118,39 @@ def api_stock(symbol: str, market: str = "IN"):
             closes = []
         try:
             tail = g.tail(90)
-            candles = [[round(float(o), 2), round(float(h), 2), round(float(lo), 2),
-                        round(float(cl), 2), int(float(vv)) if vv == vv else 0]
-                       for o, h, lo, cl, vv in zip(tail["open"], tail["high"], tail["low"],
-                                                   tail["close"], tail["volume"]) if cl == cl]
+            candles, cdates = [], []
+            for ts, o, h, lo, cl, vv in zip(tail.index, tail["open"], tail["high"], tail["low"],
+                                            tail["close"], tail["volume"]):
+                if cl != cl:
+                    continue
+                candles.append([round(float(o), 2), round(float(h), 2), round(float(lo), 2),
+                                round(float(cl), 2), int(float(vv)) if vv == vv else 0])
+                cdates.append(str(ts)[:10])
         except Exception:
-            candles = []
+            candles, cdates = [], []
+        # ---- plain-English insight so a user can actually decide ----
+        ccy = "₹" if market == "IN" else "$"
+        rs = float(row["rs20"]); rvol = float(row["rvol"]); dist = float(row["dist_hi20"])
+        trend_txt = ("in a clear uptrend (above its 20- and 50-day averages)" if (a20 and a50)
+                     else "holding above its 20-day average" if a20
+                     else "below its key moving averages (downtrend)")
+        rs_txt = ("outperforming the market" if rs > 0.03 else
+                  "moving in line with the market" if rs > -0.03 else "lagging the market")
+        vol_txt = ("on heavy volume" if rvol > 1.5 else "on light volume" if rvol < 0.8 else "on average volume")
+        loc_txt = ("right at its recent highs" if dist > -0.02 else
+                   "pulled back from its highs (a possible entry zone)" if dist > -0.12 else "well off its highs")
+        reg_txt = "risk-on (healthy)" if _regime(market) else "risk-off (weak)"
+        vmap = {"BUY": "rates this a BUY setup", "WATCH": "is watching this, not buying yet",
+                "AVOID": "would avoid this for now"}
+        insight = ("%s is %s and %s, trading %s %s. The engine %s (conviction %.2f) with the broader market %s. "
+                   "If you buy: enter around %s%s, stop %s%s (%.1f%%), target %s%s (+%.1f%%) — about %s:1 reward-to-risk."
+                   % (symbol, trend_txt, rs_txt, loc_txt, vol_txt, vmap.get(verdict, ""), conv, reg_txt,
+                      ccy, entry, ccy, stop, (stop / entry - 1) * 100, ccy, target, (target / entry - 1) * 100, rr))
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
-                                 held=held, chart=closes, candles=candles, news=_news(symbol)))
+                                 insight=insight, held=held, chart=closes, candles=candles,
+                                 dates=cdates, news=_news(symbol)))
     except Exception as exc:
         return JSONResponse(dict(symbol=symbol, error=str(exc)[:120], news=_news(symbol)))
 
@@ -1349,9 +1639,48 @@ body{color:var(--tx);overflow-x:hidden;min-height:100vh;display:flow-root;backgr
 input,select{background:#ffffff}
 button.pri{color:#fff}
 #engines svg{filter:none}
+/* ---- dark theme (manual toggle via html[data-theme]) ---- */
+html[data-theme=dark]{color-scheme:dark;background:#0f1114}
+[data-theme=dark]{
+ --bg:#0f1114;--surf:#181b1f;--card:#181b1f;--line:#23262b;--line2:#2c3037;--tx:#c7ccd4;--hd:#f1f3f6;--mut:#8890a0;
+ --up:#3fb26a;--upb:#12271a;--dn:#f0584a;--dnb:#2a1614;--inf:#5b8def;--infb:#14243d;--warn:#d99a3a;--warnb:#2a2008;
+ --acc:#5b8def;--sh:0 1px 2px rgba(0,0,0,.45)
+}
+[data-theme=dark] body{background:var(--bg)}
+/* dark: subtle borders (were too bright/white), readable ticker text */
+[data-theme=dark] .card,[data-theme=dark] .raise,[data-theme=dark] .pos,
+[data-theme=dark] input,[data-theme=dark] select,[data-theme=dark] .chip{border-color:var(--line)}
+[data-theme=dark] .ticker{background:transparent;border-bottom-color:var(--line)}
+[data-theme=dark] .tk b{color:var(--hd)}
+[data-theme=dark] .tk .num{color:var(--tx)}
+[data-theme=dark] .tk .mk{color:var(--mut);border-color:var(--line)}
+[data-theme=dark] .top{background:rgba(15,17,20,.9)}
+[data-theme=dark] .side,[data-theme=dark] .nav{background:var(--card)}
+[data-theme=dark] .side a:hover{background:#20242b;color:var(--tx)}
+[data-theme=dark] .lrow:hover{background:#1d2127}
+[data-theme=dark] .seg{background:#22262c}
+[data-theme=dark] .seg b.on{background:var(--line);color:var(--tx)}
+[data-theme=dark] .chip,[data-theme=dark] input,[data-theme=dark] select{background:var(--card)}
+[data-theme=dark] .bar,[data-theme=dark] .scorebar,[data-theme=dark] .bg-mut{background:#22262c}
+[data-theme=dark] button.pri{color:#0f1114}
+[data-theme=dark] .menu{background:var(--card);box-shadow:0 12px 32px rgba(0,0,0,.5)}
+/* ---- theme + collapse icon buttons; collapsible sidebar ---- */
+.iconbtn{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:9px;cursor:pointer;color:var(--mut);border:1px solid var(--line);background:var(--card)}
+.iconbtn:hover{color:var(--tx);background:var(--surf)}
+.iconbtn svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.side .lbl{white-space:nowrap;overflow:hidden}
+.side .b .mini{display:none}
+.sidefoot{margin-top:auto;display:flex;gap:8px;padding:10px 6px 2px}
+@media(min-width:860px){
+ .side.collapsed{width:70px}
+ .side.collapsed .lbl,.side.collapsed .b .full{display:none}
+ .side.collapsed .b .mini{display:inline}
+ .side.collapsed a{justify-content:center}
+ .side.collapsed .sidefoot{flex-direction:column;align-items:center}
+}
 /* ---- design polish: calmer type weight, precise cards, real hierarchy ---- */
 b,strong,.pos b,.card b,.raise b{font-weight:600}
-.hero{color:#242a31;font-weight:600;letter-spacing:-.022em;font-size:33px}
+.hero{color:var(--hd);font-weight:600;letter-spacing:-.022em;font-size:33px}
 .num{color:#2b3139}
 .mut{color:#8b929c}
 .card,.raise,.pos{border-radius:10px;border-color:#e8eaee}
@@ -1387,6 +1716,7 @@ button{border-radius:9px}
 .prow-l{min-width:0}
 .prow-sym{font-size:14.5px;font-weight:600;color:#242a31;display:flex;align-items:center}
 .prow-sub{font-size:12px;color:var(--mut);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:859px){.prow-sub{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}}   /* mobile: wrap the qty·avg·exit line instead of truncating it mid-word */
 .prow-r{text-align:right;white-space:nowrap;flex-shrink:0}
 .prow-ltp{font-size:14px;font-weight:600;color:#242a31}
 .prow-pnl{font-size:12.5px;margin-top:4px;font-weight:600}
@@ -1423,14 +1753,35 @@ button{border-radius:9px}
 #homefeed .fd-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-top:12px}
 .fd-hd{display:flex;gap:12px;align-items:center}
 .fd-dot{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;font-weight:700}
-.fd-title{font-size:15px;font-weight:600;color:#1c2128}
+.fd-title{font-size:15px;font-weight:600;color:var(--hd)}
 .fd-meta{font-size:12px;color:var(--mut);margin-top:2px}
+.indexbar{display:flex;gap:20px;flex-wrap:wrap;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);margin:2px 0 8px}
+.idx{display:flex;align-items:baseline;gap:7px;font-size:13px;white-space:nowrap}
+.idx b{font-weight:600;color:var(--hd)}
+.idx .iv{font-variant-numeric:tabular-nums;color:var(--tx)}
+.idx .ic{font-size:12px;font-weight:600}
+/* Kite-style clean watchlist row */
+.wlrow{display:flex;align-items:center;gap:10px;padding:12px 2px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.wlrow:last-child{border-bottom:none}
+.wlrow:hover{background:var(--surf)}
+.wlrow .wlL{flex:1;min-width:0}
+.wlrow .wlsym{font-size:15px;font-weight:600;color:var(--hd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wlrow .wlex{font-size:10px;color:var(--mut);margin-top:2px;letter-spacing:.04em}
+.wlrow .wlR{text-align:right;white-space:nowrap}
+.wlrow .wlltp{font-size:14.5px;font-variant-numeric:tabular-nums;color:var(--tx)}
+.wlrow .wlch{font-size:12px;font-weight:600;margin-top:2px}
+.wlrow .wldel{color:var(--mut);opacity:.3;font-size:19px;line-height:1;padding:4px 4px 4px 10px;transition:opacity .12s}
+.wlrow:hover .wldel{opacity:.75}
+@media(hover:none),(max-width:859px){.wlrow .wldel{opacity:.55}}   /* touch / mobile has no hover — keep the remove × tappable & visible */
+.fd-tabs{display:flex;gap:4px;margin-left:auto}
+.fd-tab{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--mut);padding:4px 9px;border-radius:7px;cursor:pointer;background:var(--surf)}
+.fd-tab.on{background:var(--infb);color:var(--inf)}
 .fd-big{font-size:33px;font-weight:700;color:var(--hd);margin:14px 0 3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .fd-chg{font-size:14px;font-weight:600}
 .fd-chart{margin:14px -6px 0}.fd-chart svg{width:100%;height:150px;display:block}
 .fd-text{font-size:13.5px;color:var(--tx);line-height:1.6;margin-top:12px}
 .fd-text b{font-weight:600}
-.fd-scored{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}
+.fd-scored{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 10px;margin-top:15px}
 .fd-sn{font-size:19px;font-weight:700;color:var(--hd);font-variant-numeric:tabular-nums}
 .fd-sn.up{color:var(--up)}.fd-sn.dn{color:var(--dn)}
 .fd-sl{font-size:11px;color:var(--mut);margin-top:3px}
@@ -1446,7 +1797,12 @@ button{border-radius:9px}
 @media(max-width:560px){.fd-scored{grid-template-columns:repeat(2,1fr);gap:15px 10px}}
 @media(min-width:1080px){
  #homefeed{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px;align-items:start}
- #homefeed .fd-card{margin-top:0}
+ #homefeed .fd-card{margin-top:0;min-width:0}   /* min-width:0 => grid tracks stay exactly equal regardless of content */
+ .heatmap{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:4px}
+ .htile{border-radius:9px;padding:8px 10px;min-width:0;cursor:default;border:1px solid var(--line)}
+ .htile .hs{font-size:11.5px;font-weight:600;color:var(--hd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .htile .hc{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:1px}
+ .htile .hn{font-size:9.5px;color:var(--mut)}
  #homefeed>#fdPerf,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
  #homefeed>div:empty{display:none}
  /* make the list CONTAINERS full-width (override old per-card grid/width rules) */
@@ -1470,6 +1826,9 @@ button{border-radius:9px}
 #ordcustom{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
 input[type=date]{width:auto;padding:8px 11px}
 .ordgrid{display:grid;gap:16px}
+.mobonly{display:none}
+@media(max-width:859px){.mobonly{display:inline-flex}
+ #ordlist.os-buy .oc-sell{display:none}#ordlist.os-sell .oc-buy{display:none}}
 .ordlbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#9aa1ac;font-weight:600;margin:0 2px 8px}
 .ordcol+.ordcol{margin-top:20px}
 @media(min-width:1080px){.ordcol+.ordcol{margin-top:0}}
@@ -1554,27 +1913,33 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  <p class=mut style="font-size:13px;margin-top:18px">No account? <b style="cursor:pointer;color:var(--inf)" onclick="alert('Ask an admin to create your account — sign-up with approval is coming next.')">Request access</b></p></div>
 
 <div id=app class="app hide">
- <nav class=side><div class=b>OpenStocks<span style="color:var(--up)">.</span></div>
-  <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>Home</a>
-  <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>Portfolio</a>
-  <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Orders</a>
-  <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>Analyze</a>
-  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Account</a>
+ <nav class=side id=side><div class=b><span class=full>OpenStocks<span style="color:var(--inf)">.</span></span><span class=mini>O<span style="color:var(--inf)">.</span></span></div>
+  <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg><span class=lbl>Home</span></a>
+  <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg><span class=lbl>Portfolio</span></a>
+  <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class=lbl>Orders</span></a>
+  <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=lbl>Analyze</span></a>
+  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class=lbl>Account</span></a>
+  <div class=sidefoot>
+   <div class=iconbtn onclick=toggleTheme() title="Light / dark"><svg id=themeicon viewBox="0 0 24 24"></svg></div>
+   <div class=iconbtn onclick=toggleSide() title="Collapse sidebar"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></div>
+  </div>
  </nav>
  <div class=main>
   <div class=ticker id=ticker style="display:none"></div>
   <div id=healthbar class=hide style="background:var(--dnb);border:1px solid rgba(255,93,108,.45);color:var(--dn);padding:8px 14px;border-radius:10px;margin:8px 0;font-size:12px"></div>
-  <div class=top><span class=live><span class=dot></span><span id=clock>live</span></span>
+  <div class=top><span style="display:flex;align-items:center;gap:9px"><span id=backbtn class=iconbtn style="display:none" onclick="goBack()" title="Back"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></span><span class=live><span class=dot></span><span id=clock>live</span></span></span>
    <div style="display:flex;align-items:center;gap:10px"><div class=seg id=mkt><b data-m=IN class=on>India</b></div>
+    <div class=iconbtn onclick=toggleTheme() title="Light / dark"><svg id=themeicon2 viewBox="0 0 24 24"></svg></div>
     <div class=prof id=avatar onclick="document.getElementById('pm').classList.toggle('hide')">U</div></div></div>
   <div id=pm class="menu hide">
    <a onclick="go('account');document.getElementById('pm').classList.add('hide')">Account &amp; settings</a>
    <a onclick=doLogout()>Log out</a></div>
+  <div id=indexbar class=indexbar style="display:none"></div>
 
   <div id=home class="tab on"><div class=home-grid>
    <div class=home-main>
     <div class=fd-greet>
-     <div style="display:flex;justify-content:space-between;align-items:center"><div class=fd-hi id=fd-hi>Your AI desk</div><span class=hp-ailive><span class=hp-pulse></span> AI live</span></div>
+     <div style="display:flex;justify-content:space-between;align-items:center"><div class=fd-hi id=fd-hi>OpenStocks desk</div><span class=hp-ailive><span class=hp-pulse></span> live</span></div>
      <div class=fd-sub id=fd-sub>&nbsp;</div>
     </div>
     <div id=homefeed></div>
@@ -1583,12 +1948,22 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
     <div class=sec><span>watchlist</span><span style="position:relative"><input id=wlq placeholder="+ add symbol" style="width:150px;padding:6px 11px;font-size:12px" oninput="wlSearch()" autocomplete=off><div id=wlsug class="menu hide" style="position:absolute;right:0;top:36px;min-width:250px;z-index:30"></div></span></div>
     <div class=card id=wl style="padding:4px 14px"></div>
     <div style="margin-top:8px"><span class=mut style="font-size:11px">alerts&nbsp;</span><span id=alerts></span></div>
+    <div class=sec><span>catalysts today</span><span class=mut style="font-size:12px;font-weight:400">live NSE filings</span></div>
+    <div class=card id=catalysts style="padding:6px 14px;font-size:12px">—</div>
     <div class=sec><span>movers</span><span class=mut style="font-size:12px;font-weight:400">vs prev close</span></div>
     <div class=grid2 id=movers></div>
     <div class=sec><span>engine radar</span><span class=mut style="font-size:12px;font-weight:400">may buy next</span></div>
     <div id=radar class=mut style="font-size:12px">quiet</div>
    </div>
   </div></div>
+
+  <div id=watch class=tab>
+   <div class=sec><span>my watchlist</span></div>
+   <div style="position:relative;margin-bottom:12px"><input id=wlq2 placeholder="+ add a symbol (e.g. RELIANCE)" oninput="wlSearch('2')" autocomplete=off><div id=wlsug2 class="menu hide" style="position:absolute;left:0;right:0;top:46px;z-index:30"></div></div>
+   <div class=card id=wl2 style="padding:4px 14px"></div>
+   <div style="margin-top:10px"><span class=mut style="font-size:11px">alerts&nbsp;</span><span id=alerts2></span></div>
+   <div class=sec style="margin-top:22px"><span>engine radar</span><span class=mut style="font-size:12px;font-weight:400">may buy next</span></div>
+   <div id=watchlist class=skel>loading…</div></div>
 
   <div id=positions class=tab>
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
@@ -1605,7 +1980,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
     <div class=seg id=ordrange><b data-d=1 class=on onclick="setOrdRange(this)">Today</b><b data-d=3 onclick="setOrdRange(this)">3 days</b><b data-d=7 onclick="setOrdRange(this)">7 days</b><b data-d=custom onclick="setOrdRange(this)">Custom</b></div>
     <div id=ordcustom class=hide><input type=date id=ordfrom> <span class=mut style="font-size:12px">to</span> <input type=date id=ordto> <button class=sm onclick=applyOrdCustom()>Apply</button></div>
    </div>
-   <div id=ordlist><div class=skel>loading…</div></div></div>
+   <div class="seg mobonly" id=ordside style="margin-bottom:10px"><b class=on onclick="setOrdSide('buy')">Bought</b><b onclick="setOrdSide('sell')">Sold</b></div>
+   <div id=ordlist class=os-buy><div class=skel>loading…</div></div></div>
 
   <div id=analyze class=tab>
    <div class=sec>analyse a stock</div>
@@ -1620,24 +1996,35 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 </div>
 
 <nav class=nav>
-<a data-t=home class=on onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>home</a>
-<a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>portfolio</a>
+<a data-t=home class=on onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg>home</a>
+<a data-t=watch onclick="go('watch')"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx=12 cy=12 r=3/></svg>watchlist</a>
 <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>orders</a>
-<a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>analyze</a>
+<a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>portfolio</a>
+<a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>analyse</a>
 <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>account</a>
 </nav>
 
 <script>
 var INR=new Intl.NumberFormat('en-IN'),USD=new Intl.NumberFormat('en-US'),cur='home',MKT='IN',ME=null,MODE='paper',ACC=null;
+var _SUN='<circle cx="12" cy="12" r="4.3"/><path d="M12 2.5v2.2M12 19.3v2.2M4.2 12H2M22 12h-2.2M5.2 5.2l1.5 1.5M17.3 17.3l1.5 1.5M18.8 5.2l-1.5 1.5M6.7 17.3l-1.5 1.5"/>';
+var _MOON='<path d="M20 14.8A8 8 0 1 1 9.2 4a6.4 6.4 0 0 0 10.8 10.8z"/>';
+function applyTheme(t){document.documentElement.dataset.theme=t;var ic=(t=='dark')?_SUN:_MOON;['themeicon','themeicon2'].forEach(function(id){var e=document.getElementById(id);if(e)e.innerHTML=ic;});}
+function toggleTheme(){var t=(document.documentElement.dataset.theme=='dark')?'light':'dark';try{localStorage.setItem('os_theme',t)}catch(e){}applyTheme(t);}
+function toggleSide(){var s=document.getElementById('side');if(!s)return;s.classList.toggle('collapsed');try{localStorage.setItem('os_side',s.classList.contains('collapsed')?'1':'0')}catch(e){}}
+(function(){var t;try{t=localStorage.getItem('os_theme')}catch(e){}if(!t)t=(window.matchMedia&&matchMedia('(prefers-color-scheme:dark)').matches)?'dark':'light';applyTheme(t);try{if(localStorage.getItem('os_side')=='1'){var s=document.getElementById('side');if(s)s.classList.add('collapsed');}}catch(e){}})();
 function sgn(x){return (x>0?'+':'')+x}function col(x){return x>0?'up':(x<0?'dn':'mut')}
 function show(i){document.getElementById(i).classList.remove('hide')}function hide(i){document.getElementById(i).classList.add('hide')}
 function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'application/json'}},o||{})).then(r=>r.json().catch(()=>({})).then(j=>({ok:r.ok,j:j})))}
 function setMkt(m){MKT=m;document.querySelectorAll('#mkt b').forEach(b=>b.classList.toggle('on',b.dataset.m==m));refresh()}
-function go(t){cur=t;['home','positions','orders','analyze','account','detail'].forEach(x=>document.getElementById(x).classList.toggle('on',x==t));
+var NAVHIST=[];
+function go(t,noPush){if(!noPush&&cur&&cur!=t)NAVHIST.push(cur);cur=t;
+ ['home','watch','positions','orders','analyze','account','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
  document.querySelectorAll('.nav a,.side a').forEach(a=>a.classList.toggle('on',a.dataset.t==t));
- if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();window.scrollTo(0,0)}
+ var bk=document.getElementById('backbtn');if(bk)bk.style.display=NAVHIST.length?'inline-flex':'none';
+ if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();window.scrollTo(0,0)}
+function goBack(){var p=NAVHIST.pop();go(p||'home',true)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
-function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadAccountData();refresh();startStream();loadTicker();}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
+function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadAccountData();refresh();startStream();loadTicker();NAVHIST=[];go('home',true);}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
 function loadTicker(){api('/v2/api/ticker').then(r=>{var it=(r.j||[]);var el=document.getElementById('ticker');if(!el)return;if(!it.length){el.style.display='none';return;}
  el.style.display='flex';var h=it.map(t=>{var pnl='';if(t.pnl!=null){var a=t.pnl>0?'▲':(t.pnl<0?'▼':''),cl=t.pnl>0?'up':(t.pnl<0?'dn':'mut');pnl='<span class="'+cl+'">'+a+Math.abs(t.pnl).toFixed(2)+'%</span>';}return '<span class=tk onclick="stock(\''+t.symbol+'\',\''+t.market+'\')"><b>'+t.symbol+'</b><span class=mk>'+t.market+'</span><span class=num>'+t.ccy+(t.ccy=='₹'?INR:USD).format(t.price)+'</span>'+pnl+'</span>'}).join('');
  el.innerHTML='<div class=track>'+h+h+'</div>';}).catch(()=>{});}
@@ -1653,7 +2040,7 @@ function doLogout(){api('/api/auth/logout',{method:'POST'}).then(()=>{ME=null;sh
 function loadAccountData(){api('/api/account').then(r=>{ACC=r.j;renderBalance()})}
 function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.paper_cash_by_market||{};var IN=cb.IN!=null?cb.IN:(p.india_cash||0),US=cb.US!=null?cb.US:(p.us_cash||0);return {IN:+IN||0,US:+US||0}}catch(e){return{IN:0,US:0}}}
 function renderBalance(){var mb=document.getElementById('modeb');if(mb){mb.textContent=MODE;mb.className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}}
-function refresh(){renderBalance();loadHealth();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
+function refresh(){renderBalance();loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
 function stratTag(st){return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
 function whyLine(p){if(!p.why)return '';var w=p.why,f=w.factors||{};var bits=(w.reasons||[]).slice(0,2);
@@ -1689,40 +2076,80 @@ function mktCard(m){var nm=m.market=='IN'?'India · NSE':'US · equities';
 function posRow(p){var s=p.market=='IN'?'₹':'$',fmt=(p.market=='IN'?INR:USD);
  var amt=(p.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
  return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry} · exit at ${s}${p.stop}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
-function heroChart(series){
+function heroChart(series,baseline){
  if(!series||series.length<2)return '';
- var w=340,h=176,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series),rng=(hi-lo)||1,pad=16;
- var up=series[n-1]>=series[0],c=up?'#3fa45b':'#e34d3f',id='hg'+(SPARKN++);
+ var w=340,h=176,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series);
+ var ref=(baseline!=null?baseline:series[0]);
+ lo=Math.min(lo,ref);hi=Math.max(hi,ref);
+ var rng=(hi-lo)||1,pad=16;
+ var up=series[n-1]>=ref,c=up?'#3fa45b':'#e34d3f',id='hg'+(SPARKN++);
  var Y=function(v){return (h-pad-(v-lo)/rng*(h-2*pad)).toFixed(1)};
  var pts=series.map(function(v,i){return (i/(n-1)*w).toFixed(1)+','+Y(v)}).join(' ');
- var base=Y(series[0]);
+ var base=Y(ref);
  return '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><defs><linearGradient id="'+id+'" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="'+c+'" stop-opacity=".15"/><stop offset="1" stop-color="'+c+'" stop-opacity="0"/></linearGradient></defs>'
   +'<polygon points="0,'+h+' '+pts+' '+w+','+h+'" fill="url(#'+id+')"/>'
   +'<line x1="0" y1="'+base+'" x2="'+w+'" y2="'+base+'" stroke="#c8cdd6" stroke-width="1" stroke-dasharray="2 4" vector-effect="non-scaling-stroke"/>'
   +'<polyline points="'+pts+'" fill="none" stroke="'+c+'" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>';}
 function fdSet(id,cls,html){var el=document.getElementById(id);if(!el)return;el.className=cls;el.innerHTML=html;}
+var HERO=null,HEROTAB='1d';
+function setHeroTab(t){HEROTAB=t;renderHero();}
+function renderHero(){
+ // one question per view, and the words ALWAYS match the line:
+ //  1D  = today's equity minute-by-minute vs yesterday's close (dotted)
+ //  1M  = last ~22 daily closes vs the first of the window
+ //  All = every daily close since the book started
+ if(!HERO)return;var m=HERO,f=(m.ccy=='₹'?INR:USD);
+ var series,baseline,noun,note,chg,pct,tab=HEROTAB;
+ if(tab=='1d'&&(m.today_series||[]).length>=3){
+  series=m.today_series;baseline=m.prev_equity;noun='today';
+  chg=m.today_pnl;pct=m.today_pct;note="dotted line = yesterday's close · updates live";
+ }else if(tab=='1m'&&(m.daily_series||[]).length>=2){
+  series=m.daily_series.slice(-22);baseline=series[0];noun='this month';
+  chg=series[series.length-1]-baseline;pct=baseline?Math.round(chg/baseline*10000)/100:0;
+  note='one point per trading day · last '+series.length+' sessions';
+ }else{
+  series=(m.daily_series||[]).length>=2?m.daily_series:(m.equity_series||[]);
+  baseline=series[0];noun='since start';
+  chg=series[series.length-1]-baseline;pct=baseline?Math.round(chg/baseline*10000)/100:0;
+  note='one point per trading day'+(m.daily_start?' · since '+m.daily_start:'');
+  if(tab=='1d')note='today’s live chart appears a few minutes after the 9:15 open — showing since start';
+ }
+ var up=(chg||0)>=0;
+ var tabs=['1d','1m','all'].map(function(t){return '<span class="fd-tab'+(t==HEROTAB?' on':'')+'" onclick="setHeroTab(\''+t+'\')">'+t.toUpperCase()+'</span>'}).join('');
+ fdSet('fdPerf','fd-card',
+  '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')+';color:'+(up?'var(--up)':'var(--dn)')+'">'+(up?'▲':'▼')+'</span>'
+  +'<div><div class=fd-title>'+(up?"You're up ":"Down ")+noun+'</div><div class=fd-meta>live paper book · '+(m.market||'IN')+'</div></div>'
+  +'<div class=fd-tabs>'+tabs+'</div></div>'
+  +'<div class=fd-big>'+fmtc(m.ccy,m.equity)+'</div>'
+  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+m.ccy+f.format(Math.abs(Math.round(chg)))+' ('+(up?'+':'')+pct+'%) '+noun+'</div>'
+  +'<div class=fd-chart>'+heroChart(series,baseline)+'</div>'
+  +'<div class=fd-meta style="margin-top:6px">'+note+'</div>');
+}
 function loadHome(){
  if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div id=fdPerf></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
  api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;
   var ms=(d.markets||[]).filter(function(m){return inMkt(m.market)});var m=ms[0]||{},f=(m.ccy=='₹'?INR:USD);
   var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
-  document.getElementById('fd-hi').textContent=greet;
-  document.getElementById('fd-sub').innerHTML='Your AI is managing <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stocks';
-  fdSet('fdPerf','fd-card',
-   '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')+';color:'+(up?'var(--up)':'var(--dn)')+'">'+(up?'▲':'▼')+'</span>'
-   +'<div><div class=fd-title>'+(up?"You're up today":"Down today")+'</div><div class=fd-meta>live paper book · '+(m.market||'IN')+'</div></div></div>'
-   +'<div class=fd-big>'+fmtc(m.ccy,m.equity)+'</div>'
-   +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ -')+m.ccy+f.format(Math.abs(Math.round(m.today_pnl)))+' ('+(up?'+':'')+m.today_pct+'%) today</div>'
-   +'<div class=fd-chart>'+heroChart(m.equity_series||[])+'</div>');
-  var RS={STRONG:['deploying into strength','the market is trending up hard, so the engine is adding momentum names'],
-          ON:['in risk-on mode','conditions look healthy, so the engine is buying dips and breakouts'],
-          NEUTRAL:['being selective','the market is choppy, so the engine is only taking its highest-scoring setups'],
-          OFF:['playing defense','the market is weak, so the engine has paused new dip-buys to protect your capital']};
+  var nm=(ME&&ME.username)?(ME.username.charAt(0).toUpperCase()+ME.username.slice(1)):'';
+  document.getElementById('fd-hi').textContent=greet+(nm?', '+nm:'');
+  document.getElementById('fd-sub').innerHTML='OpenStocks is managing <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stocks';
+  HERO=m;renderHero();
+  var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
+          ON:['is in risk-on mode','conditions look healthy, so OpenStocks is buying dips, breakouts, and news-driven volume surges'],
+          NEUTRAL:['is being selective','the market is choppy, so OpenStocks only takes its highest-conviction setups and stocks with a real news catalyst on strong volume'],
+          OFF:['is playing defense','the market is weak, so OpenStocks paused routine dip-buys — but still catches individual stocks breaking out on fresh news + volume']};
   var rg=(d.regime_state||{})[m.market]||'NEUTRAL',rv=RS[rg]||RS.NEUTRAL;
-  fdSet('fdBrain','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--infb);color:var(--inf)">◆</span><div><div class=fd-title>Your AI is '+rv[0]+'</div><div class=fd-meta>market read</div></div></div>'
+  fdSet('fdBrain','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--infb);color:var(--inf)">◆</span><div><div class=fd-title>OpenStocks '+rv[0]+'</div><div class=fd-meta>market read</div></div></div>'
    +'<div class=fd-text>'+rv[1].charAt(0).toUpperCase()+rv[1].slice(1)+'. Right now <b>'+(m.deploy_pct||0)+'%</b> of your capital is working across <b>'+(m.positions||0)+' stocks</b>, with <b>'+fmtc(m.ccy,m.cash)+'</b> kept in reserve.</div>');
   fdSet('fdScore','fd-card','<div class=fd-hd><span class=fd-dot style="background:#efe9ff;color:#7a4bff">★</span><div><div class=fd-title>Track record</div><div class=fd-meta>this book, all-time</div></div></div>'
-   +'<div class=fd-scored><div><div class=fd-sn>'+(m.win!=null?m.win+'%':'—')+'</div><div class=fd-sl>win rate</div></div><div><div class=fd-sn>'+(m.pf!=null?m.pf:'—')+'</div><div class=fd-sl>profit factor</div></div><div><div class=fd-sn>'+(m.trades||0)+'</div><div class=fd-sl>trades</div></div><div><div class="fd-sn '+(m.overall_pnl>=0?'up':'dn')+'">'+(m.overall_pnl>=0?'+':'')+(m.overall_pct||0)+'%</div><div class=fd-sl>overall</div></div></div>');
+   +'<div class=fd-scored>'
+   +'<div><div class=fd-sn>'+(m.win!=null?m.win+'%':'—')+'</div><div class=fd-sl>win rate</div></div>'
+   +'<div><div class=fd-sn>'+(m.pf!=null?m.pf:'—')+'</div><div class=fd-sl>profit factor</div></div>'
+   +'<div><div class=fd-sn>'+(m.sharpe!=null?m.sharpe:'—')+'</div><div class=fd-sl>Sharpe</div></div>'
+   +'<div><div class="fd-sn '+((m.maxdd||0)<0?'dn':'')+'">'+(m.maxdd!=null?m.maxdd+'%':'—')+'</div><div class=fd-sl>max drawdown</div></div>'
+   +'<div><div class=fd-sn>'+(m.trades||0)+'</div><div class=fd-sl>trades</div></div>'
+   +'<div><div class="fd-sn '+(m.overall_pnl>=0?'up':'dn')+'">'+(m.overall_pnl>=0?'+':'')+(m.overall_pct||0)+'%</div><div class=fd-sl>overall</div></div>'
+   +'</div>');
  });
  api('/v2/api/orders?limit=60').then(function(r){var os=(r.j||[]).filter(function(o){return o.today&&inMkt(o.market)});
   if(!os.length){fdSet('fdTrades','','');return;}
@@ -1770,8 +2197,9 @@ function ordInRange(o){var d=(o.ts||'').slice(0,10);if(!d)return false;
 function loadOrders(){api('/v2/api/orders?limit=500').then(r=>{var os=r.j.filter(o=>inMkt(o.market)).filter(ordInRange);
  var buys=os.filter(o=>o.side=='BUY'),sells=os.filter(o=>o.side=='SELL');
  document.getElementById('ordtot').textContent=(buys.length+sells.length)?(buys.length+' bought · '+sells.length+' sold'):'';
- var col=function(lbl,arr){return '<div class=ordcol><div class=ordlbl>'+lbl+' · '+arr.length+'</div>'+(arr.length?('<div class=card style="padding:2px 15px">'+arr.map(ordRow).join('')+'</div>'):'<div class=card style="padding:15px 16px"><span class=mut style="font-size:12px">nothing in this range</span></div>')+'</div>';};
- document.getElementById('ordlist').innerHTML='<div class=ordgrid>'+col('Bought',buys)+col('Sold',sells)+'</div>';});}
+ var col=function(lbl,arr,cls){return '<div class="ordcol '+cls+'"><div class=ordlbl>'+lbl+' · '+arr.length+'</div>'+(arr.length?('<div class=card style="padding:2px 15px">'+arr.map(ordRow).join('')+'</div>'):'<div class=card style="padding:15px 16px"><span class=mut style="font-size:12px">nothing in this range</span></div>')+'</div>';};
+ document.getElementById('ordlist').innerHTML='<div class=ordgrid>'+col('Bought',buys,'oc-buy')+col('Sold',sells,'oc-sell')+'</div>';});}
+function setOrdSide(s){var l=document.getElementById('ordlist');if(l){l.classList.remove('os-buy','os-sell');l.classList.add('os-'+s)}document.querySelectorAll('#ordside b').forEach(function(b,i){b.classList.toggle('on',(i===0)===(s==='buy'))})}
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
@@ -1788,7 +2216,9 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
   <button class=pri onclick=saveCash()>Save allocation</button><div id=cashmsg class=mut style="font-size:12px;margin-top:9px"></div></div>
  <div class=sec>engine performance</div><div id=acctstats class=skel>loading…</div>
  ${(u.role=='admin')?'<div class=sec>admin · allocate paper money</div><div id=adminbox class=raise><div class=skel>loading users…</div></div>':''}
- <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>`;
+ <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>
+ <div class=sec style="color:var(--dn)">danger zone</div>
+ <div class=raise><div class=mut style="font-size:13px;margin-bottom:10px">Reset the paper book to a clean ₹1,00,000 — clears all positions, trades and equity history. Paper money only; your Telegram link is kept.</div><button class=pri style="background:var(--dn);border-color:var(--dn)" onclick=doReset()>Reset paper book</button><div id=resetmsg class=mut style="font-size:12px;margin-top:9px"></div></div>`;
  api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});
  if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});
  loadTelegram();}
@@ -1850,25 +2280,28 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
  +'<div class=detail-grid><div class=detail-main>'
   +'<div class=row><div><div style="font-size:19px;font-weight:600">'+sym+'</div><div class=mut style="font-size:12px">'+mkt+' · live</div></div><div class=hero style="font-size:27px">'+s+d.live+'</div></div>'
   +'<div id=candleWrap class=raise style="padding:10px 12px;margin-top:10px"></div>'
-  +'<div class=raise style="background:'+vb+';border:none;margin-top:10px"><div class=row><b style="color:'+vt+'">'+d.verdict+'</b><span style="color:'+vt+';font-size:12px">score '+d.score+(d.regime===false?' · regime risk-off':'')+'</span></div></div>'
+  +'<div class=raise style="background:'+vb+';border:none;margin-top:10px"><div class=row><b style="color:'+vt+'">'+d.verdict+'</b><span style="color:'+vt+';font-size:12px">score '+d.score+(d.regime===false?' · regime risk-off':'')+'</span></div>'+(d.insight?'<div style="font-size:13.5px;line-height:1.55;margin-top:8px;color:var(--tx)">'+d.insight+'</div>':'')+'</div>'
   +(d.held?'<div class=raise style="margin-top:10px"><div class=row><b>you hold this · '+d.held.strategy+'</b><span class="'+col(d.held.pnl)+'">'+sgn(d.held.pnl)+'%</span></div><div class=mut style="font-size:12px;margin-top:4px">entry '+s+d.held.entry+' · qty '+d.held.qty+' · exits on '+d.held.rule+'</div></div>':'')
  +'</div><div class=detail-side>'
   +'<div class=sec style="margin-top:0;font-size:13px">'+(d.held?'if you buy more — plan':'trade plan')+'</div>'
   +'<div class=grid2><div class=card><div class=mut style="font-size:11px">entry</div><div style="font-size:17px;font-weight:600">'+s+d.entry+'</div></div><div class=card><div class=mut style="font-size:11px">reward:risk</div><div style="font-size:17px;font-weight:600">'+d.rr+':1</div></div><div class=card><div class=mut style="font-size:11px">stop</div><div class="dn" style="font-size:17px;font-weight:600">'+s+d.stop+'</div></div><div class=card><div class=mut style="font-size:11px">target</div><div class="up" style="font-size:17px;font-weight:600">'+s+d.target+'</div></div></div>'
-  +'<div style="display:flex;gap:9px;margin:14px 0 4px"><button style="flex:1" onclick="setAlert(\''+sym+'\',\''+mkt+'\','+d.live+')">Set alert</button><button class=pri style="flex:1">'+(MODE=='live'?'Buy':'Paper buy')+'</button></div>'
+  +'<div style="display:flex;gap:9px;margin:14px 0 4px"><button style="flex:1" onclick="setAlert(\''+sym+'\',\''+mkt+'\','+d.live+')">Set alert</button>'
+   +(d.held?'<button class=pri style="flex:1;background:var(--dn);border-color:var(--dn)" onclick="doSell(\''+sym+'\',\''+mkt+'\')">Sell</button>'
+           :'<button class=pri style="flex:1" onclick="doBuy(\''+sym+'\',\''+mkt+'\')">Paper buy</button>')+'</div>'
   +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
  +'</div></div>';
- var cd=d.candles||[];CHART={candles:cd,ccy:s,levels:[{v:d.entry,c:'#4184f3',t:'entry'},{v:d.stop,c:'#e34d3f',t:'stop'},{v:d.target,c:'#3fa45b',t:'target'}],range:Math.min(66,cd.length)};drawCandles();});}
+ var cd=d.candles||[];CHART={candles:cd,dates:d.dates||[],ccy:s,levels:[{v:d.entry,c:'#4184f3',t:'entry'},{v:d.stop,c:'#e34d3f',t:'stop'},{v:d.target,c:'#3fa45b',t:'target'}],range:Math.min(66,cd.length)};drawCandles();});}
 var CHART=null;
 function setRange(n){if(CHART){CHART.range=n;drawCandles()}}
 function drawCandles(){var wrap=document.getElementById('candleWrap');if(!wrap||!CHART)return;
  var all=CHART.candles;if(!all||all.length<2){wrap.innerHTML='<div class=skel style="padding:18px 0">no chart data yet</div>';return;}
- var c=all.slice(Math.max(0,all.length-(CHART.range||all.length)));
- wrap.innerHTML=candleSVG(c,CHART.levels,CHART.ccy)+rangeBar(all.length);}
+ var st=Math.max(0,all.length-(CHART.range||all.length));
+ var c=all.slice(st),ds=(CHART.dates||[]).slice(st);
+ wrap.innerHTML=candleSVG(c,CHART.levels,CHART.ccy,ds)+rangeBar(all.length);}
 function rangeBar(total){var opts=[['1M',22],['3M',66],['6M',132]].filter(o=>o[1]<total);opts.push(['All',total]);
  return '<div style="display:flex;gap:6px;margin:8px 0 0">'+opts.map(o=>'<b class="rgb'+(CHART.range==o[1]?' on':'')+'" onclick="setRange('+o[1]+')">'+o[0]+'</b>').join('')+'</div>';}
-function candleSVG(c,levels,ccy){
- var W=600,PH=210,GAP=13,VH=54,H=PH+GAP+VH,n=c.length;
+function candleSVG(c,levels,ccy,dates){
+ var W=600,PH=210,GAP=13,VH=54,XA=16,H=PH+GAP+VH+XA,n=c.length;
  var lo=1e18,hi=-1e18,vmax=0;
  c.forEach(function(k){if(k[2]<lo)lo=k[2];if(k[1]>hi)hi=k[1];if(k[4]>vmax)vmax=k[4]});
  var rng=(hi-lo)||1,pad=rng*0.06;lo-=pad;hi+=pad;rng=hi-lo;
@@ -1883,8 +2316,11 @@ function candleSVG(c,levels,ccy){
  var ma='',pts=[];for(i=0;i<n;i++){if(i<19)continue;var sm=0;for(var j=i-19;j<=i;j++)sm+=c[j][3];pts.push(X(i).toFixed(1)+','+Y(sm/20).toFixed(1))}
  if(pts.length>1)ma='<polyline points="'+pts.join(' ')+'" fill="none" stroke="#38bdf8" stroke-width="1.4" opacity="0.85" vector-effect="non-scaling-stroke"/>';
  var grid='',lab='';[0.5,0.0,1.0].forEach(function(f){var p=lo+rng*f,y=Y(p);grid+='<line x1="0" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'" stroke="rgba(255,255,255,.06)" stroke-width="1" vector-effect="non-scaling-stroke"/>';lab+='<text x="'+(W-2)+'" y="'+(y-2).toFixed(1)+'" text-anchor="end" font-size="9" fill="#7e8ca1">'+(ccy||'')+(p>=1000?Math.round(p):p.toFixed(1))+'</text>'});
- var lv=(levels||[]).filter(function(l){return l.v&&l.v>=lo&&l.v<=hi}).map(function(l){var y=Y(l.v);return '<line x1="0" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'" stroke="'+l.c+'" stroke-width="1" stroke-dasharray="3 3" opacity="0.7" vector-effect="non-scaling-stroke"/><text x="3" y="'+(y-2).toFixed(1)+'" font-size="9" fill="'+l.c+'">'+l.t+'</text>'}).join('');
- return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block;overflow:visible">'+grid+lv+body+ma+lab+'</svg>';
+ var lv=(levels||[]).filter(function(l){return l.v&&l.v>=lo&&l.v<=hi}).map(function(l){var y=Y(l.v);return '<line x1="0" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'" stroke="'+l.c+'" stroke-width="1" stroke-dasharray="3 3" opacity="0.7" vector-effect="non-scaling-stroke"/><text x="3" y="'+(y-2).toFixed(1)+'" font-size="9" fill="'+l.c+'">'+l.t+' '+(ccy||'')+l.v+'</text>'}).join('');
+ // x-axis date labels (first / middle / last)
+ var xl='';if(dates&&dates.length){var fmt=function(s){var p=(s||'').split('-');return p.length==3?(p[2]+' '+['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+p[1]]):s};
+  [0,Math.floor((n-1)/2),n-1].forEach(function(i){var anc=i===0?'start':(i===n-1?'end':'middle');xl+='<text x="'+X(i).toFixed(1)+'" y="'+(H-4)+'" text-anchor="'+anc+'" font-size="9" fill="#7e8ca1">'+fmt(dates[i])+'</text>';});}
+ return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block;overflow:visible">'+grid+lv+body+ma+lab+xl+'</svg>';
 }
 function chartHtml(closes,levels){
  if(!closes||closes.length<3)return '';
@@ -1913,20 +2349,39 @@ function pill(v){if(v==null)return '<span class="pill pmut">\u2026</span>';var f
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
  return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 var WLT=null;
-function wlSearch(){clearTimeout(WLT);var q=document.getElementById('wlq').value.trim();if(q.length<2){hide('wlsug');return}
+function wlSearch(sfx){sfx=sfx||'';clearTimeout(WLT);var qi=document.getElementById('wlq'+sfx);if(!qi)return;var q=qi.value.trim();if(q.length<2){hide('wlsug'+sfx);return}
  WLT=setTimeout(function(){api('/v2/api/search?q='+encodeURIComponent(q)).then(r=>{var h=(r.j||[]).map(x=>'<a onclick="addWL(\''+x.symbol+'\',\''+x.market+'\')"><b>'+x.symbol+'</b>&nbsp;<span class=mut style="font-size:11px">'+x.market+' · '+x.name+'</span></a>').join('');
- document.getElementById('wlsug').innerHTML=h||'<a class=mut>no match</a>';show('wlsug');})},250)}
-function addWL(sym,mkt){hide('wlsug');document.getElementById('wlq').value='';api('/v2/api/watchlist',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(loadWL)}
+ document.getElementById('wlsug'+sfx).innerHTML=h||'<a class=mut>no match</a>';show('wlsug'+sfx);})},250)}
+function addWL(sym,mkt){['','2'].forEach(function(s){var q=document.getElementById('wlq'+s);if(q)q.value='';var sg=document.getElementById('wlsug'+s);if(sg)sg.classList.add('hide')});api('/v2/api/watchlist',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(function(){loadWL();toast('✅ added '+sym+' to watchlist')})}
 function delWL(sym,mkt){api('/v2/api/watchlist/'+sym+'?market='+mkt,{method:'DELETE'}).then(loadWL)}
 function setAlert(sym,mkt,px){var v=prompt('Alert when '+sym+' crosses price (now '+px+'):',(px*1.05).toFixed(2));if(!v)return;var val=parseFloat(v);if(!(val>0))return;
  api('/v2/api/alerts',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,kind:(val>=px?'above':'below'),value:val})}).then(function(){loadWL();toast('⏰ alert set: '+sym+' '+(val>=px?'above':'below')+' '+val)})}
 function delAlert(id){api('/v2/api/alerts/'+id,{method:'DELETE'}).then(loadWL)}
+function doReset(){if(!confirm('Reset the paper book to a clean ₹1,00,000? This clears ALL positions, trades and history. (Paper money — cannot be undone.)'))return;
+ var m=document.getElementById('resetmsg');if(m)m.textContent='resetting…';
+ api('/v2/api/reset',{method:'POST'}).then(function(r){if(r.ok){if(m)m.textContent='✅ book reset to ₹'+INR.format(r.j.budget||100000);toast('✅ paper book reset — clean slate');refresh();}else{if(m)m.textContent='⚠ '+(r.j.error||'failed');}});}
+function doBuy(sym,mkt){if(!confirm('Paper buy '+sym+' at the live price?'))return;
+ api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(function(r){
+  if(r.ok){toast('✅ Bought '+r.j.symbol+' ×'+r.j.qty+' @ '+(mkt=='IN'?'₹':'$')+r.j.entry);renderStock(sym,mkt,'detail');refresh();}
+  else toast('⚠ '+(r.j.error||'buy failed'));});}
+function doSell(sym,mkt){if(!confirm('Sell your '+sym+' position at the live price?'))return;
+ api('/v2/api/sell',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(function(r){
+  if(r.ok){toast('✅ Sold '+r.j.symbol+' ('+(r.j.pnl_pct>=0?'+':'')+r.j.pnl_pct+'%)');renderStock(sym,mkt,'detail');refresh();}
+  else toast('⚠ '+(r.j.error||'sell failed'));});}
 function loadWL(){api('/v2/api/watchlist').then(r=>{var d=r.j||{};
- var h=(d.watch||[]).filter(w=>inMkt(w.market)).map(w=>{var a=w.chg>0?'▲':(w.chg<0?'▼':''),cl=w.chg>0?'up':(w.chg<0?'dn':'mut');
-  return '<div class=lrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto auto auto;gap:9px;align-items:center"><div style="cursor:pointer;overflow:hidden;text-overflow:ellipsis" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><b>'+w.symbol+'</b> <span class=mk style="font-size:9px;border:1px solid var(--line);border-radius:4px;padding:0 3px;color:var(--mut)">'+w.market+'</span></div><span class=num style="font-size:13px">'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</span>'+pill(w.chg)+'<button class="sm icb" title="set alert" onclick="setAlert(\''+w.symbol+'\',\''+w.market+'\','+w.price+')"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button><button class="sm icb" title="remove" onclick="delWL(\''+w.symbol+'\',\''+w.market+'\')">×</button></div></div>'}).join('');
- document.getElementById('wl').innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing watched yet — search a symbol above</div>';
+ var h=(d.watch||[]).filter(w=>inMkt(w.market)).map(function(w){
+  var up=w.chg>0,dn=w.chg<0,cl=up?'up':(dn?'dn':'mut'),a=up?'▲ ':(dn?'▼ ':'');
+  var chg=(w.chg==null)?'—':(a+(up?'+':'')+w.chg+'%');
+  return '<div class=wlrow onclick="stock(\''+w.symbol+'\',\''+w.market+'\')">'
+   +'<div class=wlL><div class=wlsym>'+w.symbol+'</div><div class=wlex>'+(w.market=='IN'?'NSE':w.market)+'</div></div>'
+   +'<div class=wlR><div class=wlltp>'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</div><div class="wlch '+cl+'">'+chg+'</div></div>'
+   +'<span class=wldel onclick="event.stopPropagation();delWL(\''+w.symbol+'\',\''+w.market+'\')" title="remove">×</span>'
+   +'</div>';}).join('');
+ var wlEmpty='<div class=mut style="font-size:12px;padding:8px 0">nothing watched yet — search a symbol above</div>';
+ ['wl','wl2'].forEach(function(id){var e=document.getElementById(id);if(e)e.innerHTML=h||wlEmpty});
  var al=(d.alerts||[]).filter(a=>inMkt(a.market)).slice(0,10);
- document.getElementById('alerts').innerHTML=al.length?al.map(a=>'<span class=chip style="font-size:11px;'+(a.active?'':'opacity:.55')+'">'+(a.active?'●':'✓')+' '+a.symbol+' '+(a.kind=='pct'?('±'+a.value+'%'):(a.kind+' '+a.ccy+a.value))+(a.triggered_price?(' → hit '+a.triggered_price):'')+' <b style="cursor:pointer;padding-left:3px" onclick="delAlert('+a.id+')">✕</b></span>').join(' '):'<span class=mut style="font-size:11px">none — use ⏰ on any stock</span>';});}
+ var alh=al.length?al.map(a=>'<span class=chip style="font-size:11px;'+(a.active?'':'opacity:.55')+'">'+(a.active?'●':'✓')+' '+a.symbol+' '+(a.kind=='pct'?('±'+a.value+'%'):(a.kind+' '+a.ccy+a.value))+(a.triggered_price?(' → hit '+a.triggered_price):'')+' <b style="cursor:pointer;padding-left:3px" onclick="delAlert('+a.id+')">✕</b></span>').join(' '):'<span class=mut style="font-size:11px">none — use ⏰ on any stock</span>';
+ ['alerts','alerts2'].forEach(function(id){var e=document.getElementById(id);if(e)e.innerHTML=alh});});}
 function loadMovers(){api('/v2/api/movers').then(r=>{var d=r.j||{};
  var row=(x,m)=>'<div class=mvrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:9px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"><b style="cursor:pointer;font-size:12px;overflow:hidden;text-overflow:ellipsis" onclick="stock(\''+x.symbol+'\',\''+m+'\')">'+x.symbol+'</b><span class=num style="font-size:12px;color:var(--mut)">'+x.ccy+(x.ccy=='₹'?INR:USD).format(x.price)+'</span>'+pill(x.chg)+'</div>';
  document.getElementById('movers').innerHTML=['IN','US'].filter(inMkt).map(m=>{var v=d[m]||{};if(!(v.up||[]).length&&!(v.down||[]).length)return '';
@@ -1942,7 +2397,25 @@ function loadActivity(){api('/v2/api/orders?limit=80').then(r=>{var os=(r.j||[])
  var _a=document.getElementById('activity');if(_a)_a.innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing bought or sold yet today</div>';});}
 function loadRadar(){api('/v2/api/watch').then(r=>{var it=(r.j||[]).filter(x=>inMkt(x.market)).slice(0,10);
  document.getElementById('radar').innerHTML=it.length?it.map(x=>'<span class=chip style="cursor:pointer;margin:2px" onclick="stock(\''+x.symbol+'\',\''+x.market+'\')"><b>'+x.symbol+'</b> <span class=mut style="font-size:10px">'+x.market+' · '+x.badge+'</span></span>').join(' '):'<span class=mut style="font-size:12px">no candidates on the radar right now</span>';});}
+function loadWatch(){var el=document.getElementById('watchlist');if(!el)return;api('/v2/api/watch').then(function(r){var it=(r.j||[]).filter(function(w){return inMkt(w.market)});
+ el.innerHTML=it.length?it.map(function(w){var s=w.market=='IN'?'₹':'$';return '<div class=lrow style="cursor:pointer" onclick="stock(\''+w.symbol+'\',\''+w.market+'\')"><div style="display:flex;gap:8px;align-items:center"><b>'+w.symbol+'</b><span class="badge '+((w.strategy||'').indexOf('gap')>=0?'bg-inf':'bg-warn')+'">'+w.badge+'</span></div><div><span class=num>'+s+w.live+'</span> <span class="'+col(w.chg)+'" style="font-size:13px">'+sgn(w.chg)+'%</span></div></div>';}).join(''):'<div class=mut style="font-size:12px;padding:8px 0">no candidates on the radar right now</div>';});}
+function loadHeatmap(){var el=document.getElementById('heatmap');if(!el)return;api('/v2/api/sectors').then(r=>{var rows=((r.j||{})['IN']||[]);
+ if(!rows.length){el.innerHTML='<span class=mut style="font-size:12px">warming…</span>';return;}
+ var mx=Math.max(1,Math.max.apply(null,rows.map(x=>Math.abs(x.chg))));
+ el.innerHTML=rows.slice(0,8).map(function(x){
+   var up=x.chg>=0,a=Math.min(0.9,0.15+Math.abs(x.chg)/mx*0.75);
+   var bg=up?'rgba(63,164,91,'+a+')':'rgba(227,77,63,'+a+')';
+   return '<div class=htile style="background:'+bg+'" title="'+(x.top||[]).join(', ')+'"><div class=hs>'+x.sector+'</div><div class="hc '+(up?'up':'dn')+'">'+(up?'+':'')+x.chg+'%</div><div class=hn>'+x.n+' stocks</div></div>';
+ }).join('');});}
+function loadIndices(){var el=document.getElementById('indexbar');if(!el)return;api('/v2/api/indices').then(r=>{var xs=(r.j||[]);
+ if(!xs.length){el.style.display='none';return;}
+ el.style.display='flex';
+ el.innerHTML=xs.map(function(x){var up=x.chg>=0;return '<div class=idx><b>'+x.name+'</b> <span class=iv>'+INR.format(x.last)+'</span> <span class="ic '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+x.chg+'%</span></div>';}).join('');});}
+function loadCatalysts(){var el=document.getElementById('catalysts');if(!el)return;api('/v2/api/catalysts').then(r=>{var cs=(r.j||[]).slice(0,8);
+ if(!cs.length){el.innerHTML='<span class=mut>no fresh filings yet</span>';return;}
+ var bc={results:'bg-inf',order:'bg-up',corp_action:'bg-warn'};
+ el.innerHTML=cs.map(c=>'<div class=lrow style="cursor:pointer;padding:8px 2px" onclick="stock(\''+c.symbol+'\',\'IN\')"><div style="min-width:0"><b>'+c.symbol+'</b> <span class="badge '+(bc[c.cat]||'bg-mut')+'" style="font-size:9px">'+c.kind+'</span><div class=mut style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px">'+(c.subject||'')+'</div></div></div>').join('');});}
 function toast(t){var e=document.createElement('div');e.className='toastmsg';e.textContent=t;document.body.appendChild(e);setTimeout(function(){e.remove()},6500)}
-boot();setInterval(()=>{if(ME){loadHealth();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity()}if(cur=='positions')loadPos()}},20000);
+boot();setInterval(()=>{if(ME){loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos()}},20000);
 setInterval(()=>{if(ME)loadTicker()},6000);
 </script></body></html>"""
