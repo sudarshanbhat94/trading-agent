@@ -51,9 +51,11 @@ doing. It is not a promise that the brief converges.
       symbol→sector source (NSE industry classification) before this is worth
       building. The analytics payload returns `sector_exposure: null` with a
       note rather than a fake chart.
-- [ ] **Alert engine.** Persist user alert rules (price, indicator cross,
-      volume spike, pattern, catalyst) and evaluate them on the engine's
-      existing cycle. Deliver via Telegram/WhatsApp, which already work.
+- [ ] **Extra alert kinds.** Price alerts (above/below/pct) already existed and
+      now fire server-side (`fe634d8`). Still missing from the brief: indicator
+      cross, volume spike, pattern and catalyst rules. `alert_hit()` in
+      `v2_web.py` needs a branch per kind; storage, evaluation cadence and
+      Telegram delivery are already wired, so each new kind is small.
 - [ ] **Watchlist folders and tags.** The watchlist exists; grouping does not.
 - [ ] **Fundamentals ingestion.** Revenue, profit, EPS, PE/PB, ROE/ROCE, debt,
       promoter and institutional holding. `promoter_holding` is in zero files.
@@ -127,6 +129,8 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `fe634d8` Alerts evaluated server-side — they previously fired ONLY while
+  a browser had the dashboard open (2 live alerts, 0 ever triggered)
 - `c1fe36e` Allocation & risk card in the portfolio tab
 - `4de242c` Portfolio analytics: allocation, concentration, drawdown,
   per-lane realised-P&L curves (`/v2/api/portfolio`)
