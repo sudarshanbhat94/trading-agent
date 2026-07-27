@@ -857,6 +857,23 @@ _VOL_CURVE = [(0, 0.02), (5, 0.05), (15, 0.10), (30, 0.16), (60, 0.25),
               (105, 0.35), (165, 0.46), (225, 0.57), (285, 0.70), (345, 0.88), (375, 1.0)]
 
 
+def trading_days_held(entry_date, today, market):
+    """Sessions elapsed between entry and `today`, skipping weekends and the
+    exchange holidays in MARKET_HOLIDAYS.
+
+    Extracted verbatim from exit_monitor so the hold clock can be tested; the
+    semantics are unchanged. Calendar counting used to force-sell roughly two
+    sessions early around weekends, truncating the bounce the 8-bar hold was
+    validated on.
+    """
+    try:
+        import numpy as _np
+        return int(_np.busday_count(str(entry_date)[:10], today.isoformat(),
+                                    holidays=MARKET_HOLIDAYS.get(market, [])))
+    except ValueError:
+        return 0
+
+
 def _vol_frac(mins):
     """Piecewise-linear cumulative volume fraction for `mins` after the open."""
     if mins <= 0:
@@ -1107,11 +1124,15 @@ def _stale_symbols(market, lag=STALE_QUOTE_SEC):
 CATALYST_DB = os.environ.get("CATALYST_DB", "/opt/opentrade/var/catalysts.db")
 
 
-def _catalyst_cutoff_epoch(sessions):
+def _catalyst_cutoff_epoch(sessions, today=None):
     """Epoch of 00:00 IST on the trading day `sessions` sessions before today, so
     the catalyst-freshness window bridges weekends/holidays instead of a flat 48
-    wall-clock hours (which expired Friday results before Monday's move)."""
-    today = datetime.now(IST).date()
+    wall-clock hours (which expired Friday results before Monday's move).
+
+    `today` is injectable for testing only; production callers omit it and get
+    the current IST date exactly as before.
+    """
+    today = today or datetime.now(IST).date()
     try:
         import numpy as _np
         hol = _np.array(MARKET_HOLIDAYS.get("IN", []), dtype="datetime64[D]")
@@ -1512,15 +1533,10 @@ def exit_monitor(market):
         # trade is never allowed to go red (user spec, matches the backtest)
         if p["strategy"] in INTRADAY_STRATS and peak >= p["entry"] * (1 + INTRA["lock"]):
             eff = max(eff, p["entry"] * 1.001)
-        try:
-            # TRADING days, not calendar days — the backtest validated an 8
-            # trading-bar hold; calendar counting was force-selling ~2 sessions
-            # early around weekends, truncating the bounce.
-            import numpy as _np
-            held = int(_np.busday_count(str(p["edate"])[:10], today.isoformat(),
-                                        holidays=MARKET_HOLIDAYS.get(market, [])))
-        except ValueError:
-            held = 0
+        # TRADING days, not calendar days — the backtest validated an 8
+        # trading-bar hold; calendar counting was force-selling ~2 sessions
+        # early around weekends, truncating the bounce.
+        held = trading_days_held(p["edate"], today, market)
         # IN gap names spike then mean-revert -> take profit at a fixed target
         # (validated: cuts give-back, holds the edge). US gap trends -> trail only.
         # Computed dynamically so it also protects positions opened before this rule.

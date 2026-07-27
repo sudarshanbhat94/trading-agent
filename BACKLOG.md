@@ -24,11 +24,20 @@ doing. It is not a promise that the brief converges.
 
 ## P0 — correctness and safety of the live book
 
-- [ ] **Engine behavioural tests.** `v2_live` has no test coverage of lane
-      logic — only that it imports. Cover: entry gating per lane, the
-      intraday 15:12 square-off, BTST next-open exit, stop/target evaluation,
-      and `DISABLED_LANES` actually blocking `gap_momentum`. Use a temp SQLite
-      book; do not touch the live DB.
+- **Engine behavioural tests** — split; `v2_live` is 1730 lines and its two
+  biggest functions are DB-coupled, so this is several cycles.
+  - [x] Decision logic: catalyst window, hold clock, volume curve, lane
+        configuration invariants. Done, `f0a4c21`.
+  - [ ] **Exit evaluation against a temp SQLite book.** Stop, target, trailing
+        stop, breakeven arming, the intraday 15:12 square-off and the BTST
+        next-open exit. `exit_monitor` reads and writes the book, so build a
+        throwaway DB fixture — never touch the live one. Expect to extract the
+        per-position decision out of the loop first; keep the extraction
+        behaviour-identical and say so.
+  - [ ] **Entry gating per lane.** That each lane's `*_pass` refuses to open a
+        position when its own gate fails (regime, catalyst freshness, rvol,
+        near-high, earnings block, risk halt), and that `DISABLED_LANES` is
+        honoured in the candidate loop rather than only as a constant.
 - [ ] **Deploy-safety check script.** `scripts/preflight.py` — verify the
       declared deps import, all three DBs open, the daily candle source is
       current, and services are healthy. Run before any deploy.
