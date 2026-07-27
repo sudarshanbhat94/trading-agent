@@ -182,6 +182,86 @@ def _market_stats(v2, market, budget, live):
                 win=(len(wins) / len(rets) * 100) if rets else 0.0, pf=round(pf or 0, 2))
 
 
+LANE_LABELS = {
+    "swing_meanrev": "swing mean-reversion",
+    "mom_breakout": "momentum breakout",
+    "gap_momentum": "gap momentum",
+    "volume_surge": "volume surge",
+    "intraday_news": "intraday news",
+    "btst": "BTST (overnight)",
+    "manual": "manual",
+}
+OVERNIGHT_LANES = ("swing_meanrev", "mom_breakout", "gap_momentum", "btst", "manual")
+
+
+def _hold_days(entry_date, exit_date):
+    """Calendar days held. Returns None when either date is unusable."""
+    try:
+        start = datetime.strptime(str(entry_date)[:10], "%Y-%m-%d").date()
+        end = datetime.strptime(str(exit_date)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    return (end - start).days
+
+
+def strategy_stats(rows):
+    """Per-lane performance from closed trades.
+
+    `rows` are (strategy, return_pct, pnl, entry_date, exit_date) tuples. Pure,
+    so it can be tested without a database.
+
+    Every lane is reported under its own name. The UI previously collapsed
+    everything to "gap" or "swing", which made btst, volume_surge,
+    intraday_news and mom_breakout indistinguishable — and unevaluatable.
+    """
+    buckets: dict[str, dict] = {}
+    for strategy, ret, pnl, entry_date, exit_date in rows:
+        lane = str(strategy or "unknown")
+        b = buckets.setdefault(lane, {"rets": [], "pnl": 0.0, "holds": []})
+        try:
+            b["rets"].append(float(ret))
+        except (TypeError, ValueError):
+            continue
+        try:
+            b["pnl"] += float(pnl or 0.0)
+        except (TypeError, ValueError):
+            pass
+        held = _hold_days(entry_date, exit_date)
+        if held is not None:
+            b["holds"].append(held)
+
+    out = []
+    for lane, b in buckets.items():
+        rets = b["rets"]
+        if not rets:
+            continue
+        wins = [r for r in rets if r > 0]
+        loss = [r for r in rets if r <= 0]
+        loss_sum = abs(sum(loss))
+        # Zero-denominator guard. A single break-even trade makes `loss`
+        # non-empty while summing to zero; that exact case once 500'd the
+        # overview endpoint and blanked the dashboard.
+        pf = (sum(wins) / loss_sum) if loss_sum > 0 else (9.9 if wins else 0.0)
+        out.append(dict(
+            strategy=lane,
+            label=LANE_LABELS.get(lane, lane.replace("_", " ")),
+            overnight=lane in OVERNIGHT_LANES,
+            trades=len(rets),
+            win=round(len(wins) / len(rets) * 100, 1),
+            pf=round(pf, 2),
+            pnl=round(b["pnl"], 2),
+            avg=round(sum(rets) / len(rets), 2),
+            avg_win=round(sum(wins) / len(wins), 2) if wins else 0.0,
+            avg_loss=round(sum(loss) / len(loss), 2) if loss else 0.0,
+            best=round(max(rets), 2),
+            worst=round(min(rets), 2),
+            avg_hold_days=round(sum(b["holds"]) / len(b["holds"]), 1) if b["holds"] else None,
+        ))
+    # Most-traded first; it is the lane with the most evidence behind it.
+    out.sort(key=lambda x: (-x["trades"], x["strategy"]))
+    return out
+
+
 @router.get("/api/overview")
 def api_overview():
     v2 = _ro(V2_DB)
@@ -1055,11 +1135,15 @@ def api_stats():
             "SELECT date,equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%' ORDER BY date", (market,))]
         rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?", (market,))]
         wins = [r for r in rets if r > 0]; loss = [r for r in rets if r <= 0]
+        lanes = strategy_stats(v2.execute(
+            "SELECT strategy,return_pct,pnl,entry_date,exit_date FROM v2_trades WHERE market=?",
+            (market,)).fetchall())
         out.append(dict(market=market, ccy="₹" if market == "IN" else "$",
                         overall_pnl=round(s["overall_pnl"]), today_pnl=round(s["today_pnl"]),
                         win=round(s["win"]), pf=s["pf"], trades=s["trades"], deploy_pct=s["deploy_pct"],
                         avg_win=round(sum(wins) / len(wins), 2) if wins else 0,
-                        avg_loss=round(sum(loss) / len(loss), 2) if loss else 0, curve=curve))
+                        avg_loss=round(sum(loss) / len(loss), 2) if loss else 0,
+                        by_strategy=lanes, curve=curve))
     v2.close()
     return JSONResponse(out)
 
@@ -1422,7 +1506,7 @@ function load(){fetch('/v2/api/overview').then(r=>r.json()).then(d=>{
  fetch('/v2/api/positions').then(r=>r.json()).then(d=>{document.getElementById('homepos').innerHTML=d.slice(0,4).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function loadPos(){fetch('/v2/api/positions').then(r=>r.json()).then(d=>{document.getElementById('poslist').innerHTML=d.map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function loadWatch(){fetch('/v2/api/watch').then(r=>r.json()).then(d=>{document.getElementById('watchlist').innerHTML=d.map(w=>{var sym=w.market=='IN'?'₹':'$';return `<div class=lrow onclick="stock('${w.symbol}','${w.market}')"><div style="display:flex;gap:8px;align-items:center"><b>${w.symbol}</b><span class="badge ${w.strategy.indexOf('gap')>=0?'bg-inf':'bg-warn'}">${w.badge}</span></div><div><span class=num>${sym}${w.live}</span> <span class="${col(w.chg)}" style="font-size:13px">${sgn(w.chg)}%</span></div></div>`}).join('')||'<div class=skel>no candidates right now</div>';});}
-function loadStats(){fetch('/v2/api/stats').then(r=>r.json()).then(d=>{document.getElementById('statlist').innerHTML=d.map(s=>`<div class=pos><div class=row><b>${s.market} · ${s.strategy.indexOf('gap')>=0?'gap':'swing'}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div class=tile><div class=v>${s.win}%</div></div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div class=tile><div class=v>${s.pf}</div></div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="v up" style="font-size:17px">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="v dn" style="font-size:17px">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div></div>`).join('');});}
+function loadStats(){fetch('/v2/api/stats').then(r=>r.json()).then(d=>{document.getElementById('statlist').innerHTML=d.map(s=>`<div class=pos><div class=row><b>${s.market}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div class=tile><div class=v>${s.win}%</div></div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div class=tile><div class=v>${s.pf}</div></div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="v up" style="font-size:17px">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="v dn" style="font-size:17px">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div></div>`).join('');});}
 function stock(sym,mkt){go('detail');var el=document.getElementById('detail');el.innerHTML='<div class=skel>analysing '+sym+'…</div>';
  fetch('/v2/api/stock/'+sym+'?market='+mkt).then(r=>r.json()).then(d=>{var s=mkt=='IN'?'₹':'$';
  if(d.error){el.innerHTML='<div class=back onclick="go(\'home\')">‹ back</div><div class=sec>'+sym+'</div><div class=skel>'+d.error+(d.live?' · live '+s+d.live:'')+'</div>';return;}
@@ -1614,7 +1698,8 @@ function load(){api('/v2/api/overview').then(r=>{var d=r.j;
  api('/v2/api/positions').then(r=>{document.getElementById('homepos').innerHTML=r.j.filter(p=>inMkt(p.market)).slice(0,5).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function loadPos(){api('/v2/api/positions').then(r=>{document.getElementById('poslist').innerHTML=r.j.filter(p=>inMkt(p.market)).map(posCard).join('')||'<div class=skel>no open positions</div>';});}
 function loadWatch(){api('/v2/api/watch').then(r=>{document.getElementById('watchlist').innerHTML=r.j.filter(w=>inMkt(w.market)).map(w=>{var s=w.market=='IN'?'₹':'$';return `<div class=lrow onclick="stock('${w.symbol}','${w.market}')"><div style="display:flex;gap:8px;align-items:center"><b>${w.symbol}</b><span class="badge ${w.strategy.indexOf('gap')>=0?'bg-inf':'bg-warn'}">${w.badge}</span></div><div><span class=num>${s}${w.live}</span> <span class="${col(w.chg)}" style="font-size:13px">${sgn(w.chg)}%</span></div></div>`}).join('')||'<div class=skel>no candidates</div>';});}
-function loadStats(){api('/v2/api/stats').then(r=>{document.getElementById('statlist').innerHTML=r.j.filter(s=>inMkt(s.market)).map(s=>`<div class=raise><div class=row><b>${s.market} · ${s.strategy.indexOf('gap')>=0?'gap':'swing'}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div style="font-size:18px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div style="font-size:18px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:17px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:17px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});}
+function loadStats(){api('/v2/api/stats').then(r=>{document.getElementById('statlist').innerHTML=r.j.filter(s=>inMkt(s.market)).map(s=>`<div class=raise><div class=row><b>${s.market}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div style="font-size:18px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div style="font-size:18px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:17px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:17px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div>${laneRows(s.by_strategy)}</div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});}
+function laneRows(lanes){if(!lanes||!lanes.length)return '';return '<div class=mut style="font-size:11px;margin:12px 0 6px">by lane</div>'+lanes.map(l=>`<div class=row style="padding:6px 0;border-top:1px solid var(--line)"><div><div style="font-size:13px;font-weight:600">${l.label}${l.overnight?' <span class=mut style="font-size:10px">overnight</span>':''}</div><div class=mut style="font-size:11px">${l.trades} trades · win ${l.win}% · PF ${l.pf}${l.avg_hold_days!=null?' · held '+l.avg_hold_days+'d':''}</div></div><div style="text-align:right"><div class="${col(l.avg)}" style="font-size:14px;font-weight:600">${sgn(l.avg)}%</div><div class=mut style="font-size:11px">avg/trade</div></div></div>`).join('');}
 /* account + settings */
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};
  el.innerHTML=`<div class=sec>account</div>
