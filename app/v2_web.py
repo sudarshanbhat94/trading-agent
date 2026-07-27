@@ -667,6 +667,29 @@ def api_alerts_del(aid: int):
 _alert_last_check = [0.0]
 
 
+def alert_hit(kind, value, price, day_change_pct=None):
+    """Whether one alert rule is satisfied. Pure, so it can be tested directly.
+
+    `above`/`below` compare the live price; `pct` compares the ABSOLUTE day
+    move, so a -6% collapse fires a 5% alert just as a +6% rally does.
+    """
+    try:
+        value = float(value)
+        price = float(price)
+    except (TypeError, ValueError):
+        return False
+    if kind == "above":
+        return price >= value
+    if kind == "below":
+        return price <= value
+    if kind == "pct":
+        try:
+            return abs(float(day_change_pct or 0)) >= value
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 def _check_alerts():
     """Fire due alerts against live prices; returns newly triggered (for toasts).
     Called from the SSE loop, throttled to every ~5s."""
@@ -696,8 +719,7 @@ def _check_alerts():
             if not lq:
                 continue
             p = lq["price"]
-            hit = ((kind == "above" and p >= value) or (kind == "below" and p <= value)
-                   or (kind == "pct" and abs(chg.get(m, {}).get(sym, {}).get("chg") or 0) >= value))
+            hit = alert_hit(kind, value, p, chg.get(m, {}).get(sym, {}).get("chg"))
             if hit:
                 if v2 is None:
                     v2 = _rw()

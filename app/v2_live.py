@@ -195,6 +195,12 @@ OVERNIGHT_MAX_POS_FRAC = {"IN": 0.30, "US": 0.30}
 
 _LOG = logging.getLogger("openstocks.v2_live")
 
+# Alert evaluation cadence. 20s is well inside a price alert's useful
+# resolution and keeps the engine loop cheap; _check_alerts() throttles itself
+# to 5s on top of this.
+ALERT_INTERVAL = 20
+_last_alerts: dict = {}
+
 
 def cap_overnight_shares(shares: float, entry: float, equity: float, market: str,
                          strategy: str, symbol: str = "") -> float:
@@ -1742,6 +1748,22 @@ def loop(interval):
                     if time.time() - _last_sw.get(m, 0) >= SECTOR_WATCH_INTERVAL:
                         sector_watch_pass(m)                     # watch-only radar (sector co-move + NSE spurt)
                         _last_sw[m] = time.time()
+                    # Price alerts. These used to be evaluated ONLY inside the
+                    # SSE payload builder, so they fired only while a browser
+                    # had the dashboard open — set an alert, close the tab, and
+                    # it never triggered. Evaluated here they run server-side on
+                    # the engine's own cycle. Cheap: internally throttled, and a
+                    # no-op when no alert is active.
+                    if time.time() - _last_alerts.get(m, 0) >= ALERT_INTERVAL:
+                        try:
+                            from . import v2_web            # lazy: avoids a circular import
+                            fired = v2_web._check_alerts()
+                            if fired:
+                                _LOG.info("alerts fired: %s",
+                                          ", ".join(f"{f['symbol']} {f['kind']} {f['value']}" for f in fired))
+                        except Exception:
+                            _LOG.exception("alert check failed")
+                        _last_alerts[m] = time.time()
                     if time.time() - _last_signal.get(m, 0) >= SIGNAL_INTERVAL:
                         poll_market(m)                           # heavy signal gen periodically
                         _last_signal[m] = time.time()
