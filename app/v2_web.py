@@ -2517,6 +2517,7 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
   +'<div style="display:flex;gap:9px;margin:14px 0 4px"><button style="flex:1" onclick="setAlert(\''+sym+'\',\''+mkt+'\','+d.live+')">Set alert</button>'
    +(d.held?'<button class=pri style="flex:1;background:var(--dn);border-color:var(--dn)" onclick="doSell(\''+sym+'\',\''+mkt+'\')">Sell</button>'
            :'<button class=pri style="flex:1" onclick="doBuy(\''+sym+'\',\''+mkt+'\')">Paper buy</button>')+'</div>'
+  +recHtml(d.recommendation,s)
   +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
  +'</div></div>';
  var cd=d.candles||[];CHART={candles:cd,dates:d.dates||[],ccy:s,levels:[{v:d.entry,c:'#4184f3',t:'entry'},{v:d.stop,c:'#e34d3f',t:'stop'},{v:d.target,c:'#3fa45b',t:'target'}],range:Math.min(66,cd.length)};drawCandles();});}
@@ -2575,8 +2576,40 @@ function spark(series,ccy){
 }
 var SPARKN=0;
 function pill(v){if(v==null)return '<span class="pill pmut">\u2026</span>';var fl=Math.abs(v)<0.005,up=v>0;return '<span class="pill '+(fl?'pmut':(up?'pup':'pdn'))+'">'+(fl?'0.00%':((up?'\u25b2 ':'\u25bc ')+Math.abs(v).toFixed(2)+'%'))+'</span>'}
+function esc(x){if(x==null)return '';return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function recBadge(score){var m=[['Strong Sell','var(--dn)'],['Sell','var(--dn)'],['Reduce','var(--warn)'],['Hold','var(--mut)'],['Accumulate','var(--warn)'],['Buy','var(--up)'],['Strong Buy','var(--up)']];return m[score]||m[3];}
+function recHtml(r,s){
+ if(!r)return '';
+ if(r.insufficient_data)return '<div class=sec>recommendation</div><div class=mut style="font-size:13px">Not enough stored data on this name to form a view.</div>';
+ var b=recBadge(r.rating_score),col=b[1],pct=Math.round((r.confidence||0)*100);
+ var h='<div class=sec>recommendation</div>';
+ h+='<div class=raise style="margin-top:6px"><div class=row><b style="color:'+col+';font-size:16px">'+esc(r.rating)+'</b>';
+ h+='<span class=mut style="font-size:12px">confidence '+pct+'%</span></div>';
+ h+='<div style="height:5px;border-radius:3px;background:var(--line);margin-top:8px"><div style="height:5px;border-radius:3px;width:'+pct+'%;background:'+col+'"></div></div>';
+ if(r.narrative&&r.narrative.text)h+='<div style="font-size:13.5px;line-height:1.55;margin-top:10px;color:var(--tx)">'+esc(r.narrative.text)+'</div>';
+ var lists=[['bull case',r.bull_case,'var(--up)'],['bear case',r.bear_case,'var(--dn)'],['risks',r.risks,'var(--warn)']];
+ for(var i=0;i<lists.length;i++){var t=lists[i][0],items=lists[i][1],c=lists[i][2];
+  if(!items||!items.length)continue;
+  h+='<div style="margin-top:11px"><div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.4px">'+t+'</div>';
+  for(var j=0;j<items.length;j++)h+='<div style="font-size:12.5px;margin-top:4px;padding-left:9px;border-left:2px solid '+c+'">'+esc(items[j])+'</div>';
+  h+='</div>';}
+ var lv=function(title,arr){if(!arr||!arr.length)return '';var out='<div class=mut style="font-size:11px;margin-top:10px">'+title+'</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">';
+  for(var k=0;k<arr.length;k++)out+='<span class=card style="padding:3px 8px;font-size:11.5px">'+s+arr[k].price+' <span class=mut>'+esc(arr[k].label)+'</span></span>';
+  return out+'</div>';};
+ h+=lv('support',r.support)+lv('resistance',r.resistance);
+ if(r.targets&&r.targets.length){h+='<div class=mut style="font-size:11px;margin-top:10px">targets</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">';
+  for(var t2=0;t2<r.targets.length;t2++){var tg=r.targets[t2];h+='<span class=card style="padding:3px 8px;font-size:11.5px">'+s+tg.price+' <span class="up">'+(tg.upside_pct!=null?'+'+tg.upside_pct+'%':'')+'</span></span>';}
+  h+='</div>';}
+ if(r.catalysts&&r.catalysts.length){h+='<div class=mut style="font-size:11px;margin-top:10px">catalysts</div>';
+  for(var c2=0;c2<r.catalysts.length;c2++)h+='<div style="font-size:12.5px;margin-top:3px">'+esc(r.catalysts[c2].headline)+'</div>';}
+ if(r.time_horizon)h+='<div class=mut style="font-size:12px;margin-top:10px">'+esc(r.time_horizon)+'</div>';
+ if(r.evidence&&r.evidence.length){h+='<details style="margin-top:10px"><summary class=mut style="font-size:11.5px;cursor:pointer">evidence ('+r.evidence.length+')</summary>';
+  for(var e=0;e<r.evidence.length;e++){var ev=r.evidence[e];
+   h+='<div style="font-size:11.5px;margin-top:5px"><span class=mut>'+esc(ev.metric)+'</span> = '+esc(JSON.stringify(ev.value))+' <span class=mut>via '+esc(ev.source)+'</span></div>';}
+  h+='</details>';}
+ return h+'</div>';}
 function newsHtml(n,s){if(!n||!n.length)return '<div class=sec>news</div><div class=mut style="font-size:13px">no recent headlines</div>';
- return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+x.title+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
+ return '<div class=sec>news &amp; sentiment</div>'+n.map(x=>{var c=x.score>0.1?'bg-up':(x.score<-0.1?'bg-dn':'bg-mut');return '<div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0"><span class="badge '+c+'" style="white-space:nowrap;margin-top:1px">'+x.label.replace('_',' ')+'</span><div><div style="font-size:13px;line-height:1.4">'+esc(x.title)+'</div><div class=mut style="font-size:10px">'+(x.when||'')+'</div></div></div>'}).join('');}
 var WLT=null;
 function wlSearch(sfx){sfx=sfx||'';clearTimeout(WLT);var qi=document.getElementById('wlq'+sfx);if(!qi)return;var q=qi.value.trim();if(q.length<2){hide('wlsug'+sfx);return}
  WLT=setTimeout(function(){api('/v2/api/search?q='+encodeURIComponent(q)).then(r=>{var h=(r.j||[]).map(x=>'<a onclick="addWL(\''+x.symbol+'\',\''+x.market+'\')"><b>'+x.symbol+'</b>&nbsp;<span class=mut style="font-size:11px">'+x.market+' · '+x.name+'</span></a>').join('');

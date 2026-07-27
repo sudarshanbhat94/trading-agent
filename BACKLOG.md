@@ -40,8 +40,6 @@ doing. It is not a promise that the brief converges.
       model runs. Needs a key, plus a sync-safe call path (the brain's methods
       are async and `api_stock` is sync). Until then the deterministic
       narrative serves, which is what production would show today anyway.
-- [ ] **Render the recommendation in the UI.** `/v2/api/stock` returns the
-      full structured call and narrative; the SPA does not display it yet.
 - [ ] **Multi-agent analysis architecture.** Independent analyst functions —
       technical, catalyst/news, risk, sector — each returning a structured
       opinion with evidence, combined by a CIO aggregator that reconciles
@@ -98,7 +96,8 @@ doing. It is not a promise that the brief converges.
 - [ ] **docker-compose + monitoring.** A Dockerfile exists; compose,
       metrics and structured logging do not.
 - [ ] **Security sweep.** CSRF on state-changing endpoints, XSS review of the
-      SPA templates, prompt-injection hardening on LLM inputs, and a
+      SPA templates (an `esc()` helper now exists and covers the recommendation
+      card and news headlines — the rest of the SPA is still unescaped), prompt-injection hardening on LLM inputs, and a
       systematic look at SQL construction. Session auth, rate limiting and
       secret hygiene are already done.
 
@@ -124,6 +123,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Recommendation card in the SPA + HTML escaping (first XSS fix)
 - `7154717` Narrative layer + hallucination guard (evidence-constrained,
   deterministic fallback)
 - `5ede852` Structured evidence-grounded recommendations (7-level call,
