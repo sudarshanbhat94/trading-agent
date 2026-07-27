@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import indicators as ta
 from . import narrative as narr
+from . import portfolio as pf
 from . import recommendation as rec
 from . import v2_engine as eng
 
@@ -1125,6 +1126,36 @@ def api_watch():
     v2.close()
     return JSONResponse(out[:24])
 
+
+
+@router.get("/api/portfolio")
+def api_portfolio(market: str = "IN"):
+    """Allocation, concentration, drawdown and per-lane realised-P&L curves."""
+    v2 = _ro(V2_DB)
+    try:
+        row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
+        budget = row[0] if row else 0.0
+        live = _live_map(market)
+        positions = [
+            (sym, strat, shares, entry, (live.get(sym) or {}).get("price"))
+            for sym, strat, shares, entry in v2.execute(
+                "SELECT symbol,strategy,shares,entry_price FROM v2_positions WHERE market=?",
+                (market,))
+        ]
+        curve = list(v2.execute(
+            "SELECT date,equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%' "
+            "ORDER BY date", (market,)))
+        trades = list(v2.execute(
+            "SELECT strategy,exit_date,pnl FROM v2_trades WHERE market=?", (market,)))
+    except Exception:
+        _LOG.exception("portfolio query failed for %s", market)
+        v2.close()
+        return JSONResponse({"error": "portfolio data unavailable"}, status_code=503)
+    v2.close()
+    payload = pf.build(positions, curve, trades, budget)
+    payload["market"] = market
+    payload["ccy"] = "\u20b9" if market == "IN" else "$"
+    return JSONResponse(payload)
 
 @router.get("/api/stats")
 def api_stats():
