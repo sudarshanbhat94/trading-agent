@@ -31,12 +31,17 @@ doing. It is not a promise that the brief converges.
 
 ## P0 — the product that was asked for
 
-- [ ] **Narrative layer on the recommendation.** The structured call now
-      exists (`app/recommendation.py`, served at `/v2/api/stock`). What is
-      missing is prose: an LLM pass that *writes* the bull/bear case from the
-      evidence list without inventing facts, and a UI section to render it.
-      Constrain the model to the supplied evidence and reject any claim whose
-      metric is not in the payload.
+- [ ] `BLOCKED (DeepSeek API key)` **Connect the model writer to the
+      narrative.** The prose layer and its hallucination guard are built
+      (`app/narrative.py`); `narrate(rec, writer=...)` takes any callable and
+      verifies its output. What is missing is the writer itself: the box has
+      `LLM_PROVIDER=deepseek` and `LLM_DECISION_MODE=primary` but
+      **`DEEPSEEK_API_KEY` is empty**, so `LLMBrain.enabled` is False and no
+      model runs. Needs a key, plus a sync-safe call path (the brain's methods
+      are async and `api_stock` is sync). Until then the deterministic
+      narrative serves, which is what production would show today anyway.
+- [ ] **Render the recommendation in the UI.** `/v2/api/stock` returns the
+      full structured call and narrative; the SPA does not display it yet.
 - [ ] **Multi-agent analysis architecture.** Independent analyst functions —
       technical, catalyst/news, risk, sector — each returning a structured
       opinion with evidence, combined by a CIO aggregator that reconciles
@@ -119,6 +124,8 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Narrative layer + hallucination guard (evidence-constrained,
+  deterministic fallback)
 - `5ede852` Structured evidence-grounded recommendations (7-level call,
   confidence, bull/bear, risks, catalysts, levels, targets, horizon)
 - `8f57348` CI on every push — matrix 3.12 (prod) + 3.14 (dev), deps from

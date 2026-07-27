@@ -19,6 +19,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import indicators as ta
+from . import narrative as narr
 from . import recommendation as rec
 from . import v2_engine as eng
 
@@ -1269,6 +1270,12 @@ def api_stock(symbol: str, market: str = "IN"):
             news_score=(news_items[0].get("score") if news_items else None),
             held=bool(held),
         ))
+        # Prose over the structured call. No model is wired here yet:
+        # llm_provider is offline on this deployment, so this serves the
+        # deterministic narrative. When a writer is supplied it is still
+        # gated by verify_narrative(), which discards any figure not
+        # traceable to the evidence.
+        recommendation["narrative"] = narr.narrate(recommendation)
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
