@@ -119,7 +119,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Structured evidence-grounded recommendations (7-level call,
+- `5ede852` Structured evidence-grounded recommendations (7-level call,
   confidence, bull/bear, risks, catalysts, levels, targets, horizon)
 - `8f57348` CI on every push — matrix 3.12 (prod) + 3.14 (dev), deps from
   requirements.txt only. Verified by simulating CI locally: clean venv +
