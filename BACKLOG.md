@@ -16,13 +16,47 @@ Rules for the loop:
   (This has happened twice: "CarTrade never ingested" and the numpy skip
   theory were both false premises.)
 
+**Reprioritised 2026-07-28 on the user's instruction.** The first version of
+this file put correctness and test coverage first, and the loop faithfully
+followed it for several cycles — CI, engine tests, exit-rule tests. That was my
+ordering, not the user's. The brief asked for an AI investment platform, so
+**product features now come first**. Correctness work is still here, demoted,
+not deleted.
+
 Scope note, kept deliberately: the original brief is a multi-year roadmap for a
 team. This backlog is the ordered subset that is real, unblocked and worth
 doing. It is not a promise that the brief converges.
 
 ---
 
-## P0 — correctness and safety of the live book
+## P0 — the product that was asked for
+
+- [ ] **Structured AI recommendations.** The headline feature. `/v2/api/stock`
+      already returns a verdict, entry, stop, target and technicals. Extend it
+      to the full brief: a 7-level call (Strong Buy → Strong Sell), confidence,
+      reasoning, bull case, bear case, risks, catalysts, support/resistance,
+      targets, time horizon, and **evidence** — every claim traceable to a
+      stored fact (a candle, an indicator, an NSE filing). Grounded in the DB
+      only; never free-generated. Reuse the existing DeepSeek `llm_brain`.
+- [ ] **Multi-agent analysis architecture.** Independent analyst functions —
+      technical, catalyst/news, risk, sector — each returning a structured
+      opinion with evidence, combined by a CIO aggregator that reconciles
+      disagreement and produces the final call. Build on `analysis_tools.py`
+      and `llm_brain.py`; do not start a parallel stack.
+- [ ] **Portfolio analytics.** Allocation, sector exposure, concentration,
+      drawdown, per-lane equity curves. Extends `strategy_stats()`.
+- [ ] **Alert engine.** Persist user alert rules (price, indicator cross,
+      volume spike, pattern, catalyst) and evaluate them on the engine's
+      existing cycle. Deliver via Telegram/WhatsApp, which already work.
+- [ ] **Watchlist folders and tags.** The watchlist exists; grouping does not.
+- [ ] **Fundamentals ingestion.** Revenue, profit, EPS, PE/PB, ROE/ROCE, debt,
+      promoter and institutional holding. `promoter_holding` is in zero files.
+- [ ] **User preferences.** Risk tolerance, investment style, notification
+      preferences, persisted per user and surfaced in the API.
+- [ ] **Admin console.** Users, roles, feature flags, scheduler/job status,
+      system health, audit log. Build on the admin endpoints in `main.py`.
+
+## P1 — correctness and safety of the live book
 
 - **Engine behavioural tests** — split; `v2_live` is 1730 lines and its two
   biggest functions are DB-coupled, so this is several cycles.
@@ -49,36 +83,12 @@ doing. It is not a promise that the brief converges.
       last two gaps in the technical-engine section. Pure Python, local, with
       hand-computed test values like the rest of that module.
 
-## P1 — the platform the product needs
-
-- [ ] **Alert engine.** Persist user alert rules (price, indicator cross,
-      volume spike, pattern, catalyst) and evaluate them on the engine's
-      existing cycle. Deliver through the channels that already exist
-      (Telegram, WhatsApp) — do not add new providers here.
-- [ ] **Portfolio analytics.** Allocation, sector exposure, concentration,
-      drawdown, and per-lane equity curves. Extends `strategy_stats()` in
-      `v2_web.py`, which already does per-lane returns.
-- [ ] **Watchlist folders and tags.** The watchlist exists; grouping does not.
-- [ ] **User preferences.** Risk tolerance, investment style, notification
-      preferences, persisted per user and surfaced in the API.
-- [ ] **Fundamentals ingestion.** Revenue, profit, EPS, PE/PB, ROE/ROCE, debt,
-      promoter and institutional holding. Source from NSE filings already
-      being polled where possible. `promoter_holding` currently appears in
-      zero files.
-- [ ] **Structured AI recommendations.** The stock endpoint returns a verdict,
-      entry, stop and target. Add bull case, bear case, risks, catalysts, time
-      horizon and evidence links — grounded in stored data only, never
-      free-generated. Reuse the existing DeepSeek `llm_brain`.
-
 ## P2 — scale and operations
 
 - [ ] **Event-driven orchestrator.** Replace the polling loop: watch for
       changed symbols, queue work, process only what moved, cache
       aggressively, retry with backoff. Large; plan it in one cycle and
       implement across several.
-- [ ] **Admin console.** Users, roles, feature flags, job/scheduler status,
-      system health, audit log. Build on the existing admin endpoints in
-      `main.py` rather than starting fresh.
 - [ ] **Database hardening.** Soft delete, audit history, schema versioning
       and migrations. `trade_audit_events` exists as a starting point.
 - [ ] **docker-compose + monitoring.** A Dockerfile exists; compose,
