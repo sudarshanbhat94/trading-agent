@@ -1,5 +1,7 @@
 # OpenStocks
 
+[![tests](https://github.com/sudarshanbhat94/trading-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/sudarshanbhat94/trading-agent/actions/workflows/tests.yml)
+
 Autonomous dry-money trading platform for Indian equities. It watches a stock universe, pulls quote/candle data, builds MCP-style analysis context, asks an LLM to decide or review, applies risk controls, paper-fills BUY/SELL orders, and streams the state to a live dashboard.
 
 This defaults to paper trading. Upstox live order routing exists, but it is disabled unless you explicitly enable it with a confirmation phrase.

@@ -24,11 +24,6 @@ doing. It is not a promise that the brief converges.
 
 ## P0 — correctness and safety of the live book
 
-- [ ] **CI: run the test suite on every push.** 600 tests and no automation —
-      nothing runs them except a human. Add `.github/workflows/tests.yml`
-      (checkout, Python 3.12, `pip install -r requirements.txt`,
-      `python -m unittest discover -s tests -t .`). Smallest change with the
-      largest ongoing payoff.
 - [ ] **Engine behavioural tests.** `v2_live` has no test coverage of lane
       logic — only that it imports. Cover: entry gating per lane, the
       intraday 15:12 square-off, BTST next-open exit, stop/target evaluation,
@@ -102,6 +97,10 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `9a10138` CI on every push — matrix 3.12 (prod) + 3.14 (dev), deps from
+  requirements.txt only. Verified by simulating CI locally: clean venv +
+  shallow clone, 600 tests pass, and the secret-hygiene guard runs rather
+  than silently skipping.
 - `e66caa4` Stats tab crash fixed; per-lane performance breakdown
 - `94725af` Catalyst ingest backfill window + IST timezone correctness
 - `d3b0c14` Candle-ingest deadlock — engine was scoring on stale closes
