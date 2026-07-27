@@ -27,7 +27,7 @@ doing. It is not a promise that the brief converges.
 - **Engine behavioural tests** — split; `v2_live` is 1730 lines and its two
   biggest functions are DB-coupled, so this is several cycles.
   - [x] Decision logic: catalyst window, hold clock, volume curve, lane
-        configuration invariants. Done, `f0a4c21`.
+        configuration invariants. Done, `a389407`.
   - [ ] **Exit evaluation against a temp SQLite book.** Stop, target, trailing
         stop, breakeven arming, the intraday 15:12 square-off and the BTST
         next-open exit. `exit_monitor` reads and writes the book, so build a
@@ -110,6 +110,7 @@ doing. It is not a promise that the brief converges.
   requirements.txt only. Verified by simulating CI locally: clean venv +
   shallow clone, 600 tests pass, and the secret-hygiene guard runs rather
   than silently skipping.
+- `a389407` Engine decision-logic tests + hold-clock extraction
 - `e66caa4` Stats tab crash fixed; per-lane performance breakdown
 - `94725af` Catalyst ingest backfill window + IST timezone correctness
 - `d3b0c14` Candle-ingest deadlock — engine was scoring on stale closes
