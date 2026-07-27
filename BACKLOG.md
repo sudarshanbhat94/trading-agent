@@ -31,13 +31,12 @@ doing. It is not a promise that the brief converges.
 
 ## P0 — the product that was asked for
 
-- [ ] **Structured AI recommendations.** The headline feature. `/v2/api/stock`
-      already returns a verdict, entry, stop, target and technicals. Extend it
-      to the full brief: a 7-level call (Strong Buy → Strong Sell), confidence,
-      reasoning, bull case, bear case, risks, catalysts, support/resistance,
-      targets, time horizon, and **evidence** — every claim traceable to a
-      stored fact (a candle, an indicator, an NSE filing). Grounded in the DB
-      only; never free-generated. Reuse the existing DeepSeek `llm_brain`.
+- [ ] **Narrative layer on the recommendation.** The structured call now
+      exists (`app/recommendation.py`, served at `/v2/api/stock`). What is
+      missing is prose: an LLM pass that *writes* the bull/bear case from the
+      evidence list without inventing facts, and a UI section to render it.
+      Constrain the model to the supplied evidence and reject any claim whose
+      metric is not in the payload.
 - [ ] **Multi-agent analysis architecture.** Independent analyst functions —
       technical, catalyst/news, risk, sector — each returning a structured
       opinion with evidence, combined by a CIO aggregator that reconciles
@@ -120,6 +119,8 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Structured evidence-grounded recommendations (7-level call,
+  confidence, bull/bear, risks, catalysts, levels, targets, horizon)
 - `8f57348` CI on every push — matrix 3.12 (prod) + 3.14 (dev), deps from
   requirements.txt only. Verified by simulating CI locally: clean venv +
   shallow clone, 600 tests pass, and the secret-hygiene guard runs rather

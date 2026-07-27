@@ -19,6 +19,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import indicators as ta
+from . import recommendation as rec
 from . import v2_engine as eng
 
 _LOG = logging.getLogger("openstocks.v2_web")
@@ -1254,11 +1255,26 @@ def api_stock(symbol: str, market: str = "IN"):
                       ccy, entry, ccy, stop, (stop / entry - 1) * 100, ccy, target, (target / entry - 1) * 100, rr))
         if tech_summary:
             insight = f"{insight} {tech_summary}"
+        # Structured, evidence-grounded recommendation. Additive and
+        # display-only: `verdict` above and the engine's lane logic are
+        # unchanged, so this does not affect what gets traded.
+        news_items = _news(symbol)
+        recommendation = rec.build_recommendation(dict(
+            symbol=symbol, price=px, close=close, conviction=conv,
+            sma20=float(row["sma20"]), sma50=float(row["sma50"]),
+            rs20=rs, rvol=rvol, atr_pct=float(row["atr_pct"]),
+            regime_on=_regime(market), technicals=technicals,
+            entry=entry, stop=stop, target=target,
+            news=news_items,
+            news_score=(news_items[0].get("score") if news_items else None),
+            held=bool(held),
+        ))
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,
                                  insight=insight, held=held, chart=closes, candles=candles,
-                                 dates=cdates, technicals=technicals, news=_news(symbol)))
+                                 dates=cdates, technicals=technicals,
+                                 recommendation=recommendation, news=news_items))
     except Exception as exc:
         return JSONResponse(dict(symbol=symbol, error=str(exc)[:120], news=_news(symbol)))
 
