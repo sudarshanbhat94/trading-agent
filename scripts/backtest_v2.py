@@ -21,6 +21,7 @@ Run read-only on the OCI DB:
 from __future__ import annotations
 
 import argparse
+import bisect
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -31,32 +32,106 @@ DAILY = {"IN": "upstox-live:day", "US": "alpaca-iex-live:day"}
 DEFAULT_COST = {"IN": 0.30, "US": 0.12}
 
 
-def load_market(con, market, topn, min_bars=120):
+TURNOVER_LOOKBACK = 60      # sessions of trailing turnover used to rank liquidity
+
+
+def point_in_time_universe(df, topn, min_bars, lookback=TURNOVER_LOOKBACK):
+    """{rebalance_date: frozenset(symbols)} — the top-N liquid names as they
+    would have been screened ON that date, using only data STRICTLY before it.
+
+    The old universe was chosen once, from the whole sample. That is the single
+    most expensive bug in this repo: it silently answers "which stocks turned
+    out to be worth trading?" instead of "which stocks looked tradeable at the
+    time?". Correcting exactly this turned an intraday-momentum result from
+    +18.7% into +1.6%, and a catalyst-continuation edge of +0.573%/trade into
+    -0.165%. Two properties matter:
+
+    * turnover is a TRAILING median over `lookback` sessions, not a full-sample
+      median, so a name that only became liquid later is not ranked today on
+      liquidity it had not yet earned;
+    * a symbol qualifies on bars observed before the rebalance, so names that
+      later delist stay in the universe for as long as they actually traded.
+      The old `cnt >= min_bars` over the whole sample deleted them outright,
+      which is textbook survivorship: every stock that died was erased.
+
+    Screening monthly rather than daily mirrors how a real screen is refreshed
+    and stops the universe churning on single-day volume spikes.
+    """
+    turnover = (df.assign(t=df["close"] * df["volume"])
+                  .pivot_table(index="date", columns="symbol", values="t", aggfunc="last")
+                  .sort_index())
+    # trailing liquidity + how much history each name has, as of each session
+    trail = turnover.rolling(lookback, min_periods=max(5, lookback // 4)).median()
+    history = turnover.notna().cumsum()
+    sessions = list(turnover.index)
+    rebal = sorted({pd.Timestamp(d).to_period("M").to_timestamp() for d in sessions})
+    universe = {}
+    for rd in rebal:
+        prior = [d for d in sessions if d < rd]
+        if not prior:
+            continue
+        asof = prior[-1]                       # last session BEFORE the rebalance
+        liq = trail.loc[asof]
+        seen = history.loc[asof]
+        liq = liq[(seen >= min_bars) & liq.notna() & (liq > 0)]
+        universe[rd] = frozenset(liq.sort_values(ascending=False).head(topn).index)
+    return universe
+
+
+def universe_lookup(universe):
+    """date -> frozenset, using the most recent screen at or before that date."""
+    keys = sorted(universe)
+
+    def at(date):
+        i = bisect.bisect_right(keys, date) - 1
+        return universe[keys[i]] if i >= 0 else frozenset()
+
+    return at
+
+
+def load_market(con, market, topn, min_bars=120, asof=True):
+    """Returns (symbol->bars, market_df, eligible_at).
+
+    `asof=True` builds a point-in-time universe and `eligible_at(date)` gives the
+    names screenable on that date. `asof=False` reproduces the ORIGINAL
+    hindsight universe and returns eligible_at=None — kept deliberately so the
+    two can be run side by side and the size of the bias measured rather than
+    asserted.
+    """
     src = DAILY[market]
     df = pd.read_sql_query(
         "SELECT symbol, ts, open, high, low, close, volume FROM candles WHERE source=?",
         con, params=(src,),
     )
     if df.empty:
-        return {}, None
+        return {}, None, None
     df["date"] = pd.to_datetime(df["ts"].str[:10])
     for col in ("open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["close", "high", "low"])
     df = df.sort_values(["symbol", "date"]).drop_duplicates(["symbol", "date"])
-    # liquidity filter: keep top-N symbols by median daily turnover
-    turn = df.assign(t=df["close"] * df["volume"]).groupby("symbol")["t"].median()
-    cnt = df.groupby("symbol")["close"].count()
-    eligible = cnt[cnt >= min_bars].index
-    turn = turn.loc[turn.index.isin(eligible)].sort_values(ascending=False)
-    keep = set(turn.head(topn).index)
-    df = df[df["symbol"].isin(keep)].copy()
+    if asof:
+        universe = point_in_time_universe(df, topn, min_bars)
+        # Load bars for every name that was screenable at ANY point. Eligibility
+        # is still enforced per-date in the loop; this only avoids computing
+        # features for names that were never tradeable at all.
+        ever = set().union(*universe.values()) if universe else set()
+        df = df[df["symbol"].isin(ever)].copy()
+        eligible_at = universe_lookup(universe)
+    else:
+        # ---- ORIGINAL, BIASED PATH: kept only for measuring the bias ----
+        turn = df.assign(t=df["close"] * df["volume"]).groupby("symbol")["t"].median()
+        cnt = df.groupby("symbol")["close"].count()
+        eligible = cnt[cnt >= min_bars].index
+        turn = turn.loc[turn.index.isin(eligible)].sort_values(ascending=False)
+        df = df[df["symbol"].isin(set(turn.head(topn).index))].copy()
+        eligible_at = None
     # synthetic market index = median daily return across the liquid universe
     df["ret1"] = df.groupby("symbol")["close"].pct_change()
     mkt = df.groupby("date")["ret1"].median().rename("mkt_ret1")
     mkt_cum = (1 + mkt.fillna(0)).cumprod().rename("mkt_cum")
     market_df = pd.concat([mkt, mkt_cum], axis=1)
-    return {s: g.set_index("date") for s, g in df.groupby("symbol")}, market_df
+    return {s: g.set_index("date") for s, g in df.groupby("symbol")}, market_df, eligible_at
 
 
 def load_delivery(con, market):
@@ -194,8 +269,8 @@ def simulate_trade(g, i, atr_stop=2.0, atr_target=3.5, max_days=10, cost_pct=0.3
     return (last - entry) / entry * 100 - cost_pct, "time", min(max_days, len(g) - 1 - i)
 
 
-def run(market, topn, mode, cost_pct, thresh, hold, start, con):
-    syms, market_df = load_market(con, market, topn)
+def run(market, topn, mode, cost_pct, thresh, hold, start, con, asof=True):
+    syms, market_df, eligible_at = load_market(con, market, topn, asof=asof)
     print(f"[{market}] liquid universe: {len(syms)} symbols; "
           f"market history {market_df.index.min().date()}..{market_df.index.max().date()}")
     trades = []
@@ -241,12 +316,12 @@ def run(market, topn, mode, cost_pct, thresh, hold, start, con):
     print(f"  total net P&L (1 unit/trade): {t['ret'].sum():+.1f} units over {n} trades")
 
 
-def scan_factors(market, topn, cost_pct, hold, con):
+def scan_factors(market, topn, cost_pct, hold, con, asof=True):
     """Factor discovery: for every (symbol, day), compute the realised forward
     return (enter next open, exit `hold` days later, minus cost) and report mean
     forward return by decile of each individual feature. This reveals which
     factors actually predict, before any weighting/overfitting."""
-    syms, market_df = load_market(con, market, topn)
+    syms, market_df, eligible_at = load_market(con, market, topn, asof=asof)
     deliv = load_delivery(con, market)
     sent = load_sentiment(con)
     print(f"[{market}] scanning {len(syms)} symbols for factor edge "
@@ -287,13 +362,13 @@ def scan_factors(market, topn, cost_pct, hold, con):
 
 
 def portfolio(market, topn, cost_pct, thresh, hold, max_pos, regime_on,
-              atr_stop, atr_target, start, con):
+              atr_stop, atr_target, start, con, asof=True):
     """Event-driven portfolio sim: ranks daily signals by conviction, holds at
     most `max_pos` equal-weight positions, enters next-day open, exits on ATR
     stop / target / time. Optional market-regime filter blocks new dip-buys when
     the synthetic index is below its own 50d average (downtrend protection).
     Reports the real equity curve: total return, CAGR, max drawdown, Sharpe."""
-    syms, market_df = load_market(con, market, topn)
+    syms, market_df, eligible_at = load_market(con, market, topn, asof=asof)
     # market regime: synthetic index above its 50d average
     reg = (market_df["mkt_cum"] > market_df["mkt_cum"].rolling(50).mean())
     bars = {}          # sym -> {date: (o,h,l,c,atr,conv)}
@@ -371,9 +446,12 @@ def portfolio(market, topn, cost_pct, thresh, hold, max_pos, regime_on,
         if regime_on and not bool(reg.get(d, False)):
             continue
         cands = []
+        investable = eligible_at(d) if eligible_at is not None else None
         for sym, dd in bars.items():
             if sym in pos:
                 continue
+            if investable is not None and sym not in investable:
+                continue        # not screenable on this date — no hindsight entries
             b = dd.get(d)
             if b and b[5] >= thresh:
                 cands.append((sym, b[5]))
@@ -418,16 +496,23 @@ def main():
     ap.add_argument("--thresh", type=float, default=0.6)
     ap.add_argument("--hold", type=int, default=10)
     ap.add_argument("--start", default=None, help="only trade signals on/after this date (out-of-sample)")
+    ap.add_argument("--universe", choices=["pit", "hindsight"], default="pit",
+                    help="pit = point-in-time screen (honest). hindsight = the ORIGINAL biased "
+                         "universe, kept only so the bias can be measured. Never quote a "
+                         "hindsight number as a result.")
     args = ap.parse_args()
     cost = args.cost if args.cost is not None else DEFAULT_COST[args.market]
+    asof = args.universe == "pit"
+    if not asof:
+        print("*** HINDSIGHT UNIVERSE — biased, for bias measurement only ***")
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=120)
     if args.mode == "scan":
-        scan_factors(args.market, args.topn, cost, args.hold, con)
+        scan_factors(args.market, args.topn, cost, args.hold, con, asof=asof)
     elif args.mode == "portfolio":
         portfolio(args.market, args.topn, cost, args.thresh, args.hold, args.max_pos,
-                  not args.no_regime, 2.0, 3.5, args.start, con)
+                  not args.no_regime, 2.0, 3.5, args.start, con, asof=asof)
     else:
-        run(args.market, args.topn, args.mode, cost, args.thresh, args.hold, args.start, con)
+        run(args.market, args.topn, args.mode, cost, args.thresh, args.hold, args.start, con, asof=asof)
 
 
 if __name__ == "__main__":
