@@ -28,7 +28,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
 import sqlite3
+
+import pandas as pd
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -39,10 +42,26 @@ DB = os.environ.get("INTRADAY_DB", "/tmp/intraday.db")
 def load(con, source="yahoo:5m"):
     """{date: {symbol: [(minute_from_open, o, h, l, c, v), ...]}}, bars ordered."""
     days: dict = defaultdict(lambda: defaultdict(list))
-    for symbol, ts, o, h, l, c, v in con.execute(
+    # Two schemas exist: the scratch `candles`(source,...) the recorder first
+    # wrote, and the retained `bars` table in var/intraday_yahoo.db which has no
+    # source column. Detect rather than assume — the scratch DB is periodically
+    # cleared, so the durable one is usually the only one present.
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "candles" in tables:
+        cursor = con.execute(
             "SELECT symbol,ts,open,high,low,close,volume FROM candles WHERE source=? ORDER BY ts",
-            (source,)):
-        moment = datetime.fromisoformat(str(ts)).astimezone(IST)
+            (source,))
+    else:
+        cursor = con.execute(
+            "SELECT symbol,ts,open,high,low,close,volume FROM bars ORDER BY ts")
+    for symbol, ts, o, h, l, c, v in cursor:
+        # `candles` stores ISO strings, `bars` stores epoch seconds.
+        raw = str(ts)
+        if raw.isdigit():
+            moment = datetime.fromtimestamp(int(raw), timezone.utc).astimezone(IST)
+        else:
+            moment = datetime.fromisoformat(raw).astimezone(IST)
         minute = moment.hour * 60 + moment.minute - (9 * 60 + 15)   # minutes since 09:15
         if minute < 0 or minute > 375:
             continue
@@ -93,15 +112,44 @@ def simulate_day(bars_by_symbol, entry_minute, positions, target, stop, min_move
     return results
 
 
+def point_in_time_filter(topn=300):
+    """date -> frozenset of names screenable that day, from the DAILY candles.
+
+    The intraday DB only ever recorded the ~150 names that were most liquid
+    WHEN THE RECORDER WAS WRITTEN. Backtesting on it therefore asks "how did
+    today's liquid names behave?", which is the same look-ahead that inflated
+    this strategy from +1.6% to +18.7%. Screening each date against a
+    point-in-time universe removes it.
+    """
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from backtest_v2 import DB as DAILY_DB, load_market
+    con = sqlite3.connect(f"file:{DAILY_DB}?mode=ro", uri=True, timeout=120)
+    try:
+        _syms, _mkt, eligible_at = load_market(con, "IN", topn, asof=True)
+    finally:
+        con.close()
+    return eligible_at
+
+
 def run(entry_minute=30, positions=1, target=1.0, stop=0.5, min_move=1.0,
-        rvol_min=1.0, cost=0.10, source="yahoo:5m"):
+        rvol_min=1.0, cost=0.10, source="yahoo:5m", asof=False, topn=300):
     con = sqlite3.connect(DB)
     days = load(con, source)
     con.close()
+    eligible_at = point_in_time_filter(topn) if asof else None
 
     per_day, all_trades = [], []
     for date in sorted(days):
-        returns = simulate_day(days[date], entry_minute, positions, target, stop,
+        bars = days[date]
+        if eligible_at is not None:
+            ok = eligible_at(pd.Timestamp(str(date)[:10]))
+            bars = {sym: b for sym, b in bars.items()
+                    if sym.upper().replace(".NS", "") in ok}
+            if not bars:
+                per_day.append(0.0)
+                continue
+        returns = simulate_day(bars, entry_minute, positions, target, stop,
                                min_move, rvol_min)
         net = [r - cost for r in returns]
         all_trades.extend(net)
@@ -135,9 +183,14 @@ def main():
     parser.add_argument("--min-move", type=float, default=1.0)
     parser.add_argument("--rvol-min", type=float, default=1.0)
     parser.add_argument("--cost", type=float, default=0.10)
+    parser.add_argument("--universe", choices=["recorded", "pit"], default="recorded",
+                        help="pit = point-in-time screen against daily candles; "
+                             "recorded = whatever the intraday recorder happened to "
+                             "capture, which carries the original look-ahead")
     args = parser.parse_args()
     result = run(args.entry_minute, args.positions, args.target, args.stop,
-                 args.min_move, args.rvol_min, args.cost)
+                 args.min_move, args.rvol_min, args.cost,
+                 asof=args.universe == "pit")
     for key, value in result.items():
         print(f"  {key:18s} {value}")
 
