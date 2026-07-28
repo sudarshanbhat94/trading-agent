@@ -201,7 +201,60 @@ def position_analyst(facts):
     return _opinion("position", stance, 0.45, rationale, evidence)
 
 
-ANALYSTS = (technical_analyst, catalyst_analyst, risk_analyst, position_analyst)
+def macro_analyst(facts):
+    """Scheduled calendar events: derivatives expiry, policy weeks, earnings.
+
+    Distinct from `risk_analyst`, which reads the *current* market state
+    (volatility, regime, liquidity). This reads the *diary* — events that are
+    known in advance and change the character of a session regardless of what
+    the tape is doing today.
+
+    Non-positive by construction, like risk: a quiet calendar is the absence of
+    a headwind, not a reason to buy. Expects `facts["macro"]`, a dict of flags
+    from `macro_calendar`; abstains without it.
+    """
+    macro = _dict(facts.get("macro"))
+    if not macro:
+        return _abstain("macro", "No macro calendar context supplied")
+
+    penalties, evidence, notes = [], [], []
+    if macro.get("is_expiry_day"):
+        penalties.append(0.45)
+        notes.append("derivatives expiry today — intraday whipsaw risk")
+        evidence.append({"metric": "is_expiry_day", "value": True, "source": "macro_calendar"})
+    elif macro.get("is_expiry_week"):
+        penalties.append(0.2)
+        notes.append("expiry week")
+        evidence.append({"metric": "is_expiry_week", "value": True, "source": "macro_calendar"})
+    if macro.get("is_rbi_week"):
+        penalties.append(0.35)
+        notes.append("RBI policy week")
+        evidence.append({"metric": "is_rbi_week", "value": True, "source": "macro_calendar"})
+    if macro.get("is_budget_week"):
+        penalties.append(0.4)
+        notes.append("union budget week")
+        evidence.append({"metric": "is_budget_week", "value": True, "source": "macro_calendar"})
+
+    days_away = _num(macro.get("earnings_days_away"))
+    if days_away is not None and 0 <= days_away <= 3:
+        # Mirrors EARNINGS_BLOCK_DAYS in v2_live: the engine already refuses new
+        # entries this close to a result, so the analyst should say why.
+        penalties.append(0.5)
+        notes.append(f"earnings in {int(days_away)} trading day(s)")
+        evidence.append({"metric": "earnings_days_away", "value": int(days_away),
+                         "source": "macro_calendar"})
+
+    if not evidence:
+        evidence.append({"metric": "calendar", "value": "clear", "source": "macro_calendar"})
+        return _opinion("macro", 0.0, 0.5, "No scheduled event risk in the window", evidence)
+
+    stance = -_clamp(sum(penalties), 0.0, 1.0)
+    confidence = min(1.0, 0.5 + 0.15 * len(evidence))
+    return _opinion("macro", stance, confidence, "Event risk: " + "; ".join(notes), evidence)
+
+
+ANALYSTS = (technical_analyst, catalyst_analyst, risk_analyst,
+             macro_analyst, position_analyst)
 
 
 def chief_investment_officer(opinions):

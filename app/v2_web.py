@@ -1339,7 +1339,7 @@ def api_stock(symbol: str, market: str = "IN"):
             rvol=rvol, atr_pct=float(row["atr_pct"]), regime_on=_regime(market),
             technicals=technicals, news=news_items,
             news_score=(news_items[0].get("score") if news_items else None),
-            held=held,
+            held=held, macro=_macro_flags(),
         ))
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
@@ -1367,6 +1367,34 @@ _PATTERN_LABELS = {
 
 
 VWAP_WINDOW = 20
+
+
+def _macro_flags(today=None):
+    """Calendar flags for the macro analyst, from date arithmetic only.
+
+    Deliberately does NOT construct MacroCalendarService: that needs settings
+    and a Database handle, and this runs in a request path where the rule is to
+    never block. These flags are pure functions of the date, reusing
+    macro_calendar's own expiry helper so the definition of "expiry" cannot
+    drift between the two.
+    """
+    from . import macro_calendar as mc
+    try:
+        day = today or datetime.now(IST).date()
+        weekly = mc._nearest_weekly_expiry(day)
+        monthly = mc._last_thursday(day.year, day.month)
+        return {
+            "is_expiry_day": day == weekly or day == monthly,
+            "is_expiry_week": (weekly - day).days <= 4,
+            "is_monthly_expiry_day": day == monthly,
+            # RBI MPC placeholders sit early in alternate months; treat the
+            # first full week of those months as policy-sensitive.
+            "is_rbi_week": day.month in (2, 4, 6, 8, 10, 12) and day.day <= 8,
+            "is_budget_week": day.month == 2 and day.day <= 7,
+        }
+    except Exception:
+        _LOG.exception("macro flags failed")
+        return {}
 
 
 def _technical_block(opens, highs, lows, closes, volumes, price, ccy="₹", as_of=None):

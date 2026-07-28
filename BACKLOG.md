@@ -40,10 +40,11 @@ doing. It is not a promise that the brief converges.
       model runs. Needs a key, plus a sync-safe call path (the brain's methods
       are async and `api_stock` is sync). Until then the deterministic
       narrative serves, which is what production would show today anyway.
-- [ ] **More analysts.** Four exist (technical, catalyst, risk, position).
-      The brief also lists fundamental, macro, sector, prediction and
+- [ ] **More analysts.** Five exist (technical, catalyst, risk, macro,
+      position). The brief also lists fundamental, sector, prediction and
       broker-integration agents. Fundamental and sector are blocked on data
-      (see below); macro could use the existing `macro_calendar`.
+      quality (see below). "Prediction" needs a defined, backtestable target
+      before it is worth building — do not add a agent that guesses.
 - [ ] `BLOCKED (sector data)` **Sector exposure.** `universe.sector` is a
       catch-all — "NSE Listed Equity" covers 2,594 Indian names — so a
       breakdown built on it would be a single 100% bar. Needs a real
@@ -128,6 +129,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Macro analyst — expiry, policy weeks and earnings proximity
 - `714ed26` Analyst panel card — dissent highlighted, abstainers shown as
   abstained rather than neutral
 - `5341675` Multi-agent analysts + CIO reconciliation with explicit dissent
