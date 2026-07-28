@@ -163,13 +163,19 @@ class LaneConfigurationTest(unittest.TestCase):
         it silently would resume a known-losing lane, so pin it."""
         self.assertIn("gap_momentum", v2_live.DISABLED_LANES)
 
-    def test_every_legacy_lane_is_disabled(self) -> None:
-        """2026-07-28: the operator chose to run one strategy only. Nothing is
-        deleted — removing a name from DISABLED_LANES re-enables it."""
+    def test_only_gap_momentum_is_quarantined(self) -> None:
+        """2026-07-28 (later): lanes re-enabled so the engine actually trades and
+        can be measured. gap_momentum is the ONLY permanent exclusion — it is the
+        one lane with a proven negative record on both live and backtest data."""
+        self.assertEqual(v2_live.DISABLED_LANES, {"gap_momentum"})
+
+    def test_the_re_enabled_lanes_can_actually_open_positions(self) -> None:
+        """The point of re-enabling: a lane left in DISABLED_LANES silently
+        trades nothing, which is what made the live book unmeasurable."""
         for lane in ("swing_meanrev", "mom_breakout", "volume_surge",
-                     "intraday_news", "btst", "gap_momentum"):
+                     "intraday_news", "btst"):
             with self.subTest(lane=lane):
-                self.assertIn(lane, v2_live.DISABLED_LANES)
+                self.assertNotIn(lane, v2_live.DISABLED_LANES)
 
     def test_standalone_lanes_actually_honour_the_disable(self) -> None:
         """The list is only cosmetic unless each pass checks it. These three

@@ -75,18 +75,29 @@ PLAN = {
 # also showed tightening the stop HURTS (exp +0.63->+0.14%/trade at a -4% cap) and
 # doesn't fix the rare overnight gap tail — so the swing stop is left as-is. Re-enable
 # gap_momentum only if a reworked signal beats baseline out-of-sample.
-# Every legacy lane is OFF. 2026-07-28: the operator chose to run a single
-# strategy — catalyst-continuation plus sector cascade — and nothing else.
-# Nothing here is deleted, so any of these can be re-enabled by removing it
-# from this set. What each one was worth when last measured:
-#   gap_momentum  : proven loser, -0.51%/trade over 44k trades
-#   swing_meanrev : the only lane with a real number, ~6.6%/yr, Sharpe 0.59,
-#                   though that figure still carries the load_market look-ahead
-#   mom_breakout  : never measured separately
-#   volume_surge  : untestable until now (no intraday history), -Rs 302 live
-#   intraday_news : never measured separately
-DISABLED_LANES = {"gap_momentum", "swing_meanrev", "mom_breakout",
-                  "volume_surge", "intraday_news", "btst"}
+# 2026-07-28 (later the same day): every lane EXCEPT gap_momentum is back ON.
+# A live system that never opens a position cannot be measured, and the
+# catalyst-continuation replacement failed its own backtest (+0.573%/trade
+# collapsed to -0.165% once the top 5 names were dropped — it was five stocks,
+# not an edge), so there was nothing to run in their place.
+#
+# This is deliberately a MEASUREMENT run, not a claim of edge. The book was
+# reset 2026-07-28T10:22Z, so every lane starts from a clean ledger and the
+# next few weeks produce the per-lane record that was wiped. Last known live
+# numbers, carried forward honestly:
+#   gap_momentum  : STAYS OFF. 0 wins in 6 live trades (-Rs 2,336) and
+#                   -0.51%/trade, PF 0.81 over 44,585 backtested trades.
+#   swing_meanrev : the only positive live record — 23 trades, +Rs 795,
+#                   PF 1.21, win 52%. 23 trades proves nothing; treat as noise
+#                   until it rebuilds a sample. Its ~6.6%/yr backtest figure
+#                   still carries the load_market look-ahead.
+#   volume_surge  : -Rs 302 live when last measured. Re-enabled to gather a
+#                   real sample, NOT because it is validated.
+#   mom_breakout  : never measured separately.
+#   intraday_news : never measured separately.
+#   btst          : ~149-trade backtest only; unproven live.
+# Judge these on the fresh ledger, not on the numbers above.
+DISABLED_LANES = {"gap_momentum"}
 MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
 # ---- intraday news-momentum sleeve (user spec: trade TODAY's tape, take the
 # money fast, flat by the close). 5-min-bar backtest (150 syms, 58 days):
