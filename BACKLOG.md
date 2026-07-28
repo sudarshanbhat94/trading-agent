@@ -134,7 +134,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Catalyst alerts — fire on the next material NSE filing
+- `eb05ae1` Catalyst alerts — fire on the next material NSE filing
 - `4a8035f` Macro analyst — expiry, policy weeks and earnings proximity
 - `714ed26` Analyst panel card — dissent highlighted, abstainers shown as
   abstained rather than neutral
