@@ -47,6 +47,16 @@ Each of these was tested and closed:
 
 ## Open work
 
+1. **BTST first live basket: LOST, 0 for 3 (2026-07-28).** All three names gapped down through the −2% stop at the open and exited on `stop`, not on the `btst` next-open rule — exactly the precedence the exit tests pin, and exactly the documented limitation that a poll-based stop fills at the gapped price rather than the stop level.
+   | | entry | exit | | |
+   |---|---|---|---|---|
+   | KFINTECH | 950.40 | 931.39 | −2.00% | −₹190.08 |
+   | RKFORGE | 624.00 | 611.52 | −2.00% | −₹199.68 |
+   | RRKABEL | 2571.40 | 2519.97 | −2.00% | −₹154.28 |
+
+   BTST all-time: **−₹544.04 over 3 trades.** One basket proves nothing either way against a 149-trade backtest, but the failure mode is the one the backtest could not price: a correlated overnight gap hitting every name at once. Worth watching whether losses cluster on the same morning again.
+   **Same day, `volume_surge` gave back its gains**: AEROFLEX −528.05 and CGCL −1648.00 (both stops) against COFORGE +908.80 (target). Lane all-time is now **−₹302.40 over 8 trades**, having been +₹964.85. Book all-time **−₹846.44**.
+   **The engine then stopped buying, by design.** `_risk_halt`'s StoplossGuard pauses new entries after `RISK["stopguard_n"]` = 4 stop/trail exits in a day; there were 5. It resets next session and never touches open positions. If the book looks frozen mid-session, check this first.
 1. **BTST needs ongoing evaluation** — for each basket, compare entry (prior close) against the next open, net of costs. As of 2026-07-27 the first live basket (KFINTECH, RKFORGE, RRKABEL) was held overnight for a 2026-07-28 open sell.
 2. ~~**Catalyst ingestion gap**~~ — **investigated 2026-07-27, not a bug.** The premise was wrong. `opentrade-nse-ann.service` started **2026-07-23 17:51 UTC** with 0 restarts, and the table's history begins exactly there — CarTrade's results filing simply predates the feed. The one CarTrade row present is an **ESOP allotment** correctly classified as `noise`. Feed is healthy: ~660–750 filings on weekdays, ~120–160 material.
    Two real weaknesses were found and fixed while looking: (a) `fetch()` queried **only today**, so any downtime lost that day's filings permanently — there was no backfill, and the 7-day prune hides the hole a week later. It now re-queries a 3-day window (`NSE_ANN_BACKFILL_DAYS`), which is idempotent via `INSERT OR IGNORE`. (b) `_epoch()` parsed a naive datetime and compensated with a hardcoded −5.5h, so it was only correct while the host runs UTC; switching the box to IST would have shifted every catalyst by 5.5h and corrupted the freshness window the gates use. Now parsed as IST explicitly — verified byte-identical against 200 stored rows.
