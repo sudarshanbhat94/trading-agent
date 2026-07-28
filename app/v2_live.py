@@ -145,10 +145,13 @@ VOLSURGE = dict(
     rvol_min=3.0,        # >= 3x usual volume pace for this time of day
     near_high=0.985,     # price within 1.5% of day's high (holding strong, not fading)
     min_turnover=2.5e8,  # >= Rs.25cr avg daily turnover — liquid, fillable names only
-    catalyst_sessions=3, # a material NSE filing within this many TRADING sessions
-                         # is REQUIRED (weekend/holiday-aware — a Friday result is
-                         # still fresh Monday; a flat 48h window used to expire it
-                         # over the weekend and miss Monday movers like Dr Lal/KFin)
+    catalyst_sessions=1, # a material NSE filing within this many TRADING sessions
+                         # is REQUIRED. Tightened 3 -> 1 on 2026-07-28: operator
+                         # rule is act on the latest news only, matching
+                         # intraday_news. Still weekend/holiday-aware, so a Friday
+                         # result is fresh on Monday (a flat 48h window used to
+                         # expire it over the weekend and miss Monday movers like
+                         # Dr Lal/KFin). Expect FEWER volume_surge entries.
     slots=6,             # full send: may use the whole book (still MAXPOS-bound)
     # 09:18 (was 09:20) + a 10s scan cadence: operator wants this lane quick on
     # entry. Not opened before 09:18 — the first minutes have too little volume

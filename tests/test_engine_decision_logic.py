@@ -221,6 +221,12 @@ class LaneConfigurationTest(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(v2_live.VOLSURGE[key], v2_live.INTRA[key])
 
+    def test_both_catalyst_lanes_act_on_latest_news_only(self) -> None:
+        """Operator rule: latest news only, no stale catalysts. volume_surge
+        allowed 3 sessions until 2026-07-28, so it could buy on a filing two
+        days stale while the news lane refused the same item."""
+        self.assertEqual(v2_live.VOLSURGE["catalyst_sessions"], 1)
+
     def test_volume_surge_scans_fast_but_not_before_the_open_settles(self) -> None:
         self.assertLessEqual(v2_live.VOLSURGE_INTERVAL, 10)
         self.assertGreaterEqual(v2_live.VOLSURGE["start"], "09:16")
