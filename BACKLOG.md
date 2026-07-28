@@ -137,7 +137,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Pattern alerts with a bar-freshness rule
+- `efb0776` Pattern alerts with a bar-freshness rule
 - `ee9f03e` SMA cross alerts (cross_up / cross_down) with a cached candle loader
 - `eb05ae1` Catalyst alerts — fire on the next material NSE filing
 - `4a8035f` Macro analyst — expiry, policy weeks and earnings proximity
