@@ -128,7 +128,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Analyst panel card — dissent highlighted, abstainers shown as
+- `714ed26` Analyst panel card — dissent highlighted, abstainers shown as
   abstained rather than neutral
 - `5341675` Multi-agent analysts + CIO reconciliation with explicit dissent
 - `fe634d8` Alerts evaluated server-side — they previously fired ONLY while
