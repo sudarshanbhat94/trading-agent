@@ -346,6 +346,52 @@ _SESSION_OPENED_AT: dict = {}            # market -> ts when the session last tr
 # actually opens. Pre-open it computes and stores signals, then returns.
 PREOPEN = {"IN": ("09:05", "09:15")}
 PREOPEN_INTERVAL = 120                   # re-warm every 2 min through the window
+# Using the auction to TRADE, not merely to look at.
+#
+# The problem it solves: volume_surge gates on rvol (intraday volume vs its
+# usual pace), which is meaningless in the first minutes — there is barely any
+# intraday volume yet, so the lane cannot confirm a surge and sat out the open
+# entirely (start was 09:18). Meanwhile the auction has already told us both the
+# gap and how much money participated in it.
+#
+# So in the early window ONLY, auction participation substitutes for rvol. Every
+# other gate is untouched: a material NSE catalyst is still REQUIRED, as are the
+# turnover floor, the price floor, near-day-high, and the frozen-quote skip.
+#
+# Why this is not gap_momentum, which lost money (0/6 live, PF 0.81 over 44k):
+# that lane bought gaps with no catalyst and no strength confirmation. Here the
+# gap only decides WHEN a name may be considered; what makes it eligible is
+# still the filing.
+#
+# NOT BACKTESTABLE: no historical pre-open snapshots exist, only today's. This
+# cannot be validated in advance, so entries taken this way are tagged
+# `preopen_seeded` in the position's `why` and must be scored separately before
+# anyone trusts them. Set enabled=False to revert to the old 09:18 behaviour.
+PREOPEN_SEED = dict(
+    enabled=True,
+    until="09:30",          # after this, real rvol exists and takes over
+    min_gap=0.04,           # same threshold as VOLSURGE["move_min"]
+    min_auction_value=1e7,  # Rs 1cr crossed in the auction = real participation,
+                            # not the Rs 3.5 lakh that printed PPSL +15.6%
+)
+
+
+def preopen_seed_map(hm, now=None):
+    """Auction map to lean on right now, or {} once real rvol is available.
+
+    Returns {} when seeding is disabled, outside the early window, or when the
+    fetch failed — every one of which must leave the lane behaving exactly as
+    it did before, rather than trading on absent data.
+    """
+    if not PREOPEN_SEED.get("enabled"):
+        return {}
+    if hm >= PREOPEN_SEED["until"]:
+        return {}
+    try:
+        from . import preopen
+        return preopen.cached(now=now)
+    except Exception:
+        return {}
 
 
 def _refresh_preopen():
@@ -1433,7 +1479,11 @@ def volume_surge_pass(market):
         return
     now = datetime.now(IST)
     hm = now.strftime("%H:%M")
-    if hm < VOLSURGE["start"] or hm > VOLSURGE["last_entry"]:
+    # The auction lets this lane work from the bell instead of 09:18: the gap and
+    # its participation are already known, so there is nothing to wait for.
+    seed = preopen_seed_map(hm)
+    earliest = "09:15" if seed else VOLSURGE["start"]
+    if hm < earliest or hm > VOLSURGE["last_entry"]:
         return
     live = _live(market)
     if not live:
@@ -1485,14 +1535,23 @@ def volume_surge_pass(market):
         if lq["price"] < VOLSURGE["near_high"] * lq["high"]:   # holding near day high, not fading
             continue
         rvol = (lq.get("vol") or 0.0) / (av[sym] * frac)
+        seeded = False
         if rvol < VOLSURGE["rvol_min"]:
-            continue
-        cands.append((move * min(rvol, 8.0), move, rvol, sym, lq))
+            # In the first minutes rvol cannot confirm anything — there is not
+            # enough intraday volume yet. Fall back to what the auction already
+            # proved: this name gapped, and real money crossed to do it.
+            auction = seed.get(sym) if seed else None
+            if not (auction
+                    and auction["gap_pct"] / 100.0 >= PREOPEN_SEED["min_gap"]
+                    and auction["value"] >= PREOPEN_SEED["min_auction_value"]):
+                continue
+            seeded = True
+        cands.append((move * min(max(rvol, 1.0), 8.0), move, rvol, sym, lq, seeded))
     if not cands:
         v2.close(); return
     cands.sort(key=lambda x: -x[0])
     fills = 0
-    for _, move, rvol, sym, lq in cands:
+    for _, move, rvol, sym, lq, seeded in cands:
         if n_vs + fills >= VOLSURGE["slots"] or len(positions) + fills >= max_pos or cash < 0.25 * alloc:
             break
         entry = lq["price"]
@@ -1506,7 +1565,10 @@ def volume_surge_pass(market):
         cat_label = {"results": "Q results", "order": "new order",
                      "corp_action": "corporate action"}.get(catalysts.get(sym), "NSE filing")
         why = json.dumps(dict(setup="volume_surge", move_pct=round(move * 100, 2),
-                              rvol=round(rvol, 1), catalyst=cat_label))
+                              rvol=round(rvol, 1), catalyst=cat_label,
+                              # tagged because this path cannot be backtested —
+                              # score these separately before trusting them
+                              preopen_seeded=seeded))
         if not record_entry(v2, market, "volume_surge", sym, today_s, entry, shares,
                             stop, tgt, 0.0, round(min(move / 0.10, 1.0), 4), why):
             continue

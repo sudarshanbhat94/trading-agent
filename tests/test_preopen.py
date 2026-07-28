@@ -114,6 +114,64 @@ class GapperScreenTest(unittest.TestCase):
         self.assertEqual(preopen.gappers(now=other), [])
 
 
+class SeedGateTest(unittest.TestCase):
+    """When volume_surge may lean on the auction instead of rvol.
+
+    Getting this gate wrong in the OPEN direction is the dangerous case: it
+    would let the lane buy on a stale auction price hours into the session.
+    """
+
+    def setUp(self) -> None:
+        from app import v2_live
+        self.v2_live = v2_live
+        preopen._CACHE.clear()
+        preopen._CACHE[TODAY.date().isoformat()] = {
+            "TCS": dict(open=110.0, prev_close=100.0, gap_pct=10.0, qty=1e5, value=5e7)}
+
+    def tearDown(self) -> None:
+        preopen._CACHE.clear()
+
+    def test_seeding_applies_in_the_early_window(self) -> None:
+        self.assertIn("TCS", self.v2_live.preopen_seed_map("09:16", now=TODAY))
+
+    def test_seeding_stops_once_real_rvol_exists(self) -> None:
+        """After 09:30 intraday volume is meaningful, so the auction — which is
+        by then a stale indicative price — must no longer justify a buy."""
+        self.assertEqual(self.v2_live.preopen_seed_map("09:30", now=TODAY), {})
+        self.assertEqual(self.v2_live.preopen_seed_map("14:00", now=TODAY), {})
+
+    def test_disabling_the_flag_reverts_to_old_behaviour(self) -> None:
+        original = self.v2_live.PREOPEN_SEED["enabled"]
+        self.v2_live.PREOPEN_SEED["enabled"] = False
+        try:
+            self.assertEqual(self.v2_live.preopen_seed_map("09:16", now=TODAY), {})
+        finally:
+            self.v2_live.PREOPEN_SEED["enabled"] = original
+
+    def test_no_auction_data_yields_no_seeding(self) -> None:
+        """A failed NSE fetch must leave the lane exactly as it was, not let it
+        trade on nothing."""
+        preopen._CACHE.clear()
+        self.assertEqual(self.v2_live.preopen_seed_map("09:16", now=TODAY), {})
+
+    def test_seed_threshold_matches_the_lane_move_floor(self) -> None:
+        """A seeded entry must not clear a bar the normal path would reject."""
+        self.assertGreaterEqual(self.v2_live.PREOPEN_SEED["min_gap"],
+                                self.v2_live.VOLSURGE["move_min"])
+
+    def test_seeded_entries_still_require_a_catalyst(self) -> None:
+        """The gate that separates this from gap_momentum, which lost money."""
+        import inspect
+        src = inspect.getsource(self.v2_live.volume_surge_pass)
+        self.assertIn("if not catalysts:", src)
+        self.assertIn("for sym in catalysts:", src)
+
+    def test_seeded_entries_are_tagged_for_later_scoring(self) -> None:
+        import inspect
+        src = inspect.getsource(self.v2_live.volume_surge_pass)
+        self.assertIn("preopen_seeded=seeded", src)
+
+
 class FetchSafetyTest(unittest.TestCase):
     def tearDown(self) -> None:
         preopen._CACHE.clear()
