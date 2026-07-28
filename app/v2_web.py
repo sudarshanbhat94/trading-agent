@@ -19,6 +19,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import indicators as ta
+from . import analysts as ana
 from . import narrative as narr
 from . import portfolio as pf
 from . import recommendation as rec
@@ -1329,6 +1330,17 @@ def api_stock(symbol: str, market: str = "IN"):
         # gated by verify_narrative(), which discards any figure not
         # traceable to the evidence.
         recommendation["narrative"] = narr.narrate(recommendation)
+        # Multi-agent panel. Additive and display-only: each analyst reports its
+        # own domain and the CIO surfaces disagreement, which the single blended
+        # recommendation score cannot express.
+        recommendation["panel"] = ana.analyse(dict(
+            symbol=symbol, price=px, close=close,
+            sma20=float(row["sma20"]), sma50=float(row["sma50"]),
+            rvol=rvol, atr_pct=float(row["atr_pct"]), regime_on=_regime(market),
+            technicals=technicals, news=news_items,
+            news_score=(news_items[0].get("score") if news_items else None),
+            held=held,
+        ))
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,
                                  target=target, rr=rr, regime=_regime(market), factors=factors,

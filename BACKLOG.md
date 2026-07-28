@@ -40,11 +40,13 @@ doing. It is not a promise that the brief converges.
       model runs. Needs a key, plus a sync-safe call path (the brain's methods
       are async and `api_stock` is sync). Until then the deterministic
       narrative serves, which is what production would show today anyway.
-- [ ] **Multi-agent analysis architecture.** Independent analyst functions —
-      technical, catalyst/news, risk, sector — each returning a structured
-      opinion with evidence, combined by a CIO aggregator that reconciles
-      disagreement and produces the final call. Build on `analysis_tools.py`
-      and `llm_brain.py`; do not start a parallel stack.
+- [ ] **Render the analyst panel in the UI.** `/v2/api/stock` returns
+      `recommendation.panel` with four analyst opinions and the CIO's
+      reconciliation; nothing displays it. Dissent is the part worth showing.
+- [ ] **More analysts.** Four exist (technical, catalyst, risk, position).
+      The brief also lists fundamental, macro, sector, prediction and
+      broker-integration agents. Fundamental and sector are blocked on data
+      (see below); macro could use the existing `macro_calendar`.
 - [ ] `BLOCKED (sector data)` **Sector exposure.** `universe.sector` is a
       catch-all — "NSE Listed Equity" covers 2,594 Indian names — so a
       breakdown built on it would be a single 100% bar. Needs a real
@@ -129,6 +131,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Multi-agent analysts + CIO reconciliation with explicit dissent
 - `fe634d8` Alerts evaluated server-side — they previously fired ONLY while
   a browser had the dashboard open (2 live alerts, 0 ever triggered)
 - `c1fe36e` Allocation & risk card in the portfolio tab
