@@ -73,6 +73,45 @@ class CatalystWindowTest(unittest.TestCase):
         self.assertEqual(_cutoff_date(0, date(2026, 7, 27)), date(2026, 7, 27))
 
 
+class PreOpenWarmUpTest(unittest.TestCase):
+    """Signals must be built BEFORE 09:15 so the open is spent buying rather
+    than computing. 2026-07-29 is a Wednesday; 2026-08-01 a Saturday."""
+
+    def _at(self, hh, mm, day=(2026, 7, 29)):
+        return datetime(*day, hh, mm, tzinfo=IST)
+
+    def test_warms_during_the_window(self) -> None:
+        self.assertTrue(v2_live.in_preopen("IN", self._at(9, 6)))
+        self.assertTrue(v2_live.in_preopen("IN", self._at(9, 14)))
+
+    def test_not_before_the_window(self) -> None:
+        self.assertFalse(v2_live.in_preopen("IN", self._at(8, 30)))
+
+    def test_stops_at_the_open(self) -> None:
+        """At 09:15 the live passes take over; warming past it would double the
+        heavy signal computation during the busiest minute of the session."""
+        self.assertFalse(v2_live.in_preopen("IN", self._at(9, 15)))
+        self.assertFalse(v2_live.in_preopen("IN", self._at(11, 0)))
+
+    def test_not_on_a_weekend(self) -> None:
+        self.assertFalse(v2_live.in_preopen("IN", self._at(9, 6, (2026, 8, 1))))
+
+    def test_not_on_a_market_holiday(self) -> None:
+        self.assertIn("2026-01-26", v2_live.MARKET_HOLIDAYS["IN"])
+        self.assertFalse(v2_live.in_preopen("IN", self._at(9, 6, (2026, 1, 26))))
+
+    def test_unknown_market_has_no_preopen(self) -> None:
+        self.assertFalse(v2_live.in_preopen("XX", self._at(9, 6)))
+
+    def test_warm_up_cannot_place_a_trade(self) -> None:
+        """The safety property: fills are gated on the entry window, which is
+        measured from the session-open timestamp and is not set pre-open."""
+        import inspect
+        src = inspect.getsource(v2_live.poll_market)
+        self.assertIn("_SESSION_OPENED_AT.get(market, 0)", src)
+        self.assertIn("if not in_window:", src)
+
+
 class FreshNewsWindowTest(unittest.TestCase):
     """Operator rule: act on today's news or one session back, never older.
     The old rolling '-1 day' both over- and under-reached — on a Monday it ran

@@ -334,6 +334,31 @@ CREATE TABLE IF NOT EXISTS v2_signals(market TEXT, strategy TEXT, date TEXT, sym
 _HIST: dict = {}
 _EQ_SNAP: dict = {}
 _SESSION_OPENED_AT: dict = {}            # market -> ts when the session last transitioned open
+# PRE-OPEN WARM-UP. NSE runs its call auction 09:00-09:08 and normal trading
+# starts 09:15. Until now every pass sat inside `if is_open`, so the heavy
+# signal computation only BEGAN at 09:15 — the engine spent the first minutes of
+# the session working out what it wanted while the moves it was ranking were
+# already happening. Warming from 09:05 means the candidate list, panel and
+# features are already built when the bell goes, so entries fire at the open
+# instead of several minutes into it.
+# This cannot place a trade: poll_market only fills inside the entry window,
+# which is measured from _SESSION_OPENED_AT and is not set until the session
+# actually opens. Pre-open it computes and stores signals, then returns.
+PREOPEN = {"IN": ("09:05", "09:15")}
+PREOPEN_INTERVAL = 120                   # re-warm every 2 min through the window
+
+
+def in_preopen(market, now=None):
+    """True inside the pre-open warm-up window on a real trading day."""
+    window = PREOPEN.get(market)
+    if not window:
+        return False
+    moment = now or datetime.now(IST)
+    if moment.weekday() >= 5:
+        return False
+    if moment.date().isoformat() in MARKET_HOLIDAYS.get(market, ()):
+        return False
+    return window[0] <= moment.strftime("%H:%M") < window[1]
 ENTRY_WINDOW_SEC = 30 * 60               # "at the open" — the validated fill window
 # Freed capital may be redeployed for this long after the open (~14:15 IST).
 # Before 2026-07-28 the daily lanes filled ONLY in the 30-min open window, so a
@@ -1937,6 +1962,7 @@ _last_signal: dict = {}
 _last_vs: dict = {}          # volume_surge throttle
 _last_sw: dict = {}          # sector_watch throttle
 _last_btst: dict = {}        # btst throttle
+_last_preopen: dict = {}     # pre-open warm-up throttle
 VOLSURGE_INTERVAL = 10      # 10s (was 20s): operator wants faster entry on surges
 INTRAMOM_INTERVAL = 30      # narrow entry window; no need to scan more often
 _last_im: dict = {}       # scan for intraday movers every 20s (not every 8s cycle)
@@ -2064,6 +2090,13 @@ def loop(interval):
                     if time.time() - _last_signal.get(m, 0) >= SIGNAL_INTERVAL:
                         poll_market(m)                           # heavy signal gen periodically
                         _last_signal[m] = time.time()
+                elif in_preopen(m):
+                    # Warm the signals so the open is spent BUYING, not computing.
+                    if time.time() - _last_preopen.get(m, 0) >= PREOPEN_INTERVAL:
+                        poll_market(m)
+                        _last_preopen[m] = time.time()
+                    _status[m] = (f"pre-open {datetime.now(IST).strftime('%H:%M IST')} · "
+                                  "preparing candidates for the open")
                 else:
                     _status[m] = "closed"
             except Exception as exc:
