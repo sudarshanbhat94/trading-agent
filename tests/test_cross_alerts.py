@@ -91,10 +91,15 @@ class CandleCacheTest(unittest.TestCase):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         con = sqlite3.connect(self.path)
-        con.execute("CREATE TABLE candles (symbol TEXT, ts TEXT, close REAL, source TEXT)")
+        # Mirrors the real candles table, which carries full OHLC — the loader
+        # reads open/high/low for the pattern rules as well as close.
+        con.execute("CREATE TABLE candles (symbol TEXT, ts TEXT, open REAL, high REAL, "
+                    "low REAL, close REAL, source TEXT)")
         for i in range(30):
-            con.execute("INSERT INTO candles VALUES (?,?,?,?)",
-                        ("ABC", f"2026-06-{i + 1:02d}", 100.0 + i, "upstox-live:day"))
+            close = 100.0 + i
+            con.execute("INSERT INTO candles VALUES (?,?,?,?,?,?,?)",
+                        ("ABC", f"2026-06-{i + 1:02d}", close - 0.5, close + 1.0,
+                         close - 1.0, close, "upstox-live:day"))
         con.commit()
         con.close()
         self._db = v2_web.MAIN_DB

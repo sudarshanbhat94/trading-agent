@@ -53,11 +53,12 @@ doing. It is not a promise that the brief converges.
       symbol→sector source (NSE industry classification) before this is worth
       building. The analytics payload returns `sector_exposure: null` with a
       note rather than a fake chart.
-- [ ] **Pattern alerts.** Cross alerts now work (`cross_up`/`cross_down` on
-      the 20/50/200 SMA, with a TTL-cached candle loader). A pattern rule can
-      reuse `_alert_candles()` and `indicators.candlestick_patterns()`, but
-      needs an "only fire on a bar newer than the alert" rule — daily patterns
-      would otherwise re-fire every cycle all day.
+- [ ] **Let a pattern alert name which patterns it wants.** `pattern` alerts
+      currently fire on ANY detected pattern. Measured across 300 real symbols
+      on one session: 32% of names had at least one, dominated by `doji` (11%)
+      and `morning_star` (6%). A user watching a handful of names will get
+      frequent, low-information alerts. Store a pattern list on the alert row
+      and filter — small change, meaningful noise reduction.
 - [ ] `BLOCKED (no volume in latest_quotes)` **Volume-spike alerts.**
       `latest_quotes` stores symbol/price/open/high/low/close and **no
       volume**, so relative volume cannot be evaluated in the alert loop.
@@ -136,6 +137,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Pattern alerts with a bar-freshness rule
 - `ee9f03e` SMA cross alerts (cross_up / cross_down) with a cached candle loader
 - `eb05ae1` Catalyst alerts — fire on the next material NSE filing
 - `4a8035f` Macro analyst — expiry, policy weeks and earnings proximity

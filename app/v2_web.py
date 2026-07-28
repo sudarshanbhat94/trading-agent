@@ -547,12 +547,12 @@ def api_alerts_add(payload: dict):
     except (TypeError, ValueError):
         # A catalyst alert has no threshold — it fires on the next material
         # filing — so only the price kinds require a number.
-        if payload.get("kind") == "catalyst":
+        if payload.get("kind") in ("catalyst", "pattern"):
             value = 0.0
         else:
             return JSONResponse({"error": "bad value"}, status_code=400)
     if not sym or kind not in ("above", "below", "pct", "catalyst",
-                              "cross_up", "cross_down"):
+                              "cross_up", "cross_down", "pattern"):
         return JSONResponse({"error": "bad alert"}, status_code=400)
     if kind in ("cross_up", "cross_down") and int(value) not in ALERT_SMA_PERIODS:
         return JSONResponse({"error": "bad alert"}, status_code=400)
@@ -712,8 +712,8 @@ ALERT_CANDLE_TTL = 300          # daily bars change once a session; 5 min is gen
 ALERT_SMA_PERIODS = (20, 50, 200)
 
 
-def _alert_candles(symbol, market="IN", limit=210):
-    """Recent daily closes for an alerted symbol, cached.
+def _alert_bars(symbol, market="IN", limit=210):
+    """Recent daily OHLC bars for an alerted symbol, cached.
 
     The alert loop runs every 20s and this reads the candle table, so results
     are cached for ALERT_CANDLE_TTL. Daily bars only change once a session, so
@@ -724,18 +724,56 @@ def _alert_candles(symbol, market="IN", limit=210):
     if hit and time.time() - hit[0] < ALERT_CANDLE_TTL:
         return hit[1]
     source = "upstox-live:day" if market == "IN" else "alpaca-iex-live:day"
-    closes = []
+    bars = []
     try:
         con = _ro(MAIN_DB)
         rows = con.execute(
-            "SELECT close FROM candles WHERE symbol=? AND source=? ORDER BY ts DESC LIMIT ?",
-            (key[0], source, int(limit))).fetchall()
+            "SELECT ts,open,high,low,close FROM candles WHERE symbol=? AND source=? "
+            "ORDER BY ts DESC LIMIT ?", (key[0], source, int(limit))).fetchall()
         con.close()
-        closes = [float(r[0]) for r in reversed(rows) if r[0] is not None]
+        for ts, o, h, low, c in reversed(rows):
+            if None in (o, h, low, c):
+                continue
+            bars.append((str(ts), float(o), float(h), float(low), float(c)))
     except Exception:
         _LOG.debug("alert candle load failed for %s", symbol, exc_info=True)
-    _ALERT_CANDLE_CACHE[key] = (time.time(), closes)
-    return closes
+    _ALERT_CANDLE_CACHE[key] = (time.time(), bars)
+    return bars
+
+
+def _alert_candles(symbol, market="IN", limit=210):
+    """Closing prices only, for the moving-average cross rules."""
+    return [bar[4] for bar in _alert_bars(symbol, market, limit)]
+
+
+def pattern_hit(bars, since_iso):
+    """Candlestick patterns on the newest bar, if that bar is NEW.
+
+    Returns the list of patterns found, or [] for no fire.
+
+    The freshness check is what makes this usable. Daily patterns persist for
+    the whole session, so firing on "a pattern exists" would re-trigger every
+    20s until midnight. The bar must be dated after the alert was created, so
+    each alert fires at most once per new bar.
+    """
+    if not bars:
+        return []
+    try:
+        cutoff = str(since_iso)[:10]
+        datetime.fromisoformat(cutoff)
+    except (TypeError, ValueError):
+        return []
+    if str(bars[-1][0])[:10] <= cutoff:
+        return []
+    opens = [b[1] for b in bars]
+    highs = [b[2] for b in bars]
+    lows = [b[3] for b in bars]
+    closes = [b[4] for b in bars]
+    try:
+        return list(ta.candlestick_patterns(opens, highs, lows, closes))
+    except Exception:
+        _LOG.debug("pattern detection failed", exc_info=True)
+        return []
 
 
 def sma_cross_hit(closes, price, period, direction):
@@ -821,7 +859,11 @@ def _check_alerts():
                 continue
             p = lq["price"]
             filing = None
-            if kind in ("cross_up", "cross_down"):
+            patterns = None
+            if kind == "pattern":
+                patterns = pattern_hit(_alert_bars(sym, m), created_at)
+                hit = bool(patterns)
+            elif kind in ("cross_up", "cross_down"):
                 hit = sma_cross_hit(_alert_candles(sym, m), p, value,
                                     "up" if kind == "cross_up" else "down")
             elif kind == "catalyst":
@@ -837,6 +879,8 @@ def _check_alerts():
                 v2.execute("UPDATE v2_alerts SET active=0, triggered_at=?, triggered_price=? WHERE id=?",
                            (datetime.now(timezone.utc).isoformat(), round(p, 2), aid))
                 entry = dict(id=aid, symbol=sym, market=m, kind=kind, value=value, price=round(p, 2))
+                if patterns:
+                    entry["patterns"] = patterns
                 if filing:
                     entry["catalyst"] = {"category": filing[0], "subject": filing[1],
                                          "when": filing[2]}
