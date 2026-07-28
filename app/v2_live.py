@@ -348,6 +348,21 @@ PREOPEN = {"IN": ("09:05", "09:15")}
 PREOPEN_INTERVAL = 120                   # re-warm every 2 min through the window
 
 
+def _refresh_preopen():
+    """Pull the NSE call-auction snapshot. Isolated and best-effort: NSE 503s
+    under load, and a failed pre-market fetch must never delay or break the
+    open — the engine simply proceeds on prior closes as it always did."""
+    try:
+        from . import preopen
+        data = preopen.refresh()
+        if data:
+            top = preopen.gappers(limit=5)
+            _LOG.info("pre-open: %d symbols; top gaps %s", len(data),
+                      ", ".join(f"{r['symbol']} {r['gap_pct']:+.1f}%" for r in top) or "none")
+    except Exception:
+        _LOG.exception("pre-open refresh failed")
+
+
 def in_preopen(market, now=None):
     """True inside the pre-open warm-up window on a real trading day."""
     window = PREOPEN.get(market)
@@ -2094,9 +2109,20 @@ def loop(interval):
                     # Warm the signals so the open is spent BUYING, not computing.
                     if time.time() - _last_preopen.get(m, 0) >= PREOPEN_INTERVAL:
                         poll_market(m)
+                        if m == "IN":
+                            _refresh_preopen()
                         _last_preopen[m] = time.time()
+                    tops = ""
+                    try:
+                        from . import preopen as _pre
+                        top = _pre.gappers(limit=3)
+                        if top:
+                            tops = " · gapping: " + ", ".join(
+                                f"{r['symbol']} {r['gap_pct']:+.1f}%" for r in top)
+                    except Exception:
+                        pass
                     _status[m] = (f"pre-open {datetime.now(IST).strftime('%H:%M IST')} · "
-                                  "preparing candidates for the open")
+                                  f"preparing candidates for the open{tops}")
                 else:
                     _status[m] = "closed"
             except Exception as exc:

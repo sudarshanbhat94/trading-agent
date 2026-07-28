@@ -399,6 +399,21 @@ def api_positions():
     return JSONResponse(out)
 
 
+@router.get("/api/preopen")
+def api_preopen():
+    """Today's NSE call-auction snapshot: what gapped before the bell.
+
+    Empty outside the pre-open window or if NSE refused the fetch — the caller
+    must treat an empty list as "unknown", not as "nothing gapped".
+    """
+    try:
+        from . import preopen
+        rows = preopen.gappers(min_gap=1.0, limit=40)
+        return JSONResponse(dict(count=len(preopen.cached()), gappers=rows))
+    except Exception:
+        return JSONResponse(dict(count=0, gappers=[]))
+
+
 @router.get("/api/health")
 def api_health():
     """Pipeline self-check: quote freshness, daily-candle freshness, engine
