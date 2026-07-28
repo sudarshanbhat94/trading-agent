@@ -163,11 +163,22 @@ class LaneConfigurationTest(unittest.TestCase):
         it silently would resume a known-losing lane, so pin it."""
         self.assertIn("gap_momentum", v2_live.DISABLED_LANES)
 
-    def test_active_lanes_are_not_disabled(self) -> None:
+    def test_every_legacy_lane_is_disabled(self) -> None:
+        """2026-07-28: the operator chose to run one strategy only. Nothing is
+        deleted — removing a name from DISABLED_LANES re-enables it."""
         for lane in ("swing_meanrev", "mom_breakout", "volume_surge",
-                     "intraday_news", "btst"):
+                     "intraday_news", "btst", "gap_momentum"):
             with self.subTest(lane=lane):
-                self.assertNotIn(lane, v2_live.DISABLED_LANES)
+                self.assertIn(lane, v2_live.DISABLED_LANES)
+
+    def test_standalone_lanes_actually_honour_the_disable(self) -> None:
+        """The list is only cosmetic unless each pass checks it. These three
+        open positions directly and did NOT check it until this was fixed."""
+        import inspect
+        for name in ("volume_surge_pass", "intraday_news_pass", "btst_pass"):
+            with self.subTest(lane=name):
+                self.assertIn("DISABLED_LANES",
+                              inspect.getsource(getattr(v2_live, name)))
 
     def test_intraday_lanes_square_off_and_btst_does_not(self) -> None:
         """btst must NOT be in INTRADAY_STRATS — it is held overnight, and

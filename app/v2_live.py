@@ -75,7 +75,18 @@ PLAN = {
 # also showed tightening the stop HURTS (exp +0.63->+0.14%/trade at a -4% cap) and
 # doesn't fix the rare overnight gap tail — so the swing stop is left as-is. Re-enable
 # gap_momentum only if a reworked signal beats baseline out-of-sample.
-DISABLED_LANES = {"gap_momentum"}
+# Every legacy lane is OFF. 2026-07-28: the operator chose to run a single
+# strategy — catalyst-continuation plus sector cascade — and nothing else.
+# Nothing here is deleted, so any of these can be re-enabled by removing it
+# from this set. What each one was worth when last measured:
+#   gap_momentum  : proven loser, -0.51%/trade over 44k trades
+#   swing_meanrev : the only lane with a real number, ~6.6%/yr, Sharpe 0.59,
+#                   though that figure still carries the load_market look-ahead
+#   mom_breakout  : never measured separately
+#   volume_surge  : untestable until now (no intraday history), -Rs 302 live
+#   intraday_news : never measured separately
+DISABLED_LANES = {"gap_momentum", "swing_meanrev", "mom_breakout",
+                  "volume_surge", "intraday_news", "btst"}
 MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
 # ---- intraday news-momentum sleeve (user spec: trade TODAY's tape, take the
 # money fast, flat by the close). 5-min-bar backtest (150 syms, 58 days):
@@ -969,6 +980,8 @@ def intraday_news_pass(market):
     fresh positive news catalyst. Exits: +3.5% target / -1.75% stop / breakeven
     lock at +1.5% / hard square-off 15:12 IST (handled in exit_monitor).
     Runs every engine cycle inside the entry window; cheap (one quotes read)."""
+    if "intraday_news" in DISABLED_LANES:      # honour the quarantine list
+        return
     if market != "IN":
         return
     now = datetime.now(IST)
@@ -1252,6 +1265,8 @@ def volume_surge_pass(market):
     near its day high on a >= 3x volume surge, WITH a fresh material NSE catalyst
     (results/order/board-outcome). Skips frozen quotes and circuit-locked names.
     Exits handled by exit_monitor (TP/stop/breakeven-lock/square-off 15:12)."""
+    if "volume_surge" in DISABLED_LANES:      # honour the quarantine list
+        return
     if market != "IN":
         return
     now = datetime.now(IST)
@@ -1461,6 +1476,8 @@ def btst_pass(market, force=False):
     `force` bypasses the close-time window for a one-off seed. Mirrors
     volume_surge_pass' structure/guards; the only differences are the close-position
     filter, the overnight hold, and no intraday square-off."""
+    if "btst" in DISABLED_LANES:      # honour the quarantine list
+        return
     if market != "IN":
         return
     now = datetime.now(IST)
