@@ -509,6 +509,38 @@ def _daychg(market, symbols):
     return out
 
 
+def shareholding_trend(symbol, quarters=4):
+    """Promoter/public holding history for a symbol, newest last.
+
+    Returns None when there is nothing to report — including when the table
+    does not exist at all, which is the state until the shareholding ingester
+    is deployed. Callers must treat None as "unknown", never as "zero".
+    """
+    try:
+        con = _ro(MAIN_DB)
+        rows = con.execute(
+            "SELECT as_of,promoter_pct,public_pct FROM shareholding WHERE symbol=? "
+            "ORDER BY as_of DESC LIMIT ?", (str(symbol).upper(), int(quarters))).fetchall()
+        con.close()
+    except Exception:
+        _LOG.debug("shareholding lookup unavailable for %s", symbol, exc_info=True)
+        return None
+    history = [{"as_of": r[0], "promoter_pct": r[1], "public_pct": r[2]}
+               for r in reversed(rows) if r[1] is not None]
+    if not history:
+        return None
+    latest = history[-1]
+    change = None
+    if len(history) >= 2:
+        change = round(latest["promoter_pct"] - history[0]["promoter_pct"], 2)
+    return {
+        "latest": latest,
+        "history": history,
+        "quarters": len(history),
+        "promoter_change_pp": change,
+    }
+
+
 MAX_TAGS = 8
 MAX_TAG_LENGTH = 24
 
@@ -1622,6 +1654,7 @@ def api_stock(symbol: str, market: str = "IN"):
             technicals=technicals, news=news_items,
             news_score=(news_items[0].get("score") if news_items else None),
             held=held, macro=_macro_flags(),
+            shareholding=shareholding_trend(symbol),
         ))
         return JSONResponse(dict(symbol=symbol, market=market, live=round(px, 2),
                                  verdict=verdict, score=round(conv, 2), entry=entry, stop=stop,

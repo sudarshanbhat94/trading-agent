@@ -66,10 +66,12 @@ doing. It is not a promise that the brief converges.
       **401** without a crumb (verified from the box; its chart endpoint still
       works). Needs a paid source, an XBRL parser plus a polite crawl
       schedule, or a decision to skip ratios.
-- [ ] **Expose shareholding in the API and analysts.** `scripts/shareholding_ingest.py`
-      (`25f689c`) fills a `shareholding` table, but nothing reads it yet. A
-      falling promoter stake across quarters is the signal worth surfacing —
-      and it would let a fundamental analyst participate instead of abstaining.
+- [ ] **Deploy the shareholding ingester, then confirm the analyst wakes up.**
+      The reader and `fundamental_analyst` are built and abstain cleanly, but
+      the `shareholding` table does not exist on the box yet, so the analyst
+      abstains on every symbol. It stays inert until
+      `opentrade-shareholding.timer` runs at least twice — one quarter gives a
+      level, two give the trend that carries the signal.
 - [ ] **User preferences.** Risk tolerance, investment style, notification
       preferences, persisted per user and surfaced in the API.
 - [ ] **Admin console.** Users, roles, feature flags, scheduler/job status,
@@ -140,6 +142,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Fundamental analyst — promoter-stake trend from shareholding
 - `25f689c` NSE shareholding ingester — promoter/public holding per quarter
 - `ca9b8dd` Watchlist grouping in the UI — flat until something is filed
 - `52d3fcb` Watchlist folders + tags (API), and a latent positional-INSERT bug

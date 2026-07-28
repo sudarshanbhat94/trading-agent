@@ -110,9 +110,11 @@ class MacroAnalystTest(unittest.TestCase):
 
 class PanelIntegrationTest(unittest.TestCase):
     def test_macro_joins_the_panel(self) -> None:
+        # Membership, not a hard-coded total: the panel is expected to grow,
+        # and pinning the count makes every new analyst fail this test.
         names = [a.__name__ for a in analysts.ANALYSTS]
         self.assertIn("macro_analyst", names)
-        self.assertEqual(len(analysts.ANALYSTS), 5)
+        self.assertEqual(len(names), len(set(names)), "an analyst is registered twice")
 
     def test_macro_appears_in_analyse_output(self) -> None:
         result = analysts.analyse({"macro": {"is_expiry_day": True}})

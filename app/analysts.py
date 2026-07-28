@@ -253,8 +253,62 @@ def macro_analyst(facts):
     return _opinion("macro", stance, confidence, "Event risk: " + "; ".join(notes), evidence)
 
 
-ANALYSTS = (technical_analyst, catalyst_analyst, risk_analyst,
-             macro_analyst, position_analyst)
+def fundamental_analyst(facts):
+    """Ownership: who holds the company, and which way that is moving.
+
+    The only fundamental this deployment can actually source. Revenue, EPS, PE
+    and ROE are blocked — NSE publishes results figures behind ~3,800
+    per-record links and Yahoo's quoteSummary now returns 401 — so this
+    analyst reads shareholding, which NSE serves inline, and abstains rather
+    than pretending to a fuller view.
+
+    Direction: a promoter stake that is RISING across quarters means insiders
+    are buying their own company, historically the more informative side of
+    the trade. A falling stake is the warning. Magnitudes stay modest: a stake
+    can also move through dilution, pledging or an offer for sale, none of
+    which is a directional forecast, so this argues at the margin rather than
+    carrying a call on its own.
+    """
+    data = _dict(facts.get("shareholding"))
+    if not data:
+        return _abstain("fundamental", "No shareholding data for this symbol")
+    latest = _dict(data.get("latest"))
+    promoter = _num(latest.get("promoter_pct"))
+    if promoter is None:
+        return _abstain("fundamental", "No promoter holding figure")
+
+    evidence = [{"metric": "promoter_pct", "value": promoter,
+                 "source": f"NSE shareholding, {latest.get('as_of')}"}]
+    quarters = int(_num(data.get("quarters")) or 1)
+    change = _num(data.get("promoter_change_pp"))
+
+    if change is None:
+        # One quarter tells you the level but nothing about direction. A high
+        # promoter stake is mild reassurance, not a signal.
+        stance = 0.15 if promoter >= 50 else 0.0
+        return _opinion("fundamental", stance, 0.3,
+                        f"Promoter holding {promoter:.2f}%, single quarter — no trend yet",
+                        evidence)
+
+    evidence.append({"metric": "promoter_change_pp", "value": change,
+                     "source": f"{quarters} quarters of NSE shareholding"})
+    # 1pp of promoter stake in a quarter is a meaningful move; 5pp is a large
+    # one. Scale between, and cap so this never dominates the panel.
+    stance = _clamp(change / 5.0, -0.6, 0.6)
+    confidence = min(0.75, 0.3 + 0.15 * quarters)
+    if abs(change) < 0.25:
+        direction = "steady"
+    elif change > 0:
+        direction = f"up {change:+.2f}pp"
+    else:
+        direction = f"down {change:+.2f}pp"
+    return _opinion("fundamental", stance, confidence,
+                    f"Promoter holding {promoter:.2f}%, {direction} over {quarters} quarters",
+                    evidence)
+
+
+ANALYSTS = (technical_analyst, catalyst_analyst, fundamental_analyst,
+             risk_analyst, macro_analyst, position_analyst)
 
 
 def chief_investment_officer(opinions):
