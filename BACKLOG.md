@@ -129,7 +129,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Macro analyst — expiry, policy weeks and earnings proximity
+- `4a8035f` Macro analyst — expiry, policy weeks and earnings proximity
 - `714ed26` Analyst panel card — dissent highlighted, abstainers shown as
   abstained rather than neutral
 - `5341675` Multi-agent analysts + CIO reconciliation with explicit dissent
