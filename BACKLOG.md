@@ -146,7 +146,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` User investment profile — risk tolerance and investment style
+- `10e84b1` User investment profile — risk tolerance and investment style
 - `5dd9ea4` Fundamental analyst — promoter-stake trend from shareholding
 - `25f689c` NSE shareholding ingester — promoter/public holding per quarter
 - `ca9b8dd` Watchlist grouping in the UI — flat until something is filed
