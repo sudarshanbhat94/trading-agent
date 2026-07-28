@@ -34,7 +34,7 @@ from .auth import (
     validate_username,
 )
 from .config import CONFIG_KEYS, CONFIG_SCHEMA, SECRET_FIELDS, Settings, public_settings, settings_from_overrides
-from .db import Database
+from .db import INVESTMENT_STYLES, RISK_TOLERANCES, Database
 from .delivery_data import DeliveryDataService
 from .institutional_feeds import FreeInstitutionalFeedsService
 from .llm_brain import LLMBrain
@@ -3531,6 +3531,44 @@ async def openclaw_notify_test(request: Request) -> dict[str, Any]:
     require_openclaw_bridge(request, settings)
     return await openclaw_notifier.send_test()
 
+
+
+@app.get("/api/me/preferences")
+async def my_preferences(request: Request) -> dict[str, Any]:
+    """The signed-in user's investment profile and notification settings."""
+    user = require_user(request, settings, db)
+    profile = db.user_profile(int(user["id"]))
+    return {
+        **profile,
+        "risk_tolerance_options": list(RISK_TOLERANCES),
+        "investment_style_options": list(INVESTMENT_STYLES),
+        "notifications": {
+            "whatsapp_enabled": bool(user.get("whatsapp_alerts_enabled")),
+            "whatsapp_alert_types": user.get("whatsapp_alert_types") or [],
+        },
+        "signal_execution_mode": user.get("signal_execution_mode"),
+    }
+
+
+@app.post("/api/me/preferences")
+async def set_my_preferences(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Update the investment profile.
+
+    An unrecognised value is REJECTED rather than silently coerced: storing a
+    typo as "balanced" would leave the user believing they had set something
+    else. Omitted fields are left untouched.
+    """
+    user = require_user(request, settings, db)
+    risk = payload.get("risk_tolerance")
+    style = payload.get("investment_style")
+    if risk is not None and str(risk).strip().lower() not in RISK_TOLERANCES:
+        raise HTTPException(status_code=400,
+                            detail=f"risk_tolerance must be one of {', '.join(RISK_TOLERANCES)}")
+    if style is not None and str(style).strip().lower() not in INVESTMENT_STYLES:
+        raise HTTPException(status_code=400,
+                            detail=f"investment_style must be one of {', '.join(INVESTMENT_STYLES)}")
+    db.update_user_profile(int(user["id"]), risk_tolerance=risk, investment_style=style)
+    return {"ok": True, **db.user_profile(int(user["id"]))}
 
 @app.get("/api/me/credits")
 async def my_credit_summary(request: Request) -> dict[str, Any]:

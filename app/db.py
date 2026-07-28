@@ -1069,6 +1069,21 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+RISK_TOLERANCES = ("conservative", "balanced", "aggressive")
+INVESTMENT_STYLES = ("value", "growth", "momentum", "income", "balanced")
+
+
+def normalize_risk_tolerance(value: Any) -> str:
+    """Coerce to a known risk tolerance, defaulting to balanced."""
+    text = str(value or "").strip().lower()
+    return text if text in RISK_TOLERANCES else "balanced"
+
+
+def normalize_investment_style(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in INVESTMENT_STYLES else "balanced"
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
@@ -1565,6 +1580,10 @@ class Database:
             )
             self._ensure_column(conn, "users", "role", "text not null default 'user'")
             self._ensure_column(conn, "users", "account_plan", "text not null default 'standard'")
+            # Investment profile. Free text is deliberately not allowed — these
+            # are graded scales a consumer can reason about, not labels.
+            self._ensure_column(conn, "users", "risk_tolerance", "text not null default 'balanced'")
+            self._ensure_column(conn, "users", "investment_style", "text not null default 'balanced'")
             self._ensure_column(conn, "users", "assigned_llm_provider", "text not null default ''")
             self._ensure_column(conn, "users", "assigned_llm_model", "text not null default ''")
             self._ensure_column(conn, "users", "active", "integer not null default 1")
@@ -1975,6 +1994,34 @@ class Database:
                 "update users set last_login_at = ?, updated_at = ? where id = ?",
                 (now, now, user_id),
             )
+
+    def update_user_profile(self, user_id: int, risk_tolerance: str | None = None,
+                            investment_style: str | None = None) -> dict[str, Any] | None:
+        """Persist the investment profile. Unknown values fall back to the
+        documented default rather than being stored as typos."""
+        sets, params = [], []
+        if risk_tolerance is not None:
+            sets.append("risk_tolerance = ?")
+            params.append(normalize_risk_tolerance(risk_tolerance))
+        if investment_style is not None:
+            sets.append("investment_style = ?")
+            params.append(normalize_investment_style(investment_style))
+        if not sets:
+            return self.user_by_id(user_id)
+        sets.append("updated_at = ?")
+        params.extend([utc_now(), int(user_id)])
+        with self.connect() as conn:
+            conn.execute(f"update users set {', '.join(sets)} where id = ?", params)
+        return self.user_by_id(user_id)
+
+    def user_profile(self, user_id: int) -> dict[str, Any]:
+        """The investment profile, always complete — a user created before
+        these columns existed reads as the defaults, never as None."""
+        user = self.user_by_id(int(user_id)) or {}
+        return {
+            "risk_tolerance": normalize_risk_tolerance(user.get("risk_tolerance")),
+            "investment_style": normalize_investment_style(user.get("investment_style")),
+        }
 
     def update_user_daily_credit_limit(self, user_id: int, daily_credit_limit: float) -> dict[str, Any]:
         limit = max(float(daily_credit_limit or 0.0), 0.0)

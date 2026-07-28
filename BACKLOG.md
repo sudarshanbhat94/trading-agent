@@ -66,14 +66,18 @@ doing. It is not a promise that the brief converges.
       **401** without a crumb (verified from the box; its chart endpoint still
       works). Needs a paid source, an XBRL parser plus a polite crawl
       schedule, or a decision to skip ratios.
-- [ ] **Deploy the shareholding ingester, then confirm the analyst wakes up.**
-      The reader and `fundamental_analyst` are built and abstain cleanly, but
-      the `shareholding` table does not exist on the box yet, so the analyst
-      abstains on every symbol. It stays inert until
-      `opentrade-shareholding.timer` runs at least twice — one quarter gives a
-      level, two give the trend that carries the signal.
-- [ ] **User preferences.** Risk tolerance, investment style, notification
-      preferences, persisted per user and surfaced in the API.
+- [ ] `BLOCKED (needs a deploy — the loop is barred from deploying)` **Wake the
+      fundamental analyst.** The reader and analyst are built and abstain
+      cleanly, but `shareholding` does not exist on the box, so the analyst
+      abstains on every symbol. Needs `opentrade-shareholding.timer` installed
+      and run at least twice — one quarter is a level, two are the trend.
+- [ ] **Make preferences change something.** `risk_tolerance` and
+      `investment_style` persist and are served at `/api/me/preferences`, but
+      nothing reads them. The natural consumer is the recommendation — a
+      conservative profile should weight the risk analyst up and pull extreme
+      ratings toward Hold. Blocked on plumbing: `v2_web` has **no user context
+      at all** (no `require_user`, no `Request`), so `api_stock` cannot tell
+      who is asking. Making it user-aware is the real task.
 - [ ] **Admin console.** Users, roles, feature flags, scheduler/job status,
       system health, audit log. Build on the admin endpoints in `main.py`.
 
@@ -142,6 +146,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` User investment profile — risk tolerance and investment style
 - `5dd9ea4` Fundamental analyst — promoter-stake trend from shareholding
 - `25f689c` NSE shareholding ingester — promoter/public holding per quarter
 - `ca9b8dd` Watchlist grouping in the UI — flat until something is filed
