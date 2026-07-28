@@ -746,10 +746,20 @@ def poll_market(market):
     if market == "IN" and datetime.now(IST).strftime("%H:%M") <= INTRA["last_entry"]:
         n_intra_open = sum(1 for p in positions.values() if p["strategy"] == "intraday_news")
         reserve = min(max(0, INTRA["slots"] - n_intra_open) * alloc, budget / 3.0)
+    # FROZEN-QUOTE GUARD. Every intraday lane skips symbols whose quote has
+    # stalled; the daily lane did not, so it could enter at a price that had not
+    # moved for days (GUJGASLTD sat frozen from Jun 30) and book a fill that never
+    # existed at that price. That is a fantasy trade: it corrupts the live record
+    # in the lane whose record we most rely on. poll_market runs once per
+    # SIGNAL_INTERVAL (300s), so this universe-wide query is cheap here — the
+    # 2026-07-24 lesson was that such a query must never run at the 8s cadence.
+    stale = _stale_symbols(market)
     # candidate ordering: catalysts (gap) first, then swing; each must clear its own gate
     cand = []
     for s in sigs:
         if s["strategy"] in DISABLED_LANES:              # quarantined lanes never trade
+            continue
+        if s["symbol"] in stale:                         # frozen quote -> fantasy fill
             continue
         pl = PLAN[s["strategy"]]
         if s["score"] < pl["threshold"]:
@@ -848,6 +858,20 @@ def poll_market(market):
         # (US Sharpe 1.80 vs 1.37, max-DD 10% vs 27%); composite-RANKING was worse.
         size_mult = 1.0
         why = None
+        # Defensive: don't trade if the live entry price diverges wildly from the
+        # last candle close (a feed glitch / wrong instrument). This check used to
+        # sit INSIDE the `fscores is not None` branch below, so whenever the
+        # investigation panel was unavailable the engine lost its liquidity gates
+        # AND this sanity check at the same moment — precisely when a bad price is
+        # most likely and least likely to be caught. It is independent of the
+        # investigation, so it now runs unconditionally.
+        try:
+            cclose = float(fpanel.loc[sym, "close"])
+            if cclose > 0 and abs(s["price"] / cclose - 1) > 0.30:
+                investig += 1
+                continue
+        except Exception:
+            pass
         if fscores is not None:
             rep = fi.investigate(sym, fpanel, fscores, market, s["strategy"], rstate, severe, held_sectors, sector_map)
             if rep["gates_failed"]:
@@ -857,15 +881,6 @@ def poll_market(market):
                                   setup=rep.get("setup"), reasons=rep.get("reasons"),
                                   size_mult=rep.get("size_mult"), regime=rstate,
                                   signal_score=s["score"]))
-            # defensive: don't trade if the live entry price diverges wildly from
-            # the last candle close (a feed glitch / wrong instrument)
-            try:
-                cclose = float(fpanel.loc[sym, "close"])
-                if cclose > 0 and abs(s["price"] / cclose - 1) > 0.30:
-                    investig += 1
-                    continue
-            except Exception:
-                pass
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
         # volatility-normalized sizing: equal RISK per position, not equal rupees

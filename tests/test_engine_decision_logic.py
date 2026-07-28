@@ -195,6 +195,29 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertNotIn("btst", v2_live.INTRADAY_STRATS)
         self.assertNotIn("swing_meanrev", v2_live.INTRADAY_STRATS)
 
+    def test_every_buy_path_skips_frozen_quotes(self) -> None:
+        """A stalled quote makes a fill fantasy — the price never traded there.
+        Each lane has its OWN `INSERT INTO v2_positions`, so the guard has to be
+        repeated per path; the daily lane was missing it while all four intraday
+        lanes had it, which is exactly the kind of gap five copies invite."""
+        import inspect
+        for name in ("poll_market", "volume_surge_pass", "btst_pass"):
+            with self.subTest(lane=name):
+                self.assertIn("_stale_symbols",
+                              inspect.getsource(getattr(v2_live, name)))
+
+    def test_price_divergence_check_is_not_conditional_on_the_investigation(self) -> None:
+        """The feed-glitch check must not live inside `if fscores is not None`.
+        When the investigation panel is unavailable the liquidity gates already
+        drop out; losing the price sanity check at the same time means the engine
+        is least protected exactly when it is least informed."""
+        import inspect
+        src = inspect.getsource(v2_live.poll_market)
+        guard = src.index("if fscores is not None:")
+        check = src.index("> 0.30")
+        self.assertLess(check, guard,
+                        "price-divergence check must run before/outside the fscores branch")
+
     def test_every_planned_lane_has_a_stop(self) -> None:
         for lane, plan in v2_live.PLAN.items():
             with self.subTest(lane=lane):
