@@ -142,7 +142,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Fundamental analyst — promoter-stake trend from shareholding
+- `5dd9ea4` Fundamental analyst — promoter-stake trend from shareholding
 - `25f689c` NSE shareholding ingester — promoter/public holding per quarter
 - `ca9b8dd` Watchlist grouping in the UI — flat until something is filed
 - `52d3fcb` Watchlist folders + tags (API), and a latent positional-INSERT bug
