@@ -51,11 +51,16 @@ doing. It is not a promise that the brief converges.
       symbol→sector source (NSE industry classification) before this is worth
       building. The analytics payload returns `sector_exposure: null` with a
       note rather than a fake chart.
-- [ ] **Extra alert kinds.** Price alerts (above/below/pct) already existed and
-      now fire server-side (`fe634d8`). Still missing from the brief: indicator
-      cross, volume spike, pattern and catalyst rules. `alert_hit()` in
-      `v2_web.py` needs a branch per kind; storage, evaluation cadence and
-      Telegram delivery are already wired, so each new kind is small.
+- [ ] **Indicator-cross and pattern alerts.** Price (above/below/pct) and
+      catalyst kinds now work. A cross or pattern rule needs candle history per
+      alerted symbol at evaluation time — feasible (alert counts are small, and
+      `MAIN_DB` is already reachable from `v2_web`) but it is real DB work on
+      the 20s loop, so design the caching before building.
+- [ ] `BLOCKED (no volume in latest_quotes)` **Volume-spike alerts.**
+      `latest_quotes` stores symbol/price/open/high/low/close and **no
+      volume**, so relative volume cannot be evaluated in the alert loop.
+      Needs either a volume column on the quote feed or a candle-based
+      fallback — a data decision, not a coding one.
 - [ ] **Watchlist folders and tags.** The watchlist exists; grouping does not.
 - [ ] **Fundamentals ingestion.** Revenue, profit, EPS, PE/PB, ROE/ROCE, debt,
       promoter and institutional holding. `promoter_holding` is in zero files.
@@ -129,6 +134,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Catalyst alerts — fire on the next material NSE filing
 - `4a8035f` Macro analyst — expiry, policy weeks and earnings proximity
 - `714ed26` Analyst panel card — dissent highlighted, abstainers shown as
   abstained rather than neutral

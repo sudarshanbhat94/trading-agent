@@ -29,6 +29,7 @@ _LOG = logging.getLogger("openstocks.v2_web")
 
 MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
+CATALYST_DB = os.environ.get("CATALYST_DB", "/opt/opentrade/var/catalysts.db")
 LIVE_SOURCE = {"IN": "upstox-live", "US": "alpaca-iex-live"}
 
 router = APIRouter(prefix="/v2")
@@ -544,8 +545,13 @@ def api_alerts_add(payload: dict):
     try:
         value = float(payload.get("value"))
     except (TypeError, ValueError):
-        return JSONResponse({"error": "bad value"}, status_code=400)
-    if not sym or kind not in ("above", "below", "pct"):
+        # A catalyst alert has no threshold — it fires on the next material
+        # filing — so only the price kinds require a number.
+        if payload.get("kind") == "catalyst":
+            value = 0.0
+        else:
+            return JSONResponse({"error": "bad value"}, status_code=400)
+    if not sym or kind not in ("above", "below", "pct", "catalyst"):
         return JSONResponse({"error": "bad alert"}, status_code=400)
     v2 = _rw()
     _uwl(v2)
@@ -668,6 +674,36 @@ def api_alerts_del(aid: int):
 _alert_last_check = [0.0]
 
 
+# Filing categories the engine treats as tradeable. Kept identical to
+# v2_live's catalyst gate so an alert cannot fire on something the engine
+# considers noise.
+MATERIAL_CATEGORIES = ("results", "order", "corp_action")
+
+
+def catalyst_since(symbol, since_iso):
+    """Newest material NSE filing for `symbol` after `since_iso`, or None.
+
+    Returns (category, subject, an_dt). Read-only against the catalyst feed's
+    own database; a missing table or file simply means no catalyst, never an
+    exception into the alert loop.
+    """
+    try:
+        epoch = int(datetime.fromisoformat(str(since_iso).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return None
+    try:
+        con = _ro(CATALYST_DB)
+        row = con.execute(
+            "SELECT category,subject,an_dt FROM nse_announcements WHERE symbol=? "
+            "AND an_epoch > ? AND category IN (?,?,?) ORDER BY an_epoch DESC LIMIT 1",
+            (str(symbol).upper(), epoch, *MATERIAL_CATEGORIES)).fetchone()
+        con.close()
+        return tuple(row) if row else None
+    except Exception:
+        _LOG.debug("catalyst lookup unavailable for %s", symbol, exc_info=True)
+        return None
+
+
 def alert_hit(kind, value, price, day_change_pct=None):
     """Whether one alert rule is satisfied. Pure, so it can be tested directly.
 
@@ -702,7 +738,8 @@ def _check_alerts():
     try:
         try:
             ro = _ro(V2_DB)
-            rows = ro.execute("SELECT id,symbol,market,kind,value FROM v2_alerts WHERE active=1").fetchall()
+            rows = ro.execute("SELECT id,symbol,market,kind,value,created_at "
+                              "FROM v2_alerts WHERE active=1").fetchall()
             ro.close()
         except Exception:
             return []                     # alerts table not created yet
@@ -710,23 +747,34 @@ def _check_alerts():
             return []
         v2 = None
         by_m: dict = {}
-        for _, sym, m, _, _ in rows:
+        for _, sym, m, _, _, _ in rows:
             by_m.setdefault(m, set()).add(sym)
         live = {m: _live_map(m, s) for m, s in by_m.items()}
         chg = {m: (_daychg(m, list(s)) if any(r[3] == "pct" and r[2] == m for r in rows) else {})
                for m, s in by_m.items()}
-        for aid, sym, m, kind, value in rows:
+        for aid, sym, m, kind, value, created_at in rows:
             lq = live.get(m, {}).get(sym)
             if not lq:
                 continue
             p = lq["price"]
-            hit = alert_hit(kind, value, p, chg.get(m, {}).get(sym, {}).get("chg"))
+            filing = None
+            if kind == "catalyst":
+                # Fires on the first material filing published after the alert
+                # was set — not on price at all.
+                filing = catalyst_since(sym, created_at)
+                hit = filing is not None
+            else:
+                hit = alert_hit(kind, value, p, chg.get(m, {}).get(sym, {}).get("chg"))
             if hit:
                 if v2 is None:
                     v2 = _rw()
                 v2.execute("UPDATE v2_alerts SET active=0, triggered_at=?, triggered_price=? WHERE id=?",
                            (datetime.now(timezone.utc).isoformat(), round(p, 2), aid))
-                fired.append(dict(id=aid, symbol=sym, market=m, kind=kind, value=value, price=round(p, 2)))
+                entry = dict(id=aid, symbol=sym, market=m, kind=kind, value=value, price=round(p, 2))
+                if filing:
+                    entry["catalyst"] = {"category": filing[0], "subject": filing[1],
+                                         "when": filing[2]}
+                fired.append(entry)
         if v2 is not None:
             v2.commit(); v2.close()
         if fired:
