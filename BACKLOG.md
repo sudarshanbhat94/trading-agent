@@ -130,7 +130,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Watchlist grouping in the UI — flat until something is filed
+- `ca9b8dd` Watchlist grouping in the UI — flat until something is filed
 - `52d3fcb` Watchlist folders + tags (API), and a latent positional-INSERT bug
 - `9c061ee` Pattern-alert filtering — 32% -> 13% of names on a real session
 - `efb0776` Pattern alerts with a bar-freshness rule
