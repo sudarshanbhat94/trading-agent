@@ -447,20 +447,24 @@ def api_health():
 # ---------------- watchlist · alerts · search · movers ----------------
 def _uwl(v2):
     v2.executescript(
-        "CREATE TABLE IF NOT EXISTS v2_watch_user(symbol TEXT, market TEXT, added_at TEXT, PRIMARY KEY(symbol,market));"
+        "CREATE TABLE IF NOT EXISTS v2_watch_user(symbol TEXT, market TEXT, added_at TEXT,"
+        " folder TEXT DEFAULT '', tags TEXT DEFAULT '', PRIMARY KEY(symbol,market));"
         "CREATE TABLE IF NOT EXISTS v2_alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, market TEXT,"
         " kind TEXT, value REAL, created_at TEXT, triggered_at TEXT, triggered_price REAL, active INTEGER DEFAULT 1,"
         " params TEXT DEFAULT '');")
     # Additive migration for books created before `params` existed. CREATE
     # TABLE IF NOT EXISTS does nothing to an existing table, and the live book
     # already holds alert rows, so the column has to be added explicitly.
-    try:
-        columns = {r[1] for r in v2.execute("PRAGMA table_info(v2_alerts)")}
-        if "params" not in columns:
-            v2.execute("ALTER TABLE v2_alerts ADD COLUMN params TEXT DEFAULT ''")
-            _LOG.info("v2_alerts: added params column")
-    except Exception:
-        _LOG.exception("v2_alerts params migration failed")
+    for table, column in (("v2_alerts", "params"),
+                          ("v2_watch_user", "folder"),
+                          ("v2_watch_user", "tags")):
+        try:
+            existing = {r[1] for r in v2.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                v2.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT DEFAULT ''")
+                _LOG.info("%s: added %s column", table, column)
+        except Exception:
+            _LOG.exception("%s %s migration failed", table, column)
 
 
 def _panel_warm(market):
@@ -505,25 +509,75 @@ def _daychg(market, symbols):
     return out
 
 
+MAX_TAGS = 8
+MAX_TAG_LENGTH = 24
+
+
+def parse_tags(raw):
+    """Normalise a tag list. Returns (tags, error).
+
+    Tags are lower-cased and de-duplicated so "Banks" and "banks" group
+    together rather than becoming two folders that look identical in the UI.
+    """
+    if raw in (None, "", []):
+        return [], None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return None, "tags must be a list"
+    tags = []
+    for item in raw:
+        tag = " ".join(str(item).strip().lower().split())
+        if not tag:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            return None, f"tag too long (max {MAX_TAG_LENGTH}): {tag[:30]}"
+        if tag not in tags:
+            tags.append(tag)
+    if len(tags) > MAX_TAGS:
+        return None, f"too many tags (max {MAX_TAGS})"
+    return tags, None
+
+
+def parse_folder(raw):
+    """A folder is a single optional label. Returns (folder, error)."""
+    if raw in (None, ""):
+        return "", None
+    folder = " ".join(str(raw).strip().lower().split())
+    if len(folder) > MAX_TAG_LENGTH:
+        return None, f"folder name too long (max {MAX_TAG_LENGTH})"
+    return folder, None
+
+
 @router.get("/api/watchlist")
 def api_watchlist():
     v2 = _rw()
     _uwl(v2)
-    rows = v2.execute("SELECT symbol,market FROM v2_watch_user ORDER BY added_at DESC").fetchall()
+    rows = v2.execute("SELECT symbol,market,COALESCE(folder,''),COALESCE(tags,'') "
+                      "FROM v2_watch_user ORDER BY added_at DESC").fetchall()
     alerts = v2.execute("SELECT id,symbol,market,kind,value,active,triggered_at,triggered_price "
                         "FROM v2_alerts ORDER BY id DESC LIMIT 60").fetchall()
     v2.close()
     chg = {m: _daychg(m, [r[0] for r in rows if r[1] == m]) for m in ("IN", "US")}
     watch = []
-    for sym, m in rows:
+    for sym, m, folder, tags_json in rows:
         d = chg.get(m, {}).get(sym) or {}
         c = d.get("chg")
+        try:
+            tags = _jsonmod.loads(tags_json) if tags_json else []
+        except (ValueError, TypeError):
+            tags = []
         watch.append(dict(symbol=sym, market=m, ccy="₹" if m == "IN" else "$",
-                          price=round(d.get("price", 0), 2), chg=(round(c, 2) if c is not None else None)))
+                          price=round(d.get("price", 0), 2), chg=(round(c, 2) if c is not None else None),
+                          folder=folder or "", tags=tags))
+    # Folder counts, so the UI can render groups without re-deriving them.
+    folders: dict = {}
+    for item in watch:
+        folders[item["folder"]] = folders.get(item["folder"], 0) + 1
     al = [dict(id=a[0], symbol=a[1], market=a[2], ccy="₹" if a[2] == "IN" else "$", kind=a[3],
                value=a[4], active=bool(a[5]), triggered_at=_ist(a[6]) if a[6] else None,
                triggered_price=a[7]) for a in alerts]
-    return JSONResponse(dict(watch=watch, alerts=al))
+    return JSONResponse(dict(watch=watch, alerts=al, folders=folders))
 
 
 @router.post("/api/watchlist")
@@ -532,12 +586,27 @@ def api_watchlist_add(payload: dict):
     market = payload.get("market", "IN")
     if not sym:
         return JSONResponse({"error": "symbol required"}, status_code=400)
+    folder, error = parse_folder(payload.get("folder"))
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+    tags, error = parse_tags(payload.get("tags"))
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
     v2 = _rw()
     _uwl(v2)
-    v2.execute("INSERT OR IGNORE INTO v2_watch_user VALUES(?,?,?)",
-               (sym, market, datetime.now(timezone.utc).isoformat()))
+    # Columns are named explicitly: the table has grown and a positional
+    # VALUES(?,?,?) would break the moment another column is added.
+    v2.execute("INSERT OR IGNORE INTO v2_watch_user(symbol,market,added_at,folder,tags) "
+               "VALUES(?,?,?,?,?)",
+               (sym, market, datetime.now(timezone.utc).isoformat(), folder,
+                _jsonmod.dumps(tags) if tags else ""))
+    # An existing row keeps its place but takes the new grouping, so re-adding
+    # a symbol is how you re-file it.
+    if folder or tags:
+        v2.execute("UPDATE v2_watch_user SET folder=?, tags=? WHERE symbol=? AND market=?",
+                   (folder, _jsonmod.dumps(tags) if tags else "", sym, market))
     v2.commit(); v2.close()
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "folder": folder, "tags": tags})
 
 
 @router.delete("/api/watchlist/{symbol}")

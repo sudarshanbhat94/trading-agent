@@ -58,7 +58,9 @@ doing. It is not a promise that the brief converges.
       volume**, so relative volume cannot be evaluated in the alert loop.
       Needs either a volume column on the quote feed or a candle-based
       fallback — a data decision, not a coding one.
-- [ ] **Watchlist folders and tags.** The watchlist exists; grouping does not.
+- [ ] **Render watchlist grouping in the UI.** `/v2/api/watchlist` now returns
+      `folder` and `tags` per row plus a `folders` count map; the SPA still
+      shows one flat list and the add form has no folder or tag input.
 - [ ] **Fundamentals ingestion.** Revenue, profit, EPS, PE/PB, ROE/ROCE, debt,
       promoter and institutional holding. `promoter_holding` is in zero files.
 - [ ] **User preferences.** Risk tolerance, investment style, notification
@@ -131,6 +133,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Watchlist folders + tags (API), and a latent positional-INSERT bug
 - `9c061ee` Pattern-alert filtering — 32% -> 13% of names on a real session
 - `efb0776` Pattern alerts with a bar-freshness rule
 - `ee9f03e` SMA cross alerts (cross_up / cross_down) with a cached candle loader
