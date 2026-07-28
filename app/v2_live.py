@@ -160,6 +160,18 @@ BTST = dict(
 # CURRENT turnover, which leaks a little hindsight. Treat live results as the
 # real test.
 INTRAMOM = dict(
+    # DISABLED. The +18.7% above did NOT survive removing the universe
+    # look-ahead. Ranking liquidity as of before the test window instead of
+    # today drops it to +1.6% over the same 58 sessions, win rate 50% -> 39.7%,
+    # per-trade +0.306% -> +0.035%. The original number was largely harvesting
+    # the 37 of 150 names that only BECAME liquid during the window — names the
+    # strategy could not have known to watch at the time.
+    #
+    # The lane is kept, not deleted: the code and its tests are correct, and the
+    # idea deserves a retest once intraday_recorder.py has accumulated real
+    # forward data with no selection bias at all. Set enabled=True only with a
+    # clean out-of-sample number behind it.
+    enabled=False,
     start="10:15",        # 60 min after the 09:15 open; earlier entries tested worse
     last_entry="10:45",   # narrow window — the edge was measured at the 60-min mark
     min_move=0.010,       # at least +1% from the day's OPEN (not previous close)
@@ -1372,7 +1384,7 @@ def intraday_momentum_pass(market):
     handled by exit_monitor: +2% target, -1% stop, square-off at 15:12 with the
     other intraday lanes.
     """
-    if market != "IN":
+    if market != "IN" or not INTRAMOM.get("enabled"):
         return
     now = datetime.now(IST)
     hm = now.strftime("%H:%M")

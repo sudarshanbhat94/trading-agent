@@ -90,8 +90,16 @@ class ConfigurationTest(unittest.TestCase):
         overnight gap is exactly what killed the BTST basket."""
         self.assertIn("intraday_momentum", v2_live.INTRADAY_STRATS)
 
-    def test_lane_is_not_quarantined(self) -> None:
-        self.assertNotIn("intraday_momentum", v2_live.DISABLED_LANES)
+    def test_lane_is_disabled_until_a_clean_number_exists(self) -> None:
+        """The +18.7% did not survive removing the universe look-ahead — it
+        fell to +1.6%. The lane must not trade on that."""
+        self.assertFalse(v2_live.INTRAMOM.get("enabled"),
+                         "re-enable only with a clean out-of-sample result")
+
+    def test_disabled_lane_opens_nothing(self) -> None:
+        import inspect
+        source = inspect.getsource(v2_live.intraday_momentum_pass)
+        self.assertIn('INTRAMOM.get("enabled")', source)
 
     def test_size_is_bounded(self) -> None:
         """size_frac multiplies one slot's allocation. At MAXPOS=6 a frac of 3
