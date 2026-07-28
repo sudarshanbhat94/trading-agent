@@ -2585,6 +2585,7 @@ function renderStock(sym,mkt,target){var el=document.getElementById(target);if(t
    +(d.held?'<button class=pri style="flex:1;background:var(--dn);border-color:var(--dn)" onclick="doSell(\''+sym+'\',\''+mkt+'\')">Sell</button>'
            :'<button class=pri style="flex:1" onclick="doBuy(\''+sym+'\',\''+mkt+'\')">Paper buy</button>')+'</div>'
   +recHtml(d.recommendation,s)
+  +panelHtml(d.recommendation&&d.recommendation.panel,s)
   +'<div class=sec>why this score</div>'+fb+newsHtml(d.news,s)
  +'</div></div>';
  var cd=d.candles||[];CHART={candles:cd,dates:d.dates||[],ccy:s,levels:[{v:d.entry,c:'#4184f3',t:'entry'},{v:d.stop,c:'#e34d3f',t:'stop'},{v:d.target,c:'#3fa45b',t:'target'}],range:Math.min(66,cd.length)};drawCandles();});}
@@ -2671,6 +2672,36 @@ function loadPortfolio(){api('/v2/api/portfolio?market='+(typeof MKT!=='undefine
  el.innerHTML=pfHtml(r.j);
  var n=document.getElementById('pfnote');
  if(n&&r.j&&r.j.sector_exposure===null)n.textContent='sector breakdown unavailable';});}
+function stanceBar(v){var pct=Math.round(Math.abs(v)*50),c=v>0.05?'var(--up)':(v<-0.05?'var(--dn)':'var(--mut)');
+ var left=v<0?(50-pct):50;
+ return '<div style="position:relative;height:5px;border-radius:3px;background:var(--line);margin-top:4px">'
+  +'<div style="position:absolute;left:'+left+'%;width:'+Math.max(1,pct)+'%;height:5px;border-radius:3px;background:'+c+'"></div>'
+  +'<div style="position:absolute;left:50%;top:-2px;width:1px;height:9px;background:var(--mut);opacity:.5"></div></div>';}
+function panelHtml(p,s){
+ if(!p||!p.cio||!p.opinions)return '';
+ var cio=p.cio,c=cio.stance>0.1?'var(--up)':(cio.stance<-0.1?'var(--dn)':'var(--mut)');
+ var h='<div class=sec>analyst panel</div><div class=raise style="margin-top:6px">';
+ h+='<div class=row><b style="color:'+c+';font-size:15px">'+esc(cio.consensus)+'</b>';
+ h+='<span class=mut style="font-size:12px">'+esc(cio.participating)+'/'+esc((p.opinions||[]).length)+' reporting · confidence '+Math.round((cio.confidence||0)*100)+'%</span></div>';
+ h+=stanceBar(cio.stance||0);
+ if(cio.dissent&&cio.dissent.length){
+  h+='<div style="margin-top:11px;padding:8px 10px;border-radius:8px;background:var(--warnb);border-left:3px solid var(--warn)">';
+  h+='<div style="font-size:11px;font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.4px">analysts disagree</div>';
+  for(var i=0;i<cio.dissent.length;i++)h+='<div style="font-size:12.5px;margin-top:4px">'+esc(cio.dissent[i])+'</div>';
+  h+='</div>';}
+ h+='<div style="margin-top:12px">';
+ for(var j=0;j<p.opinions.length;j++){var o=p.opinions[j];
+  if(o.abstained){h+='<div class=row style="padding:6px 0;border-top:1px solid var(--line);font-size:12.5px"><span class=mut>'+esc(o.agent)+'</span><span class=mut style="font-size:11.5px">abstained — '+esc(o.rationale)+'</span></div>';continue;}
+  h+='<div style="padding:7px 0;border-top:1px solid var(--line)">';
+  h+='<div class=row style="font-size:12.5px"><b>'+esc(o.agent)+'</b><span class=mut style="font-size:11.5px">conf '+Math.round((o.confidence||0)*100)+'%</span></div>';
+  h+=stanceBar(o.stance||0);
+  h+='<div class=mut style="font-size:11.5px;margin-top:4px">'+esc(o.rationale)+'</div>';
+  if(o.evidence&&o.evidence.length){h+='<details style="margin-top:4px"><summary class=mut style="font-size:11px;cursor:pointer">evidence ('+o.evidence.length+')</summary>';
+   for(var k=0;k<o.evidence.length;k++){var e=o.evidence[k];
+    h+='<div style="font-size:11px;margin-top:3px"><span class=mut>'+esc(e.metric)+'</span> = '+esc(JSON.stringify(e.value))+' <span class=mut>via '+esc(e.source)+'</span></div>';}
+   h+='</details>';}
+  h+='</div>';}
+ return h+'</div></div>';}
 function recBadge(score){var m=[['Strong Sell','var(--dn)'],['Sell','var(--dn)'],['Reduce','var(--warn)'],['Hold','var(--mut)'],['Accumulate','var(--warn)'],['Buy','var(--up)'],['Strong Buy','var(--up)']];return m[score]||m[3];}
 function recHtml(r,s){
  if(!r)return '';

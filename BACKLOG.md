@@ -40,9 +40,6 @@ doing. It is not a promise that the brief converges.
       model runs. Needs a key, plus a sync-safe call path (the brain's methods
       are async and `api_stock` is sync). Until then the deterministic
       narrative serves, which is what production would show today anyway.
-- [ ] **Render the analyst panel in the UI.** `/v2/api/stock` returns
-      `recommendation.panel` with four analyst opinions and the CIO's
-      reconciliation; nothing displays it. Dissent is the part worth showing.
 - [ ] **More analysts.** Four exist (technical, catalyst, risk, position).
       The brief also lists fundamental, macro, sector, prediction and
       broker-integration agents. Fundamental and sector are blocked on data
@@ -131,6 +128,8 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` Analyst panel card — dissent highlighted, abstainers shown as
+  abstained rather than neutral
 - `5341675` Multi-agent analysts + CIO reconciliation with explicit dissent
 - `fe634d8` Alerts evaluated server-side — they previously fired ONLY while
   a browser had the dashboard open (2 live alerts, 0 ever triggered)
