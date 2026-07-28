@@ -133,7 +133,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Watchlist folders + tags (API), and a latent positional-INSERT bug
+- `52d3fcb` Watchlist folders + tags (API), and a latent positional-INSERT bug
 - `9c061ee` Pattern-alert filtering — 32% -> 13% of names on a real session
 - `efb0776` Pattern alerts with a bar-freshness rule
 - `ee9f03e` SMA cross alerts (cross_up / cross_down) with a cached candle loader
