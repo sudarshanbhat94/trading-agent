@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh NSE shareholding patterns weekly
+
+[Timer]
+# Shareholding is quarterly data; companies file over several weeks after each
+# quarter end, so a weekly pull is ample and keeps NSE traffic negligible.
+OnCalendar=Sun 04:30 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

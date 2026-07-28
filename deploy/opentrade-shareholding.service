@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenTrade NSE shareholding-pattern ingester (promoter/public holding)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python3 scripts/shareholding_ingest.py
+TimeoutStartSec=600
+Nice=10
