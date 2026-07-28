@@ -131,7 +131,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Multi-agent analysts + CIO reconciliation with explicit dissent
+- `5341675` Multi-agent analysts + CIO reconciliation with explicit dissent
 - `fe634d8` Alerts evaluated server-side — they previously fired ONLY while
   a browser had the dashboard open (2 live alerts, 0 ever triggered)
 - `c1fe36e` Allocation & risk card in the portfolio tab
