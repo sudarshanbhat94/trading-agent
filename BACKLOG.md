@@ -31,6 +31,18 @@ doing. It is not a promise that the brief converges.
 
 ## P0 — the product that was asked for
 
+- [ ] **Widen the intraday sample beyond 58 days.** Yahoo caps 5-minute history
+      at ~60 days, so a longer test needs either a paid intraday source or
+      months of `intraday_recorder.py` output. Until then the +18.7% rests on
+      58 sessions and a config picked from a sweep of 16.
+- [ ] **Remove the universe look-ahead.** The backtest ranked liquidity using
+      CURRENT turnover, so it partly knows which names ended up liquid. Rank
+      as-of each date instead and re-run; expect the number to fall somewhat.
+- [ ] **Test dropping `volume_surge`'s catalyst gate.** That lane requires a
+      filing before it buys and is down ₹302. The catalyst filter tested worse
+      in 9 of 9 configurations on the momentum lane, so the gate may be costing
+      it trades without improving quality.
+
 - [ ] `BLOCKED (DeepSeek API key)` **Connect the model writer to the
       narrative.** The prose layer and its hallucination guard are built
       (`app/narrative.py`); `narrate(rec, writer=...)` takes any callable and

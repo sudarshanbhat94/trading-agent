@@ -136,7 +136,43 @@ BTST = dict(
     slots=5, size_frac=0.6,   # small size, several names (the per-trade edge is thin)
     entry_start="15:05", entry_last="15:25",   # buy near the close
 )
-INTRADAY_STRATS = ("intraday_news", "volume_surge")   # share exit_monitor's intraday handling
+# Intraday momentum lane, added 2026-07-28 from a measured backtest rather than
+# intuition. Rule: 60 minutes after the open, buy the SINGLE strongest mover of
+# the day, target +2%, stop -1%, square off with the other intraday lanes.
+#
+# Measured over 58 sessions of 5-minute data across the 150 most liquid NSE
+# names: +0.306% per trade after 0.10% costs, 50% win rate, +18.7% total.
+# Positive in both halves of the sample, and still +12.2% with the three best
+# days removed.
+#
+# Three findings are baked into these numbers and should not be "improved"
+# without re-testing:
+#   * slots=1 is the strategy, not a risk preference. Taking the 2nd and 3rd
+#     ranked movers collapsed the same test from +18.7% to +3.7% and +3.2%.
+#   * tp=2% / sl=1% is what works. Every 1% target tested lost or barely broke
+#     even — you are risking 1% to make 1% and paying costs both ways.
+#   * NO catalyst requirement. Filtering by real NSE announcements made it worse
+#     in 9 of 9 configurations: by the time a name is the day's top mover, the
+#     news is already in the price, and the filter only discards trades.
+#
+# Caveats, stated because they matter: 58 sessions is a small sample, this
+# configuration was chosen from a sweep of 16, and the universe was ranked by
+# CURRENT turnover, which leaks a little hindsight. Treat live results as the
+# real test.
+INTRAMOM = dict(
+    start="10:15",        # 60 min after the 09:15 open; earlier entries tested worse
+    last_entry="10:45",   # narrow window — the edge was measured at the 60-min mark
+    min_move=0.010,       # at least +1% from the day's OPEN (not previous close)
+    min_turnover=5e7,     # only names you can actually get filled in
+    tp=0.020,
+    sl=0.010,
+    slots=1,
+    size_frac=3.0,        # ~50% of the book at MAXPOS=6. The backtest assumed the
+                          # full book; halving it roughly halves the return and the
+                          # damage. Raise deliberately, not casually.
+)
+
+INTRADAY_STRATS = ("intraday_news", "volume_surge", "intraday_momentum")   # share exit_monitor's intraday handling
 # Freqtrade-style protections: temporarily HALT new entries when the book is
 # bleeding, so a bad tape can't chew through the whole book. Pure safety — only
 # ever reduces trading. Both reset next session.
@@ -1298,6 +1334,115 @@ def volume_surge_pass(market):
         _status[market] = f"volsurge +{fills} @ {hm} IST · " + _status.get(market, "")
 
 
+def rank_movers(live, prev_close, min_move, min_turnover, stale=()):
+    """Rank symbols by move from the DAY'S OPEN, strongest first.
+
+    Pure, so the selection rule is testable without a database or a market.
+    Returns [(move_fraction, symbol, price)].
+
+    Move is measured from the open, not the previous close: an overnight gap is
+    already in the price by 10:15, and the strategy is buying today's intraday
+    strength rather than yesterday's news.
+    """
+    out = []
+    for symbol, q in (live or {}).items():
+        if symbol in stale:
+            continue
+        try:
+            price = float(q.get("price") or 0.0)
+            day_open = float(q.get("open") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if price <= 0 or day_open <= 0:
+            continue
+        move = price / day_open - 1.0
+        if move < min_move:
+            continue
+        if min_turnover and price * float(q.get("volume") or 0.0) < min_turnover:
+            continue
+        out.append((move, symbol, price))
+    out.sort(reverse=True)
+    return out
+
+
+def intraday_momentum_pass(market):
+    """Buy the single strongest mover of the day, 60 minutes after the open.
+
+    See the INTRAMOM comment for the measured basis and its caveats. Exits are
+    handled by exit_monitor: +2% target, -1% stop, square-off at 15:12 with the
+    other intraday lanes.
+    """
+    if market != "IN":
+        return
+    now = datetime.now(IST)
+    hm = now.strftime("%H:%M")
+    if hm < INTRAMOM["start"] or hm > INTRAMOM["last_entry"]:
+        return
+    live = _live(market)
+    if not live:
+        return
+
+    v2 = _rw()
+    try:
+        book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
+        if not book:
+            return
+        budget, max_pos = book[0], int(book[1])
+        halt, reason = _risk_halt(v2, market)
+        if halt:
+            _status[market] = "intramom paused · " + reason
+            return
+        positions = {r[0]: r[1] for r in v2.execute(
+            "SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
+        held = sum(1 for st in positions.values() if st == "intraday_momentum")
+        if held >= INTRAMOM["slots"] or len(positions) >= max_pos:
+            return
+
+        today_s = now.date().isoformat()
+        traded = {r[0] for r in v2.execute(
+            "SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
+        ranked = rank_movers(_live(market), None, INTRAMOM["min_move"],
+                             INTRAMOM["min_turnover"], _stale_symbols(market))
+        ranked = [r for r in ranked if r[1] not in positions and r[1] not in traded]
+        if not ranked:
+            return
+
+        realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?",
+                              (market,)).fetchone()[0] or 0.0
+        invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions "
+                              "WHERE market=?", (market,)).fetchone()[0] or 0.0
+        cash = budget - invested + realised
+        cside = COST_SIDE[market]
+        alloc = budget / max_pos
+
+        move, symbol, price = ranked[0]        # ONLY the top mover — see INTRAMOM
+        shares = float(int(min(alloc * INTRAMOM["size_frac"], cash / (1 + cside)) / price))
+        if shares < 1:
+            return
+        stop = price * (1 - INTRAMOM["sl"])
+        target = price * (1 + INTRAMOM["tp"])
+        why = json.dumps(dict(setup="intraday_momentum", move_pct=round(move * 100, 2),
+                              rank=1, entry_window=INTRAMOM["start"]))
+        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
+                   "stop,target,trail,peak,conviction,opened_at,why) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (market, "intraday_momentum", symbol, today_s, price, shares, stop, target,
+                    0.0, price, round(min(move / 0.05, 1.0), 4),
+                    datetime.now(timezone.utc).isoformat(), why))
+        v2.commit()
+        _LOG.info("intraday_momentum BUY %s %.0f @ %.2f (top mover, %+.2f%% from open)",
+                  symbol, shares, price, move * 100)
+        try:
+            from . import telegram_bot
+            telegram_bot.notify_trade("BUY", symbol, int(shares), round(price, 2), market,
+                                      strategy="intraday_momentum", stop=round(stop, 2),
+                                      target=round(target, 2))
+        except Exception:
+            pass
+        _status[market] = f"intramom +1 {symbol}"
+    finally:
+        v2.close()
+
+
 def btst_pass(market, force=False):
     """BTST lane: near the close, buy strong-closing catalyst momentum names to hold
     ONE overnight for the gap-up. Sells at the next open (handled in exit_monitor).
@@ -1645,7 +1790,9 @@ _last_signal: dict = {}
 _last_vs: dict = {}          # volume_surge throttle
 _last_sw: dict = {}          # sector_watch throttle
 _last_btst: dict = {}        # btst throttle
-VOLSURGE_INTERVAL = 20       # scan for intraday movers every 20s (not every 8s cycle)
+VOLSURGE_INTERVAL = 20
+INTRAMOM_INTERVAL = 30      # narrow entry window; no need to scan more often
+_last_im: dict = {}       # scan for intraday movers every 20s (not every 8s cycle)
 BTST_INTERVAL = 60           # btst only fires in the 15:05-15:25 window; check once/min
 SECTOR_WATCH_INTERVAL = 180  # watch-only radar every 3min
 SIGNAL_INTERVAL = 300   # heavy signal recompute cadence (s) — daily signals barely
@@ -1742,6 +1889,9 @@ def loop(interval):
                     if time.time() - _last_vs.get(m, 0) >= VOLSURGE_INTERVAL:
                         volume_surge_pass(m)                     # day-1 mover catcher (NSE catalyst + volume)
                         _last_vs[m] = time.time()
+                    if time.time() - _last_im.get(m, 0) >= INTRAMOM_INTERVAL:
+                        intraday_momentum_pass(m)
+                        _last_im[m] = time.time()
                     if time.time() - _last_btst.get(m, 0) >= BTST_INTERVAL:
                         btst_pass(m)                             # buy-today-sell-tomorrow (near close, catalyst gap)
                         _last_btst[m] = time.time()

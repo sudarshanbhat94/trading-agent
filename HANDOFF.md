@@ -26,6 +26,7 @@ Autonomous **paper-trading** platform for Indian NSE equities (US support remove
 | `intraday_news` | active (capped) | Small news-momentum sleeve. |
 | `mom_breakout` | active | 52-week-high breakout, strong-trend only. |
 | `btst` | active — **unproven live trial** | Buy near the close on strong-closing catalyst names, sell at the next open. |
+| `intraday_momentum` | **new 2026-07-28** | Buys the SINGLE strongest mover 60 min after the open, +2% target / −1% stop, squares off with the intraday lanes. From a measured backtest: +0.306%/trade, 50% win, +18.7% over 58 sessions of 5-minute data. **slots=1, 2%/1% and no catalyst gate ARE the strategy** — 2nd/3rd movers cut it to +3.7%, 1% targets lost, and a real NSE catalyst filter was worse in 9 of 9 configs. Caveats: 58-day sample, config chosen from a sweep of 16, universe ranked on current turnover. |
 | `gap_momentum` | **quarantined** | Proven net loser (−0.51%/trade, PF 0.81 over 44k trades). Listed in `DISABLED_LANES` in `app/v2_live.py`. |
 
 ### On `btst`
