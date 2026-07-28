@@ -40,22 +40,24 @@ doing. It is not a promise that the brief converges.
       model runs. Needs a key, plus a sync-safe call path (the brain's methods
       are async and `api_stock` is sync). Until then the deterministic
       narrative serves, which is what production would show today anyway.
-- [ ] **More analysts.** Five exist (technical, catalyst, risk, macro,
-      position). The brief also lists fundamental, sector, prediction and
-      broker-integration agents. Fundamental and sector are blocked on data
-      quality (see below). "Prediction" needs a defined, backtestable target
-      before it is worth building — do not add a agent that guesses.
+- [ ] `BLOCKED (all four remaining agents)` **More analysts.** Five exist
+      (technical, catalyst, risk, macro, position). Every remaining agent in
+      the brief is blocked or unwise: **fundamental** and **sector** on data
+      quality (see below); **broker-integration** has nothing to integrate —
+      the box has zero broker tokens and `EXECUTION_MODE=paper`; and
+      **prediction** needs a defined, backtestable target first. Do not add an
+      agent that guesses.
 - [ ] `BLOCKED (sector data)` **Sector exposure.** `universe.sector` is a
       catch-all — "NSE Listed Equity" covers 2,594 Indian names — so a
       breakdown built on it would be a single 100% bar. Needs a real
       symbol→sector source (NSE industry classification) before this is worth
       building. The analytics payload returns `sector_exposure: null` with a
       note rather than a fake chart.
-- [ ] **Indicator-cross and pattern alerts.** Price (above/below/pct) and
-      catalyst kinds now work. A cross or pattern rule needs candle history per
-      alerted symbol at evaluation time — feasible (alert counts are small, and
-      `MAIN_DB` is already reachable from `v2_web`) but it is real DB work on
-      the 20s loop, so design the caching before building.
+- [ ] **Pattern alerts.** Cross alerts now work (`cross_up`/`cross_down` on
+      the 20/50/200 SMA, with a TTL-cached candle loader). A pattern rule can
+      reuse `_alert_candles()` and `indicators.candlestick_patterns()`, but
+      needs an "only fire on a bar newer than the alert" rule — daily patterns
+      would otherwise re-fire every cycle all day.
 - [ ] `BLOCKED (no volume in latest_quotes)` **Volume-spike alerts.**
       `latest_quotes` stores symbol/price/open/high/low/close and **no
       volume**, so relative volume cannot be evaluated in the alert loop.
@@ -134,6 +136,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
+- `PENDING` SMA cross alerts (cross_up / cross_down) with a cached candle loader
 - `eb05ae1` Catalyst alerts — fire on the next material NSE filing
 - `4a8035f` Macro analyst — expiry, policy weeks and earnings proximity
 - `714ed26` Analyst panel card — dissent highlighted, abstainers shown as

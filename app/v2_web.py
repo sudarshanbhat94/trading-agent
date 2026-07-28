@@ -551,7 +551,10 @@ def api_alerts_add(payload: dict):
             value = 0.0
         else:
             return JSONResponse({"error": "bad value"}, status_code=400)
-    if not sym or kind not in ("above", "below", "pct", "catalyst"):
+    if not sym or kind not in ("above", "below", "pct", "catalyst",
+                              "cross_up", "cross_down"):
+        return JSONResponse({"error": "bad alert"}, status_code=400)
+    if kind in ("cross_up", "cross_down") and int(value) not in ALERT_SMA_PERIODS:
         return JSONResponse({"error": "bad alert"}, status_code=400)
     v2 = _rw()
     _uwl(v2)
@@ -704,6 +707,66 @@ def catalyst_since(symbol, since_iso):
         return None
 
 
+_ALERT_CANDLE_CACHE: dict = {}
+ALERT_CANDLE_TTL = 300          # daily bars change once a session; 5 min is generous
+ALERT_SMA_PERIODS = (20, 50, 200)
+
+
+def _alert_candles(symbol, market="IN", limit=210):
+    """Recent daily closes for an alerted symbol, cached.
+
+    The alert loop runs every 20s and this reads the candle table, so results
+    are cached for ALERT_CANDLE_TTL. Daily bars only change once a session, so
+    a stale-by-minutes cache costs nothing and keeps the loop off the disk.
+    """
+    key = (str(symbol).upper(), market)
+    hit = _ALERT_CANDLE_CACHE.get(key)
+    if hit and time.time() - hit[0] < ALERT_CANDLE_TTL:
+        return hit[1]
+    source = "upstox-live:day" if market == "IN" else "alpaca-iex-live:day"
+    closes = []
+    try:
+        con = _ro(MAIN_DB)
+        rows = con.execute(
+            "SELECT close FROM candles WHERE symbol=? AND source=? ORDER BY ts DESC LIMIT ?",
+            (key[0], source, int(limit))).fetchall()
+        con.close()
+        closes = [float(r[0]) for r in reversed(rows) if r[0] is not None]
+    except Exception:
+        _LOG.debug("alert candle load failed for %s", symbol, exc_info=True)
+    _ALERT_CANDLE_CACHE[key] = (time.time(), closes)
+    return closes
+
+
+def sma_cross_hit(closes, price, period, direction):
+    """Whether `price` has just crossed the `period`-bar SMA.
+
+    A cross needs a BEFORE and an AFTER: the previous close on one side of the
+    average and the live price on the other. Testing the live price alone would
+    fire every cycle for as long as it stayed across, which is a level alert,
+    not a cross.
+
+    The SMA is computed on closes only, so it does not move intraday — the
+    crossing is entirely price's doing, which is what makes it detectable.
+    """
+    try:
+        period = int(period)
+        price = float(price)
+    except (TypeError, ValueError):
+        return False
+    if direction not in ("up", "down") or period <= 0:
+        return False
+    if not closes or len(closes) < period + 1:
+        return False        # not enough history to know where price came from
+    sma = sum(closes[-period:]) / period
+    previous = closes[-1]
+    if sma <= 0:
+        return False
+    if direction == "up":
+        return previous <= sma < price
+    return previous >= sma > price
+
+
 def alert_hit(kind, value, price, day_change_pct=None):
     """Whether one alert rule is satisfied. Pure, so it can be tested directly.
 
@@ -758,7 +821,10 @@ def _check_alerts():
                 continue
             p = lq["price"]
             filing = None
-            if kind == "catalyst":
+            if kind in ("cross_up", "cross_down"):
+                hit = sma_cross_hit(_alert_candles(sym, m), p, value,
+                                    "up" if kind == "cross_up" else "down")
+            elif kind == "catalyst":
                 # Fires on the first material filing published after the alert
                 # was set — not on price at all.
                 filing = catalyst_since(sym, created_at)
