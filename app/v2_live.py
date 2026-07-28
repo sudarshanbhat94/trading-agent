@@ -56,13 +56,17 @@ PLAN = {
     # 52w-high breakout sleeve: STRONG uptrend only (see eng.regime_strong), ATR
     # trail set per-entry, 40d hold. Backtested: US +26.5->+51.4%, Sharpe 2.19,
     # maxDD down; IN improves even in the bear window.
-    # atr_target 4.0 added 2026-07-28 on operator request: the lane previously
-    # had NO fixed target and exited only on the 2.5xATR trail or the 40d hold.
-    # Stop 2xATR / target 4xATR is 2:1 reward:risk. Caveat worth keeping in
-    # view: breakout lanes earn from the rare position that runs, so a fixed cap
-    # can cut the tail the edge depends on. The trail is still active, so an
-    # exit is whichever comes first.
-    "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=4.0, trail=0.0,  priority=1),
+    # Operator requires a strict target on this lane. Measured cost of each
+    # choice (scripts/breakout_target_bt.py, 2201 entries, point-in-time
+    # universe, avg net % per trade):
+    #   trail-only +0.896  |  8xATR +0.833  |  6xATR +0.701
+    #   4xATR      +0.565  |  3xATR +0.351
+    # Wider is strictly better, so the target is set at the widest tested value
+    # that is still a hard, definite exit: 8xATR keeps ~93% of the trail-only
+    # edge, where the original 4xATR gave up 37% of it. Stop 2xATR => 4:1 R:R.
+    # The 2.5xATR trail also stays active, so the exit is whichever comes first
+    # — the target is a ceiling, not the only way out.
+    "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=8.0, trail=0.0,  priority=1),
     "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
     # -- DISABLED_LANES defined just below the dict; gap_momentum is quarantined --
     # intraday news-momentum sleeve — entered by intraday_news_pass, never by the
@@ -330,7 +334,17 @@ CREATE TABLE IF NOT EXISTS v2_signals(market TEXT, strategy TEXT, date TEXT, sym
 _HIST: dict = {}
 _EQ_SNAP: dict = {}
 _SESSION_OPENED_AT: dict = {}            # market -> ts when the session last transitioned open
-ENTRY_WINDOW_SEC = 30 * 60               # fills only within 30 min of the open (backtest buys AT the open)
+ENTRY_WINDOW_SEC = 30 * 60               # "at the open" — the validated fill window
+# Freed capital may be redeployed for this long after the open (~14:15 IST).
+# Before 2026-07-28 the daily lanes filled ONLY in the 30-min open window, so a
+# position that exited at 11:00 left its capital idle until the next session —
+# the book sat half-invested all day by construction.
+# Honesty note: only the open-window fill is backtested. The validated result
+# buys at the open from prior-close signals; a fill at 13:00 is acting on a
+# signal the tape has already moved past. Late fills are therefore TAGGED in the
+# position's `why` (late_entry=true) so they can be scored separately later. If
+# they underperform, narrow this window rather than assuming the lane is broken.
+REENTRY_WINDOW_SEC = 5 * 3600
 _started = False
 _status: dict = {m: "init" for m in ENABLED_MARKETS}
 
@@ -884,7 +898,9 @@ def poll_market(market):
     # ---- ENTRY WINDOW: the validated strategy buys at the session OPEN from
     # prior-close signals. Outside the window, signals/radar refresh but no fills.
     opened_at = _SESSION_OPENED_AT.get(market, 0)
-    in_window = opened_at and (time.time() - opened_at) <= ENTRY_WINDOW_SEC
+    since_open = (time.time() - opened_at) if opened_at else None
+    at_open = since_open is not None and since_open <= ENTRY_WINDOW_SEC
+    in_window = since_open is not None and since_open <= REENTRY_WINDOW_SEC
     if not in_window:
         v2.commit(); v2.close()
         _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · "
@@ -942,7 +958,10 @@ def poll_market(market):
             why = json.dumps(dict(composite=rep.get("composite"), factors=rep.get("factors"),
                                   setup=rep.get("setup"), reasons=rep.get("reasons"),
                                   size_mult=rep.get("size_mult"), regime=rstate,
-                                  signal_score=s["score"]))
+                                  signal_score=s["score"],
+                                  # only open-window fills match the backtest; tag
+                                  # the rest so they can be scored on their own
+                                  late_entry=not at_open))
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
         # volatility-normalized sizing: equal RISK per position, not equal rupees

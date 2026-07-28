@@ -378,10 +378,21 @@ def api_positions():
             why_d = _jsonmod.loads(why) if why else None
         except Exception:
             why_d = None
+        # Exit terms, spelled out. The UI used to show only "trail <price>" in
+        # 10px grey, so it was never clear that the stop RISES with the price or
+        # what the profit target was — the operator could not tell how a
+        # position would actually be closed.
         out.append(dict(id=pid, market=market, ccy="₹" if market == "IN" else "$", strategy=strat, symbol=sym,
                         entry=round(entry, 2), live=round(p, 2), qty=round(shares, 2), value=round(p * shares, 2),
                         pnl=round((p / entry - 1) * 100, 2), pnl_amt=round((p - entry) * shares, 2),
                         stop=round(tstop, 2), trail=bool(trail), today=str(edate) == today_s,
+                        stop_kind="trailing" if trail else "fixed",
+                        stop_base=round(stop, 2),          # where the stop started
+                        trail_pct=round(trail * 100, 1) if trail else 0.0,
+                        peak=round(peak, 2),               # high-water mark the trail follows
+                        target=round(target, 2) if target else 0.0,
+                        stop_away=round((tstop / p - 1) * 100, 2) if p else 0.0,
+                        target_away=round((target / p - 1) * 100, 2) if (target and p) else 0.0,
                         since=_ist(oat or edate), headroom=round(max(0, min(1, head)) * 100), why=why_d))
     v2.close()
     out.sort(key=lambda x: -x["pnl"])
@@ -2765,9 +2776,20 @@ function mktCard(m){var nm=m.market=='IN'?'India · NSE':'US · equities';
    +'<div class=engchart>'+spark(m.equity_series,m.ccy)+'</div>'
  +'</div>'
  +'<div class=engstats>'+stat('positions',m.positions)+stat('budget',fmtc(m.ccy,m.budget))+extra+'</div></div>'}
+function exitTerms(p){var s=p.market=='IN'?'₹':'$';
+ // Spell the exit out. A trailing stop is not a fixed one: it RISES as the price
+ // makes new highs and never falls, so showing a bare number hid the mechanism.
+ var away=function(v){return (v>0?'+':'')+v.toFixed(1)+'%';};
+ var stopTxt=p.stop_kind=='trailing'
+   ? `<b>trailing stop</b> ${s}${p.stop} <span class=mut>(${away(p.stop_away)}, rises with price · ${p.trail_pct}% below peak ${s}${p.peak})</span>`
+   : `<b>stop</b> ${s}${p.stop} <span class=mut>(${away(p.stop_away)})</span>`;
+ var tgtTxt=p.target>0
+   ? ` · <b>target</b> ${s}${p.target} <span class=mut>(${away(p.target_away)})</span>`
+   : ` · <span class=mut>no fixed target — exits on the trail</span>`;
+ return stopTxt+tgtTxt;}
 function posRow(p){var s=p.market=='IN'?'₹':'$',fmt=(p.market=='IN'?INR:USD);
  var amt=(p.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
- return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry} · exit at ${s}${p.stop}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
+ return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry}</div><div class=prow-sub style="margin-top:2px">${exitTerms(p)}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
 function heroChart(series,baseline){
  if(!series||series.length<2)return '';
  var w=340,h=176,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series);
