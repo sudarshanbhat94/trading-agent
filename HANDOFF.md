@@ -37,6 +37,22 @@ The edge is the **overnight gap only** — holding into the next day gives it ba
 
 ## Settled questions — please don't re-litigate
 
+**Intraday momentum on the day's biggest movers — tested 2026-07-28, no edge.** Measured on 58 sessions of 5-minute Yahoo data across a look-ahead-free liquid universe, at realistic 0.10% intraday costs:
+
+| entry | identifies a top-10 finisher | already moved | **left to capture (median)** | avg dip after entry |
+|---|---|---|---|---|
+| 5 min | 55% | +2.86% | +0.00% | −1.90% |
+| 15 min | 71% | +3.14% | +0.07% | −1.62% |
+| 30 min | 79% | +3.70% | +0.17% | −1.74% |
+| 60 min | 90% | +4.24% | +0.30% | −1.48% |
+| 90 min | 84% | +4.45% | −0.10% | −1.68% |
+
+Identification is not the problem — by 10:15 the early leader finishes in the day's top 10 **90%** of the time. The problem is that the move is spent: ~6 of the leader's ~7.4 point day happens before you can act, and you are left risking ~1.5% of drawdown to capture a median ~0.2%. **Entering earlier does not help** — it costs identification and yields no more move. **Fading is worse than following** (laggard: median −0.20%, 43% positive vs leader +0.30%, 57%).
+
+An earlier version of this appeared to return +18.7% over the same sessions. That was **look-ahead**: the universe had been ranked on *current* turnover, so it was harvesting the 37 of 150 names that only became liquid during the window. Ranking as of before the window drops it to +1.6%. The lane exists in `v2_live.py` as `intraday_momentum`, gated behind `INTRAMOM["enabled"]=False`, with tests that fail if it is switched on without a clean out-of-sample number.
+
+**Still untested:** predicting tomorrow's mover from *today's* close (prior-day features). That is a genuinely different hypothesis and the data to test it exists.
+
 Each of these was tested and closed:
 
 - ✅ **BTST on catalyst names** — works. Shipped.
