@@ -19,6 +19,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import indicators as ta
+from . import jobs_health as jh
 from . import analysts as ana
 from . import narrative as narr
 from . import portfolio as pf
@@ -1493,6 +1494,58 @@ def api_portfolio(market: str = "IN"):
     payload["market"] = market
     payload["ccy"] = "\u20b9" if market == "IN" else "$"
     return JSONResponse(payload)
+
+
+@router.get("/api/admin/jobs")
+def api_admin_jobs(market: str = "IN"):
+    """Background-pipeline status: is each data feed still producing?
+
+    Read-only. Every query is wrapped individually so one missing table — the
+    shareholding one does not exist until its ingester is deployed — reports as
+    unknown rather than failing the whole panel.
+    """
+    observations: dict = {}
+
+    def _observe(key, db_path, sql, params=()):
+        try:
+            con = _ro(db_path)
+            row = con.execute(sql, params).fetchone()
+            con.close()
+            observations[key] = {"latest": row[0] if row else None,
+                                 "rows": row[1] if row and len(row) > 1 else None}
+        except Exception:
+            _LOG.debug("jobs health: %s unavailable", key, exc_info=True)
+
+    live_source = LIVE_SOURCE.get(market, "")
+    daily_source = "upstox-live:day" if market == "IN" else "alpaca-iex-live:day"
+    _observe("quotes", MAIN_DB,
+             "SELECT MAX(ts), COUNT(*) FROM latest_quotes WHERE source=?", (live_source,))
+    # MAX(ts) only. COUNT(DISTINCT symbol) over the candle table does not
+    # complete at production scale and would hang this request — the standing
+    # rule here is that nothing in a request path may block.
+    _observe("daily_candles", MAIN_DB,
+             "SELECT MAX(ts) FROM candles WHERE source=?", (daily_source,))
+    _observe("shareholding", MAIN_DB, "SELECT MAX(as_of), COUNT(*) FROM shareholding")
+    _observe("catalysts", CATALYST_DB,
+             "SELECT MAX(ingested_at), COUNT(*) FROM nse_announcements")
+    _observe("engine", V2_DB,
+             "SELECT MAX(date), COUNT(*) FROM v2_equity WHERE date LIKE 'LIVE_%'")
+
+    # The engine heartbeat is stored as "LIVE_<iso>"; strip the prefix so the
+    # age calculation sees a timestamp.
+    engine = observations.get("engine")
+    if engine and isinstance(engine.get("latest"), str):
+        engine["latest"] = engine["latest"].replace("LIVE_", "", 1)
+
+    try:
+        from . import market_regions
+        is_open = bool(market_regions.market_session_for_region(market).get("is_open"))
+    except Exception:
+        is_open = False
+
+    checks = jh.assess(observations, market_open=is_open)
+    return JSONResponse({"market": market, "market_open": is_open,
+                         "summary": jh.summarise(checks), "checks": checks})
 
 @router.get("/api/stats")
 def api_stats():
