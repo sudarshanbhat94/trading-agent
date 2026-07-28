@@ -3065,15 +3065,44 @@ function doSell(sym,mkt){if(!confirm('Sell your '+sym+' position at the live pri
  api('/v2/api/sell',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(function(r){
   if(r.ok){toast('✅ Sold '+r.j.symbol+' ('+(r.j.pnl_pct>=0?'+':'')+r.j.pnl_pct+'%)');renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'sell failed'));});}
-function loadWL(){api('/v2/api/watchlist').then(r=>{var d=r.j||{};
- var h=(d.watch||[]).filter(w=>inMkt(w.market)).map(function(w){
+function wlRow(w){
   var up=w.chg>0,dn=w.chg<0,cl=up?'up':(dn?'dn':'mut'),a=up?'▲ ':(dn?'▼ ':'');
   var chg=(w.chg==null)?'—':(a+(up?'+':'')+w.chg+'%');
+  var tags='';
+  if(w.tags&&w.tags.length){tags='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">';
+   for(var i=0;i<w.tags.length;i++)tags+='<span class=mut style="font-size:10px;padding:1px 5px;border:1px solid var(--line);border-radius:6px">'+esc(w.tags[i])+'</span>';
+   tags+='</div>';}
   return '<div class=wlrow onclick="stock(\''+w.symbol+'\',\''+w.market+'\')">'
-   +'<div class=wlL><div class=wlsym>'+w.symbol+'</div><div class=wlex>'+(w.market=='IN'?'NSE':w.market)+'</div></div>'
+   +'<div class=wlL><div class=wlsym>'+esc(w.symbol)+'</div><div class=wlex>'+(w.market=='IN'?'NSE':esc(w.market))+'</div>'+tags+'</div>'
    +'<div class=wlR><div class=wlltp>'+w.ccy+(w.ccy=='₹'?INR:USD).format(w.price)+'</div><div class="wlch '+cl+'">'+chg+'</div></div>'
+   +'<span class=wldel onclick="event.stopPropagation();fileWL(\''+w.symbol+'\',\''+w.market+'\',\''+esc(w.folder||'')+'\')" title="file into a folder" style="right:26px;opacity:.6">⌗</span>'
    +'<span class=wldel onclick="event.stopPropagation();delWL(\''+w.symbol+'\',\''+w.market+'\')" title="remove">×</span>'
-   +'</div>';}).join('');
+   +'</div>';}
+function wlGrouped(items){
+  // Flat when nothing is filed, so an unfiled watchlist looks exactly as before.
+  var named=items.filter(function(w){return w.folder;});
+  if(!named.length)return items.map(wlRow).join('');
+  var order=[],byFolder={};
+  for(var i=0;i<items.length;i++){var f=items[i].folder||'';
+   if(!byFolder[f]){byFolder[f]=[];order.push(f);}
+   byFolder[f].push(items[i]);}
+  order.sort(function(a,b){if(!a)return 1;if(!b)return -1;return a<b?-1:1;});  // unfiled last
+  var out='';
+  for(var j=0;j<order.length;j++){var f=order[j],rows=byFolder[f];
+   out+='<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px">'
+      +esc(f||'unfiled')+' <span style="opacity:.6">'+rows.length+'</span></div>';
+   out+=rows.map(wlRow).join('');}
+  return out;}
+function fileWL(sym,mkt,current){
+  var f=prompt('Folder for '+sym+' (blank to unfile):',current||'');
+  if(f===null)return;
+  var t=prompt('Tags for '+sym+', comma separated (blank for none):','');
+  if(t===null)return;
+  var tags=t.split(',').map(function(x){return x.trim();}).filter(function(x){return x;});
+  api('/v2/api/watchlist',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,folder:f,tags:tags})})
+   .then(function(r){if(r.j&&r.j.error){toast('⚠ '+r.j.error);return;}loadWL();toast('⌗ '+sym+(f?' → '+f:' unfiled'));});}
+function loadWL(){api('/v2/api/watchlist').then(r=>{var d=r.j||{};
+ var h=wlGrouped((d.watch||[]).filter(w=>inMkt(w.market)));
  var wlEmpty='<div class=mut style="font-size:12px;padding:8px 0">nothing watched yet — search a symbol above</div>';
  ['wl','wl2'].forEach(function(id){var e=document.getElementById(id);if(e)e.innerHTML=h||wlEmpty});
  var al=(d.alerts||[]).filter(a=>inMkt(a.market)).slice(0,10);
