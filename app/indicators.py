@@ -382,6 +382,16 @@ def fibonacci_levels(high: float, low: float, uptrend: bool = True) -> dict[str,
     return levels
 
 
+# Every name candlestick_patterns() can emit. Callers that let a user choose
+# patterns validate against this, so the vocabulary cannot drift from the
+# detector that produces it.
+CANDLESTICK_PATTERNS = (
+    "doji", "hammer", "hanging_man", "inverted_hammer", "shooting_star",
+    "bullish_marubozu", "bearish_marubozu", "bullish_engulfing",
+    "bearish_engulfing", "morning_star", "evening_star",
+)
+
+
 def _body(open_: float, close: float) -> float:
     return abs(close - open_)
 

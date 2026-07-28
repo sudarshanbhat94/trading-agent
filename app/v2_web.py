@@ -449,7 +449,18 @@ def _uwl(v2):
     v2.executescript(
         "CREATE TABLE IF NOT EXISTS v2_watch_user(symbol TEXT, market TEXT, added_at TEXT, PRIMARY KEY(symbol,market));"
         "CREATE TABLE IF NOT EXISTS v2_alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, market TEXT,"
-        " kind TEXT, value REAL, created_at TEXT, triggered_at TEXT, triggered_price REAL, active INTEGER DEFAULT 1);")
+        " kind TEXT, value REAL, created_at TEXT, triggered_at TEXT, triggered_price REAL, active INTEGER DEFAULT 1,"
+        " params TEXT DEFAULT '');")
+    # Additive migration for books created before `params` existed. CREATE
+    # TABLE IF NOT EXISTS does nothing to an existing table, and the live book
+    # already holds alert rows, so the column has to be added explicitly.
+    try:
+        columns = {r[1] for r in v2.execute("PRAGMA table_info(v2_alerts)")}
+        if "params" not in columns:
+            v2.execute("ALTER TABLE v2_alerts ADD COLUMN params TEXT DEFAULT ''")
+            _LOG.info("v2_alerts: added params column")
+    except Exception:
+        _LOG.exception("v2_alerts params migration failed")
 
 
 def _panel_warm(market):
@@ -558,8 +569,17 @@ def api_alerts_add(payload: dict):
         return JSONResponse({"error": "bad alert"}, status_code=400)
     v2 = _rw()
     _uwl(v2)
-    v2.execute("INSERT INTO v2_alerts(symbol,market,kind,value,created_at,active) VALUES(?,?,?,?,?,1)",
-               (sym, payload.get("market", "IN"), kind, value, datetime.now(timezone.utc).isoformat()))
+    params = ""
+    if kind == "pattern":
+        wanted, error = parse_pattern_filter(payload.get("patterns"))
+        if error:
+            v2.close()
+            return JSONResponse({"error": error}, status_code=400)
+        params = _jsonmod.dumps(wanted) if wanted else ""
+    v2.execute("INSERT INTO v2_alerts(symbol,market,kind,value,created_at,active,params) "
+               "VALUES(?,?,?,?,?,1,?)",
+               (sym, payload.get("market", "IN"), kind, value,
+                datetime.now(timezone.utc).isoformat(), params))
     v2.commit(); v2.close()
     return JSONResponse({"ok": True})
 
@@ -707,6 +727,32 @@ def catalyst_since(symbol, since_iso):
         return None
 
 
+KNOWN_PATTERNS = ta.CANDLESTICK_PATTERNS
+
+
+def parse_pattern_filter(raw):
+    """Validate a requested pattern list. Returns (patterns, error).
+
+    An empty or absent list means "any pattern", preserving the original
+    behaviour. An unknown name is rejected rather than silently dropped — a
+    typo that quietly matches nothing would look like a broken alert.
+    """
+    if raw in (None, "", []):
+        return [], None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return None, "patterns must be a list"
+    wanted = []
+    for item in raw:
+        name = str(item).strip().lower()
+        if name not in KNOWN_PATTERNS:
+            return None, f"unknown pattern: {name}"
+        if name not in wanted:
+            wanted.append(name)
+    return wanted, None
+
+
 _ALERT_CANDLE_CACHE: dict = {}
 ALERT_CANDLE_TTL = 300          # daily bars change once a session; 5 min is generous
 ALERT_SMA_PERIODS = (20, 50, 200)
@@ -746,7 +792,7 @@ def _alert_candles(symbol, market="IN", limit=210):
     return [bar[4] for bar in _alert_bars(symbol, market, limit)]
 
 
-def pattern_hit(bars, since_iso):
+def pattern_hit(bars, since_iso, wanted=None):
     """Candlestick patterns on the newest bar, if that bar is NEW.
 
     Returns the list of patterns found, or [] for no fire.
@@ -770,10 +816,13 @@ def pattern_hit(bars, since_iso):
     lows = [b[3] for b in bars]
     closes = [b[4] for b in bars]
     try:
-        return list(ta.candlestick_patterns(opens, highs, lows, closes))
+        found = list(ta.candlestick_patterns(opens, highs, lows, closes))
     except Exception:
         _LOG.debug("pattern detection failed", exc_info=True)
         return []
+    if wanted:
+        found = [p for p in found if p in wanted]
+    return found
 
 
 def sma_cross_hit(closes, price, period, direction):
@@ -839,8 +888,8 @@ def _check_alerts():
     try:
         try:
             ro = _ro(V2_DB)
-            rows = ro.execute("SELECT id,symbol,market,kind,value,created_at "
-                              "FROM v2_alerts WHERE active=1").fetchall()
+            rows = ro.execute("SELECT id,symbol,market,kind,value,created_at,"
+                              "COALESCE(params,'') FROM v2_alerts WHERE active=1").fetchall()
             ro.close()
         except Exception:
             return []                     # alerts table not created yet
@@ -848,12 +897,12 @@ def _check_alerts():
             return []
         v2 = None
         by_m: dict = {}
-        for _, sym, m, _, _, _ in rows:
+        for _, sym, m, _, _, _, _ in rows:
             by_m.setdefault(m, set()).add(sym)
         live = {m: _live_map(m, s) for m, s in by_m.items()}
         chg = {m: (_daychg(m, list(s)) if any(r[3] == "pct" and r[2] == m for r in rows) else {})
                for m, s in by_m.items()}
-        for aid, sym, m, kind, value, created_at in rows:
+        for aid, sym, m, kind, value, created_at, params in rows:
             lq = live.get(m, {}).get(sym)
             if not lq:
                 continue
@@ -861,7 +910,13 @@ def _check_alerts():
             filing = None
             patterns = None
             if kind == "pattern":
-                patterns = pattern_hit(_alert_bars(sym, m), created_at)
+                wanted = []
+                if params:
+                    try:
+                        wanted = _jsonmod.loads(params) or []
+                    except (ValueError, TypeError):
+                        _LOG.warning("alert %s has unreadable params; matching any pattern", aid)
+                patterns = pattern_hit(_alert_bars(sym, m), created_at, wanted)
                 hit = bool(patterns)
             elif kind in ("cross_up", "cross_down"):
                 hit = sma_cross_hit(_alert_candles(sym, m), p, value,
