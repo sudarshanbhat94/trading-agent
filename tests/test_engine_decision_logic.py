@@ -73,6 +73,39 @@ class CatalystWindowTest(unittest.TestCase):
         self.assertEqual(_cutoff_date(0, date(2026, 7, 27)), date(2026, 7, 27))
 
 
+class FreshNewsWindowTest(unittest.TestCase):
+    """Operator rule: act on today's news or one session back, never older.
+    The old rolling '-1 day' both over- and under-reached — on a Monday it ran
+    into Sunday, and at 14:00 it excluded a 09:00 item from the day before."""
+
+    def _cutoff_ist_date(self, today):
+        stamp = v2_live.fresh_news_cutoff(today=today)
+        moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        return moment.astimezone(IST).date()
+
+    def test_monday_reaches_back_to_friday_not_sunday(self) -> None:
+        self.assertEqual(self._cutoff_ist_date(date(2026, 7, 27)), date(2026, 7, 24))
+
+    def test_midweek_reaches_back_one_day(self) -> None:
+        self.assertEqual(self._cutoff_ist_date(date(2026, 7, 23)), date(2026, 7, 22))
+
+    def test_cutoff_is_midnight_ist_so_a_whole_session_counts(self) -> None:
+        """A Friday 18:00 filing must still qualify on Monday morning; a cutoff
+        anchored to the current clock time would drop it."""
+        stamp = v2_live.fresh_news_cutoff(today=date(2026, 7, 27))
+        moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        ist = moment.astimezone(IST)
+        self.assertEqual((ist.hour, ist.minute), (0, 0))
+
+    def test_holiday_is_skipped(self) -> None:
+        """Republic Day Mon 2026-01-26: one session back from Tuesday is Friday."""
+        self.assertEqual(self._cutoff_ist_date(date(2026, 1, 27)), date(2026, 1, 23))
+
+    def test_the_query_binds_the_cutoff_rather_than_hardcoding_a_day(self) -> None:
+        self.assertIn("ts>=?", v2_live.FRESH_NEWS_SQL)
+        self.assertNotIn("-1 day", v2_live.FRESH_NEWS_SQL)
+
+
 class HoldClockTest(unittest.TestCase):
     def test_counts_trading_days_not_calendar_days(self) -> None:
         """Fri 24 -> Mon 27 is 3 calendar days but 1 trading session."""
@@ -163,19 +196,34 @@ class LaneConfigurationTest(unittest.TestCase):
         it silently would resume a known-losing lane, so pin it."""
         self.assertIn("gap_momentum", v2_live.DISABLED_LANES)
 
-    def test_only_gap_momentum_is_quarantined(self) -> None:
-        """2026-07-28 (later): lanes re-enabled so the engine actually trades and
-        can be measured. gap_momentum is the ONLY permanent exclusion — it is the
-        one lane with a proven negative record on both live and backtest data."""
-        self.assertEqual(v2_live.DISABLED_LANES, {"gap_momentum"})
-
-    def test_the_re_enabled_lanes_can_actually_open_positions(self) -> None:
-        """The point of re-enabling: a lane left in DISABLED_LANES silently
-        trades nothing, which is what made the live book unmeasurable."""
-        for lane in ("swing_meanrev", "mom_breakout", "volume_surge",
-                     "intraday_news", "btst"):
+    def test_exactly_the_three_chosen_lanes_are_live(self) -> None:
+        """2026-07-28 evening: operator narrowed to three lanes. gap_momentum is
+        the permanent exclusion (negative live AND backtest); swing_meanrev and
+        btst are parked by choice, not because they failed."""
+        self.assertEqual(v2_live.DISABLED_LANES,
+                         {"gap_momentum", "swing_meanrev", "btst"})
+        for lane in ("mom_breakout", "volume_surge", "intraday_news"):
             with self.subTest(lane=lane):
                 self.assertNotIn(lane, v2_live.DISABLED_LANES)
+
+    def test_mom_breakout_has_both_a_stop_and_a_target(self) -> None:
+        """Operator required an explicit target; the lane previously had none
+        (atr_target 0.0) and exited only on the trail or the hold limit."""
+        plan = v2_live.PLAN["mom_breakout"]
+        self.assertGreater(plan["atr_target"], 0)
+        self.assertGreater(plan["atr_target"], plan["atr_stop"],
+                           "target must be further than the stop, else negative R:R")
+
+    def test_the_two_intraday_lanes_share_stop_and_target(self) -> None:
+        """Operator asked for the same stop/target on volume_surge as on the
+        news lane."""
+        for key in ("tp", "sl", "lock"):
+            with self.subTest(key=key):
+                self.assertEqual(v2_live.VOLSURGE[key], v2_live.INTRA[key])
+
+    def test_volume_surge_scans_fast_but_not_before_the_open_settles(self) -> None:
+        self.assertLessEqual(v2_live.VOLSURGE_INTERVAL, 10)
+        self.assertGreaterEqual(v2_live.VOLSURGE["start"], "09:16")
 
     def test_standalone_lanes_actually_honour_the_disable(self) -> None:
         """The list is only cosmetic unless each pass checks it. These three

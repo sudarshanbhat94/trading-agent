@@ -56,7 +56,13 @@ PLAN = {
     # 52w-high breakout sleeve: STRONG uptrend only (see eng.regime_strong), ATR
     # trail set per-entry, 40d hold. Backtested: US +26.5->+51.4%, Sharpe 2.19,
     # maxDD down; IN improves even in the bear window.
-    "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=0.0, trail=0.0,  priority=1),
+    # atr_target 4.0 added 2026-07-28 on operator request: the lane previously
+    # had NO fixed target and exited only on the 2.5xATR trail or the 40d hold.
+    # Stop 2xATR / target 4xATR is 2:1 reward:risk. Caveat worth keeping in
+    # view: breakout lanes earn from the rare position that runs, so a fixed cap
+    # can cut the tail the edge depends on. The trail is still active, so an
+    # exit is whichever comes first.
+    "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=4.0, trail=0.0,  priority=1),
     "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
     # -- DISABLED_LANES defined just below the dict; gap_momentum is quarantined --
     # intraday news-momentum sleeve — entered by intraday_news_pass, never by the
@@ -97,7 +103,12 @@ PLAN = {
 #   intraday_news : never measured separately.
 #   btst          : ~149-trade backtest only; unproven live.
 # Judge these on the fresh ledger, not on the numbers above.
-DISABLED_LANES = {"gap_momentum"}
+# 2026-07-28 (evening): operator narrowed to THREE lanes — mom_breakout,
+# volume_surge, intraday_news. swing_meanrev and btst are parked, not deleted.
+# Note swing_meanrev held the only positive live record (+Rs 795, PF 1.21 on 23
+# trades), so this trades a small measured edge for focus; say so if it is ever
+# reviewed rather than letting the ledger imply the lane failed.
+DISABLED_LANES = {"gap_momentum", "swing_meanrev", "btst"}
 MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
 # ---- intraday news-momentum sleeve (user spec: trade TODAY's tape, take the
 # money fast, flat by the close). 5-min-bar backtest (150 syms, 58 days):
@@ -139,7 +150,10 @@ VOLSURGE = dict(
                          # still fresh Monday; a flat 48h window used to expire it
                          # over the weekend and miss Monday movers like Dr Lal/KFin)
     slots=6,             # full send: may use the whole book (still MAXPOS-bound)
-    start="09:20", last_entry="14:00",   # results/orders drop all day -> wide window
+    # 09:18 (was 09:20) + a 10s scan cadence: operator wants this lane quick on
+    # entry. Not opened before 09:18 — the first minutes have too little volume
+    # for rvol to mean anything, so entering there is guessing, not speed.
+    start="09:18", last_entry="14:00",   # results/orders drop all day -> wide window
     squareoff="15:12",   # hard flat before the close — no overnight risk
     tp=0.035, sl=0.0175, lock=0.015,
 )
@@ -1025,7 +1039,22 @@ def _vol_frac(mins):
 # passed EVERY event on the boundary date, silently widening a "24h" window to
 # 24-48h. strftime with an explicit 'T' makes the comparison correct.
 FRESH_NEWS_SQL = ("SELECT MAX(score) FROM sentiment_events WHERE symbol=? "
-                  "AND ts>=strftime('%Y-%m-%dT%H:%M:%S','now','-1 day')")
+                  "AND ts>=?")
+
+
+def fresh_news_cutoff(today=None):
+    """UTC ISO cutoff for 'today or the previous trading session, nothing older'.
+
+    Was a rolling '-1 day', which at 14:00 reached back to 14:00 yesterday and
+    on a Monday reached into Sunday — i.e. it could act on a stale Friday item
+    while silently ignoring a Friday-evening one. Operator requirement is
+    strict: same day or at most one session prior, never older. Anchoring to
+    midnight IST of one trading session back is weekend- and holiday-aware, so
+    on Monday the window starts Friday 00:00 IST and on Tuesday it starts
+    Monday 00:00 IST.
+    """
+    epoch = _catalyst_cutoff_epoch(1, today=today)
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _intra_avgvol(market, tails):
@@ -1059,6 +1088,7 @@ def intraday_news_pass(market):
     hm = now.strftime("%H:%M")
     if hm < INTRA["start"] or hm > INTRA["watch_until"]:
         return
+    news_cutoff = fresh_news_cutoff()   # today or one session back — nothing older
     # after the proven entry window: keep scanning ALL day, but alert-only —
     # afternoon entries backtested as losers even on fresh news, so the book
     # never buys them; the user still sees every qualified mover on Telegram.
@@ -1143,7 +1173,7 @@ def intraday_news_pass(market):
             if sym in seen:
                 continue
             try:
-                row = mcon.execute(FRESH_NEWS_SQL, (sym,)).fetchone()
+                row = mcon.execute(FRESH_NEWS_SQL, (sym, news_cutoff)).fetchone()
                 ns = float(row[0]) if row and row[0] is not None else 0.0
             except Exception:
                 ns = 0.0
@@ -1169,7 +1199,7 @@ def intraday_news_pass(market):
             break
         # the backtested edge REQUIRES a fresh (<=24h) positive catalyst
         try:
-            row = mcon.execute(FRESH_NEWS_SQL, (sym,)).fetchone()
+            row = mcon.execute(FRESH_NEWS_SQL, (sym, news_cutoff)).fetchone()
             ns = float(row[0]) if row and row[0] is not None else 0.0
         except Exception:
             ns = 0.0
@@ -1885,7 +1915,7 @@ _last_signal: dict = {}
 _last_vs: dict = {}          # volume_surge throttle
 _last_sw: dict = {}          # sector_watch throttle
 _last_btst: dict = {}        # btst throttle
-VOLSURGE_INTERVAL = 20
+VOLSURGE_INTERVAL = 10      # 10s (was 20s): operator wants faster entry on surges
 INTRAMOM_INTERVAL = 30      # narrow entry window; no need to scan more often
 _last_im: dict = {}       # scan for intraday movers every 20s (not every 8s cycle)
 BTST_INTERVAL = 60           # btst only fires in the 15:05-15:25 window; check once/min
