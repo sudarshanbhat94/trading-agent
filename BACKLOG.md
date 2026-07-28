@@ -131,7 +131,7 @@ doing. It is not a promise that the brief converges.
 
 ## Done
 
-- `PENDING` Pattern-alert filtering — 32% -> 13% of names on a real session
+- `9c061ee` Pattern-alert filtering — 32% -> 13% of names on a real session
 - `efb0776` Pattern alerts with a bar-freshness rule
 - `ee9f03e` SMA cross alerts (cross_up / cross_down) with a cached candle loader
 - `eb05ae1` Catalyst alerts — fire on the next material NSE filing
