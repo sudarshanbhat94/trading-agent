@@ -676,6 +676,51 @@ def _tg_daily_summary(market):
         pass
 
 
+def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
+                 stop, target, trail, conviction, why, peak=None):
+    """THE single writer for v2_positions. Returns True if the row was written.
+
+    Every lane had its own copy of this INSERT — five of them, identical column
+    lists retyped by hand. That is how the daily lane ended up missing the
+    frozen-quote guard the other four had, and it is the same shape as the
+    positional `INSERT ... VALUES(?,?,?)` that broke the moment a column was
+    added. One writer means one place to audit.
+
+    It also refuses to record a position that is already broken on arrival. Each
+    condition below is unambiguously wrong rather than merely unusual, so a
+    refusal is always a bug caught, never a trade needlessly skipped:
+
+      * a non-positive price or size is not a trade;
+      * a stop at or above entry exits instantly at a loss the moment it is
+        checked — the position is dead before it opens;
+      * a target at or below entry closes instantly for no gain.
+
+    A refusal is logged loudly and the trade is skipped. Silently writing a
+    broken position is worse: it corrupts the ledger we judge the lanes on.
+    """
+    problem = None
+    if not symbol:
+        problem = "empty symbol"
+    elif not (entry_price > 0):
+        problem = "entry_price=%r" % (entry_price,)
+    elif not (shares > 0):
+        problem = "shares=%r" % (shares,)
+    elif stop and stop >= entry_price:
+        problem = "stop %.4f >= entry %.4f (would exit instantly)" % (stop, entry_price)
+    elif target and target <= entry_price:
+        problem = "target %.4f <= entry %.4f (would exit instantly)" % (target, entry_price)
+    if problem:
+        _LOG.error("REFUSED %s entry %s/%s: %s", strategy, market, symbol, problem)
+        return False
+    v2.execute(
+        "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
+        "stop,target,trail,peak,conviction,opened_at,why) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
+         entry_price if peak is None else peak, conviction,
+         datetime.now(timezone.utc).isoformat(), why))
+    return True
+
+
 def poll_market(market):
     live = _live(market)
     if not live:
@@ -913,10 +958,10 @@ def poll_market(market):
         trail = pl["trail"]
         if s["strategy"] == "mom_breakout":              # ATR-proportional trail (2.5x entry ATR)
             trail = min(0.20, max(0.04, 2.5 * atr / entry))
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
-                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, s["strategy"], sym, today_s, entry, shares, entry - pl["atr_stop"] * atr, tgt, trail, entry,
-                    s["score"], datetime.now(timezone.utc).isoformat(), why))
+        if not record_entry(v2, market, s["strategy"], sym, today_s, entry, shares,
+                            entry - pl["atr_stop"] * atr, tgt, trail, s["score"], why):
+            cash += shares * entry * (1 + cside)   # debited above; no position opened
+            continue
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=trail, peak=entry)
         try:
@@ -1141,10 +1186,9 @@ def intraday_news_pass(market):
         stop, tgt = entry * (1 - INTRA["sl"]), entry * (1 + INTRA["tp"])
         why = json.dumps(dict(setup="intraday_news", move_pct=round(move * 100, 2),
                               rvol=round(rvol, 1), news=round(ns, 2)))
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
-                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, "intraday_news", sym, today_s, entry, shares, stop, tgt, 0.0, entry,
-                    round(min(move / 0.05, 1.0), 4), datetime.now(timezone.utc).isoformat(), why))
+        if not record_entry(v2, market, "intraday_news", sym, today_s, entry, shares,
+                            stop, tgt, 0.0, round(min(move / 0.05, 1.0), 4), why):
+            continue
         try:
             from . import telegram_bot
             telegram_bot.notify_trade("BUY", sym, int(shares), round(entry, 2), market,
@@ -1371,10 +1415,9 @@ def volume_surge_pass(market):
                      "corp_action": "corporate action"}.get(catalysts.get(sym), "NSE filing")
         why = json.dumps(dict(setup="volume_surge", move_pct=round(move * 100, 2),
                               rvol=round(rvol, 1), catalyst=cat_label))
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
-                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, "volume_surge", sym, today_s, entry, shares, stop, tgt, 0.0, entry,
-                    round(min(move / 0.10, 1.0), 4), datetime.now(timezone.utc).isoformat(), why))
+        if not record_entry(v2, market, "volume_surge", sym, today_s, entry, shares,
+                            stop, tgt, 0.0, round(min(move / 0.10, 1.0), 4), why):
+            continue
         try:
             from . import telegram_bot
             telegram_bot.notify_trade("BUY", sym, int(shares), round(entry, 2), market,
@@ -1476,11 +1519,9 @@ def intraday_momentum_pass(market):
         target = price * (1 + INTRAMOM["tp"])
         why = json.dumps(dict(setup="intraday_momentum", move_pct=round(move * 100, 2),
                               rank=1, entry_window=INTRAMOM["start"]))
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
-                   "stop,target,trail,peak,conviction,opened_at,why) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, "intraday_momentum", symbol, today_s, price, shares, stop, target,
-                    0.0, price, round(min(move / 0.05, 1.0), 4),
-                    datetime.now(timezone.utc).isoformat(), why))
+        if not record_entry(v2, market, "intraday_momentum", symbol, today_s, price, shares,
+                            stop, target, 0.0, round(min(move / 0.05, 1.0), 4), why):
+            return
         v2.commit()
         _LOG.info("intraday_momentum BUY %s %.0f @ %.2f (top mover, %+.2f%% from open)",
                   symbol, shares, price, move * 100)
@@ -1583,10 +1624,9 @@ def btst_pass(market, force=False):
                      "corp_action": "corporate action"}.get(catalysts.get(sym), "NSE filing")
         why = json.dumps(dict(setup="btst", move_pct=round(move * 100, 2), rvol=round(rvol, 1),
                               close_pos=round(cpos, 2), catalyst=cat_label, exit="next open"))
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
-                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, "btst", sym, today_s, entry, shares, stop, 0.0, 0.0, entry,
-                    round(min(move / 0.10, 1.0), 4), datetime.now(timezone.utc).isoformat(), why))
+        if not record_entry(v2, market, "btst", sym, today_s, entry, shares,
+                            stop, 0.0, 0.0, round(min(move / 0.10, 1.0), 4), why):
+            continue
         try:
             from . import telegram_bot
             telegram_bot.notify_trade("BUY", sym, int(shares), round(entry, 2), market,
