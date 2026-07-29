@@ -2286,7 +2286,9 @@ button.sm{padding:6px 12px;font-size:13px;border-radius:8px}
 .toggle{display:inline-flex;border:1px solid var(--line);border-radius:20px;overflow:hidden}.toggle b{font-size:13px;padding:7px 16px;cursor:pointer;color:var(--mut)}.toggle b.on{background:var(--acc);color:var(--bg)}
 .nav{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);display:flex;z-index:8}
 .nav a{flex:1;text-align:center;padding:8px 0 6px;color:var(--mut);font-size:10px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}.nav a.on{color:var(--tx)}.nav svg,.side svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7}
-@media(min-width:860px){.nav{display:none}.side{display:flex;flex-direction:column;width:212px;border-right:1px solid var(--line);padding:16px 12px;position:sticky;top:0;height:100vh}.side .b{font-size:18px;font-weight:600;padding:6px 10px 18px}.side a{display:flex;gap:11px;align-items:center;padding:10px 12px;border-radius:10px;color:var(--mut);cursor:pointer;font-size:14px}.side a.on{background:var(--surf);color:var(--tx)}.main{padding:0 28px 30px}}
+/* height:100vh with no overflow meant a sidebar taller than the window had its
+   last items unreachable — there was nothing to scroll. */
+@media(min-width:860px){.nav{display:none}.side{display:flex;flex-direction:column;width:212px;border-right:1px solid var(--line);padding:16px 12px;position:sticky;top:0;height:100vh;overflow-y:auto;scrollbar-width:thin}.side .b{font-size:18px;font-weight:600;padding:6px 10px 18px}.side a{display:flex;gap:11px;align-items:center;padding:10px 12px;border-radius:10px;color:var(--mut);cursor:pointer;font-size:14px}.side a.on{background:var(--surf);color:var(--tx)}.main{padding:0 28px 30px}}
 </style><style>
 :root{--surf:#f6f7f9;--line:#eaecf0;--tx:#0c0d10;--mut:#697586;--up:#06a35a;--upb:#e7f7ef;--dn:#df2f29;--inf:#2563eb;--infb:#eaf0fe;--sh:0 1px 2px rgba(16,24,40,.06)}
 @media(prefers-color-scheme:dark){:root{--bg:#0b0c0e;--surf:#15171b;--card:#15171b;--line:#24262d;--tx:#f0f2f5;--mut:#8b919e;--up:#26c281;--dn:#ff5a52;--inf:#5b8def;--sh:0 1px 2px rgba(0,0,0,.4)}}
@@ -2319,7 +2321,14 @@ input:focus,select:focus{outline:none;border-color:var(--inf);box-shadow:0 0 0 3
  --acc:#4184f3;--sh:0 1px 3px rgba(16,24,40,.05)
 }
 html{background:#f5f6f8;color-scheme:light}
-body{color:var(--tx);overflow-x:hidden;min-height:100vh;display:flow-root;background:#f5f6f8}
+/* overflow-x:hidden on BODY silently broke every position:sticky on the page —
+   the sidebar, the top bar and the home rail all scrolled away instead of
+   staying put. `hidden` makes body a scroll container, and sticky then anchors
+   to that container rather than the viewport; because body's box grows with the
+   content it never scrolls, so nothing ever sticks. `clip` clips the same
+   horizontal overflow WITHOUT establishing a scroll container, so sticky works.
+   The `hidden` line is kept first as a fallback for engines without clip. */
+body{color:var(--tx);overflow-x:hidden;overflow-x:clip;min-height:100vh;display:flow-root;background:#f5f6f8}
 .app{min-width:0}.main{min-width:0}
 .num,.hero,#pv{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .hero{font-weight:600;text-shadow:none;color:var(--hd)}
@@ -2433,6 +2442,10 @@ button{border-radius:9px}
 .prow-sym{font-size:14.5px;font-weight:600;color:#242a31;display:flex;align-items:center}
 .prow-sub{font-size:12px;color:var(--mut);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:859px){.prow-sub{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}}   /* mobile: wrap the qty·avg·exit line instead of truncating it mid-word */
+/* The exit terms must never be truncated — a stop clipped to "trailing stop
+   ₹980 (-2.4%, rise…" tells you less than the bare number it replaced. It wraps
+   at every width, including the 2-up desktop grid where rows are half as wide. */
+.prow-exit{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5;margin-top:3px}
 .prow-r{text-align:right;white-space:nowrap;flex-shrink:0}
 .prow-ltp{font-size:14px;font-weight:600;color:#242a31}
 .prow-pnl{font-size:12.5px;margin-top:4px;font-weight:600}
@@ -2530,7 +2543,17 @@ button{border-radius:9px}
  #ordlist .ordgrid{grid-template-columns:1fr 1fr}
  /* rail: stack movers full-width (readable names) + keep it in view while scrolling */
  #movers{grid-template-columns:1fr}
- .home-rail{position:sticky;top:14px;align-self:start}
+ /* max-height + own scroll: without it a long rail runs past the fold and its
+    tail is unreachable, because a sticky element cannot scroll itself. */
+ .home-rail{position:sticky;top:14px;align-self:start;max-height:calc(100vh - 28px);overflow-y:auto;scrollbar-width:thin}
+ /* Column headings stay visible while a long list scrolls under them —
+    otherwise you lose track of which column is Bought and which is Sold.
+    Offset by the sticky top bar's height (65px), or they park behind it. */
+ .ordlbl{position:sticky;top:65px;z-index:2;background:var(--bg);padding-top:8px;padding-bottom:6px}
+ .ordcol{align-self:start}
+ /* Same treatment for the rail's section headings, which sit inside its own
+    scroll container and were scrolling out of view with their lists. */
+ .home-rail .sec{position:sticky;top:0;z-index:2;background:var(--bg)}
  /* portfolio: strategy cards + equity curve stretch to fill (were half-width) */
  #attrib{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))!important}
  #eqcurves{grid-template-columns:1fr!important}
@@ -2804,7 +2827,7 @@ function exitTerms(p){var s=p.market=='IN'?'₹':'$';
  return stopTxt+tgtTxt;}
 function posRow(p){var s=p.market=='IN'?'₹':'$',fmt=(p.market=='IN'?INR:USD);
  var amt=(p.pnl_amt<0?'-':'+')+s+fmt.format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
- return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry}</div><div class=prow-sub style="margin-top:2px">${exitTerms(p)}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
+ return `<div class=prow onclick="stock('${p.symbol}','${p.market}')"><div class=prow-l><div class=prow-sym>${p.symbol}<span class="badge ${st[1]}" style="margin-left:8px;font-weight:500">${st[0]}</span></div><div class=prow-sub>${p.qty} qty · avg ${s}${p.entry}</div><div class="prow-sub prow-exit">${exitTerms(p)}</div></div><div class=prow-r><div class="prow-ltp num">${s}${p.live} <span class="${col(p.pnl)}" style="font-weight:600;font-size:11.5px">${sgn(p.pnl)}%</span></div><div class="prow-pnl num ${col(p.pnl)}">${amt}</div></div></div>`;}
 function heroChart(series,baseline){
  if(!series||series.length<2)return '';
  var w=340,h=176,n=series.length,lo=Math.min.apply(null,series),hi=Math.max.apply(null,series);
