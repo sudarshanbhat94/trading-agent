@@ -60,6 +60,12 @@ BLOCKED = dict(READY, live_quotes=False)
 
 @unittest.skipIf(shutil.which("node") is None, "node not available")
 class SettingsRenderTest(unittest.TestCase):
+    def test_a_failed_load_says_so_instead_of_rendering_empty(self) -> None:
+        """Blank checkboxes read as 'selection is broken'. The failure must be
+        visible as a failure."""
+        html = _run("idxHtml", dict(READY, available=[]))
+        self.assertIn("could not load", html)
+
     def test_every_available_index_is_offered(self) -> None:
         html = _run("idxHtml", READY)
         for name in READY["available"]:
@@ -94,6 +100,25 @@ class SettingsRenderTest(unittest.TestCase):
         it belongs on screen, not only in a commit message."""
         html = _run("idxHtml", READY)
         self.assertIn("premium", html.lower())
+
+
+class ApiPathTest(unittest.TestCase):
+    """The SPA serves TWO roots: /api/... for auth and account (main.py) and
+    /v2/api/... for engine endpoints. Calling the wrong one returns 404, and
+    api() turns that into an empty object — so the control rendered with no
+    checkboxes and looked like selection was broken rather than like a failure."""
+
+    def _active(self):
+        source = V2_WEB.read_text(encoding="utf-8")
+        return source[source.rindex('SPA_HTML = r\'\'\'' if False else 'SPA_HTML = r"""'):]
+
+    def test_index_endpoints_are_called_on_the_v2_root(self) -> None:
+        active = self._active()
+        self.assertIn("api('/v2/api/index-settings'", active)
+        self.assertIn("api('/v2/api/index-call'", active)
+
+    def test_no_index_call_uses_the_bare_root(self) -> None:
+        self.assertNotIn("api('/api/index-", self._active())
 
 
 @unittest.skipIf(shutil.which("node") is None, "node not available")

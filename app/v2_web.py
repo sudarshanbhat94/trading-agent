@@ -3152,11 +3152,14 @@ function setOrdSide(s){var l=document.getElementById('ordlist');if(l){l.classLis
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
 function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
- api('/api/index-settings').then(function(r){var d=r.j||{};IDXCFG=d;el.innerHTML=idxHtml(d);
-  api('/api/index-call').then(function(c){var box=document.getElementById('idxcall');
+ api('/v2/api/index-settings').then(function(r){var d=r.j||{};IDXCFG=d;el.innerHTML=idxHtml(d);
+  api('/v2/api/index-call').then(function(c){var box=document.getElementById('idxcall');
    if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
  }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
 function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
+ // An empty list means the request failed, not that there are no indices —
+ // rendering blank checkboxes looked exactly like 'selection does not work'.
+ if(!s.length)return '<div class=mut style="font-size:13px">could not load index settings — the engine did not respond.</div>';
  // auto-trade is shown but held DISABLED until the feed can price a contract —
  // a switch that silently does nothing is worse than one you cannot reach.
  var blocked=!d.live_quotes;
@@ -3189,7 +3192,7 @@ function saveIndexOpts(){var syms=[].slice.call(document.querySelectorAll('.idxs
   auto_trade:document.getElementById('idxAuto').checked,
   instruments:syms, expiry:(IDXCFG&&IDXCFG.expiry)||'weekly'};
  var m=document.getElementById('idxmsg');if(m)m.textContent='saving…';
- api('/api/index-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+ api('/v2/api/index-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){if(m)m.textContent=r.ok?'saved':'save failed';loadIndexOpts();})
   .catch(function(){if(m)m.textContent='save failed';});}
 var IDXCFG={};
