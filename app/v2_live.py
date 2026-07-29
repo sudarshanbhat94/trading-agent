@@ -112,7 +112,7 @@ PLAN = {
 # Note swing_meanrev held the only positive live record (+Rs 795, PF 1.21 on 23
 # trades), so this trades a small measured edge for focus; say so if it is ever
 # reviewed rather than letting the ledger imply the lane failed.
-DISABLED_LANES = {"gap_momentum", "swing_meanrev", "btst"}
+DISABLED_LANES = {"gap_momentum", "btst"}
 MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
 # mom_breakout used to require a STRONG market uptrend, which is why on
 # 2026-07-29 — regime OFF — it took zero trades all morning while the operator

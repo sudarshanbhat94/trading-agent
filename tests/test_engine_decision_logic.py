@@ -235,13 +235,14 @@ class LaneConfigurationTest(unittest.TestCase):
         it silently would resume a known-losing lane, so pin it."""
         self.assertIn("gap_momentum", v2_live.DISABLED_LANES)
 
-    def test_exactly_the_three_chosen_lanes_are_live(self) -> None:
-        """2026-07-28 evening: operator narrowed to three lanes. gap_momentum is
-        the permanent exclusion (negative live AND backtest); swing_meanrev and
-        btst are parked by choice, not because they failed."""
-        self.assertEqual(v2_live.DISABLED_LANES,
-                         {"gap_momentum", "swing_meanrev", "btst"})
-        for lane in ("mom_breakout", "volume_surge", "intraday_news"):
+    def test_the_chosen_lanes_are_live(self) -> None:
+        """2026-07-29: swing_meanrev re-enabled — it was producing the day's
+        strongest signals with nothing able to act on them, and it holds the only
+        positive live record (+Rs 795, PF 1.21 over 23 trades). gap_momentum
+        remains the permanent exclusion (negative live AND backtest); btst stays
+        parked by choice, not because it failed."""
+        self.assertEqual(v2_live.DISABLED_LANES, {"gap_momentum", "btst"})
+        for lane in ("mom_breakout", "volume_surge", "intraday_news", "swing_meanrev"):
             with self.subTest(lane=lane):
                 self.assertNotIn(lane, v2_live.DISABLED_LANES)
 
