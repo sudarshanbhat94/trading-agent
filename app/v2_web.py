@@ -399,6 +399,92 @@ def api_positions():
     return JSONResponse(out)
 
 
+INDEX_SETTINGS_FILE = os.path.join(os.path.dirname(V2_DB), "index_options.json")
+# Only these keys can be set from the browser. Everything else in INDEX_OPTIONS
+# — the long-only rule, the premium cap — is a safety property, not a
+# preference, and is deliberately not reachable from the UI.
+INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry", "min_confidence")
+INDEX_ALLOWED_INSTRUMENTS = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
+
+
+def _index_settings_load():
+    """Apply the persisted choices onto INDEX_OPTIONS. Called at read AND write
+    so a restart does not silently revert the operator's selection."""
+    try:
+        from . import v2_live
+        with open(INDEX_SETTINGS_FILE, encoding="utf-8") as handle:
+            saved = _jsonmod.load(handle)
+        for key in INDEX_EDITABLE:
+            if key in saved:
+                v2_live.INDEX_OPTIONS[key] = (tuple(saved[key]) if key == "instruments"
+                                              else saved[key])
+    except Exception:
+        pass
+
+
+@router.get("/api/index-settings")
+def api_index_settings():
+    from . import v2_live
+    _index_settings_load()
+    cfg = v2_live.INDEX_OPTIONS
+    return JSONResponse(dict(
+        enabled=bool(cfg.get("enabled")), auto_trade=bool(cfg.get("auto_trade")),
+        instruments=list(cfg.get("instruments") or ()), expiry=cfg.get("expiry", "weekly"),
+        min_confidence=cfg.get("min_confidence", 0.6),
+        available=list(INDEX_ALLOWED_INSTRUMENTS),
+        # Surfaced so the UI can explain WHY auto-trade cannot be honoured yet,
+        # rather than letting the operator switch it on and see nothing happen.
+        live_quotes=_index_live_quotes_ready()))
+
+
+@router.post("/api/index-settings")
+def api_index_settings_save(payload: dict):
+    from . import v2_live
+    saved = {}
+    if "enabled" in payload:
+        saved["enabled"] = bool(payload["enabled"])
+    if "auto_trade" in payload:
+        saved["auto_trade"] = bool(payload["auto_trade"])
+    if "expiry" in payload and payload["expiry"] in ("weekly", "monthly"):
+        saved["expiry"] = payload["expiry"]
+    if "min_confidence" in payload:
+        try:
+            saved["min_confidence"] = max(0.2, min(1.0, float(payload["min_confidence"])))
+        except (TypeError, ValueError):
+            pass
+    if "instruments" in payload:
+        chosen = [str(s).upper() for s in (payload.get("instruments") or [])]
+        saved["instruments"] = [s for s in chosen if s in INDEX_ALLOWED_INSTRUMENTS]
+    for key, value in saved.items():
+        v2_live.INDEX_OPTIONS[key] = tuple(value) if key == "instruments" else value
+    try:
+        current = {k: (list(v2_live.INDEX_OPTIONS[k]) if k == "instruments"
+                       else v2_live.INDEX_OPTIONS[k]) for k in INDEX_EDITABLE}
+        tmp = INDEX_SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            _jsonmod.dump(current, handle)
+        os.replace(tmp, INDEX_SETTINGS_FILE)
+    except Exception as exc:
+        return JSONResponse(dict(ok=False, error=str(exc)[:120]), status_code=500)
+    return api_index_settings()
+
+
+def _index_live_quotes_ready():
+    """Whether the feed can actually price an option contract.
+
+    Auto-trade is meaningless without this: a weekly option moves 30-50% on a 1%
+    index move, so a position that cannot be seen intraday cannot be exited.
+    """
+    try:
+        con = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True, timeout=10)
+        n = con.execute("SELECT COUNT(*) FROM latest_quotes WHERE symbol LIKE 'NIFTY%CE'"
+                        " OR symbol LIKE 'NIFTY%PE'").fetchone()[0]
+        con.close()
+        return n > 0
+    except Exception:
+        return False
+
+
 @router.get("/api/index-call")
 def api_index_call():
     """Today's CE / PE / no-trade call per index, with every reading shown.
@@ -2322,6 +2408,49 @@ function loadWatch(){api('/v2/api/watch').then(r=>{document.getElementById('watc
 function loadStats(){api('/v2/api/stats').then(r=>{document.getElementById('statlist').innerHTML=r.j.filter(s=>inMkt(s.market)).map(s=>`<div class=raise><div class=row><b>${s.market}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div style="font-size:18px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div style="font-size:18px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:17px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:17px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div>${laneRows(s.by_strategy)}</div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});}
 function laneRows(lanes){if(!lanes||!lanes.length)return '';return '<div class=mut style="font-size:11px;margin:12px 0 6px">by lane</div>'+lanes.map(l=>`<div class=row style="padding:6px 0;border-top:1px solid var(--line)"><div><div style="font-size:13px;font-weight:600">${l.label}${l.overnight?' <span class=mut style="font-size:10px">overnight</span>':''}</div><div class=mut style="font-size:11px">${l.trades} trades · win ${l.win}% · PF ${l.pf}${l.avg_hold_days!=null?' · held '+l.avg_hold_days+'d':''}</div></div><div style="text-align:right"><div class="${col(l.avg)}" style="font-size:14px;font-weight:600">${sgn(l.avg)}%</div><div class=mut style="font-size:11px">avg/trade</div></div></div>`).join('');}
 /* account + settings */
+function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
+ api('/api/index-settings').then(function(r){var d=r.j||{};IDXCFG=d;el.innerHTML=idxHtml(d);
+  api('/api/index-call').then(function(c){var box=document.getElementById('idxcall');
+   if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
+ }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
+function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
+ // auto-trade is shown but held DISABLED until the feed can price a contract —
+ // a switch that silently does nothing is worse than one you cannot reach.
+ var blocked=!d.live_quotes;
+ return '<div class=mut style="font-size:13px;margin-bottom:10px">Buys index calls (CE) when the read is bullish, puts (PE) when bearish. Long options only — the most you can lose is the premium paid.</div>'
+ +'<div class=row style="padding:7px 0"><span>Show the CE/PE call</span>'
+ +'<input type=checkbox id=idxEnabled '+(d.enabled?'checked':'')+' onchange=saveIndexOpts()></div>'
+ +'<div class=row style="padding:7px 0;border-top:1px solid var(--line)"><span>Auto-trade the call'
+ +(blocked?'<div class=mut style="font-size:11px">unavailable — no live option prices, so a position could not be exited</div>':'')
+ +'</span><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()></div>'
+ +'<div class=mut style="font-size:11px;margin:12px 0 6px">indices to call</div>'
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+s.map(function(x){
+    return '<label class=tgopt style="border:1px solid var(--line);border-radius:8px;padding:6px 11px"><input type=checkbox class=idxsym value="'+x+'" '+(sel.indexOf(x)>=0?'checked':'')+' onchange=saveIndexOpts()> '+x+'</label>';}).join('')
+ +'</div>'
+ +'<div class=mut style="font-size:11px;margin:12px 0 6px">expiry</div>'
+ +'<div class=toggle><b id=idxWk class="'+(d.expiry!='monthly'?'on':'')+'" onclick="setIdxExpiry(\'weekly\')">Weekly</b>'
+ +'<b id=idxMo class="'+(d.expiry=='monthly'?'on':'')+'" onclick="setIdxExpiry(\'monthly\')">Monthly</b></div>'
+ +'<div class=mut style="font-size:11px;margin:14px 0 6px">today\'s call</div><div id=idxcall class=skel>loading…</div>'
+ +'<div id=idxmsg class=mut style="font-size:12px;margin-top:9px"></div>';}
+function idxCallHtml(calls){if(!calls.length)return '<div class=mut style="font-size:12px">no indices selected</div>';
+ return calls.map(function(c){
+  var tag=c.call?('<span class="badge '+(c.call=='CE'?'bg-up':'bg-dn')+'">'+c.call+'</span>'):'<span class="badge bg-mut">no trade</span>';
+  return '<div style="border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px">'
+   +'<div class=row><b>'+esc(c.symbol||'')+'</b>'+tag+'</div>'
+   +'<div class=mut style="font-size:11px;margin-top:6px">'+(c.reasons||[]).map(esc).join('<br>')+'</div></div>';}).join('');}
+function setIdxExpiry(v){IDXCFG.expiry=v;
+ document.getElementById('idxWk').classList.toggle('on',v=='weekly');
+ document.getElementById('idxMo').classList.toggle('on',v=='monthly');saveIndexOpts();}
+function saveIndexOpts(){var syms=[].slice.call(document.querySelectorAll('.idxsym')).filter(function(x){return x.checked;}).map(function(x){return x.value;});
+ var body={enabled:document.getElementById('idxEnabled').checked,
+  auto_trade:document.getElementById('idxAuto').checked,
+  instruments:syms, expiry:(IDXCFG&&IDXCFG.expiry)||'weekly'};
+ var m=document.getElementById('idxmsg');if(m)m.textContent='saving…';
+ api('/api/index-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){if(m)m.textContent=r.ok?'saved':'save failed';loadIndexOpts();})
+  .catch(function(){if(m)m.textContent='save failed';});}
+var IDXCFG={};
+
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};
  el.innerHTML=`<div class=sec>account</div>
  <div class=raise><div style="display:flex;gap:12px;align-items:center"><div class=prof style="width:44px;height:44px;font-size:17px">${(u.username||'U')[0].toUpperCase()}</div><div><div style="font-weight:600">${u.username||'—'}</div><div class=mut style="font-size:12px">${u.role||'user'} · credits ${u.credits!=null?u.credits:'—'}</div></div></div></div>
@@ -3066,6 +3195,7 @@ function setOrdSide(s){var l=document.getElementById('ordlist');if(l){l.classLis
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
+ setTimeout(loadIndexOpts,0);
  el.innerHTML=`<div class=sec>account</div>
  <div class=raise><div style="display:flex;gap:12px;align-items:center"><div class=prof style="width:44px;height:44px;font-size:17px">${(u.username||'U')[0].toUpperCase()}</div><div><div style="font-weight:600">${u.username||'—'}</div><div class=mut style="font-size:12px">${u.role||'user'}${u.credits!=null?' · credits '+u.credits:''}</div></div></div></div>
  <div class=sec>trading mode</div>
@@ -3077,6 +3207,8 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
  <div class=sec>paper allocation</div>
  <div class=raise><div style="display:flex;gap:16px;flex-wrap:wrap"><div class=field style="flex:0 1 260px"><label>India cash (₹)</label><input id=cin type=number value="${Math.round(b.IN)||''}"></div></div>
   <button class=pri onclick=saveCash()>Save allocation</button><div id=cashmsg class=mut style="font-size:12px;margin-top:9px"></div></div>
+ <div class=sec>index options · CE / PE</div>
+ <div id=idxbox class=raise><div class=skel>loading…</div></div>
  <div class=sec>engine performance</div><div id=acctstats class=skel>loading…</div>
  ${(u.role=='admin')?'<div class=sec>admin · allocate paper money</div><div id=adminbox class=raise><div class=skel>loading users…</div></div>':''}
  <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>
