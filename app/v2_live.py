@@ -147,7 +147,10 @@ INTRA = dict(
     watch_until="14:30",                 # after last_entry: watch-only Telegram radar, no buys
     squareoff="15:12", # hard flat before the 15:30 close — NO overnight risk
     tp=0.035,          # take +3.5% and get out
-    sl=0.0175,         # hard stop -1.75%
+    sl=0.025,          # hard stop -2.5%. Widened with volume_surge on 2026-07-29:
+                       # the operator requires the two intraday lanes to carry the
+                       # same stop/target, and both buy an intraday move that
+                       # routinely pulls back more than 1.75% without failing.
     lock=0.015,        # once up +1.5%, stop moves to breakeven: green never goes red
 )
 # ---- volume-surge + catalyst lane: the "day-1 mover" catcher ----
