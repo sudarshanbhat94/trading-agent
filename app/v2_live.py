@@ -67,7 +67,15 @@ PLAN = {
     # The 2.5xATR trail also stays active, so the exit is whichever comes first
     # — the target is a ceiling, not the only way out.
     "mom_breakout":  dict(regime_gated=False, threshold=0.10, atr_stop=2.0, atr_target=8.0, trail=0.0,  priority=1),
-    "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
+    # regime_gated False on operator instruction (2026-07-29): the lane was
+    # holding six signals it could not act on because the market regime was OFF.
+    # Flagged before changing: the daily-portfolio A/B (point-in-time, OOS) ran
+    # regime ON +2.2% / maxDD -6.6% versus OFF -0.4% / maxDD -18.4%, i.e. the
+    # gate looked worth keeping for mean-reversion specifically — buying dips in
+    # a downtrend is how this lane catches falling knives. Operator chose to
+    # proceed anyway. Set back to True to restore; watch drawdown, not win rate,
+    # since that is where the difference showed.
+    "swing_meanrev": dict(regime_gated=False, threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
     # -- DISABLED_LANES defined just below the dict; gap_momentum is quarantined --
     # intraday news-momentum sleeve — entered by intraday_news_pass, never by the
     # daily signal path. atr_stop=1.0 so exit_monitor's atr_est reconstruction
