@@ -413,13 +413,13 @@ def api_index_call():
         cfg = v2_live.INDEX_OPTIONS
         if not cfg.get("enabled"):
             return JSONResponse(dict(enabled=False, calls=[]))
-        con = sqlite3.connect(f"file:{v2_live.MAIN_DB}?mode=ro", uri=True, timeout=20)
         out = []
         for symbol in cfg.get("instruments", ()):
-            rows = con.execute(
-                "SELECT open,high,low,close,volume FROM candles WHERE symbol=? AND source=?"
-                " ORDER BY ts DESC LIMIT 60", (symbol, "upstox-live:day")).fetchall()
-            rows = list(reversed(rows))
+            # The index is not an equity, so it has no row in `candles`. Its
+            # near-month FUTURE is the tradeable proxy and carries real OHLC and
+            # volume — spot would give a close with no range to read structure
+            # from, which is exactly what the pattern and location votes need.
+            rows = _index_candles(symbol)
             if len(rows) < 50:
                 out.append(dict(symbol=symbol, call=None, confidence=0.0,
                                 reasons=[f"only {len(rows)} sessions of history"]))
@@ -434,19 +434,43 @@ def api_index_call():
             verdict["actionable"] = bool(
                 verdict["call"] and verdict["confidence"] >= cfg.get("min_confidence", 0.6))
             out.append(verdict)
-        con.close()
         return JSONResponse(dict(enabled=True, auto_trade=bool(cfg.get("auto_trade")),
                                  expiry=cfg.get("expiry"), calls=out))
     except Exception as exc:
         return JSONResponse(dict(enabled=False, calls=[], error=str(exc)[:120]))
 
 
+def _fo_db():
+    import os
+    return os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
+
+
+def _index_candles(symbol, limit=60):
+    """Daily OHLCV for an index, taken from its NEAR-MONTH futures contract.
+
+    Rolling to the nearest expiry each session keeps the series on the most
+    liquid contract, which is what actually trades. A far-dated contract would
+    carry stale prints and a range that reflects nobody.
+    """
+    try:
+        con = sqlite3.connect(f"file:{_fo_db()}?mode=ro", uri=True, timeout=20)
+        rows = con.execute(
+            "SELECT open, high, low, close, volume FROM ("
+            "  SELECT date, open, high, low, close, volume,"
+            "         ROW_NUMBER() OVER (PARTITION BY date ORDER BY expiry) rn"
+            "    FROM fo_bhav WHERE symbol=? AND instrument='FUT' AND close>0"
+            ") WHERE rn=1 ORDER BY date DESC LIMIT ?", (symbol, limit)).fetchall()
+        con.close()
+        return list(reversed(rows))
+    except Exception:
+        return []
+
+
 def _index_oi(symbol):
     """(put_oi, call_oi) for the nearest expiry, or (None, None)."""
     try:
         import os
-        path = os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=15)
+        con = sqlite3.connect(f"file:{_fo_db()}?mode=ro", uri=True, timeout=15)
         day = con.execute("SELECT MAX(date) FROM fo_bhav WHERE symbol=?", (symbol,)).fetchone()[0]
         expiry = con.execute("SELECT MIN(expiry) FROM fo_bhav WHERE symbol=? AND date=?"
                              " AND expiry>=date", (symbol, day)).fetchone()[0]
