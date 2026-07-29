@@ -399,6 +399,67 @@ def api_positions():
     return JSONResponse(out)
 
 
+@router.get("/api/index-call")
+def api_index_call():
+    """Today's CE / PE / no-trade call per index, with every reading shown.
+
+    Returns the reasoning rather than just the verdict: a call that cannot be
+    reviewed after it loses is not worth acting on. `call: null` is the normal
+    answer — an option held through a flat market bleeds time value, so the
+    engine is built to decline rather than to have a view every day.
+    """
+    try:
+        from . import index_direction, v2_live
+        cfg = v2_live.INDEX_OPTIONS
+        if not cfg.get("enabled"):
+            return JSONResponse(dict(enabled=False, calls=[]))
+        con = sqlite3.connect(f"file:{v2_live.MAIN_DB}?mode=ro", uri=True, timeout=20)
+        out = []
+        for symbol in cfg.get("instruments", ()):
+            rows = con.execute(
+                "SELECT open,high,low,close,volume FROM candles WHERE symbol=? AND source=?"
+                " ORDER BY ts DESC LIMIT 60", (symbol, "upstox-live:day")).fetchall()
+            rows = list(reversed(rows))
+            if len(rows) < 50:
+                out.append(dict(symbol=symbol, call=None, confidence=0.0,
+                                reasons=[f"only {len(rows)} sessions of history"]))
+                continue
+            cols = list(zip(*rows))
+            put_oi, call_oi = _index_oi(symbol)
+            verdict = index_direction.decide(
+                [float(x or 0) for x in cols[0]], [float(x or 0) for x in cols[1]],
+                [float(x or 0) for x in cols[2]], [float(x or 0) for x in cols[3]],
+                [float(x or 0) for x in cols[4]], put_oi=put_oi, call_oi=call_oi)
+            verdict["symbol"] = symbol
+            verdict["actionable"] = bool(
+                verdict["call"] and verdict["confidence"] >= cfg.get("min_confidence", 0.6))
+            out.append(verdict)
+        con.close()
+        return JSONResponse(dict(enabled=True, auto_trade=bool(cfg.get("auto_trade")),
+                                 expiry=cfg.get("expiry"), calls=out))
+    except Exception as exc:
+        return JSONResponse(dict(enabled=False, calls=[], error=str(exc)[:120]))
+
+
+def _index_oi(symbol):
+    """(put_oi, call_oi) for the nearest expiry, or (None, None)."""
+    try:
+        import os
+        path = os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=15)
+        day = con.execute("SELECT MAX(date) FROM fo_bhav WHERE symbol=?", (symbol,)).fetchone()[0]
+        expiry = con.execute("SELECT MIN(expiry) FROM fo_bhav WHERE symbol=? AND date=?"
+                             " AND expiry>=date", (symbol, day)).fetchone()[0]
+        row = con.execute(
+            "SELECT SUM(CASE WHEN opt_type='PE' THEN oi ELSE 0 END),"
+            " SUM(CASE WHEN opt_type='CE' THEN oi ELSE 0 END)"
+            " FROM fo_bhav WHERE symbol=? AND date=? AND expiry=?", (symbol, day, expiry)).fetchone()
+        con.close()
+        return row[0], row[1]
+    except Exception:
+        return None, None
+
+
 @router.get("/api/preopen")
 def api_preopen():
     """Today's NSE call-auction snapshot: what gapped before the bell.

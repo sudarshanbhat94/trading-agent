@@ -402,6 +402,31 @@ _SESSION_OPENED_AT: dict = {}            # market -> ts when the session last tr
 # This cannot place a trade: poll_market only fills inside the entry window,
 # which is measured from _SESSION_OPENED_AT and is not set until the session
 # actually opens. Pre-open it computes and stores signals, then returns.
+# ---- index options (CE / PE) ----------------------------------------------
+# The direction call is computed and shown whenever this is enabled; it only
+# places a trade when auto_trade is ALSO true. Two switches rather than one
+# because seeing the call and acting on it are different decisions, and the
+# call has not been validated against history yet.
+#
+# Sizing is bounded by what a single lot costs, not by a percentage: one NIFTY
+# weekly ATM lot is roughly 6-9% of a Rs 1L book, and a lot is the minimum
+# tradeable unit. There is no way to take a 3% position in index options at
+# this book size, so max_premium_pct is the honest cap rather than a target.
+#
+# LONG OPTIONS ONLY. Selling an option to open is not supported anywhere in
+# this engine: a short call has unbounded loss, and one gap through a strike
+# would exceed the entire book. Maximum loss on every position here is the
+# premium paid, known at entry.
+INDEX_OPTIONS = dict(
+    enabled=True,               # compute and display the CE/PE call
+    auto_trade=False,           # place trades — operator's explicit choice
+    instruments=("NIFTY",),     # which indices to call; BANKNIFTY is 2x the tick risk
+    expiry="weekly",            # "weekly" or "monthly"
+    max_premium_pct=0.10,       # cap on premium at risk per position
+    max_concurrent=1,           # one directional bet at a time
+    min_confidence=0.6,         # share of readings that must agree
+)
+
 PREOPEN = {"IN": ("09:05", "09:15")}
 PREOPEN_INTERVAL = 120                   # re-warm every 2 min through the window
 # Using the auction to TRADE, not merely to look at.
