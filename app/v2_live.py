@@ -2022,6 +2022,19 @@ def exit_monitor(market):
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)
             net, net_pct = net_trade_pnl(market, p["shares"], p["entry"], ex)
+            # Log the FULL decision, not just the outcome. On 2026-07-29
+            # HINDUNILVR exited at its entry price with reason "stop" while its
+            # day high was only +0.05% above entry — neither breakeven trigger
+            # (+1.5% or +3 ATR) could have armed, and the -1.75% stop was 36
+            # points away. Without the inputs there is no way to tell whether a
+            # bad tick latched `peak` (which is persisted, so one spurious high
+            # arms the lock permanently) or the rule itself is wrong. These
+            # fields make the next occurrence answerable instead of arguable.
+            _LOG.info("EXIT %s %s %s entry=%.2f exit=%.2f reason=%s | stop=%.2f "
+                      "eff=%.2f peak=%.2f live=%.2f high=%.2f low=%.2f net=%.2f%%",
+                      market, p["strategy"], sym, p["entry"], ex, reason,
+                      p["stop"], eff, peak, lq["price"], lq.get("high") or 0.0,
+                      lq.get("low") or 0.0, net_pct)
             v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
                        " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction FROM v2_positions WHERE id=?",
                        (today_s, ex, p["shares"], net, net_pct, reason, p["id"]))
