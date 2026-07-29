@@ -110,6 +110,21 @@ def load_market(con, market, topn, min_bars=120, asof=True):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["close", "high", "low"])
     df = df.sort_values(["symbol", "date"]).drop_duplicates(["symbol", "date"])
+    # Back-adjust unadjusted splits/bonuses before ANY factor is measured. The
+    # raw feed carries -80% "returns" that never happened, and a mean-reversion
+    # factor scored on those is measuring corporate actions, not behaviour.
+    try:
+        import sys as _sys, pathlib as _pl
+        _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+        from app import corpactions as _ca
+        panel = {sym: g.set_index("date") for sym, g in df.groupby("symbol")}
+        panel, fixed = _ca.clean_all(panel)
+        if fixed:
+            print(f"  corporate actions back-adjusted: {len(fixed)} symbols")
+        df = pd.concat([g.assign(symbol=sym).reset_index() for sym, g in panel.items()],
+                       ignore_index=True)
+    except Exception as exc:
+        print(f"  (corporate-action adjustment skipped: {exc})")
     if asof:
         universe = point_in_time_universe(df, topn, min_bars)
         # Load bars for every name that was screenable at ANY point. Eligibility
