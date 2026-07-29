@@ -3160,30 +3160,34 @@ function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
  // An empty list means the request failed, not that there are no indices —
  // rendering blank checkboxes looked exactly like 'selection does not work'.
  if(!s.length)return '<div class=mut style="font-size:13px">could not load index settings — the engine did not respond.</div>';
- // auto-trade is shown but held DISABLED until the feed can price a contract —
- // a switch that silently does nothing is worse than one you cannot reach.
  var blocked=!d.live_quotes;
- return '<div class=mut style="font-size:13px;margin-bottom:10px">Buys index calls (CE) when the read is bullish, puts (PE) when bearish. Long options only — the most you can lose is the premium paid.</div>'
- +'<div class=row style="padding:7px 0"><span>Show the CE/PE call</span>'
- +'<input type=checkbox id=idxEnabled '+(d.enabled?'checked':'')+' onchange=saveIndexOpts()></div>'
- +'<div class=row style="padding:7px 0;border-top:1px solid var(--line)"><span>Auto-trade the call'
- +(blocked?'<div class=mut style="font-size:11px">unavailable — no live option prices, so a position could not be exited</div>':'')
- +'</span><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()></div>'
- +'<div class=mut style="font-size:11px;margin:12px 0 6px">indices to call</div>'
+ // Uses the app's own toggle idiom (label wrapping the checkbox, like the
+ // Telegram prefs) rather than a bespoke row, so the control reads as part of
+ // the page instead of bolted onto it.
+ return '<div class=mut style="font-size:12.5px;line-height:1.5;margin-bottom:12px">Buys index calls (CE) when the read is bullish, puts (PE) when bearish. <b>Long options only</b> — the most you can lose is the premium paid.</div>'
+ +'<label class=tgopt><input type=checkbox id=idxEnabled '+(d.enabled?'checked':'')+' onchange=saveIndexOpts()> Show the CE / PE call</label>'
+ +'<label class=tgopt style="'+(blocked?'opacity:.55;cursor:not-allowed':'')+'"><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()> Auto-trade the call</label>'
+ +(blocked?'<div class=mut style="font-size:11.5px;margin:-2px 0 4px 26px;line-height:1.45">Unavailable — no live option prices yet, so a position could not be exited.</div>':'')
+ +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">indices</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+s.map(function(x){
-    return '<label class=tgopt style="border:1px solid var(--line);border-radius:8px;padding:6px 11px"><input type=checkbox class=idxsym value="'+x+'" '+(sel.indexOf(x)>=0?'checked':'')+' onchange=saveIndexOpts()> '+x+'</label>';}).join('')
+    var on=sel.indexOf(x)>=0;
+    return '<label class=tgopt style="border:1px solid '+(on?'var(--inf)':'var(--line)')+';border-radius:8px;padding:6px 12px;margin:0;'+(on?'background:var(--infb)':'')+'"><input type=checkbox class=idxsym value="'+x+'" '+(on?'checked':'')+' onchange=saveIndexOpts()> '+x+'</label>';}).join('')
  +'</div>'
- +'<div class=mut style="font-size:11px;margin:12px 0 6px">expiry</div>'
+ +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">expiry</div>'
  +'<div class=toggle><b id=idxWk class="'+(d.expiry!='monthly'?'on':'')+'" onclick="setIdxExpiry(\'weekly\')">Weekly</b>'
  +'<b id=idxMo class="'+(d.expiry=='monthly'?'on':'')+'" onclick="setIdxExpiry(\'monthly\')">Monthly</b></div>'
- +'<div class=mut style="font-size:11px;margin:14px 0 6px">today\'s call</div><div id=idxcall class=skel>loading…</div>'
- +'<div id=idxmsg class=mut style="font-size:12px;margin-top:9px"></div>';}
-function idxCallHtml(calls){if(!calls.length)return '<div class=mut style="font-size:12px">no indices selected</div>';
+ +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:18px 0 7px">today\'s call</div><div id=idxcall class=skel>loading…</div>'
+ +'<div id=idxmsg class=mut style="font-size:12px;margin-top:10px"></div>';}
+
+function idxCallHtml(calls){if(!calls.length)return '<div class=mut style="font-size:12.5px">no indices selected</div>';
  return calls.map(function(c){
   var tag=c.call?('<span class="badge '+(c.call=='CE'?'bg-up':'bg-dn')+'">'+c.call+'</span>'):'<span class="badge bg-mut">no trade</span>';
-  return '<div style="border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px">'
-   +'<div class=row><b>'+esc(c.symbol||'')+'</b>'+tag+'</div>'
-   +'<div class=mut style="font-size:11px;margin-top:6px">'+(c.reasons||[]).map(esc).join('<br>')+'</div></div>';}).join('');}
+  // Reasons are LEFT aligned and one per line: they are read as a checklist of
+  // what agreed and what did not, which centring destroys.
+  return '<div style="border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin-bottom:8px">'
+   +'<div class=row style="margin-bottom:8px"><b style="font-size:13.5px">'+esc(c.symbol||'')+'</b>'+tag+'</div>'
+   +'<div class=mut style="font-size:11.5px;line-height:1.7;text-align:left">'+(c.reasons||[]).map(esc).join('<br>')+'</div></div>';}).join('');}
+
 function setIdxExpiry(v){IDXCFG.expiry=v;
  document.getElementById('idxWk').classList.toggle('on',v=='weekly');
  document.getElementById('idxMo').classList.toggle('on',v=='monthly');saveIndexOpts();}
