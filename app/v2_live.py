@@ -519,6 +519,65 @@ def _hist(market):
     return tails, mdf
 
 
+# Score the daily lanes on TODAY's forming bar instead of only completed
+# sessions. Until 2026-07-29 `asof` was dates[-1], the last COMPLETED trading
+# day, so at noon the engine was ranking yesterday's close and buying at today's
+# price — a full session stale, which is what made the picks look off.
+#
+# This is legitimate live (the partial bar is information you genuinely have
+# now) but it is NOT what the backtest validated: that scored completed bars
+# only, precisely to avoid look-ahead. So entries taken this way are tagged
+# `intraday_bar` and can be scored separately. Set False to restore.
+INTRADAY_SIGNAL_BAR = True
+
+
+def append_today_bar(tails, mdf, market, live, stale=None):
+    """Add today's forming OHLCV bar, built from the live Upstox feed.
+
+    The quote already carries a true session open/high/low, so the partial bar
+    is real rather than synthesised from the last print. Symbols with a frozen
+    quote are skipped — a stale price would otherwise be written in as though it
+    were today's action, which is the same failure the entry guard exists for.
+
+    Returns (tails, market_df). Both are new objects; the cached history is left
+    untouched so the next call rebuilds from clean completed bars.
+    """
+    today = pd.Timestamp(datetime.now(IST).date() if market == "IN"
+                         else datetime.now(timezone.utc).date())
+    stale = stale or set()
+    out, rets = {}, []
+    for sym, g in tails.items():
+        lq = live.get(sym)
+        px = (lq or {}).get("price")
+        if not lq or sym in stale or not px or float(px) <= 0 or g.empty:
+            out[sym] = g
+            continue
+        if g.index[-1] >= today:            # already ingested by the nightly job
+            out[sym] = g
+            continue
+        px = float(px)
+        prev_close = float(g["close"].iloc[-1])
+        ret1 = (px / prev_close - 1) if prev_close > 0 else 0.0
+        row = {c: None for c in g.columns}
+        row.update(open=_f(lq.get("open"), px), high=_f(lq.get("high"), px),
+                   low=_f(lq.get("low"), px), close=px,
+                   volume=float(lq.get("vol") or 0.0), ret1=ret1)
+        if "symbol" in row:
+            row["symbol"] = sym
+        if "ts" in row:
+            row["ts"] = today.isoformat()
+        out[sym] = pd.concat([g, pd.DataFrame([row], index=[today])])
+        rets.append(ret1)
+    # The regime reads mdf, so it has to advance too — otherwise the lanes would
+    # score today while the market filter still described yesterday.
+    if rets and mdf is not None and not mdf.empty and mdf.index[-1] < today:
+        med = float(pd.Series(rets).median())
+        cum = float(mdf["mkt_cum"].iloc[-1]) * (1 + med)
+        mdf = pd.concat([mdf, pd.DataFrame({"mkt_ret1": [med], "mkt_cum": [cum]},
+                                           index=[today])])
+    return out, mdf
+
+
 def _f(v, d):
     try:
         x = float(v)
@@ -903,6 +962,11 @@ def poll_market(market):
         return
     tails, mdf = _hist(market)
     _session_opens(market, live)                     # keep session open/hi/lo tracking fresh
+    # Bring the history up to NOW, not to last night's close.
+    today_bar = False
+    if INTRADAY_SIGNAL_BAR and market_open(market):
+        tails, mdf = append_today_bar(tails, mdf, market, live, _stale_symbols(market))
+        today_bar = True
     dates = eng.complete_trading_dates(tails, 0.5)
     if not dates:
         _status[market] = "no history"
@@ -1105,7 +1169,10 @@ def poll_market(market):
                                   signal_score=s["score"],
                                   # only open-window fills match the backtest; tag
                                   # the rest so they can be scored on their own
-                                  late_entry=not at_open))
+                                  late_entry=not at_open,
+                                  # scored on today's partial bar rather than the
+                                  # last completed session — also untested
+                                  intraday_bar=today_bar))
             size_mult = rep.get("size_mult", 1.0)
         entry, atr = s["price"], s["atr"]
         # volatility-normalized sizing: equal RISK per position, not equal rupees
