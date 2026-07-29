@@ -114,6 +114,19 @@ PLAN = {
 # reviewed rather than letting the ledger imply the lane failed.
 DISABLED_LANES = {"gap_momentum", "swing_meanrev", "btst"}
 MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
+# mom_breakout used to require a STRONG market uptrend, which is why on
+# 2026-07-29 — regime OFF — it took zero trades all morning while the operator
+# watched an idle book. Measured on a point-in-time universe
+# (scripts/breakout_target_bt.py --regime both), trail-only exit:
+#     gate ON   1067 entries, +0.937%/trade
+#     gate OFF  2221 entries, +0.919%/trade
+# Per trade the gate is worth +0.02pp — nothing — while it removes HALF the
+# opportunities, so turning it off captures roughly twice the total edge. That
+# matches the separate finding that the regime filter has no timing skill
+# (scripts/regime_isolation.py: it is invested on the worse days, and a static
+# exposure beats it). The stock-level uptrend filter still applies: a breakout
+# is only taken above the name's own 50d average. Set True to restore.
+MOM_REQUIRE_STRONG = False
 # ---- intraday news-momentum sleeve (user spec: trade TODAY's tape, take the
 # money fast, flat by the close). 5-min-bar backtest (150 syms, 58 days):
 # intraday momentum ALONE loses (PF ~0.70 every config); the ONLY positive
@@ -928,7 +941,7 @@ def poll_market(market):
             continue
         if pl["regime_gated"] and not regime:
             continue
-        if s["strategy"] == "mom_breakout" and not strong:   # boosters need a STRONG uptrend
+        if s["strategy"] == "mom_breakout" and MOM_REQUIRE_STRONG and not strong:
             continue
         if s["symbol"] in ETF_EXCLUDE:                  # no index/sector/leveraged ETFs
             continue
@@ -2040,6 +2053,7 @@ _last_vs: dict = {}          # volume_surge throttle
 _last_sw: dict = {}          # sector_watch throttle
 _last_btst: dict = {}        # btst throttle
 _last_preopen: dict = {}     # pre-open warm-up throttle
+_preopen_tried: dict = {}    # one restart-recovery attempt per session
 VOLSURGE_INTERVAL = 10      # 10s (was 20s): operator wants faster entry on surges
 INTRAMOM_INTERVAL = 30      # narrow entry window; no need to scan more often
 _last_im: dict = {}       # scan for intraday movers every 20s (not every 8s cycle)
@@ -2131,6 +2145,14 @@ def loop(interval):
                     _equity_janitor(m)                           # compact daily row + prune old minute rows
                 prev_open[m] = is_open
                 if is_open:
+                    # Restart recovery. A deploy at 09:33 IST on 2026-07-29 left
+                    # the whole day with no auction data, because the fetch only
+                    # ran 09:05-09:15 and the cache was memory-only. NSE serves
+                    # the morning auction all day, so a process that missed the
+                    # window can still recover it. Attempted once per session.
+                    if m == "IN" and not _preopen_tried.get(m):
+                        _preopen_tried[m] = True
+                        _refresh_preopen()
                     exit_monitor(m)                              # fast exits every cycle (held symbols only — cheap)
                     _market_open_watchdog(m)                     # once ~09:20 IST: alert if feed/engine/catalysts broken
                     # These scan the WHOLE universe (heavy: full latest_quotes read),

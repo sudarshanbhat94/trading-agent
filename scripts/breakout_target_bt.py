@@ -48,7 +48,15 @@ def atr(g, window=ATR_WINDOW):
     return tr.rolling(window).mean()
 
 
-def find_entries(syms, eligible_at):
+def market_regime(market_df, ma=50):
+    """date -> bool: synthetic index above its own MA, shifted one day so the
+    decision never uses the session it acts on."""
+    cum = market_df["mkt_cum"]
+    reg = (cum > cum.rolling(ma).mean()).shift(1).fillna(False)
+    return {d: bool(v) for d, v in reg.items()}
+
+
+def find_entries(syms, eligible_at, regime=None):
     """[(date, symbol, entry_index)] — signal bars, entry is the NEXT bar."""
     out = []
     for sym, g in syms.items():
@@ -69,6 +77,8 @@ def find_entries(syms, eligible_at):
             date = g.index[i]
             if eligible_at is not None and sym not in eligible_at(date):
                 continue
+            if regime is not None and not regime.get(date, False):
+                continue        # live lane requires a STRONG uptrend to buy at all
             out.append((date, sym, i, float(a.iloc[i])))
     out.sort(key=lambda x: x[0])
     return out
@@ -124,15 +134,25 @@ def main():
     ap.add_argument("--trail", type=float, default=2.5, help="trail in ATRs")
     ap.add_argument("--max-days", type=int, default=40)
     ap.add_argument("--cost", type=float, default=0.25)
+    ap.add_argument("--regime", choices=["off", "on", "both"], default="both",
+                    help="gate entries on the market regime, as the live lane does")
     args = ap.parse_args()
 
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=120)
-    syms, _mkt, eligible_at = load_market(con, args.market, args.topn, asof=True)
+    syms, market_df, eligible_at = load_market(con, args.market, args.topn, asof=True)
     con.close()
-    entries = find_entries(syms, eligible_at)
-    print(f"[{args.market}] 52w-high breakouts on a point-in-time universe: "
-          f"{len(entries)} signals across {len({s for _, s, _, _ in entries})} names")
+    reg = market_regime(market_df)
+    modes = ["off", "on"] if args.regime == "both" else [args.regime]
+    for mode in modes:
+        entries = find_entries(syms, eligible_at, reg if mode == "on" else None)
+        print(f"\n### market-regime gate: {mode.upper()} — {len(entries)} entries")
+        run_variants(entries, syms, args)
+    return
+
+
+def run_variants(entries, syms, args):
     if not entries:
+        print("  no entries")
         return
     print(f"  stop {args.stop}xATR, trail {args.trail}xATR, max hold {args.max_days}d, "
           f"cost {args.cost}%\n")

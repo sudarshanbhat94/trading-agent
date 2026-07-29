@@ -16,7 +16,9 @@ before. It must never be able to block or break the open.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -33,6 +35,36 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 
 # session date -> {symbol: {...}}. One session's worth; replaced next morning.
 _CACHE: dict = {}
+
+# Memory alone was not enough. The snapshot is fetched only in the 09:05-09:15
+# window, so ANY restart after 09:15 left the rest of the day with no auction
+# data at all — silently, with volume_surge quietly reverting to its old
+# behaviour. That happened live on 2026-07-29: a deploy restarted the service at
+# 09:33 IST and the day ran blind. Persisting it means a restart recovers.
+STORE = os.environ.get("PREOPEN_STORE", "/opt/opentrade/var/preopen.json")
+
+
+def _load_disk(session):
+    """Today's snapshot from disk, or {} — a stale session is never returned."""
+    try:
+        with open(STORE, encoding="utf-8") as handle:
+            saved = json.load(handle)
+        if saved.get("session") == session:
+            return saved.get("data") or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_disk(session, data):
+    """Write atomically: a half-written file must not look like a good one."""
+    try:
+        tmp = STORE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({"session": session, "data": data}, handle)
+        os.replace(tmp, STORE)
+    except Exception as exc:
+        _LOG.warning("pre-open snapshot not persisted: %s", exc)
 
 
 def parse(payload):
@@ -85,22 +117,44 @@ def fetch(timeout=15):
 
 
 def refresh(now=None):
-    """Fetch once per session and cache. Returns the cached map."""
+    """Memory, then disk, then the network. Returns today's map.
+
+    Reading disk before fetching is what makes a restart survivable: NSE serves
+    the most recent auction all day, but the engine only asks in the pre-open
+    window, so without this a process started at 09:33 would never have it.
+    """
     session = (now or datetime.now(IST)).date().isoformat()
     if session in _CACHE:
         return _CACHE[session]
+    disk = _load_disk(session)
+    if disk:
+        _CACHE.clear()
+        _CACHE[session] = disk
+        _LOG.info("pre-open: %d symbols recovered from disk", len(disk))
+        return disk
     data = fetch()
     if data:                        # only cache a real result, so a 503 retries
         _CACHE.clear()              # one session at a time
         _CACHE[session] = data
+        _save_disk(session, data)
         _LOG.info("pre-open: %d symbols, %d gapping >2%%", len(data),
                   sum(1 for v in data.values() if abs(v["gap_pct"]) >= 2))
     return data
 
 
 def cached(now=None):
-    """Today's pre-open map, or {} if it was never fetched."""
-    return _CACHE.get((now or datetime.now(IST)).date().isoformat(), {})
+    """Today's pre-open map, or {} if it is genuinely unavailable.
+
+    Falls back to disk so a process that restarted mid-session still sees the
+    morning's auction instead of behaving as though nothing gapped.
+    """
+    session = (now or datetime.now(IST)).date().isoformat()
+    if session in _CACHE:
+        return _CACHE[session]
+    disk = _load_disk(session)
+    if disk:
+        _CACHE[session] = disk
+    return disk
 
 
 def gappers(min_gap=2.0, min_value=1e6, min_price=50.0, limit=25, now=None):

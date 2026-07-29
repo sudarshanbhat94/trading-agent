@@ -468,6 +468,19 @@ def api_health():
                            detail=(f"{hb/60:.0f}min ago" if hb < 1e9 else "no data") if any_open else "markets closed"))
     except Exception:
         checks.append(dict(name="engine heartbeat", ok=False, detail="unreadable"))
+    # Pre-open auction. On 2026-07-29 this was empty for the whole session and
+    # nothing said so — volume_surge simply reverted to its pre-auction
+    # behaviour. A capability that degrades silently is one you cannot rely on,
+    # so its absence is now a visible unhealthy check rather than a guess.
+    if openm.get("IN"):
+        try:
+            from . import preopen
+            count = len(preopen.cached())
+            checks.append(dict(name="IN pre-open auction", ok=count > 0,
+                               detail=(f"{count} symbols" if count
+                                       else "MISSING — volume_surge cannot use gaps today")))
+        except Exception:
+            checks.append(dict(name="IN pre-open auction", ok=False, detail="unreadable"))
     return JSONResponse(dict(ok=all(c["ok"] for c in checks), checks=checks))
 
 

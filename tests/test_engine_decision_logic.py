@@ -245,6 +245,17 @@ class LaneConfigurationTest(unittest.TestCase):
             with self.subTest(lane=lane):
                 self.assertNotIn(lane, v2_live.DISABLED_LANES)
 
+    def test_mom_breakout_is_not_blocked_by_the_market_regime(self) -> None:
+        """2026-07-29: regime OFF meant this lane took zero trades all morning.
+        Measured, the gate is worth +0.02%/trade while removing half the
+        entries — so it costs roughly half the total edge for nothing."""
+        self.assertFalse(v2_live.MOM_REQUIRE_STRONG)
+
+    def test_the_strong_gate_is_still_wired_so_it_can_be_restored(self) -> None:
+        import inspect
+        src = inspect.getsource(v2_live.poll_market)
+        self.assertIn("MOM_REQUIRE_STRONG and not strong", src)
+
     def test_mom_breakout_has_both_a_stop_and_a_target(self) -> None:
         """Operator required an explicit target; the lane previously had none
         (atr_target 0.0) and exited only on the trail or the hold limit."""

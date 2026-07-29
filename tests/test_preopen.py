@@ -172,6 +172,71 @@ class SeedGateTest(unittest.TestCase):
         self.assertIn("preopen_seeded=seeded", src)
 
 
+class PersistenceTest(unittest.TestCase):
+    """A restart after 09:15 used to leave the whole day blind: the fetch runs
+    only in the pre-open window and the cache was memory-only. That happened
+    live on 2026-07-29 when a deploy restarted the service at 09:33 IST."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.original_store = preopen.STORE
+        preopen.STORE = self.tmp.name + "/preopen.json"
+        preopen._CACHE.clear()
+
+    def tearDown(self) -> None:
+        preopen.STORE = self.original_store
+        preopen._CACHE.clear()
+        self.tmp.cleanup()
+
+    def _fetch_once(self):
+        calls = []
+
+        def ok():
+            calls.append(1)
+            return {"TCS": dict(open=110.0, prev_close=100.0, gap_pct=10.0, qty=1e5, value=5e7)}
+
+        original, preopen.fetch = preopen.fetch, ok
+        try:
+            preopen.refresh(now=TODAY)
+        finally:
+            preopen.fetch = original
+        return calls
+
+    def test_a_restart_recovers_the_snapshot_from_disk(self) -> None:
+        self.assertEqual(len(self._fetch_once()), 1)
+        preopen._CACHE.clear()                       # simulate the process restart
+        self.assertIn("TCS", preopen.cached(now=TODAY))
+
+    def test_recovery_does_not_refetch(self) -> None:
+        """NSE rate-limits; a restart loop must not hammer it."""
+        self._fetch_once()
+        preopen._CACHE.clear()
+        self.assertEqual(len(self._fetch_once()), 0, "should have come from disk")
+
+    def test_a_stale_session_on_disk_is_ignored(self) -> None:
+        """Yesterday's auction must never be served as today's."""
+        self._fetch_once()
+        preopen._CACHE.clear()
+        tomorrow = TODAY.replace(day=30)
+        self.assertEqual(preopen.cached(now=tomorrow), {})
+
+    def test_a_corrupt_store_is_not_fatal(self) -> None:
+        with open(preopen.STORE, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        self.assertEqual(preopen.cached(now=TODAY), {})
+
+    def test_a_missing_store_is_not_fatal(self) -> None:
+        self.assertEqual(preopen.cached(now=TODAY), {})
+
+    def test_an_unwritable_store_does_not_break_the_fetch(self) -> None:
+        """Persisting is an optimisation; failing to persist must not lose the
+        data the engine already has in hand."""
+        preopen.STORE = "/nonexistent-dir/preopen.json"
+        self.assertEqual(len(self._fetch_once()), 1)
+        self.assertIn("TCS", preopen.cached(now=TODAY))
+
+
 class FetchSafetyTest(unittest.TestCase):
     def tearDown(self) -> None:
         preopen._CACHE.clear()
