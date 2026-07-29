@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import sqlite3
 import threading
 import time
@@ -431,6 +432,35 @@ PREOPEN_SEED = dict(
     min_auction_value=1e7,  # Rs 1cr crossed in the auction = real participation,
                             # not the Rs 3.5 lakh that printed PPSL +15.6%
 )
+
+
+def _nse_reference_refresh():
+    """Pull the day's delivery figures, institutional flows, bulk deals and
+    sector labels once the session has closed.
+
+    Driven from the engine rather than a systemd timer deliberately: the last
+    delivery ingestion had NO script, timer or service anywhere and died on
+    2026-06-17 with nothing reporting it. Anything the engine itself depends on
+    should fail where the engine can see it.
+
+    Runs in a subprocess so a hung NSE request or a parser fault cannot stall
+    the trading loop, and is capped so it cannot outlive the evening.
+    """
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "scripts", "nse_reference_ingest.py")
+    if not os.path.exists(script):
+        _LOG.warning("NSE reference ingester not found at %s", script)
+        return
+    try:
+        out = subprocess.run([sys.executable, script, "--backfill-days", "3"],
+                             capture_output=True, text=True, timeout=900)
+        tail = (out.stdout or out.stderr or "").strip().splitlines()[-3:]
+        _LOG.info("NSE reference refresh: %s", " | ".join(t.strip() for t in tail))
+    except subprocess.TimeoutExpired:
+        _LOG.warning("NSE reference refresh timed out")
+    except Exception:
+        _LOG.exception("NSE reference refresh failed")
 
 
 def _bars5m_janitor():
@@ -2378,6 +2408,7 @@ def loop(interval):
                     _equity_janitor(m)                           # compact daily row + prune old minute rows
                     if m == "IN":
                         _bars5m_janitor()                        # flush last bar, prune, monthly VACUUM
+                        _nse_reference_refresh()                 # delivery / FII-DII / bulk deals / sectors
                 prev_open[m] = is_open
                 if is_open:
                     # Record 5-min bars for the Nifty 500 off the quote feed we
