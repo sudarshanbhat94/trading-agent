@@ -166,8 +166,36 @@ def _nfo_write(quotes, contracts):
         return 0
 
 
-def _nfo_worker(interval):
-    """Poll a small ATM window of index options while the market is open."""
+def _nfo_held(contracts):
+    """Option contracts we actually HOLD, matched to the live contract rows.
+
+    A held option is the one position whose price genuinely cannot wait: it is
+    leveraged, it decays, and the exit decision is worthless if it is acting on
+    a price from twenty seconds ago.
+    """
+    try:
+        con = sqlite3.connect(f"file:{V2_DB}?mode=ro", uri=True, timeout=5)
+        held = {str(r[0]).upper() for r in con.execute(
+            "SELECT symbol FROM v2_positions WHERE market=?", ("IN",))}
+        con.close()
+    except Exception:
+        return []
+    return [c for c in contracts if c["symbol"].upper() in held]
+
+
+def _nfo_worker(interval, hot_interval):
+    """Two cadences, mirroring the equity lanes.
+
+    HELD contracts are polled every `hot_interval` — the same reasoning as the
+    equity hot lane, only more urgent, because an option can lose a third of its
+    value inside a minute and the stop is meaningless if it is evaluated against
+    a stale price.
+
+    The ATM WATCH window refreshes every `interval`. Those are candidates, not
+    positions; nothing is riding on them being a few seconds old, and Upstox
+    rate-limits — a 429 puts BOTH equity lanes into a 45s cooldown, so spending
+    quota on contracts nobody holds would degrade the rest of the engine.
+    """
     try:
         from app import nfo_contracts
     except Exception as exc:
@@ -176,20 +204,30 @@ def _nfo_worker(interval):
     db, providers, _rows, _symmap = _build()
     if "IN" not in providers:
         return
-    print(f"nfo worker up @ {interval}s", flush=True)
+    print(f"nfo worker up @ {hot_interval}s held / {interval}s watch", flush=True)
+    contracts, last_watch = [], 0.0
     while True:
         t0 = time.time()
         try:
             if market_regions.market_session_for_region("IN").get("is_open"):
-                contracts = nfo_contracts.select_many(_nfo_spots())
-                if contracts:
-                    quotes = asyncio.run(providers["IN"].get_quotes(contracts))
-                    n = _nfo_write(quotes, contracts)
-                    print(f"  [NFO] {n} option quotes @ "
-                          f"{datetime.now(timezone.utc).strftime('%H:%M:%S')}", flush=True)
+                due = (time.time() - last_watch) >= interval
+                if due or not contracts:
+                    contracts = nfo_contracts.select_many(_nfo_spots())
+                    last_watch = time.time()
+                    poll = contracts
+                    label = "watch"
+                else:
+                    poll = _nfo_held(contracts)
+                    label = "held"
+                if poll:
+                    quotes = asyncio.run(providers["IN"].get_quotes(poll))
+                    n = _nfo_write(quotes, contracts or poll)
+                    if label == "watch":
+                        print(f"  [NFO/{label}] {n} option quotes @ "
+                              f"{datetime.now(timezone.utc).strftime('%H:%M:%S')}", flush=True)
         except Exception as exc:
             print(f"  [NFO] {str(exc)[:160]}", flush=True)
-        time.sleep(max(3.0, interval - (time.time() - t0)))
+        time.sleep(max(0.5, hot_interval - (time.time() - t0)))
 
 
 
@@ -199,7 +237,8 @@ def main():
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=float, default=1.0)        # hot (held) cadence
     ap.add_argument("--full-interval", type=float, default=15.0)  # whole-universe cadence
-    ap.add_argument("--nfo-interval", type=float, default=20.0)   # index option cadence
+    ap.add_argument("--nfo-interval", type=float, default=20.0)      # ATM watch window
+    ap.add_argument("--nfo-hot-interval", type=float, default=1.0)   # contracts we HOLD
     ap.add_argument("--no-nfo", action="store_true")
     a = ap.parse_args()
 
@@ -239,7 +278,8 @@ def main():
     t = threading.Thread(target=_hot_worker, daemon=True)
     t.start()
     if not a.no_nfo:
-        threading.Thread(target=_nfo_worker, args=(a.nfo_interval,), daemon=True).start()
+        threading.Thread(target=_nfo_worker, args=(a.nfo_interval, a.nfo_hot_interval),
+                         daemon=True).start()
     _full_worker()
 
 

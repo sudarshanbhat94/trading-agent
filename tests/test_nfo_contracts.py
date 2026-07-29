@@ -100,5 +100,42 @@ class IsolationTest(unittest.TestCase):
         self.assertNotIn("upsert_quotes", nfo_write)
 
 
+class CadenceTest(unittest.TestCase):
+    """A held option cannot wait 20 seconds for a price.
+
+    It is leveraged and it decays: a stop evaluated against a twenty-second-old
+    quote is not a stop. Held contracts therefore poll at the equity hot lane's
+    cadence, while the ATM watch window — candidates, not positions — stays slow
+    so it does not burn the rate limit that both equity lanes share.
+    """
+
+    def _feed(self):
+        import pathlib as _p
+        return (_p.Path(__file__).resolve().parent.parent
+                / "scripts" / "v2_quote_feed.py").read_text()
+
+    def test_held_contracts_poll_far_faster_than_the_watch_window(self) -> None:
+        src = self._feed()
+        self.assertIn('"--nfo-hot-interval", type=float, default=1.0', src)
+        self.assertIn('"--nfo-interval", type=float, default=20.0', src)
+
+    def test_the_worker_distinguishes_held_from_watched(self) -> None:
+        src = self._feed()
+        self.assertIn("def _nfo_held(", src)
+        worker = src[src.index("def _nfo_worker("):src.index("\ndef main():")]
+        self.assertIn("_nfo_held(contracts)", worker)
+
+    def test_held_lookup_reads_open_positions(self) -> None:
+        src = self._feed()
+        held = src[src.index("def _nfo_held("):src.index("def _nfo_worker(")]
+        self.assertIn("FROM v2_positions", held)
+
+    def test_the_loop_sleeps_at_the_hot_cadence(self) -> None:
+        """Sleeping at the watch interval would make the fast lane cosmetic."""
+        src = self._feed()
+        worker = src[src.index("def _nfo_worker("):src.index("\ndef main():")]
+        self.assertIn("hot_interval - (time.time() - t0)", worker)
+
+
 if __name__ == "__main__":
     unittest.main()
