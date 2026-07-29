@@ -415,6 +415,27 @@ PREOPEN_SEED = dict(
 )
 
 
+def _bars5m_janitor():
+    """Close out the 5-min recorder for the day: flush, prune, and VACUUM once a
+    month. Runs at the session-close transition, so the VACUUM — which locks the
+    file — never lands while the engine is trading. DELETE alone does not shrink
+    a SQLite file; skipping the VACUUM is how trading_agent.db reached 12 GB.
+    """
+    try:
+        from . import bars5m
+        written = bars5m.flush(bars5m.bar_start())
+        deleted = bars5m.prune()
+        info = bars5m.stats()
+        vacuumed = False
+        if datetime.now(IST).day == 1:                # once a month, market closed
+            vacuumed = bars5m.vacuum()
+        _LOG.info("5m janitor: flushed %d, pruned %d, now %d rows / %d symbols / %.0f MB%s",
+                  written, deleted, info["rows"], info["symbols"],
+                  info["bytes"] / 1e6, " (vacuumed)" if vacuumed else "")
+    except Exception:
+        _LOG.exception("5m janitor failed")
+
+
 def preopen_seed_map(hm, now=None):
     """Auction map to lean on right now, or {} once real rvol is available.
 
@@ -2269,8 +2290,22 @@ def loop(interval):
                 if prev_open[m] is True and not is_open:
                     _tg_daily_summary(m)                         # session just closed -> daily digest
                     _equity_janitor(m)                           # compact daily row + prune old minute rows
+                    if m == "IN":
+                        _bars5m_janitor()                        # flush last bar, prune, monthly VACUUM
                 prev_open[m] = is_open
                 if is_open:
+                    # Record 5-min bars for the Nifty 500 off the quote feed we
+                    # are already reading. Cheap: dict updates each cycle, one
+                    # 500-row write every 5 minutes. Isolated so a recorder
+                    # fault can never stop the engine trading.
+                    if m == "IN":
+                        try:
+                            from . import bars5m
+                            written = bars5m.observe(_live(m))
+                            if written:
+                                _LOG.info("5m bars written: %d", written)
+                        except Exception:
+                            _LOG.exception("5m bar record failed")
                     # Restart recovery. A deploy at 09:33 IST on 2026-07-29 left
                     # the whole day with no auction data, because the fetch only
                     # ran 09:05-09:15 and the cache was memory-only. NSE serves
