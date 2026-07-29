@@ -533,6 +533,15 @@ def _hist(market):
     con = _ro(MAIN_DB)
     syms, mdf = eng.load_panel(con, market, topn=eng.DEFAULTS["topn"])
     con.close()
+    # Back-adjust unadjusted splits/bonuses BEFORE anything reads the series.
+    # The feed stores raw traded prices, so a 1:5 split is a -80% "return" that
+    # never happened — and that is precisely what the dip-buying lane hunts for,
+    # so one artefact outranks every genuine setup in the book.
+    try:
+        from . import corpactions
+        syms, _fixed = corpactions.clean_all(syms)
+    except Exception:
+        _LOG.exception("corporate-action adjustment failed; using raw prices")
     # keep ~1y of bars so the pre-trade factor investigation has enough history
     # (drawdown-from-252d-high, RSI, 50d-slope, etc.); signals only need the tail.
     tails = {s: g.tail(300).copy() for s, g in syms.items() if len(g) >= 70}
