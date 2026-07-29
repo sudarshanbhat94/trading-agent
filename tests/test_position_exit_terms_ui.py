@@ -21,7 +21,16 @@ V2_WEB = REPO_ROOT / "app" / "v2_web.py"
 
 
 def _function_source(source: str, name: str) -> str:
-    start = source.index(f"function {name}(")
+    """Slice a JS function out of the ACTIVE template only.
+
+    v2_web.py contains three SPA_HTML definitions and only the LAST is served;
+    the earlier ones are dead. Searching the whole file finds a function in dead
+    code and passes while the shipped page throws ReferenceError — which is
+    exactly how a blank Account tab reached production. Anchor to the active
+    template so the tests exercise what is actually served.
+    """
+    active = source.rindex('SPA_HTML = r"""')
+    start = source.index(f"function {name}(", active)
     end = source.index("\nfunction ", start)
     return source[start:end] + "\n"
 

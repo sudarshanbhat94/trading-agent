@@ -2408,49 +2408,6 @@ function loadWatch(){api('/v2/api/watch').then(r=>{document.getElementById('watc
 function loadStats(){api('/v2/api/stats').then(r=>{document.getElementById('statlist').innerHTML=r.j.filter(s=>inMkt(s.market)).map(s=>`<div class=raise><div class=row><b>${s.market}</b><span class="${col(s.ret)}">${sgn(s.ret)}%</span></div><div class=grid style="margin-top:10px"><div class=card><div class=mut style="font-size:11px">win rate</div><div style="font-size:18px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">profit factor</div><div style="font-size:18px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:17px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:17px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:8px">${s.trades} closed trades</div>${laneRows(s.by_strategy)}</div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});}
 function laneRows(lanes){if(!lanes||!lanes.length)return '';return '<div class=mut style="font-size:11px;margin:12px 0 6px">by lane</div>'+lanes.map(l=>`<div class=row style="padding:6px 0;border-top:1px solid var(--line)"><div><div style="font-size:13px;font-weight:600">${l.label}${l.overnight?' <span class=mut style="font-size:10px">overnight</span>':''}</div><div class=mut style="font-size:11px">${l.trades} trades · win ${l.win}% · PF ${l.pf}${l.avg_hold_days!=null?' · held '+l.avg_hold_days+'d':''}</div></div><div style="text-align:right"><div class="${col(l.avg)}" style="font-size:14px;font-weight:600">${sgn(l.avg)}%</div><div class=mut style="font-size:11px">avg/trade</div></div></div>`).join('');}
 /* account + settings */
-function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
- api('/api/index-settings').then(function(r){var d=r.j||{};IDXCFG=d;el.innerHTML=idxHtml(d);
-  api('/api/index-call').then(function(c){var box=document.getElementById('idxcall');
-   if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
- }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
-function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
- // auto-trade is shown but held DISABLED until the feed can price a contract —
- // a switch that silently does nothing is worse than one you cannot reach.
- var blocked=!d.live_quotes;
- return '<div class=mut style="font-size:13px;margin-bottom:10px">Buys index calls (CE) when the read is bullish, puts (PE) when bearish. Long options only — the most you can lose is the premium paid.</div>'
- +'<div class=row style="padding:7px 0"><span>Show the CE/PE call</span>'
- +'<input type=checkbox id=idxEnabled '+(d.enabled?'checked':'')+' onchange=saveIndexOpts()></div>'
- +'<div class=row style="padding:7px 0;border-top:1px solid var(--line)"><span>Auto-trade the call'
- +(blocked?'<div class=mut style="font-size:11px">unavailable — no live option prices, so a position could not be exited</div>':'')
- +'</span><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()></div>'
- +'<div class=mut style="font-size:11px;margin:12px 0 6px">indices to call</div>'
- +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+s.map(function(x){
-    return '<label class=tgopt style="border:1px solid var(--line);border-radius:8px;padding:6px 11px"><input type=checkbox class=idxsym value="'+x+'" '+(sel.indexOf(x)>=0?'checked':'')+' onchange=saveIndexOpts()> '+x+'</label>';}).join('')
- +'</div>'
- +'<div class=mut style="font-size:11px;margin:12px 0 6px">expiry</div>'
- +'<div class=toggle><b id=idxWk class="'+(d.expiry!='monthly'?'on':'')+'" onclick="setIdxExpiry(\'weekly\')">Weekly</b>'
- +'<b id=idxMo class="'+(d.expiry=='monthly'?'on':'')+'" onclick="setIdxExpiry(\'monthly\')">Monthly</b></div>'
- +'<div class=mut style="font-size:11px;margin:14px 0 6px">today\'s call</div><div id=idxcall class=skel>loading…</div>'
- +'<div id=idxmsg class=mut style="font-size:12px;margin-top:9px"></div>';}
-function idxCallHtml(calls){if(!calls.length)return '<div class=mut style="font-size:12px">no indices selected</div>';
- return calls.map(function(c){
-  var tag=c.call?('<span class="badge '+(c.call=='CE'?'bg-up':'bg-dn')+'">'+c.call+'</span>'):'<span class="badge bg-mut">no trade</span>';
-  return '<div style="border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px">'
-   +'<div class=row><b>'+esc(c.symbol||'')+'</b>'+tag+'</div>'
-   +'<div class=mut style="font-size:11px;margin-top:6px">'+(c.reasons||[]).map(esc).join('<br>')+'</div></div>';}).join('');}
-function setIdxExpiry(v){IDXCFG.expiry=v;
- document.getElementById('idxWk').classList.toggle('on',v=='weekly');
- document.getElementById('idxMo').classList.toggle('on',v=='monthly');saveIndexOpts();}
-function saveIndexOpts(){var syms=[].slice.call(document.querySelectorAll('.idxsym')).filter(function(x){return x.checked;}).map(function(x){return x.value;});
- var body={enabled:document.getElementById('idxEnabled').checked,
-  auto_trade:document.getElementById('idxAuto').checked,
-  instruments:syms, expiry:(IDXCFG&&IDXCFG.expiry)||'weekly'};
- var m=document.getElementById('idxmsg');if(m)m.textContent='saving…';
- api('/api/index-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-  .then(function(r){if(m)m.textContent=r.ok?'saved':'save failed';loadIndexOpts();})
-  .catch(function(){if(m)m.textContent='save failed';});}
-var IDXCFG={};
-
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};
  el.innerHTML=`<div class=sec>account</div>
  <div class=raise><div style="display:flex;gap:12px;align-items:center"><div class=prof style="width:44px;height:44px;font-size:17px">${(u.username||'U')[0].toUpperCase()}</div><div><div style="font-weight:600">${u.username||'—'}</div><div class=mut style="font-size:12px">${u.role||'user'} · credits ${u.credits!=null?u.credits:'—'}</div></div></div></div>
@@ -3194,6 +3151,49 @@ function loadOrders(){api('/v2/api/orders?limit=500').then(r=>{var os=r.j.filter
 function setOrdSide(s){var l=document.getElementById('ordlist');if(l){l.classList.remove('os-buy','os-sell');l.classList.add('os-'+s)}document.querySelectorAll('#ordside b').forEach(function(b,i){b.classList.toggle('on',(i===0)===(s==='buy'))})}
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
+function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
+ api('/api/index-settings').then(function(r){var d=r.j||{};IDXCFG=d;el.innerHTML=idxHtml(d);
+  api('/api/index-call').then(function(c){var box=document.getElementById('idxcall');
+   if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
+ }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
+function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
+ // auto-trade is shown but held DISABLED until the feed can price a contract —
+ // a switch that silently does nothing is worse than one you cannot reach.
+ var blocked=!d.live_quotes;
+ return '<div class=mut style="font-size:13px;margin-bottom:10px">Buys index calls (CE) when the read is bullish, puts (PE) when bearish. Long options only — the most you can lose is the premium paid.</div>'
+ +'<div class=row style="padding:7px 0"><span>Show the CE/PE call</span>'
+ +'<input type=checkbox id=idxEnabled '+(d.enabled?'checked':'')+' onchange=saveIndexOpts()></div>'
+ +'<div class=row style="padding:7px 0;border-top:1px solid var(--line)"><span>Auto-trade the call'
+ +(blocked?'<div class=mut style="font-size:11px">unavailable — no live option prices, so a position could not be exited</div>':'')
+ +'</span><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()></div>'
+ +'<div class=mut style="font-size:11px;margin:12px 0 6px">indices to call</div>'
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+s.map(function(x){
+    return '<label class=tgopt style="border:1px solid var(--line);border-radius:8px;padding:6px 11px"><input type=checkbox class=idxsym value="'+x+'" '+(sel.indexOf(x)>=0?'checked':'')+' onchange=saveIndexOpts()> '+x+'</label>';}).join('')
+ +'</div>'
+ +'<div class=mut style="font-size:11px;margin:12px 0 6px">expiry</div>'
+ +'<div class=toggle><b id=idxWk class="'+(d.expiry!='monthly'?'on':'')+'" onclick="setIdxExpiry(\'weekly\')">Weekly</b>'
+ +'<b id=idxMo class="'+(d.expiry=='monthly'?'on':'')+'" onclick="setIdxExpiry(\'monthly\')">Monthly</b></div>'
+ +'<div class=mut style="font-size:11px;margin:14px 0 6px">today\'s call</div><div id=idxcall class=skel>loading…</div>'
+ +'<div id=idxmsg class=mut style="font-size:12px;margin-top:9px"></div>';}
+function idxCallHtml(calls){if(!calls.length)return '<div class=mut style="font-size:12px">no indices selected</div>';
+ return calls.map(function(c){
+  var tag=c.call?('<span class="badge '+(c.call=='CE'?'bg-up':'bg-dn')+'">'+c.call+'</span>'):'<span class="badge bg-mut">no trade</span>';
+  return '<div style="border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px">'
+   +'<div class=row><b>'+esc(c.symbol||'')+'</b>'+tag+'</div>'
+   +'<div class=mut style="font-size:11px;margin-top:6px">'+(c.reasons||[]).map(esc).join('<br>')+'</div></div>';}).join('');}
+function setIdxExpiry(v){IDXCFG.expiry=v;
+ document.getElementById('idxWk').classList.toggle('on',v=='weekly');
+ document.getElementById('idxMo').classList.toggle('on',v=='monthly');saveIndexOpts();}
+function saveIndexOpts(){var syms=[].slice.call(document.querySelectorAll('.idxsym')).filter(function(x){return x.checked;}).map(function(x){return x.value;});
+ var body={enabled:document.getElementById('idxEnabled').checked,
+  auto_trade:document.getElementById('idxAuto').checked,
+  instruments:syms, expiry:(IDXCFG&&IDXCFG.expiry)||'weekly'};
+ var m=document.getElementById('idxmsg');if(m)m.textContent='saving…';
+ api('/api/index-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){if(m)m.textContent=r.ok?'saved':'save failed';loadIndexOpts();})
+  .catch(function(){if(m)m.textContent='save failed';});}
+var IDXCFG={};
+
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
  setTimeout(loadIndexOpts,0);
  el.innerHTML=`<div class=sec>account</div>
