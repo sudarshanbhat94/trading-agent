@@ -41,6 +41,12 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 BHAV_URL = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_%s.csv"
 FIIDII_URL = HOME + "/api/fiidiiTradeReact"
 BULK_URL = "https://nsearchives.nseindia.com/content/equities/bulk.csv"
+ALLINDICES_URL = HOME + "/api/allIndices"
+# Participant-wise open interest: FII / DII / Client / Pro positioning in index
+# futures and options. This is the cleanest institutional read available in
+# India and has no equivalent in most markets.
+PARTICIPANT_OI_URL = ("https://nsearchives.nseindia.com/content/nsccl/"
+                      "fao_participant_oi_%s.csv")
 # Index constituent lists carry a real Industry column. Together these cover the
 # large/mid/small-cap universe the engine actually trades.
 INDEX_LISTS = {
@@ -68,6 +74,15 @@ def _schema(con):
     con.execute("CREATE TABLE IF NOT EXISTS fii_dii_flows("
                 "date TEXT, category TEXT, buy_value REAL, sell_value REAL,"
                 " net_value REAL, PRIMARY KEY(date, category))")
+    con.execute("CREATE TABLE IF NOT EXISTS india_vix("
+                "date TEXT PRIMARY KEY, value REAL, pct_change REAL,"
+                " day_high REAL, day_low REAL)")
+    con.execute("CREATE TABLE IF NOT EXISTS participant_oi("
+                "date TEXT, client_type TEXT,"
+                " fut_idx_long REAL, fut_idx_short REAL,"
+                " opt_idx_call_long REAL, opt_idx_put_long REAL,"
+                " opt_idx_call_short REAL, opt_idx_put_short REAL,"
+                " PRIMARY KEY(date, client_type))")
     con.execute("CREATE TABLE IF NOT EXISTS bulk_deals("
                 "date TEXT, symbol TEXT, client TEXT, side TEXT, quantity REAL,"
                 " price REAL, PRIMARY KEY(date, symbol, client, side, quantity))")
@@ -130,6 +145,72 @@ def ingest_fii_dii(con, http):
     if rows:
         con.executemany("INSERT OR REPLACE INTO fii_dii_flows"
                         "(date,category,buy_value,sell_value,net_value) VALUES(?,?,?,?,?)", rows)
+        con.commit()
+    return len(rows)
+
+
+def ingest_vix(con, http, day=None):
+    """India VIX from the all-indices snapshot.
+
+    VIX is what makes IV rank computable: knowing an option costs 2% of spot is
+    meaningless without knowing whether that is high or low for this market.
+    """
+    try:
+        payload = http.get(ALLINDICES_URL).json()
+    except Exception as exc:
+        print(f"  vix: {exc}")
+        return 0
+    for item in (payload or {}).get("data") or []:
+        if "VIX" not in str(item.get("index") or "").upper():
+            continue
+        stamp = (day or date.today()).isoformat()
+        con.execute("INSERT OR REPLACE INTO india_vix(date,value,pct_change,day_high,day_low)"
+                    " VALUES(?,?,?,?,?)",
+                    (stamp, _num(item.get("last")), _num(item.get("percentChange")),
+                     _num(item.get("high")), _num(item.get("low"))))
+        con.commit()
+        return 1
+    return 0
+
+
+def ingest_participant_oi(con, http, day):
+    """FII / DII / Client / Pro positioning in index futures and options.
+
+    Read as positioning rather than as a signal to copy: FIIs being heavily long
+    index futures says the move has already been paid for, not that it will
+    continue. It is the second row of the file (the header is a title line) that
+    carries the real column names.
+    """
+    url = PARTICIPANT_OI_URL % day.strftime("%d%m%Y")
+    try:
+        response = http.get(url)
+    except Exception as exc:
+        print(f"  participant oi {day}: {exc}")
+        return 0
+    if response.status_code != 200 or not response.text.strip():
+        return 0
+    lines = response.text.strip().splitlines()
+    if len(lines) < 2:
+        return 0
+    reader = csv.DictReader(io.StringIO("\n".join(lines[1:])))
+    rows = []
+    for row in reader:
+        clean = {(k or "").strip(): (v.strip() if isinstance(v, str) else v)
+                 for k, v in row.items()}
+        who = clean.get("Client Type")
+        if not who:
+            continue
+        rows.append((day.isoformat(), who,
+                     _num(clean.get("Future Index Long"), 0.0),
+                     _num(clean.get("Future Index Short"), 0.0),
+                     _num(clean.get("Option Index Call Long"), 0.0),
+                     _num(clean.get("Option Index Put Long"), 0.0),
+                     _num(clean.get("Option Index Call Short"), 0.0),
+                     _num(clean.get("Option Index Put Short"), 0.0)))
+    if rows:
+        con.executemany("INSERT OR REPLACE INTO participant_oi(date,client_type,"
+                        "fut_idx_long,fut_idx_short,opt_idx_call_long,opt_idx_put_long,"
+                        "opt_idx_call_short,opt_idx_put_short) VALUES(?,?,?,?,?,?,?,?)", rows)
         con.commit()
     return len(rows)
 
@@ -212,6 +293,14 @@ def main():
             print(f"  delivery {day}: {n:,} symbols")
     print(f"delivery rows written: {total:,}")
     print(f"fii/dii rows written : {ingest_fii_dii(con, http):,}")
+    print(f"india vix            : {ingest_vix(con, http):,}")
+    poi = 0
+    for back in range(1, args.backfill_days + 1):
+        day = date.today() - timedelta(days=back)
+        if day.weekday() >= 5:
+            continue
+        poi += ingest_participant_oi(con, http, day)
+    print(f"participant OI rows  : {poi:,}")
     print(f"bulk deal rows       : {ingest_bulk_deals(con, http):,}")
     if not args.skip_sectors:
         print(f"sectors updated      : {ingest_sectors(con, http):,}")

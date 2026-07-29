@@ -183,6 +183,81 @@ class SectorTest(unittest.TestCase):
         self.assertEqual(con.execute("SELECT sector FROM universe").fetchone()[0], "Technology")
 
 
+PARTICIPANT_CSV = """Participant wise Open Interest as on 28-Jul-2026
+Client Type,Future Index Long,Future Index Short,Option Index Call Long,Option Index Put Long,Option Index Call Short,Option Index Put Short
+FII,21862,227463,100,200,300,400
+DII,70112,15641,10,20,30,40
+TOTAL,318092,318092,110,220,330,440
+"""
+
+ALLINDICES = {"data": [{"index": "NIFTY 50", "last": 24000, "percentChange": 0.5},
+                       {"index": "INDIA VIX", "last": 12.01, "percentChange": -4.41,
+                        "high": 12.9, "low": 11.8}]}
+
+
+class VixTest(unittest.TestCase):
+    def test_vix_is_picked_out_of_the_index_list(self) -> None:
+        """The endpoint returns every index; only VIX is wanted."""
+        con = memdb()
+        http = FakeHttp({"allIndices": FakeResponse(payload=ALLINDICES)})
+        self.assertEqual(ingest.ingest_vix(con, http, day=date(2026, 7, 29)), 1)
+        row = con.execute("SELECT date,value,pct_change FROM india_vix").fetchone()
+        self.assertEqual(row, ("2026-07-29", 12.01, -4.41))
+
+    def test_a_negative_change_keeps_its_sign(self) -> None:
+        """A VIX collapse is the informative case — losing the sign inverts it."""
+        con = memdb()
+        http = FakeHttp({"allIndices": FakeResponse(payload=ALLINDICES)})
+        ingest.ingest_vix(con, http, day=date(2026, 7, 29))
+        self.assertLess(con.execute("SELECT pct_change FROM india_vix").fetchone()[0], 0)
+
+    def test_a_rerun_does_not_duplicate(self) -> None:
+        con = memdb()
+        http = FakeHttp({"allIndices": FakeResponse(payload=ALLINDICES)})
+        ingest.ingest_vix(con, http, day=date(2026, 7, 29))
+        ingest.ingest_vix(con, http, day=date(2026, 7, 29))
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM india_vix").fetchone()[0], 1)
+
+
+class ParticipantOiTest(unittest.TestCase):
+    def _load(self):
+        con = memdb()
+        http = FakeHttp({"fao_participant_oi": FakeResponse(PARTICIPANT_CSV)})
+        n = ingest.ingest_participant_oi(con, http, date(2026, 7, 28))
+        return con, n
+
+    def test_the_title_line_is_skipped(self) -> None:
+        """The file opens with a title, NOT the header — parsing from line one
+        yields a single garbage column and silently zero rows."""
+        _con, n = self._load()
+        self.assertEqual(n, 3)
+
+    def test_fii_positioning_is_captured(self) -> None:
+        con, _n = self._load()
+        row = con.execute("SELECT fut_idx_long, fut_idx_short FROM participant_oi"
+                          " WHERE client_type='FII'").fetchone()
+        self.assertEqual(row, (21862.0, 227463.0))
+
+    def test_every_participant_type_is_kept(self) -> None:
+        """FII against DII is the comparison that carries the information;
+        keeping only one side would throw it away."""
+        con, _n = self._load()
+        kinds = {r[0] for r in con.execute("SELECT client_type FROM participant_oi")}
+        self.assertEqual(kinds, {"FII", "DII", "TOTAL"})
+
+    def test_a_rerun_does_not_duplicate(self) -> None:
+        con = memdb()
+        http = FakeHttp({"fao_participant_oi": FakeResponse(PARTICIPANT_CSV)})
+        ingest.ingest_participant_oi(con, http, date(2026, 7, 28))
+        ingest.ingest_participant_oi(con, http, date(2026, 7, 28))
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM participant_oi").fetchone()[0], 3)
+
+    def test_a_missing_file_is_not_an_error(self) -> None:
+        con = memdb()
+        http = FakeHttp({"fao_participant_oi": FakeResponse("", 404)})
+        self.assertEqual(ingest.ingest_participant_oi(con, http, date(2026, 7, 26)), 0)
+
+
 class NumberParsingTest(unittest.TestCase):
     def test_handles_the_shapes_nse_actually_sends(self) -> None:
         self.assertEqual(ingest._num("1,56,781"), 156781.0)
