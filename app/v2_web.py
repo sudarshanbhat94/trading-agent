@@ -477,10 +477,17 @@ def _index_live_quotes_ready():
     """
     try:
         con = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True, timeout=10)
-        n = con.execute("SELECT COUNT(*) FROM latest_quotes WHERE symbol LIKE 'NIFTY%CE'"
-                        " OR symbol LIKE 'NIFTY%PE'").fetchone()[0]
+        # nfo_quotes, NOT latest_quotes: option quotes are deliberately kept out
+        # of the equity feed so they cannot leak into the equity lanes' universe.
+        # Freshness matters as much as presence — yesterday's option prices would
+        # unlock auto-trade while leaving a position just as unmanageable.
+        row = con.execute("SELECT COUNT(*), MAX(ts) FROM nfo_quotes").fetchone()
         con.close()
-        return n > 0
+        if not row or not row[0] or not row[1]:
+            return False
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(str(row[1]).replace("Z", "+00:00"))).total_seconds()
+        return age < 15 * 60
     except Exception:
         return False
 
