@@ -599,6 +599,50 @@ def append_today_bar(tails, mdf, market, live, stale=None):
     return out, mdf
 
 
+# Falling-knife guard for the dip-buying lane. On 2026-07-29 swing_meanrev's
+# top-ranked signals were THANGAMAYL (-10.75% and sitting at the very low of its
+# day), J&KBANK (-6.55%) and PNGJL (-1.74%, 4% off its low) — stocks still in
+# free fall, not stocks that had finished falling. Only the market regime gate
+# was keeping them out of the book.
+#
+# The distinction that matters for mean reversion is not "how far has it
+# dropped" but "has it stopped dropping". A name down 10% that has bounced back
+# into the middle of its range is the setup this lane wants; the same name
+# pinned at the low is a knife. Range position separates the two; a raw
+# percentage change cannot.
+#
+# Deliberately NOT applied to mom_breakout — that lane buys names pressing their
+# highs, where this test is trivially satisfied and adds nothing.
+KNIFE_MIN_RANGE_POS = 0.25              # must be out of the bottom quarter of the day
+
+
+def day_range_position(lq):
+    """Where the live price sits in today's range: 0.0 at the low, 1.0 at the high.
+
+    Returns None when the range is unusable (missing, zero-width, or a price
+    outside its own high/low, which means a stale or broken quote). Callers must
+    treat None as "unknown" and not as a pass or a fail on its own.
+    """
+    if not lq:
+        return None
+    try:
+        high, low, price = float(lq.get("high") or 0), float(lq.get("low") or 0), float(lq.get("price") or 0)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0 or high <= 0 or low <= 0 or high <= low:
+        return None
+    if price < low or price > high:      # quote inconsistent with its own range
+        return None
+    return (price - low) / (high - low)
+
+
+def clear_of_the_day_low(lq, floor=KNIFE_MIN_RANGE_POS):
+    """True if the name has lifted off its low. Unknown range => allowed, so a
+    thin or missing quote never silently blocks the whole lane."""
+    pos = day_range_position(lq)
+    return True if pos is None else pos >= floor
+
+
 def _f(v, d):
     try:
         x = float(v)
@@ -1061,6 +1105,7 @@ def poll_market(market):
     stale = _stale_symbols(market)
     # candidate ordering: catalysts (gap) first, then swing; each must clear its own gate
     cand = []
+    knives = 0                                           # dip-buys rejected for still falling
     for s in sigs:
         if s["strategy"] in DISABLED_LANES:              # quarantined lanes never trade
             continue
@@ -1076,6 +1121,9 @@ def poll_market(market):
         if s["symbol"] in ETF_EXCLUDE:                  # no index/sector/leveraged ETFs
             continue
         if s["price"] < MIN_PRICE.get(market, 0.0):     # quality/liquidity floor
+            continue
+        if s["strategy"] == "swing_meanrev" and not clear_of_the_day_low(live.get(s["symbol"])):
+            knives += 1                                 # still falling — not a dip yet
             continue
         cand.append((pl["priority"], -s["score"], s, pl))
     # ---- meta-label gate: secondary P(win) model on top of the primary engine
@@ -1247,7 +1295,8 @@ def poll_market(market):
     mcon.close()
     v2.commit(); v2.close()
     _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · +{fills} new · "
-                       f"{vetoed} news-vetoed · {investig} investigation-rejected")
+                       f"{vetoed} news-vetoed · {investig} investigation-rejected · "
+                       f"{knives} still-falling")
 
 
 _INTRA_AVGVOL: dict = {}   # market -> (date, {sym: 20d avg daily volume}) refreshed daily
