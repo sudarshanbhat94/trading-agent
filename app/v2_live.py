@@ -157,7 +157,13 @@ INTRA = dict(
 # announcements (results / orders / board outcomes) joined with a big volume
 # surge + price strength. Full send: competes for the whole book (MAXPOS-bound).
 VOLSURGE = dict(
-    move_min=0.04,       # up >= 4% vs PREV CLOSE (a real day move, not noise)
+    # 4% -> 2% on 2026-07-29. Requiring a name to be up 4% AND within 1.5% of its
+    # day high meant buying at the top of a move that had already happened: all
+    # five of that morning's entries reversed straight into the stop. The volume
+    # gate (rvol >= 3) is what identifies a real surge; the price threshold was
+    # only making the entry late. 2% still filters noise but enters while the
+    # move is developing rather than after it.
+    move_min=0.02,       # up >= 2% vs PREV CLOSE (a real day move, not noise)
     move_max=0.19,       # >19% => likely upper-circuit locked / un-fillable — skip
     rvol_min=3.0,        # >= 3x usual volume pace for this time of day
     near_high=0.985,     # price within 1.5% of day's high (holding strong, not fading)
@@ -175,7 +181,12 @@ VOLSURGE = dict(
     # for rvol to mean anything, so entering there is guessing, not speed.
     start="09:18", last_entry="14:00",   # results/orders drop all day -> wide window
     squareoff="15:12",   # hard flat before the close — no overnight risk
-    tp=0.035, sl=0.0175, lock=0.015,
+    # sl 1.75% -> 2.5%: a stock that has just moved several percent on 3x volume
+    # routinely pulls back more than 1.75% without the setup failing, and that is
+    # exactly how 2026-07-29's entries died. Note this worsens reward:risk from
+    # 2.0:1 to 1.4:1, so the lane now needs a ~42% win rate rather than ~33% —
+    # the bet is that far fewer trades get shaken out.
+    tp=0.035, sl=0.025, lock=0.015,
 )
 # BTST (Buy Today, Sell Tomorrow): near the close, buy a strong-CLOSING catalyst
 # momentum name and hold ONE overnight to capture the gap-up. Validated on 2mo of
