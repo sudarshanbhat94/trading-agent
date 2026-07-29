@@ -32,6 +32,7 @@ import threading
 # data pulled at all). Re-enable US in one place: v2_live.ENABLED_MARKETS.
 MARKETS = {m: p for m, p in {"IN": "upstox", "US": "alpaca"}.items() if m in ENABLED_MARKETS}
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
+MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 
 
 def _build():
@@ -99,12 +100,107 @@ def _poll(db, providers, rows_for, label):
                 print(f"  [{m}] fetch error: {msg[:180]}", flush=True)
 
 
+# ---- index option lane -------------------------------------------------------
+# Options are polled SEPARATELY and written under their own source. Two reasons,
+# both about isolation rather than tidiness:
+#   * they are never added to the `universe` table, because that table is what
+#     get_universe() screens over — a NIFTY option sitting in it would become a
+#     buy candidate for the equity lanes;
+#   * they are stored under NFO_SOURCE, so _live("IN") (which selects on
+#     source='upstox-live') cannot see them either.
+# Only a few strikes around the money on the nearest expiry are polled: Upstox
+# rate-limits, and a 429 puts BOTH equity lanes into a 45s cooldown, so asking
+# for the full 1,549-contract chain would cost real quotes to serve options
+# nobody holds.
+NFO_SOURCE = "upstox-nfo"
+
+
+def _nfo_spots():
+    """{index: spot} from the most recent derivatives bhavcopy."""
+    out = {}
+    try:
+        import os
+        path = os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+        for (sym,) in con.execute("SELECT DISTINCT symbol FROM fo_bhav"):
+            row = con.execute("SELECT underlying FROM fo_bhav WHERE symbol=? AND underlying>0"
+                              " ORDER BY date DESC LIMIT 1", (sym,)).fetchone()
+            if row and row[0]:
+                out[sym] = float(row[0])
+        con.close()
+    except Exception:
+        pass
+    return out
+
+
+def _nfo_write(quotes, contracts):
+    """Persist option quotes under NFO_SOURCE, keeping them out of the equity feed."""
+    if not quotes:
+        return 0
+    meta = {c["symbol"]: c for c in contracts}
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for symbol, quote in quotes.items():
+        d = quote.to_dict() if hasattr(quote, "to_dict") else dict(quote)
+        c = meta.get(str(symbol).upper(), {})
+        rows.append((str(symbol).upper(), NFO_SOURCE, now,
+                     d.get("price"), d.get("open"), d.get("high"), d.get("low"),
+                     d.get("close"), d.get("volume"),
+                     c.get("underlying"), c.get("expiry"), c.get("strike"),
+                     c.get("option_type"), c.get("lot_size")))
+    try:
+        con = sqlite3.connect(MAIN_DB, timeout=20)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("""CREATE TABLE IF NOT EXISTS nfo_quotes(
+            symbol TEXT, source TEXT, ts TEXT, price REAL, open REAL, high REAL,
+            low REAL, close REAL, volume REAL, underlying TEXT, expiry TEXT,
+            strike REAL, option_type TEXT, lot_size REAL,
+            PRIMARY KEY(symbol, source))""")
+        con.executemany("INSERT OR REPLACE INTO nfo_quotes(symbol,source,ts,price,open,high,"
+                        "low,close,volume,underlying,expiry,strike,option_type,lot_size)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        con.commit(); con.close()
+        return len(rows)
+    except Exception as exc:
+        print(f"  [NFO] write failed: {str(exc)[:120]}", flush=True)
+        return 0
+
+
+def _nfo_worker(interval):
+    """Poll a small ATM window of index options while the market is open."""
+    try:
+        from app import nfo_contracts
+    except Exception as exc:
+        print(f"  [NFO] disabled: {exc}", flush=True)
+        return
+    db, providers, _rows, _symmap = _build()
+    if "IN" not in providers:
+        return
+    print(f"nfo worker up @ {interval}s", flush=True)
+    while True:
+        t0 = time.time()
+        try:
+            if market_regions.market_session_for_region("IN").get("is_open"):
+                contracts = nfo_contracts.select_many(_nfo_spots())
+                if contracts:
+                    quotes = asyncio.run(providers["IN"].get_quotes(contracts))
+                    n = _nfo_write(quotes, contracts)
+                    print(f"  [NFO] {n} option quotes @ "
+                          f"{datetime.now(timezone.utc).strftime('%H:%M:%S')}", flush=True)
+        except Exception as exc:
+            print(f"  [NFO] {str(exc)[:160]}", flush=True)
+        time.sleep(max(3.0, interval - (time.time() - t0)))
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=float, default=1.0)        # hot (held) cadence
     ap.add_argument("--full-interval", type=float, default=15.0)  # whole-universe cadence
+    ap.add_argument("--nfo-interval", type=float, default=20.0)   # index option cadence
+    ap.add_argument("--no-nfo", action="store_true")
     a = ap.parse_args()
 
     if a.once:
@@ -142,6 +238,8 @@ def main():
 
     t = threading.Thread(target=_hot_worker, daemon=True)
     t.start()
+    if not a.no_nfo:
+        threading.Thread(target=_nfo_worker, args=(a.nfo_interval,), daemon=True).start()
     _full_worker()
 
 
