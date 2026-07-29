@@ -257,6 +257,35 @@ class LaneConfigurationTest(unittest.TestCase):
         src = inspect.getsource(v2_live.poll_market)
         self.assertIn("MOM_REQUIRE_STRONG and not strong", src)
 
+    def test_swing_meanrev_exit_matches_the_measured_best(self) -> None:
+        """Same 19,510 entries, exit varied: stop3 +0.680%/trade vs the old
+        stop2+target3.5 at +0.506%. The target cost -0.06% and capped the best
+        trade at +28% against +69% without it."""
+        plan = v2_live.PLAN["swing_meanrev"]
+        self.assertEqual(plan["atr_stop"], 3.0)
+        self.assertEqual(plan["atr_target"], 0.0, "fixed target clips the winners")
+
+    def test_the_stop_is_not_removed_entirely(self) -> None:
+        """hold-only scored highest (+0.775%) but its worst trade was -45.9%
+        against -29.7% with a 3ATR stop. One such position undoes a quarter of
+        a year's edge, so the stop stays."""
+        self.assertGreater(v2_live.PLAN["swing_meanrev"]["atr_stop"], 0)
+
+    def test_sizing_is_normalised_by_stop_distance(self) -> None:
+        """Risk is shares x atr_stop x ATR. Without this, widening the stop
+        would raise risk per trade by 50% and flatter the change with leverage
+        rather than with a better exit."""
+        import inspect
+        src = inspect.getsource(v2_live.poll_market)
+        self.assertIn("BASE_ATR_STOP / stop_atr", src)
+        self.assertEqual(v2_live.BASE_ATR_STOP, 2.0)
+
+    def test_a_wider_stop_produces_a_smaller_position(self) -> None:
+        wide = v2_live.BASE_ATR_STOP / 3.0
+        narrow = v2_live.BASE_ATR_STOP / 2.0
+        self.assertLess(wide, narrow)
+        self.assertAlmostEqual(wide * 3.0, narrow * 2.0)   # equal rupee risk
+
     def test_mom_breakout_has_both_a_stop_and_a_target(self) -> None:
         """Operator required an explicit target; the lane previously had none
         (atr_target 0.0) and exited only on the trail or the hold limit."""

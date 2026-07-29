@@ -79,7 +79,21 @@ PLAN = {
     # for +0.02pp and was removed — the asymmetry is deliberate.
     # Cost of the gate: while the regime is OFF the lane queues signals and buys
     # nothing. That is the protection working, not a fault.
-    "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=2.0, atr_target=3.5, trail=0.0,  priority=2),
+    # stop 2.0 -> 3.0 ATR and the fixed target REMOVED, on measured evidence.
+    # Same 19,510 entries, only the exit varied (scripts/exit_cost_analysis.py),
+    # average net % per trade:
+    #     hold-only                +0.775   (worst single trade -45.9%)
+    #     stop 3ATR                +0.680   (worst -29.7%)
+    #     stop 2ATR                +0.569   (worst -19.9%)
+    #     stop 2ATR + target 3.5   +0.506   <- what this lane used to run
+    # The old settings gave up 35% of the entry edge. The target alone cost
+    # -0.06%/trade and capped the best trade at +28% against +69% without it —
+    # the same "targets clip the winners that pay for the losers" result the
+    # breakout study found independently.
+    # The stop is NOT removed even though hold-only scores best: it is what
+    # bounds the worst trade at -30% instead of -46%, and one -46% position
+    # would undo a quarter of a year's edge.
+    "swing_meanrev": dict(regime_gated=True,  threshold=0.55, atr_stop=3.0, atr_target=0.0, trail=0.0,  priority=2),
     # -- DISABLED_LANES defined just below the dict; gap_momentum is quarantined --
     # intraday news-momentum sleeve — entered by intraday_news_pass, never by the
     # daily signal path. atr_stop=1.0 so exit_monitor's atr_est reconstruction
@@ -303,6 +317,10 @@ GAP_TARGET = {"IN": 0.10, "US": 0.0}    # gap_momentum profit target by market: 
 # a typical IN swing name; a name at 2x that ATR gets ~half size, at 0.5x gets
 # up to VOL_SIZE_MAX. Clamped so no single position gets wildly over/under-sized.
 VOL_TARGET_ATR = 0.030
+# Stop distance the sizing model is calibrated against. A lane with a wider
+# stop is sized down in proportion, so risk per trade stays constant when an
+# exit rule changes.
+BASE_ATR_STOP = 2.0
 VOL_SIZE_MIN, VOL_SIZE_MAX = 0.55, 1.60
 # Hard ceiling on what ONE overnight-held position may be worth, as a fraction
 # of equity. This is a guardrail, NOT a re-tuning of the sizing model.
@@ -1261,6 +1279,16 @@ def poll_market(market):
         vol_mult = 1.0
         if atr_pct > 0:
             vol_mult = max(VOL_SIZE_MIN, min(VOL_SIZE_MAX, VOL_TARGET_ATR / atr_pct))
+        # Sizing normalised by STOP DISTANCE, not just volatility. The rupee at
+        # risk on a position is shares x atr_stop x ATR, so widening
+        # swing_meanrev's stop from 2.0 to 3.0 ATR would have raised risk per
+        # trade by 50% while the size stayed put — a better exit rule silently
+        # bought with more risk. Scaling by BASE_ATR_STOP/atr_stop holds the
+        # loss on a stopped-out trade at what it was before the change, so the
+        # measured improvement is the exit's and not extra leverage.
+        stop_atr = pl.get("atr_stop") or BASE_ATR_STOP
+        if stop_atr > 0:
+            vol_mult *= BASE_ATR_STOP / stop_atr
         remaining = max(1, max_pos - len(positions))
         base_alloc = equity_now / max_pos
         if DYN_ALLOC.get(market, True):

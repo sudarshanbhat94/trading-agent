@@ -94,15 +94,23 @@ class TrailTest(unittest.TestCase):
 
 class BreakevenLockTest(unittest.TestCase):
     def test_big_winner_locks_the_stop_at_entry(self) -> None:
-        """swing atr_stop is 2.0, so entry 100 / stop 90 implies ATR 5.
-        BE_TRIGGER_ATR is 3, so a peak at or above 115 arms breakeven."""
-        self.assertEqual(v2_live.PLAN["swing_meanrev"]["atr_stop"], 2.0)
+        """The lock arms off the ATR implied by the stop, so it moves with
+        atr_stop rather than with a fixed price. swing atr_stop is 3.0, so
+        entry 100 / stop 90 implies ATR 10/3, and BE_TRIGGER_ATR of 3 puts the
+        trigger at exactly entry + 10 = 110."""
+        stop_mult = v2_live.PLAN["swing_meanrev"]["atr_stop"]
         self.assertEqual(v2_live.BE_TRIGGER_ATR, 3.0)
-        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=115.0), _quote(112.0))
+        atr = (100.0 - 90.0) / stop_mult
+        trigger = 100.0 + v2_live.BE_TRIGGER_ATR * atr
+        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=trigger), _quote(trigger - 3))
         self.assertEqual(eff, 100.0)
 
     def test_below_the_trigger_the_stop_is_untouched(self) -> None:
-        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=114.0), _quote(112.0))
+        stop_mult = v2_live.PLAN["swing_meanrev"]["atr_stop"]
+        atr = (100.0 - 90.0) / stop_mult
+        trigger = 100.0 + v2_live.BE_TRIGGER_ATR * atr
+        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=trigger - 0.5),
+                                 _quote(trigger - 3))
         self.assertEqual(eff, 90.0)
 
     def test_intraday_lock_arms_just_above_entry(self) -> None:
