@@ -1402,10 +1402,20 @@ def _stream_payload():
                 as_of=datetime.now(IST).strftime("%H:%M:%S IST"))
 
 
+STREAM_MAX_SECONDS = 240        # recycle the SSE connection so a restart can land
+
+
 @router.get("/api/stream")
 async def api_stream():
     async def gen():
-        while True:
+        # Bounded, not `while True`. An unbounded stream is an request that never
+        # completes, and uvicorn's graceful shutdown waits for exactly that — so
+        # a single open dashboard tab made every restart hang the full 30s stop
+        # timeout and get SIGKILLed (19 times in three days). Ending the stream
+        # periodically gives shutdown a window to land cleanly; EventSource
+        # reconnects on its own, so the client sees no interruption.
+        deadline = time.monotonic() + STREAM_MAX_SECONDS
+        while time.monotonic() < deadline:
             try:
                 payload = await asyncio.to_thread(_stream_payload)
                 yield "data: " + _jsonmod.dumps(payload) + "\n\n"
