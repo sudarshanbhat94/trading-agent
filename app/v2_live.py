@@ -806,6 +806,25 @@ def _tg_daily_summary(market):
         pass
 
 
+def net_trade_pnl(market, shares, entry, exit_price):
+    """(net_pnl, net_return_pct) after round-trip costs — the ONE definition.
+
+    Exits recorded the GROSS move while the cash ledger was charged costs on
+    both sides. Equity was therefore honest but every statistic derived from
+    v2_trades — realised P&L, win rate, profit factor, per-lane attribution —
+    was flattered by exactly the cost of trading, and a small loser could be
+    reported as a winner. Three separate exit paths (the engine's exit_monitor
+    and two manual-sell endpoints) each had their own copy of the arithmetic;
+    this is the shared one, charged on the same basis as the cash ledger so the
+    two can no longer disagree.
+    """
+    cside = COST_SIDE.get(market, 0.0)
+    gross = shares * (exit_price - entry)
+    net = gross - cside * shares * (entry + exit_price)
+    basis = shares * entry
+    return net, (net / basis * 100) if basis else 0.0
+
+
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
                  stop, target, trail, conviction, why, peak=None):
     """THE single writer for v2_positions. Returns True if the row was written.
@@ -2002,9 +2021,10 @@ def exit_monitor(market):
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)
+            net, net_pct = net_trade_pnl(market, p["shares"], p["entry"], ex)
             v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
                        " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction FROM v2_positions WHERE id=?",
-                       (today_s, ex, p["shares"], p["shares"] * (ex - p["entry"]), (ex / p["entry"] - 1) * 100, reason, p["id"]))
+                       (today_s, ex, p["shares"], net, net_pct, reason, p["id"]))
             v2.execute("DELETE FROM v2_positions WHERE id=?", (p["id"],))
             try:
                 from . import telegram_bot

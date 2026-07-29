@@ -810,7 +810,8 @@ def api_sell(payload: dict):
             return JSONResponse({"error": "not holding " + sym}, status_code=400)
         pid, entry, shares, strat = r
         px = float((_live_map(market).get(sym) or {}).get("price") or entry)
-        pnl = shares * (px - entry); ret = (px / entry - 1) * 100
+        from .v2_live import net_trade_pnl        # one definition of the cost math
+        pnl, ret = net_trade_pnl(market, shares, entry, px)
         v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
                    " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,'manual',conviction FROM v2_positions WHERE id=?",
                    (datetime.now(IST).date().isoformat(), round(px, 2), shares, round(pnl, 2), round(ret, 2), pid))
@@ -1468,13 +1469,15 @@ def api_exit(pid: int):
         return JSONResponse(dict(error="position not found"), status_code=404)
     market, strat, sym, edate, entry, shares, conv = row
     px = _live_map(market).get(sym, {}).get("price", entry)
+    from .v2_live import net_trade_pnl            # one definition of the cost math
+    net, net_pct = net_trade_pnl(market, shares, entry, px)
     rw.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,"
                "shares,pnl,return_pct,reason,conviction) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                (market, strat, sym, edate, entry, datetime.now(IST).date().isoformat(), px, shares,
-                shares * (px - entry), (px / entry - 1) * 100, "manual", conv))
+                net, net_pct, "manual", conv))
     rw.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
     rw.commit(); rw.close()
-    return JSONResponse(dict(ok=True, symbol=sym, exit=round(px, 2), pnl=round((px / entry - 1) * 100, 2)))
+    return JSONResponse(dict(ok=True, symbol=sym, exit=round(px, 2), pnl=round(net_pct, 2)))
 
 
 @router.get("/api/watch")
