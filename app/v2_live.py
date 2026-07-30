@@ -430,7 +430,7 @@ INDEX_OPTIONS = dict(
     budget=100000.0,
     max_premium_pct=0.10,       # cap on premium at risk per position, of the OPTIONS book
     max_concurrent=1,           # one directional bet at a time
-    min_confidence=0.6,         # share of readings that must agree
+    min_confidence=0.4,         # 2 of 5 readings; risk is held by size+stop, not by abstaining
     stop_pct=0.35,              # premium stop: options move far, a tight stop is noise
     target_pct=0.60,            # premium target
     # The ATM straddle is the market's own expected move. Above this the

@@ -35,11 +35,17 @@ BEARISH_PATTERNS = frozenset({
     "hanging_man", "shooting_star", "bearish_marubozu", "bearish_engulfing", "evening_star",
 })
 
-# A call is only issued when at least this many readings agree AND nothing of
-# equal weight contradicts. Three of five is deliberately demanding: the cost of
-# a wrong option trade is the whole premium, while the cost of sitting out is
-# nothing.
-MIN_AGREEING = 3
+# A call needs this many readings agreeing AND a net majority.
+#
+# Was 3-of-5 with ZERO contradiction, which fired on 12% of sessions — the lane
+# spent almost all its time declining. That is not risk management, it is
+# absence. Risk on an option position is controlled by SIZE and the STOP, both
+# of which are enforced at entry; refusing to trade only guarantees no return.
+#
+# Now 2 agreeing and strictly more than the other side. A single dissenting
+# reading no longer vetoes — five independent readings rarely agree unanimously,
+# so demanding it made the strong-signal case unreachable.
+MIN_AGREEING = 2
 
 
 def _ema(values, span):
@@ -157,9 +163,9 @@ def decide(opens, highs, lows, closes, volumes, put_oi=None, call_oi=None,
     bullish = sum(1 for v in votes.values() if v > 0)
     bearish = sum(1 for v in votes.values() if v < 0)
     call = None
-    if bullish >= min_agreeing and bearish == 0:
+    if bullish >= min_agreeing and bullish > bearish:
         call = "CE"
-    elif bearish >= min_agreeing and bullish == 0:
+    elif bearish >= min_agreeing and bearish > bullish:
         call = "PE"
     # Confidence is the share of readings that agreed, so it can never exceed 1
     # and never implies more certainty than the number of inputs supports.
