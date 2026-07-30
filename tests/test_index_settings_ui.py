@@ -40,7 +40,11 @@ def _function_source(source: str, name: str) -> str:
 
 def _run(fn: str, arg) -> str:
     source = V2_WEB.read_text(encoding="utf-8")
-    js = _function_source(source, "esc") + _function_source(source, fn)
+    # Every helper the rendered function calls must be loaded too — a missing
+    # one throws ReferenceError in the browser and blanks the section, which is
+    # exactly how the Account tab broke before.
+    js = (_function_source(source, "esc") + _function_source(source, "fmtn")
+          + _function_source(source, fn))
     script = js + f"\nconsole.log({fn}(" + json.dumps(arg) + "));\n"
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "t.js"

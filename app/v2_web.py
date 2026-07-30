@@ -432,6 +432,10 @@ def api_index_settings():
         instruments=list(cfg.get("instruments") or ()), expiry=cfg.get("expiry", "weekly"),
         min_confidence=cfg.get("min_confidence", 0.6),
         available=list(INDEX_ALLOWED_INSTRUMENTS),
+        # The options book is SEPARATE from the equity book, so the UI has to
+        # show its own cash — otherwise the operator reads the equity number and
+        # assumes it funds options.
+        **_options_book(),
         # Surfaced so the UI can explain WHY auto-trade cannot be honoured yet,
         # rather than letting the operator switch it on and see nothing happen.
         live_quotes=_index_live_quotes_ready()))
@@ -467,6 +471,29 @@ def api_index_settings_save(payload: dict):
     except Exception as exc:
         return JSONResponse(dict(ok=False, error=str(exc)[:120]), status_code=500)
     return api_index_settings()
+
+
+def _options_book():
+    """(budget, cash, open positions) for the ring-fenced options book."""
+    try:
+        from . import v2_live
+        budget = float(v2_live.INDEX_OPTIONS.get("budget", 100000.0))
+        con = _ro(V2_DB)
+        spent = con.execute("SELECT COALESCE(SUM(entry_price*shares),0) FROM v2_positions"
+                            " WHERE strategy=?", ("index_options",)).fetchone()[0] or 0.0
+        realised = con.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
+                               " WHERE strategy=?", ("index_options",)).fetchone()[0] or 0.0
+        n = con.execute("SELECT COUNT(*) FROM v2_positions WHERE strategy=?",
+                        ("index_options",)).fetchone()[0]
+        con.close()
+        return dict(options_budget=round(budget, 2),
+                    options_cash=round(budget - spent + realised, 2),
+                    options_deployed=round(spent, 2),
+                    options_realised=round(realised, 2),
+                    options_positions=n)
+    except Exception:
+        return dict(options_budget=None, options_cash=None, options_deployed=None,
+                    options_realised=None, options_positions=0)
 
 
 def _index_live_quotes_ready():
@@ -1867,6 +1894,21 @@ def api_stock(symbol: str, market: str = "IN"):
                 candles.append([round(float(o), 2), round(float(h), 2), round(float(lo), 2),
                                 round(float(cl), 2), int(float(vv)) if vv == vv else 0])
                 cdates.append(str(ts)[:10])
+            # TODAY'S BAR. The daily candles stop at last night's close, so a
+            # stock that has gapped shows a plot ending far from the live price
+            # in the header — BALKRISIND closed 2081.7 and traded 2252 the next
+            # morning, putting the last drawn candle BELOW a stop the position
+            # was nowhere near. The chart has to end where the price is.
+            today_key = datetime.now(IST).date().isoformat()
+            if px and px > 0 and (not cdates or cdates[-1] < today_key):
+                lq = (_live_map(market) or {}).get(symbol) or {}
+                o_t = float(lq.get("open") or px)
+                h_t = float(lq.get("high") or max(px, o_t))
+                l_t = float(lq.get("low") or min(px, o_t))
+                candles.append([round(o_t, 2), round(max(h_t, px), 2),
+                                round(min(l_t, px), 2), round(px, 2),
+                                int(float(lq.get("volume") or 0))])
+                cdates.append(today_key)
         except Exception:
             candles, cdates = [], []
         ccy = "₹" if market == "IN" else "$"
@@ -2641,7 +2683,7 @@ button{border-radius:9px}
 .k-list{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
 .prow:last-child{border-bottom:none}
-.prow:hover{background:#f8f9fb}
+.prow:hover{background:var(--surf)}
 .prow-l{min-width:0}
 .prow-sym{font-size:14.5px;font-weight:600;color:var(--hd);display:flex;align-items:center}
 .prow-sub{font-size:12px;color:var(--mut);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3163,6 +3205,7 @@ function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
   api('/v2/api/index-call').then(function(c){var box=document.getElementById('idxcall');
    if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
  }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
+function fmtn(v){return (v==null)?'—':Math.round(v).toLocaleString('en-IN');}
 function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
  // An empty list means the request failed, not that there are no indices —
  // rendering blank checkboxes looked exactly like 'selection does not work'.
@@ -3175,6 +3218,13 @@ function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
  +'<label class=tgopt><input type=checkbox id=idxEnabled '+(d.enabled?'checked':'')+' onchange=saveIndexOpts()> Show the CE / PE call</label>'
  +'<label class=tgopt style="'+(blocked?'opacity:.55;cursor:not-allowed':'')+'"><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()> Auto-trade the call</label>'
  +(blocked?'<div class=mut style="font-size:11.5px;margin:-2px 0 4px 26px;line-height:1.45">Unavailable — no live option prices yet, so a position could not be exited.</div>':'')
+ +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">options book · separate from equity</div>'
+ +'<div class=grid style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">'
+ +'<div class=card><div class=mut style="font-size:11px">cash</div><div style="font-size:16px;font-weight:600">\u20b9'+fmtn(d.options_cash)+'</div></div>'
+ +'<div class=card><div class=mut style="font-size:11px">deployed</div><div style="font-size:16px;font-weight:600">\u20b9'+fmtn(d.options_deployed)+'</div></div>'
+ +'<div class=card><div class=mut style="font-size:11px">realised</div><div class="'+(d.options_realised<0?'dn':'up')+'" style="font-size:16px;font-weight:600">\u20b9'+fmtn(d.options_realised)+'</div></div>'
+ +'<div class=card><div class=mut style="font-size:11px">positions</div><div style="font-size:16px;font-weight:600">'+(d.options_positions||0)+'</div></div>'
+ +'</div>'
  +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">indices</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+s.map(function(x){
     var on=sel.indexOf(x)>=0;
