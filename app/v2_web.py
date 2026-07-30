@@ -2677,7 +2677,7 @@ html[data-theme=dark]{color-scheme:dark;background:#0f1114}
 /* ---- design polish: calmer type weight, precise cards, real hierarchy ---- */
 b,strong,.pos b,.card b,.raise b{font-weight:600}
 .hero{color:var(--hd);font-weight:600;letter-spacing:-.022em;font-size:33px}
-.num{color:#2b3139}
+.num{color:var(--tx)}
 .mut{color:#8b929c}
 .card,.raise,.pos{border-radius:10px;border-color:#e8eaee}
 .pos{padding:14px 16px}
@@ -2703,7 +2703,7 @@ button{border-radius:9px}
 .k-sub{font-size:13px;margin-top:4px}
 .k-metrics{display:flex;gap:14px;margin-top:16px;padding-top:15px;border-top:1px solid var(--line);flex-wrap:wrap}
 .k-metric{display:flex;flex-direction:column;gap:4px;flex:1;min-width:78px}
-.k-metric .num{font-size:15px;font-weight:600;color:#242a31}
+.k-metric .num{font-size:15px;font-weight:600;color:var(--hd)}
 .k-listhead{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#9aa1ac;font-weight:600;margin:22px 3px 8px}
 .k-list{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
@@ -2741,9 +2741,9 @@ button{border-radius:9px}
 .hp-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}
 .hp-stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 13px}
 .hp-slbl{font-size:11px;color:var(--mut);font-weight:500}
-.hp-sval{font-size:16px;font-weight:700;color:#242a31;margin-top:6px}
+.hp-sval{font-size:16px;font-weight:700;color:var(--hd);margin-top:6px}
 .hp-sval .up,.hp-sval .dn{font-weight:700}
-.hp-sechead{display:flex;justify-content:space-between;align-items:baseline;font-size:15px;font-weight:700;color:#1c2128;margin:22px 3px 10px}
+.hp-sechead{display:flex;justify-content:space-between;align-items:baseline;font-size:15px;font-weight:700;color:var(--hd);margin:22px 3px 10px}
 .hp-sechead .mut{font-size:12px;font-weight:500}
 @media(max-width:560px){.hp-stats{grid-template-columns:1fr 1fr}.hp-hero .hero{font-size:33px}}
 /* ---- AI report feed ---- */

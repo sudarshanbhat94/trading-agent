@@ -62,7 +62,7 @@ class GateTest(unittest.TestCase):
         """Enabling trading must not disable the measured constraints — these
         are what stop it buying rich Bank Nifty premium into an event."""
         src = self._src()
-        for gate in ('symbol.upper() != "NIFTY"', 'events["event_risk"]',
+        for gate in ('symbol.upper() != "NIFTY"', 'events["budget_day"]',
                      "max_straddle_pct", "max_premium_pct", "_risk_halt("):
             with self.subTest(gate=gate):
                 self.assertIn(gate, src)
@@ -72,10 +72,26 @@ class GateTest(unittest.TestCase):
         the move that happens."""
         self.assertIn('symbol.upper() != "NIFTY"', self._src())
 
-    def test_event_days_are_skipped(self) -> None:
-        """IV is bid into Budget/policy/expiry and collapses after, so a correct
-        direction still loses to the crush."""
-        self.assertIn('events["event_risk"]', self._src())
+    def test_policy_and_budget_days_are_skipped(self) -> None:
+        """Scheduled repricings: premium is bid beforehand and collapses after,
+        and no intraday edge survives paying that."""
+        src = self._src()
+        self.assertIn('events["budget_day"]', src)
+        self.assertIn('events["days_to_mpc"]', src)
+
+    def test_expiry_day_is_TRADEABLE(self) -> None:
+        """Weekly expiry is the highest-volume session for Indian index options
+        — where most option traders make their money, not a day to sit out. The
+        IV-crush argument applies to HOLDING through an event, not to trading
+        the session intraday."""
+        src = self._src()
+        self.assertNotIn('events["event_risk"]', src)
+        self.assertIn("EXPIRY_LAST_ENTRY", src)
+
+    def test_late_expiry_entries_are_still_refused(self) -> None:
+        """Past the cutoff on expiry day the remaining premium is nearly all
+        decay, so a late entry is buying the part that is guaranteed to go."""
+        self.assertGreaterEqual(v2_live.EXPIRY_LAST_ENTRY, "12:00")
 
     def test_rich_premium_is_refused(self) -> None:
         self.assertIn("max_straddle_pct", self._src())

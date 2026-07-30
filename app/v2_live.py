@@ -2194,8 +2194,23 @@ def index_options_pass(market):
 
     today = datetime.now(IST).date()
     events = event_calendar.events(today, MARKET_HOLIDAYS.get("IN", ()))
-    if events["event_risk"]:
-        _status[market] = "index options: sitting out an event day"
+    # EXPIRY DAY IS TRADEABLE and is deliberately NOT blocked. Weekly expiry is
+    # the highest-volume session for Indian index options — it is where most
+    # option traders make their money, not a day to sit out. The IV-crush
+    # argument applies to HOLDING a position through an event, not to trading
+    # the session, and these are intraday positions squared off before the
+    # close.
+    #
+    # Budget and RBI policy still block: those are scheduled repricings where
+    # premium is bid beforehand and collapses after, and no intraday edge
+    # survives paying that.
+    if events["budget_day"] or (events["days_to_mpc"] is not None
+                                and events["days_to_mpc"] <= 1):
+        _status[market] = "index options: sitting out a policy/budget event"
+        return
+    if events["is_expiry_day"] and hm > EXPIRY_LAST_ENTRY:
+        # Late on expiry day the remaining premium is almost all decay.
+        _status[market] = f"index options: past {EXPIRY_LAST_ENTRY} on expiry day"
         return
 
     v2 = _rw()
@@ -2625,6 +2640,7 @@ _last_btst: dict = {}        # btst throttle
 _last_preopen: dict = {}     # pre-open warm-up throttle
 _last_idx: dict = {}         # index-options throttle
 INDEX_OPT_INTERVAL = 60      # one directional bet; no need to scan faster
+EXPIRY_LAST_ENTRY = "13:30"  # on expiry day, later than this is buying pure decay
 _preopen_tried: dict = {}    # one restart-recovery attempt per session
 VOLSURGE_INTERVAL = 10      # 10s (was 20s): operator wants faster entry on surges
 INTRAMOM_INTERVAL = 30      # narrow entry window; no need to scan more often
