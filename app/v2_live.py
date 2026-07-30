@@ -419,7 +419,7 @@ _SESSION_OPENED_AT: dict = {}            # market -> ts when the session last tr
 # premium paid, known at entry.
 INDEX_OPTIONS = dict(
     enabled=True,               # compute and display the CE/PE call
-    auto_trade=False,           # place trades — operator's explicit choice
+    auto_trade=True,            # ON at the operator's explicit instruction (2026-07-30)
     instruments=("NIFTY",),     # which indices to call; BANKNIFTY is 2x the tick risk
     expiry="weekly",            # "weekly" or "monthly"
     # SEPARATE CAPITAL. Options do not share the equity book: a leveraged,

@@ -403,7 +403,8 @@ INDEX_SETTINGS_FILE = os.path.join(os.path.dirname(V2_DB), "index_options.json")
 # Only these keys can be set from the browser. Everything else in INDEX_OPTIONS
 # — the long-only rule, the premium cap — is a safety property, not a
 # preference, and is deliberately not reachable from the UI.
-INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry", "min_confidence")
+INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry",
+                  "min_confidence", "budget")
 INDEX_ALLOWED_INSTRUMENTS = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
 
 
@@ -454,6 +455,13 @@ def api_index_settings_save(payload: dict):
     if "min_confidence" in payload:
         try:
             saved["min_confidence"] = max(0.2, min(1.0, float(payload["min_confidence"])))
+        except (TypeError, ValueError):
+            pass
+    if "budget" in payload:
+        try:
+            # Floor at one lot's worth: a book too small to buy anything would
+            # silently never trade, which looks identical to a broken lane.
+            saved["budget"] = max(5000.0, float(payload["budget"]))
         except (TypeError, ValueError):
             pass
     if "instruments" in payload:
@@ -3236,6 +3244,8 @@ function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
  +'<label class=tgopt style="'+(blocked?'opacity:.55;cursor:not-allowed':'')+'"><input type=checkbox id=idxAuto '+(d.auto_trade?'checked':'')+(blocked?' disabled':'')+' onchange=saveIndexOpts()> Auto-trade the call</label>'
  +(blocked?'<div class=mut style="font-size:11.5px;margin:-2px 0 4px 26px;line-height:1.45">Unavailable — no live option prices yet, so a position could not be exited.</div>':'')
  +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">options book · separate from equity</div>'
+ +'<div class=field style="max-width:260px"><label>allocation (\u20b9)</label>'
+ +'<input id=idxBudget type=number value="'+Math.round(d.options_budget||100000)+'" onchange=saveIndexOpts()></div>'
  +'<div class=grid style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">'
  +'<div class=card><div class=mut style="font-size:11px">cash</div><div style="font-size:16px;font-weight:600">\u20b9'+fmtn(d.options_cash)+'</div></div>'
  +'<div class=card><div class=mut style="font-size:11px">deployed</div><div style="font-size:16px;font-weight:600">\u20b9'+fmtn(d.options_deployed)+'</div></div>'
@@ -3266,9 +3276,11 @@ function setIdxExpiry(v){IDXCFG.expiry=v;
  document.getElementById('idxWk').classList.toggle('on',v=='weekly');
  document.getElementById('idxMo').classList.toggle('on',v=='monthly');saveIndexOpts();}
 function saveIndexOpts(){var syms=[].slice.call(document.querySelectorAll('.idxsym')).filter(function(x){return x.checked;}).map(function(x){return x.value;});
+ var bEl=document.getElementById('idxBudget');
  var body={enabled:document.getElementById('idxEnabled').checked,
   auto_trade:document.getElementById('idxAuto').checked,
-  instruments:syms, expiry:(IDXCFG&&IDXCFG.expiry)||'weekly'};
+  instruments:syms, expiry:(IDXCFG&&IDXCFG.expiry)||'weekly',
+  budget:bEl?Number(bEl.value):undefined};
  var m=document.getElementById('idxmsg');if(m)m.textContent='saving…';
  api('/v2/api/index-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){if(m)m.textContent=r.ok?'saved':'save failed';loadIndexOpts();})

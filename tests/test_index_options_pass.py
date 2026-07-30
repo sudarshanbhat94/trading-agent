@@ -52,10 +52,20 @@ class GateTest(unittest.TestCase):
     def test_auto_trade_is_required(self) -> None:
         self.assertIn('cfg.get("auto_trade")', self._src())
 
-    def test_auto_trade_defaults_off(self) -> None:
-        """The call measured 36% accurate over 404 sessions. Making the path
-        real must not make it default-on."""
-        self.assertFalse(v2_live.INDEX_OPTIONS["auto_trade"])
+    def test_auto_trade_state_is_explicit(self) -> None:
+        """Turned ON by the operator on 2026-07-30, with the measured result
+        (36% direction accuracy over 404 sessions) stated and overruled. Pinned
+        so the state is a decision on record rather than a drift."""
+        self.assertTrue(v2_live.INDEX_OPTIONS["auto_trade"])
+
+    def test_the_gates_still_apply_with_auto_trade_on(self) -> None:
+        """Enabling trading must not disable the measured constraints — these
+        are what stop it buying rich Bank Nifty premium into an event."""
+        src = self._src()
+        for gate in ('symbol.upper() != "NIFTY"', 'events["event_risk"]',
+                     "max_straddle_pct", "max_premium_pct", "_risk_halt("):
+            with self.subTest(gate=gate):
+                self.assertIn(gate, src)
 
     def test_banknifty_is_excluded(self) -> None:
         """Measured: implied 2.20% vs realised 1.13% — premium priced for twice
