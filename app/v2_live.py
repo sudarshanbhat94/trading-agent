@@ -385,7 +385,8 @@ CREATE TABLE IF NOT EXISTS v2_book(market TEXT PRIMARY KEY, budget REAL, max_pos
 CREATE TABLE IF NOT EXISTS v2_positions(id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, strategy TEXT, symbol TEXT,
   entry_date TEXT, entry_price REAL, shares REAL, stop REAL, target REAL, trail REAL, peak REAL, conviction REAL, opened_at TEXT);
 CREATE TABLE IF NOT EXISTS v2_trades(id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, strategy TEXT, symbol TEXT,
-  entry_date TEXT, entry_price REAL, exit_date TEXT, exit_price REAL, shares REAL, pnl REAL, return_pct REAL, reason TEXT, conviction REAL);
+  entry_date TEXT, entry_price REAL, exit_date TEXT, exit_price REAL, shares REAL, pnl REAL, return_pct REAL, reason TEXT, conviction REAL,
+  opened_at TEXT, closed_at TEXT);
 CREATE TABLE IF NOT EXISTS v2_equity(market TEXT, date TEXT, equity REAL, cash REAL, positions_value REAL, n_positions INTEGER, PRIMARY KEY(market,date));
 CREATE TABLE IF NOT EXISTS v2_signals(market TEXT, strategy TEXT, date TEXT, symbol TEXT, conviction REAL, ref_close REAL, rank INTEGER);
 """
@@ -647,6 +648,17 @@ def ensure_schema(v2):
         v2.execute("ALTER TABLE v2_positions ADD COLUMN why TEXT")
     except Exception:
         pass
+    # Additive migration: a closed trade only ever recorded DATES, so the whole
+    # sell side of the ledger had no time of day. The UI showed "05:30 IST" for
+    # every one of them — midnight UTC shifted into IST, an hour before the
+    # market opens, invented from a field that never held a time. Carrying
+    # opened_at across on exit also keeps the buy leg's real fill time, which
+    # was previously discarded the moment the position closed.
+    for column in ("opened_at", "closed_at"):
+        try:
+            v2.execute(f"ALTER TABLE v2_trades ADD COLUMN {column} TEXT")
+        except Exception:
+            pass
     v2.commit()
 
 
@@ -2587,9 +2599,13 @@ def exit_monitor(market):
                       market, p["strategy"], sym, p["entry"], ex, reason,
                       p["stop"], eff, peak, lq["price"], lq.get("high") or 0.0,
                       lq.get("low") or 0.0, net_pct)
-            v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
-                       " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction FROM v2_positions WHERE id=?",
-                       (today_s, ex, p["shares"], net, net_pct, reason, p["id"]))
+            # opened_at rides across from the position; closed_at is stamped now.
+            # Without both, the ledger held only dates and the UI had to invent a
+            # clock time for every fill it displayed.
+            v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
+                       " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,opened_at,? FROM v2_positions WHERE id=?",
+                       (today_s, ex, p["shares"], net, net_pct, reason,
+                        datetime.now(timezone.utc).isoformat(), p["id"]))
             v2.execute("DELETE FROM v2_positions WHERE id=?", (p["id"],))
             try:
                 from . import telegram_bot

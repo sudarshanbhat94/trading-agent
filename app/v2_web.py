@@ -354,16 +354,39 @@ def _rw():
     return c
 
 
+def _col(con, table, column, missing="NULL"):
+    """`column` if the table has it, else a literal — for columns added by an
+    additive migration the engine may not have run yet. The web process opens
+    the book READ-ONLY, so it cannot add the column itself and must degrade."""
+    try:
+        if any(r[1] == column for r in con.execute(f"PRAGMA table_info({table})")):
+            return column
+    except Exception:
+        pass
+    return missing
+
+
 def _ist(ts):
+    """Render a stored timestamp in IST.
+
+    A DATE-ONLY value is rendered as a date, because no time was ever recorded.
+    It used to be parsed as midnight UTC and shifted into IST, so every row that
+    held only a date displayed "05:30 IST" — a clock time an hour before the
+    market opens, invented out of a field that never contained one. On 30 Jul
+    four of the six fills on the home page showed it, and all four sells did.
+    """
     if not ts:
         return ""
+    raw = str(ts).replace("LIVE_", "").strip()
     try:
-        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00").replace("LIVE_", ""))
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=timezone.utc)
-        return t.astimezone(IST).strftime("%d %b %H:%M IST")
+        t = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        return str(ts)
+        return raw
+    if len(raw) <= 10:
+        return t.strftime("%d %b")
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.astimezone(IST).strftime("%d %b %H:%M IST")
 
 
 @router.get("/api/positions")
@@ -1052,9 +1075,10 @@ def api_sell(payload: dict):
         px = float((_live_map(market).get(sym) or {}).get("price") or entry)
         from .v2_live import net_trade_pnl        # one definition of the cost math
         pnl, ret = net_trade_pnl(market, shares, entry, px)
-        v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction)"
-                   " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,'manual',conviction FROM v2_positions WHERE id=?",
-                   (datetime.now(IST).date().isoformat(), round(px, 2), shares, round(pnl, 2), round(ret, 2), pid))
+        v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
+                   " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,'manual',conviction,opened_at,? FROM v2_positions WHERE id=?",
+                   (datetime.now(IST).date().isoformat(), round(px, 2), shares, round(pnl, 2), round(ret, 2),
+                    datetime.now(timezone.utc).isoformat(), pid))
         v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
         v2.commit()
     finally:
@@ -1680,10 +1704,12 @@ def api_trades(limit: int = 60):
     v2 = _ro(V2_DB)
     rows = v2.execute(
         "SELECT market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,"
-        "return_pct,reason FROM v2_trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        "return_pct,reason," + _col(v2, "v2_trades", "opened_at") +
+        "," + _col(v2, "v2_trades", "closed_at") +
+        " FROM v2_trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     v2.close()
-    out = [dict(market=r[0], strategy=r[1], symbol=r[2], bought=_ist(r[3]), entry=round(r[4], 2),
-               sold=_ist(r[5]), exit=round(r[6], 2), pnl_amt=round(r[8]), pnl=round(r[9], 2),
+    out = [dict(market=r[0], strategy=r[1], symbol=r[2], bought=_ist(r[11] or r[3]), entry=round(r[4], 2),
+               sold=_ist(r[12] or r[5]), exit=round(r[6], 2), pnl_amt=round(r[8]), pnl=round(r[9], 2),
                reason=r[10], win=r[9] > 0) for r in rows]
     return JSONResponse(out)
 
@@ -1701,18 +1727,27 @@ def api_orders(limit: int = 120):
                            qty=round(shares, 2), price=round(entry, 2), value=round(entry * shares),
                            today=str(edate) == datetime.now(IST).date().isoformat(),
                            when=_ist(oat or edate), ts=str(oat or edate)))
-    for market, sym, edate, entry, xdate, exitp, shares, pnl, ret, reason, strat in v2.execute(
-            "SELECT market,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,strategy "
+    # COALESCE so a book written before the timestamp columns existed still
+    # renders — it falls back to the date, which now displays as a date instead
+    # of being shifted into a fictional 05:30 clock time.
+    for market, sym, edate, oat, entry, xdate, cat, exitp, shares, pnl, ret, reason, strat in v2.execute(
+            "SELECT market,symbol,entry_date," + _col(v2, "v2_trades", "opened_at") +
+            ",entry_price,exit_date," + _col(v2, "v2_trades", "closed_at") +
+            ",exit_price,shares,pnl,return_pct,reason,strategy "
             "FROM v2_trades ORDER BY id DESC LIMIT ?", (limit,)):
         ccy = "₹" if market == "IN" else "$"
         orders.append(dict(side="BUY", status="closed", symbol=sym, market=market, ccy=ccy, strategy=strat,
                            qty=round(shares, 2), price=round(entry, 2), value=round(entry * shares),
-                           when=_ist(edate), ts=str(edate)))
+                           # Bought and sold the same day: the buy leg belongs in
+                           # today's activity too. It carried no `today` flag, so
+                           # the home list dropped it and showed the sell alone.
+                           today=str(edate) == datetime.now(IST).date().isoformat(),
+                           when=_ist(oat or edate), ts=str(oat or edate)))
         orders.append(dict(side="SELL", status="closed", symbol=sym, market=market, ccy=ccy, strategy=strat,
                            qty=round(shares, 2), price=round(exitp, 2), value=round(exitp * shares),
                            entry=round(entry, 2), pnl=round(ret, 2), pnl_amt=round(pnl), reason=reason,
                            today=str(xdate) == datetime.now(IST).date().isoformat(),
-                           when=_ist(xdate), ts=str(xdate)))
+                           when=_ist(cat or xdate), ts=str(cat or xdate)))
     v2.close()
     orders.sort(key=lambda o: o["ts"], reverse=True)
     return JSONResponse(orders[:limit])
@@ -1721,19 +1756,19 @@ def api_orders(limit: int = 120):
 @router.post("/api/positions/{pid}/exit")
 def api_exit(pid: int):
     rw = _rw()
-    row = rw.execute("SELECT market,strategy,symbol,entry_date,entry_price,shares,conviction "
+    row = rw.execute("SELECT market,strategy,symbol,entry_date,entry_price,shares,conviction,opened_at "
                      "FROM v2_positions WHERE id=?", (pid,)).fetchone()
     if not row:
         rw.close()
         return JSONResponse(dict(error="position not found"), status_code=404)
-    market, strat, sym, edate, entry, shares, conv = row
+    market, strat, sym, edate, entry, shares, conv, oat = row
     px = _live_map(market).get(sym, {}).get("price", entry)
     from .v2_live import net_trade_pnl            # one definition of the cost math
     net, net_pct = net_trade_pnl(market, shares, entry, px)
     rw.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,"
-               "shares,pnl,return_pct,reason,conviction) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+               "shares,pnl,return_pct,reason,conviction,opened_at,closed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (market, strat, sym, edate, entry, datetime.now(IST).date().isoformat(), px, shares,
-                net, net_pct, "manual", conv))
+                net, net_pct, "manual", conv, oat, datetime.now(timezone.utc).isoformat()))
     rw.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
     rw.commit(); rw.close()
     return JSONResponse(dict(ok=True, symbol=sym, exit=round(px, 2), pnl=round(net_pct, 2)))
