@@ -473,6 +473,15 @@ def api_index_settings_save(payload: dict):
     return api_index_settings()
 
 
+def _fnum(value, default=0.0):
+    """float() that survives None/''/NaN — quote fields are often absent."""
+    try:
+        out = float(value)
+        return out if out == out and out > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _options_book():
     """(budget, cash, open positions) for the ring-fenced options book."""
     try:
@@ -1894,21 +1903,29 @@ def api_stock(symbol: str, market: str = "IN"):
                 candles.append([round(float(o), 2), round(float(h), 2), round(float(lo), 2),
                                 round(float(cl), 2), int(float(vv)) if vv == vv else 0])
                 cdates.append(str(ts)[:10])
-            # TODAY'S BAR. The daily candles stop at last night's close, so a
-            # stock that has gapped shows a plot ending far from the live price
-            # in the header — BALKRISIND closed 2081.7 and traded 2252 the next
-            # morning, putting the last drawn candle BELOW a stop the position
-            # was nowhere near. The chart has to end where the price is.
-            today_key = datetime.now(IST).date().isoformat()
-            if px and px > 0 and (not cdates or cdates[-1] < today_key):
-                lq = (_live_map(market) or {}).get(symbol) or {}
-                o_t = float(lq.get("open") or px)
-                h_t = float(lq.get("high") or max(px, o_t))
-                l_t = float(lq.get("low") or min(px, o_t))
-                candles.append([round(o_t, 2), round(max(h_t, px), 2),
-                                round(min(l_t, px), 2), round(px, 2),
-                                int(float(lq.get("volume") or 0))])
-                cdates.append(today_key)
+            # TODAY'S BAR, in its OWN try. The daily candles stop at last
+            # night's close, so a gapped stock plots a series ending far from
+            # the live price in the header — BALKRISIND closed 2081.7 and traded
+            # 2252 next morning, putting the final candle BELOW a stop the
+            # position was nowhere near.
+            #
+            # Isolated deliberately: on the first attempt this sat inside the
+            # outer try, so when it raised, the except wiped candles entirely
+            # and the chart vanished. An enhancement must degrade to "no
+            # today bar", never to "no chart".
+            try:
+                today_key = datetime.now(IST).date().isoformat()
+                if px and px > 0 and (not cdates or cdates[-1] < today_key):
+                    lq = (_live_map(market, [symbol]) or {}).get(str(symbol).upper()) or {}
+                    o_t = _fnum(lq.get("open"), px)
+                    h_t = _fnum(lq.get("high"), px)
+                    l_t = _fnum(lq.get("low"), px)
+                    candles.append([round(o_t, 2), round(max(h_t, px, o_t), 2),
+                                    round(min(l_t, px, o_t), 2), round(px, 2),
+                                    int(_fnum(lq.get("volume"), 0))])
+                    cdates.append(today_key)
+            except Exception:
+                _LOG.exception("today bar not added to %s chart", symbol)
         except Exception:
             candles, cdates = [], []
         ccy = "₹" if market == "IN" else "$"
