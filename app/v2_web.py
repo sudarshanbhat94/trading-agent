@@ -272,6 +272,15 @@ def strategy_stats(rows):
 def api_overview():
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
+    # they cannot leak into the equity lanes' universe). Without this merge an
+    # option position falls back to its ENTRY price and shows a permanent 0%,
+    # which is exactly what it looked like: held, priced, and never moving.
+    try:
+        from .v2_live import _option_live
+        live["IN"].update(_option_live())
+    except Exception:
+        pass
     markets = []
     for market, budget in _markets(v2):
         s = _market_stats(v2, market, budget, live[market])
@@ -361,6 +370,15 @@ def _ist(ts):
 def api_positions():
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
+    # they cannot leak into the equity lanes' universe). Without this merge an
+    # option position falls back to its ENTRY price and shows a permanent 0%,
+    # which is exactly what it looked like: held, priced, and never moving.
+    try:
+        from .v2_live import _option_live
+        live["IN"].update(_option_live())
+    except Exception:
+        pass
     out = []
     today_s = datetime.now(IST).date().isoformat()
     try:
@@ -1492,6 +1510,15 @@ def api_attribution():
     view."""
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
+    # they cannot leak into the equity lanes' universe). Without this merge an
+    # option position falls back to its ENTRY price and shows a permanent 0%,
+    # which is exactly what it looked like: held, priced, and never moving.
+    try:
+        from .v2_live import _option_live
+        live["IN"].update(_option_live())
+    except Exception:
+        pass
     agg = {}
     for m, strat, n, w, pnl, avg in v2.execute(
             "SELECT market,strategy,COUNT(*),SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),"
@@ -1716,6 +1743,15 @@ def api_exit(pid: int):
 def api_watch():
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
+    # they cannot leak into the equity lanes' universe). Without this merge an
+    # option position falls back to its ENTRY price and shows a permanent 0%,
+    # which is exactly what it looked like: held, priced, and never moving.
+    try:
+        from .v2_live import _option_live
+        live["IN"].update(_option_live())
+    except Exception:
+        pass
     held = {r[0] for r in v2.execute("SELECT symbol FROM v2_positions")}
     out, seen = [], set()
     for market, _ in _markets(v2):
@@ -1825,6 +1861,15 @@ def api_admin_jobs(market: str = "IN"):
 def api_stats():
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
+    # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
+    # they cannot leak into the equity lanes' universe). Without this merge an
+    # option position falls back to its ENTRY price and shows a permanent 0%,
+    # which is exactly what it looked like: held, priced, and never moving.
+    try:
+        from .v2_live import _option_live
+        live["IN"].update(_option_live())
+    except Exception:
+        pass
     out = []
     for market, budget in _markets(v2):
         s = _market_stats(v2, market, budget, live[market])
@@ -3054,7 +3099,9 @@ function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.pap
 function renderBalance(){var mb=document.getElementById('modeb');if(mb){mb.textContent=MODE;mb.className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}}
 function refresh(){renderBalance();loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
-function stratTag(st){return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
+function stratTag(st){st=st||'';
+ if(st.indexOf('index_options')>=0)return [st.indexOf('PE')>=0?'PE':'CE','bg-inf'];
+ return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
 function whyLine(p){if(!p.why)return '';var w=p.why,f=w.factors||{};var bits=(w.reasons||[]).slice(0,2);
  if(!bits.length)bits=['RS '+(f.rel_strength||'-')+' · vol '+(f.volume||'-')];
  return '<div class=mut style="font-size:10px;margin-top:3px" title="entry investigation">why: comp '+(w.composite||'-')+' · '+bits.join(' · ')+'</div>'}
