@@ -125,6 +125,31 @@ class ContractPickTest(unittest.TestCase):
     def test_empty_quotes_yield_nothing(self) -> None:
         self.assertIsNone(v2_live._pick_contract("NIFTY", "CE", 24010, {}))
 
+    def test_an_expensive_atm_does_not_block_the_trade(self) -> None:
+        """The reasoning error this fixes: ATM at ~Rs 22,000 is 22% of a Rs 1L
+        book, but a strike slightly out of the money is Rs 2,000-5,000 — an
+        ordinary position. Standing aside because ATM is dear is wrong."""
+        quotes = {"NIFTY_ATM_CE": q(24000, "CE", 346.0),      # 346 x 65 = 22,490
+                  "NIFTY_OTM_CE": q(24300, "CE", 31.6)}       # 31.6 x 65 = 2,054
+        out = v2_live._pick_contract("NIFTY", "CE", 24010, quotes, max_cost=10_000)
+        self.assertEqual(out["symbol"], "NIFTY_OTM_CE")
+
+    def test_the_nearest_affordable_strike_wins_not_the_cheapest(self) -> None:
+        """Further out is cheaper but expires worthless more often, so nearest
+        affordable is the trade-off — not the cheapest available."""
+        quotes = {"NEAR": q(24100, "CE", 90.0),      # 5,850
+                  "FAR": q(24800, "CE", 8.0)}        # 520, but far OTM
+        out = v2_live._pick_contract("NIFTY", "CE", 24010, quotes, max_cost=10_000)
+        self.assertEqual(out["symbol"], "NEAR")
+
+    def test_nothing_affordable_returns_none(self) -> None:
+        quotes = {"NIFTY_ATM_CE": q(24000, "CE", 346.0)}
+        self.assertIsNone(v2_live._pick_contract("NIFTY", "CE", 24010, quotes, max_cost=1_000))
+
+    def test_cost_is_reported_on_the_chosen_contract(self) -> None:
+        out = v2_live._pick_contract("NIFTY", "CE", 24010, self.QUOTES, max_cost=100_000)
+        self.assertAlmostEqual(out["cost"], out["price"] * out["lot_size"])
+
 
 class NoSymbolParsingTest(unittest.TestCase):
     def test_the_ticker_is_never_parsed_for_a_strike(self) -> None:

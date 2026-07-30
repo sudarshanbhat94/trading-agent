@@ -2209,15 +2209,16 @@ def index_options_pass(market):
                                    f"({straddle['pct']:.2f}% expected move)")
                 continue
 
-            contract = _pick_contract(symbol, side, spot, quotes)
+            # Give the selector the budget so it picks a strike that FITS,
+            # rather than insisting on ATM and standing aside when ATM is dear.
+            budget_per_trade = budget * cfg.get("max_premium_pct", 0.10)
+            contract = _pick_contract(symbol, side, spot, quotes, max_cost=budget_per_trade)
             if not contract:
+                _status[market] = (f"index options: no {side} strike under "
+                                   f"Rs {budget_per_trade:.0f}")
                 continue
             premium, lot = contract["price"], contract["lot_size"]
             cost = premium * lot
-            if lot <= 0 or cost <= 0 or cost > budget * cfg.get("max_premium_pct", 0.10):
-                _status[market] = (f"index options: 1 lot costs Rs {cost:.0f}, "
-                                   f"over the {cfg.get('max_premium_pct', 0.10) * 100:.0f}% cap")
-                continue
 
             why = json.dumps(dict(setup="index_options", side=side, symbol=symbol,
                                   confidence=verdict["confidence"],
@@ -2275,31 +2276,43 @@ def _index_chain(symbol):
         return []
 
 
-def _pick_contract(symbol, side, spot, quotes):
-    """The ATM contract on the side we want, from the LIVE option feed.
+def _pick_contract(symbol, side, spot, quotes, max_cost=None):
+    """The closest-to-the-money contract whose ONE LOT fits `max_cost`.
 
-    Chosen from live quotes rather than the chain so the premium used for
-    sizing is the one we would actually pay, not last night's settlement.
+    Not simply ATM. Demanding at-the-money and refusing everything else is how
+    this lane concluded a Rs 1L book "cannot trade options" — at ~Rs 22,000 a
+    lot, ATM is 22% of the book, while a strike a little out of the money runs
+    Rs 2,000-5,000, which is an ordinary 2-5% position. Real traders take the
+    strike that fits; they do not stand aside because the ATM is dear.
+
+    Preference order is therefore: affordable first, then nearest the money.
+    Further out is cheaper but expires worthless more often, so the nearest
+    affordable strike is the right trade-off rather than the cheapest one.
 
     Strike and side come from the STORED COLUMNS, never from parsing the ticker.
     A symbol like NIFTY2680424000CE runs the expiry code straight into the
-    strike, and a digits-from-the-right parse yields 2,680,424,000 — which is
-    not obviously wrong, so it would have silently chosen a nonsense contract.
+    strike, and a digits-from-the-right parse yields 2,680,424,000 — not
+    obviously wrong, so it would have silently chosen a nonsense contract.
     """
     want = "CE" if side == "CE" else "PE"
-    best = None
+    affordable, any_valid = [], []
     for sym, q in quotes.items():
         if (q.get("underlying") or "").upper() != symbol.upper():
             continue
         if (q.get("option_type") or "").upper() != want:
             continue
         strike = _f(q.get("strike"), 0.0)
-        if strike <= 0 or _f(q.get("price"), 0) <= 0 or _f(q.get("lot_size"), 0) <= 0:
+        price, lot = _f(q.get("price"), 0.0), _f(q.get("lot_size"), 0.0)
+        if strike <= 0 or price <= 0 or lot <= 0:
             continue
-        distance = abs(strike - spot)
-        if best is None or distance < best[0]:
-            best = (distance, dict(q, symbol=sym))
-    return best[1] if best else None
+        row = (abs(strike - spot), dict(q, symbol=sym, cost=price * lot))
+        any_valid.append(row)
+        if max_cost is None or price * lot <= max_cost:
+            affordable.append(row)
+    pool = affordable or []
+    if not pool:
+        return None
+    return min(pool)[1]
 
 
 def sector_watch_pass(market):
