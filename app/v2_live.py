@@ -425,6 +425,11 @@ INDEX_OPTIONS = dict(
     max_premium_pct=0.10,       # cap on premium at risk per position
     max_concurrent=1,           # one directional bet at a time
     min_confidence=0.6,         # share of readings that must agree
+    stop_pct=0.35,              # premium stop: options move far, a tight stop is noise
+    target_pct=0.60,            # premium target
+    # The ATM straddle is the market's own expected move. Above this the
+    # option is priced for more than the signal is playing for.
+    max_straddle_pct=1.5,
 )
 
 PREOPEN = {"IN": ("09:05", "09:15")}
@@ -525,6 +530,39 @@ def preopen_seed_map(hm, now=None):
         return preopen.cached(now=now)
     except Exception:
         return {}
+
+
+def _option_live(symbols=None):
+    """Live option quotes from nfo_quotes, shaped like the equity feed.
+
+    Options are stored separately on purpose (they must not appear in the
+    equity lanes' universe), which means every consumer of `_live` needs this
+    merge or an option position becomes invisible — enterable but never
+    exitable.
+    """
+    out = {}
+    try:
+        con = _ro(MAIN_DB)
+        rows = con.execute("SELECT symbol, price, open, high, low, volume, lot_size,"
+                           " strike, option_type, underlying, expiry"
+                           " FROM nfo_quotes").fetchall()
+        con.close()
+    except Exception:
+        return out
+    wanted = {str(s).upper() for s in symbols} if symbols else None
+    for symbol, price, open_, high, low, volume, lot, strike, opt_type, under, expiry in rows:
+        sym = str(symbol).upper()
+        if wanted is not None and sym not in wanted:
+            continue
+        price = _f(price, 0.0)
+        if price <= 0:
+            continue
+        out[sym] = dict(price=price, open=_f(open_, price), high=_f(high, price),
+                        low=_f(low, price), close=price, vol=_f(volume, 0.0),
+                        lot_size=_f(lot, 0.0), strike=_f(strike, 0.0),
+                        option_type=(opt_type or "").upper(),
+                        underlying=(under or "").upper(), expiry=expiry)
+    return out
 
 
 def _refresh_preopen():
@@ -2083,6 +2121,187 @@ def btst_pass(market, force=False):
 _SECTOR_ALERTED: dict = {}   # date -> set of sectors already radar-alerted (dedupe)
 
 
+def index_options_pass(market):
+    """Buy an index CE or PE when the call is strong enough — the execution path.
+
+    Everything before this produced analysis and nothing consumed it: the
+    direction engine, the chain analytics, the levels and the settings toggle
+    all existed while INDEX_OPTIONS appeared exactly once in this file, in its
+    config block. The switch was wired to nothing.
+
+    The gates below are not style — each one is a measured result from the
+    404-session study, and without them this lane loses money by construction:
+
+      * NIFTY ONLY. Bank Nifty's ATM straddle implies 2.20% while realised is
+        1.13% — premium priced at roughly twice the move that happens. Buying
+        it is paying double for the same exposure.
+      * NOT INTO AN EVENT. Implied volatility is bid before Budget/policy/expiry
+        and collapses after, so a directionally correct trade still loses to the
+        crush.
+      * NOT WHEN PREMIUM IS RICH. The ATM straddle is the market's own expected
+        move; if it already exceeds what the signal is playing for, the option is
+        priced against us regardless of direction.
+      * ONE POSITION, defined risk, premium capped as a share of the book.
+
+    The direction call itself measured at 36% accuracy over 404 sessions, which
+    is why min_confidence defaults high and auto_trade defaults False. This
+    makes the path REAL; it does not make the signal good.
+    """
+    cfg = INDEX_OPTIONS
+    if not cfg.get("enabled") or not cfg.get("auto_trade"):
+        return
+    if market != "IN" or not market_open(market):
+        return
+    hm = datetime.now(IST).strftime("%H:%M")
+    if hm < "09:20" or hm > "14:30":          # skip the open's noise and the close
+        return
+    try:
+        from . import event_calendar, index_direction, option_chain
+    except Exception:
+        _LOG.exception("index options: analytics unavailable")
+        return
+
+    today = datetime.now(IST).date()
+    events = event_calendar.events(today, MARKET_HOLIDAYS.get("IN", ()))
+    if events["event_risk"]:
+        _status[market] = "index options: sitting out an event day"
+        return
+
+    v2 = _rw()
+    try:
+        book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
+        if not book:
+            return
+        budget = float(book[0])
+        held = [r[0] for r in v2.execute(
+            "SELECT symbol FROM v2_positions WHERE market=? AND strategy=?",
+            (market, "index_options"))]
+        if len(held) >= cfg.get("max_concurrent", 1):
+            return
+        halt, reason = _risk_halt(v2, market)
+        if halt:
+            _status[market] = "index options paused · " + reason
+            return
+
+        quotes = _option_live()
+        if not quotes:
+            _status[market] = "index options: no live option prices"
+            return
+
+        for symbol in cfg.get("instruments", ()):
+            if symbol.upper() != "NIFTY":
+                continue                       # measured: see docstring
+            bars = _index_bars(symbol)
+            if len(bars) < 55:
+                continue
+            o, h, l, c, v = ([float(b[i] or 0) for b in bars] for i in range(1, 6))
+            chain, spot = _index_chain(symbol), c[-1]
+            put_oi = sum(r["oi"] for r in chain if r["opt_type"] == "PE") or None
+            call_oi = sum(r["oi"] for r in chain if r["opt_type"] == "CE") or None
+            verdict = index_direction.decide(o, h, l, c, v, put_oi=put_oi, call_oi=call_oi)
+            side = verdict["call"]
+            if not side or verdict["confidence"] < cfg.get("min_confidence", 0.6):
+                continue
+
+            straddle = option_chain.atm_straddle(chain, spot) if chain else None
+            if straddle and straddle["pct"] > cfg.get("max_straddle_pct", 1.5):
+                _status[market] = (f"index options: premium too rich "
+                                   f"({straddle['pct']:.2f}% expected move)")
+                continue
+
+            contract = _pick_contract(symbol, side, spot, quotes)
+            if not contract:
+                continue
+            premium, lot = contract["price"], contract["lot_size"]
+            cost = premium * lot
+            if lot <= 0 or cost <= 0 or cost > budget * cfg.get("max_premium_pct", 0.10):
+                _status[market] = (f"index options: 1 lot costs Rs {cost:.0f}, "
+                                   f"over the {cfg.get('max_premium_pct', 0.10) * 100:.0f}% cap")
+                continue
+
+            why = json.dumps(dict(setup="index_options", side=side, symbol=symbol,
+                                  confidence=verdict["confidence"],
+                                  reasons=verdict["reasons"],
+                                  straddle_pct=straddle["pct"] if straddle else None,
+                                  days_to_expiry=events["days_to_expiry"],
+                                  unvalidated=True))
+            stop = premium * (1 - cfg.get("stop_pct", 0.35))
+            target = premium * (1 + cfg.get("target_pct", 0.60))
+            if not record_entry(v2, market, "index_options", contract["symbol"],
+                                today.isoformat(), premium, lot, stop, target, 0.0,
+                                verdict["confidence"], why):
+                continue
+            v2.commit()
+            _LOG.info("INDEX OPTION BUY %s %s x%.0f @ %.2f (cost Rs %.0f, conf %.2f)",
+                      contract["symbol"], side, lot, premium, cost, verdict["confidence"])
+            _status[market] = f"index options: bought {contract['symbol']} @ {premium:.2f}"
+            return
+    finally:
+        v2.close()
+
+
+def _index_bars(symbol, limit=60):
+    """Daily OHLCV for an index from its near-month future."""
+    try:
+        path = os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=20)
+        rows = con.execute(
+            "SELECT date, open, high, low, close, volume FROM ("
+            "  SELECT date, open, high, low, close, volume,"
+            "         ROW_NUMBER() OVER (PARTITION BY date ORDER BY expiry) rn"
+            "    FROM fo_bhav WHERE symbol=? AND instrument='FUT' AND close>0"
+            ") WHERE rn=1 ORDER BY date DESC LIMIT ?", (symbol, limit)).fetchall()
+        con.close()
+        return list(reversed(rows))
+    except Exception:
+        return []
+
+
+def _index_chain(symbol):
+    """Nearest-expiry chain rows for the chain analytics."""
+    try:
+        path = os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=20)
+        day = con.execute("SELECT MAX(date) FROM fo_bhav WHERE symbol=?", (symbol,)).fetchone()[0]
+        rows = con.execute(
+            "SELECT strike, opt_type, close, oi, volume FROM fo_bhav"
+            " WHERE symbol=? AND date=? AND instrument='OPT' AND expiry=("
+            "   SELECT MIN(expiry) FROM fo_bhav WHERE symbol=? AND date=? AND expiry>=date)",
+            (symbol, day, symbol, day)).fetchall()
+        con.close()
+        return [dict(strike=r[0], opt_type=r[1], close=r[2], oi=r[3], volume=r[4])
+                for r in rows]
+    except Exception:
+        return []
+
+
+def _pick_contract(symbol, side, spot, quotes):
+    """The ATM contract on the side we want, from the LIVE option feed.
+
+    Chosen from live quotes rather than the chain so the premium used for
+    sizing is the one we would actually pay, not last night's settlement.
+
+    Strike and side come from the STORED COLUMNS, never from parsing the ticker.
+    A symbol like NIFTY2680424000CE runs the expiry code straight into the
+    strike, and a digits-from-the-right parse yields 2,680,424,000 — which is
+    not obviously wrong, so it would have silently chosen a nonsense contract.
+    """
+    want = "CE" if side == "CE" else "PE"
+    best = None
+    for sym, q in quotes.items():
+        if (q.get("underlying") or "").upper() != symbol.upper():
+            continue
+        if (q.get("option_type") or "").upper() != want:
+            continue
+        strike = _f(q.get("strike"), 0.0)
+        if strike <= 0 or _f(q.get("price"), 0) <= 0 or _f(q.get("lot_size"), 0) <= 0:
+            continue
+        distance = abs(strike - spot)
+        if best is None or distance < best[0]:
+            best = (distance, dict(q, symbol=sym))
+    return best[1] if best else None
+
+
 def sector_watch_pass(market):
     """WATCH-ONLY (no auto-trade — unvalidated): surface two patterns the engine
     otherwise ignores, as Telegram radar alerts —
@@ -2262,6 +2481,12 @@ def exit_monitor(market):
                 pass
         v2.close(); return
     live = _live(market, positions.keys())       # only held symbols (cheap, not all 10k)
+    # Option contracts are NOT in latest_quotes — they are deliberately kept in
+    # nfo_quotes so they cannot leak into the equity lanes' universe. Without
+    # this merge exit_monitor would find no price for an option position and
+    # hold it forever: the engine could open an option trade and never close
+    # one, which is worse than not trading it at all.
+    live.update(_option_live(positions.keys()))
     sess = _session_opens(market, live)          # session high ratchets US trails between samples
     frozen = _stale_symbols(market)              # don't mark/exit off a stale (frozen) quote
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
@@ -2341,6 +2566,8 @@ _last_vs: dict = {}          # volume_surge throttle
 _last_sw: dict = {}          # sector_watch throttle
 _last_btst: dict = {}        # btst throttle
 _last_preopen: dict = {}     # pre-open warm-up throttle
+_last_idx: dict = {}         # index-options throttle
+INDEX_OPT_INTERVAL = 60      # one directional bet; no need to scan faster
 _preopen_tried: dict = {}    # one restart-recovery attempt per session
 VOLSURGE_INTERVAL = 10      # 10s (was 20s): operator wants faster entry on surges
 INTRAMOM_INTERVAL = 30      # narrow entry window; no need to scan more often
@@ -2470,6 +2697,9 @@ def loop(interval):
                     if time.time() - _last_btst.get(m, 0) >= BTST_INTERVAL:
                         btst_pass(m)                             # buy-today-sell-tomorrow (near close, catalyst gap)
                         _last_btst[m] = time.time()
+                    if time.time() - _last_idx.get(m, 0) >= INDEX_OPT_INTERVAL:
+                        index_options_pass(m)                    # index CE/PE (auto_trade gated)
+                        _last_idx[m] = time.time()
                     if time.time() - _last_sw.get(m, 0) >= SECTOR_WATCH_INTERVAL:
                         sector_watch_pass(m)                     # watch-only radar (sector co-move + NSE spurt)
                         _last_sw[m] = time.time()

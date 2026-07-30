@@ -1,0 +1,139 @@
+"""The index-options execution path.
+
+Everything before this produced analysis that nothing consumed: the direction
+engine, chain analytics, levels and the settings toggle all existed while
+INDEX_OPTIONS appeared exactly once in v2_live.py, in its config block. The
+switch the operator turned on was wired to nothing, and it took him asking "why
+isn't it buying" to surface that.
+
+So the first thing these tests assert is WIRING — that a pass exists, that the
+engine loop calls it, and that exits can see option prices at all. A lane that
+can enter but not exit is worse than one that does nothing.
+
+The gates are the second thing, and each is a measured result rather than a
+preference. Bank Nifty's ATM straddle implies 2.20% against 1.13% realised, so
+buying its premium is paying twice for the same exposure.
+"""
+
+from __future__ import annotations
+
+import inspect
+import unittest
+
+from app import v2_live
+
+
+class WiringTest(unittest.TestCase):
+    """The failure that started this: built, tested, and connected to nothing."""
+
+    def test_the_pass_exists(self) -> None:
+        self.assertTrue(callable(getattr(v2_live, "index_options_pass", None)))
+
+    def test_the_engine_loop_calls_it(self) -> None:
+        """The whole point. A pass nobody calls is dead code."""
+        src = inspect.getsource(v2_live.loop)
+        self.assertIn("index_options_pass(m)", src)
+
+    def test_exits_can_see_option_prices(self) -> None:
+        """Options live in nfo_quotes, not latest_quotes. Without this merge a
+        position is enterable and never exitable."""
+        src = inspect.getsource(v2_live.exit_monitor)
+        self.assertIn("_option_live(", src)
+
+    def test_entry_goes_through_the_single_writer(self) -> None:
+        src = inspect.getsource(v2_live.index_options_pass)
+        self.assertIn("record_entry(", src)
+
+
+class GateTest(unittest.TestCase):
+    def _src(self):
+        return inspect.getsource(v2_live.index_options_pass)
+
+    def test_auto_trade_is_required(self) -> None:
+        self.assertIn('cfg.get("auto_trade")', self._src())
+
+    def test_auto_trade_defaults_off(self) -> None:
+        """The call measured 36% accurate over 404 sessions. Making the path
+        real must not make it default-on."""
+        self.assertFalse(v2_live.INDEX_OPTIONS["auto_trade"])
+
+    def test_banknifty_is_excluded(self) -> None:
+        """Measured: implied 2.20% vs realised 1.13% — premium priced for twice
+        the move that happens."""
+        self.assertIn('symbol.upper() != "NIFTY"', self._src())
+
+    def test_event_days_are_skipped(self) -> None:
+        """IV is bid into Budget/policy/expiry and collapses after, so a correct
+        direction still loses to the crush."""
+        self.assertIn('events["event_risk"]', self._src())
+
+    def test_rich_premium_is_refused(self) -> None:
+        self.assertIn("max_straddle_pct", self._src())
+
+    def test_position_count_is_capped(self) -> None:
+        self.assertIn("max_concurrent", self._src())
+
+    def test_premium_at_risk_is_capped(self) -> None:
+        self.assertIn("max_premium_pct", self._src())
+
+    def test_the_risk_halt_is_respected(self) -> None:
+        self.assertIn("_risk_halt(", self._src())
+
+    def test_no_selling_to_open_anywhere(self) -> None:
+        """A short option has unbounded loss; one gap through a strike would
+        exceed the whole book."""
+        src = self._src()
+        self.assertNotIn("SELL", src.upper().replace("SELLING", ""))
+
+
+def q(strike, side, price, under="NIFTY", lot=65.0):
+    return dict(price=price, lot_size=lot, strike=strike,
+                option_type=side, underlying=under)
+
+
+class ContractPickTest(unittest.TestCase):
+    """Strike and side are read from STORED COLUMNS, never parsed out of the
+    ticker: NIFTY2680424000CE runs the expiry code into the strike, and taking
+    digits from the right yields 2,680,424,000 — wrong, but not obviously so,
+    which would have silently selected a nonsense contract."""
+
+    QUOTES = {
+        "NIFTY2680423900CE": q(23900, "CE", 150.0),
+        "NIFTY2680424000CE": q(24000, "CE", 100.0),
+        "NIFTY2680424100CE": q(24100, "CE", 60.0),
+        "NIFTY2680424000PE": q(24000, "PE", 90.0),
+        "BANKNIFTY2680456000CE": q(56000, "CE", 400.0, under="BANKNIFTY", lot=30.0),
+    }
+
+    def test_picks_the_strike_nearest_spot(self) -> None:
+        out = v2_live._pick_contract("NIFTY", "CE", 24010, self.QUOTES)
+        self.assertEqual(out["symbol"], "NIFTY2680424000CE")
+
+    def test_respects_the_side(self) -> None:
+        out = v2_live._pick_contract("NIFTY", "PE", 24010, self.QUOTES)
+        self.assertTrue(out["symbol"].endswith("PE"))
+
+    def test_does_not_stray_to_another_index(self) -> None:
+        out = v2_live._pick_contract("NIFTY", "CE", 24010, self.QUOTES)
+        self.assertFalse(out["symbol"].startswith("BANKNIFTY"))
+
+    def test_zero_price_or_lot_is_skipped(self) -> None:
+        quotes = {"NIFTY2680424000CE": q(24000, "CE", 0.0),
+                  "NIFTY2680424100CE": q(24100, "CE", 60.0, lot=0.0)}
+        self.assertIsNone(v2_live._pick_contract("NIFTY", "CE", 24010, quotes))
+
+    def test_empty_quotes_yield_nothing(self) -> None:
+        self.assertIsNone(v2_live._pick_contract("NIFTY", "CE", 24010, {}))
+
+
+class NoSymbolParsingTest(unittest.TestCase):
+    def test_the_ticker_is_never_parsed_for_a_strike(self) -> None:
+        """Guards the bug directly: any digits-from-the-right helper is a
+        landmine, because the expiry code sits immediately before the strike."""
+        src = inspect.getsource(v2_live._pick_contract)
+        self.assertIn('q.get("strike")', src)
+        self.assertFalse(hasattr(v2_live, "_strike_from_symbol"))
+
+
+if __name__ == "__main__":
+    unittest.main()
