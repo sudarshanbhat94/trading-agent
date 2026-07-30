@@ -91,6 +91,38 @@ def q(strike, side, price, under="NIFTY", lot=65.0):
                 option_type=side, underlying=under)
 
 
+class SeparateBookTest(unittest.TestCase):
+    """Options run on their own Rs 1L, ring-fenced from equity.
+
+    Sharing one pot would let a bad options week shrink the position sizing of
+    the lane that actually has a measured edge — and would make both results
+    unreadable, since neither could be attributed in a mixed ledger.
+    """
+
+    def _src(self):
+        return inspect.getsource(v2_live.index_options_pass)
+
+    def test_the_options_book_has_its_own_budget(self) -> None:
+        self.assertEqual(v2_live.INDEX_OPTIONS["budget"], 100000.0)
+
+    def test_it_never_reads_the_equity_book(self) -> None:
+        """v2_book is the EQUITY book. An option must not be funded from it."""
+        self.assertNotIn("FROM v2_book", self._src())
+
+    def test_cash_is_computed_from_this_lane_only(self) -> None:
+        src = self._src()
+        self.assertIn("options_cash", src)
+        self.assertIn('"index_options"', src)
+
+    def test_sizing_uses_remaining_cash_not_the_starting_budget(self) -> None:
+        """Otherwise losses would not shrink the next bet and the lane would
+        keep staking the original amount after drawing down."""
+        self.assertIn("min(options_cash", self._src())
+
+    def test_an_exhausted_book_stops_trading(self) -> None:
+        self.assertIn("book exhausted", self._src())
+
+
 class ContractPickTest(unittest.TestCase):
     """Strike and side are read from STORED COLUMNS, never parsed out of the
     ticker: NIFTY2680424000CE runs the expiry code into the strike, and taking

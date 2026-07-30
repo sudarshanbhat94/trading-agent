@@ -422,7 +422,13 @@ INDEX_OPTIONS = dict(
     auto_trade=False,           # place trades — operator's explicit choice
     instruments=("NIFTY",),     # which indices to call; BANKNIFTY is 2x the tick risk
     expiry="weekly",            # "weekly" or "monthly"
-    max_premium_pct=0.10,       # cap on premium at risk per position
+    # SEPARATE CAPITAL. Options do not share the equity book: a leveraged,
+    # decaying instrument drawing on the same cash would let a bad options week
+    # shrink the position sizing of the lane that actually has a measured edge.
+    # Ring-fencing also makes the two independently readable — mixed into one
+    # ledger, neither result can be attributed.
+    budget=100000.0,
+    max_premium_pct=0.10,       # cap on premium at risk per position, of the OPTIONS book
     max_concurrent=1,           # one directional bet at a time
     min_confidence=0.6,         # share of readings that must agree
     stop_pct=0.35,              # premium stop: options move far, a tight stop is noise
@@ -2169,10 +2175,16 @@ def index_options_pass(market):
 
     v2 = _rw()
     try:
-        book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
-        if not book:
-            return
-        budget = float(book[0])
+        # The OPTIONS book, computed only from this lane's own trades — the
+        # equity book is never touched and never funds an option.
+        budget = float(cfg.get("budget", 100000.0))
+        spent = v2.execute(
+            "SELECT COALESCE(SUM(entry_price*shares),0) FROM v2_positions"
+            " WHERE market=? AND strategy=?", (market, "index_options")).fetchone()[0] or 0.0
+        realised = v2.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND strategy=?",
+            (market, "index_options")).fetchone()[0] or 0.0
+        options_cash = budget - spent + realised
         held = [r[0] for r in v2.execute(
             "SELECT symbol FROM v2_positions WHERE market=? AND strategy=?",
             (market, "index_options"))]
@@ -2211,7 +2223,14 @@ def index_options_pass(market):
 
             # Give the selector the budget so it picks a strike that FITS,
             # rather than insisting on ATM and standing aside when ATM is dear.
-            budget_per_trade = budget * cfg.get("max_premium_pct", 0.10)
+            # Sized off the options book's REMAINING cash, not its starting
+            # budget, so losses shrink the next position instead of letting the
+            # lane keep betting the original stake.
+            budget_per_trade = min(options_cash,
+                                   budget * cfg.get("max_premium_pct", 0.10))
+            if budget_per_trade <= 0:
+                _status[market] = "index options: book exhausted"
+                return
             contract = _pick_contract(symbol, side, spot, quotes, max_cost=budget_per_trade)
             if not contract:
                 _status[market] = (f"index options: no {side} strike under "

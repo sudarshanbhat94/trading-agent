@@ -2643,7 +2643,7 @@ button{border-radius:9px}
 .prow:last-child{border-bottom:none}
 .prow:hover{background:#f8f9fb}
 .prow-l{min-width:0}
-.prow-sym{font-size:14.5px;font-weight:600;color:#242a31;display:flex;align-items:center}
+.prow-sym{font-size:14.5px;font-weight:600;color:var(--hd);display:flex;align-items:center}
 .prow-sub{font-size:12px;color:var(--mut);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:859px){.prow-sub{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}}   /* mobile: wrap the qty·avg·exit line instead of truncating it mid-word */
 /* The exit terms must never be truncated — a stop clipped to "trailing stop
@@ -2651,7 +2651,7 @@ button{border-radius:9px}
    at every width, including the 2-up desktop grid where rows are half as wide. */
 .prow-exit{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5;margin-top:3px}
 .prow-r{text-align:right;white-space:nowrap;flex-shrink:0}
-.prow-ltp{font-size:14px;font-weight:600;color:#242a31}
+.prow-ltp{font-size:14px;font-weight:600;color:var(--tx)}
 .prow-pnl{font-size:12.5px;margin-top:4px;font-weight:600}
 .prow .exitbtn{font-size:11px;padding:5px 12px;margin-left:12px}
 .home-main #homepos,.home-main #activity{display:block!important}
