@@ -470,6 +470,31 @@ PREOPEN_SEED = dict(
 )
 
 
+def _fo_refresh():
+    """Pull the day's index F&O bhavcopy after the close.
+
+    fo_ingest had NO scheduler — exactly the failure that killed the delivery
+    feed. It went two sessions stale (28-Jul while trading on the 30th), so the
+    direction call and every chain reading were scoring on bars from two days
+    earlier while reporting them as today's.
+    """
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "scripts", "fo_ingest.py")
+    if not os.path.exists(script):
+        _LOG.warning("fo_ingest not found at %s", script)
+        return
+    try:
+        out = subprocess.run([sys.executable, script, "--backfill-days", "5"],
+                             capture_output=True, text=True, timeout=900)
+        tail = (out.stdout or out.stderr or "").strip().splitlines()[-2:]
+        _LOG.info("F&O refresh: %s", " | ".join(t.strip() for t in tail))
+    except subprocess.TimeoutExpired:
+        _LOG.warning("F&O refresh timed out")
+    except Exception:
+        _LOG.exception("F&O refresh failed")
+
+
 def _nse_reference_refresh():
     """Pull the day's delivery figures, institutional flows, bulk deals and
     sector labels once the session has closed.
@@ -2693,6 +2718,7 @@ def loop(interval):
                     if m == "IN":
                         _bars5m_janitor()                        # flush last bar, prune, monthly VACUUM
                         _nse_reference_refresh()                 # delivery / FII-DII / bulk deals / sectors
+                        _fo_refresh()                            # index F&O bhavcopy (OI, chains)
                 prev_open[m] = is_open
                 if is_open:
                     # Record 5-min bars for the Nifty 500 off the quote feed we
