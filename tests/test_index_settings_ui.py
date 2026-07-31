@@ -44,7 +44,7 @@ def _run(fn: str, arg) -> str:
     # one throws ReferenceError in the browser and blanks the section, which is
     # exactly how the Account tab broke before.
     js = (_function_source(source, "esc") + _function_source(source, "fmtn")
-          + _function_source(source, fn))
+          + _function_source(source, "wrn") + _function_source(source, fn))
     script = js + f"\nconsole.log({fn}(" + json.dumps(arg) + "));\n"
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "t.js"
@@ -78,6 +78,27 @@ class SettingsRenderTest(unittest.TestCase):
     def test_the_selected_index_is_checked(self) -> None:
         html = _run("idxHtml", READY)
         self.assertIn('value="NIFTY" checked', html)
+
+    def test_a_premium_warning_is_shown_for_a_selected_index(self) -> None:
+        """These tick-boxes were decorative: the engine traded NIFTY only, and
+        the Bank Nifty premium finding was enforced silently behind a control
+        that said otherwise. Now the selection is honoured, so the finding has
+        to be visible where the choice is made."""
+        payload = dict(READY, instruments=["NIFTY", "BANKNIFTY"],
+                       premium_warnings={"BANKNIFTY": "straddle implies 2.20% vs 1.13% realised"})
+        html = _run("idxHtml", payload)
+        self.assertIn("2.20%", html)
+        self.assertIn("BANKNIFTY", html)
+
+    def test_no_warning_when_the_index_is_not_selected(self) -> None:
+        payload = dict(READY, instruments=["NIFTY"],
+                       premium_warnings={"BANKNIFTY": "straddle implies 2.20% vs 1.13% realised"})
+        self.assertNotIn("2.20%", _run("idxHtml", payload))
+
+    def test_a_payload_without_warnings_still_renders(self) -> None:
+        """Older engine, newer page: the key is simply absent."""
+        html = _run("idxHtml", READY)
+        self.assertIn("NIFTY", html)
 
     def test_an_unselected_index_is_not_checked(self) -> None:
         html = _run("idxHtml", READY)

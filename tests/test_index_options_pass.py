@@ -60,17 +60,61 @@ class GateTest(unittest.TestCase):
 
     def test_the_gates_still_apply_with_auto_trade_on(self) -> None:
         """Enabling trading must not disable the measured constraints — these
-        are what stop it buying rich Bank Nifty premium into an event."""
+        are what stop it buying rich premium into an event."""
         src = self._src()
-        for gate in ('symbol.upper() != "NIFTY"', 'events["budget_day"]',
-                     "max_straddle_pct", "max_premium_pct", "_risk_halt("):
+        for gate in ('events["budget_day"]', "max_straddle_pct",
+                     "max_premium_pct", "_risk_halt("):
             with self.subTest(gate=gate):
                 self.assertIn(gate, src)
 
-    def test_banknifty_is_excluded(self) -> None:
+    def test_the_operator_selection_is_honoured(self) -> None:
+        """Was `if symbol.upper() != "NIFTY": continue`. The settings page
+        offered four instruments, persisted all four, and returned a live call
+        for each — and the engine dropped three on the floor. A tick-box that
+        does nothing is worse than no tick-box, and this is the second time the
+        index settings have silently ignored a selection.
+
+        The measured Bank Nifty caution is now SURFACED rather than enforced;
+        see test_the_banknifty_premium_finding_is_still_stated.
+        """
+        self.assertNotIn('!= "NIFTY"', self._src())
+        self.assertIn('cfg.get("instruments"', self._src())
+
+    def test_the_banknifty_premium_finding_is_still_stated(self) -> None:
         """Measured: implied 2.20% vs realised 1.13% — premium priced for twice
-        the move that happens."""
-        self.assertIn('symbol.upper() != "NIFTY"', self._src())
+        the move that happens. That is a reason to warn the operator, not to
+        override a choice they made, so it must still reach the UI."""
+        self.assertIn("BANKNIFTY", v2_live.INDEX_PREMIUM_WARNING)
+        self.assertIn("2.20%", v2_live.INDEX_PREMIUM_WARNING["BANKNIFTY"])
+
+    def test_only_indices_with_data_can_be_selected(self) -> None:
+        """Verified live: all four return 60 daily bars, a populated chain and
+        live option quotes. Anything outside this set is skipped."""
+        self.assertEqual(set(v2_live.INDEX_ALLOWED),
+                         {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"})
+        self.assertIn("INDEX_ALLOWED", self._src())
+
+    def test_one_position_per_index_not_one_overall(self) -> None:
+        """max_concurrent was 1, and the pass returned after the first fill, so
+        a NIFTY CE opened at 09:40 blocked every other index for the session."""
+        self.assertGreaterEqual(v2_live.INDEX_OPTIONS["max_concurrent"], 3)
+        self.assertIn("h.startswith(symbol)", self._src())
+
+    def test_the_confidence_gate_cannot_exceed_what_the_vote_can_produce(self) -> None:
+        """`confidence` is agreeing/5, so a MIN_AGREEING=2 call reports 0.40 and
+        no more. The persisted setting was 0.60 — right when MIN_AGREEING was 3,
+        left behind when it was loosened to 2 — so the lane refused every call
+        it generated. That reads as 'index options are broken'."""
+        from app import index_direction
+        self.assertAlmostEqual(index_direction.MAX_CONFIDENCE_AT_MIN_AGREEING, 0.4)
+        self.assertIn("MAX_CONFIDENCE_AT_MIN_AGREEING", self._src())
+
+    def test_a_stale_high_setting_cannot_silently_kill_the_lane(self) -> None:
+        from app.v2_web import _effective_min_conf
+        self.assertAlmostEqual(_effective_min_conf({"min_confidence": 0.6}), 0.4)
+        self.assertAlmostEqual(_effective_min_conf({"min_confidence": 0.2}), 0.2)
+        self.assertAlmostEqual(_effective_min_conf({}), 0.4)
+        self.assertAlmostEqual(_effective_min_conf({"min_confidence": None}), 0.4)
 
     def test_policy_and_budget_days_are_skipped(self) -> None:
         """Scheduled repricings: premium is bid beforehand and collapses after,

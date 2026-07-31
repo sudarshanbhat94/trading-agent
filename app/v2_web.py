@@ -446,7 +446,29 @@ INDEX_SETTINGS_FILE = os.path.join(os.path.dirname(V2_DB), "index_options.json")
 # preference, and is deliberately not reachable from the UI.
 INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry",
                   "min_confidence", "budget")
-INDEX_ALLOWED_INSTRUMENTS = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
+def INDEX_ALLOWED_INSTRUMENTS():
+    """One source of truth, owned by the engine. This was a second hardcoded
+    tuple here while index_options_pass only ever traded NIFTY, so the settings
+    page offered four instruments and three of them silently did nothing."""
+    from . import v2_live
+    return v2_live.INDEX_ALLOWED
+
+
+def _effective_min_conf(cfg):
+    """The confidence gate the engine will actually apply.
+
+    `confidence` is agreeing-readings / 5, so a MIN_AGREEING=2 call tops out at
+    0.40. A stored value above that silently demands more agreement than the
+    vote threshold asks for — which is exactly what happened: 0.60 was correct
+    when MIN_AGREEING was 3, survived the loosening to 2, and left the lane
+    refusing every call it generated.
+    """
+    from . import index_direction
+    try:
+        want = float(cfg.get("min_confidence", 0.4) or 0.4)
+    except (TypeError, ValueError):
+        want = 0.4
+    return min(want, index_direction.MAX_CONFIDENCE_AT_MIN_AGREEING)
 
 
 def _index_settings_load():
@@ -472,8 +494,12 @@ def api_index_settings():
     return JSONResponse(dict(
         enabled=bool(cfg.get("enabled")), auto_trade=bool(cfg.get("auto_trade")),
         instruments=list(cfg.get("instruments") or ()), expiry=cfg.get("expiry", "weekly"),
-        min_confidence=cfg.get("min_confidence", 0.6),
-        available=list(INDEX_ALLOWED_INSTRUMENTS),
+        # Report the EFFECTIVE gate, clamped the same way the engine clamps it.
+        # A stored 0.60 against a 2-of-5 vote threshold (max 0.40) refused every
+        # call the lane produced; showing the raw setting hid that completely.
+        min_confidence=_effective_min_conf(cfg),
+        available=list(INDEX_ALLOWED_INSTRUMENTS()),
+        premium_warnings=dict(v2_live.INDEX_PREMIUM_WARNING),
         # The options book is SEPARATE from the equity book, so the UI has to
         # show its own cash — otherwise the operator reads the equity number and
         # assumes it funds options.
@@ -507,7 +533,7 @@ def api_index_settings_save(payload: dict):
             pass
     if "instruments" in payload:
         chosen = [str(s).upper() for s in (payload.get("instruments") or [])]
-        saved["instruments"] = [s for s in chosen if s in INDEX_ALLOWED_INSTRUMENTS]
+        saved["instruments"] = [s for s in chosen if s in INDEX_ALLOWED_INSTRUMENTS()]
     for key, value in saved.items():
         v2_live.INDEX_OPTIONS[key] = tuple(value) if key == "instruments" else value
     try:
@@ -3313,6 +3339,9 @@ function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
    if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
  }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
 function fmtn(v){return (v==null)?'—':Math.round(v).toLocaleString('en-IN');}
+function wrn(sel,w){var out=sel.filter(function(x){return w[x]}).map(function(x){
+  return '<div style="font-size:11.5px;line-height:1.45;margin-top:8px;color:var(--warn)">⚠ <b>'+x+'</b> — '+w[x]+'</div>';});
+ return out.join('');}
 function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
  // An empty list means the request failed, not that there are no indices —
  // rendering blank checkboxes looked exactly like 'selection does not work'.
@@ -3339,6 +3368,10 @@ function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
     var on=sel.indexOf(x)>=0;
     return '<label class=tgopt style="border:1px solid '+(on?'var(--inf)':'var(--line)')+';border-radius:8px;padding:6px 12px;margin:0;'+(on?'background:var(--infb)':'')+'"><input type=checkbox class=idxsym value="'+x+'" '+(on?'checked':'')+' onchange=saveIndexOpts()> '+x+'</label>';}).join('')
  +'</div>'
+ // These tick-boxes are now actually read by the engine. Until this change it
+ // only ever traded NIFTY, so three of the four did nothing. The measured
+ // caution that used to be enforced silently is stated here instead.
+ +wrn(sel,d.premium_warnings||{})
  +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">expiry</div>'
  +'<div class=toggle><b id=idxWk class="'+(d.expiry!='monthly'?'on':'')+'" onclick="setIdxExpiry(\'weekly\')">Weekly</b>'
  +'<b id=idxMo class="'+(d.expiry=='monthly'?'on':'')+'" onclick="setIdxExpiry(\'monthly\')">Monthly</b></div>'

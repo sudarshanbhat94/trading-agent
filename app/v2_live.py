@@ -433,6 +433,9 @@ INDEX_OPTIONS = dict(
     auto_trade=True,            # ON at the operator's explicit instruction (2026-07-30)
     instruments=("NIFTY",),     # which indices to call; BANKNIFTY is 2x the tick risk
     expiry="weekly",            # "weekly" or "monthly"
+    # NOTE: `instruments` is what the operator ticked. It is now honoured — see
+    # the loop in index_options_pass. INDEX_ALLOWED below is the set the engine
+    # has data for; anything outside it is not offered in the UI either.
     # SEPARATE CAPITAL. Options do not share the equity book: a leveraged,
     # decaying instrument drawing on the same cash would let a bad options week
     # shrink the position sizing of the lane that actually has a measured edge.
@@ -440,7 +443,12 @@ INDEX_OPTIONS = dict(
     # ledger, neither result can be attributed.
     budget=100000.0,
     max_premium_pct=0.10,       # cap on premium at risk per position, of the OPTIONS book
-    max_concurrent=1,           # one directional bet at a time
+    # One position PER INDEX, not one across all of them. At 1 the first fill
+    # returned out of the whole pass, so a NIFTY CE opened at 09:40 blocked
+    # FINNIFTY and MIDCPNIFTY for the rest of the session even though both had
+    # live calls. Premium per position is still capped by max_premium_pct, so
+    # three concurrent is at most 30% of the options book at risk.
+    max_concurrent=3,
     min_confidence=0.4,         # 2 of 5 readings; risk is held by size+stop, not by abstaining
     stop_pct=0.35,              # premium stop: options move far, a tight stop is noise
     target_pct=0.60,            # premium target
@@ -448,6 +456,18 @@ INDEX_OPTIONS = dict(
     # option is priced for more than the signal is playing for.
     max_straddle_pct=1.5,
 )
+# Indices the engine has daily futures bars, an option chain and live quotes
+# for — verified live, all four return 60 bars and a populated chain. This is
+# the single source of truth for what the settings page may offer; it used to
+# live in v2_web while the engine hardcoded NIFTY, which is how the UI came to
+# present three choices that did nothing.
+INDEX_ALLOWED = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
+# Measured on the 404-session study and shown next to the tick-box rather than
+# enforced behind it: buying these is paying materially over the realised move.
+INDEX_PREMIUM_WARNING = {
+    "BANKNIFTY": "straddle implies 2.20% vs 1.13% realised — premium is roughly "
+                 "double the move that actually happens",
+}
 
 PREOPEN = {"IN": ("09:05", "09:15")}
 PREOPEN_INTERVAL = 120                   # re-warm every 2 min through the window
@@ -2185,19 +2205,23 @@ def index_options_pass(market):
     The gates below are not style — each one is a measured result from the
     404-session study, and without them this lane loses money by construction:
 
-      * NIFTY ONLY. Bank Nifty's ATM straddle implies 2.20% while realised is
-        1.13% — premium priced at roughly twice the move that happens. Buying
-        it is paying double for the same exposure.
-      * NOT INTO AN EVENT. Implied volatility is bid before Budget/policy/expiry
+      * NOT INTO AN EVENT. Implied volatility is bid before Budget/policy
         and collapses after, so a directionally correct trade still loses to the
         crush.
       * NOT WHEN PREMIUM IS RICH. The ATM straddle is the market's own expected
         move; if it already exceeds what the signal is playing for, the option is
         priced against us regardless of direction.
-      * ONE POSITION, defined risk, premium capped as a share of the book.
+      * ONE POSITION PER INDEX, defined risk, premium capped as a share of the
+        book, and the whole lane funded by its OWN ring-fenced capital.
 
-    The direction call itself measured at 36% accuracy over 404 sessions, which
-    is why min_confidence defaults high and auto_trade defaults False. This
+    WHICH INDICES is the operator's call, not this function's. It used to skip
+    everything except NIFTY on the Bank Nifty premium finding (implied 2.20% vs
+    1.13% realised) — but the settings page was offering all four, so three
+    tick-boxes did nothing. The finding now reaches the UI through
+    INDEX_PREMIUM_WARNING instead of being enforced behind a control that
+    claimed otherwise.
+
+    The direction call itself measured at 36% accuracy over 404 sessions. This
     makes the path REAL; it does not make the signal good.
     """
     cfg = INDEX_OPTIONS
@@ -2250,7 +2274,7 @@ def index_options_pass(market):
         held = [r[0] for r in v2.execute(
             "SELECT symbol FROM v2_positions WHERE market=? AND strategy=?",
             (market, "index_options"))]
-        if len(held) >= cfg.get("max_concurrent", 1):
+        if len(held) >= cfg.get("max_concurrent", 3):
             return
         halt, reason = _risk_halt(v2, market)
         if halt:
@@ -2262,9 +2286,24 @@ def index_options_pass(market):
             _status[market] = "index options: no live option prices"
             return
 
+        # HONOUR THE OPERATOR'S SELECTION. This used to be a hardcoded skip of
+        # everything except the first index, so the settings page offered four
+        # tick-boxes, persisted all four, and returned a live call for each —
+        # and the engine silently dropped three. A control that does nothing is
+        # worse than one that is absent.
+        #
+        # The measured caution stands and is surfaced rather than enforced:
+        # Bank Nifty's ATM straddle implies 2.20% against 1.13% realised, so
+        # buying it is paying roughly double for the same exposure. That is a
+        # reason to warn the operator, not to override a choice they made.
         for symbol in cfg.get("instruments", ()):
-            if symbol.upper() != "NIFTY":
-                continue                       # measured: see docstring
+            symbol = symbol.upper()
+            if symbol not in INDEX_ALLOWED:
+                continue
+            if len(held) >= cfg.get("max_concurrent", 3):
+                break                          # book full: stop, don't churn
+            if any(h.startswith(symbol) for h in held):
+                continue                       # already positioned in this index
             bars = _index_bars(symbol)
             if len(bars) < 55:
                 continue
@@ -2274,7 +2313,15 @@ def index_options_pass(market):
             call_oi = sum(r["oi"] for r in chain if r["opt_type"] == "CE") or None
             verdict = index_direction.decide(o, h, l, c, v, put_oi=put_oi, call_oi=call_oi)
             side = verdict["call"]
-            if not side or verdict["confidence"] < cfg.get("min_confidence", 0.6):
+            # CLAMPED to what the vote threshold can actually produce.
+            # `confidence` is agreeing/5, so a MIN_AGREEING=2 call reports 0.40
+            # and nothing higher. The persisted setting was 0.60 — correct back
+            # when MIN_AGREEING was 3, and left behind when it was loosened to
+            # 2. The lane then refused every call it generated, which reads as
+            # "index options are broken" rather than as a threshold mismatch.
+            min_conf = min(float(cfg.get("min_confidence", 0.4) or 0.4),
+                           index_direction.MAX_CONFIDENCE_AT_MIN_AGREEING)
+            if not side or verdict["confidence"] < min_conf:
                 continue
 
             straddle = option_chain.atm_straddle(chain, spot) if chain else None

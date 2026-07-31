@@ -46,6 +46,17 @@ BEARISH_PATTERNS = frozenset({
 # reading no longer vetoes — five independent readings rarely agree unanimously,
 # so demanding it made the strong-signal case unreachable.
 MIN_AGREEING = 2
+# Five readings, and `confidence` is the share of them that agreed. So the
+# HIGHEST confidence a MIN_AGREEING call can ever report is 2/5 = 0.40.
+#
+# This matters because the options lane ALSO gates on min_confidence, in the
+# same units. When MIN_AGREEING was 3 the stored setting 0.60 matched it
+# exactly; loosening to 2 left that 0.60 in place, so the lane went on
+# demanding 3-of-5 through a number in a JSON file while this constant said 2.
+# Every call on 2026-07-31 read confidence 0.40 and was refused. Anything that
+# compares against confidence must be checked against this ceiling.
+N_READINGS = 5
+MAX_CONFIDENCE_AT_MIN_AGREEING = MIN_AGREEING / N_READINGS
 
 
 def _ema(values, span):
