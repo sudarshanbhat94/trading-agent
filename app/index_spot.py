@@ -49,13 +49,26 @@ _LOG = logging.getLogger("openstocks.index_spot")
 
 MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 IST = timezone(timedelta(hours=5, minutes=30))
-BUCKET_MIN = 5                  # candle width
+# CANDLE WIDTH IS SET BY THE OBSERVATION RATE, not by preference. The feed
+# refreshes the whole ATM watch window in ONE batch and, measured live, those
+# batches land ~2-3 minutes apart; only contracts we HOLD refresh faster, and
+# parity needs both a call and a put at the same strike, so a held CE alone
+# does not help. At 5 minutes a candle therefore contained a single
+# observation and drew open==high==low==close — a row of dots that looks like
+# a broken chart while claiming to be OHLC. 15 minutes gives ~5 observations
+# per candle, so the range is real.
+BUCKET_MIN = 15
 RETAIN_DAYS = 30
 # A parity estimate is only as good as the nearest strike quoted. Beyond this
 # the call and the put are both far from the money, their spreads dominate, and
 # the estimate is not worth recording.
 MAX_ATM_DISTANCE_PCT = 2.0
 MIN_PAIRS = 1
+# symbol -> source quote timestamp last folded into a bar, so the same feed
+# batch is not counted twice. Memory-only on purpose: after a restart one
+# duplicate sample is harmless, and persisting it would be state to keep
+# correct for no benefit.
+_LAST_TS: dict = {}
 
 
 # `path=MAIN_DB` as a DEFAULT ARGUMENT would bind the value at import time, so
@@ -80,13 +93,23 @@ def _f(v, d=0.0):
 
 
 def ensure_schema(con):
-    con.execute("CREATE TABLE IF NOT EXISTS index_bars_5m("
+    # The table was briefly called index_bars_5m. The bucket is 15 minutes, so
+    # that name was a quiet lie in the schema; renamed rather than left to
+    # mislead the next reader. Carries the existing rows across.
+    try:
+        have = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "index_bars_5m" in have and "index_bars" not in have:
+            con.execute("ALTER TABLE index_bars_5m RENAME TO index_bars")
+    except Exception:
+        pass
+    con.execute("CREATE TABLE IF NOT EXISTS index_bars("
                 "symbol TEXT, ts TEXT, open REAL, high REAL, low REAL, close REAL,"
                 " n INTEGER DEFAULT 1, PRIMARY KEY(symbol, ts))")
 
 
 def bucket(now=None):
-    """The 5-minute bucket a timestamp belongs to, as an IST ISO string.
+    """The bucket a timestamp belongs to, as an IST ISO string.
 
     Floor, not round: a bar is named for the interval it OPENS, so a sample at
     09:47 belongs to the 09:45 bar.
@@ -111,7 +134,7 @@ def spot(symbol, quotes=None, con=None):
         con = con or _ro()
         try:
             rows = con.execute(
-                "SELECT underlying, strike, option_type, price, expiry FROM nfo_quotes"
+                "SELECT underlying, strike, option_type, price, expiry, ts FROM nfo_quotes"
                 " WHERE price>0 AND UPPER(underlying)=?", (symbol,)).fetchall()
         except Exception as exc:
             _LOG.warning("index spot query failed: %s", exc)
@@ -119,13 +142,16 @@ def spot(symbol, quotes=None, con=None):
         finally:
             if own:
                 con.close()
-    pairs = {}
-    for underlying, strike, opt_type, price, expiry in rows:
+    pairs, source_ts = {}, ""
+    for row in rows:
+        underlying, strike, opt_type, price, expiry = row[:5]
+        stamp = row[5] if len(row) > 5 else ""
         if str(underlying or "").upper() != symbol:
             continue
         strike, price = _f(strike), _f(price)
         if strike <= 0 or price <= 0:
             continue
+        source_ts = max(source_ts, str(stamp or ""))
         pairs.setdefault((strike, expiry), {})[str(opt_type or "").upper()] = price
     # Nearest the money first: the smallest |call - put| is the strike closest to
     # spot, which is where parity is least sensitive to a wide quote.
@@ -141,11 +167,11 @@ def spot(symbol, quotes=None, con=None):
     if distance > MAX_ATM_DISTANCE_PCT:
         return None                     # nearest quoted strike is too far to trust
     return dict(price=round(price, 2), pairs=len(est), strike=est[0][2],
-                atm_distance_pct=round(distance, 2))
+                atm_distance_pct=round(distance, 2), source_ts=source_ts)
 
 
 def observe(symbols, now=None, con=None):
-    """Fold one live sample into each symbol's current 5-minute bar.
+    """Fold one live sample into each symbol's current bar.
 
     Written as an UPSERT that widens the existing bar rather than replacing it,
     so a restart mid-bar keeps the high and low already seen instead of
@@ -163,9 +189,17 @@ def observe(symbols, now=None, con=None):
                 s = spot(symbol, con=read)
                 if not s:
                     continue
+                # Skip a quote batch we have already folded in. The sampler runs
+                # far more often than the feed refreshes, so without this the
+                # same observation is counted repeatedly and `n` stops meaning
+                # "how many independent looks this candle is built from".
+                key = str(symbol).upper()
+                if s.get("source_ts") and _LAST_TS.get(key) == s["source_ts"]:
+                    continue
+                _LAST_TS[key] = s.get("source_ts")
                 price = s["price"]
                 con.execute(
-                    "INSERT INTO index_bars_5m(symbol,ts,open,high,low,close,n)"
+                    "INSERT INTO index_bars(symbol,ts,open,high,low,close,n)"
                     " VALUES(?,?,?,?,?,?,1)"
                     " ON CONFLICT(symbol,ts) DO UPDATE SET"
                     "   high=MAX(high,excluded.high),"
@@ -186,14 +220,14 @@ def observe(symbols, now=None, con=None):
 
 
 def bars(symbol, limit=200, con=None):
-    """Most recent 5-minute bars, oldest first — chart order."""
+    """Most recent bars, oldest first — chart order."""
     own = con is None
     con = con or _ro()
     try:
         # No ensure_schema here: this path is read-only, and a missing table
         # simply means nothing has been sampled yet.
         rows = con.execute(
-            "SELECT ts, open, high, low, close FROM index_bars_5m"
+            "SELECT ts, open, high, low, close FROM index_bars"
             " WHERE symbol=? ORDER BY ts DESC LIMIT ?",
             (str(symbol).upper(), int(limit))).fetchall()
     except Exception:
@@ -213,7 +247,7 @@ def prune(days=RETAIN_DAYS, con=None):
     try:
         ensure_schema(con)
         cutoff = (datetime.now(IST) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
-        con.execute("DELETE FROM index_bars_5m WHERE ts < ?", (cutoff,))
+        con.execute("DELETE FROM index_bars WHERE ts < ?", (cutoff,))
         con.commit()
     except Exception as exc:
         _LOG.warning("index bar prune failed: %s", exc)

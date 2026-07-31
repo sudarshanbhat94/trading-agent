@@ -613,7 +613,7 @@ def _index_live_quotes_ready():
 
 @router.get("/api/index-candles")
 def api_index_candles(symbol: str = "NIFTY", limit: int = 120):
-    """Intraday 5-minute candles for an index, plus the live level.
+    """Intraday candles for an index, plus the live level.
 
     There was no index chart because there was no index price series: the feed
     carries equities and option contracts, and every index level in the system
@@ -3425,7 +3425,7 @@ function idxChartHtml(d){
   +'<span><span class=num style="font-size:15px;font-weight:600">'+(px==null?'—':fmtn(px))+'</span> '+(chg==null?'':pill(chg))+'</span></div>';
  // Said plainly rather than dressed up as a tick: this is derived from the
  // option chain we poll, because no live index quote reaches this system.
- var note='<div class=mut style="font-size:10.5px;margin-top:5px;line-height:1.4">5-min candles, estimated from the option chain via put-call parity'
+ var note='<div class=mut style="font-size:10.5px;margin-top:5px;line-height:1.4">15-min candles, estimated from the option chain via put-call parity'
   +(d.pairs?(' · '+d.pairs+' strike pairs'):'')+(c.length?(' · '+c.length+' bars today'):'')+'</div>';
  return head+idxCandleSVG(c)+note;}
 function loadIndexChart(sym){var el=document.getElementById('idxchart');if(!el)return;

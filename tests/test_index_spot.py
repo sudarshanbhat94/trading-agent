@@ -89,7 +89,13 @@ class BucketTest(unittest.TestCase):
         self.assertEqual(index_spot.bucket(datetime(2026, 7, 31, 9, 45, tzinfo=IST)),
                          "2026-07-31T09:45")
         self.assertEqual(index_spot.bucket(datetime(2026, 7, 31, 9, 44, 59, tzinfo=IST)),
-                         "2026-07-31T09:40")
+                         "2026-07-31T09:30")
+
+    def test_the_width_matches_the_observation_rate(self) -> None:
+        """The feed refreshes the ATM watch window in one batch every ~2-3
+        minutes, so a 5-minute candle held ONE observation and drew
+        open==high==low==close — dots claiming to be OHLC."""
+        self.assertEqual(index_spot.BUCKET_MIN, 15)
 
 
 class BarFoldingTest(unittest.TestCase):
@@ -121,7 +127,7 @@ class BarFoldingTest(unittest.TestCase):
 
     def bar(self):
         con = sqlite3.connect(self.path)
-        row = con.execute("SELECT open,high,low,close,n FROM index_bars_5m").fetchone()
+        row = con.execute("SELECT open,high,low,close,n FROM index_bars").fetchone()
         con.close()
         return row
 
@@ -145,20 +151,21 @@ class BarFoldingTest(unittest.TestCase):
     def test_a_new_interval_starts_a_new_bar(self) -> None:
         self.write(167.65, 79.10)
         index_spot.observe(["NIFTY"], now=datetime(2026, 7, 31, 9, 47, tzinfo=IST))
-        index_spot.observe(["NIFTY"], now=datetime(2026, 7, 31, 9, 52, tzinfo=IST))
+        self.write(168.00, 79.10)          # a NEW quote batch, not a re-read
+        index_spot.observe(["NIFTY"], now=datetime(2026, 7, 31, 10, 2, tzinfo=IST))
         con = sqlite3.connect(self.path)
-        stamps = [r[0] for r in con.execute("SELECT ts FROM index_bars_5m ORDER BY ts")]
+        stamps = [r[0] for r in con.execute("SELECT ts FROM index_bars ORDER BY ts")]
         con.close()
-        self.assertEqual(stamps, ["2026-07-31T09:45", "2026-07-31T09:50"])
+        self.assertEqual(stamps, ["2026-07-31T09:45", "2026-07-31T10:00"])
 
     def test_bars_come_back_oldest_first(self) -> None:
         """Chart order — a reversed series would draw the session backwards."""
-        self.write(167.65, 79.10)
-        for minute in (9, 14, 19):
-            index_spot.observe(["NIFTY"], now=datetime(2026, 7, 31, 10, minute, tzinfo=IST))
+        for i, hour in enumerate((10, 11, 12)):
+            self.write(167.65 + i, 79.10)   # distinct batches
+            index_spot.observe(["NIFTY"], now=datetime(2026, 7, 31, hour, 5, tzinfo=IST))
         rows = index_spot.bars("NIFTY", con=sqlite3.connect(self.path))
         self.assertEqual([r["ts"] for r in rows],
-                         ["2026-07-31T10:05", "2026-07-31T10:10", "2026-07-31T10:15"])
+                         ["2026-07-31T10:00", "2026-07-31T11:00", "2026-07-31T12:00"])
 
     def test_an_unquotable_index_records_nothing(self) -> None:
         """No pair, no bar — an empty candle would look like a flat market."""
@@ -169,12 +176,12 @@ class BarFoldingTest(unittest.TestCase):
         self.write(167.65, 79.10)
         index_spot.observe(["NIFTY"], now=datetime.now(IST))
         con = sqlite3.connect(self.path)
-        con.execute("INSERT INTO index_bars_5m(symbol,ts,open,high,low,close)"
+        con.execute("INSERT INTO index_bars(symbol,ts,open,high,low,close)"
                     " VALUES('NIFTY','2020-01-01T09:15',1,1,1,1)")
         con.commit(); con.close()
         index_spot.prune(days=30)
         con = sqlite3.connect(self.path)
-        stamps = [r[0] for r in con.execute("SELECT ts FROM index_bars_5m")]
+        stamps = [r[0] for r in con.execute("SELECT ts FROM index_bars")]
         con.close()
         self.assertNotIn("2020-01-01T09:15", stamps)
         self.assertEqual(len(stamps), 1)
