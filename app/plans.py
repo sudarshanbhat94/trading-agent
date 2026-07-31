@@ -90,6 +90,41 @@ HIGHLIGHTS = {
 TRIAL_DAYS = 7
 TRIAL_TIER = "paper"
 
+# A PAID PLAN RUNS OUT. Without this an approval was permanent: pay Rs 999 once
+# and hold Elite forever, which is a one-off sale wearing the word
+# "subscription". The billing period is what makes it recurring.
+SUBSCRIPTION_DAYS = 30
+# How close to the end the UI starts saying so. Long enough to act on, short
+# enough not to nag from day one.
+RENEWAL_WARN_DAYS = 5
+
+
+def subscription_state(account_plan, plan_expires_at, now=None):
+    """{active, days_left, expires, expired} for a PAID plan.
+
+    A free-tier account has nothing to expire, so it is never "expired" — that
+    word is reserved for a subscription that lapsed, which is a different thing
+    to say to somebody and drives different words on screen.
+    """
+    from datetime import datetime, timezone
+    plan = normalize(account_plan)
+    if plan == DEFAULT_TIER or plan == SIGNUP_TIER:
+        return dict(active=False, days_left=0, expires=None, expired=False, paid=False)
+    if not plan_expires_at:
+        # A paid plan with no end date predates this feature. Treat it as
+        # running rather than lapsed: demoting real subscribers to fix a schema
+        # gap is the worse of the two mistakes.
+        return dict(active=True, days_left=None, expires=None, expired=False, paid=True)
+    try:
+        ends = datetime.fromisoformat(str(plan_expires_at).replace("Z", "+00:00"))
+        if ends.tzinfo is None:
+            ends = ends.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return dict(active=True, days_left=None, expires=None, expired=False, paid=True)
+    remaining = (ends - (now or datetime.now(timezone.utc))).total_seconds()
+    return dict(active=remaining > 0, expired=remaining <= 0, paid=True,
+                days_left=max(0, int(-(-remaining // 86400))), expires=ends.isoformat())
+
 
 def trial_state(trial_ends_at, now=None):
     """{active, days_left, ends} for an account's trial.
@@ -116,14 +151,20 @@ def trial_state(trial_ends_at, now=None):
                 ends=ends.isoformat(), had_trial=True)
 
 
-def effective(account_plan, trial_ends_at=None, now=None):
+def effective(account_plan, trial_ends_at=None, now=None, plan_expires_at=None):
     """The tier this account may actually use RIGHT NOW.
 
-    An active trial lifts the account to TRIAL_TIER, but never DOWN: a paying
-    subscriber on `auto` whose trial window is still open must not be demoted to
-    `paper` by it.
+    Three inputs, in this order:
+      * a LAPSED subscription drops back to SIGNUP_TIER — not to `free`, so a
+        former subscriber keeps the signals and can still see how to renew;
+      * an active trial lifts the account to TRIAL_TIER;
+      * but a trial never DEMOTES: a subscriber on `auto` whose trial window
+        happens to still be open must not be dropped to `paper` by it.
     """
     stored = normalize(account_plan)
+    sub = subscription_state(stored, plan_expires_at, now)
+    if sub["paid"] and sub["expired"]:
+        stored = SIGNUP_TIER
     trial = trial_state(trial_ends_at, now)
     if trial["active"] and rank(TRIAL_TIER) > rank(stored):
         return TRIAL_TIER

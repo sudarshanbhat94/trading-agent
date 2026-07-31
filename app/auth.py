@@ -485,6 +485,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         # account the moment gating went live. Both must carry it.
         "account_plan": user.get("account_plan") or "",
         "trial_ends_at": user.get("trial_ends_at") or "",
+        "plan_expires_at": user.get("plan_expires_at") or "",
         "active": bool(user.get("active")),
         "signal_execution_mode": str(user.get("signal_execution_mode") or "SIGNAL_ONLY").strip().upper(),
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),

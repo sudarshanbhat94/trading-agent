@@ -1054,6 +1054,7 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         # moment plan gating went live.
         "account_plan": row.get("account_plan") or "",
         "trial_ends_at": row.get("trial_ends_at") or "",
+        "plan_expires_at": row.get("plan_expires_at") or "",
         "assigned_llm": {
             "provider": row.get("assigned_llm_provider") or "",
             "model": row.get("assigned_llm_model") or "",
@@ -1597,6 +1598,10 @@ class Database:
             # accounts that predate this feature must keep the plan they have
             # rather than being read as lapsed triallists and demoted.
             self._ensure_column(conn, "users", "trial_ends_at", "text")
+            # When the PAID plan runs out. NULL on a paid row means it predates
+            # this column and is treated as running, not lapsed — demoting real
+            # subscribers to fix a schema gap is the worse mistake.
+            self._ensure_column(conn, "users", "plan_expires_at", "text")
             conn.execute(
                 """
                 create table if not exists plan_requests (
@@ -1991,6 +1996,7 @@ class Database:
         *,
         role: str | None = None,
         account_plan: str | None = None,
+        plan_expires_at: str | None = None,
         assigned_llm_provider: str | None = None,
         assigned_llm_model: str | None = None,
         signal_execution_mode: str | None = None,
@@ -2008,6 +2014,9 @@ class Database:
             from . import plans as _plans
             assignments.append("account_plan = ?")
             values.append(_plans.normalize(account_plan))
+        if plan_expires_at is not None:
+            assignments.append("plan_expires_at = ?")
+            values.append(plan_expires_at or None)
         if assigned_llm_provider is not None:
             assignments.append("assigned_llm_provider = ?")
             values.append(str(assigned_llm_provider or "").strip().lower())
@@ -2114,7 +2123,22 @@ class Database:
                          ("approved" if approve else "rejected", utc_now(), by,
                           note, request_id))
         if approve:
-            self.update_user(int(row["user_id"]), account_plan=row["requested_plan"])
+            # EXTEND, do not reset. Renewing three days early must add to what
+            # is left rather than throw it away, or paying on time is punished.
+            from datetime import datetime, timedelta, timezone
+            from . import plans as _plans
+            current = (self.user_by_id(int(row["user_id"])) or {}).get("plan_expires_at")
+            base = datetime.now(timezone.utc)
+            try:
+                if current:
+                    have = datetime.fromisoformat(str(current).replace("Z", "+00:00"))
+                    if have.tzinfo is None:
+                        have = have.replace(tzinfo=timezone.utc)
+                    base = max(base, have)
+            except (TypeError, ValueError):
+                pass
+            self.update_user(int(row["user_id"]), account_plan=row["requested_plan"],
+                             plan_expires_at=(base + timedelta(days=_plans.SUBSCRIPTION_DAYS)).isoformat())
         return self.plan_request(request_id)
 
     def plan_request(self, request_id: int) -> dict[str, Any] | None:

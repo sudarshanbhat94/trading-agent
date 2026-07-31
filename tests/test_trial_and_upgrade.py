@@ -416,5 +416,79 @@ class AdminNotificationTest(unittest.TestCase):
         self.assertEqual(self.client.get("/v2/api/me").json()["pending_approvals"], 0)
 
 
+class SubscriptionExpiryTest(unittest.TestCase):
+    """A paid plan RUNS OUT. Without this an approval was permanent — pay Rs 999
+    once and hold Elite forever, which is a one-off sale wearing the word
+    "subscription"."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.client, self.main, self.web = _client(self.tmp)
+        from app.auth import hash_password
+        self.pw = "Str0ngPassw0rd!x"
+        self.name = "exp_" + uuid.uuid4().hex[:8]
+        self.user = self.main.db.create_user(self.name, hash_password(self.pw),
+                                             role="user", active=True)
+
+    def login(self):
+        self.client.cookies.clear()
+        self.client.post("/api/auth/login", json={"username": self.name, "password": self.pw})
+
+    def test_approval_sets_a_billing_period(self) -> None:
+        r = self.main.db.create_plan_request(self.user["id"], "auto", 999.0)
+        self.main.db.decide_plan_request(r["id"], True, "admin")
+        row = self.main.db.user_by_id(self.user["id"])
+        self.assertTrue(row["plan_expires_at"])
+        st = plans.subscription_state(row["account_plan"], row["plan_expires_at"])
+        self.assertEqual(st["days_left"], plans.SUBSCRIPTION_DAYS)
+
+    def test_renewing_early_extends_rather_than_resets(self) -> None:
+        """Paying on time must not throw away what is left."""
+        for _ in range(2):
+            r = self.main.db.create_plan_request(self.user["id"], "auto", 999.0)
+            self.main.db.decide_plan_request(r["id"], True, "admin")
+        row = self.main.db.user_by_id(self.user["id"])
+        st = plans.subscription_state(row["account_plan"], row["plan_expires_at"])
+        self.assertEqual(st["days_left"], plans.SUBSCRIPTION_DAYS * 2)
+
+    def test_a_lapsed_subscription_loses_its_features(self) -> None:
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self.main.db.update_user(self.user["id"], account_plan="auto", plan_expires_at=past)
+        self.login()
+        self.assertEqual(self.client.get("/v2/api/me").json()["plan"], plans.SIGNUP_TIER)
+        self.assertEqual(self.client.get("/v2/api/index-settings").status_code, 402)
+
+    def test_a_lapsed_subscriber_keeps_the_starter_features(self) -> None:
+        """Dropping them to `free` would take away the signals they had before
+        they ever paid."""
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self.main.db.update_user(self.user["id"], account_plan="auto", plan_expires_at=past)
+        self.login()
+        self.assertEqual(self.client.get("/v2/api/catalysts").status_code, 200)
+
+    def test_a_lapsed_subscriber_can_re_buy_the_same_tier(self) -> None:
+        """Comparing against the STORED plan would call it a downgrade and
+        refuse the renewal."""
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self.main.db.update_user(self.user["id"], account_plan="auto", plan_expires_at=past)
+        self.login()
+        self.assertEqual(self.client.post("/v2/api/upgrade", json={"plan": "auto"}).status_code, 200)
+
+    def test_an_active_subscription_keeps_working(self) -> None:
+        future = (datetime.now(timezone.utc) + timedelta(days=9)).isoformat()
+        self.main.db.update_user(self.user["id"], account_plan="auto", plan_expires_at=future)
+        self.login()
+        me = self.client.get("/v2/api/me").json()
+        self.assertEqual(me["plan"], "auto")
+        self.assertEqual(me["subscription"]["days_left"], 9)
+
+    def test_a_paid_plan_with_no_end_date_is_not_treated_as_lapsed(self) -> None:
+        """Rows that predate this column must not be demoted to fix a schema
+        gap — that would cut off real subscribers."""
+        self.main.db.update_user(self.user["id"], account_plan="auto")
+        self.login()
+        self.assertEqual(self.client.get("/v2/api/me").json()["plan"], "auto")
+
+
 if __name__ == "__main__":
     unittest.main()

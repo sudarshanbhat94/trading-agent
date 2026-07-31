@@ -108,7 +108,8 @@ def _check_plan(request, user):
     # EFFECTIVE, not stored: an active trial lifts the account, and the gate has
     # to agree with what /api/me told the page or the UI shows a feature that
     # then 402s when clicked.
-    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"))
+    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                           plan_expires_at=user.get("plan_expires_at"))
     if not plans.allows(plan, feature):
         raise HTTPException(
             status_code=402,                # Payment Required: says WHY, not just "no"
@@ -859,6 +860,11 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
     # wants to BUY Pro — the exact plan they are about to lose. You are
     # subscribing to what you keep, and the trial is temporary.
     paid = plans.normalize(user.get("account_plan"))
+    # a LAPSED subscription must be re-buyable at the same tier, so compare
+    # against what is actually still running
+    if not plans.subscription_state(paid, user.get("plan_expires_at"))["active"] and \
+            plans.rank(paid) > plans.rank(plans.SIGNUP_TIER):
+        paid = plans.SIGNUP_TIER
     if plans.rank(want) <= plans.rank(paid):
         return JSONResponse(dict(error="you are already on that plan", plan=paid),
                             status_code=400)
@@ -958,8 +964,10 @@ def api_me(user=Depends(require_session)):
     from . import plans
     settings, db = _auth_bits()
     trial = plans.trial_state(user.get("trial_ends_at"))
-    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"))
+    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                           plan_expires_at=user.get("plan_expires_at"))
     paid = plans.normalize(user.get("account_plan"))
+    sub = plans.subscription_state(paid, user.get("plan_expires_at"))
     pending = db.open_plan_request(int(user["id"]))
     cfg = _payment_config()
     return JSONResponse(dict(
@@ -968,6 +976,8 @@ def api_me(user=Depends(require_session)):
         plan=plan, plan_label=plans.LABELS.get(plan, plan),
         paid_plan=paid, features=plans.features_for(plan),
         trial=trial, trial_days=plans.TRIAL_DAYS, trial_tier=plans.TRIAL_TIER,
+        subscription=sub, renewal_warn_days=plans.RENEWAL_WARN_DAYS,
+        subscription_days=plans.SUBSCRIPTION_DAYS,
         # everything the upgrade screen needs, so it never has to guess a price
         tiers=[dict(key=t, label=plans.LABELS[t], price=plans.PRICES.get(t, 0),
                     list_price=plans.LIST_PRICES.get(t, 0),
@@ -994,11 +1004,17 @@ def api_admin_users(user=Depends(require_admin_session)):
     out = []
     for row in db.list_users():
         plan = plans.normalize(row.get("account_plan"))
+        sub = plans.subscription_state(plan, row.get("plan_expires_at"))
+        tri = plans.trial_state(row.get("trial_ends_at"))
         out.append(dict(id=row.get("id"), username=row.get("username"),
                         role=row.get("role") or "user", plan=plan,
                         plan_label=plans.LABELS.get(plan, plan),
                         active=bool(row.get("active")),
                         mode=row.get("signal_execution_mode") or "SIGNAL_ONLY",
+                        days_left=sub.get("days_left"), expired=sub.get("expired"),
+                        paid=sub.get("paid"),
+                        trial_days_left=(tri.get("days_left") if tri.get("active") else 0),
+                        expires=_ist(sub.get("expires")) if sub.get("expires") else "",
                         last_login=row.get("last_login_at") or ""))
     out.sort(key=lambda r: (r["role"] != "admin", r["username"]))
     return JSONResponse(dict(users=out, tiers=list(plans.TIERS),
@@ -3922,6 +3938,14 @@ function trialBanner(){var el=document.getElementById('trialbar');if(!el||!MEV2)
   el.innerHTML='<span><b>'+t.days_left+' day'+(t.days_left==1?'':'s')+'</b> left of your free trial'
    +' — full access to <b>'+esc((tl&&tl.label)||MEV2.plan_label||'Pro')+'</b>.</span>'
    +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">See plans</button>';return;}
+ var sub=MEV2.subscription||{},warn=MEV2.renewal_warn_days||5;
+ if(sub.paid&&sub.expired){el.style.display='';el.className='tbar tbar-end';
+  el.innerHTML='<span>Your <b>'+esc(MEV2.plan_label||'')+'</b> subscription has ended — you are back on Starter.</span>'
+   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Renew</button>';return;}
+ if(sub.paid&&sub.active&&sub.days_left!=null&&sub.days_left<=warn){
+  el.style.display='';el.className='tbar tbar-wait';
+  el.innerHTML='<span>Your subscription renews in <b>'+sub.days_left+' day'+(sub.days_left==1?'':'s')+'</b>.</span>'
+   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Renew now</button>';return;}
  if(t.had_trial&&MEV2.paid_plan=='watch'){el.style.display='';el.className='tbar tbar-end';
   el.innerHTML='<span>Your trial has ended. You are on the free plan — signals and the catalyst feed stay available.</span>'
    +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Upgrade</button>';return;}
@@ -3931,7 +3955,9 @@ function loadUpgrade(){var el=document.getElementById('upgrade');if(!el)return;
  var t=MEV2.trial||{},pend=MEV2.pending_request;
  var status=pend?('payment pending for '+esc(pend.plan))
    :(t.active?(t.days_left+' day'+(t.days_left==1?'':'s')+' left of trial')
-             :('you are on '+esc(MEV2.plan_label||MEV2.plan)));
+     :((MEV2.subscription&&MEV2.subscription.paid&&MEV2.subscription.days_left!=null)
+        ?(esc(MEV2.plan_label)+' \u00b7 '+MEV2.subscription.days_left+' days left')
+        :('you are on '+esc(MEV2.plan_label||MEV2.plan))));
  var cards=(MEV2.tiers||[]).filter(function(x){return x.price>0;}).map(function(x){
   var owned=x.current;
   var off=x.list_price&&x.list_price>x.price?Math.round((1-x.price/x.list_price)*100):0;
@@ -4065,7 +4091,13 @@ function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
        +(u.role=='admin'?' <span class="badge bg-warn">admin</span>':'')
        +(u.active?'':' <span class="badge bg-dn">disabled</span>')
        +'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+esc(u.mode||'')+'</span></span>'
-     +planPill(u.plan,lab[u.plan])+sel+roleBtn+actBtn+'</div>';};
+     +'<span style="text-align:right">'+planPill(u.plan,lab[u.plan])
+       +'<div class="mut num" style="font-size:10.5px;margin-top:3px">'
+       +(u.trial_days_left?('trial '+u.trial_days_left+'d'):
+         (u.expired?'<span class=dn>expired</span>':
+          (u.paid&&u.days_left!=null?(u.days_left+'d left'):
+           (u.paid?'no end date':'\u2014'))))+'</div></span>'
+     +sel+roleBtn+actBtn+'</div>';};
   el.innerHTML='<div id=reqbox></div><div id=paycfg></div>'
    +'<div class=sec><span>users &amp; plans</span><span class=mut style="font-size:12px">'+us.length+' accounts</span></div>'
    +'<div class=card style="padding:2px 15px">'+us.map(row).join('')+'</div>'
