@@ -135,7 +135,7 @@ class UpgradeFlowTest(unittest.TestCase):
         self.assertEqual(len(self.mine()), 1)
 
     def test_changing_your_mind_updates_the_open_request(self) -> None:
-        self.client.post("/v2/api/upgrade", json={"plan": "watch"})
+        self.client.post("/v2/api/upgrade", json={"plan": "paper"})
         self.client.post("/v2/api/upgrade", json={"plan": "auto"})
         open_ = self.mine()
         self.assertEqual(len(open_), 1)
@@ -201,12 +201,14 @@ class UpgradeFlowTest(unittest.TestCase):
         self.assertNotEqual(plans.normalize(fresh["account_plan"]), "auto")
 
     def test_a_decided_request_cannot_be_decided_again(self) -> None:
-        self.client.post("/v2/api/upgrade", json={"plan": "watch"})
+        # `paper`, not `watch`: a new account already STARTS on watch, so
+        # requesting it is not an upgrade and never creates a request.
+        self.client.post("/v2/api/upgrade", json={"plan": "paper"})
         rid = self.mine()[0]["id"]
         self.main.db.decide_plan_request(rid, False, "admin")
         self.main.db.decide_plan_request(rid, True, "admin")
         fresh = self.main.db.user_by_id(self.user["id"])
-        self.assertNotEqual(plans.normalize(fresh["account_plan"]), "watch")
+        self.assertNotEqual(plans.normalize(fresh["account_plan"]), "paper")
 
     def test_a_normal_user_cannot_approve_their_own_request(self) -> None:
         self.client.post("/v2/api/upgrade", json={"plan": "auto"})
@@ -241,6 +243,27 @@ class LapsedAccountTest(unittest.TestCase):
         for path in ("/v2/api/positions", "/v2/api/catalysts", "/v2/api/orders"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 402)
+
+
+class SignupTierTest(unittest.TestCase):
+    def test_a_new_account_starts_on_starter(self) -> None:
+        """Operator decision: everyone keeps the signals and the catalyst feed
+        for good, and only loses the paper book and analytics when the trial
+        lapses."""
+        tmp = tempfile.mkdtemp()
+        _c, m, _w = _client(tmp)
+        from app.auth import hash_password
+        u = m.db.create_user("new_" + uuid.uuid4().hex[:8],
+                             hash_password("Str0ngPassw0rd!x"), role="user", active=True)
+        self.assertEqual(plans.normalize(m.db.user_by_id(u["id"])["account_plan"]),
+                         plans.SIGNUP_TIER)
+        self.assertEqual(plans.SIGNUP_TIER, "watch")
+
+    def test_the_fallback_for_garbage_is_still_the_free_tier(self) -> None:
+        """SIGNUP_TIER is a product decision; DEFAULT_TIER is what an unreadable
+        stored value falls back to, and that must stay closed."""
+        self.assertEqual(plans.DEFAULT_TIER, "free")
+        self.assertEqual(plans.normalize("nonsense"), "free")
 
 
 class SignupStartsTrialTest(unittest.TestCase):

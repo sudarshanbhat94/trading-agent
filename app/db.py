@@ -1003,6 +1003,13 @@ def _refresh_idea_lifecycle(
     return new_status, details
 
 
+def _signup_tier() -> str:
+    """The plan a new account starts on. Imported lazily so db.py keeps no
+    import-time dependency on the plans table."""
+    from . import plans
+    return plans.SIGNUP_TIER
+
+
 def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
@@ -1957,14 +1964,15 @@ class Database:
                 -- NOT 'standard'. That literal predates subscriptions and is
                 -- aliased to the TOP tier so the ten accounts already carrying
                 -- it are not demoted — which would have handed every new signup
-                -- the most expensive plan for free. New accounts start on the
-                -- free tier and are lifted by their trial.
-                values (?, ?, ?, 'free', ?, ?, ?, ?, ?, ?)
+                -- the most expensive plan for free. New accounts start on
+                -- plans.SIGNUP_TIER and are lifted further by their trial.
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username.strip(),
                     password_hash,
                     role,
+                    _signup_tier(),
                     str(assigned_llm_provider or "").strip().lower(),
                     str(assigned_llm_model or "").strip(),
                     _normalize_signal_execution_mode(signal_execution_mode),

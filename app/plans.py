@@ -33,6 +33,12 @@ from __future__ import annotations
 TIERS = ("free", "watch", "paper", "auto")
 PACKAGES = ("watch", "paper", "auto")       # the three that are actually sold
 DEFAULT_TIER = "free"
+# What a NEW account starts on. Separate from DEFAULT_TIER on purpose: that one
+# is the fallback for an unreadable stored value and stays at `free` so garbage
+# fails closed, while this is a product decision about what a signup is worth.
+# Everyone therefore keeps the signals and the catalyst feed for good, and only
+# loses the paper book and the analytics when the trial lapses.
+SIGNUP_TIER = "watch"
 # The live book predates plans, so every existing row reads 'standard'. It maps
 # to the top tier deliberately — the ten accounts already on it are the
 # operator's own people, and silently demoting them on deploy would be a
