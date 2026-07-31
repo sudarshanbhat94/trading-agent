@@ -147,6 +147,22 @@ class UpgradeFlowTest(unittest.TestCase):
         self.login()
         self.assertEqual(self.client.post("/v2/api/upgrade", json={"plan": "watch"}).status_code, 400)
 
+    def test_a_trial_user_can_buy_the_plan_their_trial_is_showing_them(self) -> None:
+        """The trial lifts the account to Pro, so comparing against the
+        EFFECTIVE plan refused the trial user who wanted to buy Pro — the very
+        plan they were about to lose. Found on the live site."""
+        self.main.db.start_trial(self.user["id"], 7)
+        self.login()
+        me = self.client.get("/v2/api/me").json()
+        self.assertEqual(me["plan"], "paper")       # lifted by the trial
+        self.assertEqual(me["paid_plan"], plans.SIGNUP_TIER)
+        self.assertEqual(self.client.post("/v2/api/upgrade", json={"plan": "paper"}).status_code, 200)
+
+    def test_you_still_cannot_buy_what_you_already_pay_for(self) -> None:
+        self.main.db.update_user(self.user["id"], account_plan="paper")
+        self.login()
+        self.assertEqual(self.client.post("/v2/api/upgrade", json={"plan": "paper"}).status_code, 400)
+
     def test_the_price_comes_from_the_server_not_the_client(self) -> None:
         """A client-supplied amount would be a free upgrade for anyone with a
         browser console."""

@@ -848,9 +848,13 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
     from . import plans
     settings, db = _auth_bits()
     want = plans.normalize(payload.get("plan"))
-    current = plans.effective(user.get("account_plan"), user.get("trial_ends_at"))
-    if plans.rank(want) <= plans.rank(current):
-        return JSONResponse(dict(error="that is not an upgrade", plan=current),
+    # Compared against the PAID plan, not the effective one. A trial lifts the
+    # account to Pro, so comparing effective would refuse the trial user who
+    # wants to BUY Pro — the exact plan they are about to lose. You are
+    # subscribing to what you keep, and the trial is temporary.
+    paid = plans.normalize(user.get("account_plan"))
+    if plans.rank(want) <= plans.rank(paid):
+        return JSONResponse(dict(error="you are already on that plan", plan=paid),
                             status_code=400)
     amount = plans.PRICES.get(want, 0)
     req = db.create_plan_request(int(user["id"]), want, float(amount),
