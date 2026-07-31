@@ -3385,7 +3385,8 @@ input,select{background:#ffffff;border:1px solid var(--line);color:var(--tx)}
 input::placeholder{color:#aab0b9}
 input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb)}
 .sec{color:var(--mut)}
-#login{background:#fff;border:1px solid var(--line);box-shadow:0 2px 14px rgba(16,24,40,.06)}
+#login{background:var(--card);border:1px solid var(--line);box-shadow:0 2px 14px rgba(16,24,40,.06)}
+#login h1{color:var(--hd,var(--tx))}
 .skel{color:var(--mut)}
 .toastmsg{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);box-shadow:0 8px 28px rgba(16,24,40,.18);padding:11px 20px;border-radius:12px;z-index:99;font-size:13px;animation:fade .3s}
 .ticker{overflow:hidden;white-space:nowrap;align-items:center;height:34px;margin:0 -16px 4px;padding:0;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
@@ -3445,9 +3446,9 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 <div id=login class=hide><h1>OpenStocks<span style="color:var(--up)">.</span></h1><p class=mut style="margin:0 0 22px">AI trading desk · sign in</p>
  <div class=field><label>username</label><input id=u autocomplete=username></div>
  <div class=field><label>password</label><input id=pw type=password autocomplete=current-password></div>
+ <div id=signupextra class=hide><div class=field><label>confirm password</label><input id=pw2 type=password autocomplete=new-password></div></div>
  <button class=pri style="width:100%;margin-top:8px" onclick="AUTHMODE=='signup'?doSignup():doLogin()">Sign in</button>
  <div id=lerr class=dn style="font-size:13px;margin-top:10px"></div>
- <div id=signupextra class=hide><div class=field><label>confirm password</label><input id=pw2 type=password autocomplete=new-password></div></div>
  <p class=mut style="font-size:12.5px;margin-top:14px;line-height:1.5" id=lswitch>
    No account? <b style="cursor:pointer;color:var(--inf)" onclick="setAuthMode('signup')">Create one</b>
    — <b>{TRIAL_DAYS} days free</b>, no card needed.</p></div>
