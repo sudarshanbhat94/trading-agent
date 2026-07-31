@@ -1046,6 +1046,7 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         # to the LOWEST tier and would have quietly demoted every account the
         # moment plan gating went live.
         "account_plan": row.get("account_plan") or "",
+        "trial_ends_at": row.get("trial_ends_at") or "",
         "assigned_llm": {
             "provider": row.get("assigned_llm_provider") or "",
             "model": row.get("assigned_llm_model") or "",
@@ -1585,6 +1586,27 @@ class Database:
             )
             self._ensure_column(conn, "users", "role", "text not null default 'user'")
             self._ensure_column(conn, "users", "account_plan", "text not null default 'standard'")
+            # Trial window. NULL means NO TRIAL, not an expired one — the
+            # accounts that predate this feature must keep the plan they have
+            # rather than being read as lapsed triallists and demoted.
+            self._ensure_column(conn, "users", "trial_ends_at", "text")
+            conn.execute(
+                """
+                create table if not exists plan_requests (
+                    id integer primary key autoincrement,
+                    user_id integer not null,
+                    requested_plan text not null,
+                    status text not null default 'pending',
+                    amount real not null default 0,
+                    note text not null default '',
+                    created_at text not null,
+                    decided_at text,
+                    decided_by text
+                )
+                """
+            )
+            conn.execute("create index if not exists idx_plan_requests_status"
+                         " on plan_requests(status, created_at)")
             # Investment profile. Free text is deliberately not allowed — these
             # are graded scales a consumer can reason about, not labels.
             self._ensure_column(conn, "users", "risk_tolerance", "text not null default 'balanced'")
@@ -1932,7 +1954,12 @@ class Database:
                     username, password_hash, role, account_plan, assigned_llm_provider,
                     assigned_llm_model, signal_execution_mode, active, created_at, updated_at
                 )
-                values (?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?)
+                -- NOT 'standard'. That literal predates subscriptions and is
+                -- aliased to the TOP tier so the ten accounts already carrying
+                -- it are not demoted — which would have handed every new signup
+                -- the most expensive plan for free. New accounts start on the
+                -- free tier and are lifted by their trial.
+                values (?, ?, ?, 'free', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username.strip(),
@@ -1998,6 +2025,86 @@ class Database:
             conn.execute(f"update users set {', '.join(assignments)} where id = ?", values)
         user = self.user_by_id(user_id)
         return _public_user(user) if user else None
+
+    def start_trial(self, user_id: int, days: int) -> None:
+        """Begin a trial, but never restart one.
+
+        Written as a conditional UPDATE rather than a read-then-write so a
+        second call cannot hand the same account another free week — including
+        two requests arriving at once.
+        """
+        from datetime import datetime, timedelta, timezone
+        ends = (datetime.now(timezone.utc) + timedelta(days=int(days))).isoformat()
+        with self.connect() as conn:
+            conn.execute("update users set trial_ends_at = ?, updated_at = ?"
+                         " where id = ? and (trial_ends_at is null or trial_ends_at = '')",
+                         (ends, utc_now(), user_id))
+
+    def create_plan_request(self, user_id: int, plan: str, amount: float, note: str = "") -> dict[str, Any]:
+        """Record an upgrade request. Returns the row.
+
+        One OPEN request per user: a second press of the button must not queue
+        a second row for the admin to work through.
+        """
+        with self.connect() as conn:
+            existing = conn.execute(
+                "select * from plan_requests where user_id = ? and status = 'pending'"
+                " order by id desc limit 1", (user_id,)).fetchone()
+            if existing:
+                row = dict(existing)
+                if row.get("requested_plan") == plan:
+                    return row
+                conn.execute("update plan_requests set requested_plan = ?, amount = ?, note = ?"
+                             " where id = ?", (plan, amount, note, row["id"]))
+                return dict(conn.execute("select * from plan_requests where id = ?",
+                                         (row["id"],)).fetchone())
+            cur = conn.execute(
+                "insert into plan_requests (user_id, requested_plan, status, amount, note, created_at)"
+                " values (?, ?, 'pending', ?, ?, ?)",
+                (user_id, plan, amount, note, utc_now()))
+            return dict(conn.execute("select * from plan_requests where id = ?",
+                                     (cur.lastrowid,)).fetchone())
+
+    def open_plan_request(self, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from plan_requests where user_id = ? and status = 'pending'"
+                " order by id desc limit 1", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def plan_requests(self, status: str | None = "pending") -> list[dict[str, Any]]:
+        sql = ("select r.*, u.username from plan_requests r"
+               " join users u on u.id = r.user_id")
+        args: tuple = ()
+        if status:
+            sql += " where r.status = ?"
+            args = (status,)
+        sql += " order by r.created_at desc"
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute(sql, args)]
+
+    def decide_plan_request(self, request_id: int, approve: bool, by: str) -> dict[str, Any] | None:
+        """Approve or reject. Approving is what actually grants the plan, so the
+        two happen together — an admin cannot mark a request done and forget to
+        upgrade the account."""
+        with self.connect() as conn:
+            row = conn.execute("select * from plan_requests where id = ?", (request_id,)).fetchone()
+            if not row:
+                return None
+            row = dict(row)
+            if row["status"] != "pending":
+                return row
+            conn.execute("update plan_requests set status = ?, decided_at = ?, decided_by = ?"
+                         " where id = ?",
+                         ("approved" if approve else "rejected", utc_now(), by, request_id))
+        if approve:
+            self.update_user(int(row["user_id"]), account_plan=row["requested_plan"])
+        return self.plan_request(request_id)
+
+    def plan_request(self, request_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("select * from plan_requests where id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
 
     def mark_user_login(self, user_id: int) -> None:
         now = utc_now()

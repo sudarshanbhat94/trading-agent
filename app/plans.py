@@ -25,8 +25,14 @@ conflating them is how admin accidentally becomes a billing tier.
 from __future__ import annotations
 
 # Order matters: a plan grants everything its predecessors grant.
-TIERS = ("watch", "paper", "auto")
-DEFAULT_TIER = "watch"
+#
+# `free` is not a package — it is where an account sits before it subscribes and
+# after a trial lapses. It reaches only the always-open routes (own profile,
+# health, the plans screen), which is what lets a lapsed user still log in and
+# pay rather than meeting a locked door with no way through it.
+TIERS = ("free", "watch", "paper", "auto")
+PACKAGES = ("watch", "paper", "auto")       # the three that are actually sold
+DEFAULT_TIER = "free"
 # The live book predates plans, so every existing row reads 'standard'. It maps
 # to the top tier deliberately — the ten accounts already on it are the
 # operator's own people, and silently demoting them on deploy would be a
@@ -49,7 +55,73 @@ FEATURES = {
     "export": "auto",
 }
 
-LABELS = {"watch": "Watch", "paper": "Paper", "auto": "Auto"}
+LABELS = {"free": "Free", "watch": "Starter", "paper": "Pro", "auto": "Elite"}
+# Monthly, in rupees. PRICES is what is charged; LIST_PRICES is what it is shown
+# against. The list price must be a real intended price, not decoration — a
+# permanent "discount" that never expires is the kind of thing that reads as
+# dishonest once a subscriber notices it never changes.
+PRICES = {"free": 0, "watch": 199, "paper": 499, "auto": 999}
+LIST_PRICES = {"watch": 499, "paper": 999, "auto": 1999}
+ONE_LINERS = {
+    "free": "Sign in and see your plan.",
+    "watch": "Signals and the live NSE catalyst feed.",
+    "paper": "Your own paper book, market internals, option chain and full history.",
+    "auto": "Index options, broker connect and exports.",
+}
+HIGHLIGHTS = {
+    "watch": ["Daily CE/PE index call", "Live NSE announcements", "Top movers and radar"],
+    "paper": ["Everything in Starter", "Your own ₹1L paper book",
+              "Market internals: breadth, FII, VIX", "Option chain and index candles",
+              "Full trade history and per-lane stats"],
+    "auto": ["Everything in Pro", "Index options auto-trading",
+             "Connect your own broker", "Data export"],
+}
+
+# TRIAL. A new account gets the middle tier for a week, then falls back to the
+# free one — it does not get locked out. Someone who tried the product and did
+# not pay should still see the catalyst feed and the calls; turning them into a
+# 402 wall converts a warm lead into a churned one, and costs nothing to avoid.
+TRIAL_DAYS = 7
+TRIAL_TIER = "paper"
+
+
+def trial_state(trial_ends_at, now=None):
+    """{active, days_left, ends} for an account's trial.
+
+    A NULL end date means no trial, not an expired one — the ten accounts that
+    predate this feature must keep the plan they already have rather than being
+    treated as lapsed triallists and demoted.
+    """
+    from datetime import datetime, timezone
+    if not trial_ends_at:
+        return dict(active=False, days_left=0, ends=None, had_trial=False)
+    try:
+        ends = datetime.fromisoformat(str(trial_ends_at).replace("Z", "+00:00"))
+        if ends.tzinfo is None:
+            ends = ends.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return dict(active=False, days_left=0, ends=None, had_trial=False)
+    now = now or datetime.now(timezone.utc)
+    remaining = (ends - now).total_seconds()
+    return dict(active=remaining > 0,
+                # ceil, so the last partial day still reads "1 day left" rather
+                # than "0 days left" while the trial is genuinely still running
+                days_left=max(0, int(-(-remaining // 86400))),
+                ends=ends.isoformat(), had_trial=True)
+
+
+def effective(account_plan, trial_ends_at=None, now=None):
+    """The tier this account may actually use RIGHT NOW.
+
+    An active trial lifts the account to TRIAL_TIER, but never DOWN: a paying
+    subscriber on `auto` whose trial window is still open must not be demoted to
+    `paper` by it.
+    """
+    stored = normalize(account_plan)
+    trial = trial_state(trial_ends_at, now)
+    if trial["active"] and rank(TRIAL_TIER) > rank(stored):
+        return TRIAL_TIER
+    return stored
 
 # WHICH ROUTE NEEDS WHICH FEATURE — one table, enforced by a single dependency
 # on the router, exactly like authentication. Annotating 37 routes one at a time
@@ -96,6 +168,11 @@ ROUTE_FEATURES = {
     "/v2/api/index-settings": "index_options",
     # admin routes carry their own ROLE check; a plan must not gate
     # administration, or an admin on a low tier could not manage anyone
+    "/v2/api/upgrade": None,
+    "/v2/api/pay-qr": None,
+    "/v2/api/payment-settings": None,
+    "/v2/api/admin/requests": None,
+    "/v2/api/admin/requests/{rid}": None,
     "/v2/api/admin/users": None,
     "/v2/api/admin/users/{uid}": None,
     "/v2/api/admin/jobs": None,

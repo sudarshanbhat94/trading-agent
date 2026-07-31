@@ -27,22 +27,40 @@ from app import plans
 
 class TierTest(unittest.TestCase):
     def test_the_ladder_is_ordered(self) -> None:
-        self.assertEqual(plans.TIERS, ("watch", "paper", "auto"))
+        self.assertEqual(plans.TIERS, ("free", "watch", "paper", "auto"))
+        self.assertLess(plans.rank("free"), plans.rank("watch"))
         self.assertLess(plans.rank("watch"), plans.rank("paper"))
         self.assertLess(plans.rank("paper"), plans.rank("auto"))
+
+    def test_only_three_tiers_are_actually_sold(self) -> None:
+        """`free` is where an account sits before it subscribes and after a
+        trial lapses — not a package. It must still be able to log in and reach
+        the plans screen, or a lapsed user meets a locked door with no way to
+        pay through it."""
+        self.assertEqual(plans.PACKAGES, ("watch", "paper", "auto"))
+        self.assertEqual(plans.PRICES["free"], 0)
+        for tier in plans.PACKAGES:
+            with self.subTest(tier=tier):
+                self.assertGreater(plans.PRICES[tier], 0)
+                self.assertGreater(plans.LIST_PRICES[tier], plans.PRICES[tier])
+
+    def test_the_free_tier_reaches_no_paid_feature(self) -> None:
+        for feature in plans.FEATURES:
+            with self.subTest(feature=feature):
+                self.assertFalse(plans.allows("free", feature))
 
     def test_a_higher_tier_grants_everything_below_it(self) -> None:
         for feature in plans.FEATURES:
             with self.subTest(feature=feature):
                 self.assertTrue(plans.allows("auto", feature))
 
-    def test_the_lowest_tier_does_not_reach_paid_features(self) -> None:
+    def test_the_starter_tier_does_not_reach_higher_features(self) -> None:
         for feature in ("market_internals", "option_chain", "paper_book",
                         "index_options", "broker_connect", "export"):
             with self.subTest(feature=feature):
                 self.assertFalse(plans.allows("watch", feature))
 
-    def test_the_free_tier_still_reaches_the_free_features(self) -> None:
+    def test_the_starter_tier_reaches_the_starter_features(self) -> None:
         for feature in ("signals", "catalysts", "index_call"):
             self.assertTrue(plans.allows("watch", feature))
 
@@ -55,6 +73,7 @@ class TierTest(unittest.TestCase):
     def test_an_unknown_plan_falls_back_rather_than_raising(self) -> None:
         for bad in (None, "", "gold", "PAPER ", 7):
             self.assertIn(plans.normalize(bad), plans.TIERS)
+        self.assertEqual(plans.normalize(None), "free")
         self.assertEqual(plans.normalize("PAPER "), "paper")
 
     def test_an_unknown_feature_is_denied(self) -> None:

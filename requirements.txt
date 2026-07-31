@@ -19,3 +19,10 @@ pandas>=1.5,<4
 # unfiltered), so a missing joblib does not crash — it silently disables the
 # meta-filter gate. Declared so the gate is actually present in a deploy.
 joblib>=1.2,<2
+
+# QR codes for the UPI subscription payment (app/v2_web.py). Pure Python, no
+# system libraries — chosen over a static QR image so the AMOUNT is encoded in
+# the code itself: the subscriber scans and pays the exact plan price instead
+# of typing it, which is where manual-payment flows go wrong and turn into
+# reconciliation work for the admin.
+segno>=1.5,<2

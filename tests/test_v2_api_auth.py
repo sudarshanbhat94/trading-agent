@@ -84,8 +84,12 @@ class AuthenticatedAccessTest(unittest.TestCase):
         # a fixed username collides on the second test in this class.
         import uuid
         name = "planuser_" + uuid.uuid4().hex[:8]
-        self.main.db.create_user(name, hash_password("Str0ngPassw0rd!x"),
-                                 role="user", active=True)
+        user = self.main.db.create_user(name, hash_password("Str0ngPassw0rd!x"),
+                                        role="user", active=True)
+        # A paid plan, so these assert AUTHENTICATION and not the subscription
+        # tier — a free account is correctly refused with 402, which would make
+        # this test pass or fail for the wrong reason.
+        self.main.db.update_user(user["id"], account_plan="auto")
         r = self.client.post("/api/auth/login",
                              json={"username": name, "password": "Str0ngPassw0rd!x"})
         self.assertEqual(r.status_code, 200, r.text)

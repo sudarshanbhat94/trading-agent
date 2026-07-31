@@ -338,6 +338,15 @@ def signup_user(
         raise HTTPException(status_code=409, detail="Username already exists") from None
 
     user_id = int(created["id"])
+    # Start the trial at SIGNUP, not at first use of a paid feature. Tying it to
+    # account creation means the clock is the same for everyone and the end date
+    # is knowable from day one, so the UI can count down honestly instead of
+    # discovering the deadline when the user hits a wall.
+    try:
+        from . import plans as _plans
+        db.start_trial(user_id, _plans.TRIAL_DAYS)
+    except Exception:
+        _LOGGER.exception("could not start trial for user %s", user_id)
     _LOGGER.info("New account registered: id=%s username=%s", user_id, normalized)
     try:
         db.insert_agent_log(
@@ -475,6 +484,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         # no plan, which normalises to the lowest tier: silent demotion of every
         # account the moment gating went live. Both must carry it.
         "account_plan": user.get("account_plan") or "",
+        "trial_ends_at": user.get("trial_ends_at") or "",
         "active": bool(user.get("active")),
         "signal_execution_mode": str(user.get("signal_execution_mode") or "SIGNAL_ONLY").strip().upper(),
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),

@@ -16,7 +16,7 @@ import asyncio
 import json as _jsonmod
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.requests import Request
 
 from .auth import current_user
@@ -105,7 +105,10 @@ def _check_plan(request, user):
     feature = plans.feature_for_path(path)
     if feature is None:
         return                              # free, or unmapped (see feature_for_path)
-    plan = plans.normalize(user.get("account_plan"))
+    # EFFECTIVE, not stored: an active trial lifts the account, and the gate has
+    # to agree with what /api/me told the page or the UI shows a feature that
+    # then 402s when clicked.
+    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"))
     if not plans.allows(plan, feature):
         raise HTTPException(
             status_code=402,                # Payment Required: says WHY, not just "no"
@@ -715,6 +718,157 @@ def _index_live_quotes_ready():
         return False
 
 
+# Where the money goes. Set by the operator in the admin panel — deliberately
+# NOT hardcoded and not committed: a payee identifier belongs to whoever runs
+# the install, and this repo is public.
+PAYMENT_FILE = os.path.join(os.path.dirname(V2_DB), "payment.json")
+
+
+def _payment_config():
+    try:
+        with open(PAYMENT_FILE, encoding="utf-8") as handle:
+            saved = _jsonmod.load(handle)
+    except Exception:
+        saved = {}
+    return dict(upi_id=saved.get("upi_id", ""), payee=saved.get("payee", ""),
+                qr_url=saved.get("qr_url", ""), note=saved.get("note", ""))
+
+
+def _upi_link(cfg, amount, label):
+    """A UPI intent link, so a phone can open it directly instead of asking the
+    user to retype a VPA. Falls back to nothing when unconfigured."""
+    from urllib.parse import quote
+    if not cfg.get("upi_id"):
+        return ""
+    parts = [f"pa={quote(cfg['upi_id'])}"]
+    if cfg.get("payee"):
+        parts.append(f"pn={quote(cfg['payee'])}")
+    parts.append(f"am={amount:.2f}")
+    parts.append("cu=INR")
+    parts.append(f"tn={quote(label)}")
+    return "upi://pay?" + "&".join(parts)
+
+
+@router.get("/api/pay-qr")
+def api_pay_qr(plan: str = "paper", user=Depends(require_session)):
+    """A UPI QR for one plan, as SVG, with the AMOUNT already in it.
+
+    Generated rather than served as a static image on purpose. A fixed QR makes
+    the subscriber type the price themselves, and a wrong amount is exactly the
+    reconciliation work a manual payment flow cannot absorb. This encodes the
+    payee, the amount and a reference, so scanning it produces the right payment
+    with nothing to mistype.
+
+    SVG so it stays sharp on any screen and needs no image pipeline.
+    """
+    from . import plans
+    want = plans.normalize(plan)
+    cfg = _payment_config()
+    amount = float(plans.PRICES.get(want, 0))
+    if not cfg.get("upi_id") or amount <= 0:
+        return JSONResponse(dict(error="payment not configured"), status_code=404)
+    link = _upi_link(cfg, amount, f"OpenStocks {plans.LABELS.get(want, want)}")
+    try:
+        import io
+        import segno
+        buf = io.BytesIO()          # segno writes BYTES even for svg
+        segno.make(link, error="m").save(buf, kind="svg", scale=6, border=2,
+                                         dark="#111111", light="#ffffff")
+        return Response(content=buf.getvalue(), media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"})
+    except Exception as exc:
+        # The UPI id and link are still shown by the page, so a missing encoder
+        # degrades to "type it yourself" rather than to a dead screen.
+        _LOG.warning("QR generation unavailable: %s", exc)
+        return JSONResponse(dict(error="qr unavailable", upi_link=link), status_code=503)
+
+
+@router.get("/api/payment-settings")
+def api_payment_settings(user=Depends(require_admin_session)):
+    return JSONResponse(_payment_config())
+
+
+@router.post("/api/payment-settings")
+def api_payment_settings_save(payload: dict, user=Depends(require_admin_session)):
+    cfg = _payment_config()
+    for key in ("upi_id", "payee", "qr_url", "note"):
+        if key in payload:
+            cfg[key] = str(payload[key] or "").strip()
+    try:
+        tmp = PAYMENT_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            _jsonmod.dump(cfg, handle)
+        os.replace(tmp, PAYMENT_FILE)
+    except Exception as exc:
+        return JSONResponse(dict(ok=False, error=str(exc)[:120]), status_code=500)
+    _LOG.info("ADMIN %s updated payment settings", user.get("username"))
+    return JSONResponse(dict(ok=True, **cfg))
+
+
+@router.post("/api/upgrade")
+def api_upgrade(payload: dict, user=Depends(require_session)):
+    """Ask for a plan. Returns how to pay.
+
+    Payment is MANUAL on purpose at this stage: the user pays by UPI and an
+    admin confirms. No card details, no payment processor, nothing sensitive
+    stored — which is the right shape while the product is finding out whether
+    anyone will pay at all, and it can be replaced by a gateway later without
+    changing this contract.
+    """
+    from . import plans
+    settings, db = _auth_bits()
+    want = plans.normalize(payload.get("plan"))
+    current = plans.effective(user.get("account_plan"), user.get("trial_ends_at"))
+    if plans.rank(want) <= plans.rank(current):
+        return JSONResponse(dict(error="that is not an upgrade", plan=current),
+                            status_code=400)
+    amount = plans.PRICES.get(want, 0)
+    req = db.create_plan_request(int(user["id"]), want, float(amount),
+                                 str(payload.get("note") or "")[:200])
+    cfg = _payment_config()
+    _LOG.info("UPGRADE REQUEST %s -> %s (Rs %s), request id %s",
+              user.get("username"), want, amount, req.get("id"))
+    return JSONResponse(dict(
+        ok=True, request_id=req.get("id"), plan=want,
+        label=plans.LABELS.get(want, want), amount=amount,
+        status=req.get("status"), payment=dict(
+            **cfg, amount=amount,
+            upi_link=_upi_link(cfg, float(amount),
+                               f"OpenStocks {plans.LABELS.get(want, want)}"),
+            configured=bool(cfg.get("upi_id") or cfg.get("qr_url")))))
+
+
+@router.get("/api/admin/requests")
+def api_admin_requests(status: str = "pending", user=Depends(require_admin_session)):
+    settings, db = _auth_bits()
+    from . import plans
+    out = []
+    for r in db.plan_requests(status if status != "all" else None):
+        out.append(dict(id=r["id"], user_id=r["user_id"], username=r.get("username"),
+                        plan=r["requested_plan"],
+                        label=plans.LABELS.get(r["requested_plan"], r["requested_plan"]),
+                        amount=r.get("amount") or 0, status=r["status"],
+                        note=r.get("note") or "", created=_ist(r.get("created_at")),
+                        decided=_ist(r.get("decided_at")) if r.get("decided_at") else ""))
+    return JSONResponse(dict(requests=out))
+
+
+@router.post("/api/admin/requests/{rid}")
+def api_admin_request_decide(rid: int, payload: dict, user=Depends(require_admin_session)):
+    """Approve or reject. Approving is what GRANTS the plan — the two happen in
+    one call so an admin cannot mark a request handled and forget to upgrade
+    the account."""
+    settings, db = _auth_bits()
+    approve = bool(payload.get("approve"))
+    row = db.decide_plan_request(rid, approve, str(user.get("username") or ""))
+    if not row:
+        return JSONResponse(dict(error="no such request"), status_code=404)
+    _LOG.info("ADMIN %s %s request %s (user %s -> %s)", user.get("username"),
+              "approved" if approve else "rejected", rid, row["user_id"],
+              row["requested_plan"])
+    return JSONResponse(dict(ok=True, status=row["status"]))
+
+
 @router.get("/api/me")
 def api_me(user=Depends(require_session)):
     """Who am I, what may I reach, and may I administer.
@@ -725,12 +879,30 @@ def api_me(user=Depends(require_session)):
     can never disagree about it.
     """
     from . import plans
-    plan = plans.normalize(user.get("account_plan"))
+    settings, db = _auth_bits()
+    trial = plans.trial_state(user.get("trial_ends_at"))
+    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"))
+    paid = plans.normalize(user.get("account_plan"))
+    pending = db.open_plan_request(int(user["id"]))
+    cfg = _payment_config()
     return JSONResponse(dict(
         username=user.get("username"), role=user.get("role") or "user",
         is_admin=(user.get("role") or "").lower() == "admin",
         plan=plan, plan_label=plans.LABELS.get(plan, plan),
-        features=plans.features_for(plan)))
+        paid_plan=paid, features=plans.features_for(plan),
+        trial=trial, trial_days=plans.TRIAL_DAYS, trial_tier=plans.TRIAL_TIER,
+        # everything the upgrade screen needs, so it never has to guess a price
+        tiers=[dict(key=t, label=plans.LABELS[t], price=plans.PRICES.get(t, 0),
+                    list_price=plans.LIST_PRICES.get(t, 0),
+                    blurb=plans.ONE_LINERS.get(t, ""),
+                    highlights=plans.HIGHLIGHTS.get(t, []),
+                    best=(t == plans.TRIAL_TIER),   # the tier the trial showcases
+                    current=(t == plan))
+               for t in plans.PACKAGES],
+        pending_request=(dict(id=pending["id"], plan=pending["requested_plan"],
+                              amount=pending.get("amount") or 0)
+                         if pending else None),
+        payment_configured=bool(cfg.get("upi_id") or cfg.get("qr_url"))))
 
 
 @router.get("/api/admin/users")
@@ -3190,6 +3362,13 @@ input[type=date]{width:auto;padding:8px 11px}
    the P&L outside the card: the Sold column's returns were clipped at the right
    edge while Bought, holding shorter equity tickers, fitted fine. */
 .fd-movecol{min-width:0}
+/* Trial / upgrade banner. Sits above the tabs so it is seen without hunting,
+   and is display:none until /v2/api/me says there is something to say. */
+.tbar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+ margin:0 0 12px;padding:10px 14px;border-radius:12px;font-size:12.5px;line-height:1.45;
+ background:var(--infb);color:var(--tx);border:1px solid var(--inf)}
+.tbar-wait{background:var(--warnb);border-color:var(--warn)}
+.tbar-end{background:var(--dnb);border-color:var(--dn)}
 /* The same rule one level down — <b> is a flex item of .fd-tsym. Without it the
    ticker holds the row open and squeezes the qty/price beside it to nothing. */
 .fd-trade .fd-tsym b{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -3271,6 +3450,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  <p class=mut style="font-size:13px;margin-top:18px">No account? <b style="cursor:pointer;color:var(--inf)" onclick="alert('Ask an admin to create your account — sign-up with approval is coming next.')">Request access</b></p></div>
 
 <div id=app class="app hide">
+<div id=trialbar class=tbar style="display:none"></div>
  <nav class=side id=side><div class=b><span class=full>OpenStocks<span style="color:var(--inf)">.</span></span><span class=mini>O<span style="color:var(--inf)">.</span></span></div>
   <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg><span class=lbl>Home</span></a>
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg><span class=lbl>Portfolio</span></a>
@@ -3353,6 +3533,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=account class=tab></div>
   <div id=admin class=tab></div>
+  <div id=upgrade class=tab></div>
   <div id=detail class=tab></div>
  </div>
 </div>
@@ -3380,10 +3561,10 @@ function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'applica
 function setMkt(m){MKT=m;document.querySelectorAll('#mkt b').forEach(b=>b.classList.toggle('on',b.dataset.m==m));refresh()}
 var NAVHIST=[];
 function go(t,noPush){if(!noPush&&cur&&cur!=t)NAVHIST.push(cur);cur=t;
- ['home','watch','positions','orders','analyze','account','admin','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
+ ['home','watch','positions','orders','analyze','account','admin','upgrade','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
  document.querySelectorAll('.nav a,.side a').forEach(a=>a.classList.toggle('on',a.dataset.t==t));
  var bk=document.getElementById('backbtn');if(bk)bk.style.display=NAVHIST.length?'inline-flex':'none';
- if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();window.scrollTo(0,0)}
+ if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();if(t=='upgrade')loadUpgrade();window.scrollTo(0,0)}
 function goBack(){var p=NAVHIST.pop();go(p||'home',true)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
 function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadMe();loadAccountData();refresh();startStream();loadTicker();NAVHIST=[];go('home',true);}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
@@ -3623,14 +3804,100 @@ function idxChartHtml(d){
   +(d.pairs?(' · '+d.pairs+' strike pairs'):'')+(c.length?(' · '+c.length+' bars today'):'')+'</div>';
  return head+idxCandleSVG(c)+note;}
 var MEV2=null;
+// ---- trial + upgrade -------------------------------------------------------
+function trialBanner(){var el=document.getElementById('trialbar');if(!el||!MEV2)return;
+ var t=MEV2.trial||{},pend=MEV2.pending_request;
+ if(pend){el.style.display='';el.className='tbar tbar-wait';
+  el.innerHTML='<span>Payment pending confirmation for <b>'+esc(pend.plan)+'</b> — we will enable it as soon as it is verified.</span>';return;}
+ if(t.active){el.style.display='';el.className='tbar';
+  // Counts DOWN and names the date. "Trial active" alone tells nobody when to act.
+  el.innerHTML='<span><b>'+t.days_left+' day'+(t.days_left==1?'':'s')+'</b> left of your free trial'
+   +' — full access to '+esc(MEV2.trial_tier||'paper')+'.</span>'
+   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">See plans</button>';return;}
+ if(t.had_trial&&MEV2.paid_plan=='watch'){el.style.display='';el.className='tbar tbar-end';
+  el.innerHTML='<span>Your trial has ended. You are on the free plan — signals and the catalyst feed stay available.</span>'
+   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Upgrade</button>';return;}
+ el.style.display='none';}
+function loadUpgrade(){var el=document.getElementById('upgrade');if(!el)return;
+ if(!MEV2){el.innerHTML='<div class=skel>loading…</div>';loadMe().then(loadUpgrade);return;}
+ var t=MEV2.trial||{},pend=MEV2.pending_request;
+ var status=pend?('payment pending for '+esc(pend.plan))
+   :(t.active?(t.days_left+' day'+(t.days_left==1?'':'s')+' left of trial')
+             :('you are on '+esc(MEV2.plan_label||MEV2.plan)));
+ var cards=(MEV2.tiers||[]).filter(function(x){return x.price>0;}).map(function(x){
+  var owned=x.current;
+  var off=x.list_price&&x.list_price>x.price?Math.round((1-x.price/x.list_price)*100):0;
+  var feats=(x.highlights||[]).map(function(f){
+    return '<div style="display:flex;gap:7px;align-items:flex-start;margin-top:5px">'
+      +'<span class=up style="font-size:12px;line-height:1.35">\u2713</span>'
+      +'<span class=mut style="font-size:12px;line-height:1.35">'+esc(f)+'</span></div>';}).join('');
+  return '<div class=card style="margin-bottom:12px;position:relative;'
+    +(x.best?'border-color:var(--inf)':'')+(owned?'border-color:var(--up)':'')+'">'
+   +(x.best&&!owned?'<div class="badge bg-inf" style="position:absolute;top:-9px;right:14px">most popular</div>':'')
+   +'<div class=row style="align-items:baseline"><b style="font-size:16px">'+esc(x.label)+'</b>'
+   +'<span style="text-align:right">'
+     +(off?('<span class=mut style="font-size:12px;text-decoration:line-through;margin-right:6px">\u20b9'+x.list_price+'</span>'):'')
+     +'<span class=num style="font-size:19px;font-weight:700">\u20b9'+x.price+'</span>'
+     +'<span class=mut style="font-size:11px;font-weight:400">/mo</span>'
+     +(off?('<div><span class="badge bg-up" style="font-size:10px">'+off+'% off</span></div>'):'')
+   +'</span></div>'
+   +feats
+   +(owned?'<div class="badge bg-up" style="margin-top:10px">your current plan</div>'
+         :'<button class=pri style="margin-top:11px;width:100%;font-size:13px;padding:9px 14px" onclick="askUpgrade(\''+x.key+'\')">Get '+esc(x.label)+' \u2014 \u20b9'+x.price+'</button>')
+   +'</div>';}).join('');
+ el.innerHTML='<div class=sec><span>choose a plan</span><span class=mut style="font-size:12px">'+status+'</span></div>'
+  +cards+'<div id=paybox></div>'
+  +'<div class=mut style="font-size:11.5px;margin-top:12px;line-height:1.55">'
+  +'Pay by UPI \u2014 scan the code and the amount is filled in for you. '
+  +'Your plan switches over once the payment is confirmed.</div>';
+ if(pend)askUpgrade(pend.plan,true);}
+function askUpgrade(plan,silent){
+ api('/v2/api/upgrade',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({plan:plan})}).then(function(r){
+  if(!r.ok){toast('⚠ '+((r.j&&r.j.error)||'could not request'));return;}
+  var d=r.j||{},p=d.payment||{};
+  var box=document.getElementById('paybox');if(!box)return;
+  if(!p.configured){
+   // Say so plainly rather than showing an empty frame the user stares at.
+   box.innerHTML='<div class=card style="margin-top:6px"><b>Request sent</b>'
+    +'<div class=mut style="font-size:12px;margin-top:6px;line-height:1.5">Payment details are not set up yet. '
+    +'The admin has your request and will get in touch.</div></div>';return;}
+  box.innerHTML='<div class=card style="margin-top:6px">'
+   +'<div class=row style="align-items:baseline"><b>Pay ₹'+d.amount+'</b>'
+   +'<span class=mut style="font-size:12px">'+esc(d.label)+' · monthly</span></div>'
+   +'<div style="text-align:center;margin:12px 0"><img src="/v2/api/pay-qr?plan='+encodeURIComponent(plan)+'" alt="UPI QR for \u20b9'+d.amount+'" style="width:210px;height:210px;background:#fff;padding:9px;border-radius:12px" onerror="this.style.display=\'none\'"></div>'
+   +'<div class=mut style="font-size:11.5px;text-align:center;margin-top:-4px">Scan with any UPI app \u2014 \u20b9'+d.amount+' is already filled in</div>' 
+   +(p.upi_id?('<div class=mut style="font-size:12px;line-height:1.6">UPI ID <b class=num style="color:var(--tx)">'+esc(p.upi_id)+'</b>'
+      +(p.payee?(' · '+esc(p.payee)):'')+'</div>'):'')
+   +(p.upi_link?('<a class=pri href="'+esc(p.upi_link)+'" style="display:inline-block;margin-top:10px;font-size:12.5px;padding:7px 14px;text-decoration:none">Open in UPI app</a>'):'')
+   +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">After paying, the admin confirms it and your plan switches over. '
+   +'Reference: request #'+d.request_id+'.</div>'
+   +(p.note?('<div class=mut style="font-size:11.5px;margin-top:6px">'+esc(p.note)+'</div>'):'')
+   +'</div>';
+  if(!silent)toast('✓ request sent');loadMe();});}
 // Who this account is, per the SERVER. The plan is resolved server-side and
 // sent here, so the page and the API can never disagree about what is allowed —
 // a plan computed in JavaScript is a suggestion, not a gate.
 function loadMe(){return api('/v2/api/me').then(function(r){MEV2=r.j||{};
  var n=document.getElementById('navadmin');if(n)n.style.display=MEV2.is_admin?'':'none';
- return MEV2;}).catch(function(){MEV2=null;});}
+ trialBanner();return MEV2;}).catch(function(){MEV2=null;});}
 function planPill(p,label){var c=p=='auto'?'bg-up':(p=='paper'?'bg-inf':'bg-mut');
  return '<span class="badge '+c+'">'+esc(label||p||'—')+'</span>';}
+function reqRow(r){
+ return '<div class=lrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:10px;align-items:center">'
+  +'<span style="min-width:0"><b>'+esc(r.username||('user '+r.user_id))+'</b>'
+  +'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+esc(r.created)+'</span></span>'
+  +'<span class="badge bg-inf">'+esc(r.label)+'</span>'
+  +'<span class=num style="font-size:13px;font-weight:600">\u20b9'+r.amount+'</span>'
+  +'<span style="display:inline-flex;gap:6px">'
+   +'<button class=pri style="font-size:11px;padding:4px 10px" onclick="decideReq('+r.id+',true)">approve</button>'
+   +'<button class=chip style="cursor:pointer;border:1px solid var(--line);font-size:11px" onclick="decideReq('+r.id+',false)">reject</button>'
+  +'</span></div>';}
+function decideReq(id,ok){
+ if(!confirm(ok?'Approve and upgrade this account?':'Reject this request?'))return;
+ api('/v2/api/admin/requests/'+id,{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({approve:ok})}).then(function(r){
+   if(!r.ok){toast('\u26a0 failed');return;}toast(ok?'\u2713 approved':'rejected');loadAdmin();});}
 function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
  el.innerHTML='<div class=skel>loading…</div>';
  api('/v2/api/admin/users').then(function(r){
@@ -3655,11 +3922,18 @@ function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
        +(u.active?'':' <span class="badge bg-dn">disabled</span>')
        +'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+esc(u.mode||'')+'</span></span>'
      +planPill(u.plan,lab[u.plan])+sel+roleBtn+actBtn+'</div>';};
-  el.innerHTML='<div class=sec><span>users &amp; plans</span><span class=mut style="font-size:12px">'+us.length+' accounts</span></div>'
+  el.innerHTML='<div id=reqbox></div>'
+   +'<div class=sec><span>users &amp; plans</span><span class=mut style="font-size:12px">'+us.length+' accounts</span></div>'
    +'<div class=card style="padding:2px 15px">'+us.map(row).join('')+'</div>'
    +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">'
    +'<b>Watch</b> — signals and the catalyst feed. <b>Paper</b> — own paper book, market internals, option chain, full history. '
    +'<b>Auto</b> — index options, broker connect, exports.</div>';
+  // Pending payments first: it is the only thing here someone is waiting on.
+  api('/v2/api/admin/requests').then(function(q){
+   var rq=(q.j||{}).requests||[],box=document.getElementById('reqbox');if(!box)return;
+   if(!rq.length){box.innerHTML='';return;}
+   box.innerHTML='<div class=sec><span>upgrade requests</span><span class="badge bg-warn">'+rq.length+' waiting</span></div>'
+    +'<div class=card style="padding:2px 15px">'+rq.map(reqRow).join('')+'</div>';});
  });}
 function adminPost(uid,body,what){return api('/v2/api/admin/users/'+uid,{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
