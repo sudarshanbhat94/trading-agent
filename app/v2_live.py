@@ -2275,7 +2275,7 @@ def index_options_pass(market):
     if hm < "09:20" or hm > "14:30":          # skip the open's noise and the close
         return
     try:
-        from . import event_calendar, index_direction, option_chain
+        from . import event_calendar, index_direction, market_internals, option_chain
     except Exception:
         _LOG.exception("index options: analytics unavailable")
         return
@@ -2327,6 +2327,15 @@ def index_options_pass(market):
         if not quotes:
             _status[market] = "index options: no live option prices"
             return
+        # Read ONCE per pass: it scans ~2,400 live quotes, and every index in
+        # the loop shares the same market-wide reading.
+        try:
+            internals = market_internals.read()
+        except Exception as exc:
+            # {} not None: votes_for treats None as "go and read it", which
+            # would retry the failing scan once per index in the loop.
+            _LOG.warning("market internals unavailable: %s", exc)
+            internals = {}
 
         # HONOUR THE OPERATOR'S SELECTION. This used to be a hardcoded skip of
         # everything except the first index, so the settings page offered four
@@ -2353,16 +2362,26 @@ def index_options_pass(market):
             chain, spot = _index_chain(symbol), c[-1]
             put_oi = sum(r["oi"] for r in chain if r["opt_type"] == "PE") or None
             call_oi = sum(r["oi"] for r in chain if r["opt_type"] == "CE") or None
-            verdict = index_direction.decide(o, h, l, c, v, put_oi=put_oi, call_oi=call_oi)
+            # LIVE MARKET INTERNALS. The five readings above are all computed
+            # from DAILY bars, so an intraday decision was being made on
+            # yesterday's candle. Breadth, FII index-futures positioning, the
+            # heavyweight contribution and VIX were all already in the database
+            # and unused — which is how a CE was bought on a tape that was 32%
+            # advancing with FIIs 10:1 short.
+            extra = market_internals.votes_for(symbol, internals)
+            verdict = index_direction.decide(o, h, l, c, v, put_oi=put_oi,
+                                             call_oi=call_oi, extra_votes=extra)
             side = verdict["call"]
             # CLAMPED to what the vote threshold can actually produce.
-            # `confidence` is agreeing/5, so a MIN_AGREEING=2 call reports 0.40
-            # and nothing higher. The persisted setting was 0.60 — correct back
-            # when MIN_AGREEING was 3, and left behind when it was loosened to
-            # 2. The lane then refused every call it generated, which reads as
-            # "index options are broken" rather than as a threshold mismatch.
+            # `confidence` is agreeing / number-of-readings, so a MIN_AGREEING=2
+            # call cannot exceed 2/n. The persisted setting was 0.60 — correct
+            # back when MIN_AGREEING was 3 of 5, left behind when it loosened to
+            # 2 — and the lane then refused every call it generated, which reads
+            # as "index options are broken" rather than a threshold mismatch.
+            # Computed from the ACTUAL reading count, which grows when live
+            # internals are available and shrinks when they are not.
             min_conf = min(float(cfg.get("min_confidence", 0.4) or 0.4),
-                           index_direction.MAX_CONFIDENCE_AT_MIN_AGREEING)
+                           index_direction.max_confidence(verdict["n_readings"]))
             if not side or verdict["confidence"] < min_conf:
                 continue
 
@@ -2398,11 +2417,19 @@ def index_options_pass(market):
             premium, lot = contract["price"], contract["lot_size"]
             cost = premium * lot
 
+            # The internals reading is RECORDED with the entry, not just used.
+            # It has no history to backtest against, so the only way to find out
+            # whether it helps is to store what it said at the moment of each
+            # trade and read it back later (scripts/experiment_report.py).
             why = json.dumps(dict(setup="index_options", side=side, symbol=symbol,
                                   confidence=verdict["confidence"],
+                                  n_readings=verdict["n_readings"],
                                   reasons=verdict["reasons"],
+                                  internals={k: vote for k, (vote, _r) in extra.items()},
                                   straddle_pct=straddle["pct"] if straddle else None,
+                                  straddle_cap=round(straddle_cap, 2),
                                   days_to_expiry=events["days_to_expiry"],
+                                  experiment="internals_in_index_call",
                                   unvalidated=True))
             stop = premium * (1 - cfg.get("stop_pct", 0.35))
             target = premium * (1 + cfg.get("target_pct", 0.60))

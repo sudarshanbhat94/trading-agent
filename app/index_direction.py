@@ -59,6 +59,19 @@ N_READINGS = 5
 MAX_CONFIDENCE_AT_MIN_AGREEING = MIN_AGREEING / N_READINGS
 
 
+def max_confidence(n_readings=N_READINGS):
+    """The ceiling `confidence` can reach for a MIN_AGREEING call, given how
+    many readings actually voted.
+
+    Must be computed rather than hardcoded: live market internals add readings
+    to the five daily ones, so the denominator is no longer always 5. A fixed
+    2/5 would let a stored threshold silently out-run what the vote can produce
+    the moment the reading count changes — the same failure that had this lane
+    refusing every call it generated.
+    """
+    return MIN_AGREEING / max(1, int(n_readings or N_READINGS))
+
+
 def _ema(values, span):
     if not values:
         return None
@@ -149,12 +162,28 @@ def positioning_vote(put_oi, call_oi):
 
 
 def decide(opens, highs, lows, closes, volumes, put_oi=None, call_oi=None,
-           min_agreeing=MIN_AGREEING):
-    """Return {call, confidence, votes, reasons}.
+           min_agreeing=MIN_AGREEING, extra_votes=None):
+    """Return {call, confidence, votes, reasons, n_readings}.
 
     `call` is "CE", "PE" or None. None means do not trade, and is the expected
     answer on most days — an option held through a flat market loses to time
     decay, so indecision is a losing position rather than a free one.
+
+    `extra_votes` is {name: (vote, reason)} — live market internals (breadth,
+    FII positioning, heavyweight contribution, VIX). The five readings below are
+    all computed from DAILY bars, so on any intraday decision they describe
+    yesterday. Every one of the extra readings was already in the database and
+    unused, which is how a CE was bought on a tape that was 32% advancing with
+    FIIs 10:1 short.
+
+    They are added as VOTES, not as a veto. A veto would have blocked both the
+    2026-07-30 CE (closed +21.7%) and the 2026-07-31 CE (+33.9% intraday) —
+    on 30 Jul the internals read bearish and were simply wrong. Risk on an
+    option is held by size and the stop, which are enforced at entry.
+
+    UNVALIDATED: the internals have no history to backtest against, so this is
+    shipped on reasoning and tagged. The reading is recorded with every entry so
+    it can be read back later.
     """
     votes = {}
     reasons = []
@@ -170,6 +199,13 @@ def decide(opens, highs, lows, closes, volumes, put_oi=None, call_oi=None,
     }.items():
         votes[name] = vote
         reasons.append(f"{name}: {why}")
+    for name, pair in (extra_votes or {}).items():
+        try:
+            vote, why = pair
+        except (TypeError, ValueError):
+            continue
+        votes[name] = int(vote)
+        reasons.append(f"{name}: {why}")
 
     bullish = sum(1 for v in votes.values() if v > 0)
     bearish = sum(1 for v in votes.values() if v < 0)
@@ -182,5 +218,8 @@ def decide(opens, highs, lows, closes, volumes, put_oi=None, call_oi=None,
     # and never implies more certainty than the number of inputs supports.
     agreed = max(bullish, bearish)
     confidence = round(agreed / len(votes), 2) if call else 0.0
+    # n_readings so callers can clamp a stored min_confidence against what this
+    # particular vote could actually produce — the denominator is no longer
+    # always 5 once live internals are supplied.
     return dict(call=call, confidence=confidence, votes=votes, reasons=reasons,
-                bullish=bullish, bearish=bearish)
+                bullish=bullish, bearish=bearish, n_readings=len(votes))

@@ -465,21 +465,25 @@ def INDEX_ALLOWED_INSTRUMENTS():
     return v2_live.INDEX_ALLOWED
 
 
-def _effective_min_conf(cfg):
+def _effective_min_conf(cfg, n_readings=None):
     """The confidence gate the engine will actually apply.
 
-    `confidence` is agreeing-readings / 5, so a MIN_AGREEING=2 call tops out at
-    0.40. A stored value above that silently demands more agreement than the
-    vote threshold asks for — which is exactly what happened: 0.60 was correct
-    when MIN_AGREEING was 3, survived the loosening to 2, and left the lane
+    `confidence` is agreeing-readings / n, so a MIN_AGREEING=2 call tops out at
+    2/n. A stored value above that silently demands more agreement than the vote
+    threshold asks for — which is exactly what happened: 0.60 was correct when
+    MIN_AGREEING was 3 of 5, survived the loosening to 2, and left the lane
     refusing every call it generated.
+
+    `n_readings` matters now that live internals add readings to the five daily
+    ones: the denominator is no longer always 5, so a fixed 2/5 would drift out
+    of step with the engine the same way 0.60 did.
     """
     from . import index_direction
     try:
         want = float(cfg.get("min_confidence", 0.4) or 0.4)
     except (TypeError, ValueError):
         want = 0.4
-    return min(want, index_direction.MAX_CONFIDENCE_AT_MIN_AGREEING)
+    return min(want, index_direction.max_confidence(n_readings))
 
 
 def _index_settings_load():
@@ -617,10 +621,15 @@ def api_index_call():
     engine is built to decline rather than to have a view every day.
     """
     try:
-        from . import index_direction, v2_live
+        from . import index_direction, market_internals, v2_live
+        _index_settings_load()          # the operator's saved instrument list
         cfg = v2_live.INDEX_OPTIONS
         if not cfg.get("enabled"):
             return JSONResponse(dict(enabled=False, calls=[]))
+        try:                            # once, not once per index
+            internals = market_internals.read()
+        except Exception:
+            internals = {}
         out = []
         for symbol in cfg.get("instruments", ()):
             # The index is not an equity, so it has no row in `candles`. Its
@@ -634,16 +643,21 @@ def api_index_call():
                 continue
             cols = list(zip(*rows))
             put_oi, call_oi = _index_oi(symbol)
+            # Same live internals the ENGINE decides on, through the same
+            # helper. Showing the call without them would put yesterday's
+            # reasoning on the page beside a position taken on today's tape.
             verdict = index_direction.decide(
                 [float(x or 0) for x in cols[0]], [float(x or 0) for x in cols[1]],
                 [float(x or 0) for x in cols[2]], [float(x or 0) for x in cols[3]],
-                [float(x or 0) for x in cols[4]], put_oi=put_oi, call_oi=call_oi)
+                [float(x or 0) for x in cols[4]], put_oi=put_oi, call_oi=call_oi,
+                extra_votes=market_internals.votes_for(symbol, internals))
             verdict["symbol"] = symbol
             # Same clamp the ENGINE applies. Reading the raw setting here meant
             # the page said "not actionable" for a call the engine would take —
             # the display and the book disagreeing about the same number.
             verdict["actionable"] = bool(
-                verdict["call"] and verdict["confidence"] >= _effective_min_conf(cfg))
+                verdict["call"] and
+                verdict["confidence"] >= _effective_min_conf(cfg, verdict["n_readings"]))
             out.append(verdict)
         return JSONResponse(dict(enabled=True, auto_trade=bool(cfg.get("auto_trade")),
                                  expiry=cfg.get("expiry"), calls=out))

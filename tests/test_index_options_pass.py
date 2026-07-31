@@ -106,8 +106,22 @@ class GateTest(unittest.TestCase):
         left behind when it was loosened to 2 — so the lane refused every call
         it generated. That reads as 'index options are broken'."""
         from app import index_direction
-        self.assertAlmostEqual(index_direction.MAX_CONFIDENCE_AT_MIN_AGREEING, 0.4)
-        self.assertIn("MAX_CONFIDENCE_AT_MIN_AGREEING", self._src())
+        self.assertAlmostEqual(index_direction.max_confidence(5), 0.4)
+        self.assertIn("max_confidence(", self._src())
+
+    def test_the_ceiling_tracks_the_actual_reading_count(self) -> None:
+        """Live internals add readings to the five daily ones, so the
+        denominator is no longer always 5. A hardcoded 2/5 would let a stored
+        threshold out-run what the vote can produce the moment that changes —
+        the same failure that had the lane refusing every call."""
+        from app import index_direction as idx
+        self.assertAlmostEqual(idx.max_confidence(9), 2 / 9)
+        self.assertAlmostEqual(idx.max_confidence(5), 2 / 5)
+        # unknown or zero falls back to the default count rather than dividing
+        # by zero or returning a ceiling above 1.0
+        self.assertAlmostEqual(idx.max_confidence(None), 2 / 5)
+        self.assertAlmostEqual(idx.max_confidence(0), 2 / 5)
+        self.assertLessEqual(idx.max_confidence(3), 1.0)
 
     def test_a_stale_high_setting_cannot_silently_kill_the_lane(self) -> None:
         from app.v2_web import _effective_min_conf

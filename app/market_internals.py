@@ -250,6 +250,33 @@ def read(con=None):
             con.close()
 
 
+# `contribution` ranks NIFTY 50 constituents, so it explains a NIFTY move and
+# nothing else. Breadth, VIX, FII index-futures positioning and cash turnover
+# are market-wide and apply to any index. Handing BANKNIFTY a reading built
+# from Nifty 50 heavyweights would be a confident answer to the wrong question.
+INDEX_SPECIFIC = ("heavyweights",)
+
+
+def votes_for(symbol, internals=None):
+    """Internals votes valid for ONE index, ready to hand to index_direction.
+
+    One helper so the engine's entry decision and the call shown on the page
+    cannot compute this differently — the actionable flag and the book have
+    already disagreed once over a threshold, and that was harder to spot than
+    it should have been.
+    """
+    try:
+        data = internals if internals is not None else read()
+        out = votes(data)
+    except Exception as exc:
+        _LOG.warning("internals unavailable: %s", exc)
+        return {}
+    if str(symbol).upper() != "NIFTY":
+        for name in INDEX_SPECIFIC:
+            out.pop(name, None)
+    return out
+
+
 def votes(internals):
     """Turn the internals into directional votes for the index call.
 
