@@ -132,6 +132,47 @@ class GateTest(unittest.TestCase):
         body = active.replace(inspect.getsource(v2_web._effective_min_conf), "")
         self.assertNotIn('cfg.get("min_confidence"', body)
 
+    def test_the_saved_selection_applies_without_a_page_view(self) -> None:
+        """The loader used to live in v2_web and run only when a web request
+        read the settings page. After a restart INDEX_OPTIONS held the code
+        default instruments ("NIFTY",) while the saved file listed four, so
+        three indices were dropped until somebody opened that page in a
+        browser. Verified live on 2026-07-31: a freshly restarted process
+        reported one instrument against a file listing four.
+        """
+        import json, tempfile, os, inspect
+        from app import v2_live
+        self.assertIn("index_settings_load()",
+                      inspect.getsource(v2_live.index_options_pass))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "index_options.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"instruments": ["NIFTY", "FINNIFTY", "MIDCPNIFTY"],
+                           "min_confidence": 0.4}, fh)
+            orig_file = v2_live.INDEX_SETTINGS_FILE
+            orig_inst = v2_live.INDEX_OPTIONS["instruments"]
+            try:
+                v2_live.INDEX_SETTINGS_FILE = path
+                v2_live.INDEX_OPTIONS["instruments"] = ("NIFTY",)   # post-restart state
+                v2_live.index_settings_load()
+                self.assertEqual(v2_live.INDEX_OPTIONS["instruments"],
+                                 ("NIFTY", "FINNIFTY", "MIDCPNIFTY"))
+            finally:
+                v2_live.INDEX_SETTINGS_FILE = orig_file
+                v2_live.INDEX_OPTIONS["instruments"] = orig_inst
+
+    def test_a_missing_settings_file_leaves_the_defaults_alone(self) -> None:
+        from app import v2_live
+        orig_file = v2_live.INDEX_SETTINGS_FILE
+        orig_inst = v2_live.INDEX_OPTIONS["instruments"]
+        try:
+            v2_live.INDEX_SETTINGS_FILE = "/nonexistent/index_options.json"
+            v2_live.index_settings_load()
+            self.assertEqual(v2_live.INDEX_OPTIONS["instruments"], orig_inst)
+        finally:
+            v2_live.INDEX_SETTINGS_FILE = orig_file
+            v2_live.INDEX_OPTIONS["instruments"] = orig_inst
+
     def test_a_two_of_five_call_is_actionable(self) -> None:
         """The end state that matters: on 2026-07-31 NIFTY, FINNIFTY and
         MIDCPNIFTY all read CE at 0.40 and all three were refused."""

@@ -462,6 +462,32 @@ INDEX_OPTIONS = dict(
 # live in v2_web while the engine hardcoded NIFTY, which is how the UI came to
 # present three choices that did nothing.
 INDEX_ALLOWED = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
+INDEX_SETTINGS_FILE = os.path.join(os.path.dirname(V2_DB), "index_options.json")
+INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry",
+                  "min_confidence", "budget")
+
+
+def index_settings_load():
+    """Apply the operator's saved choices onto INDEX_OPTIONS.
+
+    This lives in the ENGINE, and the engine calls it on every pass, because it
+    used to be called only when a web request read the settings page. After a
+    restart INDEX_OPTIONS therefore held the code defaults — instruments
+    ("NIFTY",) — and the saved selection of four indices did not apply until
+    somebody happened to open that page. Verified on 2026-07-31: a freshly
+    restarted process reported one instrument while the JSON file listed four.
+
+    Re-reading each pass also means an edit takes effect without a restart,
+    which is the behaviour the settings page already implies.
+    """
+    try:
+        with open(INDEX_SETTINGS_FILE, encoding="utf-8") as handle:
+            saved = json.load(handle)
+    except Exception:
+        return                              # no file yet -> code defaults stand
+    for key in INDEX_EDITABLE:
+        if key in saved:
+            INDEX_OPTIONS[key] = tuple(saved[key]) if key == "instruments" else saved[key]
 # Measured on the 404-session study and shown next to the tick-box rather than
 # enforced behind it: buying these is paying materially over the realised move.
 INDEX_PREMIUM_WARNING = {
@@ -2224,6 +2250,7 @@ def index_options_pass(market):
     The direction call itself measured at 36% accuracy over 404 sessions. This
     makes the path REAL; it does not make the signal good.
     """
+    index_settings_load()                 # the operator's saved choices, every pass
     cfg = INDEX_OPTIONS
     if not cfg.get("enabled") or not cfg.get("auto_trade"):
         return

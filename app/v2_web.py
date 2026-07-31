@@ -440,12 +440,23 @@ def api_positions():
     return JSONResponse(out)
 
 
-INDEX_SETTINGS_FILE = os.path.join(os.path.dirname(V2_DB), "index_options.json")
-# Only these keys can be set from the browser. Everything else in INDEX_OPTIONS
-# — the long-only rule, the premium cap — is a safety property, not a
-# preference, and is deliberately not reachable from the UI.
-INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry",
-                  "min_confidence", "budget")
+# The settings FILE, the editable key list and the loader all live in the
+# engine now. They were defined here, so the persisted selection only reached
+# INDEX_OPTIONS when a web request read the settings page — after a restart the
+# engine ran on code defaults until somebody opened that page in a browser.
+def _settings_file():
+    from . import v2_live
+    return v2_live.INDEX_SETTINGS_FILE
+
+
+def INDEX_EDITABLE():
+    """Only these keys can be set from the browser. Everything else in
+    INDEX_OPTIONS — the long-only rule, the premium cap — is a safety property,
+    not a preference, and is deliberately not reachable from the UI."""
+    from . import v2_live
+    return v2_live.INDEX_EDITABLE
+
+
 def INDEX_ALLOWED_INSTRUMENTS():
     """One source of truth, owned by the engine. This was a second hardcoded
     tuple here while index_options_pass only ever traded NIFTY, so the settings
@@ -472,18 +483,10 @@ def _effective_min_conf(cfg):
 
 
 def _index_settings_load():
-    """Apply the persisted choices onto INDEX_OPTIONS. Called at read AND write
-    so a restart does not silently revert the operator's selection."""
-    try:
-        from . import v2_live
-        with open(INDEX_SETTINGS_FILE, encoding="utf-8") as handle:
-            saved = _jsonmod.load(handle)
-        for key in INDEX_EDITABLE:
-            if key in saved:
-                v2_live.INDEX_OPTIONS[key] = (tuple(saved[key]) if key == "instruments"
-                                              else saved[key])
-    except Exception:
-        pass
+    """Delegate to the engine's loader — one implementation, and the engine
+    calls it on every pass rather than waiting for a page view."""
+    from . import v2_live
+    v2_live.index_settings_load()
 
 
 @router.get("/api/index-settings")
@@ -538,11 +541,12 @@ def api_index_settings_save(payload: dict):
         v2_live.INDEX_OPTIONS[key] = tuple(value) if key == "instruments" else value
     try:
         current = {k: (list(v2_live.INDEX_OPTIONS[k]) if k == "instruments"
-                       else v2_live.INDEX_OPTIONS[k]) for k in INDEX_EDITABLE}
-        tmp = INDEX_SETTINGS_FILE + ".tmp"
+                       else v2_live.INDEX_OPTIONS[k]) for k in INDEX_EDITABLE()}
+        path = _settings_file()
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
             _jsonmod.dump(current, handle)
-        os.replace(tmp, INDEX_SETTINGS_FILE)
+        os.replace(tmp, path)
     except Exception as exc:
         return JSONResponse(dict(ok=False, error=str(exc)[:120]), status_code=500)
     return api_index_settings()
