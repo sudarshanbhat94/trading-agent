@@ -62,7 +62,7 @@ class GateTest(unittest.TestCase):
         """Enabling trading must not disable the measured constraints — these
         are what stop it buying rich premium into an event."""
         src = self._src()
-        for gate in ('events["budget_day"]', "max_straddle_pct",
+        for gate in ('events["budget_day"]', "_straddle_limit(",
                      "max_premium_pct", "_risk_halt("):
             with self.subTest(gate=gate):
                 self.assertIn(gate, src)
@@ -201,10 +201,69 @@ class GateTest(unittest.TestCase):
         self.assertGreaterEqual(v2_live.EXPIRY_LAST_ENTRY, "12:00")
 
     def test_rich_premium_is_refused(self) -> None:
-        self.assertIn("max_straddle_pct", self._src())
+        self.assertIn("_straddle_limit(", self._src())
+        self.assertIn("max_straddle_pct", v2_live.INDEX_OPTIONS)
 
     def test_position_count_is_capped(self) -> None:
         self.assertIn("max_concurrent", self._src())
+
+    def test_the_straddle_cap_scales_with_time_to_expiry(self) -> None:
+        """An implied move grows with the SQUARE ROOT of time, so a 25-day
+        option quotes a bigger expected move than a 4-day one without being any
+        richer. The 1.5% cap was calibrated on NIFTY weeklies; applied raw it
+        rejected every monthly contract for being longer-dated.
+
+        Measured live on 2026-07-31, raw straddle -> per sqrt-day:
+            NIFTY 4d 1.07% -> 0.54   BANKNIFTY 25d 2.88% -> 0.58
+            FINNIFTY 25d 3.04% -> 0.61   MIDCPNIFTY 25d 3.10% -> 0.62
+        Nearly identical once normalised.
+        """
+        from datetime import date as _date
+        cfg = v2_live.INDEX_OPTIONS
+        today = _date(2026, 7, 31)
+        weekly = v2_live._straddle_limit(cfg, "2026-08-04", today)   # 4 days
+        monthly = v2_live._straddle_limit(cfg, "2026-08-25", today)  # 25 days
+        # the calibrated weekly cap is preserved exactly
+        self.assertAlmostEqual(weekly, 1.5, places=6)
+        # 25 days -> 1.5 * sqrt(25/4) = 3.75
+        self.assertAlmostEqual(monthly, 3.75, places=6)
+        # the live readings that were being rejected now pass, NIFTY unaffected
+        self.assertLess(1.07, weekly)
+        for observed in (2.88, 3.04, 3.10):
+            self.assertLess(observed, monthly)
+
+    def test_a_genuinely_rich_contract_is_still_refused(self) -> None:
+        """Scaling must not turn the gate off."""
+        from datetime import date as _date
+        cfg = v2_live.INDEX_OPTIONS
+        limit = v2_live._straddle_limit(cfg, "2026-08-25", _date(2026, 7, 31))
+        self.assertGreater(5.0, 0)
+        self.assertGreater(5.0, limit, "a 5% expected move on a monthly must still be refused")
+
+    def test_an_unknown_expiry_falls_back_to_the_strict_cap(self) -> None:
+        from datetime import date as _date
+        cfg = v2_live.INDEX_OPTIONS
+        for bad in (None, "", "not-a-date"):
+            self.assertAlmostEqual(v2_live._straddle_limit(cfg, bad, _date(2026, 7, 31)), 1.5)
+        # an already-expired contract must not scale the cap DOWN to zero
+        self.assertAlmostEqual(
+            v2_live._straddle_limit(cfg, "2026-07-30", _date(2026, 7, 31)), 1.5)
+
+    def test_the_monthly_only_indices_get_a_workable_premium_cap(self) -> None:
+        """Their cheapest single lot is Rs 21.8k / 27.7k / 27.1k against a Rs 10k
+        default, so they could never fill even with every gate open. Raising the
+        cap globally would also quadruple NIFTY's size, since _pick_contract
+        buys the nearest AFFORDABLE strike — hence a per-instrument override."""
+        cfg = v2_live.INDEX_OPTIONS
+        by_index = cfg.get("max_premium_pct_by_index") or {}
+        budget = cfg["budget"]
+        self.assertEqual(cfg["max_premium_pct"], 0.10, "NIFTY sizing must not change")
+        for idx, cheapest in (("BANKNIFTY", 21802), ("FINNIFTY", 27669), ("MIDCPNIFTY", 27066)):
+            allowed = budget * by_index.get(idx, cfg["max_premium_pct"])
+            self.assertGreater(allowed, cheapest, f"{idx} still cannot buy one lot")
+        # NIFTY keeps the default
+        self.assertNotIn("NIFTY", by_index)
+        self.assertGreater(budget * cfg["max_premium_pct"], 4388)  # cheapest NIFTY lot
 
     def test_premium_at_risk_is_capped(self) -> None:
         self.assertIn("max_premium_pct", self._src())

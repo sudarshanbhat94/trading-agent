@@ -443,6 +443,16 @@ INDEX_OPTIONS = dict(
     # ledger, neither result can be attributed.
     budget=100000.0,
     max_premium_pct=0.10,       # cap on premium at risk per position, of the OPTIONS book
+    # NSE kept weekly expiry only for NIFTY. BANKNIFTY, FINNIFTY and MIDCPNIFTY
+    # are month-dated in the feed, so their CHEAPEST single lot is Rs 21.8k,
+    # Rs 27.7k and Rs 27.1k — every one of them above the Rs 10k cap, which is
+    # why they never filled even once the gates were fixed.
+    #
+    # Stated PER INSTRUMENT rather than by raising the global cap. _pick_contract
+    # buys the nearest strike that FITS, so a global 0.30 would also quadruple
+    # NIFTY's position size from ~Rs 7k to ~Rs 30k — a four-fold size increase on
+    # the one index that actually trades, which is not what was asked for.
+    max_premium_pct_by_index={"BANKNIFTY": 0.30, "FINNIFTY": 0.30, "MIDCPNIFTY": 0.30},
     # One position PER INDEX, not one across all of them. At 1 the first fill
     # returned out of the whole pass, so a NIFTY CE opened at 09:40 blocked
     # FINNIFTY and MIDCPNIFTY for the rest of the session even though both had
@@ -454,7 +464,12 @@ INDEX_OPTIONS = dict(
     target_pct=0.60,            # premium target
     # The ATM straddle is the market's own expected move. Above this the
     # option is priced for more than the signal is playing for.
+    #
+    # SCALED BY TIME TO EXPIRY — see _straddle_limit. This 1.5% was calibrated
+    # on NIFTY weeklies (~4 days to run). Compared raw against a 25-day monthly
+    # it rejects the contract for being longer-dated, not for being rich.
     max_straddle_pct=1.5,
+    straddle_base_dte=4,        # the horizon max_straddle_pct was measured on
 )
 # Indices the engine has daily futures bars, an option chain and live quotes
 # for — verified live, all four return 60 bars and a populated chain. This is
@@ -2352,9 +2367,13 @@ def index_options_pass(market):
                 continue
 
             straddle = option_chain.atm_straddle(chain, spot) if chain else None
-            if straddle and straddle["pct"] > cfg.get("max_straddle_pct", 1.5):
-                _status[market] = (f"index options: premium too rich "
-                                   f"({straddle['pct']:.2f}% expected move)")
+            # Cap scaled to the contract's remaining life — a 25-day monthly
+            # quotes a bigger expected move than a 4-day weekly without being
+            # richer. Judging both against a flat 1.5% rejected every monthly.
+            straddle_cap = _straddle_limit(cfg, _chain_expiry(symbol), today)
+            if straddle and straddle["pct"] > straddle_cap:
+                _status[market] = (f"index options: {symbol} premium too rich "
+                                   f"({straddle['pct']:.2f}% vs {straddle_cap:.2f}% allowed)")
                 continue
 
             # Give the selector the budget so it picks a strike that FITS,
@@ -2362,8 +2381,12 @@ def index_options_pass(market):
             # Sized off the options book's REMAINING cash, not its starting
             # budget, so losses shrink the next position instead of letting the
             # lane keep betting the original stake.
-            budget_per_trade = min(options_cash,
-                                   budget * cfg.get("max_premium_pct", 0.10))
+            # Per-instrument premium cap: the monthly-only indices cannot buy a
+            # single lot inside the 10% default, and raising it globally would
+            # also quadruple NIFTY's size (nearest AFFORDABLE strike).
+            premium_pct = (cfg.get("max_premium_pct_by_index") or {}).get(
+                symbol, cfg.get("max_premium_pct", 0.10))
+            budget_per_trade = min(options_cash, budget * premium_pct)
             if budget_per_trade <= 0:
                 _status[market] = "index options: book exhausted"
                 return
@@ -2429,6 +2452,57 @@ def _index_chain(symbol):
                 for r in rows]
     except Exception:
         return []
+
+
+def _chain_expiry(symbol):
+    """Expiry date of the nearest-expiry chain, as an ISO string or None.
+
+    Needed because the straddle cap has to know the HORIZON it is judging. See
+    _straddle_limit.
+    """
+    try:
+        path = os.environ.get("FO_DB", "/opt/opentrade/var/fo.db")
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=20)
+        day = con.execute("SELECT MAX(date) FROM fo_bhav WHERE symbol=?", (symbol,)).fetchone()[0]
+        row = con.execute("SELECT MIN(expiry) FROM fo_bhav WHERE symbol=? AND date=?"
+                          " AND expiry>=date", (symbol, day)).fetchone()
+        con.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _straddle_limit(cfg, expiry, today):
+    """The straddle cap, scaled to the contract's remaining life.
+
+    An implied move grows with the SQUARE ROOT of time, so a 25-day option
+    naturally quotes a bigger expected move than a 4-day one without being any
+    richer. max_straddle_pct was calibrated on NIFTY weeklies; applied raw to a
+    monthly it rejects the contract for being longer-dated.
+
+    Measured on the live chain, 2026-07-31 — raw straddle, and the same number
+    divided by the square root of days to expiry:
+
+        NIFTY       4d   1.07%   ->  0.54 %/sqrt-day
+        BANKNIFTY  25d   2.88%   ->  0.58
+        FINNIFTY   25d   3.04%   ->  0.61
+        MIDCPNIFTY 25d   3.10%   ->  0.62
+
+    Nearly identical once normalised: the spread was almost entirely time, not
+    price. Against a flat 1.5% the three monthlies were all rejected; against a
+    scaled cap they are judged on the same footing as NIFTY.
+    """
+    base = float(cfg.get("max_straddle_pct", 1.5))
+    base_dte = max(1, int(cfg.get("straddle_base_dte", 4)))
+    if not expiry:
+        return base                       # unknown horizon -> the strict cap
+    try:
+        dte = (date.fromisoformat(str(expiry)[:10]) - today).days
+    except (TypeError, ValueError):
+        return base
+    if dte <= 0:
+        return base
+    return base * (dte / base_dte) ** 0.5
 
 
 def _pick_contract(symbol, side, spot, quotes, max_cost=None):
