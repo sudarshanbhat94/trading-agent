@@ -116,6 +116,28 @@ class GateTest(unittest.TestCase):
         self.assertAlmostEqual(_effective_min_conf({}), 0.4)
         self.assertAlmostEqual(_effective_min_conf({"min_confidence": None}), 0.4)
 
+    def test_every_reader_of_min_confidence_uses_the_same_clamp(self) -> None:
+        """There are three: the engine's entry gate, the settings API, and the
+        `actionable` flag on the call display. The third was still reading the
+        raw setting, so the page reported "not actionable" for a call the
+        engine would have taken — the display and the book disagreeing about
+        the same number. A raw `cfg.get("min_confidence"` outside the clamp
+        helper is that bug returning.
+        """
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web)
+        active = src[:src.index('SPA_HTML = r"""')]
+        # the helper itself is the one legitimate raw read
+        body = active.replace(inspect.getsource(v2_web._effective_min_conf), "")
+        self.assertNotIn('cfg.get("min_confidence"', body)
+
+    def test_a_two_of_five_call_is_actionable(self) -> None:
+        """The end state that matters: on 2026-07-31 NIFTY, FINNIFTY and
+        MIDCPNIFTY all read CE at 0.40 and all three were refused."""
+        from app.v2_web import _effective_min_conf
+        self.assertGreaterEqual(0.4, _effective_min_conf({"min_confidence": 0.6}))
+
     def test_policy_and_budget_days_are_skipped(self) -> None:
         """Scheduled repricings: premium is bid beforehand and collapses after,
         and no intraday edge survives paying that."""

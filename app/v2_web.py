@@ -635,8 +635,11 @@ def api_index_call():
                 [float(x or 0) for x in cols[2]], [float(x or 0) for x in cols[3]],
                 [float(x or 0) for x in cols[4]], put_oi=put_oi, call_oi=call_oi)
             verdict["symbol"] = symbol
+            # Same clamp the ENGINE applies. Reading the raw setting here meant
+            # the page said "not actionable" for a call the engine would take —
+            # the display and the book disagreeing about the same number.
             verdict["actionable"] = bool(
-                verdict["call"] and verdict["confidence"] >= cfg.get("min_confidence", 0.6))
+                verdict["call"] and verdict["confidence"] >= _effective_min_conf(cfg))
             out.append(verdict)
         return JSONResponse(dict(enabled=True, auto_trade=bool(cfg.get("auto_trade")),
                                  expiry=cfg.get("expiry"), calls=out))
