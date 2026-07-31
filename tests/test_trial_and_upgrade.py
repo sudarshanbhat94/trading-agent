@@ -355,5 +355,66 @@ class SignupStartsTrialTest(unittest.TestCase):
         self.assertIn("start_trial(", inspect.getsource(auth.signup_user))
 
 
+class AdminNotificationTest(unittest.TestCase):
+    """Nothing tells this system that money ARRIVED — a UPI credit lands in a
+    bank account the app cannot see. What it CAN do is tell the admin a payment
+    is expected and what reference to look for, so the bank notification on
+    their phone means something when it appears."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.client, self.main, self.web = _client(self.tmp)
+        from app.auth import hash_password
+        self.pw = "Str0ngPassw0rd!x"
+        self.name = "u_" + uuid.uuid4().hex[:8]
+        self.user = self.main.db.create_user(self.name, hash_password(self.pw),
+                                             role="user", active=True)
+        self.admin_name = "a_" + uuid.uuid4().hex[:8]
+        self.admin = self.main.db.create_user(self.admin_name, hash_password(self.pw),
+                                              role="admin", active=True)
+
+    def test_requesting_an_upgrade_alerts_the_admins(self) -> None:
+        from app import telegram_bot, v2_web
+        seen = {}
+        orig = telegram_bot.notify_users
+        telegram_bot.notify_users = lambda ids, text: seen.update(ids=list(ids), text=text) or 1
+        try:
+            self.client.post("/api/auth/login", json={"username": self.name, "password": self.pw})
+            self.client.post("/v2/api/upgrade", json={"plan": "auto"})
+        finally:
+            telegram_bot.notify_users = orig
+        self.assertIn(int(self.admin["id"]), seen.get("ids", []))
+        self.assertNotIn(int(self.user["id"]), seen.get("ids", []))
+        self.assertIn(self.name, seen.get("text", ""))
+        self.assertIn("999", seen.get("text", ""))
+
+    def test_a_telegram_failure_does_not_block_the_subscription(self) -> None:
+        """A messaging outage must never stop someone paying."""
+        from app import telegram_bot
+        orig = telegram_bot.notify_users
+        telegram_bot.notify_users = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+        try:
+            self.client.post("/api/auth/login", json={"username": self.name, "password": self.pw})
+            r = self.client.post("/v2/api/upgrade", json={"plan": "auto"})
+        finally:
+            telegram_bot.notify_users = orig
+        self.assertEqual(r.status_code, 200, r.text)
+        # this user's row only — app.main imports once, so the database is
+        # shared across the run and a global count sees other tests' requests
+        self.assertEqual(len([q for q in self.main.db.plan_requests("pending")
+                              if int(q["user_id"]) == int(self.user["id"])]), 1)
+
+    def test_the_admin_sees_a_pending_count(self) -> None:
+        self.client.post("/api/auth/login", json={"username": self.name, "password": self.pw})
+        self.client.post("/v2/api/upgrade", json={"plan": "auto"})
+        self.client.cookies.clear()
+        self.client.post("/api/auth/login", json={"username": self.admin_name, "password": self.pw})
+        self.assertGreaterEqual(self.client.get("/v2/api/me").json()["pending_approvals"], 1)
+
+    def test_a_normal_user_is_not_told_the_queue_length(self) -> None:
+        self.client.post("/api/auth/login", json={"username": self.name, "password": self.pw})
+        self.assertEqual(self.client.get("/v2/api/me").json()["pending_approvals"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -873,6 +873,7 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
     ref = _pay_note(plans.LABELS.get(want, want), req.get("id"))
     _LOG.info("UPGRADE REQUEST %s -> %s (Rs %s), request id %s",
               user.get("username"), want, amount, req.get("id"))
+    _alert_admins_of_request(db, user, want, amount, req, ref)
     return JSONResponse(dict(
         ok=True, request_id=req.get("id"), plan=want,
         label=plans.LABELS.get(want, want), amount=amount,
@@ -881,6 +882,36 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
             upi_link=_upi_link(cfg, float(amount), ref),
             apps=_upi_apps(cfg, float(amount), ref), reference=ref,
             configured=bool(cfg.get("upi_id") or cfg.get("qr_url")))))
+
+
+def _alert_admins_of_request(db, user, plan, amount, req, ref):
+    """Tell the admins a payment is expected, on their own Telegram.
+
+    Nothing tells this system that money ARRIVED — a UPI credit lands in a bank
+    account the app cannot see. What it can do is make sure the admin knows a
+    payment is coming and what reference to look for, so the bank notification
+    on their phone means something when it appears instead of being one more
+    alert to work out.
+
+    Best effort throughout: a Telegram outage must never stop someone
+    subscribing. The request is already saved before this runs.
+    """
+    from . import plans
+    try:
+        admin_ids = [int(u["id"]) for u in db.list_users()
+                     if (u.get("role") or "").lower() == "admin" and u.get("active")]
+        if not admin_ids:
+            return
+        from . import telegram_bot
+        text = ("\U0001f4b3 <b>OpenStocks</b> · upgrade requested\n"
+                "<b>%s</b> wants <b>%s</b> — <b>Rs %s</b>\n"
+                "Reference: <code>%s</code>\n"
+                "Approve in Admin once the credit shows in your bank."
+                % (user.get("username"), plans.LABELS.get(plan, plan),
+                   int(amount), ref))
+        telegram_bot.notify_users(admin_ids, text)
+    except Exception:
+        _LOG.exception("could not alert admins of upgrade request %s", req.get("id"))
 
 
 @router.get("/api/admin/requests")
@@ -948,6 +979,10 @@ def api_me(user=Depends(require_session)):
         pending_request=(dict(id=pending["id"], plan=pending["requested_plan"],
                               amount=pending.get("amount") or 0)
                          if pending else None),
+        # Admins only: a count for the nav badge, so money waiting on a decision
+        # is visible without opening the tab to look for it.
+        pending_approvals=(len(db.plan_requests("pending"))
+                           if (user.get("role") or "").lower() == "admin" else 0),
         payment_configured=bool(cfg.get("upi_id") or cfg.get("qr_url"))))
 
 
@@ -3957,7 +3992,12 @@ function askUpgrade(plan,silent){
 // sent here, so the page and the API can never disagree about what is allowed —
 // a plan computed in JavaScript is a suggestion, not a gate.
 function loadMe(){return api('/v2/api/me').then(function(r){MEV2=r.j||{};
- var n=document.getElementById('navadmin');if(n)n.style.display=MEV2.is_admin?'':'none';
+ var n=document.getElementById('navadmin');
+ if(n){n.style.display=MEV2.is_admin?'':'none';
+  var k=MEV2.pending_approvals||0,b=n.querySelector('.pend');
+  if(b)b.remove();
+  if(k){var e=document.createElement('span');e.className='badge bg-warn pend';
+   e.style.marginLeft='6px';e.textContent=k;n.appendChild(e);}}
  trialBanner();return MEV2;}).catch(function(){MEV2=null;});}
 function planPill(p,label){var c=p=='auto'?'bg-up':(p=='paper'?'bg-inf':'bg-mut');
  return '<span class="badge '+c+'">'+esc(label||p||'—')+'</span>';}

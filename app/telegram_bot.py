@@ -197,6 +197,42 @@ def _recipients(pref_col):
     return rows
 
 
+def notify_users(user_ids, text):
+    """Send to specific linked accounts. Returns how many were delivered.
+
+    The CALLER decides who — telegram_accounts lives in the paper book while
+    `users` (and therefore roles) lives in the auth database, so resolving
+    "who is an admin" here would mean this module reaching into a second
+    database it otherwise knows nothing about.
+
+    Deliberately ignores the per-alert-type preferences: those are a
+    subscriber's choice about market noise, and an operational message about
+    money owed is not something to opt out of by accident.
+    """
+    ids = [int(u) for u in (user_ids or []) if u]
+    if not ids or not text:
+        return 0
+    try:
+        ensure_schema()
+        c = _db()
+        marks = ",".join("?" * len(ids))
+        rows = c.execute(
+            "SELECT bot_token, chat_id FROM telegram_accounts"
+            " WHERE bot_token IS NOT NULL AND chat_id IS NOT NULL"
+            f" AND user_id IN ({marks})", ids).fetchall()
+        c.close()
+    except Exception:
+        return 0
+    sent = 0
+    for token, chat_id in rows:
+        try:
+            send(token, chat_id, text)
+            sent += 1
+        except Exception:
+            pass
+    return sent
+
+
 def notify_radar(items, market="IN"):
     """items: list of {'symbol','note'} the engine is watching to buy next."""
     try:
