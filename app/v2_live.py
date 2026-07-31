@@ -488,6 +488,18 @@ INDEX_OPTIONS = dict(
     # it rejects the contract for being longer-dated, not for being rich.
     max_straddle_pct=1.5,
     straddle_base_dte=4,        # the horizon max_straddle_pct was measured on
+    # Minimum traded volume for a strike, as a SHARE of the busiest strike in
+    # that index's own chain. Relative, not absolute: volume accumulates through
+    # the session, so a fixed floor would refuse every morning trade and wave
+    # anything through by the afternoon.
+    #
+    # There was no liquidity test at all. Median live option volume by index —
+    # NIFTY 60,284,250 · BANKNIFTY 696,180 · MIDCPNIFTY 106,200 · FINNIFTY
+    # 3,360, minimum ZERO — and the lane put 28% of the options book into a
+    # FINNIFTY contract without ever looking. A paper fill in a contract nobody
+    # trades is fiction, and it is the kind of fiction that only shows up as a
+    # loss when the book goes live.
+    min_volume_share=0.05,
 )
 # Indices the engine has daily futures bars, an option chain and live quotes
 # for — verified live, all four return 60 bars and a populated chain. This is
@@ -2436,13 +2448,26 @@ def index_options_pass(market):
             if budget_per_trade <= 0:
                 _status[market] = "index options: book exhausted"
                 return
-            contract = _pick_contract(symbol, side, spot, quotes, max_cost=budget_per_trade)
+            contract = _pick_contract(symbol, side, spot, quotes,
+                                      max_cost=budget_per_trade,
+                                      min_vol_share=cfg.get("min_volume_share", 0.05))
             if not contract:
-                _status[market] = (f"index options: no {side} strike under "
+                _status[market] = (f"index options: no liquid {side} strike under "
                                    f"Rs {budget_per_trade:.0f}")
                 continue
             premium, lot = contract["price"], contract["lot_size"]
-            cost = premium * lot
+            # SIZE IN LOTS. It always bought exactly ONE, whatever the budget
+            # allowed — a Rs 4,397 NIFTY lot against a Rs 10,000 cap left more
+            # than half the allowance unused on every trade, which is a large
+            # part of why the options book sat a third deployed. Options trade
+            # in whole lots, so this is floor division, never fractional.
+            lots = max(1, int(budget_per_trade // (premium * lot)))
+            shares = lot * lots
+            cost = premium * shares
+            if cost > budget_per_trade:          # one lot already exceeds the cap
+                _status[market] = (f"index options: one {symbol} lot is Rs {cost:.0f}, "
+                                   f"over the Rs {budget_per_trade:.0f} cap")
+                continue
 
             # The internals reading is RECORDED with the entry, not just used.
             # It has no history to backtest against, so the only way to find out
@@ -2469,13 +2494,15 @@ def index_options_pass(market):
             # whose expiry is only knowable from a quote that no longer arrives
             # can never be closed.
             if not record_entry(v2, market, "index_options", contract["symbol"],
-                                today.isoformat(), premium, lot, stop, target, 0.0,
+                                today.isoformat(), premium, shares, stop, target, 0.0,
                                 verdict["confidence"], why,
                                 expiry=contract.get("expiry")):
                 continue
             v2.commit()
-            _LOG.info("INDEX OPTION BUY %s %s x%.0f @ %.2f (cost Rs %.0f, conf %.2f)",
-                      contract["symbol"], side, lot, premium, cost, verdict["confidence"])
+            _LOG.info("INDEX OPTION BUY %s %s %dx%.0f=%.0f @ %.2f (cost Rs %.0f, "
+                      "target +%.0f%%, conf %.2f)",
+                      contract["symbol"], side, lots, lot, shares, premium, cost,
+                      tgt_pct * 100, verdict["confidence"])
             _status[market] = f"index options: bought {contract['symbol']} @ {premium:.2f}"
             # KEEP FILLING. This used to `return` after one buy, so with a 60s
             # cadence and an entry window that shuts at 14:30 the remaining
@@ -2575,7 +2602,7 @@ def _straddle_limit(cfg, expiry, today):
     return base * (dte / base_dte) ** 0.5
 
 
-def _pick_contract(symbol, side, spot, quotes, max_cost=None):
+def _pick_contract(symbol, side, spot, quotes, max_cost=None, min_vol_share=None):
     """The closest-to-the-money contract whose ONE LOT fits `max_cost`.
 
     Not simply ATM. Demanding at-the-money and refusing everything else is how
@@ -2594,24 +2621,34 @@ def _pick_contract(symbol, side, spot, quotes, max_cost=None):
     obviously wrong, so it would have silently chosen a nonsense contract.
     """
     want = "CE" if side == "CE" else "PE"
-    affordable, any_valid = [], []
-    for sym, q in quotes.items():
-        if (q.get("underlying") or "").upper() != symbol.upper():
-            continue
-        if (q.get("option_type") or "").upper() != want:
-            continue
+    mine = [(sym, q) for sym, q in quotes.items()
+            if (q.get("underlying") or "").upper() == symbol.upper()
+            and (q.get("option_type") or "").upper() == want]
+    # LIQUIDITY, judged against this index's own chain rather than an absolute
+    # floor. Volume accumulates through the session, so a fixed number would
+    # refuse every trade in the morning and accept anything by the afternoon;
+    # a share of the most active strike is the same test at 09:20 and 14:20.
+    #
+    # It matters more than it looks. Measured live, median option volume by
+    # index: NIFTY 60,284,250 · BANKNIFTY 696,180 · MIDCPNIFTY 106,200 ·
+    # FINNIFTY 3,360 with a minimum of ZERO. There was no liquidity test at
+    # all, and the lane put 28% of the options book into a FINNIFTY contract on
+    # that basis. A paper fill in a contract nobody trades is fiction.
+    busiest = max((_f(q.get("vol"), 0.0) for _s, q in mine), default=0.0)
+    floor = busiest * (min_vol_share if min_vol_share is not None else 0.0)
+    affordable = []
+    for sym, q in mine:
         strike = _f(q.get("strike"), 0.0)
         price, lot = _f(q.get("price"), 0.0), _f(q.get("lot_size"), 0.0)
         if strike <= 0 or price <= 0 or lot <= 0:
             continue
-        row = (abs(strike - spot), dict(q, symbol=sym, cost=price * lot))
-        any_valid.append(row)
+        if floor > 0 and _f(q.get("vol"), 0.0) < floor:
+            continue                            # too thin to treat a fill as real
         if max_cost is None or price * lot <= max_cost:
-            affordable.append(row)
-    pool = affordable or []
-    if not pool:
+            affordable.append((abs(strike - spot), dict(q, symbol=sym, cost=price * lot)))
+    if not affordable:
         return None
-    return min(pool)[1]
+    return min(affordable, key=lambda r: r[0])[1]
 
 
 def sector_watch_pass(market):
