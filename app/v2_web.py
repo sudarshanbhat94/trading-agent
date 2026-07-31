@@ -15,9 +15,11 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 import json as _jsonmod
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.requests import Request
 
+from .auth import current_user
 from . import indicators as ta
 from . import jobs_health as jh
 from . import analysts as ana
@@ -33,7 +35,57 @@ V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
 CATALYST_DB = os.environ.get("CATALYST_DB", "/opt/opentrade/var/catalysts.db")
 LIVE_SOURCE = {"IN": "upstox-live", "US": "alpaca-iex-live"}
 
-router = APIRouter(prefix="/v2")
+def _auth_bits():
+    """The app's session settings and user store, resolved lazily.
+
+    Imported inside the call rather than at module scope because main.py imports
+    THIS module while it is still constructing them — a top-level import would
+    be circular and would fail at boot.
+    """
+    from . import main as _main
+    return _main.settings, _main.db
+
+
+def require_session(request: Request):
+    """Every /v2 route requires a logged-in user.
+
+    THIS WAS ENTIRELY ABSENT. The v2 router carried no authentication of any
+    kind — no dependency, no user lookup, nothing — while nginx proxies it
+    straight to the internet. Verified from outside the box with no cookie:
+
+        GET https://openstocks.in/v2/api/positions   -> 200, full book
+
+    Read access to the book was the mild half. These were open too:
+
+        POST /v2/api/reset                 wipes the entire book
+        POST /v2/api/buy, /api/sell        trade it
+        POST /v2/api/positions/{id}/exit   close any position
+        POST /v2/api/index-settings        change auto-trade, budget, instruments
+
+    Anyone who knew the URL could flatten the book or turn on live trading.
+
+    Attached to the ROUTER rather than to each route on purpose. Thirty-five
+    endpoints and counting: a per-route decorator is one forgotten line away
+    from a hole, and this codebase has already shown that shape of failure —
+    four separate index gates, each silently blocking a whole lane, each
+    individually plausible.
+    """
+    try:
+        settings, db = _auth_bits()
+        user = current_user(request, settings, db)
+    except HTTPException:
+        raise
+    except Exception:
+        # A broken auth path must FAIL CLOSED. Returning the book because the
+        # user lookup threw is the same outcome as having no auth at all.
+        _LOG.exception("v2 auth check failed")
+        raise HTTPException(status_code=503, detail="auth unavailable")
+    if not user:
+        raise HTTPException(status_code=401, detail="login required")
+    return user
+
+
+router = APIRouter(prefix="/v2", dependencies=[Depends(require_session)])
 _panel_cache: dict = {}
 
 
