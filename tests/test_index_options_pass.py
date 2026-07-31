@@ -115,7 +115,9 @@ class GateTest(unittest.TestCase):
         threshold out-run what the vote can produce the moment that changes —
         the same failure that had the lane refusing every call."""
         from app import index_direction as idx
-        self.assertAlmostEqual(idx.max_confidence(9), 2 / 9)
+        # rounded to 2dp, matching how decide() reports confidence — see
+        # test_internals_in_index_call.ReachableThresholdTest
+        self.assertAlmostEqual(idx.max_confidence(9), 0.22)
         self.assertAlmostEqual(idx.max_confidence(5), 2 / 5)
         # unknown or zero falls back to the default count rather than dividing
         # by zero or returning a ceiling above 1.0

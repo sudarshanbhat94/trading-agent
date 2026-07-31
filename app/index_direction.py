@@ -68,8 +68,15 @@ def max_confidence(n_readings=N_READINGS):
     2/5 would let a stored threshold silently out-run what the vote can produce
     the moment the reading count changes — the same failure that had this lane
     refusing every call it generated.
+
+    ROUNDED THE SAME WAY `confidence` IS. decide() reports round(agreed/n, 2),
+    so an exact ratio here is off by the rounding error and the comparison
+    fails against itself: with 9 readings a 2-vote call reports 0.22 while the
+    exact ceiling is 0.2222, and 0.22 < 0.2222 refuses every such call. Caught
+    live on 2026-07-31 — FINNIFTY and MIDCPNIFTY both read CE at 0.22 and were
+    marked not actionable by a threshold derived from their own vote.
     """
-    return MIN_AGREEING / max(1, int(n_readings or N_READINGS))
+    return round(MIN_AGREEING / max(1, int(n_readings or N_READINGS)), 2)
 
 
 def _ema(values, span):

@@ -137,6 +137,34 @@ class IndexSpecificReadingTest(unittest.TestCase):
         self.assertIn("0.11", why)
 
 
+class ReachableThresholdTest(unittest.TestCase):
+    """THE INVARIANT: a call that just clears MIN_AGREEING must always clear the
+    confidence gate derived from it. Break this and the lane refuses every call
+    it generates, which looks like "index options are broken" rather than like a
+    threshold that cannot be reached.
+
+    It has now broken twice. First a stored 0.60 survived MIN_AGREEING dropping
+    from 3 to 2. Then, once internals made the denominator 9, `confidence` came
+    back rounded to 0.22 while the exact ceiling was 0.2222 — so a 2-of-9 call
+    was refused by a number computed from its own vote. Caught live on
+    2026-07-31 with FINNIFTY and MIDCPNIFTY.
+    """
+
+    def test_a_minimum_call_clears_its_own_gate_at_every_reading_count(self) -> None:
+        from app.v2_web import _effective_min_conf
+        for n in range(2, 15):
+            confidence = round(idx.MIN_AGREEING / n, 2)   # exactly what decide() reports
+            with self.subTest(n_readings=n):
+                self.assertGreaterEqual(confidence, idx.max_confidence(n))
+                self.assertGreaterEqual(
+                    confidence, _effective_min_conf({"min_confidence": 0.6}, n),
+                    "a stale high setting must not make the gate unreachable")
+
+    def test_the_rounding_case_that_broke_it(self) -> None:
+        self.assertAlmostEqual(idx.max_confidence(9), 0.22)
+        self.assertGreaterEqual(round(2 / 9, 2), idx.max_confidence(9))
+
+
 class WiringTest(unittest.TestCase):
     def test_the_engine_passes_internals_into_the_decision(self) -> None:
         import inspect
