@@ -151,6 +151,24 @@ class FrozenQuoteTest(unittest.TestCase):
         src = inspect.getsource(v2_live.exit_monitor)
         self.assertIn("if sym in frozen and not _expired_or_expiring(", src)
 
+    def test_the_frozen_exception_also_reads_the_quote(self) -> None:
+        """The two option positions open when this shipped predate the column,
+        so their stored expiry is NULL. Reading only the position would leave
+        exactly those positions stranded — the ones the fix exists for."""
+        import inspect
+        src = inspect.getsource(v2_live.exit_monitor)
+        self.assertIn('p.get("expiry") or lq.get("expiry")', src)
+
+    def test_a_missing_expiry_is_backfilled_while_the_contract_is_quoted(self) -> None:
+        """Once a contract expires it leaves the watch list, so the last chance
+        to learn its expiry is while a quote still arrives."""
+        import inspect
+        src = inspect.getsource(v2_live.exit_monitor)
+        self.assertIn("UPDATE v2_positions SET expiry=?", src)
+        backfill = src.index("UPDATE v2_positions SET expiry=?")
+        evaluate = src.index("evaluate_exit(p, lq,")
+        self.assertLess(backfill, evaluate, "backfill must happen before the exit test")
+
     def test_the_position_loader_reads_the_expiry_column(self) -> None:
         import inspect
         src = inspect.getsource(v2_live.exit_monitor)

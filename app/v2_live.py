@@ -2842,8 +2842,18 @@ def exit_monitor(market):
         # updating precisely because the contract is gone, so refusing to act on
         # a stale price would strand the position permanently. The last price we
         # saw is the only price that will ever exist for it.
-        if sym in frozen and not _expired_or_expiring(p.get("expiry"), today):
+        if sym in frozen and not _expired_or_expiring(p.get("expiry") or lq.get("expiry"), today):
             continue
+        # BACKFILL the expiry while the contract is still quoted. Positions
+        # opened before the column existed carry None, and once a contract
+        # expires it leaves the watch list — so the last chance to learn its
+        # expiry is now, while a quote still arrives. Written once per position.
+        if lq.get("expiry") and not p.get("expiry"):
+            p["expiry"] = lq["expiry"]
+            try:
+                v2.execute("UPDATE v2_positions SET expiry=? WHERE id=?", (lq["expiry"], p["id"]))
+            except Exception:
+                pass
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)
