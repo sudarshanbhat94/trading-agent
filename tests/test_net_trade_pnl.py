@@ -67,10 +67,43 @@ class NetTradePnlTest(unittest.TestCase):
 
 
 class SingleDefinitionTest(unittest.TestCase):
-    """Three exit paths must share one cost calculation, or they drift again."""
+    """All three exit paths go through ONE writer, so the cost math cannot
+    drift. Previously they shared the helper but each built its own INSERT —
+    which is how rows written before the helper landed still carry gross P&L,
+    including a -91.18 loss stored as a +14.20 WIN.
 
-    def test_engine_exit_uses_the_helper(self) -> None:
-        self.assertIn("net_trade_pnl(", inspect.getsource(v2_live.exit_monitor))
+    The invariant is now stronger than "they call net_trade_pnl": there is no
+    hand-written INSERT into v2_trades left to get wrong, and record_exit
+    computes the costs itself so a caller cannot pass a gross figure at all.
+    """
+
+    def test_there_is_exactly_one_writer(self) -> None:
+        import pathlib
+        root = pathlib.Path(inspect.getfile(v2_live)).parent
+        inserts = sum((root / n).read_text(encoding="utf-8").count("INSERT INTO v2_trades")
+                      for n in ("v2_live.py", "v2_web.py"))
+        self.assertEqual(inserts, 1, "v2_trades must only be written by record_exit")
+        self.assertIn("INSERT INTO v2_trades", inspect.getsource(v2_live.record_exit))
+
+    def test_every_exit_path_routes_through_it(self) -> None:
+        import pathlib
+        root = pathlib.Path(inspect.getfile(v2_live)).parent
+        self.assertIn("record_exit(", inspect.getsource(v2_live.exit_monitor))
+        web = (root / "v2_web.py").read_text(encoding="utf-8")
+        self.assertEqual(web.count("record_exit("), 2,
+                         "both manual-sell endpoints must use the single writer")
+        self.assertEqual(web.count("from .v2_live import record_exit"), 2)
+        self.assertNotIn("net_trade_pnl(market", web,
+                         "the web layer must not compute costs itself any more")
+
+    def test_the_writer_computes_costs_itself(self) -> None:
+        """A caller cannot hand it a gross number even by mistake — that is the
+        whole point of moving the arithmetic inside."""
+        src = inspect.getsource(v2_live.record_exit)
+        self.assertIn("net_trade_pnl(", src)
+        params = inspect.signature(v2_live.record_exit).parameters
+        for leaked in ("pnl", "net", "return_pct", "net_pct"):
+            self.assertNotIn(leaked, params, f"record_exit must not accept {leaked}")
 
     def test_no_exit_path_still_writes_a_gross_figure(self) -> None:
         """`shares * (px - entry)` written straight into v2_trades is the bug."""
@@ -82,13 +115,6 @@ class SingleDefinitionTest(unittest.TestCase):
                         "shares * (ex - p[\"entry\"]), (ex / p[\"entry\"] - 1) * 100"):
                 with self.subTest(file=name, pattern=bad):
                     self.assertNotIn(bad, src)
-
-    def test_both_manual_sell_paths_use_the_helper(self) -> None:
-        import pathlib
-        src = (pathlib.Path(inspect.getfile(v2_live)).parent / "v2_web.py").read_text(encoding="utf-8")
-        self.assertEqual(src.count("net_trade_pnl(market"), 2,
-                         "both manual-sell endpoints must use the shared helper")
-        self.assertEqual(src.count("from .v2_live import net_trade_pnl"), 2)
 
 
 if __name__ == "__main__":

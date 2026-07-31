@@ -1334,12 +1334,12 @@ def api_sell(payload: dict):
             return JSONResponse({"error": "not holding " + sym}, status_code=400)
         pid, entry, shares, strat = r
         px = float((_live_map(market).get(sym) or {}).get("price") or entry)
-        from .v2_live import net_trade_pnl        # one definition of the cost math
-        pnl, ret = net_trade_pnl(market, shares, entry, px)
-        v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
-                   " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,'manual',conviction,opened_at,? FROM v2_positions WHERE id=?",
-                   (datetime.now(IST).date().isoformat(), round(px, 2), shares, round(pnl, 2), round(ret, 2),
-                    datetime.now(timezone.utc).isoformat(), pid))
+        # ONE writer for v2_trades, which computes the costs itself — a caller
+        # cannot pass a gross figure even by mistake. This INSERT used to be
+        # one of three hand-written copies.
+        from .v2_live import record_exit
+        pnl, ret = record_exit(v2, market, pid, datetime.now(IST).date().isoformat(),
+                               round(px, 2), shares, "manual")
         v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
         v2.commit()
     finally:
@@ -2024,12 +2024,10 @@ def api_exit(pid: int):
         return JSONResponse(dict(error="position not found"), status_code=404)
     market, strat, sym, edate, entry, shares, conv, oat = row
     px = _live_map(market).get(sym, {}).get("price", entry)
-    from .v2_live import net_trade_pnl            # one definition of the cost math
-    net, net_pct = net_trade_pnl(market, shares, entry, px)
-    rw.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,"
-               "shares,pnl,return_pct,reason,conviction,opened_at,closed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-               (market, strat, sym, edate, entry, datetime.now(IST).date().isoformat(), px, shares,
-                net, net_pct, "manual", conv, oat, datetime.now(timezone.utc).isoformat()))
+    # Same single writer — see record_exit.
+    from .v2_live import record_exit
+    net, net_pct = record_exit(rw, market, pid, datetime.now(IST).date().isoformat(),
+                               px, shares, "manual")
     rw.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
     rw.commit(); rw.close()
     return JSONResponse(dict(ok=True, symbol=sym, exit=round(px, 2), pnl=round(net_pct, 2)))

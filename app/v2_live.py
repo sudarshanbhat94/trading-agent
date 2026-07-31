@@ -1247,6 +1247,43 @@ def net_trade_pnl(market, shares, entry, exit_price):
     return net, (net / basis * 100) if basis else 0.0
 
 
+def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
+                closed_at=None):
+    """THE single writer for v2_trades. Returns (net_pnl, net_return_pct).
+
+    The counterpart to record_entry, and here for the same reason: the exit
+    INSERT existed in THREE places — the engine's exit_monitor and both manual
+    sell endpoints — each with its own copy of the P&L arithmetic. When exits
+    were recording the gross move, fixing it meant finding all three, and the
+    rows written before that landed still carry gross numbers today. On the
+    live book that is a -605.61 loss stored as -500.18, and a -91.18 loss
+    stored as a +14.20 WIN.
+
+    Costs are computed HERE from net_trade_pnl rather than accepted as an
+    argument, so a caller cannot pass a gross figure even by mistake. That is
+    the whole point: the previous shape made the wrong thing easy to write and
+    invisible afterwards.
+
+    The row is built by SELECT from the position, so strategy, entry price,
+    conviction and opened_at carry across rather than being retyped.
+    """
+    net, net_pct = net_trade_pnl(market, shares, *_entry_of(v2, position_id, exit_price))
+    v2.execute(
+        "INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,"
+        "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
+        " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,"
+        "opened_at,? FROM v2_positions WHERE id=?",
+        (exit_date, exit_price, shares, net, net_pct, reason,
+         closed_at or datetime.now(timezone.utc).isoformat(), position_id))
+    return net, net_pct
+
+
+def _entry_of(v2, position_id, exit_price):
+    """(entry_price, exit_price) for the cost math, read from the position."""
+    row = v2.execute("SELECT entry_price FROM v2_positions WHERE id=?", (position_id,)).fetchone()
+    return (float(row[0]) if row else 0.0), exit_price
+
+
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
                  stop, target, trail, conviction, why, peak=None, expiry=None):
     """THE single writer for v2_positions. Returns True if the row was written.
@@ -2937,7 +2974,11 @@ def exit_monitor(market):
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)
-            net, net_pct = net_trade_pnl(market, p["shares"], p["entry"], ex)
+            # ONE writer, which computes the costs itself — see record_exit.
+            # Its return feeds the log below, so the number recorded and the
+            # number logged cannot drift apart.
+            net, net_pct = record_exit(v2, market, p["id"], today_s, ex,
+                                       p["shares"], reason)
             # Log the FULL decision, not just the outcome. On 2026-07-29
             # HINDUNILVR exited at its entry price with reason "stop" while its
             # day high was only +0.05% above entry — neither breakeven trigger
@@ -2951,13 +2992,6 @@ def exit_monitor(market):
                       market, p["strategy"], sym, p["entry"], ex, reason,
                       p["stop"], eff, peak, lq["price"], lq.get("high") or 0.0,
                       lq.get("low") or 0.0, net_pct)
-            # opened_at rides across from the position; closed_at is stamped now.
-            # Without both, the ledger held only dates and the UI had to invent a
-            # clock time for every fill it displayed.
-            v2.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
-                       " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,opened_at,? FROM v2_positions WHERE id=?",
-                       (today_s, ex, p["shares"], net, net_pct, reason,
-                        datetime.now(timezone.utc).isoformat(), p["id"]))
             v2.execute("DELETE FROM v2_positions WHERE id=?", (p["id"],))
             try:
                 from . import telegram_bot
