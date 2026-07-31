@@ -461,7 +461,25 @@ INDEX_OPTIONS = dict(
     max_concurrent=3,
     min_confidence=0.4,         # 2 of 5 readings; risk is held by size+stop, not by abstaining
     stop_pct=0.35,              # premium stop: options move far, a tight stop is noise
-    target_pct=0.60,            # premium target
+    # TARGET BY TIME TO EXPIRY, not one flat number. A longer-dated option
+    # carries more premium and less gamma, so the same index move is a far
+    # smaller PERCENTAGE move in the premium — a flat target is reachable on a
+    # weekly and unreachable on a monthly.
+    #
+    # Measured, same-day, on 405 sessions: how often the premium reaches +60%,
+    # and the median of how far it actually gets (ITM/ATM contracts):
+    #
+    #     0-2d   42.6-42.9% reach it   median excursion ~46%
+    #     3-7d   36.1-44.1%            median ~37-50%
+    #     8-20d  18.8-21.1%            median ~24-29%
+    #     21d+    6.1-10.4%            median ~17-23%
+    #
+    # A flat 0.60 therefore meant 44% on the NIFTY weekly and 10% on the
+    # FINNIFTY 25-day monthly — the same setting, one reachable and one
+    # decorative. Targets below sit near the measured median for each bucket,
+    # so the number on screen is one the contract can actually print.
+    target_pct=0.60,            # fallback when the expiry is unknown
+    target_by_dte=((2, 0.45), (7, 0.40), (20, 0.28), (10 ** 6, 0.20)),
     # The ATM straddle is the market's own expected move. Above this the
     # option is priced for more than the signal is playing for.
     #
@@ -2441,7 +2459,11 @@ def index_options_pass(market):
                                   experiment="internals_in_index_call",
                                   unvalidated=True))
             stop = premium * (1 - cfg.get("stop_pct", 0.35))
-            target = premium * (1 + cfg.get("target_pct", 0.60))
+            # Target scaled to the contract's remaining life, so it is a level
+            # this option can realistically print rather than a flat number that
+            # happens to suit a weekly.
+            tgt_pct = _target_pct(cfg, contract.get("expiry"), today)
+            target = premium * (1 + tgt_pct)
             # expiry is PERSISTED, not left to be read off a quote later: once
             # the contract expires it leaves the ATM watch list, and a position
             # whose expiry is only knowable from a quote that no longer arrives
@@ -2680,6 +2702,27 @@ HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intrad
 # with their OWN time and WITHOUT inheriting INTRA's +1.5% breakeven lock — that
 # lock is calibrated for a stock, and 1.5% on an option premium is noise.
 INDEX_OPT_SQUAREOFF = "15:12"
+
+
+def _target_pct(cfg, expiry, today):
+    """Target as a fraction of premium, for THIS contract's remaining life.
+
+    See INDEX_OPTIONS["target_by_dte"] for the measurement. The short version:
+    premium percentage moves shrink as time to expiry grows, so one flat number
+    cannot be right for both a 4-day weekly and a 25-day monthly.
+    """
+    table = cfg.get("target_by_dte")
+    fallback = float(cfg.get("target_pct", 0.60))
+    if not table or not expiry:
+        return fallback
+    try:
+        dte = (date.fromisoformat(str(expiry)[:10]) - today).days
+    except (TypeError, ValueError):
+        return fallback
+    for limit, pct in table:
+        if dte <= limit:
+            return float(pct)
+    return fallback
 
 
 def _expired_or_expiring(expiry, today):

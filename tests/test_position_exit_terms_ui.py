@@ -51,10 +51,16 @@ def _run(payload: dict) -> str:
 
 TRAILING = dict(market="IN", stop=118.5, stop_kind="trailing", stop_base=96.0,
                 trail_pct=2.5, peak=121.5, target=0.0, stop_away=-2.5,
-                target_away=0.0)
+                target_away=0.0, stop_from_entry=+18.5, target_from_entry=0.0)
 FIXED = dict(market="IN", stop=96.0, stop_kind="fixed", stop_base=96.0,
              trail_pct=0.0, peak=104.0, target=132.0, stop_away=-7.7,
-             target_away=+26.9)
+             target_away=+26.9, stop_from_entry=-4.0, target_from_entry=+32.0)
+# The position from the screenshot: bought 112.90, now 139.50. A stop set at
+# -35% OF ENTRY displayed as "-47.4%" because the only percentage shown was
+# distance from the live price. Same setting, two positions, two numbers.
+OPTION = dict(market="IN", stop=73.39, stop_kind="fixed", stop_base=73.39,
+              trail_pct=0.0, peak=139.5, target=180.64, stop_away=-47.4,
+              target_away=+29.5, stop_from_entry=-35.0, target_from_entry=+60.0)
 
 
 @unittest.skipIf(shutil.which("node") is None, "node not available")
@@ -83,12 +89,16 @@ class ExitTermsTest(unittest.TestCase):
     def test_a_target_is_shown_with_its_distance(self) -> None:
         html = _run(FIXED)
         self.assertIn("132", html)
-        self.assertIn("+26.9%", html)
+        self.assertIn("26.9% away", html)
+        self.assertIn("+32.0% from entry", html)
 
-    def test_distances_carry_a_sign(self) -> None:
-        """-2.5% below and +26.9% above must be readable at a glance."""
-        self.assertIn("-2.5%", _run(TRAILING))
-        self.assertIn("+26.9%", _run(FIXED))
+    def test_the_from_entry_figure_carries_a_sign(self) -> None:
+        """A stop below entry and a target above it must be readable at a
+        glance. The DISTANCE deliberately does not carry one — it is a gap, and
+        a signed gap beside a signed return is what looked contradictory."""
+        self.assertIn("+18.5% from entry", _run(TRAILING))
+        self.assertIn("-4.0% from entry", _run(FIXED))
+        self.assertIn("+32.0% from entry", _run(FIXED))
 
     def test_us_positions_render_in_dollars(self) -> None:
         payload = dict(FIXED, market="US")
@@ -99,3 +109,26 @@ class ExitTermsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_both_percentages_are_shown(self) -> None:
+        """The confusion this fixes: a -35% stop rendering as -47.4% once the
+        position was up 23%. Distance-from-here and the terms the trade was
+        opened on are different questions; showing only one reads as an error."""
+        html = _run("exitTerms", OPTION)
+        self.assertIn("-35.0% from entry", html)
+        self.assertIn("47.4% away", html)
+        self.assertIn("+60.0% from entry", html)
+        self.assertIn("29.5% away", html)
+
+    def test_the_configured_terms_come_first(self) -> None:
+        """What the settings configure is the primary number; how far away it
+        happens to be right now is context."""
+        html = _run("exitTerms", OPTION)
+        self.assertLess(html.index("from entry"), html.index("away"))
+
+    def test_the_away_figure_is_unsigned_so_it_cannot_be_misread(self) -> None:
+        """It is a distance, not a return. A signed one sitting beside a signed
+        from-entry figure is what made two numbers look contradictory."""
+        html = _run("exitTerms", OPTION)
+        self.assertNotIn("-47.4% away", html)
+        self.assertNotIn("+29.5% away", html)

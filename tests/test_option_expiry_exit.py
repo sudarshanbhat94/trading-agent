@@ -141,6 +141,56 @@ class SquareOffTest(unittest.TestCase):
         self.assertIsNone(ex, "a 2% pop must not arm a breakeven stop on an option")
 
 
+class TargetByExpiryTest(unittest.TestCase):
+    """A flat target percentage cannot be right for both a 4-day weekly and a
+    25-day monthly. A longer-dated option carries more premium and less gamma,
+    so the same index move is a far smaller PERCENTAGE move in the premium.
+
+    Measured same-day on 405 sessions — how often the premium reaches +60%, and
+    the median of how far it actually gets (ITM/ATM):
+
+        0-2d   42.6-42.9% reach it   median ~46%
+        3-7d   36.1-44.1%            median ~37-50%
+        8-20d  18.8-21.1%            median ~24-29%
+        21d+    6.1-10.4%            median ~17-23%
+
+    So the flat 0.60 was reached 44% of the time on the NIFTY weekly and 10% on
+    the FINNIFTY 25-day monthly — one workable, one decorative.
+    """
+
+    CFG = v2_live.INDEX_OPTIONS
+
+    def pct(self, expiry, today=date(2026, 7, 31)):
+        return v2_live._target_pct(self.CFG, expiry, today)
+
+    def test_a_near_dated_contract_keeps_an_ambitious_target(self) -> None:
+        self.assertAlmostEqual(self.pct("2026-08-01"), 0.45)   # 1 day
+        self.assertAlmostEqual(self.pct("2026-08-04"), 0.40)   # 4 days, the NIFTY CE
+
+    def test_a_monthly_contract_gets_a_reachable_one(self) -> None:
+        """The FINNIFTY position: 25 days out, where +60% printed 10% of the
+        time and the median trade only reached +22.6%."""
+        self.assertAlmostEqual(self.pct("2026-08-25"), 0.20)
+
+    def test_the_target_falls_as_expiry_lengthens(self) -> None:
+        seq = [self.pct(e) for e in ("2026-08-01", "2026-08-05",
+                                     "2026-08-15", "2026-09-30")]
+        self.assertEqual(seq, sorted(seq, reverse=True))
+
+    def test_an_unknown_expiry_falls_back_rather_than_crashing(self) -> None:
+        for bad in (None, "", "not-a-date"):
+            self.assertAlmostEqual(self.pct(bad), self.CFG["target_pct"])
+
+    def test_an_expired_contract_does_not_produce_a_negative_target(self) -> None:
+        self.assertGreater(self.pct("2026-07-20"), 0)
+
+    def test_the_entry_path_uses_it(self) -> None:
+        import inspect
+        src = inspect.getsource(v2_live.index_options_pass)
+        self.assertIn("_target_pct(cfg, contract.get(\"expiry\"), today)", src)
+        self.assertIn("premium * (1 + tgt_pct)", src)
+
+
 class FrozenQuoteTest(unittest.TestCase):
     """An expired contract's quote stops updating BECAUSE the contract is gone.
     Refusing to act on a stale price there strands the position permanently —

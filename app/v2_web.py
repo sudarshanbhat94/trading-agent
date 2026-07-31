@@ -432,8 +432,18 @@ def api_positions():
                         trail_pct=round(trail * 100, 1) if trail else 0.0,
                         peak=round(peak, 2),               # high-water mark the trail follows
                         target=round(target, 2) if target else 0.0,
+                        # TWO different questions, and showing only one caused
+                        # real confusion: "-47.4%" against a stop that was set
+                        # at -35% of entry. `_away` is distance from the LIVE
+                        # price (what is at risk right now); `_from_entry` is
+                        # the terms the position was opened on, which is what
+                        # "stop" and "target" mean as a plan and what the
+                        # settings actually configure.
                         stop_away=round((tstop / p - 1) * 100, 2) if p else 0.0,
                         target_away=round((target / p - 1) * 100, 2) if (target and p) else 0.0,
+                        stop_from_entry=round((tstop / entry - 1) * 100, 2) if entry else 0.0,
+                        target_from_entry=(round((target / entry - 1) * 100, 2)
+                                           if (target and entry) else 0.0),
                         since=_ist(oat or edate), headroom=round(max(0, min(1, head)) * 100), why=why_d))
     v2.close()
     out.sort(key=lambda x: -x["pnl"])
@@ -3253,11 +3263,17 @@ function exitTerms(p){var s=p.market=='IN'?'₹':'$';
  // Spell the exit out. A trailing stop is not a fixed one: it RISES as the price
  // makes new highs and never falls, so showing a bare number hid the mechanism.
  var away=function(v){return (v>0?'+':'')+v.toFixed(1)+'%';};
+ // TWO numbers, because they answer different questions and showing only the
+ // second read as an error: a stop set at -35% of entry displayed as "-47.4%"
+ // once the position was up 23%. The first is the terms the trade was opened
+ // on (what the settings configure); the second is how far away it is NOW.
+ var both=function(fromEntry,fromHere){
+   return away(fromEntry)+' from entry · '+Math.abs(fromHere).toFixed(1)+'% away';};
  var stopTxt=p.stop_kind=='trailing'
-   ? `<b>trailing stop</b> ${s}${p.stop} <span class=mut>(${away(p.stop_away)}, rises with price · ${p.trail_pct}% below peak ${s}${p.peak})</span>`
-   : `<b>stop</b> ${s}${p.stop} <span class=mut>(${away(p.stop_away)})</span>`;
+   ? `<b>trailing stop</b> ${s}${p.stop} <span class=mut>(${both(p.stop_from_entry,p.stop_away)}, rises with price · ${p.trail_pct}% below peak ${s}${p.peak})</span>`
+   : `<b>stop</b> ${s}${p.stop} <span class=mut>(${both(p.stop_from_entry,p.stop_away)})</span>`;
  var tgtTxt=p.target>0
-   ? ` · <b>target</b> ${s}${p.target} <span class=mut>(${away(p.target_away)})</span>`
+   ? ` · <b>target</b> ${s}${p.target} <span class=mut>(${both(p.target_from_entry,p.target_away)})</span>`
    : ` · <span class=mut>no fixed target — exits on the trail</span>`;
  return stopTxt+tgtTxt;}
 function posRow(p){var s=p.market=='IN'?'₹':'$',fmt=(p.market=='IN'?INR:USD);
