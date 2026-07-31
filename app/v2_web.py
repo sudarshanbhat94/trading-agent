@@ -3453,7 +3453,6 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    — <b>{TRIAL_DAYS} days free</b>, no card needed.</p></div>
 
 <div id=app class="app hide">
-<div id=trialbar class=tbar style="display:none"></div>
  <nav class=side id=side><div class=b><span class=full>OpenStocks<span style="color:var(--inf)">.</span></span><span class=mini>O<span style="color:var(--inf)">.</span></span></div>
   <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg><span class=lbl>Home</span></a>
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg><span class=lbl>Portfolio</span></a>
@@ -3470,6 +3469,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
  <div class=main>
   <div class=ticker id=ticker style="display:none"></div>
   <div id=healthbar class=hide style="background:var(--dnb);border:1px solid rgba(255,93,108,.45);color:var(--dn);padding:8px 14px;border-radius:10px;margin:8px 0;font-size:12px"></div>
+  <div id=trialbar class=tbar style="display:none"></div>
   <div class=top><span style="display:flex;align-items:center;gap:9px"><span id=backbtn class=iconbtn style="display:none" onclick="goBack()" title="Back"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></span><span class=live><span class=dot></span><span id=clock>live</span></span></span>
    <div style="display:flex;align-items:center;gap:10px"><div class=seg id=mkt><b data-m=IN class=on>India</b></div>
     <div class=iconbtn onclick=toggleTheme() title="Light / dark"><svg id=themeicon2 viewBox="0 0 24 24"></svg></div>
@@ -3834,8 +3834,11 @@ function trialBanner(){var el=document.getElementById('trialbar');if(!el||!MEV2)
   el.innerHTML='<span>Payment pending confirmation for <b>'+esc(pend.plan)+'</b> — we will enable it as soon as it is verified.</span>';return;}
  if(t.active){el.style.display='';el.className='tbar';
   // Counts DOWN and names the date. "Trial active" alone tells nobody when to act.
+  // the PLAN NAME, not the internal key — it read "full access to paper",
+  // which is a database value leaking onto the page
+  var tl=(MEV2.tiers||[]).filter(function(x){return x.key==MEV2.trial_tier;})[0];
   el.innerHTML='<span><b>'+t.days_left+' day'+(t.days_left==1?'':'s')+'</b> left of your free trial'
-   +' — full access to '+esc(MEV2.trial_tier||'paper')+'.</span>'
+   +' — full access to <b>'+esc((tl&&tl.label)||MEV2.plan_label||'Pro')+'</b>.</span>'
    +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">See plans</button>';return;}
  if(t.had_trial&&MEV2.paid_plan=='watch'){el.style.display='';el.className='tbar tbar-end';
   el.innerHTML='<span>Your trial has ended. You are on the free plan — signals and the catalyst feed stay available.</span>'
