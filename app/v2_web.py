@@ -750,6 +750,12 @@ UPI_APPS = (
 )
 
 
+def _pay_note(label, request_id):
+    """The transaction note, and the ONLY link between a bank credit and a
+    subscriber. Kept short: UPI notes are truncated by some banks."""
+    return f"OpenStocks {label} #{request_id}" if request_id else f"OpenStocks {label}"
+
+
 def _upi_query(cfg, amount, label):
     """The shared UPI parameter string: payee, amount, currency, reference."""
     from urllib.parse import quote
@@ -780,7 +786,7 @@ def _upi_apps(cfg, amount, label):
 
 
 @router.get("/api/pay-qr")
-def api_pay_qr(plan: str = "paper", user=Depends(require_session)):
+def api_pay_qr(plan: str = "paper", ref: str = "", user=Depends(require_session)):
     """A UPI QR for one plan, as SVG, with the AMOUNT already in it.
 
     Generated rather than served as a static image on purpose. A fixed QR makes
@@ -797,7 +803,7 @@ def api_pay_qr(plan: str = "paper", user=Depends(require_session)):
     amount = float(plans.PRICES.get(want, 0))
     if not cfg.get("upi_id") or amount <= 0:
         return JSONResponse(dict(error="payment not configured"), status_code=404)
-    link = _upi_link(cfg, amount, f"OpenStocks {plans.LABELS.get(want, want)}")
+    link = _upi_link(cfg, amount, ref or _pay_note(plans.LABELS.get(want, want), None))
     try:
         import io
         import segno
@@ -860,6 +866,11 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
     req = db.create_plan_request(int(user["id"]), want, float(amount),
                                  str(payload.get("note") or "")[:200])
     cfg = _payment_config()
+    # THE REFERENCE. Nothing tells this app that money arrived — the admin
+    # reconciles against their own bank feed — so the note has to make that
+    # possible. "OpenStocks Pro #4" lands in the statement narration, which is
+    # the only thread tying a UPI credit to the account that owes it.
+    ref = _pay_note(plans.LABELS.get(want, want), req.get("id"))
     _LOG.info("UPGRADE REQUEST %s -> %s (Rs %s), request id %s",
               user.get("username"), want, amount, req.get("id"))
     return JSONResponse(dict(
@@ -867,10 +878,8 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
         label=plans.LABELS.get(want, want), amount=amount,
         status=req.get("status"), payment=dict(
             **cfg, amount=amount,
-            upi_link=_upi_link(cfg, float(amount),
-                               f"OpenStocks {plans.LABELS.get(want, want)}"),
-            apps=_upi_apps(cfg, float(amount),
-                           f"OpenStocks {plans.LABELS.get(want, want)}"),
+            upi_link=_upi_link(cfg, float(amount), ref),
+            apps=_upi_apps(cfg, float(amount), ref), reference=ref,
             configured=bool(cfg.get("upi_id") or cfg.get("qr_url")))))
 
 
@@ -896,7 +905,8 @@ def api_admin_request_decide(rid: int, payload: dict, user=Depends(require_admin
     the account."""
     settings, db = _auth_bits()
     approve = bool(payload.get("approve"))
-    row = db.decide_plan_request(rid, approve, str(user.get("username") or ""))
+    row = db.decide_plan_request(rid, approve, str(user.get("username") or ""),
+                                 str(payload.get("payment_ref") or "")[:80])
     if not row:
         return JSONResponse(dict(error="no such request"), status_code=404)
     _LOG.info("ADMIN %s %s request %s (user %s -> %s)", user.get("username"),
@@ -3928,7 +3938,7 @@ function askUpgrade(plan,silent){
   box.innerHTML='<div class=card style="margin-top:6px">'
    +'<div class=row style="align-items:baseline"><b>Pay ₹'+d.amount+'</b>'
    +'<span class=mut style="font-size:12px">'+esc(d.label)+' · monthly</span></div>'
-   +'<div style="text-align:center;margin:12px 0"><img src="/v2/api/pay-qr?plan='+encodeURIComponent(plan)+'" alt="UPI QR for \u20b9'+d.amount+'" style="width:210px;height:210px;background:#fff;padding:9px;border-radius:12px" onerror="this.style.display=\'none\'"></div>'
+   +'<div style="text-align:center;margin:12px 0"><img src="/v2/api/pay-qr?plan='+encodeURIComponent(plan)+'&ref='+encodeURIComponent(d.reference||'')+'" alt="UPI QR for \u20b9'+d.amount+'" style="width:210px;height:210px;background:#fff;padding:9px;border-radius:12px" onerror="this.style.display=\'none\'"></div>'
    +'<div class=mut style="font-size:11.5px;text-align:center;margin-top:-4px">Scan with any UPI app \u2014 \u20b9'+d.amount+' is already filled in</div>' 
    +(p.upi_id?('<div class=mut style="font-size:12px;line-height:1.6">UPI ID <b class=num style="color:var(--tx)">'+esc(p.upi_id)+'</b>'
       +(p.payee?(' · '+esc(p.payee)):'')+'</div>'):'')
@@ -3938,8 +3948,8 @@ function askUpgrade(plan,silent){
         return '<a href="'+esc(a.link)+'" class="'+(i===0?'pri':'chip')+'" style="text-decoration:none;font-size:12.5px;padding:8px 14px;'
           +(i===0?'':'border:1px solid var(--line);')+'display:inline-block">'+esc(a.name)+'</a>';}).join('')
       +'</div>'):'')
-   +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">After paying, the admin confirms it and your plan switches over. '
-   +'Reference: request #'+d.request_id+'.</div>'
+   +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">After paying, the admin confirms it and your plan switches over.</div>'
+   +'<div class=mut style="font-size:11.5px;margin-top:6px">Your reference <b class=num style="color:var(--tx)">'+esc(d.reference||('#'+d.request_id))+'</b> — it appears on the payment, so keep it if you need to follow up.</div>'
    +(p.note?('<div class=mut style="font-size:11.5px;margin-top:6px">'+esc(p.note)+'</div>'):'')
    +'</div>';
   if(!silent)toast('✓ request sent');loadMe();});}
@@ -3983,9 +3993,14 @@ function reqRow(r){
    +'<button class=chip style="cursor:pointer;border:1px solid var(--line);font-size:11px" onclick="decideReq('+r.id+',false)">reject</button>'
   +'</span></div>';}
 function decideReq(id,ok){
- if(!confirm(ok?'Approve and upgrade this account?':'Reject this request?'))return;
+ var ref='';
+ if(ok){// record WHAT was matched — an approval with no reference is an
+        // unauditable claim that money arrived
+   ref=prompt('Approving. Paste the UPI reference / UTR from your bank (optional but recommended):','');
+   if(ref===null)return;}
+ else if(!confirm('Reject this request?'))return;
  api('/v2/api/admin/requests/'+id,{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({approve:ok})}).then(function(r){
+   body:JSON.stringify({approve:ok,payment_ref:ref})}).then(function(r){
    if(!r.ok){toast('\u26a0 failed');return;}toast(ok?'\u2713 approved':'rejected');loadAdmin();});}
 function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
  el.innerHTML='<div class=skel>loading…</div>';

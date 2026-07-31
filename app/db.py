@@ -2091,7 +2091,8 @@ class Database:
         with self.connect() as conn:
             return [dict(r) for r in conn.execute(sql, args)]
 
-    def decide_plan_request(self, request_id: int, approve: bool, by: str) -> dict[str, Any] | None:
+    def decide_plan_request(self, request_id: int, approve: bool, by: str,
+                            payment_ref: str = "") -> dict[str, Any] | None:
         """Approve or reject. Approving is what actually grants the plan, so the
         two happen together — an admin cannot mark a request done and forget to
         upgrade the account."""
@@ -2102,9 +2103,16 @@ class Database:
             row = dict(row)
             if row["status"] != "pending":
                 return row
-            conn.execute("update plan_requests set status = ?, decided_at = ?, decided_by = ?"
-                         " where id = ?",
-                         ("approved" if approve else "rejected", utc_now(), by, request_id))
+            # The UTR / payment reference is stored WITH the decision. Without
+            # it an approval is an unauditable claim that money arrived, and
+            # there is nothing to check a disputed subscription against.
+            note = (row.get("note") or "").strip()
+            if payment_ref:
+                note = (note + " | " if note else "") + "paid: " + payment_ref[:80]
+            conn.execute("update plan_requests set status = ?, decided_at = ?, decided_by = ?,"
+                         " note = ? where id = ?",
+                         ("approved" if approve else "rejected", utc_now(), by,
+                          note, request_id))
         if approve:
             self.update_user(int(row["user_id"]), account_plan=row["requested_plan"])
         return self.plan_request(request_id)

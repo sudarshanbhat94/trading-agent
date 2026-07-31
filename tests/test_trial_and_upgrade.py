@@ -209,6 +209,33 @@ class UpgradeFlowTest(unittest.TestCase):
         self.assertEqual(
             self.client.post("/v2/api/upgrade", json={"plan": "paper"}).json()["payment"]["apps"], [])
 
+    def test_the_payment_note_carries_the_request_id(self) -> None:
+        """NOTHING tells this app that money arrived — the admin reconciles
+        against their own bank feed. The note lands in the statement narration
+        and is the only thread tying a UPI credit to the account that owes it."""
+        self.configure_payment()
+        d = self.client.post("/v2/api/upgrade", json={"plan": "auto"}).json()
+        self.assertEqual(d["payment"]["reference"], f"OpenStocks Elite #{d['request_id']}")
+        for a in d["payment"]["apps"]:
+            with self.subTest(app=a["name"]):
+                self.assertIn(f"%23{d['request_id']}", a["link"])   # '#' url-encoded
+
+    def test_approving_records_what_was_matched(self) -> None:
+        """An approval with no reference is an unauditable claim that money
+        arrived, and leaves nothing to check a disputed subscription against."""
+        self.client.post("/v2/api/upgrade", json={"plan": "paper"})
+        rid = self.mine()[0]["id"]
+        self.main.db.decide_plan_request(rid, True, "admin", "UTR123456789")
+        row = self.main.db.plan_request(rid)
+        self.assertEqual(row["status"], "approved")
+        self.assertIn("UTR123456789", row["note"])
+
+    def test_approving_without_a_reference_still_works(self) -> None:
+        self.client.post("/v2/api/upgrade", json={"plan": "paper"})
+        rid = self.mine()[0]["id"]
+        self.main.db.decide_plan_request(rid, True, "admin", "")
+        self.assertEqual(self.main.db.plan_request(rid)["status"], "approved")
+
     def test_the_qr_encodes_the_amount(self) -> None:
         """A static QR makes the subscriber type the price, and a wrong amount
         is the reconciliation work this flow cannot absorb."""
