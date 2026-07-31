@@ -3445,9 +3445,12 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 <div id=login class=hide><h1>OpenStocks<span style="color:var(--up)">.</span></h1><p class=mut style="margin:0 0 22px">AI trading desk · sign in</p>
  <div class=field><label>username</label><input id=u autocomplete=username></div>
  <div class=field><label>password</label><input id=pw type=password autocomplete=current-password></div>
- <button class=pri style="width:100%;margin-top:8px" onclick=doLogin()>Sign in</button>
+ <button class=pri style="width:100%;margin-top:8px" onclick="AUTHMODE=='signup'?doSignup():doLogin()">Sign in</button>
  <div id=lerr class=dn style="font-size:13px;margin-top:10px"></div>
- <p class=mut style="font-size:13px;margin-top:18px">No account? <b style="cursor:pointer;color:var(--inf)" onclick="alert('Ask an admin to create your account — sign-up with approval is coming next.')">Request access</b></p></div>
+ <div id=signupextra class=hide><div class=field><label>confirm password</label><input id=pw2 type=password autocomplete=new-password></div></div>
+ <p class=mut style="font-size:12.5px;margin-top:14px;line-height:1.5" id=lswitch>
+   No account? <b style="cursor:pointer;color:var(--inf)" onclick="setAuthMode('signup')">Create one</b>
+   — <b>{TRIAL_DAYS} days free</b>, no card needed.</p></div>
 
 <div id=app class="app hide">
 <div id=trialbar class=tbar style="display:none"></div>
@@ -3457,6 +3460,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class=lbl>Orders</span></a>
   <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=lbl>Analyze</span></a>
   <a data-t=admin id=navadmin style="display:none" onclick="go('admin')"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 4.5-3.2 8.3-8 9-4.8-.7-8-4.5-8-9V7z"/></svg>admin</a>
+<a data-t=upgrade onclick="go('upgrade')"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8 6.6 19.7l1.2-6.1L3.3 9.4l6.1-.8z"/></svg>plans</a>
 <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class=lbl>Account</span></a>
   <div class=sidefoot>
    <div class=iconbtn onclick=toggleTheme() title="Light / dark"><svg id=themeicon viewBox="0 0 24 24"></svg></div>
@@ -3567,6 +3571,25 @@ function go(t,noPush){if(!noPush&&cur&&cur!=t)NAVHIST.push(cur);cur=t;
  if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();if(t=='upgrade')loadUpgrade();window.scrollTo(0,0)}
 function goBack(){var p=NAVHIST.pop();go(p||'home',true)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
+var AUTHMODE='login';
+function setAuthMode(m){AUTHMODE=m;
+ var extra=document.getElementById('signupextra'),btn=document.querySelector('#login .pri'),
+     sw=document.getElementById('lswitch'),err=document.getElementById('lerr');
+ if(err)err.textContent='';
+ if(m=='signup'){extra.classList.remove('hide');btn.textContent='Create account & start free trial';
+  sw.innerHTML='Already have an account? <b style="cursor:pointer;color:var(--inf)" onclick="setAuthMode(\'login\')">Sign in</b>';}
+ else{extra.classList.add('hide');btn.textContent='Sign in';
+  sw.innerHTML='No account? <b style="cursor:pointer;color:var(--inf)" onclick="setAuthMode(\'signup\')">Create one</b> — <b>{TRIAL_DAYS} days free</b>, no card needed.';}}
+function doSignup(){var u=document.getElementById('u').value.trim(),
+  pw=document.getElementById('pw').value,pw2=document.getElementById('pw2').value,
+  err=document.getElementById('lerr');
+ if(pw!==pw2){err.textContent='Passwords do not match.';return;}
+ if(pw.length<8){err.textContent='Password must be at least 8 characters.';return;}
+ api('/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({username:u,password:pw})}).then(function(r){
+  if(!r.ok){err.textContent=(r.j&&r.j.detail)||'Could not create the account.';return;}
+  // signup issues the session, so land them straight in the trial
+  boot();}).catch(function(){err.textContent='Could not create the account.';});}
 function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadMe();loadAccountData();refresh();startStream();loadTicker();NAVHIST=[];go('home',true);}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
 function loadTicker(){api('/v2/api/ticker').then(r=>{var it=(r.j||[]);var el=document.getElementById('ticker');if(!el)return;if(!it.length){el.style.display='none';return;}
  el.style.display='flex';var h=it.map(t=>{var pnl='';if(t.pnl!=null){var a=t.pnl>0?'▲':(t.pnl<0?'▼':''),cl=t.pnl>0?'up':(t.pnl<0?'dn':'mut');pnl='<span class="'+cl+'">'+a+Math.abs(t.pnl).toFixed(2)+'%</span>';}return '<span class=tk onclick="stock(\''+t.symbol+'\',\''+t.market+'\')"><b>'+t.symbol+'</b><span class=mk>'+t.market+'</span><span class=num>'+t.ccy+(t.ccy=='₹'?INR:USD).format(t.price)+'</span>'+pnl+'</span>'}).join('');
@@ -4348,3 +4371,10 @@ function toast(t){var e=document.createElement('div');e.className='toastmsg';e.t
 boot();setInterval(()=>{if(ME){loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos()}},20000);
 setInterval(()=>{if(ME)loadTicker()},6000);
 </script></body></html>"""
+
+
+# The page is a raw string, so the trial length is substituted once here instead
+# of being typed into the HTML — otherwise the number on the sign-up card would
+# drift from plans.TRIAL_DAYS the first time it changed.
+from . import plans as _plans_for_copy          # noqa: E402
+SPA_HTML = SPA_HTML.replace("{TRIAL_DAYS}", str(_plans_for_copy.TRIAL_DAYS))
