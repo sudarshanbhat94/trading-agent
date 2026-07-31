@@ -282,6 +282,16 @@ INTRAMOM = dict(
 )
 
 INTRADAY_STRATS = ("intraday_news", "volume_surge", "intraday_momentum")   # share exit_monitor's intraday handling
+# Lanes that ALWAYS enter MID-SESSION. On their entry day the day's high and low
+# were set before the trade existed, so neither may be used to exit it or to arm
+# a breakeven lock — the position never traded at those prices.
+#
+# index_options was missing from this list and it enters mid-session like the
+# rest. On 2026-07-30 the NIFTY 24300 CE was bought at 10:52 for 87.75; the
+# 3-ATR breakeven lock armed off the day HIGH of 139.45 and the stop then fired
+# against the day LOW of 67.05, booking breakeven on a contract that closed at
+# 106.75 — up 21.7%. Neither extreme was necessarily reached while we held it.
+MIDSESSION_STRATS = INTRADAY_STRATS + ("index_options", "manual", "btst")
 # Freqtrade-style protections: temporarily HALT new entries when the book is
 # bleeding, so a bad tape can't chew through the whole book. Pure safety — only
 # ever reduces trading. Both reset next session.
@@ -2480,7 +2490,19 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     next-open exit, so a bad overnight down-gap is booked as a stop rather than
     a gap capture.
     """
-    peak = max(p["peak"], lq["high"], lq["price"], sess_row[1] if sess_row else 0.0)
+    # WHICH EXTREMES ARE LEGITIMATE for this position, decided once and applied
+    # to both the lock arming (peak) and the exit test (lo_ref/hi_ref). It used
+    # to be decided only for the exit test, so `peak` still swept in the day
+    # high and the session high — arming a breakeven lock off a price the trade
+    # never saw, then exiting against a low it never saw either.
+    same_day = str(p.get("edate"))[:10] == today_s
+    use_live = p["strategy"] in MIDSESSION_STRATS and same_day
+    # `p["peak"]` starts at the entry price and is persisted, so it already
+    # carries every price observed SINCE entry — on a mid-session entry day that
+    # is the only honest high available.
+    peak = max(p["peak"], lq["price"])
+    if not use_live:
+        peak = max(peak, lq["high"], sess_row[1] if sess_row else 0.0)
     eff = p["stop"]
     if p["trail"]:
         eff = max(eff, peak * (1 - p["trail"]))
@@ -2504,15 +2526,10 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     if p["strategy"] == "gap_momentum" and GAP_TARGET.get(market):
         eff_tgt = max(eff_tgt, p["entry"] * (1 + GAP_TARGET[market]))
     ex = reason = None
-    # mid-session entries (intraday lanes AND manual buys, on their ENTRY day)
-    # happen after the day's low/high are already set — those extremes predate
-    # the entry, so using them would instantly "trigger" a stop/target the trade
-    # never touched after entry. Use the LIVE price as the only valid reference
-    # in that case; on later held days the day low/high are legitimate.
-    same_day = str(p.get("edate"))[:10] == today_s
-    # intraday lanes always enter mid-session; a manual buy enters mid-session on
-    # its ENTRY day. swing/gap enter at the OPEN so their day low/high are valid.
-    use_live = (p["strategy"] in INTRADAY_STRATS) or (p["strategy"] in ("manual", "btst") and same_day)
+    # swing/gap/momentum enter at the OPEN, so their day low/high are valid from
+    # the first tick and `use_live` is False for them. Everything in
+    # MIDSESSION_STRATS gets the LIVE price as its only reference on the entry
+    # day; on any later held day the day extremes are legitimate again.
     lo_ref = lq["price"] if use_live else lq["low"]
     hi_ref = lq["price"] if use_live else lq["high"]
     if lo_ref <= eff or lq["price"] <= eff:

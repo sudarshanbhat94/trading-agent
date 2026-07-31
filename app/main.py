@@ -570,6 +570,32 @@ _POSITION_MARKS_CACHE_TTL_SECONDS = 5.0
 _position_marks_payload_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _RALLY_PLAN_CACHE_TTL_SECONDS = 300.0
 
+def _configure_logging():
+    """Give the app's own loggers somewhere to go.
+
+    Nothing ever called basicConfig or dictConfig, and uvicorn only configures
+    its own loggers — so the root logger had no handler and Python's last-resort
+    fallback drops anything below WARNING. Every _LOG.info in the codebase was
+    being discarded, including the EXIT diagnostics written specifically to
+    explain why a position closed. On 2026-07-30 that meant the journal held
+    nothing but HTTP access lines while four positions exited at breakeven, and
+    the reasons had to be reconstructed from stored OHLC after the fact.
+
+    Scoped to the "openstocks" namespace at INFO. That is 14 call sites in the
+    whole app, all decision-level events — not a firehose.
+    """
+    import logging as _logging
+    log = _logging.getLogger("openstocks")
+    if not log.handlers:
+        h = _logging.StreamHandler()
+        h.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+        log.addHandler(h)
+    log.setLevel(_logging.INFO)
+    log.propagate = False               # uvicorn's root handler would double-print
+
+
+_configure_logging()
+
 app = FastAPI(title="OpenStocks")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
