@@ -3926,30 +3926,40 @@ function idxChartHtml(d){
  return head+idxCandleSVG(c)+note;}
 var MEV2=null;
 // ---- trial + upgrade -------------------------------------------------------
-function trialBanner(){var el=document.getElementById('trialbar');if(!el||!MEV2)return;
- var t=MEV2.trial||{},pend=MEV2.pending_request;
- if(pend){el.style.display='';el.className='tbar tbar-wait';
-  el.innerHTML='<span>Payment pending confirmation for <b>'+esc(pend.plan)+'</b> — we will enable it as soon as it is verified.</span>';return;}
- if(t.active){el.style.display='';el.className='tbar';
-  // Counts DOWN and names the date. "Trial active" alone tells nobody when to act.
-  // the PLAN NAME, not the internal key — it read "full access to paper",
-  // which is a database value leaking onto the page
-  var tl=(MEV2.tiers||[]).filter(function(x){return x.key==MEV2.trial_tier;})[0];
-  el.innerHTML='<span><b>'+t.days_left+' day'+(t.days_left==1?'':'s')+'</b> left of your free trial'
-   +' — full access to <b>'+esc((tl&&tl.label)||MEV2.plan_label||'Pro')+'</b>.</span>'
-   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">See plans</button>';return;}
- var sub=MEV2.subscription||{},warn=MEV2.renewal_warn_days||5;
- if(sub.paid&&sub.expired){el.style.display='';el.className='tbar tbar-end';
-  el.innerHTML='<span>Your <b>'+esc(MEV2.plan_label||'')+'</b> subscription has ended — you are back on Starter.</span>'
-   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Renew</button>';return;}
- if(sub.paid&&sub.active&&sub.days_left!=null&&sub.days_left<=warn){
-  el.style.display='';el.className='tbar tbar-wait';
-  el.innerHTML='<span>Your subscription renews in <b>'+sub.days_left+' day'+(sub.days_left==1?'':'s')+'</b>.</span>'
-   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Renew now</button>';return;}
- if(t.had_trial&&MEV2.paid_plan=='watch'){el.style.display='';el.className='tbar tbar-end';
-  el.innerHTML='<span>Your trial has ended. You are on the free plan — signals and the catalyst feed stay available.</span>'
-   +'<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">Upgrade</button>';return;}
- el.style.display='none';}
+function bannerFor(me){
+ // The DECISION, separated from the DOM so it can be tested. This logic had a
+ // precedence bug that no test could have caught while it was tangled up with
+ // innerHTML: the trial was checked FIRST, so an account that signed up and
+ // paid on day one was still told "6 days left of your free trial" — counting
+ // down a trial at somebody who had just handed over money.
+ //
+ // What has been PAID FOR always outranks the trial.
+ if(!me)return null;
+ var t=me.trial||{},pend=me.pending_request,sub=me.subscription||{},
+     warn=me.renewal_warn_days||5,plan=me.plan_label||'';
+ if(pend)return {kind:'pending',cls:'tbar-wait',
+   text:'Payment pending confirmation for '+pend.plan+' — we will enable it as soon as it is verified.'};
+ if(sub.paid&&sub.expired)return {kind:'lapsed',cls:'tbar-end',cta:'Renew',
+   text:'Your '+plan+' subscription has ended — you are back on Starter.'};
+ if(sub.paid&&sub.active){
+  if(sub.days_left!=null&&sub.days_left<=warn)return {kind:'renewal',cls:'tbar-wait',cta:'Renew now',
+    text:'Your '+plan+' subscription renews in '+sub.days_left+' day'+(sub.days_left==1?'':'s')+'.'};
+  // Quiet while there is plenty of time left. A banner that never goes away
+  // stops being read, and then the one that matters is not read either.
+  return null;}
+ if(t.active){var tl=(me.tiers||[]).filter(function(x){return x.key==me.trial_tier;})[0];
+  return {kind:'trial',cls:'',cta:'See plans',
+   text:t.days_left+' day'+(t.days_left==1?'':'s')+' left of your free trial — full access to '
+        +((tl&&tl.label)||'Pro')+'.'};}
+ if(t.had_trial)return {kind:'trial_over',cls:'tbar-end',cta:'Upgrade',
+   text:'Your trial has ended — you are on '+plan+'. Signals and the catalyst feed stay available.'};
+ return null;}
+function trialBanner(){var el=document.getElementById('trialbar');if(!el)return;
+ var b=bannerFor(MEV2);
+ if(!b){el.style.display='none';return;}
+ el.style.display='';el.className='tbar'+(b.cls?' '+b.cls:'');
+ el.innerHTML='<span>'+esc(b.text)+'</span>'
+  +(b.cta?('<button class=pri style="font-size:12px;padding:5px 12px" onclick="go(\'upgrade\')">'+esc(b.cta)+'</button>'):'');}
 function loadUpgrade(){var el=document.getElementById('upgrade');if(!el)return;
  if(!MEV2){el.innerHTML='<div class=skel>loading…</div>';loadMe().then(loadUpgrade);return;}
  var t=MEV2.trial||{},pend=MEV2.pending_request;
