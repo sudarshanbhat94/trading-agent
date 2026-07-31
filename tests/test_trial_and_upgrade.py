@@ -166,6 +166,33 @@ class UpgradeFlowTest(unittest.TestCase):
         self.assertIn("pa=test%40ybl", pay["upi_link"])
         self.assertIn(f"am={plans.PRICES['paper']:.2f}", pay["upi_link"])
 
+    def test_each_payment_app_gets_its_own_link(self) -> None:
+        """One button per app so nobody has to find the right one in a chooser,
+        and the generic upi:// stays as the fallback because app-specific
+        schemes are vendor conventions rather than a standard."""
+        self.configure_payment()
+        apps = self.client.post("/v2/api/upgrade", json={"plan": "paper"}).json()["payment"]["apps"]
+        names = [a["name"] for a in apps]
+        self.assertIn("PhonePe", names)
+        self.assertIn("Google Pay", names)
+        self.assertEqual(names[-1], "Any UPI app", "the generic link must remain, and last")
+
+    def test_every_app_link_carries_the_same_amount(self) -> None:
+        """They differ only by scheme, so they cannot disagree about the price —
+        a branded link that charged something else would be the worst possible
+        bug in this flow."""
+        self.configure_payment()
+        apps = self.client.post("/v2/api/upgrade", json={"plan": "auto"}).json()["payment"]["apps"]
+        want = f"am={plans.PRICES['auto']:.2f}"
+        for a in apps:
+            with self.subTest(app=a["name"]):
+                self.assertIn(want, a["link"])
+                self.assertIn("pa=test%40ybl", a["link"])
+
+    def test_no_apps_when_payment_is_unconfigured(self) -> None:
+        self.assertEqual(
+            self.client.post("/v2/api/upgrade", json={"plan": "paper"}).json()["payment"]["apps"], [])
+
     def test_the_qr_encodes_the_amount(self) -> None:
         """A static QR makes the subscriber type the price, and a wrong amount
         is the reconciliation work this flow cannot absorb."""

@@ -734,9 +734,24 @@ def _payment_config():
                 qr_url=saved.get("qr_url", ""), note=saved.get("note", ""))
 
 
-def _upi_link(cfg, amount, label):
-    """A UPI intent link, so a phone can open it directly instead of asking the
-    user to retype a VPA. Falls back to nothing when unconfigured."""
+# Deep links per app. The QUERY is identical UPI in every case — only the
+# scheme differs — so one payment description drives all of them and they cannot
+# disagree about the amount.
+#
+# The generic `upi://` entry is listed last and deliberately kept: app-specific
+# schemes are vendor conventions rather than a standard and do change, whereas
+# `upi://` is what Android's chooser resolves. If a branded link ever stops
+# working the generic one still pays.
+UPI_APPS = (
+    ("PhonePe", "phonepe://pay?"),
+    ("Google Pay", "tez://upi/pay?"),
+    ("Paytm", "paytmmp://pay?"),
+    ("Any UPI app", "upi://pay?"),
+)
+
+
+def _upi_query(cfg, amount, label):
+    """The shared UPI parameter string: payee, amount, currency, reference."""
     from urllib.parse import quote
     if not cfg.get("upi_id"):
         return ""
@@ -746,7 +761,22 @@ def _upi_link(cfg, amount, label):
     parts.append(f"am={amount:.2f}")
     parts.append("cu=INR")
     parts.append(f"tn={quote(label)}")
-    return "upi://pay?" + "&".join(parts)
+    return "&".join(parts)
+
+
+def _upi_link(cfg, amount, label, scheme="upi://pay?"):
+    """A UPI intent link, so a phone opens the app instead of asking the user to
+    retype a VPA and an amount."""
+    query = _upi_query(cfg, amount, label)
+    return (scheme + query) if query else ""
+
+
+def _upi_apps(cfg, amount, label):
+    """One link per payment app, for the buttons on the payment card."""
+    query = _upi_query(cfg, amount, label)
+    if not query:
+        return []
+    return [dict(name=name, link=scheme + query) for name, scheme in UPI_APPS]
 
 
 @router.get("/api/pay-qr")
@@ -835,6 +865,8 @@ def api_upgrade(payload: dict, user=Depends(require_session)):
             **cfg, amount=amount,
             upi_link=_upi_link(cfg, float(amount),
                                f"OpenStocks {plans.LABELS.get(want, want)}"),
+            apps=_upi_apps(cfg, float(amount),
+                           f"OpenStocks {plans.LABELS.get(want, want)}"),
             configured=bool(cfg.get("upi_id") or cfg.get("qr_url")))))
 
 
@@ -3896,7 +3928,12 @@ function askUpgrade(plan,silent){
    +'<div class=mut style="font-size:11.5px;text-align:center;margin-top:-4px">Scan with any UPI app \u2014 \u20b9'+d.amount+' is already filled in</div>' 
    +(p.upi_id?('<div class=mut style="font-size:12px;line-height:1.6">UPI ID <b class=num style="color:var(--tx)">'+esc(p.upi_id)+'</b>'
       +(p.payee?(' · '+esc(p.payee)):'')+'</div>'):'')
-   +(p.upi_link?('<a class=pri href="'+esc(p.upi_link)+'" style="display:inline-block;margin-top:10px;font-size:12.5px;padding:7px 14px;text-decoration:none">Open in UPI app</a>'):'')
+   +((p.apps&&p.apps.length)?('<div class=mut style="font-size:11.5px;margin:12px 0 7px">On your phone, pay with</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +p.apps.map(function(a,i){
+        return '<a href="'+esc(a.link)+'" class="'+(i===0?'pri':'chip')+'" style="text-decoration:none;font-size:12.5px;padding:8px 14px;'
+          +(i===0?'':'border:1px solid var(--line);')+'display:inline-block">'+esc(a.name)+'</a>';}).join('')
+      +'</div>'):'')
    +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">After paying, the admin confirms it and your plan switches over. '
    +'Reference: request #'+d.request_id+'.</div>'
    +(p.note?('<div class=mut style="font-size:11.5px;margin-top:6px">'+esc(p.note)+'</div>'):'')
