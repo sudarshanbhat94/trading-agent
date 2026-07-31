@@ -3017,6 +3017,15 @@ input[type=date]{width:auto;padding:8px 11px}
 .fd-trade{gap:10px}
 .fd-trade .fd-tsym{flex:1;min-width:0;display:flex;gap:8px;align-items:baseline;overflow:hidden}
 .fd-trade .fd-tsym .mut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* A grid item defaults to min-width:auto, so it will not shrink below its own
+   content. An option ticker is one long unbreakable token
+   (FINNIFTY26AUG26100CE), which pushed the column past its 1fr share and threw
+   the P&L outside the card: the Sold column's returns were clipped at the right
+   edge while Bought, holding shorter equity tickers, fitted fine. */
+.fd-movecol{min-width:0}
+/* The same rule one level down — <b> is a flex item of .fd-tsym. Without it the
+   ticker holds the row open and squeezes the qty/price beside it to nothing. */
+.fd-trade .fd-tsym b{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rgb{font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;color:var(--mut);font-weight:500}
 .rgb.on{background:var(--infb);color:var(--inf);border-color:rgba(56,189,248,.3)}
 .detail-grid{display:flex;flex-direction:column;gap:0}
