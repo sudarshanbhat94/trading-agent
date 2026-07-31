@@ -1041,6 +1041,11 @@ def _public_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "id": int(row["id"]),
         "username": row["username"],
         "role": row.get("role") or "user",
+        # The subscription tier. It was stored but never exposed here, so every
+        # caller that asked the session for a plan got None — which normalises
+        # to the LOWEST tier and would have quietly demoted every account the
+        # moment plan gating went live.
+        "account_plan": row.get("account_plan") or "",
         "assigned_llm": {
             "provider": row.get("assigned_llm_provider") or "",
             "model": row.get("assigned_llm_model") or "",
@@ -1950,6 +1955,7 @@ class Database:
         user_id: int,
         *,
         role: str | None = None,
+        account_plan: str | None = None,
         assigned_llm_provider: str | None = None,
         assigned_llm_model: str | None = None,
         signal_execution_mode: str | None = None,
@@ -1961,6 +1967,12 @@ class Database:
         if role is not None:
             assignments.append("role = ?")
             values.append(role)
+        if account_plan is not None:
+            # Normalised on the way in, so an unknown tier cannot be stored and
+            # then silently deny everything at read time.
+            from . import plans as _plans
+            assignments.append("account_plan = ?")
+            values.append(_plans.normalize(account_plan))
         if assigned_llm_provider is not None:
             assignments.append("assigned_llm_provider = ?")
             values.append(str(assigned_llm_provider or "").strip().lower())

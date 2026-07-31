@@ -85,6 +85,20 @@ def require_session(request: Request):
     return user
 
 
+def require_admin_session(request: Request):
+    """Admin-only routes. ROLE, not plan.
+
+    An admin manages other people's plans; it does not change what their own
+    book does. Keeping the two separate is what lets the operator hold a real
+    trading account and still administer — conflating them is how "admin"
+    quietly becomes a billing tier that cannot be revoked.
+    """
+    user = require_session(request)
+    if (user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="admin only")
+    return user
+
+
 router = APIRouter(prefix="/v2", dependencies=[Depends(require_session)])
 _panel_cache: dict = {}
 
@@ -671,6 +685,81 @@ def _index_live_quotes_ready():
         return age < 15 * 60
     except Exception:
         return False
+
+
+@router.get("/api/me")
+def api_me(user=Depends(require_session)):
+    """Who am I, what may I reach, and may I administer.
+
+    The UI needs all three to render honestly. Hiding a control the account
+    cannot use is kinder than showing one that returns 403 when clicked, and
+    the plan is resolved HERE rather than in JavaScript so the page and the API
+    can never disagree about it.
+    """
+    from . import plans
+    plan = plans.normalize(user.get("account_plan"))
+    return JSONResponse(dict(
+        username=user.get("username"), role=user.get("role") or "user",
+        is_admin=(user.get("role") or "").lower() == "admin",
+        plan=plan, plan_label=plans.LABELS.get(plan, plan),
+        features=plans.features_for(plan)))
+
+
+@router.get("/api/admin/users")
+def api_admin_users(user=Depends(require_admin_session)):
+    """Everyone, with the two fields an operator actually administers."""
+    from . import plans
+    settings, db = _auth_bits()
+    out = []
+    for row in db.list_users():
+        plan = plans.normalize(row.get("account_plan"))
+        out.append(dict(id=row.get("id"), username=row.get("username"),
+                        role=row.get("role") or "user", plan=plan,
+                        plan_label=plans.LABELS.get(plan, plan),
+                        active=bool(row.get("active")),
+                        mode=row.get("signal_execution_mode") or "SIGNAL_ONLY",
+                        last_login=row.get("last_login_at") or ""))
+    out.sort(key=lambda r: (r["role"] != "admin", r["username"]))
+    return JSONResponse(dict(users=out, tiers=list(plans.TIERS),
+                             labels=plans.LABELS, features=plans.FEATURES))
+
+
+@router.post("/api/admin/users/{uid}")
+def api_admin_user_update(uid: int, payload: dict, user=Depends(require_admin_session)):
+    """Change a user's plan, role or active flag."""
+    from . import plans
+    settings, db = _auth_bits()
+    target = db.user_by_id(uid)
+    if not target:
+        return JSONResponse(dict(error="no such user"), status_code=404)
+    fields = {}
+    if "plan" in payload:
+        fields["account_plan"] = plans.normalize(payload["plan"])
+    if "active" in payload:
+        # AN ADMIN MUST NOT DISABLE THEMSELVES. It is a one-way door: the
+        # account cannot log back in to undo it, and if it is the only admin
+        # the panel becomes unreachable for everyone.
+        if int(uid) == int(user.get("id") or 0) and not payload["active"]:
+            return JSONResponse(dict(error="you cannot deactivate your own account"),
+                                status_code=400)
+        fields["active"] = bool(payload["active"])
+    if "role" in payload:
+        role = "admin" if str(payload["role"]).lower() == "admin" else "user"
+        # Same reasoning, and the more likely accident: demoting yourself locks
+        # the panel behind an account that can no longer open it.
+        if int(uid) == int(user.get("id") or 0) and role != "admin":
+            return JSONResponse(dict(error="you cannot remove your own admin role"),
+                                status_code=400)
+        fields["role"] = role
+    if not fields:
+        return JSONResponse(dict(error="nothing to change"), status_code=400)
+    updated = db.update_user(uid, **fields)
+    _LOG.info("ADMIN %s updated user %s (%s): %s",
+              user.get("username"), uid, target.get("username"), fields)
+    plan = plans.normalize((updated or {}).get("account_plan"))
+    return JSONResponse(dict(ok=True, id=uid, plan=plan,
+                             role=(updated or {}).get("role"),
+                             active=bool((updated or {}).get("active"))))
 
 
 @router.get("/api/index-candles")
@@ -3161,7 +3250,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg><span class=lbl>Portfolio</span></a>
   <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class=lbl>Orders</span></a>
   <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=lbl>Analyze</span></a>
-  <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class=lbl>Account</span></a>
+  <a data-t=admin id=navadmin style="display:none" onclick="go('admin')"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 4.5-3.2 8.3-8 9-4.8-.7-8-4.5-8-9V7z"/></svg>admin</a>
+<a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class=lbl>Account</span></a>
   <div class=sidefoot>
    <div class=iconbtn onclick=toggleTheme() title="Light / dark"><svg id=themeicon viewBox="0 0 24 24"></svg></div>
    <div class=iconbtn onclick=toggleSide() title="Collapse sidebar"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></div>
@@ -3236,6 +3326,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <div id=ares></div></div>
 
   <div id=account class=tab></div>
+  <div id=admin class=tab></div>
   <div id=detail class=tab></div>
  </div>
 </div>
@@ -3263,13 +3354,13 @@ function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'applica
 function setMkt(m){MKT=m;document.querySelectorAll('#mkt b').forEach(b=>b.classList.toggle('on',b.dataset.m==m));refresh()}
 var NAVHIST=[];
 function go(t,noPush){if(!noPush&&cur&&cur!=t)NAVHIST.push(cur);cur=t;
- ['home','watch','positions','orders','analyze','account','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
+ ['home','watch','positions','orders','analyze','account','admin','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
  document.querySelectorAll('.nav a,.side a').forEach(a=>a.classList.toggle('on',a.dataset.t==t));
  var bk=document.getElementById('backbtn');if(bk)bk.style.display=NAVHIST.length?'inline-flex':'none';
- if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();window.scrollTo(0,0)}
+ if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();window.scrollTo(0,0)}
 function goBack(){var p=NAVHIST.pop();go(p||'home',true)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
-function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadAccountData();refresh();startStream();loadTicker();NAVHIST=[];go('home',true);}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
+function boot(){api('/api/auth/me').then(r=>{var u=r.j.user||r.j;if(r.ok&&u&&u.username){ME=u;MODE=(u.signal_execution_mode||'paper');hide('login');show('app');document.getElementById('avatar').textContent=(u.username[0]||'U').toUpperCase();loadMe();loadAccountData();refresh();startStream();loadTicker();NAVHIST=[];go('home',true);}else{show('login');hide('app');}}).catch(()=>{show('login');hide('app')})}
 function loadTicker(){api('/v2/api/ticker').then(r=>{var it=(r.j||[]);var el=document.getElementById('ticker');if(!el)return;if(!it.length){el.style.display='none';return;}
  el.style.display='flex';var h=it.map(t=>{var pnl='';if(t.pnl!=null){var a=t.pnl>0?'▲':(t.pnl<0?'▼':''),cl=t.pnl>0?'up':(t.pnl<0?'dn':'mut');pnl='<span class="'+cl+'">'+a+Math.abs(t.pnl).toFixed(2)+'%</span>';}return '<span class=tk onclick="stock(\''+t.symbol+'\',\''+t.market+'\')"><b>'+t.symbol+'</b><span class=mk>'+t.market+'</span><span class=num>'+t.ccy+(t.ccy=='₹'?INR:USD).format(t.price)+'</span>'+pnl+'</span>'}).join('');
  el.innerHTML='<div class=track>'+h+h+'</div>';}).catch(()=>{});}
@@ -3505,6 +3596,51 @@ function idxChartHtml(d){
  var note='<div class=mut style="font-size:10.5px;margin-top:5px;line-height:1.4">15-min candles, estimated from the option chain via put-call parity'
   +(d.pairs?(' · '+d.pairs+' strike pairs'):'')+(c.length?(' · '+c.length+' bars today'):'')+'</div>';
  return head+idxCandleSVG(c)+note;}
+var MEV2=null;
+// Who this account is, per the SERVER. The plan is resolved server-side and
+// sent here, so the page and the API can never disagree about what is allowed —
+// a plan computed in JavaScript is a suggestion, not a gate.
+function loadMe(){return api('/v2/api/me').then(function(r){MEV2=r.j||{};
+ var n=document.getElementById('navadmin');if(n)n.style.display=MEV2.is_admin?'':'none';
+ return MEV2;}).catch(function(){MEV2=null;});}
+function planPill(p,label){var c=p=='auto'?'bg-up':(p=='paper'?'bg-inf':'bg-mut');
+ return '<span class="badge '+c+'">'+esc(label||p||'—')+'</span>';}
+function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
+ el.innerHTML='<div class=skel>loading…</div>';
+ api('/v2/api/admin/users').then(function(r){
+  if(!r.ok){el.innerHTML='<div class=card><div class=mut style="font-size:13px">'
+    +(r.status==403?'Admin only.':'Could not load users.')+'</div></div>';return;}
+  var d=r.j||{},us=d.users||[],tiers=d.tiers||['watch','paper','auto'],lab=d.labels||{};
+  var row=function(u){
+   var sel='<select onchange="setPlan('+u.id+',this.value)" style="font-size:12px;padding:4px 6px">'
+     +tiers.map(function(t){return '<option value="'+t+'"'+(u.plan==t?' selected':'')+'>'+esc(lab[t]||t)+'</option>';}).join('')
+     +'</select>';
+   // The operator's own row shows its state but offers no self-demotion: it is
+   // a one-way door, and on the only admin it locks this page for everyone.
+   var me=MEV2&&MEV2.username==u.username;
+   var roleBtn=me?'<span class=mut style="font-size:11px">you</span>'
+     :'<button class=chip style="cursor:pointer;border:1px solid var(--line)" onclick="setRole('+u.id+',\''+(u.role=='admin'?'user':'admin')+'\')">'
+       +(u.role=='admin'?'revoke admin':'make admin')+'</button>';
+   var actBtn=me?'':'<button class=chip style="cursor:pointer;border:1px solid var(--line)" onclick="setActive('+u.id+','+(u.active?'false':'true')+')">'
+       +(u.active?'disable':'enable')+'</button>';
+   return '<div class=lrow style="display:grid;grid-template-columns:minmax(0,1.4fr) auto auto auto auto;gap:10px;align-items:center">'
+     +'<span style="min-width:0"><b>'+esc(u.username)+'</b>'
+       +(u.role=='admin'?' <span class="badge bg-warn">admin</span>':'')
+       +(u.active?'':' <span class="badge bg-dn">disabled</span>')
+       +'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+esc(u.mode||'')+'</span></span>'
+     +planPill(u.plan,lab[u.plan])+sel+roleBtn+actBtn+'</div>';};
+  el.innerHTML='<div class=sec><span>users &amp; plans</span><span class=mut style="font-size:12px">'+us.length+' accounts</span></div>'
+   +'<div class=card style="padding:2px 15px">'+us.map(row).join('')+'</div>'
+   +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">'
+   +'<b>Watch</b> — signals and the catalyst feed. <b>Paper</b> — own paper book, market internals, option chain, full history. '
+   +'<b>Auto</b> — index options, broker connect, exports.</div>';
+ });}
+function adminPost(uid,body,what){return api('/v2/api/admin/users/'+uid,{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
+  if(!r.ok){toast('⚠ '+((r.j&&r.j.error)||'failed'));return;}toast('✓ '+what);loadAdmin();});}
+function setPlan(uid,plan){adminPost(uid,{plan:plan},'plan → '+plan);}
+function setRole(uid,role){if(!confirm('Set role to '+role+'?'))return;adminPost(uid,{role:role},'role → '+role);}
+function setActive(uid,on){adminPost(uid,{active:on},on?'enabled':'disabled');}
 function loadIndexChart(sym){var el=document.getElementById('idxchart');if(!el)return;
  api('/v2/api/index-candles?symbol='+encodeURIComponent(sym||'NIFTY')).then(function(r){
   el.innerHTML=idxChartHtml(r.j||{});}).catch(function(){el.innerHTML='<div class=mut style="font-size:12px">could not load candles</div>'});}

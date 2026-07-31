@@ -469,6 +469,12 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "id": int(user["id"]),
         "username": user["username"],
         "role": user.get("role") or "user",
+        # The subscription tier. There are TWO builders of the public user dict
+        # — this one and db._public_user — and the session goes through THIS
+        # one. Adding the field to only the other left every session reporting
+        # no plan, which normalises to the lowest tier: silent demotion of every
+        # account the moment gating went live. Both must carry it.
+        "account_plan": user.get("account_plan") or "",
         "active": bool(user.get("active")),
         "signal_execution_mode": str(user.get("signal_execution_mode") or "SIGNAL_ONLY").strip().upper(),
         "credit_balance": round(float(user.get("credit_balance") or 0.0), 6),
