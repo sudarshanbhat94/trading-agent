@@ -51,6 +51,68 @@ FEATURES = {
 
 LABELS = {"watch": "Watch", "paper": "Paper", "auto": "Auto"}
 
+# WHICH ROUTE NEEDS WHICH FEATURE — one table, enforced by a single dependency
+# on the router, exactly like authentication. Annotating 37 routes one at a time
+# is how you end up with the hole: this codebase has already shipped four
+# separate index gates, each individually plausible, each silently disabling a
+# whole lane, with no single place to read the truth from.
+#
+# `None` means "any logged-in user" — free, and deliberately explicit rather
+# than absent, so the table doubles as the inventory of what is free.
+ROUTE_FEATURES = {
+    "/v2": None, "/v2/": None,
+    "/v2/api/me": None,
+    "/v2/api/health": None,
+    "/v2/api/engine-status": None,
+    "/v2/api/ticker": None,
+    "/v2/api/indices": None,
+    "/v2/api/catalysts": "catalysts",
+    "/v2/api/index-call": "index_call",
+    "/v2/api/movers": "signals",
+    "/v2/api/search": "signals",
+    "/v2/api/watch": "signals",
+    "/v2/api/sectors": "signals",
+    "/v2/api/preopen": "signals",
+    # paper tier
+    "/v2/api/overview": "paper_book",
+    "/v2/api/positions": "paper_book",
+    "/v2/api/portfolio": "paper_book",
+    "/v2/api/stream": "paper_book",
+    "/v2/api/stats": "history_full",
+    "/v2/api/orders": "history_full",
+    "/v2/api/trades": "history_full",
+    "/v2/api/attribution": "history_full",
+    "/v2/api/stock/{symbol}": "market_internals",
+    "/v2/api/index-candles": "index_candles",
+    "/v2/api/watchlist": "paper_book",
+    "/v2/api/watchlist/{symbol}": "paper_book",
+    "/v2/api/alerts": "paper_book",
+    "/v2/api/alerts/{aid}": "paper_book",
+    "/v2/api/buy": "manual_trade",
+    "/v2/api/sell": "manual_trade",
+    "/v2/api/reset": "manual_trade",
+    "/v2/api/positions/{pid}/exit": "manual_trade",
+    # auto tier
+    "/v2/api/index-settings": "index_options",
+    # admin routes carry their own ROLE check; a plan must not gate
+    # administration, or an admin on a low tier could not manage anyone
+    "/v2/api/admin/users": None,
+    "/v2/api/admin/users/{uid}": None,
+    "/v2/api/admin/jobs": None,
+}
+
+
+def feature_for_path(path: str):
+    """The feature a route needs, or None if it is free.
+
+    An UNMAPPED path returns None — free — on purpose. Denying it would mean a
+    newly added route breaks for every user until someone notices, which is a
+    self-inflicted outage; a test enumerates the live router and fails when a
+    path is missing from the table, so the gap is caught in CI instead of in
+    production. Fail open here, catch it there.
+    """
+    return ROUTE_FEATURES.get(path)
+
 
 def normalize(value) -> str:
     """Map whatever is stored to a real tier.

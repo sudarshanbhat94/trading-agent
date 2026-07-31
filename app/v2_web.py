@@ -82,7 +82,35 @@ def require_session(request: Request):
         raise HTTPException(status_code=503, detail="auth unavailable")
     if not user:
         raise HTTPException(status_code=401, detail="login required")
+    _check_plan(request, user)
     return user
+
+
+def _check_plan(request, user):
+    """Enforce the account's subscription tier for the route being called.
+
+    Done HERE, in the one dependency every route already inherits, rather than
+    as a decorator on each of the 37 routes. Same reasoning as the auth gate:
+    a per-route annotation is one forgotten line from a hole, and this codebase
+    has already produced that failure four times over with the index gates.
+
+    The route pattern is used, not the raw URL, so /api/stock/{symbol} is one
+    entry rather than one per symbol.
+    """
+    from . import plans
+    route = request.scope.get("route") if hasattr(request, "scope") else None
+    path = getattr(route, "path", None) or getattr(request, "url", None)
+    if not isinstance(path, str):
+        return                              # nothing to match on; auth still applied
+    feature = plans.feature_for_path(path)
+    if feature is None:
+        return                              # free, or unmapped (see feature_for_path)
+    plan = plans.normalize(user.get("account_plan"))
+    if not plans.allows(plan, feature):
+        raise HTTPException(
+            status_code=402,                # Payment Required: says WHY, not just "no"
+            detail={"error": "upgrade required", "feature": feature,
+                    "plan": plan, "needs": plans.FEATURES.get(feature)})
 
 
 def require_admin_session(request: Request):
