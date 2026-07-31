@@ -3951,6 +3951,27 @@ function loadMe(){return api('/v2/api/me').then(function(r){MEV2=r.j||{};
  trialBanner();return MEV2;}).catch(function(){MEV2=null;});}
 function planPill(p,label){var c=p=='auto'?'bg-up':(p=='paper'?'bg-inf':'bg-mut');
  return '<span class="badge '+c+'">'+esc(label||p||'—')+'</span>';}
+function loadPaySettings(){var box=document.getElementById('paycfg');if(!box)return;
+ api('/v2/api/payment-settings').then(function(r){var d=r.j||{};
+  box.innerHTML='<div class=sec><span>where payments go</span></div>'
+   +'<div class=card>'
+   +'<div class=field><label>UPI ID (VPA)</label><input id=payUpi value="'+esc(d.upi_id||'')+'" placeholder="name@bank"></div>'
+   +'<div class=field><label>payee name shown in the app</label><input id=payName value="'+esc(d.payee||'')+'"></div>'
+   +'<div class=field><label>note shown under the QR</label><input id=payNote value="'+esc(d.note||'')+'"></div>'
+   +'<button class=pri style="font-size:12.5px;padding:7px 14px" onclick=savePaySettings()>Save</button>'
+   // The reason this is editable at all: on 2026-07-31 ICICI had a UPI outage
+   // and every payment to this VPA failed. A second account at another bank is
+   // the difference between an hour of lost sign-ups and none.
+   +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">'
+   +'If your bank has a UPI outage, switch this to a VPA at another bank — new QRs and '
+   +'payment links use it immediately.</div>'
+   +'</div>';});}
+function savePaySettings(){
+ api('/v2/api/payment-settings',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({upi_id:document.getElementById('payUpi').value.trim(),
+    payee:document.getElementById('payName').value.trim(),
+    note:document.getElementById('payNote').value.trim()})}).then(function(r){
+  if(!r.ok){toast('\u26a0 could not save');return;}toast('\u2713 payment details saved');loadPaySettings();});}
 function reqRow(r){
  return '<div class=lrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:10px;align-items:center">'
   +'<span style="min-width:0"><b>'+esc(r.username||('user '+r.user_id))+'</b>'
@@ -3990,7 +4011,7 @@ function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
        +(u.active?'':' <span class="badge bg-dn">disabled</span>')
        +'<span class="mut num" style="display:block;font-size:11px;margin-top:2px">'+esc(u.mode||'')+'</span></span>'
      +planPill(u.plan,lab[u.plan])+sel+roleBtn+actBtn+'</div>';};
-  el.innerHTML='<div id=reqbox></div>'
+  el.innerHTML='<div id=reqbox></div><div id=paycfg></div>'
    +'<div class=sec><span>users &amp; plans</span><span class=mut style="font-size:12px">'+us.length+' accounts</span></div>'
    +'<div class=card style="padding:2px 15px">'+us.map(row).join('')+'</div>'
    +'<div class=mut style="font-size:11.5px;margin-top:10px;line-height:1.5">'
@@ -4002,6 +4023,7 @@ function loadAdmin(){var el=document.getElementById('admin');if(!el)return;
    if(!rq.length){box.innerHTML='';return;}
    box.innerHTML='<div class=sec><span>upgrade requests</span><span class="badge bg-warn">'+rq.length+' waiting</span></div>'
     +'<div class=card style="padding:2px 15px">'+rq.map(reqRow).join('')+'</div>';});
+  loadPaySettings();
  });}
 function adminPost(uid,body,what){return api('/v2/api/admin/users/'+uid,{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
