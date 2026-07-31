@@ -223,6 +223,24 @@ class GateTest(unittest.TestCase):
     def test_position_count_is_capped(self) -> None:
         self.assertIn("max_concurrent", self._src())
 
+    def test_the_pass_keeps_filling_instead_of_returning_after_one_buy(self) -> None:
+        """It used to `return` after a single fill. With a 60s cadence and an
+        entry window that shuts at 14:30, the remaining slots often never
+        filled — on 2026-07-31 the options book sat at 35% deployed, two of
+        three slots used, Rs 65k idle."""
+        src = self._src()
+        self.assertIn("held.append(contract", src)
+        self.assertIn("options_cash -= cost", src)
+
+    def test_continuing_cannot_over_commit_the_book(self) -> None:
+        """Filling in one pass is only safe because the loop re-checks the slot
+        cap and the cash it just spent."""
+        src = self._src()
+        cap = src.index('if len(held) >= cfg.get("max_concurrent"', src.index("for symbol in cfg"))
+        spend = src.index("options_cash -= cost")
+        self.assertLess(cap, spend, "the slot cap must be re-checked before the next buy")
+        self.assertIn("budget_per_trade = min(options_cash", src)
+
     def test_the_straddle_cap_scales_with_time_to_expiry(self) -> None:
         """An implied move grows with the SQUARE ROOT of time, so a 25-day
         option quotes a bigger expected move than a 4-day one without being any

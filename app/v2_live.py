@@ -730,6 +730,14 @@ def ensure_schema(v2):
             v2.execute(f"ALTER TABLE v2_trades ADD COLUMN {column} TEXT")
         except Exception:
             pass
+    # Additive migration: an OPTION position must carry its own expiry. Reading
+    # it off the live quote is not enough — once the contract expires it drops
+    # out of the ATM watch list, and a position whose expiry is only knowable
+    # from a quote that no longer arrives can never be closed.
+    try:
+        v2.execute("ALTER TABLE v2_positions ADD COLUMN expiry TEXT")
+    except Exception:
+        pass
     v2.commit()
 
 
@@ -1210,7 +1218,7 @@ def net_trade_pnl(market, shares, entry, exit_price):
 
 
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
-                 stop, target, trail, conviction, why, peak=None):
+                 stop, target, trail, conviction, why, peak=None, expiry=None):
     """THE single writer for v2_positions. Returns True if the row was written.
 
     Every lane had its own copy of this INSERT — five of them, identical column
@@ -1247,10 +1255,11 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
         return False
     v2.execute(
         "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
-        "stop,target,trail,peak,conviction,opened_at,why) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "stop,target,trail,peak,conviction,opened_at,why,expiry)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
          entry_price if peak is None else peak, conviction,
-         datetime.now(timezone.utc).isoformat(), why))
+         datetime.now(timezone.utc).isoformat(), why, expiry))
     return True
 
 
@@ -2433,15 +2442,27 @@ def index_options_pass(market):
                                   unvalidated=True))
             stop = premium * (1 - cfg.get("stop_pct", 0.35))
             target = premium * (1 + cfg.get("target_pct", 0.60))
+            # expiry is PERSISTED, not left to be read off a quote later: once
+            # the contract expires it leaves the ATM watch list, and a position
+            # whose expiry is only knowable from a quote that no longer arrives
+            # can never be closed.
             if not record_entry(v2, market, "index_options", contract["symbol"],
                                 today.isoformat(), premium, lot, stop, target, 0.0,
-                                verdict["confidence"], why):
+                                verdict["confidence"], why,
+                                expiry=contract.get("expiry")):
                 continue
             v2.commit()
             _LOG.info("INDEX OPTION BUY %s %s x%.0f @ %.2f (cost Rs %.0f, conf %.2f)",
                       contract["symbol"], side, lot, premium, cost, verdict["confidence"])
             _status[market] = f"index options: bought {contract['symbol']} @ {premium:.2f}"
-            return
+            # KEEP FILLING. This used to `return` after one buy, so with a 60s
+            # cadence and an entry window that shuts at 14:30 the remaining
+            # slots often never filled — on 2026-07-31 the book sat at 35%
+            # deployed with two of three slots used and Rs 65k idle. The loop
+            # already re-checks max_concurrent and skips an index we hold, and
+            # the cash is decremented here, so continuing cannot over-commit.
+            held.append(contract["symbol"])
+            options_cash -= cost
     finally:
         v2.close()
 
@@ -2647,7 +2668,32 @@ def sector_watch_pass(market):
         pass
 
 
-HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intraday_news": 1, "volume_surge": 1}
+HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intraday_news": 1,
+             "volume_surge": 1,
+             # MEASURED on 405 sessions / 229,229 affordable index-option entries.
+             # Same entries, same -35%/+60% exits, only the hold varies:
+             #   1 day -5.2% | 2 days -7.3% | 3 days -8.3% | 5 days -8.9% | 10 days -9.2%
+             # Roughly a percent of premium per day, which is theta doing exactly
+             # what theta does. It used to fall through to the default of 10.
+             "index_options": 1}
+# Index options are squared off intraday, like the equity intraday lanes, but
+# with their OWN time and WITHOUT inheriting INTRA's +1.5% breakeven lock — that
+# lock is calibrated for a stock, and 1.5% on an option premium is noise.
+INDEX_OPT_SQUAREOFF = "15:12"
+
+
+def _expired_or_expiring(expiry, today):
+    """True on or after the contract's expiry date.
+
+    Deliberately fires ON expiry day rather than the day after. An option's
+    remaining premium on its last session is almost all decay, and once the
+    session closes the contract is gone from the feed — there is no later
+    chance to sell it at a price.
+    """
+    try:
+        return date.fromisoformat(str(expiry)[:10]) <= today
+    except (TypeError, ValueError):
+        return False
 
 
 def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
@@ -2711,6 +2757,19 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
         ex, reason = min(eff, lq["price"]), ("trail" if p["trail"] and eff > p["stop"] else "stop")
     elif eff_tgt and (hi_ref >= eff_tgt or lq["price"] >= eff_tgt):
         ex, reason = max(eff_tgt, lq["price"]), "target"
+    # AN OPTION MUST NOT BE CARRIED INTO ITS EXPIRY. Nothing closed one: there
+    # is no expiry rule anywhere in this path, and HOLD_DAYS fell through to 10.
+    # The NIFTY CE bought 2026-07-31 expires 08-04 while its time-exit was not
+    # due until ~08-14. After expiry the contract drops out of the ATM watch
+    # list, so `lq` is either absent — and the loop does `if not lq: continue` —
+    # or frozen, and the frozen guard skips it too. Either way the position is
+    # never closed and marks at a stale price forever.
+    elif _expired_or_expiring(p.get("expiry") or lq.get("expiry"), today):
+        ex, reason = lq["price"], "expiry"
+    # Index options square off intraday on their own clock (see HOLD_DAYS).
+    elif p["strategy"] == "index_options" and (
+            now_hhmm or datetime.now(IST).strftime("%H:%M")) >= INDEX_OPT_SQUAREOFF:
+        ex, reason = lq["price"], "eod"
     elif p["strategy"] == "btst" and not same_day:
         # BTST: sell the morning after entry. exit_monitor first runs at the
         # 09:15 open, so this fills at ~the open — the overnight gap is the whole
@@ -2738,10 +2797,16 @@ def exit_monitor(market):
     today = datetime.now(IST).date()
     today_s = today.isoformat()
     positions = {}
-    for r in v2.execute("SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,entry_date "
-                        "FROM v2_positions WHERE market=?", (market,)):
+    try:
+        rows = v2.execute("SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,"
+                          "entry_date,expiry FROM v2_positions WHERE market=?", (market,)).fetchall()
+    except Exception:                            # expiry column not migrated yet
+        rows = [(*r, None) for r in v2.execute(
+            "SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,entry_date "
+            "FROM v2_positions WHERE market=?", (market,))]
+    for r in rows:
         positions[r[2]] = dict(id=r[0], strategy=r[1], entry=r[3], shares=r[4], stop=r[5],
-                               target=r[6], trail=r[7], peak=r[8], edate=r[9])
+                               target=r[6], trail=r[7], peak=r[8], edate=r[9], expiry=r[10])
     if not positions:                            # nothing held -> nothing to monitor,
         # but still write a heartbeat snapshot (throttled) so the health check knows
         # the engine is ALIVE on an empty/fresh book (equity = cash = budget+realized).
@@ -2772,8 +2837,13 @@ def exit_monitor(market):
         lq = live.get(sym)
         if not lq:
             continue
-        if sym in frozen:                        # frozen quote (e.g. GUJGASLTD): a stale
-            continue                             # HIGH price would phantom-hit stop/target
+        # Frozen quote (e.g. GUJGASLTD): a stale HIGH would phantom-hit a stop
+        # or target. An EXPIRED contract is the one exception — its quote stops
+        # updating precisely because the contract is gone, so refusing to act on
+        # a stale price would strand the position permanently. The last price we
+        # saw is the only price that will ever exist for it.
+        if sym in frozen and not _expired_or_expiring(p.get("expiry"), today):
+            continue
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
             cash += p["shares"] * ex * (1 - cside)

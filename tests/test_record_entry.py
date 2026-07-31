@@ -20,10 +20,14 @@ import unittest
 
 from app import v2_live
 
-SCHEMA = """CREATE TABLE v2_positions(
-    id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, strategy TEXT, symbol TEXT,
-    entry_date TEXT, entry_price REAL, shares REAL, stop REAL, target REAL,
-    trail REAL, peak REAL, conviction REAL, opened_at TEXT, why TEXT)"""
+# The REAL schema, via the engine's own migrator. This used to be a
+# hand-copied CREATE TABLE, which meant every column added to the live book had
+# to be retyped here too — and when `expiry` was added for the option expiry
+# exit, six tests failed on a table that production had and the test did not.
+# A test asserting a writer lands columns correctly must run against the schema
+# that writer actually targets.
+def _schema(con):
+    v2_live.ensure_schema(con)
 
 GOOD = dict(market="IN", strategy="swing_meanrev", symbol="TCS", entry_date="2026-07-29",
             entry_price=100.0, shares=10.0, stop=96.0, target=110.0, trail=0.0,
@@ -33,7 +37,7 @@ GOOD = dict(market="IN", strategy="swing_meanrev", symbol="TCS", entry_date="202
 class RecordEntryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.db = sqlite3.connect(":memory:")
-        self.db.execute(SCHEMA)
+        _schema(self.db)
 
     def rows(self):
         return self.db.execute(
