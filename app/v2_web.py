@@ -611,6 +611,41 @@ def _index_live_quotes_ready():
         return False
 
 
+@router.get("/api/index-candles")
+def api_index_candles(symbol: str = "NIFTY", limit: int = 120):
+    """Intraday 5-minute candles for an index, plus the live level.
+
+    There was no index chart because there was no index price series: the feed
+    carries equities and option contracts, and every index level in the system
+    came from the previous session's bhavcopy. These bars are derived from the
+    option quotes already polled — see index_spot.
+    """
+    from . import index_spot, v2_live
+    symbol = str(symbol).upper()
+    if symbol not in v2_live.INDEX_ALLOWED:
+        return JSONResponse(dict(error="unknown index", candles=[]), status_code=400)
+    rows = index_spot.bars(symbol, limit=limit)
+    live = index_spot.spot(symbol)
+    prev = None
+    try:                                # previous session's close, for the % change
+        con = _ro(os.environ.get("FO_DB", "/opt/opentrade/var/fo.db"))
+        r = con.execute("SELECT underlying FROM fo_bhav WHERE symbol=? AND underlying>0"
+                        " ORDER BY date DESC LIMIT 1", (symbol,)).fetchone()
+        con.close()
+        prev = float(r[0]) if r and r[0] else None
+    except Exception:
+        prev = None
+    price = (live or {}).get("price") or (rows[-1]["close"] if rows else None)
+    return JSONResponse(dict(
+        symbol=symbol, candles=rows, price=price, prev_close=prev,
+        chg=((price / prev - 1) * 100 if price and prev else None),
+        # Stated, not hidden: this is a parity ESTIMATE from the strikes we
+        # poll, not an exchange index quote. `pairs` is how many strike pairs
+        # backed it — a thin reading should not read like a tick.
+        estimate=True, pairs=(live or {}).get("pairs"),
+        atm_distance_pct=(live or {}).get("atm_distance_pct")))
+
+
 @router.get("/api/index-call")
 def api_index_call():
     """Today's CE / PE / no-trade call per index, with every reading shown.
@@ -3356,10 +3391,46 @@ function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
 function loadIndexOpts(){var el=document.getElementById('idxbox');if(!el)return;
  api('/v2/api/index-settings').then(function(r){var d=r.j||{};IDXCFG=d;el.innerHTML=idxHtml(d);
+  loadIndexChart((d.instruments||['NIFTY'])[0]);
   api('/v2/api/index-call').then(function(c){var box=document.getElementById('idxcall');
    if(box)box.innerHTML=idxCallHtml((c.j||{}).calls||[]);});
  }).catch(function(){el.innerHTML='<div class=mut>could not load</div>';});}
 function fmtn(v){return (v==null)?'—':Math.round(v).toLocaleString('en-IN');}
+// Intraday INDEX candles. Deliberately not candleSVG: that draws a volume
+// panel underneath, and an index has no volume of its own — an empty strip
+// under every chart reads as a broken chart.
+function idxCandleSVG(b){
+ if(!b||b.length<2)return '<div class=mut style="font-size:12px;padding:10px 0">no candles yet — the session has not been sampled</div>';
+ var W=600,H=180,XA=16,n=b.length,lo=1e18,hi=-1e18;
+ b.forEach(function(k){if(k.low<lo)lo=k.low;if(k.high>hi)hi=k.high});
+ var rng=(hi-lo)||1,pad=rng*0.08;lo-=pad;hi+=pad;rng=hi-lo;
+ var step=W/n,bw=Math.max(1.4,step*0.6);
+ function X(i){return i*step+step/2}
+ function Y(p){return H-(p-lo)/rng*H}
+ var body='';
+ for(var i=0;i<n;i++){var k=b[i],up=k.close>=k.open,col=up?'#3fa45b':'#e34d3f';
+  var cx=X(i),yo=Y(k.open),yc=Y(k.close),yt=Math.min(yo,yc),hb=Math.max(1,Math.abs(yc-yo));
+  body+='<line x1="'+cx.toFixed(1)+'" y1="'+Y(k.high).toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+Y(k.low).toFixed(1)+'" stroke="'+col+'" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  body+='<rect x="'+(cx-bw/2).toFixed(1)+'" y="'+yt.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+hb.toFixed(1)+'" fill="'+col+'" rx="0.4"/>';}
+ var grid='',lab='';[0,0.5,1].forEach(function(f){var p=lo+rng*f,y=Y(p);
+  grid+='<line x1="0" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".5" vector-effect="non-scaling-stroke"/>';
+  lab+='<text x="'+(W-2)+'" y="'+(y-2).toFixed(1)+'" text-anchor="end" font-size="9" fill="var(--mut)">'+Math.round(p)+'</text>';});
+ var xl='',hm=function(s){return (s||'').split('T')[1]||''};
+ [0,Math.floor((n-1)/2),n-1].forEach(function(i){var a=i===0?'start':(i===n-1?'end':'middle');
+  xl+='<text x="'+X(i).toFixed(1)+'" y="'+(H+XA-4)+'" text-anchor="'+a+'" font-size="9" fill="var(--mut)">'+hm(b[i].ts)+'</text>';});
+ return '<svg viewBox="0 0 '+W+' '+(H+XA)+'" style="width:100%;height:auto;display:block;overflow:visible">'+grid+body+lab+xl+'</svg>';}
+function idxChartHtml(d){
+ var c=d.candles||[],px=d.price,chg=d.chg;
+ var head='<div class=row style="align-items:baseline;margin-bottom:4px"><b style="font-size:15px">'+esc(d.symbol||'')+'</b>'
+  +'<span><span class=num style="font-size:15px;font-weight:600">'+(px==null?'—':fmtn(px))+'</span> '+(chg==null?'':pill(chg))+'</span></div>';
+ // Said plainly rather than dressed up as a tick: this is derived from the
+ // option chain we poll, because no live index quote reaches this system.
+ var note='<div class=mut style="font-size:10.5px;margin-top:5px;line-height:1.4">5-min candles, estimated from the option chain via put-call parity'
+  +(d.pairs?(' · '+d.pairs+' strike pairs'):'')+(c.length?(' · '+c.length+' bars today'):'')+'</div>';
+ return head+idxCandleSVG(c)+note;}
+function loadIndexChart(sym){var el=document.getElementById('idxchart');if(!el)return;
+ api('/v2/api/index-candles?symbol='+encodeURIComponent(sym||'NIFTY')).then(function(r){
+  el.innerHTML=idxChartHtml(r.j||{});}).catch(function(){el.innerHTML='<div class=mut style="font-size:12px">could not load candles</div>'});}
 function wrn(sel,w){var out=sel.filter(function(x){return w[x]}).map(function(x){
   return '<div style="font-size:11.5px;line-height:1.45;margin-top:8px;color:var(--warn)">⚠ <b>'+x+'</b> — '+w[x]+'</div>';});
  return out.join('');}
@@ -3396,6 +3467,7 @@ function idxHtml(d){var s=d.available||[],sel=d.instruments||[];
  +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">expiry</div>'
  +'<div class=toggle><b id=idxWk class="'+(d.expiry!='monthly'?'on':'')+'" onclick="setIdxExpiry(\'weekly\')">Weekly</b>'
  +'<b id=idxMo class="'+(d.expiry=='monthly'?'on':'')+'" onclick="setIdxExpiry(\'monthly\')">Monthly</b></div>'
+ +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:18px 0 7px">intraday candles</div><div id=idxchart class=skel>loading…</div>'
  +'<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:18px 0 7px">today\'s call</div><div id=idxcall class=skel>loading…</div>'
  +'<div id=idxmsg class=mut style="font-size:12px;margin-top:10px"></div>';}
 

@@ -2848,6 +2848,8 @@ _last_btst: dict = {}        # btst throttle
 _last_preopen: dict = {}     # pre-open warm-up throttle
 _last_idx: dict = {}         # index-options throttle
 INDEX_OPT_INTERVAL = 60      # one directional bet; no need to scan faster
+_last_ispot: dict = {}       # index 5m-candle sampler throttle
+INDEX_SPOT_INTERVAL = 30     # a 5-minute bar needs ~10 samples, not one per 8s cycle
 EXPIRY_LAST_ENTRY = "13:30"  # on expiry day, later than this is buying pure decay
 _preopen_tried: dict = {}    # one restart-recovery attempt per session
 VOLSURGE_INTERVAL = 10      # 10s (was 20s): operator wants faster entry on surges
@@ -2943,6 +2945,11 @@ def loop(interval):
                         _bars5m_janitor()                        # flush last bar, prune, monthly VACUUM
                         _nse_reference_refresh()                 # delivery / FII-DII / bulk deals / sectors
                         _fo_refresh()                            # index F&O bhavcopy (OI, chains)
+                        try:                                     # index candles: bounded retention
+                            from . import index_spot
+                            index_spot.prune()
+                        except Exception:
+                            _LOG.exception("index bar prune failed")
                 prev_open[m] = is_open
                 if is_open:
                     # Record 5-min bars for the Nifty 500 off the quote feed we
@@ -2965,6 +2972,20 @@ def loop(interval):
                     if m == "IN" and not _preopen_tried.get(m):
                         _preopen_tried[m] = True
                         _refresh_preopen()
+                    # Intraday INDEX candles. The index has no live quote
+                    # anywhere — latest_quotes is equities, nfo_quotes is
+                    # contracts — so everything read yesterday's bhavcopy close
+                    # and the dashboard had no series to draw. Derived from the
+                    # option quotes already polled (put-call parity), so this
+                    # costs no API quota. Throttled: a 5-minute bar does not
+                    # need an 8-second sampler.
+                    if m == "IN" and time.time() - _last_ispot.get(m, 0) >= INDEX_SPOT_INTERVAL:
+                        _last_ispot[m] = time.time()
+                        try:
+                            from . import index_spot
+                            index_spot.observe(INDEX_ALLOWED)
+                        except Exception:
+                            _LOG.exception("index spot sample failed")
                     exit_monitor(m)                              # fast exits every cycle (held symbols only — cheap)
                     _market_open_watchdog(m)                     # once ~09:20 IST: alert if feed/engine/catalysts broken
                     # These scan the WHOLE universe (heavy: full latest_quotes read),
