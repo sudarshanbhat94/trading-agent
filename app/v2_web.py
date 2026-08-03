@@ -722,7 +722,27 @@ def _options_book():
         mtm = sum(sh * float((live.get(sym) or {}).get("price") or entry)
                   for sym, entry, sh in rows)
         cash = budget - spent + realised
-        return dict(options_budget=round(budget, 2),
+        # TODAY, separately. Overall alone cannot tell a subscriber whether the
+        # book moved this session, which is the question the tile is asked.
+        today_s = datetime.now(IST).date().isoformat()
+        con2 = _ro(V2_DB)
+        try:
+            realised_today = con2.execute(
+                "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE strategy=?"
+                " AND substr(exit_date,1,10)=?", ("index_options", today_s)).fetchone()[0] or 0.0
+            opened_today = {r[0] for r in con2.execute(
+                "SELECT symbol FROM v2_positions WHERE strategy=? AND entry_date=?",
+                ("index_options", today_s))}
+        finally:
+            con2.close()
+        # An option opened today is measured from its entry; one carried over has
+        # no stored previous close here, so it contributes nothing rather than a
+        # guess.
+        unreal_today = sum(sh * (float((live.get(sym) or {}).get("price") or entry) - entry)
+                           for sym, entry, sh in rows if sym in opened_today)
+        return dict(options_today=round(realised_today + unreal_today, 2),
+                    options_overall=round(cash + mtm - budget, 2),
+                    options_budget=round(budget, 2),
                     options_cash=round(cash, 2),
                     options_deployed=round(spent, 2),
                     options_value=round(mtm, 2),
@@ -730,7 +750,8 @@ def _options_book():
                     options_realised=round(realised, 2),
                     options_positions=n)
     except Exception:
-        return dict(options_budget=None, options_cash=None, options_deployed=None,
+        return dict(options_today=None, options_overall=None,
+                    options_budget=None, options_cash=None, options_deployed=None,
                     options_value=None, options_equity=None,
                     options_realised=None, options_positions=0)
 
@@ -3606,6 +3627,15 @@ input[type=date]{width:auto;padding:8px 11px}
    the P&L outside the card: the Sold column's returns were clipped at the right
    edge while Bought, holding shorter equity tickers, fitted fine. */
 .fd-movecol{min-width:0}
+/* The two books, side by side on a wide screen and stacked on a phone. They are
+   funded separately, so they are shown separately. */
+.fd-books{display:grid;grid-template-columns:1fr;gap:12px;align-items:start}
+@media(min-width:1080px){.fd-books{grid-template-columns:1fr 1fr}}
+.fd-books>div{min-width:0}
+.fd-obook{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px;
+ padding-top:12px;border-top:1px solid var(--line)}
+.fd-ol{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.fd-ov{font-size:14px;font-weight:600;margin-top:2px}
 /* Trial / upgrade banner. Sits above the tabs so it is seen without hunting,
    and is display:none until /v2/api/me says there is something to say. */
 .tbar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
@@ -3955,8 +3985,31 @@ function renderHero(){
   +'<div class=fd-chart>'+heroChart(series,baseline)+'</div>'
   +'<div class=fd-meta style="margin-top:6px">'+note+'</div>');
 }
+function renderOptionsTile(o,ccy){
+ // The SECOND book. It is separately funded, so it gets its own tile rather
+ // than a clause in someone else's sentence — mixing them is what let option
+ // profits read as equity performance.
+ if(o.options_equity==null){fdSet('fdOpts','','');return;}
+ var f=(ccy=='\u20b9'?INR:USD),up=(o.options_today||0)>=0,
+     ov=(o.options_overall||0),ovUp=ov>=0,
+     ovPct=o.options_budget?Math.round(ov/o.options_budget*10000)/100:0,
+     todayPct=o.options_budget?Math.round((o.options_today||0)/o.options_budget*10000)/100:0;
+ fdSet('fdOpts','fd-card',
+  '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')+';color:'+(up?'var(--up)':'var(--dn)')+'">\u25c8</span>'
+  +'<div><div class=fd-title>Index options</div><div class=fd-meta>separate book \u00b7 '
+  +(o.options_positions||0)+' open</div></div></div>'
+  +'<div class=fd-big>'+fmtc(ccy,o.options_equity)+'</div>'
+  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'\u25b2 +':'\u25bc ')+ccy+f.format(Math.abs(Math.round(o.options_today||0)))
+  +' ('+(up?'+':'')+todayPct+'%) today</div>'
+  +'<div class=fd-obook>'
+   +'<div><div class=fd-ol>overall</div><div class="fd-ov '+(ovUp?'up':'dn')+'">'+(ovUp?'+':'')+ccy+f.format(Math.abs(Math.round(ov)))+'<span class=mut style="font-size:11px;font-weight:400"> ('+(ovUp?'+':'')+ovPct+'%)</span></div></div>'
+   +'<div><div class=fd-ol>cash</div><div class=fd-ov>'+fmtc(ccy,o.options_cash)+'</div></div>'
+   +'<div><div class=fd-ol>deployed</div><div class=fd-ov>'+fmtc(ccy,o.options_value||0)+'</div></div>'
+  +'</div>'
+  +'<div class=fd-meta style="margin-top:8px">funded separately from the stock book \u2014 '
+  +'its profits are not counted there</div>');}
 function loadHome(){
- if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div id=fdPerf></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
+ if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
  api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;
   var ms=(d.markets||[]).filter(function(m){return inMkt(m.market)});var m=ms[0]||{},f=(m.ccy=='₹'?INR:USD);
   var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
@@ -3969,7 +4022,7 @@ function loadHome(){
    +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
    +(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
      +(ob.options_positions?(' ('+ob.options_positions+' open)'):'')));
-  HERO=m;renderHero();
+  HERO=m;renderHero();renderOptionsTile(d.options||{},m.ccy);
   var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
           ON:['is in risk-on mode','conditions look healthy, so OpenStocks is buying dips, breakouts, and news-driven volume surges'],
           NEUTRAL:['is being selective','the market is choppy, so OpenStocks only takes its highest-conviction setups and stocks with a real news catalyst on strong volume'],

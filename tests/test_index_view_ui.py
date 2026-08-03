@@ -408,3 +408,66 @@ class IndexBreakdownTest(unittest.TestCase):
         for key in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
             with self.subTest(key=key):
                 self.assertIn(key, self.mi.INDEX_LISTS)
+
+
+@unittest.skipIf(shutil.which("node") is None, "node not available")
+class OptionsTileTest(unittest.TestCase):
+    """The options book gets its OWN tile.
+
+    It is funded separately, so it was wrong for it to appear as a clause in the
+    equity book's sentence — mixing them is what let option profits read as
+    equity performance (+27.44% on a day the stock lanes made +1.78%).
+    """
+
+    def _render(self, book):
+        src = V2_WEB.read_text(encoding="utf-8")
+        js = "".join(_function_source(src, n) for n in ("fmtc", "renderOptionsTile"))
+        stub = ("var INR={format:function(n){return String(n)}},USD=INR;var __out={};\n"
+                "function fdSet(id,cls,html){__out={id:id,cls:cls,html:html};}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "t.js"
+            path.write_text(stub + js + "\nrenderOptionsTile(" + json.dumps(book)
+                            + ",'\\u20b9');console.log(JSON.stringify(__out));\n", encoding="utf-8")
+            out = subprocess.run([shutil.which("node") or "node", str(path)],
+                                 capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            raise AssertionError(out.stderr)
+        return json.loads(out.stdout.strip())
+
+    BOOK = dict(options_equity=127301, options_today=1200, options_overall=27301,
+                options_budget=100000, options_cash=127301, options_value=0,
+                options_positions=0)
+
+    def test_it_renders_its_own_card(self) -> None:
+        out = self._render(self.BOOK)
+        self.assertEqual(out["id"], "fdOpts")
+        self.assertEqual(out["cls"], "fd-card")
+        self.assertIn("Index options", out["html"])
+
+    def test_it_shows_today_and_overall_separately(self) -> None:
+        """Overall alone cannot answer 'did it move this session', which is the
+        question the tile is asked."""
+        html = self._render(self.BOOK)["html"]
+        self.assertIn("today", html)
+        self.assertIn("overall", html)
+        self.assertIn("27301", html.replace(",", ""))
+
+    def test_percentages_are_against_its_own_budget(self) -> None:
+        """Not the equity book's. They are different pots."""
+        html = self._render(self.BOOK)["html"]
+        self.assertIn("27.3", html)          # 27301 / 100000
+
+    def test_a_loss_reads_as_a_loss(self) -> None:
+        html = self._render(dict(self.BOOK, options_today=-800, options_overall=-5000))["html"]
+        self.assertIn("dn", html)
+        self.assertIn("\u25bc", html)
+
+    def test_it_says_the_books_are_separate(self) -> None:
+        """The sentence that stops a reader adding the two percentages
+        together."""
+        self.assertIn("not counted there", self._render(self.BOOK)["html"])
+
+    def test_an_unavailable_book_renders_nothing(self) -> None:
+        """No book is not the same as a book worth zero."""
+        out = self._render(dict(options_equity=None))
+        self.assertEqual(out["html"], "")
