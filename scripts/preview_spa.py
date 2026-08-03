@@ -121,8 +121,17 @@ def _market(mkt):
                 positions=5, trades=11, win=64, pf=1.7)
 
 
+# The options book, with the LIVE 2026-08-03 figures — six digits with grouping
+# is the widest string this tile ever has to hold, so previewing anything
+# smaller would not exercise the overflow the layout has to survive.
+OPTIONS = dict(options_today=25666.0, options_overall=27300.92, options_budget=100000.0,
+               options_cash=127300.92, options_deployed=0.0, options_value=0.0,
+               options_equity=127300.92, options_realised=27300.92, options_positions=0,
+               options_trades=5, options_win=40)
+
 OVERVIEW = dict(as_of="22 Jul, 13:45 IST", regime={"IN": True},
                 regime_state={"IN": "NEUTRAL"},
+                options=OPTIONS,
                 markets=[_market("IN")])
 
 NEWS = [

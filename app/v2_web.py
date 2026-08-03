@@ -708,6 +708,12 @@ def _options_book():
                                " WHERE strategy=?", ("index_options",)).fetchone()[0] or 0.0
         n = con.execute("SELECT COUNT(*) FROM v2_positions WHERE strategy=?",
                         ("index_options",)).fetchone()[0]
+        # Closed count travels WITH the win rate, always. "60% win rate" off five
+        # trades is noise wearing the costume of a statistic, and this book has
+        # exactly five.
+        closed, wins = con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0)"
+            " FROM v2_trades WHERE strategy=?", ("index_options",)).fetchone()
         rows = con.execute("SELECT symbol,entry_price,shares FROM v2_positions"
                            " WHERE strategy=?", ("index_options",)).fetchall()
         con.close()
@@ -748,12 +754,15 @@ def _options_book():
                     options_value=round(mtm, 2),
                     options_equity=round(cash + mtm, 2),
                     options_realised=round(realised, 2),
+                    options_trades=int(closed or 0),
+                    options_win=(round(wins / closed * 100) if closed else None),
                     options_positions=n)
     except Exception:
         return dict(options_today=None, options_overall=None,
                     options_budget=None, options_cash=None, options_deployed=None,
                     options_value=None, options_equity=None,
-                    options_realised=None, options_positions=0)
+                    options_realised=None, options_trades=0, options_win=None,
+                    options_positions=0)
 
 
 def _index_live_quotes_ready():
@@ -3579,7 +3588,10 @@ button{border-radius:9px}
  .htile .hs{font-size:11.5px;font-weight:600;color:var(--hd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  .htile .hc{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:1px}
  .htile .hn{font-size:9.5px;color:var(--mut)}
- #homefeed>#fdPerf,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
+ /* .fd-books, NOT #fdPerf — the tile moved inside the books wrapper, so the old
+    selector stopped matching and the pair was crammed into one column of this
+    grid and then split again: two quarter-width cards with overflowing text. */
+ #homefeed>.fd-books,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
  #homefeed>div:empty{display:none}
  /* make the list CONTAINERS full-width (override old per-card grid/width rules) */
  #poslist{display:block!important}
@@ -3628,14 +3640,29 @@ input[type=date]{width:auto;padding:8px 11px}
    edge while Bought, holding shorter equity tickers, fitted fine. */
 .fd-movecol{min-width:0}
 /* The two books, side by side on a wide screen and stacked on a phone. They are
-   funded separately, so they are shown separately. */
-.fd-books{display:grid;grid-template-columns:1fr;gap:12px;align-items:start}
-@media(min-width:1080px){.fd-books{grid-template-columns:1fr 1fr}}
-.fd-books>div{min-width:0}
+   funded separately, so they are shown separately.
+   auto-fit, not `1fr 1fr`: when the options book is absent its div collapses to
+   :empty and the remaining tile takes the FULL width instead of sitting in a
+   half-width column with a hole beside it. */
+.fd-books{display:grid;grid-template-columns:1fr;gap:12px;align-items:stretch}
+@media(min-width:1080px){.fd-books{grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}}
+.fd-books>div{min-width:0;display:flex}
+.fd-books>div:empty{display:none}
+/* equal-height pair: the stock tile carries a 150px chart the options tile has
+   no series for, so without this the second card is a stub next to a tall one */
+.fd-books .fd-card{flex:1;display:flex;flex-direction:column;margin-top:0}
+.fd-books .fd-card>.fd-meta:last-child{margin-top:auto;padding-top:10px}
+.fd-hd>div{min-width:0}          /* title wraps inside the card, not through it */
+.fd-books .fd-big{font-size:29px;overflow-wrap:anywhere}
 .fd-obook{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px;
  padding-top:12px;border-top:1px solid var(--line)}
+/* clip rather than collide: three columns of un-truncated numbers ran into each
+   other and rendered "OVERALLCASH" / "1,27,3001" as one unreadable string */
+.fd-ol,.fd-ov{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fd-ol{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
 .fd-ov{font-size:14px;font-weight:600;margin-top:2px}
+.fd-osub{font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
+@media(max-width:560px){.fd-obook{grid-template-columns:1fr 1fr}}
 /* Trial / upgrade banner. Sits above the tabs so it is seen without hunting,
    and is display:none until /v2/api/me says there is something to say. */
 .tbar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
@@ -4002,9 +4029,22 @@ function renderOptionsTile(o,ccy){
   +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'\u25b2 +':'\u25bc ')+ccy+f.format(Math.abs(Math.round(o.options_today||0)))
   +' ('+(up?'+':'')+todayPct+'%) today</div>'
   +'<div class=fd-obook>'
-   +'<div><div class=fd-ol>overall</div><div class="fd-ov '+(ovUp?'up':'dn')+'">'+(ovUp?'+':'')+ccy+f.format(Math.abs(Math.round(ov)))+'<span class=mut style="font-size:11px;font-weight:400"> ('+(ovUp?'+':'')+ovPct+'%)</span></div></div>'
+   // percent on its OWN line, not trailing the rupee figure: inline it needed
+   // 113px in a 96px cell on a phone and the ellipsis ate the number
+   +'<div><div class=fd-ol>overall</div><div class="fd-ov '+(ovUp?'up':'dn')+'">'+(ovUp?'+':'')+ccy+f.format(Math.abs(Math.round(ov)))+'</div>'
+    +'<div class=fd-osub>'+(ovUp?'+':'')+ovPct+'%</div></div>'
    +'<div><div class=fd-ol>cash</div><div class=fd-ov>'+fmtc(ccy,o.options_cash)+'</div></div>'
    +'<div><div class=fd-ol>deployed</div><div class=fd-ov>'+fmtc(ccy,o.options_value||0)+'</div></div>'
+  +'</div>'
+  +'<div class=fd-obook>'
+   +'<div><div class=fd-ol>realised</div><div class="fd-ov '+((o.options_realised||0)>=0?'up':'dn')+'">'
+    +((o.options_realised||0)>=0?'+':'')+ccy+f.format(Math.abs(Math.round(o.options_realised||0)))+'</div></div>'
+   +'<div><div class=fd-ol>closed trades</div><div class=fd-ov>'+(o.options_trades||0)+'</div></div>'
+   // the sample size is stated NEXT TO the win rate, never on its own: this book
+   // has five closed trades, and a bare "60%" off five would read as an edge
+   +'<div><div class=fd-ol>win rate</div><div class=fd-ov>'
+    +(o.options_win==null?'\u2014':o.options_win+'%')+'</div>'
+    +(o.options_win==null?'':'<div class=fd-osub>of '+(o.options_trades||0)+'</div>')+'</div>'
   +'</div>'
   +'<div class=fd-meta style="margin-top:8px">funded separately from the stock book \u2014 '
   +'its profits are not counted there</div>');}

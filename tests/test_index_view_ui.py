@@ -471,3 +471,67 @@ class OptionsTileTest(unittest.TestCase):
         """No book is not the same as a book worth zero."""
         out = self._render(dict(options_equity=None))
         self.assertEqual(out["html"], "")
+
+    def test_the_win_rate_never_appears_without_its_sample_size(self) -> None:
+        """This book has five closed trades. A bare "40%" off five reads as an
+        edge; "40% of 5" reads as what it is."""
+        html = self._render(dict(self.BOOK, options_trades=5, options_win=40))["html"]
+        self.assertIn("40%", html)
+        self.assertIn("of 5", html)
+
+    def test_no_win_rate_at_all_when_nothing_has_closed(self) -> None:
+        """0% off zero trades is a fabricated statistic."""
+        html = self._render(dict(self.BOOK, options_trades=0, options_win=None))["html"]
+        self.assertIn("—", html)
+        self.assertNotIn("of 0", html)
+
+
+class BooksLayoutTest(unittest.TestCase):
+    """The pair must span the FULL feed, not one column of it.
+
+    #homefeed is a two-column grid on desktop, and the tile used to be a direct
+    child carrying `grid-column:1 / -1`. Wrapping the two tiles in `.fd-books`
+    moved #fdPerf one level down, so that rule silently stopped matching: the
+    pair landed in ONE column and then split again, giving two quarter-width
+    cards whose six-digit rupee figures overflowed the card and rendered
+    "OVERALLCASH" and "1,27,3001" as single unreadable strings.
+
+    Nothing in Python or Node computes layout, so these assert the SELECTORS —
+    which is where the bug actually was.
+    """
+
+    def setUp(self) -> None:
+        self.css = V2_WEB.read_text(encoding="utf-8")
+
+    def test_the_wrapper_spans_the_feed(self) -> None:
+        self.assertIn("#homefeed>.fd-books", self.css)
+
+    def test_the_stale_child_selector_is_gone(self) -> None:
+        """The exact rule that stopped matching when the DOM changed."""
+        self.assertNotIn("#homefeed>#fdPerf", self.css)
+
+    def test_the_tiles_are_actually_inside_the_wrapper(self) -> None:
+        """If this ever moves back, the span selector above is wrong again."""
+        self.assertIn("<div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div>",
+                      self.css)
+
+    def test_a_missing_options_tile_does_not_leave_a_half_width_hole(self) -> None:
+        """auto-fit collapses the empty track; `1fr 1fr` would not."""
+        self.assertIn("repeat(auto-fit,minmax(360px,1fr))", self.css)
+        self.assertIn(".fd-books>div:empty{display:none}", self.css)
+
+    def test_the_two_cards_are_equal_height(self) -> None:
+        """The stock tile carries a 150px chart the options tile has no series
+        for; without stretch the second card is a stub beside a tall one."""
+        self.assertIn(".fd-books{display:grid;grid-template-columns:1fr;gap:12px;"
+                      "align-items:stretch}", self.css)
+        self.assertIn(".fd-books .fd-card{flex:1;display:flex;flex-direction:column", self.css)
+
+    def test_stat_cells_clip_rather_than_collide(self) -> None:
+        self.assertIn(".fd-ol,.fd-ov{white-space:nowrap;overflow:hidden;"
+                      "text-overflow:ellipsis}", self.css)
+
+    def test_the_stat_row_drops_to_two_columns_on_a_phone(self) -> None:
+        """Three columns in 347px clipped the overall figure's percentage."""
+        self.assertIn("@media(max-width:560px){.fd-obook{grid-template-columns:1fr 1fr}}",
+                      self.css)
