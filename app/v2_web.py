@@ -1995,7 +1995,11 @@ def api_sectors():
 
 _index_cache = {}
 _index_loading = set()
-_INDEX_SYMS = [("^NSEI", "Nifty 50"), ("^NSEBANK", "Bank Nifty"), ("^BSESN", "Sensex")]
+# (yahoo symbol, display name, ENGINE key). The third is empty for Sensex:
+# it is a BSE index and the F&O feed carries no data for it, so it must not
+# be clickable into a view that would have nothing to show.
+_INDEX_SYMS = [("^NSEI", "Nifty 50", "NIFTY"), ("^NSEBANK", "Bank Nifty", "BANKNIFTY"),
+               ("^BSESN", "Sensex", "")]
 
 
 def _indices_bg():
@@ -2006,13 +2010,14 @@ def _indices_bg():
                            "(KHTML, like Gecko) Chrome/124 Safari/537.36"}
         out = []
         with httpx.Client(headers=H, timeout=8, follow_redirects=True) as cl:
-            for sym, nm in _INDEX_SYMS:
+            for sym, nm, key in _INDEX_SYMS:
                 try:
                     m = cl.get("https://query1.finance.yahoo.com/v8/finance/chart/" + sym).json()["chart"]["result"][0]["meta"]
                     px = m.get("regularMarketPrice")
                     pc = m.get("chartPreviousClose") or m.get("previousClose")
                     if px and pc:
-                        out.append(dict(name=nm, last=round(px, 2), chg=round((px / pc - 1) * 100, 2)))
+                        out.append(dict(name=nm, key=key, last=round(px, 2),
+                                       chg=round((px / pc - 1) * 100, 2)))
                 except Exception:
                     pass
         if out:
@@ -4267,7 +4272,35 @@ function saveCash(){var b={},i=document.getElementById('cin').value;if(i)b.india
 function allocUser(id){var b={},i=document.getElementById('ai_'+id).value;if(i)b.india_cash=+i;api('/api/users/'+id+'/paper-cash',{method:'POST',body:JSON.stringify(b)}).then(r=>{alert(r.ok?'Allocated to user.':(r.j.detail||'Failed'))})}
 function openBroker(w){api(w=='upstox'?'/api/me/upstox/auth-url':'/api/alpaca/connect').then(r=>{if(r.j.auth_url)location.href=r.j.auth_url;else alert('Connect '+w+' from settings.')})}
 function stock(sym,mkt){go('detail');renderStock(sym,mkt,'detail')}
-function renderStock(sym,mkt,target){var el=document.getElementById(target);if(target=='detail')el.innerHTML='<div class=skel>analysing '+sym+'…</div>';
+function isIndexSym(s){return ['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY'].indexOf((s||'').toUpperCase())>=0;}
+function renderIndex(sym,target){var el=document.getElementById(target);if(!el)return;
+ // An INDEX is not an equity. It has no row in the liquid universe, so the
+ // stock panel answered "not in liquid universe" and showed a blank page —
+ // for the one instrument the engine actually trades options on. The pieces to
+ // render it properly already existed and nothing was calling them.
+ el.innerHTML='<div class=skel>loading '+esc(sym)+'…</div>';
+ var back=(target=='detail')?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">\u2039 back</div>':'';
+ Promise.all([api('/v2/api/index-candles?symbol='+encodeURIComponent(sym)),
+              api('/v2/api/index-call')]).then(function(res){
+  var c=res[0].j||{},calls=((res[1].j||{}).calls||[]).filter(function(x){return x.symbol==sym;}),v=calls[0];
+  var head='<div class=row style="align-items:baseline;margin-bottom:6px"><b style="font-size:18px">'+esc(sym)+'</b>'
+   +'<span><span class=num style="font-size:18px;font-weight:600">'+(c.price==null?'\u2014':fmtn(c.price))+'</span>'
+   +(c.chg==null?'':' '+pill(c.chg))+'</span></div>';
+  var callBox='';
+  if(v){var side=v.call||'no trade';
+   callBox='<div class=sec><span>today\u2019s read</span></div><div class=card>'
+    +'<div class=row><b style="font-size:15px">'+esc(side)+'</b>'
+    +'<span class=mut style="font-size:12px">'+Math.round((v.confidence||0)*100)+'% confidence \u00b7 '
+    +v.bullish+' bullish / '+v.bearish+' bearish</span></div>'
+    +'<div style="margin-top:8px">'+(v.reasons||[]).map(function(x){
+       return '<div class=mut style="font-size:12px;line-height:1.5">\u00b7 '+esc(x)+'</div>';}).join('')+'</div></div>';}
+  el.innerHTML=back+head+'<div class=card>'+idxCandleSVG(c.candles||[])
+   +'<div class=mut style="font-size:10.5px;margin-top:6px">15-min candles, estimated from the option chain via put-call parity'
+   +(c.pairs?(' \u00b7 '+c.pairs+' strike pairs'):'')+'</div></div>'+callBox;
+ }).catch(function(){el.innerHTML=back+'<div class=card><span class=mut>could not load '+esc(sym)+'</span></div>';});}
+function renderStock(sym,mkt,target){
+ if(isIndexSym(sym))return renderIndex((sym||'').toUpperCase(),target);
+ var el=document.getElementById(target);if(target=='detail')el.innerHTML='<div class=skel>analysing '+sym+'…</div>';
  api('/v2/api/stock/'+sym+'?market='+mkt).then(r=>{var d=r.j,s=mkt=='IN'?'₹':'$';
  if(d.error){el.innerHTML=(target=='detail'?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">‹ back</div>':'')+'<div class=skel>'+(d.error)+(d.live?' · '+s+d.live:'')+'</div>'+newsHtml(d.news,s);return;}
  var vt=d.verdict=='BUY'?'var(--up)':(d.verdict=='WATCH'?'var(--warn)':'var(--dn)'),vb=d.verdict=='BUY'?'var(--upb)':(d.verdict=='WATCH'?'var(--warnb)':'var(--dnb)');
@@ -4526,7 +4559,8 @@ function loadHeatmap(){var el=document.getElementById('heatmap');if(!el)return;a
 function loadIndices(){var el=document.getElementById('indexbar');if(!el)return;api('/v2/api/indices').then(r=>{var xs=(r.j||[]);
  if(!xs.length){el.style.display='none';return;}
  el.style.display='flex';
- el.innerHTML=xs.map(function(x){var up=x.chg>=0;return '<div class=idx><b>'+x.name+'</b> <span class=iv>'+INR.format(x.last)+'</span> <span class="ic '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+x.chg+'%</span></div>';}).join('');});}
+ el.innerHTML=xs.map(function(x){var up=x.chg>=0;var k=(x.key||'').toUpperCase();var goable=isIndexSym(k);
+  return '<div class=idx'+(goable?' style="cursor:pointer" onclick="stock(\''+k+'\',\'IN\')"':'')+'><b>'+x.name+'</b> <span class=iv>'+INR.format(x.last)+'</span> <span class="ic '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+x.chg+'%</span></div>';}).join('');});}
 function loadCatalysts(){var el=document.getElementById('catalysts');if(!el)return;api('/v2/api/catalysts').then(r=>{var cs=(r.j||[]).slice(0,8);
  if(!cs.length){el.innerHTML='<span class=mut>no fresh filings yet</span>';return;}
  var bc={results:'bg-inf',order:'bg-up',corp_action:'bg-warn'};
