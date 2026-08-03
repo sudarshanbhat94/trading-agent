@@ -50,6 +50,11 @@ FEATURES = {
     "signals": "watch",
     "catalysts": "watch",
     "index_call": "watch",
+    # Every paid tier sees ideas; how MANY is ideas.PER_DAY, not this gate.
+    # Rank 1 is the engine's best candidate and Starter gets it too — the paid
+    # tiers buy breadth, not a better first pick, because publishing a
+    # deliberately worse top idea to the cheaper tier would be indefensible.
+    "ideas": "watch",
     "telegram_alerts": "paper",     # Pro and above
     "market_internals": "paper",
     "option_chain": "paper",
@@ -76,12 +81,13 @@ ONE_LINERS = {
     "auto": "Index options, broker connect and exports.",
 }
 HIGHLIGHTS = {
-    "watch": ["Daily CE/PE index call", "Live NSE announcements", "Top movers and radar"],
-    "paper": ["Everything in Starter", "Your own ₹1L paper book",
+    "watch": ["1 stock idea a day, with stop and targets", "Daily CE/PE index call",
+              "Live NSE announcements", "Top movers and radar"],
+    "paper": ["Everything in Starter", "3 stock ideas a day", "Your own ₹1L paper book",
               "Market internals: breadth, FII, VIX", "Option chain and index candles",
               "Full trade history and per-lane stats",
               "Telegram alerts"],
-    "auto": ["Everything in Pro", "Index options auto-trading",
+    "auto": ["Everything in Pro", "5 stock ideas a day", "Index options auto-trading",
              "Connect your own broker", "Data export"],
 }
 
@@ -189,6 +195,7 @@ ROUTE_FEATURES = {
     "/v2/api/indices": None,
     "/v2/api/catalysts": "catalysts",
     "/v2/api/index-call": "index_call",
+    "/v2/api/ideas": "ideas",
     "/v2/api/movers": "signals",
     "/v2/api/search": "signals",
     "/v2/api/watch": "signals",

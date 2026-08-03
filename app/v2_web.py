@@ -2115,6 +2115,46 @@ def _movers_bg():
         _movers_loading.discard("x")
 
 
+@router.get("/api/ideas")
+def api_ideas(market: str = "IN", days: int = 30,
+              user: dict = Depends(require_session)):
+    """Published ideas for this subscriber's plan, plus the honest scoreboard.
+
+    The plan gate on the ROUTE only decides whether ideas are visible at all;
+    HOW MANY is ideas.PER_DAY, applied here against the idea's own stored tier.
+    Both numbers are returned so the UI can show a locked row with a real count
+    behind it rather than pretending the higher tiers publish nothing.
+    """
+    from . import ideas as _ideas
+    from . import plans
+    user = user or {}
+    plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                           plan_expires_at=user.get("plan_expires_at"))
+    v2 = _ro(V2_DB)
+    try:
+        rows = _ideas.visible(v2, market, plan, days=days)
+        today_s = datetime.now(IST).date().isoformat()
+        published_today = v2.execute(
+            "SELECT COUNT(*) FROM v2_ideas WHERE market=? AND published_date=?",
+            (market, today_s)).fetchone()[0]
+    finally:
+        v2.close()
+    live = _live_map(market, [r["symbol"] for r in rows])
+    for r in rows:
+        q = live.get(r["symbol"]) or {}
+        if q.get("price"):
+            r["live"] = round(float(q["price"]), 2)
+            if r["status"] == _ideas.STATUS_OPEN and r.get("entry"):
+                r["open_pct"] = round((float(q["price"]) / float(r["entry"]) - 1) * 100, 2)
+    return JSONResponse(dict(
+        ideas=rows, stats=_ideas.scoreboard(rows), plan=plan,
+        allowance=_ideas.allowance(plan), max_per_day=_ideas.MAX_PER_DAY,
+        published_today=published_today,
+        withheld_today=max(0, published_today - _ideas.allowance(plan)),
+        capital=_ideas.CAPITAL, risk_pct=_ideas.RISK_PCT,
+        horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")))
+
+
 @router.get("/api/movers")
 def api_movers():
     """Top gainers/losers per market (live price vs panel prev-close). Instant:
@@ -3686,6 +3726,39 @@ input[type=date]{width:auto;padding:8px 11px}
 .fd-ol{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
 .fd-ov{font-size:14px;font-weight:600;margin-top:2px}
 .fd-osub{font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
+/* ---- published ideas ---- */
+.ig-card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+ padding:13px 15px;margin-bottom:10px}
+.ig-top{display:flex;align-items:flex-start;gap:12px;cursor:pointer}
+.ig-id{flex:1;min-width:0}
+.ig-sym{font-size:15.5px;font-weight:700;color:var(--hd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ig-meta{font-size:11.5px;color:var(--mut);margin-top:2px}
+.ig-right{text-align:right;white-space:nowrap}
+.ig-mv{font-size:15.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.ig-badge{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+ margin-top:3px;color:var(--mut)}
+.ig-badge.up{color:var(--up)}.ig-badge.dn{color:var(--dn)}
+/* the ladder: entry, stop and the three targets on one row so the DISTANCES are
+   comparable at a glance instead of six numbers to subtract mentally */
+.ig-ladder{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;
+ margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
+.ig-ll{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.ig-lv{font-size:12.5px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ig-lv.up{color:var(--up)}.ig-lv.dn{color:var(--dn)}
+.ig-foot{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;
+ font-size:11.5px;color:var(--mut);margin-top:10px}
+.ig-foot b{color:var(--tx);font-weight:700}
+.ig-warn{font-size:12px;color:var(--tx);background:var(--warnb);border-radius:9px;
+ padding:9px 11px;margin-top:11px;line-height:1.5}
+.ig-lock{font-size:13px;color:var(--tx);background:var(--surf);border:1px dashed var(--line);
+ border-radius:12px;padding:13px 15px;cursor:pointer;line-height:1.55}
+.ig-lock b{color:var(--hd)}
+@media(max-width:420px){
+ /* five columns of currency in 340px is unreadable; the two that decide whether
+    to take the trade at all stay on the first row */
+ .ig-ladder{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px 8px}
+}
 /* MUST come after .fd-big and .fd-obook above: a container query carries no
    extra specificity, so placed before them it parsed, matched, and lost every
    declaration to the later rule.
@@ -3809,6 +3882,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 <div id=app class="app hide">
  <nav class=side id=side><div class=b><span class=full>OpenStocks<span style="color:var(--inf)">.</span></span><span class=mini>O<span style="color:var(--inf)">.</span></span></div>
   <a data-t=home onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg><span class=lbl>Home</span></a>
+  <a data-t=ideas onclick="go('ideas')"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.5.4.8 1 .9 1.7h5.4c.1-.7.4-1.3.9-1.7A6 6 0 0 0 12 3z"/></svg><span class=lbl>Ideas</span></a>
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg><span class=lbl>Portfolio</span></a>
   <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class=lbl>Orders</span></a>
   <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=lbl>Analyze</span></a>
@@ -3854,6 +3928,15 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    </div>
   </div></div>
 
+  <div id=ideas class=tab>
+   <div class=sec><span>today's ideas</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
+   <div id=ideasHead></div>
+   <div id=ideasList class=skel style="min-height:120px"></div>
+   <div class=sec style="margin-top:22px"><span>track record</span><span class=mut style="font-size:12px;font-weight:400">every idea, winners and losers</span></div>
+   <div id=ideasStats></div>
+   <div id=ideasHist></div>
+  </div>
+
   <div id=watch class=tab>
    <div class=sec><span>my watchlist</span></div>
    <div style="position:relative;margin-bottom:12px"><input id=wlq2 placeholder="+ add a symbol (e.g. RELIANCE)" oninput="wlSearch('2')" autocomplete=off><div id=wlsug2 class="menu hide" style="position:absolute;left:0;right:0;top:46px;z-index:30"></div></div>
@@ -3898,6 +3981,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
 <nav class=nav>
 <a data-t=home class=on onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg>home</a>
+<a data-t=ideas onclick="go('ideas')"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.5.4.8 1 .9 1.7h5.4c.1-.7.4-1.3.9-1.7A6 6 0 0 0 12 3z"/></svg>ideas</a>
 <a data-t=watch onclick="go('watch')"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx=12 cy=12 r=3/></svg>watchlist</a>
 <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>orders</a>
 <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg>portfolio</a>
@@ -3915,14 +3999,16 @@ function toggleSide(){var s=document.getElementById('side');if(!s)return;s.class
 (function(){var t;try{t=localStorage.getItem('os_theme')}catch(e){}if(!t)t=(window.matchMedia&&matchMedia('(prefers-color-scheme:dark)').matches)?'dark':'light';applyTheme(t);try{if(localStorage.getItem('os_side')=='1'){var s=document.getElementById('side');if(s)s.classList.add('collapsed');}}catch(e){}})();
 function sgn(x){return (x>0?'+':'')+x}function col(x){return x>0?'up':(x<0?'dn':'mut')}
 function show(i){document.getElementById(i).classList.remove('hide')}function hide(i){document.getElementById(i).classList.add('hide')}
-function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'application/json'}},o||{})).then(r=>r.json().catch(()=>({})).then(j=>({ok:r.ok,j:j})))}
+// `s` carries the HTTP status: a 402 is not a failure to be swallowed, it is
+// the plan gate telling the UI to render an offer instead of an empty page.
+function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'application/json'}},o||{})).then(r=>r.json().catch(()=>({})).then(j=>({ok:r.ok,s:r.status,j:j})))}
 function setMkt(m){MKT=m;document.querySelectorAll('#mkt b').forEach(b=>b.classList.toggle('on',b.dataset.m==m));refresh()}
 var NAVHIST=[];
 function go(t,noPush){if(!noPush&&cur&&cur!=t)NAVHIST.push(cur);cur=t;
- ['home','watch','positions','orders','analyze','account','admin','upgrade','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
+ ['home','ideas','watch','positions','orders','analyze','account','admin','upgrade','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
  document.querySelectorAll('.nav a,.side a').forEach(a=>a.classList.toggle('on',a.dataset.t==t));
  var bk=document.getElementById('backbtn');if(bk)bk.style.display=NAVHIST.length?'inline-flex':'none';
- if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();if(t=='upgrade')loadUpgrade();window.scrollTo(0,0)}
+ if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='ideas')loadIdeas();if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();if(t=='upgrade')loadUpgrade();window.scrollTo(0,0)}
 function goBack(){var p=NAVHIST.pop();go(p||'home',true)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
 var AUTHMODE='login';
@@ -4127,6 +4213,107 @@ function renderOptionsTile(o,ccy){
   stats:{budget:o.options_budget,overall:o.options_overall,cash:o.options_cash,
          deployed:o.options_value,realised:o.options_realised,
          trades:o.options_trades,win:o.options_win}}));}
+// ---- published ideas -------------------------------------------------------
+var IDEAS=null;
+// Readable names for the two things a subscriber sees on every card. Kept next
+// to the renderer that uses them rather than assumed to exist elsewhere — the
+// first draft of this page referenced two maps that were never defined, which
+// renders "undefined" rather than throwing.
+var LANE={swing_meanrev:'dip buy',mom_breakout:'52-week breakout',
+ gap_momentum:'gap',volume_surge:'volume surge',intraday_news:'news momentum',
+ btst:'overnight',manual:'manual'};
+var PLANLBL={free:'Free',watch:'Starter',paper:'Pro',auto:'Elite'};
+function ideaStatus(s){return {open:'live',t1:'T1 hit',t2:'T2 hit',t3:'T3 hit',
+ stopped:'stopped',expired:'expired'}[s]||s;}
+function ideaCls(r){if(r.status=='stopped')return 'dn';if(r.status=='open')return '';
+ return (r.result_pct||0)>=0?'up':'dn';}
+function ideaCard(r,ccy,d){
+ var f=(ccy=='₹'?INR:USD),live=r.live!=null?r.live:r.last_price,
+     mv=(r.status=='open'&&r.open_pct!=null)?r.open_pct:r.result_pct,
+     up=(mv||0)>=0;
+ // the LADDER is the point of the card: entry, where it dies, and the three
+ // places it could go. Rendered as one bar so the distances are comparable at a
+ // glance rather than six numbers the reader has to subtract in their head.
+ function leg(lbl,v,cls){return '<div class=ig-leg><div class=ig-ll>'+lbl+'</div>'
+   +'<div class="ig-lv '+(cls||'')+'">'+ccy+f.format(v)+'</div></div>';}
+ var reached=r.best_target||'';
+ function tcls(n){return reached&&('t1t2t3'.indexOf(n)<='t1t2t3'.indexOf(reached))?'up':'';}
+ return '<div class=ig-card>'
+  +'<div class=ig-top onclick="stock(\''+r.symbol+'\',\''+(r.market||'IN')+'\')">'
+   +'<div class=ig-id><div class=ig-sym>'+r.symbol+'</div>'
+    +'<div class=ig-meta>'+(LANE[r.strategy]||r.strategy)+' · '+d(r.published_date)+'</div></div>'
+   +'<div class=ig-right><div class="ig-mv '+(up?'up':'dn')+'">'
+    +(mv==null?'—':(up?'+':'')+mv+'%')+'</div>'
+    +'<div class="ig-badge '+ideaCls(r)+'">'+ideaStatus(r.status)+'</div></div>'
+  +'</div>'
+  +'<div class=ig-ladder>'+leg('entry',r.entry)+leg('stop',r.stop,'dn')
+   +leg('T1',r.t1,tcls('t1'))+leg('T2',r.t2,tcls('t2'))+leg('T3',r.t3,tcls('t3'))+'</div>'
+  +'<div class=ig-foot><span><b>'+r.qty+'</b> shares · '+ccy+f.format(Math.round(r.notional))
+   +' · risking '+ccy+f.format(Math.round(r.risk_amt))+'</span>'
+   +(live!=null?'<span class=mut>now '+ccy+f.format(live)+'</span>':'')+'</div>'
+  +'</div>';}
+function renderIdeas(d){
+ var ccy=d.ccy||'₹',f=(ccy=='₹'?INR:USD),rows=d.ideas||[],s=d.stats||{};
+ var today=(rows[0]||{}).published_date,
+     todays=rows.filter(function(r){return r.published_date==today}),
+     older=rows.filter(function(r){return r.published_date!=today});
+ document.getElementById('ideasSub').textContent=
+  d.allowance+' a day on '+(PLANLBL[d.plan]||d.plan);
+ // Sizing is stated ONCE, at the top, because a quantity with no capital behind
+ // it is not actionable — and every reader must know these are sized for the
+ // same reference account, not for theirs.
+ fdSet('ideasHead','fd-card',
+  '<div class=fd-text style="margin-top:0">Sized for a <b>'+ccy+f.format(d.capital)
+  +'</b> account risking <b>'+Math.round(d.risk_pct*100)+'%</b> ('+ccy
+  +f.format(Math.round(d.capital*d.risk_pct))+') per idea. Stop and targets are '
+  +'set from each stock’s own ATR, so T1 is one stop-width of upside — not a '
+  +'flat percentage. Tracked from publication until the stop or T1 is hit, '
+  +'whichever comes first.</div>'
+  +'<div class=ig-warn>Our own backtests say a target at T1 <b>gives up edge</b> on '
+  +'these lanes — letting winners run scored +0.78%/trade against +0.51% with a '
+  +'tight target. T1 is the safe exit, not the best one.</div>');
+ var head='';
+ if(d.withheld_today>0)
+  head='<div class=ig-lock onclick="go(\'upgrade\')"><b>'+d.withheld_today+' more idea'
+   +(d.withheld_today>1?'s':'')+' published today.</b> '
+   +(d.plan=='watch'?'Pro sees 3 a day, Elite 5.':'Elite sees 5 a day.')+' Upgrade →</div>';
+ document.getElementById('ideasList').className='';
+ document.getElementById('ideasList').innerHTML=
+  (todays.length?todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
+   '<div class=fd-text>No ideas published yet today. They go out when the market opens '
+   +'and the engine has a candidate that clears its confidence bar — some days it '
+   +'does not, and publishing one anyway would be filler.</div>')+head;
+ // The scoreboard counts EVERY published idea, including the ones that lost.
+ fdSet('ideasStats','fd-card',
+  '<div class=fd-obook>'
+  +'<div><div class=fd-ol>published</div><div class=fd-ov>'+s.published+'</div></div>'
+  +'<div><div class=fd-ol>resolved</div><div class=fd-ov>'+s.closed+'</div>'
+   +(s.open?'<div class=fd-osub>'+s.open+' still live</div>':'')+'</div>'
+  +'<div><div class=fd-ol>win</div><div class=fd-ov>'+(s.win_pct==null?'—':s.win_pct+'%')+'</div>'
+   +(s.closed?'<div class=fd-osub>of '+s.closed+'</div>':'')+'</div>'
+  +'<div><div class=fd-ol>avg</div><div class="fd-ov '+((s.avg_pct||0)>=0?'up':'dn')+'">'
+   +(s.avg_pct==null?'—':(s.avg_pct>0?'+':'')+s.avg_pct+'%')+'</div></div>'
+  +'<div><div class=fd-ol>hit T1</div><div class=fd-ov>'+s.hit_t1+'</div>'
+   +'<div class=fd-osub>T2 '+s.hit_t2+' · T3 '+s.hit_t3+'</div></div>'
+  +'<div><div class=fd-ol>stopped</div><div class=fd-ov>'+s.stopped+'</div>'
+   +(s.expired?'<div class=fd-osub>'+s.expired+' expired</div>':'')+'</div>'
+  +'</div>'
+  +(s.closed<20?'<div class=fd-meta style="margin-top:10px">'+s.closed+' resolved idea'
+    +(s.closed==1?'':'s')+' is not a track record yet. Treat these numbers as a log, '
+    +'not as evidence.</div>':''));
+ document.getElementById('ideasHist').innerHTML=
+  older.length?older.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):'';
+}
+function fmtDay(s){try{var p=String(s).split('-');
+ return p[2]+' '+['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+p[1]-1];
+}catch(e){return s||''}}
+function loadIdeas(){
+ api('/v2/api/ideas?market='+(MKT=='BOTH'?'IN':MKT)).then(function(r){
+  if(r.s==402){document.getElementById('ideasList').className='';
+   document.getElementById('ideasList').innerHTML=
+    '<div class=ig-lock onclick="go(\'upgrade\')"><b>Stock ideas are a paid feature.</b> '
+    +'Starter sees 1 a day with its stop, targets and size. Upgrade →</div>';return;}
+  if(!r.ok)return;IDEAS=r.j;renderIdeas(r.j);});}
 function loadHome(){
  if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
  api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;

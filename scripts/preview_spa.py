@@ -130,6 +130,31 @@ OPTIONS = dict(options_today=25666.0, options_overall=27300.92, options_budget=1
                options_trades=6, options_win=50,
                options_curve=[100000, 99977, 101745, 101634, 110684, 128591, 127301])
 
+
+def _ideas():
+    """Mock ideas covering every status the card has to render: live, T1 hit,
+    stopped, and expired — a preview that only shows winners proves nothing."""
+    def one(sym, strat, entry, atr, rank, status, best=None, res=None, live=None, day="2026-08-04"):
+        r = entry - atr * 3
+        return dict(symbol=sym, strategy=strat, published_date=day, rank=rank,
+                    tier=["watch", "paper", "paper", "auto", "auto"][rank - 1],
+                    entry=entry, atr=atr, stop=round(r, 2), t1=round(entry + (entry - r), 2),
+                    t2=round(entry + 2 * (entry - r), 2), t3=round(entry + 3 * (entry - r), 2),
+                    qty=int(1000 // (entry - r)) or 1, risk_amt=998.0,
+                    notional=round((int(1000 // (entry - r)) or 1) * entry, 2),
+                    status=status, best_target=best, result_pct=res, live=live,
+                    open_pct=(round((live / entry - 1) * 100, 2) if live and status == "open" else None),
+                    mfe=4.2, mae=-2.1, last_price=live or entry)
+    return [one("WABAG", "swing_meanrev", 2206.3, 52.4, 1, "open", live=2261.0),
+            one("JKCEMENT", "mom_breakout", 5529.5, 121.0, 2, "open", live=5480.0),
+            one("HCC", "swing_meanrev", 27.1, 0.9, 3, "open", live=27.9),
+            one("PGEL", "swing_meanrev", 563.0, 18.2, 4, "t1", "t2", 9.7, 618.0, "2026-08-01"),
+            one("ZENTEC", "mom_breakout", 1998.6, 61.0, 5, "stopped", None, -9.2, 1815.0, "2026-08-01"),
+            one("SWIGGY", "swing_meanrev", 448.2, 12.0, 1, "expired", "t1", 1.4, 454.5, "2026-07-21")]
+
+
+IDEAS = _ideas()
+
 OVERVIEW = dict(as_of="22 Jul, 13:45 IST", regime={"IN": True},
                 regime_state={"IN": "NEUTRAL"},
                 options=OPTIONS,
@@ -185,6 +210,12 @@ class H(BaseHTTPRequestHandler):
             mkt = "US" if "market=US" in self.path else "IN"
             return self._send(json.dumps(_stock(sym, mkt)))
         routes = {
+            "/v2/api/ideas": dict(ideas=IDEAS, plan="auto", allowance=5, max_per_day=5,
+                                  published_today=5, withheld_today=0, capital=100000.0,
+                                  risk_pct=0.01, horizon_days=10, ccy="\u20b9",
+                                  stats=dict(published=6, open=3, closed=3, wins=2, win_pct=67,
+                                             avg_pct=0.63, hit_t1=2, hit_t2=1, hit_t3=0,
+                                             stopped=1, expired=1)),
             "/v2/api/overview": OVERVIEW,
             "/v2/api/positions": POSITIONS,
             "/v2/api/orders": ORDERS,

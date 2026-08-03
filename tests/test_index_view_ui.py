@@ -571,10 +571,13 @@ class OneBookRendererTest(unittest.TestCase):
     def setUp(self) -> None:
         self.src = V2_WEB.read_text(encoding="utf-8")
         active = self.src[self.src.rindex('SPA_HTML = r"""'):]
-        self.hero = active[active.index("function renderHero("):
-                           active.index("function renderOptionsTile(")]
-        self.opts = active[active.index("function renderOptionsTile("):
-                           active.index("function loadHome(")]
+        # slice each function at the NEXT function, not at a named landmark —
+        # anything inserted between them would otherwise be attributed to the
+        # function under test and fail it for someone else's code
+        def body(name):
+            start = active.index(f"function {name}(")
+            return active[start:active.index("\nfunction ", start)]
+        self.hero, self.opts = body("renderHero"), body("renderOptionsTile")
 
     def test_both_renderers_delegate_to_it(self) -> None:
         self.assertIn("bookCard({", self.hero)

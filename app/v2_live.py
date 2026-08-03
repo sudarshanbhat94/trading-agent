@@ -399,6 +399,20 @@ CREATE TABLE IF NOT EXISTS v2_trades(id INTEGER PRIMARY KEY AUTOINCREMENT, marke
   opened_at TEXT, closed_at TEXT);
 CREATE TABLE IF NOT EXISTS v2_equity(market TEXT, date TEXT, equity REAL, cash REAL, positions_value REAL, n_positions INTEGER, PRIMARY KEY(market,date));
 CREATE TABLE IF NOT EXISTS v2_signals(market TEXT, strategy TEXT, date TEXT, symbol TEXT, conviction REAL, ref_close REAL, rank INTEGER);
+-- Published ideas. UNIQUE(market,symbol,published_date) is the whole
+-- idempotency story: poll_market runs every 5 minutes and must be able to
+-- publish the same day's list repeatedly without ever creating a second copy or
+-- moving a level after a subscriber has acted on it.
+CREATE TABLE IF NOT EXISTS v2_ideas(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, symbol TEXT, strategy TEXT,
+  published_date TEXT, published_at TEXT, tier TEXT, rank INTEGER,
+  entry REAL, atr REAL, conviction REAL,
+  stop REAL, t1 REAL, t2 REAL, t3 REAL, qty INTEGER, risk_amt REAL, notional REAL,
+  status TEXT DEFAULT 'open', best_target TEXT, hit_price REAL, result_pct REAL,
+  mfe REAL, mae REAL, last_price REAL, last_at TEXT, closed_at TEXT,
+  UNIQUE(market, symbol, published_date));
+CREATE INDEX IF NOT EXISTS ix_ideas_date ON v2_ideas(published_date DESC, rank);
+CREATE INDEX IF NOT EXISTS ix_ideas_open ON v2_ideas(status, market);
 """
 _HIST: dict = {}
 _EQ_SNAP: dict = {}
@@ -1461,6 +1475,15 @@ def poll_market(market):
         pass
     cand.sort(key=lambda x: (x[0], x[1]))
     _tg_radar_digest(market, today, cand, positions)   # once/day: what the AI is watching
+    # PUBLISHED IDEAS — from THIS list, in THIS order, after the meta filter.
+    # Not a parallel computation: if the ideas page and the book ever disagreed
+    # about what looks good, one of them would be lying and there would be no
+    # way to tell which. Wrapped so a failure here can never stop the book from
+    # trading — ideas are a product feature, the book is the product.
+    try:
+        _publish_ideas(v2, market, cand, live)
+    except Exception:
+        _LOG.exception("idea publication failed (book unaffected)")
     # strategy balance: hold back slots for swing ONLY when swing actually has
     # eligible candidates, so we never leave cash idle in a gap-only (risk-off) tape
     strat_count = {}
@@ -1628,6 +1651,30 @@ _INTRA_WATCHED: dict = {}  # date -> symbols already radar-alerted (watch-only m
 # understated it right after the open (missed real ones).
 _VOL_CURVE = [(0, 0.02), (5, 0.05), (15, 0.10), (30, 0.16), (60, 0.25),
               (105, 0.35), (165, 0.46), (225, 0.57), (285, 0.70), (345, 0.88), (375, 1.0)]
+
+
+def _publish_ideas(v2, market, cand, live):
+    """Publish today's ideas and advance the open ones.
+
+    Publication is gated on the market being OPEN. An idea carries a specific
+    entry price and a subscriber cannot act on it outside market hours, so
+    publishing into a closed session would put a price on screen that nobody can
+    get — the same class of mistake as the RELIANCE buy that filled on a
+    Saturday.
+    """
+    from . import ideas as _ideas
+    now = datetime.now(IST)
+    today_s = now.date().isoformat()
+    # track first: an idea published earlier must be resolved against today's
+    # tape before any new one is written, so a stop hit is never reported after
+    # the day's fresh list has already pushed it down the page
+    _ideas.track(v2, market, live, now.isoformat(), today_s)
+    if not market_open(market):
+        return
+    rows = [dict(s, atr=s.get("atr"), price=s.get("price")) for _pr, _rk, s, _pl in cand]
+    _ideas.publish(v2, market, rows,
+                   lambda strat: float(PLAN.get(strat, {}).get("atr_stop") or 0.0),
+                   today_s, now.isoformat())
 
 
 def trading_days_held(entry_date, today, market):
