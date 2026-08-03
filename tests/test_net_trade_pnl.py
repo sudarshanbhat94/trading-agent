@@ -117,5 +117,71 @@ class SingleDefinitionTest(unittest.TestCase):
                     self.assertNotIn(bad, src)
 
 
+
+class BookSeparationTest(unittest.TestCase):
+    """The options book is funded separately, and the reporting must agree.
+
+    INDEX_OPTIONS carries its own budget so a bad options week cannot shrink the
+    sizing of the lane that has a measured edge. That ring-fence lived in the
+    ENGINE and not in the reporting: _market_stats counted every position and
+    every trade for the market, so option P&L landed in the equity book. On
+    2026-08-03 two BANKNIFTY winners put +Rs 26,956 into a book that never
+    funded them, and the hero card read +27.44% on the day off an equity
+    strategy that had not made it.
+    """
+
+    def _stats(self, rows_positions, rows_trades):
+        import sqlite3
+        from app import v2_live, v2_web
+        con = sqlite3.connect(":memory:")
+        v2_live.ensure_schema(con)
+        for strat, sym, entry, shares in rows_positions:
+            v2_live.record_entry(con, "IN", strat, sym, "2026-08-03", entry, shares,
+                                 entry * 0.9, entry * 1.5, 0.0, 0.5, None)
+        for strat, sym, pnl in rows_trades:
+            # return_pct must follow the SIGN of pnl, or a loser is recorded as
+            # a win and the win-rate assertion tests nothing
+            con.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,"
+                        "exit_date,exit_price,shares,pnl,return_pct,reason)"
+                        " VALUES('IN',?,?,'2026-08-03',100,'2026-08-03',110,10,?,?,'target')",
+                        (strat, sym, pnl, 10.0 if pnl > 0 else -10.0))
+        con.commit()
+        live = {sym: {"price": entry} for _s, sym, entry, _sh in rows_positions}
+        out = v2_web._market_stats(con, "IN", 100000.0, live)
+        con.close()
+        return out
+
+    def test_option_positions_are_not_counted_as_stocks(self) -> None:
+        s = self._stats([("swing_meanrev", "ITC", 287.0, 92.0),
+                         ("index_options", "BANKNIFTY26AUG57400CE", 991.85, 30.0)], [])
+        self.assertEqual(s["positions"], 1, "the option is not a stock in the equity book")
+
+    def test_option_profits_do_not_inflate_the_equity_book(self) -> None:
+        """The exact shape of the 2026-08-03 report."""
+        s = self._stats([], [("index_options", "BANKNIFTY26AUG57400CE", 17906.0),
+                             ("volume_surge", "ITC", -500.0)])
+        self.assertAlmostEqual(s["overall_pnl"], -500.0, places=2)
+        self.assertNotIn(17906.0, [round(s["overall_pnl"], 2)])
+
+    def test_option_trades_are_out_of_the_equity_win_rate(self) -> None:
+        s = self._stats([], [("index_options", "X", 9000.0), ("volume_surge", "Y", -100.0)])
+        self.assertEqual(s["trades"], 1, "only the equity trade counts")
+        self.assertEqual(round(s["win"]), 0, "the one equity trade lost; the option win is not ours")
+
+    def test_the_equity_lanes_are_untouched(self) -> None:
+        s = self._stats([("swing_meanrev", "ITC", 287.0, 92.0)],
+                        [("volume_surge", "Y", 250.0)])
+        self.assertEqual(s["positions"], 1)
+        self.assertEqual(s["trades"], 1)
+        self.assertAlmostEqual(s["overall_pnl"], 250.0, places=2)
+
+    def test_the_options_book_reports_its_own_equity(self) -> None:
+        """Marked to market, not at cost — a book valued at cost hides exactly
+        the move the position was opened for."""
+        from app import v2_web
+        book = v2_web._options_book()
+        self.assertIn("options_equity", book)
+        self.assertIn("options_value", book)
+
 if __name__ == "__main__":
     unittest.main()

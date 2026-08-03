@@ -256,12 +256,28 @@ def _prev_close_map(market, symbols):
     return out
 
 
+# The options book is funded SEPARATELY (INDEX_OPTIONS["budget"]) so a bad
+# options week cannot shrink the position sizing of the lane that has a
+# measured edge. That ring-fence existed in the engine and NOT in the reporting:
+# _market_stats counted every position and every trade for the market, so option
+# P&L landed in the equity book. On 2026-08-03 two BANKNIFTY winners put
+# +Rs 26,956 into a book that never funded them and the hero card read +27.44%
+# on the day. Excluded here so the two books add up to what actually happened.
+EQUITY_EXCLUDED = ("index_options",)
+
+
 def _market_stats(v2, market, budget, live):
     today_s = datetime.now(IST).date().isoformat()
-    pos = v2.execute("SELECT symbol,entry_price,shares,entry_date FROM v2_positions WHERE market=?", (market,)).fetchall()
-    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
-    realised_today = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND exit_date=?",
-                                (market, today_s)).fetchone()[0] or 0.0
+    marks = ",".join("?" * len(EQUITY_EXCLUDED))
+    pos = v2.execute("SELECT symbol,entry_price,shares,entry_date FROM v2_positions"
+                     f" WHERE market=? AND strategy NOT IN ({marks})",
+                     (market, *EQUITY_EXCLUDED)).fetchall()
+    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
+                          f" WHERE market=? AND strategy NOT IN ({marks})",
+                          (market, *EQUITY_EXCLUDED)).fetchone()[0] or 0.0
+    realised_today = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
+                                f" AND strategy NOT IN ({marks}) AND exit_date=?",
+                                (market, *EQUITY_EXCLUDED, today_s)).fetchone()[0] or 0.0
     mtm = unreal = unreal_today = 0.0
     prevs = _prev_close_map(market, [r[0] for r in pos])
     for sym, entry, shares, edate in pos:
@@ -274,7 +290,9 @@ def _market_stats(v2, market, budget, live):
         base = entry if str(edate) == today_s else (ref if ref > 0 else entry)
         unreal_today += (p - base) * shares
     cash = budget - sum(r[1] * r[2] for r in pos) + realised
-    rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?", (market,))]
+    rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?"
+                                     f" AND strategy NOT IN ({marks})",
+                                     (market, *EQUITY_EXCLUDED))]
     wins = [r for r in rets if r > 0]
     loss = [r for r in rets if r <= 0]
     loss_sum = abs(sum(loss))
@@ -414,7 +432,12 @@ def api_overview():
                         "overall_pct": round(s["overall_pnl"] / s["budget"] * 100, 2) if s["budget"] else 0,
                         "positions": s["positions"], "trades": s["trades"], "win": round(s["win"]), "pf": s["pf"]})
     v2.close()
-    return JSONResponse(dict(markets=markets, regime={"IN": _regime("IN"), "US": _regime("US")},
+    # The OPTIONS book, alongside. It is separately funded, so leaving it out
+    # made the headline contradict itself: "managing Rs 1,26,619" while another
+    # Rs 1L sat in index options that the same card never mentioned.
+    opts = _options_book()
+    return JSONResponse(dict(markets=markets, options=opts,
+                             regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
                              as_of=datetime.now(IST).strftime("%H:%M:%S IST")))
 
@@ -685,14 +708,30 @@ def _options_book():
                                " WHERE strategy=?", ("index_options",)).fetchone()[0] or 0.0
         n = con.execute("SELECT COUNT(*) FROM v2_positions WHERE strategy=?",
                         ("index_options",)).fetchone()[0]
+        rows = con.execute("SELECT symbol,entry_price,shares FROM v2_positions"
+                           " WHERE strategy=?", ("index_options",)).fetchall()
         con.close()
+        # MARK TO MARKET, not cost. `deployed` is what was paid; an options book
+        # valued at cost hides exactly the move the position was opened for.
+        live = {}
+        try:
+            from .v2_live import _option_live
+            live = _option_live()
+        except Exception:
+            pass
+        mtm = sum(sh * float((live.get(sym) or {}).get("price") or entry)
+                  for sym, entry, sh in rows)
+        cash = budget - spent + realised
         return dict(options_budget=round(budget, 2),
-                    options_cash=round(budget - spent + realised, 2),
+                    options_cash=round(cash, 2),
                     options_deployed=round(spent, 2),
+                    options_value=round(mtm, 2),
+                    options_equity=round(cash + mtm, 2),
                     options_realised=round(realised, 2),
                     options_positions=n)
     except Exception:
         return dict(options_budget=None, options_cash=None, options_deployed=None,
+                    options_value=None, options_equity=None,
                     options_realised=None, options_positions=0)
 
 
@@ -3923,7 +3962,13 @@ function loadHome(){
   var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
   var nm=(ME&&ME.username)?(ME.username.charAt(0).toUpperCase()+ME.username.slice(1)):'';
   document.getElementById('fd-hi').textContent=greet+(nm?', '+nm:'');
-  document.getElementById('fd-sub').innerHTML='OpenStocks is managing <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stocks';
+  var ob=d.options||{},oeq=(ob.options_equity==null?0:ob.options_equity);
+  // Both books, and the total. Naming only the equity book contradicted itself
+  // against a separately funded Rs 1L in index options.
+  document.getElementById('fd-sub').innerHTML='OpenStocks is managing <b>'+fmtc(m.ccy,(m.equity||0)+oeq)+'</b>'
+   +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
+   +(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
+     +(ob.options_positions?(' ('+ob.options_positions+' open)'):'')));
   HERO=m;renderHero();
   var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
           ON:['is in risk-on mode','conditions look healthy, so OpenStocks is buying dips, breakouts, and news-driven volume surges'],
