@@ -118,7 +118,7 @@ def _market(mkt):
                 today_pct=round((today[-1] - prev_eq) / prev_eq * 100, 2),
                 overall_pct=round((today[-1] - budget) / budget * 100, 2),
                 sharpe=1.84, maxdd=-4.2,
-                positions=5, trades=11, win=64, pf=1.7)
+                positions=5, trades=11, win=64, pf=1.7, realised=-1443.0)
 
 
 # The options book, with the LIVE 2026-08-03 figures — six digits with grouping
@@ -127,7 +127,8 @@ def _market(mkt):
 OPTIONS = dict(options_today=25666.0, options_overall=27300.92, options_budget=100000.0,
                options_cash=127300.92, options_deployed=0.0, options_value=0.0,
                options_equity=127300.92, options_realised=27300.92, options_positions=0,
-               options_trades=5, options_win=40)
+               options_trades=6, options_win=50,
+               options_curve=[100000, 99977, 101745, 101634, 110684, 128591, 127301])
 
 OVERVIEW = dict(as_of="22 Jul, 13:45 IST", regime={"IN": True},
                 regime_state={"IN": "NEUTRAL"},

@@ -422,9 +422,11 @@ class OptionsTileTest(unittest.TestCase):
 
     def _render(self, book):
         src = V2_WEB.read_text(encoding="utf-8")
-        js = "".join(_function_source(src, n) for n in ("fmtc", "renderOptionsTile"))
+        js = "".join(_function_source(src, n)
+                     for n in ("fmtc", "bookCard", "renderOptionsTile"))
         stub = ("var INR={format:function(n){return String(n)}},USD=INR;var __out={};\n"
-                "function fdSet(id,cls,html){__out={id:id,cls:cls,html:html};}\n")
+                "function fdSet(id,cls,html){__out={id:id,cls:cls,html:html};}\n"
+                "function heroChart(s,b){return '<svg data-n=\"'+(s||[]).length+'\"></svg>';}\n")
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "t.js"
             path.write_text(stub + js + "\nrenderOptionsTile(" + json.dumps(book)
@@ -437,7 +439,8 @@ class OptionsTileTest(unittest.TestCase):
 
     BOOK = dict(options_equity=127301, options_today=1200, options_overall=27301,
                 options_budget=100000, options_cash=127301, options_value=0,
-                options_positions=0)
+                options_positions=0, options_realised=27301, options_trades=6,
+                options_win=50, options_curve=[100000, 110000, 127301])
 
     def test_it_renders_its_own_card(self) -> None:
         out = self._render(self.BOOK)
@@ -551,6 +554,55 @@ class BooksLayoutTest(unittest.TestCase):
         fonts simply never changed."""
         self.assertLess(self.css.index(".fd-books .fd-big{font-size:29px"),
                         self.css.index("@container (max-width:285px)"))
+
+
+class OneBookRendererTest(unittest.TestCase):
+    """Both books go through ONE renderer.
+
+    They were written at different times and drifted into two different-looking
+    things — the stock tile had a chart and no stats, the options tile stats and
+    no chart — so two views of the same kind of object read as two products.
+    Same shape as the record_exit rule: a single definition cannot disagree with
+    itself, and two copies of a layout eventually will.
+    """
+
+    def setUp(self) -> None:
+        self.src = V2_WEB.read_text(encoding="utf-8")
+        active = self.src[self.src.rindex('SPA_HTML = r"""'):]
+        self.hero = active[active.index("function renderHero("):
+                           active.index("function renderOptionsTile(")]
+        self.opts = active[active.index("function renderOptionsTile("):
+                           active.index("function loadHome(")]
+
+    def test_both_renderers_delegate_to_it(self) -> None:
+        self.assertIn("bookCard({", self.hero)
+        self.assertIn("bookCard({", self.opts)
+
+    def test_neither_builds_its_own_stat_row(self) -> None:
+        """A hand-rolled .fd-obook in either caller is the drift starting again."""
+        for name, body in (("renderHero", self.hero), ("renderOptionsTile", self.opts)):
+            with self.subTest(fn=name):
+                self.assertNotIn("fd-obook", body)
+                self.assertNotIn("class=fd-ol", body)
+
+    def test_neither_builds_its_own_header_or_headline(self) -> None:
+        for name, body in (("renderHero", self.hero), ("renderOptionsTile", self.opts)):
+            with self.subTest(fn=name):
+                self.assertNotIn("class=fd-hd", body)
+                self.assertNotIn("class=fd-big", body)
+                self.assertNotIn("class=fd-chart", body)
+
+    def test_the_equity_book_exposes_the_stats_the_tile_needs(self) -> None:
+        """The tile can only match if the API gives it the same fields; the
+        equity book computed `realised` and then dropped it on the floor."""
+        stats = self.src[self.src.index("def _market_stats("):
+                         self.src.index("LANE_LABELS = {")]
+        self.assertIn("realised=round(realised, 2)", stats)
+
+    def test_the_options_book_exposes_a_curve(self) -> None:
+        start = self.src.index("def _options_book(")
+        book = self.src[start:self.src.index("\ndef ", start + 1)]
+        self.assertIn("options_curve", book)
 
 
 class SpaCssIsWellFormedTest(unittest.TestCase):

@@ -300,7 +300,7 @@ def _market_stats(v2, market, budget, live):
     return dict(market=market, budget=budget, equity=cash + mtm, cash=cash, deployed=mtm,
                 deploy_pct=round(mtm / budget * 100) if budget else 0,
                 today_pnl=realised_today + unreal_today, overall_pnl=realised + unreal,
-                positions=len(pos), trades=len(rets),
+                positions=len(pos), trades=len(rets), realised=round(realised, 2),
                 win=(len(wins) / len(rets) * 100) if rets else 0.0, pf=round(pf or 0, 2))
 
 
@@ -714,6 +714,17 @@ def _options_book():
         closed, wins = con.execute(
             "SELECT COUNT(*), COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0)"
             " FROM v2_trades WHERE strategy=?", ("index_options",)).fetchone()
+        # An equity curve for this book. Its x-axis is CLOSED TRADES, not time —
+        # there is no minute-by-minute series for it, and stretching six trades
+        # across a calendar would draw flat stretches that look like the book
+        # was holding when it was simply idle. Six points is a small sample and
+        # the chart should read that way.
+        curve = [budget]
+        run = 0.0
+        for (p,) in con.execute("SELECT pnl FROM v2_trades WHERE strategy=?"
+                                " ORDER BY exit_date, rowid", ("index_options",)):
+            run += float(p or 0.0)
+            curve.append(round(budget + run, 2))
         rows = con.execute("SELECT symbol,entry_price,shares FROM v2_positions"
                            " WHERE strategy=?", ("index_options",)).fetchall()
         con.close()
@@ -755,6 +766,8 @@ def _options_book():
                     options_equity=round(cash + mtm, 2),
                     options_realised=round(realised, 2),
                     options_trades=int(closed or 0),
+                    # last point is the LIVE book, so open positions show up
+                    options_curve=[*curve[:-1], round(cash + mtm, 2)] if len(curve) > 1 else [],
                     options_win=(round(wins / closed * 100) if closed else None),
                     options_positions=n)
     except Exception:
@@ -762,7 +775,7 @@ def _options_book():
                     options_budget=None, options_cash=None, options_deployed=None,
                     options_value=None, options_equity=None,
                     options_realised=None, options_trades=0, options_win=None,
-                    options_positions=0)
+                    options_curve=[], options_positions=0)
 
 
 def _index_live_quotes_ready():
@@ -4006,6 +4019,44 @@ function heroChart(series,baseline){
 function fdSet(id,cls,html){var el=document.getElementById(id);if(!el)return;el.className=cls;el.innerHTML=html;}
 var HERO=null,HEROTAB='1d';
 function setHeroTab(t){HEROTAB=t;renderHero();}
+// ONE definition of a book tile, used by BOTH books.
+//
+// They were written at different times and drifted into two different-looking
+// things — the stock tile had a chart and no stats, the options tile stats and
+// no chart — so two views of the same kind of object read as two products.
+// Anything that should look the same on both belongs in here, not in a caller.
+function bookCard(c){
+ var f=(c.ccy=='₹'?INR:USD),up=(c.chg||0)>=0;
+ function money(v){return (v>=0?'+':'−')+c.ccy+f.format(Math.abs(Math.round(v||0)));}
+ function cell(label,value,cls,sub){
+  return '<div><div class=fd-ol>'+label+'</div><div class="fd-ov '+(cls||'')+'">'+value+'</div>'
+   +(sub?'<div class=fd-osub>'+sub+'</div>':'')+'</div>';}
+ var s=c.stats||{},ov=s.overall||0,rl=s.realised||0;
+ // percent on its OWN line, not trailing the rupee figure: inline it needed
+ // 113px in a 96px cell on a phone and the ellipsis ate the number
+ var stats=s.budget==null?'':
+  '<div class=fd-obook>'
+   +cell('overall',money(ov),ov>=0?'up':'dn',
+         (s.budget?(ov>=0?'+':'')+Math.round(ov/s.budget*10000)/100+'%':''))
+   +cell('cash',fmtc(c.ccy,s.cash||0))
+   +cell('deployed',fmtc(c.ccy,s.deployed||0))
+  +'</div><div class=fd-obook>'
+   +cell('realised',money(rl),rl>=0?'up':'dn')
+   +cell('trades',s.trades||0)
+   // the sample size is stated NEXT TO the win rate, never on its own: six
+   // closed trades is not a track record, and a bare "50%" would read as one
+   +cell('win',s.trades?Math.round(s.win)+'%':'—',null,s.trades?'of '+s.trades:'')
+  +'</div>';
+ return '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')
+   +';color:'+(up?'var(--up)':'var(--dn)')+'">'+c.icon+'</span>'
+  +'<div><div class=fd-title>'+c.title+'</div><div class=fd-meta>'+c.meta+'</div></div>'
+  +(c.tabs?'<div class=fd-tabs>'+c.tabs+'</div>':'')+'</div>'
+  +'<div class=fd-big>'+fmtc(c.ccy,c.equity)+'</div>'
+  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+c.ccy
+   +f.format(Math.abs(Math.round(c.chg||0)))+' ('+(up?'+':'')+c.pct+'%) '+c.noun+'</div>'
+  +stats
+  +(c.series&&c.series.length>1?'<div class=fd-chart>'+heroChart(c.series,c.baseline)+'</div>':'')
+  +'<div class=fd-meta style="margin-top:8px">'+c.note+'</div>';}
 function renderHero(){
  // one question per view, and the words ALWAYS match the line:
  //  1D  = today's equity minute-by-minute vs yesterday's close (dotted)
@@ -4029,51 +4080,35 @@ function renderHero(){
  }
  var up=(chg||0)>=0;
  var tabs=['1d','1m','all'].map(function(t){return '<span class="fd-tab'+(t==HEROTAB?' on':'')+'" onclick="setHeroTab(\''+t+'\')">'+t.toUpperCase()+'</span>'}).join('');
- fdSet('fdPerf','fd-card',
-  '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')+';color:'+(up?'var(--up)':'var(--dn)')+'">'+(up?'▲':'▼')+'</span>'
-  +'<div><div class=fd-title>'+(up?"You're up ":"Down ")+noun+'</div><div class=fd-meta>live paper book · '+(m.market||'IN')+'</div></div>'
-  +'<div class=fd-tabs>'+tabs+'</div></div>'
-  +'<div class=fd-big>'+fmtc(m.ccy,m.equity)+'</div>'
-  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+m.ccy+f.format(Math.abs(Math.round(chg)))+' ('+(up?'+':'')+pct+'%) '+noun+'</div>'
-  +'<div class=fd-chart>'+heroChart(series,baseline)+'</div>'
-  +'<div class=fd-meta style="margin-top:6px">'+note+'</div>');
+ fdSet('fdPerf','fd-card',bookCard({
+  icon:(up?'▲':'▼'),title:(up?"You're up ":"Down ")+noun,
+  meta:'live paper book · '+(m.market||'IN'),tabs:tabs,ccy:m.ccy,
+  equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,note:note,
+  stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
+         realised:m.realised,trades:m.trades,win:m.win}}));
 }
 function renderOptionsTile(o,ccy){
  // The SECOND book. It is separately funded, so it gets its own tile rather
  // than a clause in someone else's sentence — mixing them is what let option
  // profits read as equity performance.
  if(o.options_equity==null){fdSet('fdOpts','','');return;}
- var f=(ccy=='\u20b9'?INR:USD),up=(o.options_today||0)>=0,
-     ov=(o.options_overall||0),ovUp=ov>=0,
-     ovPct=o.options_budget?Math.round(ov/o.options_budget*10000)/100:0,
-     todayPct=o.options_budget?Math.round((o.options_today||0)/o.options_budget*10000)/100:0;
- fdSet('fdOpts','fd-card',
-  '<div class=fd-hd><span class=fd-dot style="background:'+(up?'var(--upb)':'var(--dnb)')+';color:'+(up?'var(--up)':'var(--dn)')+'">\u25c8</span>'
-  +'<div><div class=fd-title>Index options</div><div class=fd-meta>separate book \u00b7 '
-  +(o.options_positions||0)+' open</div></div></div>'
-  +'<div class=fd-big>'+fmtc(ccy,o.options_equity)+'</div>'
-  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'\u25b2 +':'\u25bc ')+ccy+f.format(Math.abs(Math.round(o.options_today||0)))
-  +' ('+(up?'+':'')+todayPct+'%) today</div>'
-  +'<div class=fd-obook>'
-   // percent on its OWN line, not trailing the rupee figure: inline it needed
-   // 113px in a 96px cell on a phone and the ellipsis ate the number
-   +'<div><div class=fd-ol>overall</div><div class="fd-ov '+(ovUp?'up':'dn')+'">'+(ovUp?'+':'')+ccy+f.format(Math.abs(Math.round(ov)))+'</div>'
-    +'<div class=fd-osub>'+(ovUp?'+':'')+ovPct+'%</div></div>'
-   +'<div><div class=fd-ol>cash</div><div class=fd-ov>'+fmtc(ccy,o.options_cash)+'</div></div>'
-   +'<div><div class=fd-ol>deployed</div><div class=fd-ov>'+fmtc(ccy,o.options_value||0)+'</div></div>'
-  +'</div>'
-  +'<div class=fd-obook>'
-   +'<div><div class=fd-ol>realised</div><div class="fd-ov '+((o.options_realised||0)>=0?'up':'dn')+'">'
-    +((o.options_realised||0)>=0?'+':'')+ccy+f.format(Math.abs(Math.round(o.options_realised||0)))+'</div></div>'
-   +'<div><div class=fd-ol>trades</div><div class=fd-ov>'+(o.options_trades||0)+'</div></div>'
-   // the sample size is stated NEXT TO the win rate, never on its own: this book
-   // has five closed trades, and a bare "60%" off five would read as an edge
-   +'<div><div class=fd-ol>win</div><div class=fd-ov>'
-    +(o.options_win==null?'\u2014':o.options_win+'%')+'</div>'
-    +(o.options_win==null?'':'<div class=fd-osub>of '+(o.options_trades||0)+'</div>')+'</div>'
-  +'</div>'
-  +'<div class=fd-meta style="margin-top:8px">funded separately from the stock book \u2014 '
-  +'its profits are not counted there</div>');}
+ var todayPct=o.options_budget?Math.round((o.options_today||0)/o.options_budget*10000)/100:0,
+     curve=o.options_curve||[];
+ fdSet('fdOpts','fd-card',bookCard({
+  icon:'\u25c8',title:'Index options',
+  meta:'separate book \u00b7 '+(o.options_positions||0)+' open',ccy:ccy,
+  equity:o.options_equity,chg:o.options_today,pct:todayPct,noun:'today',
+  // x-axis is CLOSED TRADES, not time: there is no minute series for this book,
+  // and spreading six trades across a calendar would draw flat stretches that
+  // look like holding when it was simply idle
+  series:curve,baseline:o.options_budget,
+  note:curve.length>1
+   ?'one point per closed trade \u00b7 '+(o.options_trades||0)+' so far \u2014 funded '
+    +'separately from the stock book, its profits are not counted there'
+   :'funded separately from the stock book \u2014 its profits are not counted there',
+  stats:{budget:o.options_budget,overall:o.options_overall,cash:o.options_cash,
+         deployed:o.options_value,realised:o.options_realised,
+         trades:o.options_trades,win:o.options_win}}));}
 function loadHome(){
  if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
  api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;
