@@ -181,3 +181,80 @@ class HeldContractLookupTest(unittest.TestCase):
                / "scripts" / "v2_quote_feed.py").read_text(encoding="utf-8")
         self.assertIn("nfo_contracts.by_symbols(missing)", src)
         self.assertNotIn('return [c for c in contracts if c["symbol"].upper() in held]', src)
+
+
+class WatchWindowCentringTest(unittest.TestCase):
+    """The ATM window must be aimed at where the index IS, not where it closed.
+
+    Centring on the bhavcopy is what put a held position outside the window and
+    stopped it being quoted. On 2026-08-03 BANKNIFTY's bhavcopy close was
+    57,147.5 while the index was at 57,249 — 102 points, which is a whole strike
+    at ATM +/- 3:
+
+        centred on the bhavcopy   56800 .. 57400   held 57500CE OUTSIDE
+        centred on the live level 56900 .. 57500   inside
+
+    The error is systematically worst when the index has moved a long way, which
+    is exactly when an option position is winning and most needs pricing.
+    """
+
+    def _feed(self):
+        import importlib.util
+        import pathlib
+        import sys
+        path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "v2_quote_feed.py"
+        sys.argv = ["v2_quote_feed"]
+        spec = importlib.util.spec_from_file_location("feed_under_test", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_a_hundred_point_error_moves_the_window_a_whole_strike(self) -> None:
+        """The arithmetic that made this matter, on the real numbers."""
+        from app import nfo_contracts
+        rows = [{"tradingsymbol": f"BANKNIFTY26AUG{k}CE", "instrument_key": f"NSE_FO|{k}",
+                 "expiry": "2026-08-26", "strike": str(k), "option_type": "CE",
+                 "lot_size": "30", "name": "BANKNIFTY"}
+                for k in range(56500, 57900, 100)]
+        stale = {int(r["strike"]) for r in nfo_contracts.select("BANKNIFTY", 57147.5, rows=rows)}
+        live = {int(r["strike"]) for r in nfo_contracts.select("BANKNIFTY", 57249.3, rows=rows)}
+        self.assertNotIn(57500, stale, "the bhavcopy window is what dropped the held strike")
+        self.assertIn(57500, live, "the live window keeps it")
+
+    def test_the_live_level_is_preferred_over_the_close(self) -> None:
+        feed = self._feed()
+        from app import index_spot
+        orig = index_spot.spot
+        index_spot.spot = lambda sym, *a, **k: {"price": 57249.3, "pairs": 9}
+        try:
+            spots = feed._nfo_spots()
+        finally:
+            index_spot.spot = orig
+        if "BANKNIFTY" in spots:      # only when fo.db is present in this env
+            self.assertAlmostEqual(spots["BANKNIFTY"], 57249.3, places=1)
+
+    def test_it_falls_back_to_the_close_when_there_is_no_live_reading(self) -> None:
+        """spot() refuses a thin or far-from-the-money chain, and a refusal must
+        leave the bhavcopy in place rather than blanking the window."""
+        feed = self._feed()
+        from app import index_spot
+        orig = index_spot.spot
+        index_spot.spot = lambda sym, *a, **k: None
+        try:
+            spots = feed._nfo_spots()
+        finally:
+            index_spot.spot = orig
+        for sym, px in spots.items():
+            with self.subTest(sym=sym):
+                self.assertGreater(px, 0)
+
+    def test_a_broken_live_lookup_does_not_break_the_feed(self) -> None:
+        feed = self._feed()
+        from app import index_spot
+        orig = index_spot.spot
+        index_spot.spot = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db gone"))
+        try:
+            spots = feed._nfo_spots()      # must not raise
+        finally:
+            index_spot.spot = orig
+        self.assertIsInstance(spots, dict)

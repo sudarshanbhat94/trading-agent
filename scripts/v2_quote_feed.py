@@ -116,7 +116,26 @@ NFO_SOURCE = "upstox-nfo"
 
 
 def _nfo_spots():
-    """{index: spot} from the most recent derivatives bhavcopy."""
+    """{index: spot} used to CENTRE the ATM watch window.
+
+    The LIVE level first, falling back to the last bhavcopy close.
+
+    Centring on the bhavcopy alone is what put a held position outside the
+    window and stopped it being quoted. On 2026-08-03 BANKNIFTY's bhavcopy
+    close was 57,147.5 while the index was actually at 57,249 — 102 points, one
+    strike at ATM +/- 3:
+
+        centred on the bhavcopy   56800 .. 57400   <- held 57500CE OUTSIDE
+        centred on the live level 56900 .. 57500   <- inside
+
+    The error is systematically worst when the index has moved a long way,
+    which is exactly when an option position is winning and most needs pricing.
+
+    The live level comes from put-call parity on the strikes already being
+    polled, so this is self-correcting rather than circular: even a window
+    aimed slightly wrong still quotes strikes near the money, and their parity
+    recentres the next pass.
+    """
     out = {}
     try:
         import os
@@ -130,6 +149,16 @@ def _nfo_spots():
         con.close()
     except Exception:
         pass
+    try:
+        from app import index_spot
+        for sym in list(out) or []:
+            live = index_spot.spot(sym)
+            # A thin or far-from-the-money reading is refused by spot() itself,
+            # so this only ever replaces the stale close with something better.
+            if live and live.get("price"):
+                out[sym] = float(live["price"])
+    except Exception as exc:
+        print(f"  [NFO] live spot unavailable, using bhavcopy: {str(exc)[:80]}", flush=True)
     return out
 
 
