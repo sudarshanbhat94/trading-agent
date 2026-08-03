@@ -277,3 +277,55 @@ class IndexCallCacheTest(unittest.TestCase):
         from app import v2_live
         self.assertNotIn("_index_call_cache", inspect.getsource(v2_live.index_options_pass))
         self.assertIn("index_direction.decide(", inspect.getsource(v2_live.index_options_pass))
+
+
+@unittest.skipIf(shutil.which("node") is None, "node not available")
+class OptionContractRoutingTest(unittest.TestCase):
+    """An option contract must not fall into the equity panel.
+
+    Option rows are clickable everywhere — Orders, Positions, Today's moves —
+    and Analyse accepts a ticker typed by hand. All of them called
+    stock('BANKNIFTY26AUG57400CE','IN'), which is not an index and not an
+    equity, so it hit the liquid-universe lookup and answered "not in liquid
+    universe". Reproduced from Orders in a real browser.
+
+    A contract has no chart of its own here, but the thing that moves it does,
+    so it routes to the UNDERLYING's candles and read.
+    """
+
+    def _u(self, sym):
+        return _run(f"optionUnderlying({json.dumps(sym)})", fns=("optionUnderlying",))
+
+    def test_a_contract_resolves_to_its_index(self) -> None:
+        self.assertEqual(self._u("BANKNIFTY26AUG57400CE"), "BANKNIFTY")
+        self.assertEqual(self._u("NIFTY2680424300CE"), "NIFTY")
+        self.assertEqual(self._u("FINNIFTY26AUG26100CE"), "FINNIFTY")
+        self.assertEqual(self._u("MIDCPNIFTY26AUG14725PE"), "MIDCPNIFTY")
+
+    def test_the_longest_prefix_wins(self) -> None:
+        """MIDCPNIFTY and BANKNIFTY both END in NIFTY — matching NIFTY first
+        would send a Bank Nifty contract to the wrong index."""
+        self.assertEqual(self._u("BANKNIFTY26AUG57400PE"), "BANKNIFTY")
+        self.assertEqual(self._u("MIDCPNIFTY26AUG14725CE"), "MIDCPNIFTY")
+
+    def test_an_equity_is_not_mistaken_for_a_contract(self) -> None:
+        """The routing must not swallow ordinary symbols. ONGC and NESTLEIND
+        end in the letters that would trip a careless check."""
+        for sym in ("RELIANCE", "ITC", "NIFTYBEES", "ABCAPITAL", "URBANCO"):
+            with self.subTest(sym=sym):
+                self.assertEqual(self._u(sym), "")
+
+    def test_an_index_itself_is_not_a_contract(self) -> None:
+        self.assertEqual(self._u("BANKNIFTY"), "")
+        self.assertEqual(self._u("NIFTY"), "")
+
+    def test_junk_does_not_throw(self) -> None:
+        for bad in ("", None, "CE", "PE"):
+            self.assertEqual(self._u(bad), "")
+
+    def test_render_stock_routes_contracts_too(self) -> None:
+        src = V2_WEB.read_text(encoding="utf-8")
+        active = src[src.rindex('SPA_HTML = r"""'):]
+        body = active[active.index("function renderStock("):]
+        self.assertIn("optionUnderlying(sym)", body[:400])
+        self.assertIn("renderIndex(und,target", body[:600])

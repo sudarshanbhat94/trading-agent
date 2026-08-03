@@ -4310,7 +4310,17 @@ function allocUser(id){var b={},i=document.getElementById('ai_'+id).value;if(i)b
 function openBroker(w){api(w=='upstox'?'/api/me/upstox/auth-url':'/api/alpaca/connect').then(r=>{if(r.j.auth_url)location.href=r.j.auth_url;else alert('Connect '+w+' from settings.')})}
 function stock(sym,mkt){go('detail');renderStock(sym,mkt,'detail')}
 function isIndexSym(s){return ['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY'].indexOf((s||'').toUpperCase())>=0;}
-function renderIndex(sym,target){var el=document.getElementById(target);if(!el)return;
+// The UNDERLYING of an option ticker, or ''. BANKNIFTY26AUG57400CE -> BANKNIFTY.
+// Option rows are clickable everywhere — orders, positions, today's moves — and
+// every one of them routed into the equity panel, which has never heard of a
+// contract and answered "not in liquid universe". That is the blank page.
+// Longest prefix first: MIDCPNIFTY and BANKNIFTY both end in NIFTY.
+function optionUnderlying(s){var u=(s||'').toUpperCase();
+ if(!/(CE|PE)$/.test(u))return '';
+ var known=['MIDCPNIFTY','BANKNIFTY','FINNIFTY','NIFTY'];
+ for(var i=0;i<known.length;i++){if(u.indexOf(known[i])===0)return known[i];}
+ return '';}
+function renderIndex(sym,target,contract){var el=document.getElementById(target);if(!el)return;
  // An INDEX is not an equity. It has no row in the liquid universe, so the
  // stock panel answered "not in liquid universe" and showed a blank page.
  //
@@ -4324,7 +4334,8 @@ function renderIndex(sym,target){var el=document.getElementById(target);if(!el)r
  el.innerHTML=back+'<div class=skel>loading '+esc(sym)+'…</div>';
  api('/v2/api/index-candles?symbol='+encodeURIComponent(sym)).then(function(r){
   var c=r.j||{};
-  var head='<div class=row style="align-items:baseline;margin-bottom:6px"><b style="font-size:18px">'+esc(sym)+'</b>'
+  var head='<div class=row style="align-items:baseline;margin-bottom:6px"><b style="font-size:18px">'
+   +esc(contract||sym)+(contract?('<span class=mut style="font-size:12px;font-weight:400"> \u00b7 on '+esc(sym)+'</span>'):'')+'</b>'
    +'<span><span class=num style="font-size:18px;font-weight:600">'+(c.price==null?'\u2014':fmtn(c.price))+'</span>'
    +(c.chg==null?'':' '+pill(c.chg))+'</span></div>';
   el.innerHTML=back+head+'<div class=card>'+idxCandleSVG(c.candles||[])
@@ -4349,6 +4360,11 @@ function loadIndexRead(sym){
   if(box){box.className='';box.innerHTML='<div class=card><span class=mut>read unavailable</span></div>';}});}
 function renderStock(sym,mkt,target){
  if(isIndexSym(sym))return renderIndex((sym||'').toUpperCase(),target);
+ var und=optionUnderlying(sym);
+ // An option has no chart of its own here, but the thing that MOVES it does.
+ // Showing the underlying's candles and read is the analysis somebody opening
+ // a contract is actually after.
+ if(und)return renderIndex(und,target,(sym||'').toUpperCase());
  var el=document.getElementById(target);if(target=='detail')el.innerHTML='<div class=skel>analysing '+sym+'…</div>';
  api('/v2/api/stock/'+sym+'?market='+mkt).then(r=>{var d=r.j,s=mkt=='IN'?'₹':'$';
  if(d.error){el.innerHTML=(target=='detail'?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">‹ back</div>':'')+'<div class=skel>'+(d.error)+(d.live?' · '+s+d.live:'')+'</div>'+newsHtml(d.news,s);return;}
