@@ -1895,16 +1895,34 @@ def api_search(q: str = ""):
     q = q.strip().upper()
     if len(q) < 2:
         return JSONResponse([])
+    # INDICES FIRST. They are not rows in `universe` — an index is not a listed
+    # equity — so searching "nifty" returned only the ETFs that track it
+    # (NIFTYBEES, NIFTY1, NIFTYETF) and never NIFTY itself. There was no way to
+    # reach the index page from anywhere in the UI, which is why it looked like
+    # the page did not exist.
+    out = []
+    try:
+        from . import v2_live as _vl
+        for key in _vl.INDEX_ALLOWED:
+            if key.startswith(q) or q in key:
+                out.append(dict(symbol=key, name=_INDEX_NAMES.get(key, key),
+                                market="IN", kind="index"))
+    except Exception:
+        pass
     con = _ro(MAIN_DB)
     rows = con.execute(
         "SELECT symbol,name,exchange FROM universe WHERE enabled=1 AND (symbol LIKE ? OR upper(name) LIKE ?) "
         "ORDER BY CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END, length(symbol) LIMIT 8",
         (q + "%", "%" + q + "%", q + "%")).fetchall()
     con.close()
-    return JSONResponse([dict(symbol=r[0], name=(r[1] or "")[:40],
-                              market="IN" if str(r[2]).upper() in ("NSE", "BSE") else "US") for r in rows])
+    out.extend(dict(symbol=r[0], name=(r[1] or "")[:40], kind="equity",
+                    market="IN" if str(r[2]).upper() in ("NSE", "BSE") else "US")
+               for r in rows)
+    return JSONResponse(out[:10])
 
 
+_INDEX_NAMES = {"NIFTY": "Nifty 50 · index", "BANKNIFTY": "Bank Nifty · index",
+                "FINNIFTY": "Fin Nifty · index", "MIDCPNIFTY": "Midcap Nifty · index"}
 _movers_cache: dict = {}
 _movers_loading: set = set()
 

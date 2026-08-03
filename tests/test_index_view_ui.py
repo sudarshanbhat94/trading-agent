@@ -139,3 +139,72 @@ class SpaCacheHeaderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IndexSearchTest(unittest.TestCase):
+    """You must be able to REACH the index page.
+
+    Searching "nifty" returned only the ETFs that track it — NIFTY1, NIFTYBEES,
+    NIFTYETF — and never NIFTY itself, because search reads `universe` and an
+    index is not a listed equity. So the index view existed and nothing in the
+    UI could navigate to it, which is indistinguishable from it not existing.
+    """
+
+    def setUp(self) -> None:
+        import os
+        import sqlite3
+        import tempfile
+        import uuid
+        tmp = tempfile.mkdtemp()
+        os.environ["OPENSTOCKS_DISABLE_ENGINE"] = "1"
+        os.environ["DATABASE_PATH"] = os.path.join(tmp, "a.db")
+        main_db = os.path.join(tmp, "m.db")
+        con = sqlite3.connect(main_db)
+        con.execute("CREATE TABLE universe(symbol TEXT, name TEXT, exchange TEXT, enabled INTEGER)")
+        con.executemany("INSERT INTO universe VALUES(?,?,?,1)",
+                        [("NIFTYBEES", "NIP IND ETF NIFTY BEES", "NSE"),
+                         ("NIFTY1", "KOTAK NIFTY ETF", "NSE"),
+                         ("RELIANCE", "RELIANCE INDUSTRIES", "NSE")])
+        con.commit(); con.close()
+        from fastapi.testclient import TestClient
+        from app import main as m, v2_web
+        v2_web.MAIN_DB = main_db
+        self.client = TestClient(m.app)
+        from app.auth import hash_password
+        name = "s_" + uuid.uuid4().hex[:8]
+        u = m.db.create_user(name, hash_password("Str0ngPassw0rd!x"), role="user", active=True)
+        m.db.update_user(u["id"], account_plan="auto")
+        self.client.post("/api/auth/login",
+                         json={"username": name, "password": "Str0ngPassw0rd!x"})
+
+    def results(self, q):
+        r = self.client.get(f"/v2/api/search?q={q}")
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_the_index_itself_is_findable(self) -> None:
+        syms = [x["symbol"] for x in self.results("nifty")]
+        self.assertIn("NIFTY", syms)
+        self.assertIn("BANKNIFTY", syms)
+
+    def test_the_index_ranks_above_the_etfs_that_track_it(self) -> None:
+        """Someone typing "nifty" wants the index, not a fund holding it."""
+        syms = [x["symbol"] for x in self.results("nifty")]
+        self.assertLess(syms.index("NIFTY"), syms.index("NIFTYBEES"))
+
+    def test_banknifty_is_findable_by_its_own_name(self) -> None:
+        self.assertIn("BANKNIFTY", [x["symbol"] for x in self.results("banknifty")])
+
+    def test_the_etfs_are_still_returned(self) -> None:
+        """Adding indices must not push the equities out of the results."""
+        syms = [x["symbol"] for x in self.results("nifty")]
+        self.assertIn("NIFTYBEES", syms)
+
+    def test_an_index_row_is_marked_as_one(self) -> None:
+        row = [x for x in self.results("nifty") if x["symbol"] == "NIFTY"][0]
+        self.assertEqual(row["kind"], "index")
+        self.assertIn("index", row["name"].lower())
+
+    def test_an_ordinary_search_is_unaffected(self) -> None:
+        syms = [x["symbol"] for x in self.results("relianc")]
+        self.assertEqual(syms, ["RELIANCE"])
