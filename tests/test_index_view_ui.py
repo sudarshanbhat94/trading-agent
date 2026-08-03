@@ -96,5 +96,46 @@ class RoutingWiringTest(unittest.TestCase):
         self.assertIn("key=key", src)
 
 
+
+class SpaCacheHeaderTest(unittest.TestCase):
+    """The page must not be served from a browser cache after a deploy.
+
+    The whole app is ONE html document with the JS inline, and it went out with
+    no cache headers at all — so browsers applied heuristic caching and kept
+    running the previous build. Every UI fix looked like it had not shipped,
+    because for that browser it genuinely had not, and the same bug got
+    reported again after it was fixed.
+    """
+
+    def setUp(self) -> None:
+        import os
+        import tempfile
+        os.environ["OPENSTOCKS_DISABLE_ENGINE"] = "1"
+        os.environ["DATABASE_PATH"] = os.path.join(tempfile.mkdtemp(), "a.db")
+        from fastapi.testclient import TestClient
+        from app import main as m
+        self.client = TestClient(m.app)
+
+    def test_the_spa_is_not_cacheable(self) -> None:
+        r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        cache = r.headers.get("cache-control", "").lower()
+        self.assertIn("no-store", cache)
+        self.assertIn("no-cache", cache)
+
+    def test_it_carries_a_build_marker(self) -> None:
+        """So "which version is this browser running" has an answer instead of
+        being guessed at from behaviour."""
+        r = self.client.get("/")
+        build = r.headers.get("x-openstocks-build", "")
+        self.assertTrue(build)
+        self.assertEqual(len(build), 12)
+
+    def test_the_marker_tracks_the_content(self) -> None:
+        from app import v2_web
+        import hashlib
+        expected = hashlib.sha256(v2_web.SPA_HTML.encode("utf-8")).hexdigest()[:12]
+        self.assertEqual(self.client.get("/").headers.get("x-openstocks-build"), expected)
+
 if __name__ == "__main__":
     unittest.main()

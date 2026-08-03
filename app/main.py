@@ -603,12 +603,26 @@ templates = Jinja2Templates(directory="app/templates")
 
 try:  # new v2 dashboard (self-contained, read-only; never break the main app)
     from .v2_web import router as _v2_router, SPA_HTML as _V2_SPA
+    import hashlib as _hl
+    _V2_BUILD = _hl.sha256(_V2_SPA.encode('utf-8')).hexdigest()[:12]
 
     app.include_router(_v2_router)
 
     @app.get("/", response_class=HTMLResponse)  # serve new UI at root for the domain
     def _v2_root() -> HTMLResponse:
-        return HTMLResponse(_V2_SPA)
+        # NO-STORE. The whole app is one HTML document with the JS inline, and
+        # it was served with no cache headers at all — so browsers applied
+        # heuristic caching and kept running yesterday's code after a deploy.
+        # Every UI fix looked like it had not shipped, because for that browser
+        # it had not. An ETag would still save the bytes, but the document is
+        # small and correctness after a deploy matters more than the transfer.
+        return HTMLResponse(_V2_SPA, headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            # A build marker, so "which version is this browser on" is a
+            # question with an answer rather than a guess.
+            "X-OpenStocks-Build": _V2_BUILD,
+        })
 
     @app.get("/legacy", response_class=HTMLResponse)  # old dashboard preserved here
     async def _legacy_dashboard(request: Request) -> HTMLResponse:
