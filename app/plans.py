@@ -50,6 +50,7 @@ FEATURES = {
     "signals": "watch",
     "catalysts": "watch",
     "index_call": "watch",
+    "telegram_alerts": "paper",     # Pro and above
     "market_internals": "paper",
     "option_chain": "paper",
     "index_candles": "paper",
@@ -78,7 +79,8 @@ HIGHLIGHTS = {
     "watch": ["Daily CE/PE index call", "Live NSE announcements", "Top movers and radar"],
     "paper": ["Everything in Starter", "Your own ₹1L paper book",
               "Market internals: breadth, FII, VIX", "Option chain and index candles",
-              "Full trade history and per-lane stats"],
+              "Full trade history and per-lane stats",
+              "Telegram alerts"],
     "auto": ["Everything in Pro", "Index options auto-trading",
              "Connect your own broker", "Data export"],
 }

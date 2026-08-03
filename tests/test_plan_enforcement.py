@@ -176,3 +176,64 @@ class GateShapeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MainAppFeatureGateTest(unittest.TestCase):
+    """Routes on the MAIN app inherit nothing from the /v2 router.
+
+    The /v2 gate is one shared dependency, which is what makes it safe. These
+    endpoints hang off `app` instead, so Telegram alerts were reachable on
+    every tier — including free — while being sold as a Pro feature.
+    """
+
+    def setUp(self) -> None:
+        import uuid
+        self.tmp = tempfile.mkdtemp()
+        self.client, self.main = _client(self.tmp)
+        from app.auth import hash_password
+        self.pw = "Str0ngPassw0rd!x"
+        self.name = "tg_" + uuid.uuid4().hex[:8]
+        self.user = self.main.db.create_user(self.name, hash_password(self.pw),
+                                             role="user", active=True)
+
+    def as_plan(self, plan):
+        self.main.db.update_user(self.user["id"], account_plan=plan)
+        self.client.cookies.clear()
+        self.client.post("/api/auth/login", json={"username": self.name, "password": self.pw})
+
+    def test_starter_cannot_reach_telegram(self) -> None:
+        self.as_plan("watch")
+        self.assertEqual(self.client.get("/api/me/telegram").status_code, 402)
+
+    def test_free_cannot_either(self) -> None:
+        self.as_plan("free")
+        self.assertEqual(self.client.get("/api/me/telegram").status_code, 402)
+
+    def test_pro_can(self) -> None:
+        self.as_plan("paper")
+        self.assertEqual(self.client.get("/api/me/telegram").status_code, 200)
+
+    def test_elite_can(self) -> None:
+        self.as_plan("auto")
+        self.assertEqual(self.client.get("/api/me/telegram").status_code, 200)
+
+    def test_every_telegram_route_is_gated(self) -> None:
+        """Six endpoints; gating five of them would be the same hole."""
+        import inspect
+        from app import main as m
+        src = inspect.getsource(m)
+        start = src.index('@app.get("/api/me/telegram")')
+        # end at the unlink handler's own body, not the next route's
+        end = src.index("return {\"ok\": True}",
+                        src.index('@app.post("/api/me/telegram/unlink")'))
+        block = src[start:end]
+        self.assertNotIn("require_user(request, settings, db)", block)
+        self.assertEqual(block.count('require_feature(request, "telegram_alerts")'), 6)
+
+    def test_writes_are_gated_not_just_the_read(self) -> None:
+        self.as_plan("watch")
+        for path in ("/api/me/telegram/token", "/api/me/telegram/verify",
+                     "/api/me/telegram/test", "/api/me/telegram/prefs",
+                     "/api/me/telegram/unlink"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.post(path, json={}).status_code, 402)

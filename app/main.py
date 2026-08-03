@@ -2963,16 +2963,35 @@ async def cancel_order(order_id: int, request: Request) -> dict[str, Any]:
     return {"ok": True, "order": row}
 
 
+def require_feature(request, feature: str):
+    """Gate a MAIN-APP route on the subscriber's plan.
+
+    The /v2 router enforces plans in one shared dependency, but these endpoints
+    hang off `app` and inherited nothing — so Telegram alerts were reachable on
+    every tier including free. Returns the user so the caller keeps using it.
+    """
+    user = require_user(request, settings, db)
+    from . import plans as _plans
+    plan = _plans.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                            plan_expires_at=user.get("plan_expires_at"))
+    if not _plans.allows(plan, feature):
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "upgrade required", "feature": feature, "plan": plan,
+                    "needs": _plans.FEATURES.get(feature)})
+    return user
+
+
 @app.get("/api/me/telegram")
 async def my_telegram_status(request: Request) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    user = require_feature(request, "telegram_alerts")
     from . import telegram_bot
     return telegram_bot.status(int(user["id"]))
 
 
 @app.post("/api/me/telegram/token")
 async def my_telegram_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    user = require_feature(request, "telegram_alerts")
     from . import telegram_bot
     token = str(payload.get("token", "")).strip()
     if not token:
@@ -2985,7 +3004,7 @@ async def my_telegram_token(payload: dict[str, Any], request: Request) -> dict[s
 
 @app.post("/api/me/telegram/verify")
 async def my_telegram_verify(request: Request) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    user = require_feature(request, "telegram_alerts")
     from . import telegram_bot
     chat_id = telegram_bot.verify(int(user["id"]))
     if not chat_id:
@@ -2995,7 +3014,7 @@ async def my_telegram_verify(request: Request) -> dict[str, Any]:
 
 @app.post("/api/me/telegram/test")
 async def my_telegram_test(request: Request) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    user = require_feature(request, "telegram_alerts")
     from . import telegram_bot
     if not telegram_bot.send_test(int(user["id"])):
         raise HTTPException(status_code=400, detail="Couldn't send. Make sure Telegram is connected (press Start in your bot).")
@@ -3004,7 +3023,7 @@ async def my_telegram_test(request: Request) -> dict[str, Any]:
 
 @app.post("/api/me/telegram/prefs")
 async def my_telegram_prefs(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    user = require_feature(request, "telegram_alerts")
     from . import telegram_bot
     telegram_bot.set_prefs(int(user["id"]), bool(payload.get("alerts_buy", True)), bool(payload.get("alerts_sell", True)),
                            bool(payload.get("alerts_radar", True)), bool(payload.get("alerts_summary", True)),
@@ -3014,7 +3033,7 @@ async def my_telegram_prefs(payload: dict[str, Any], request: Request) -> dict[s
 
 @app.post("/api/me/telegram/unlink")
 async def my_telegram_unlink(request: Request) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    user = require_feature(request, "telegram_alerts")
     from . import telegram_bot
     telegram_bot.unlink(int(user["id"]))
     return {"ok": True}
@@ -3022,7 +3041,10 @@ async def my_telegram_unlink(request: Request) -> dict[str, Any]:
 
 @app.post("/api/positions/{symbol}/exit")
 async def manual_exit_position(symbol: str, request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    user = require_user(request, settings, db)
+    # Closing a position is a TRADING action and is gated like the others. It
+    # sits on the main app, so it inherited nothing from the /v2 dependency and
+    # was reachable on every tier.
+    user = require_feature(request, "manual_trade")
     symbol = str(symbol or "").strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbol is required.")

@@ -1574,6 +1574,29 @@ def api_alerts_add(payload: dict):
     return JSONResponse({"ok": True})
 
 
+def _market_shut(market):
+    """Refuse a manual order when the exchange is closed.
+
+    RELIANCE was bought at 15:50 IST on SATURDAY 2026-08-01 — the market had
+    been shut for two days — because these endpoints checked the symbol, the
+    price and the book, and never the clock. `latest_quotes` keeps the last
+    price it ever saw, so a closed market still looks like a tradeable one and
+    the fill goes in at a price nobody could have got.
+
+    The engine's lanes have always gated on market_open; only the manual path
+    did not.
+    """
+    try:
+        from .v2_live import market_open
+        if market_open(market):
+            return None
+    except Exception:
+        return None                 # cannot tell -> do not block the operator
+    return JSONResponse(
+        {"error": "market is closed — a fill here would use the last stored "
+                  "price, not one you could have traded at"}, status_code=409)
+
+
 @router.post("/api/buy")
 def api_buy(payload: dict):
     """Manual paper buy into the v2 book — user-initiated, bypasses the engine's
@@ -1582,6 +1605,9 @@ def api_buy(payload: dict):
     market = payload.get("market", "IN")
     if not sym:
         return JSONResponse({"error": "no symbol"}, status_code=400)
+    shut = _market_shut(market)
+    if shut is not None:
+        return shut
     px = float((_live_map(market).get(sym) or {}).get("price") or 0)
     if px <= 0:
         return JSONResponse({"error": "no live price for " + sym}, status_code=400)
@@ -1651,6 +1677,9 @@ def api_sell(payload: dict):
     """Manual paper sell — close a held position at the live price."""
     sym = str(payload.get("symbol", "")).upper().strip()
     market = payload.get("market", "IN")
+    shut = _market_shut(market)
+    if shut is not None:
+        return shut
     v2 = _rw()
     try:
         r = v2.execute("SELECT id,entry_price,shares,strategy FROM v2_positions WHERE market=? AND symbol=?",
@@ -3635,8 +3664,8 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <a data-t=positions onclick="go('positions')"><svg viewBox="0 0 24 24"><rect x=3 y=6 width=18 height=13 rx=2/><path d="M3 10h18"/></svg><span class=lbl>Portfolio</span></a>
   <a data-t=orders onclick="go('orders')"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class=lbl>Orders</span></a>
   <a data-t=analyze onclick="go('analyze')"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=lbl>Analyze</span></a>
-  <a data-t=admin id=navadmin style="display:none" onclick="go('admin')"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 4.5-3.2 8.3-8 9-4.8-.7-8-4.5-8-9V7z"/></svg>admin</a>
-<a data-t=upgrade onclick="go('upgrade')"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8 6.6 19.7l1.2-6.1L3.3 9.4l6.1-.8z"/></svg>plans</a>
+  <a data-t=admin id=navadmin style="display:none" onclick="go('admin')"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 4.5-3.2 8.3-8 9-4.8-.7-8-4.5-8-9V7z"/></svg><span class=lbl>Admin</span></a>
+<a data-t=upgrade onclick="go('upgrade')"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8 6.6 19.7l1.2-6.1L3.3 9.4l6.1-.8z"/></svg><span class=lbl>Plans</span></a>
 <a data-t=account onclick="go('account')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class=lbl>Account</span></a>
   <div class=sidefoot>
    <div class=iconbtn onclick=toggleTheme() title="Light / dark"><svg id=themeicon viewBox="0 0 24 24"></svg></div>
