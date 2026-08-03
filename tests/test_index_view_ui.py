@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -517,21 +518,76 @@ class BooksLayoutTest(unittest.TestCase):
 
     def test_a_missing_options_tile_does_not_leave_a_half_width_hole(self) -> None:
         """auto-fit collapses the empty track; `1fr 1fr` would not."""
-        self.assertIn("repeat(auto-fit,minmax(360px,1fr))", self.css)
+        self.assertIn("repeat(auto-fit,minmax(270px,1fr))", self.css)
         self.assertIn(".fd-books>div:empty{display:none}", self.css)
 
     def test_the_two_cards_are_equal_height(self) -> None:
         """The stock tile carries a 150px chart the options tile has no series
         for; without stretch the second card is a stub beside a tall one."""
-        self.assertIn(".fd-books{display:grid;grid-template-columns:1fr;gap:12px;"
-                      "align-items:stretch}", self.css)
+        self.assertIn("align-items:stretch}", self.css)
         self.assertIn(".fd-books .fd-card{flex:1;display:flex;flex-direction:column", self.css)
 
     def test_stat_cells_clip_rather_than_collide(self) -> None:
         self.assertIn(".fd-ol,.fd-ov{white-space:nowrap;overflow:hidden;"
                       "text-overflow:ellipsis}", self.css)
 
-    def test_the_stat_row_drops_to_two_columns_on_a_phone(self) -> None:
-        """Three columns in 347px clipped the overall figure's percentage."""
-        self.assertIn("@media(max-width:560px){.fd-obook{grid-template-columns:1fr 1fr}}",
-                      self.css)
+    def test_the_pair_is_not_gated_on_the_viewport_width(self) -> None:
+        """The feed is a column beside the rail, so its width is not the
+        window's: a 1000px retina window leaves the feed 690px — room for two
+        tiles — while a `min-width:1080px` gate stacked them anyway. auto-fit
+        measures the CONTAINER, which is the thing that actually decides."""
+        self.assertIn(".fd-books{display:grid;grid-template-columns:"
+                      "repeat(auto-fit,minmax(270px,1fr));", self.css)
+
+    def test_each_tile_sizes_its_type_off_its_own_width(self) -> None:
+        """The same viewport yields 282px or 427px tiles depending on the rail,
+        so a viewport media query is the wrong instrument here."""
+        self.assertIn("container-type:inline-size", self.css)
+        self.assertIn("@container (max-width:285px)", self.css)
+
+    def test_the_container_query_comes_after_the_rules_it_overrides(self) -> None:
+        """A container query carries NO extra specificity. Placed above them it
+        parsed, matched, and lost every declaration to the later rule — the
+        fonts simply never changed."""
+        self.assertLess(self.css.index(".fd-books .fd-big{font-size:29px"),
+                        self.css.index("@container (max-width:285px)"))
+
+
+class SpaCssIsWellFormedTest(unittest.TestCase):
+    """Comment delimiters in the inline stylesheet must balance.
+
+    Twice in one sitting an edit left a stray `*/` after an existing comment's
+    close. CSS then treats the following text as garbage and drops the rule
+    after it — silently. Nothing failed, no console error, the page just kept
+    the old sizes and looked like the change had not deployed.
+    """
+
+    def _style(self) -> str:
+        src = V2_WEB.read_text(encoding="utf-8")
+        spa = re.findall(r'SPA_HTML = r"""(.*?)"""', src, re.S)[-1]
+        return "".join(re.findall(r"<style>(.*?)</style>", spa, re.S))
+
+    def test_comment_delimiters_balance(self) -> None:
+        css = self._style()
+        self.assertEqual(css.count("/*"), css.count("*/"),
+                         "a stray */ silently drops the rule that follows it")
+
+    def test_no_comment_closes_before_it_opens(self) -> None:
+        """Catches the exact shape of the bug: `... */\\n   more prose */`."""
+        depth, css = 0, self._style()
+        i = 0
+        while i < len(css) - 1:
+            pair = css[i:i + 2]
+            if pair == "/*" and depth == 0:
+                depth, i = 1, i + 2
+                continue
+            if pair == "*/":
+                self.assertEqual(depth, 1, f"unopened */ at offset {i}")
+                depth, i = 0, i + 2
+                continue
+            i += 1
+        self.assertEqual(depth, 0, "unterminated /* comment")
+
+    def test_braces_balance_once_comments_are_stripped(self) -> None:
+        css = re.sub(r"/\*.*?\*/", "", self._style(), flags=re.S)
+        self.assertEqual(css.count("{"), css.count("}"))

@@ -3639,14 +3639,25 @@ input[type=date]{width:auto;padding:8px 11px}
    the P&L outside the card: the Sold column's returns were clipped at the right
    edge while Bought, holding shorter equity tickers, fitted fine. */
 .fd-movecol{min-width:0}
-/* The two books, side by side on a wide screen and stacked on a phone. They are
+/* The two books, side by side whenever the FEED has room for them. They are
    funded separately, so they are shown separately.
-   auto-fit, not `1fr 1fr`: when the options book is absent its div collapses to
-   :empty and the remaining tile takes the FULL width instead of sitting in a
-   half-width column with a hole beside it. */
-.fd-books{display:grid;grid-template-columns:1fr;gap:12px;align-items:stretch}
-@media(min-width:1080px){.fd-books{grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}}
-.fd-books>div{min-width:0;display:flex}
+
+   No `@media(min-width:1080px)` gate here, and that is the point: the feed is a
+   column beside the rail, so its width is not the viewport's. A 1000px retina
+   window leaves the feed 690px — ample for two tiles — yet a 1080px viewport
+   gate stacked them anyway. auto-fit measures the CONTAINER, so the pair splits
+   exactly when it fits and collapses to one column on a phone with no
+   breakpoint to keep in sync.
+
+   auto-fit, not `1fr 1fr`, for the second reason too: when the options book is
+   absent its div collapses to :empty and the remaining tile takes the FULL
+   width instead of sitting in a half-width column with a hole beside it. */
+.fd-books{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));
+ gap:12px;align-items:stretch}
+/* each tile sizes its own type off ITS width, not the window's — at 1280 the
+   pair is 282px each, at 1920 it is 427px, and the same viewport can produce
+   either depending on the rail */
+.fd-books>div{min-width:0;display:flex;container-type:inline-size}
 .fd-books>div:empty{display:none}
 /* equal-height pair: the stock tile carries a 150px chart the options tile has
    no series for, so without this the second card is a stub next to a tall one */
@@ -3662,7 +3673,22 @@ input[type=date]{width:auto;padding:8px 11px}
 .fd-ol{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
 .fd-ov{font-size:14px;font-weight:600;margin-top:2px}
 .fd-osub{font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
-@media(max-width:560px){.fd-obook{grid-template-columns:1fr 1fr}}
+/* MUST come after .fd-big and .fd-obook above: a container query carries no
+   extra specificity, so placed before them it parsed, matched, and lost every
+   declaration to the later rule.
+   The stat labels are short enough ("trades", "win") that three columns still
+   fit at 282px, so this only shrinks type — dropping to two columns made the
+   tile 100px taller for no gain.
+
+   285px is the CONTENT box: #fdOpts is itself the .fd-card (fdSet sets the
+   class on it), so 18px of padding and a border come off the tile width before
+   the query sees it. A 339px tile measures 301 and keeps the full 29px. */
+@container (max-width:285px){
+ .fd-books .fd-big{font-size:24px}
+ .fd-books .fd-chg{font-size:12.5px}
+ .fd-books .fd-hd{gap:9px}
+ .fd-books .fd-obook{gap:8px}
+}
 /* Trial / upgrade banner. Sits above the tabs so it is seen without hunting,
    and is display:none until /v2/api/me says there is something to say. */
 .tbar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
@@ -4039,10 +4065,10 @@ function renderOptionsTile(o,ccy){
   +'<div class=fd-obook>'
    +'<div><div class=fd-ol>realised</div><div class="fd-ov '+((o.options_realised||0)>=0?'up':'dn')+'">'
     +((o.options_realised||0)>=0?'+':'')+ccy+f.format(Math.abs(Math.round(o.options_realised||0)))+'</div></div>'
-   +'<div><div class=fd-ol>closed trades</div><div class=fd-ov>'+(o.options_trades||0)+'</div></div>'
+   +'<div><div class=fd-ol>trades</div><div class=fd-ov>'+(o.options_trades||0)+'</div></div>'
    // the sample size is stated NEXT TO the win rate, never on its own: this book
    // has five closed trades, and a bare "60%" off five would read as an edge
-   +'<div><div class=fd-ol>win rate</div><div class=fd-ov>'
+   +'<div><div class=fd-ol>win</div><div class=fd-ov>'
     +(o.options_win==null?'\u2014':o.options_win+'%')+'</div>'
     +(o.options_win==null?'':'<div class=fd-osub>of '+(o.options_trades||0)+'</div>')+'</div>'
   +'</div>'
