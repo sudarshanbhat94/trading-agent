@@ -208,3 +208,72 @@ class IndexSearchTest(unittest.TestCase):
     def test_an_ordinary_search_is_unaffected(self) -> None:
         syms = [x["symbol"] for x in self.results("relianc")]
         self.assertEqual(syms, ["RELIANCE"])
+
+
+class IndexViewLoadingTest(unittest.TestCase):
+    """The chart must not wait on the read.
+
+    Measured in a real browser against the live site: /v2/api/index-candles
+    returns in 37ms while /v2/api/index-call had still not returned after 12
+    SECONDS. They were behind a single Promise.all, so the page sat on
+    "loading NIFTY…" indefinitely while the data it needed was already there —
+    which is exactly what "it shows nothing" looked like.
+    """
+
+    def _view(self, code_only=False):
+        src = V2_WEB.read_text(encoding="utf-8")
+        active = src[src.rindex('SPA_HTML = r"""'):]
+        view = active[active.index("function renderIndex("):active.index("function renderStock(")]
+        if code_only:
+            # comments explain the bug by name, so they must not be what the
+            # assertion matches on
+            view = "\n".join(l for l in view.splitlines() if not l.strip().startswith("//"))
+        return view
+
+    def test_the_two_requests_are_not_joined(self) -> None:
+        view = self._view(code_only=True)
+        self.assertNotIn("Promise.all", view,
+                         "the chart must not block on the slow read")
+
+    def test_the_chart_renders_from_its_own_response(self) -> None:
+        view = self._view()
+        chart = view[:view.index("function loadIndexRead(")]
+        self.assertIn("/v2/api/index-candles", chart)
+        self.assertIn("idxCandleSVG(", chart)
+        self.assertNotIn("/v2/api/index-call", chart)
+
+    def test_the_read_fills_in_separately(self) -> None:
+        view = self._view()
+        self.assertIn("id=idxread", view)
+        self.assertIn("loadIndexRead(sym)", view)
+        read = view[view.index("function loadIndexRead("):]
+        self.assertIn("/v2/api/index-call", read)
+
+    def test_a_failed_read_does_not_blank_the_chart(self) -> None:
+        """The chart is already on screen by then; a slow or broken read must
+        degrade to a message inside its own box."""
+        view = self._view()
+        read = view[view.index("function loadIndexRead("):]
+        self.assertIn("read unavailable", read)
+        self.assertIn("getElementById('idxread')", read)
+
+
+class IndexCallCacheTest(unittest.TestCase):
+    def test_the_endpoint_is_cached(self) -> None:
+        """Over 12 seconds per request: it reloads settings, scans ~2,400 live
+        quotes for the internals, and per index reads 60 daily bars and sums the
+        whole option chain. None of it changes between page views."""
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web.api_index_call)
+        self.assertIn("_index_call_cache", src)
+        self.assertIn("INDEX_CALL_TTL", src)
+        self.assertGreaterEqual(v2_web.INDEX_CALL_TTL, 30)
+
+    def test_the_engine_does_not_read_this_cache(self) -> None:
+        """A stale display value must never reach a trading decision — the
+        engine computes its own verdict inside index_options_pass."""
+        import inspect
+        from app import v2_live
+        self.assertNotIn("_index_call_cache", inspect.getsource(v2_live.index_options_pass))
+        self.assertIn("index_direction.decide(", inspect.getsource(v2_live.index_options_pass))

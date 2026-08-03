@@ -1094,6 +1094,10 @@ def api_index_candles(symbol: str = "NIFTY", limit: int = 120):
         atm_distance_pct=(live or {}).get("atm_distance_pct")))
 
 
+_index_call_cache: dict = {}
+INDEX_CALL_TTL = 120        # seconds; the readings are daily bars + slow internals
+
+
 @router.get("/api/index-call")
 def api_index_call():
     """Today's CE / PE / no-trade call per index, with every reading shown.
@@ -1103,6 +1107,19 @@ def api_index_call():
     answer — an option held through a flat market bleeds time value, so the
     engine is built to decline rather than to have a view every day.
     """
+    # CACHED. Measured from the browser this took over 12 SECONDS: it reloads
+    # the settings, scans ~2,400 live quotes for the market internals, and for
+    # EACH of four indices reads 60 daily bars out of fo.db, sums the whole
+    # option chain for OI and runs the decision. None of that changes between
+    # one page view and the next.
+    #
+    # The inputs are daily bars plus internals that move slowly, so a short
+    # cache costs nothing in freshness and turns an unusable endpoint into an
+    # instant one. The engine does NOT read this — it computes its own verdict
+    # in index_options_pass — so a stale read here can never affect a trade.
+    hit = _index_call_cache.get("v")
+    if hit is not None and time.time() - _index_call_cache.get("t", 0) < INDEX_CALL_TTL:
+        return JSONResponse(hit)
     try:
         from . import index_direction, market_internals, v2_live
         _index_settings_load()          # the operator's saved instrument list
@@ -1142,8 +1159,10 @@ def api_index_call():
                 verdict["call"] and
                 verdict["confidence"] >= _effective_min_conf(cfg, verdict["n_readings"]))
             out.append(verdict)
-        return JSONResponse(dict(enabled=True, auto_trade=bool(cfg.get("auto_trade")),
-                                 expiry=cfg.get("expiry"), calls=out))
+        payload = dict(enabled=True, auto_trade=bool(cfg.get("auto_trade")),
+                       expiry=cfg.get("expiry"), calls=out)
+        _index_call_cache["v"], _index_call_cache["t"] = payload, time.time()
+        return JSONResponse(payload)
     except Exception as exc:
         return JSONResponse(dict(enabled=False, calls=[], error=str(exc)[:120]))
 
@@ -4293,29 +4312,41 @@ function stock(sym,mkt){go('detail');renderStock(sym,mkt,'detail')}
 function isIndexSym(s){return ['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY'].indexOf((s||'').toUpperCase())>=0;}
 function renderIndex(sym,target){var el=document.getElementById(target);if(!el)return;
  // An INDEX is not an equity. It has no row in the liquid universe, so the
- // stock panel answered "not in liquid universe" and showed a blank page —
- // for the one instrument the engine actually trades options on. The pieces to
- // render it properly already existed and nothing was calling them.
- el.innerHTML='<div class=skel>loading '+esc(sym)+'…</div>';
+ // stock panel answered "not in liquid universe" and showed a blank page.
+ //
+ // The chart and the read are loaded SEPARATELY and rendered as each arrives.
+ // They were behind one Promise.all, and measured in the browser the candles
+ // come back in 37ms while the call takes over 12 SECONDS — it re-reads the
+ // whole option chain, the market internals and four indices on every request.
+ // So the page sat on "loading NIFTY…" indefinitely while the data it needed
+ // was already there.
  var back=(target=='detail')?'<div class=mut style="padding:12px 0;cursor:pointer" onclick="go(\'home\')">\u2039 back</div>':'';
- Promise.all([api('/v2/api/index-candles?symbol='+encodeURIComponent(sym)),
-              api('/v2/api/index-call')]).then(function(res){
-  var c=res[0].j||{},calls=((res[1].j||{}).calls||[]).filter(function(x){return x.symbol==sym;}),v=calls[0];
+ el.innerHTML=back+'<div class=skel>loading '+esc(sym)+'…</div>';
+ api('/v2/api/index-candles?symbol='+encodeURIComponent(sym)).then(function(r){
+  var c=r.j||{};
   var head='<div class=row style="align-items:baseline;margin-bottom:6px"><b style="font-size:18px">'+esc(sym)+'</b>'
    +'<span><span class=num style="font-size:18px;font-weight:600">'+(c.price==null?'\u2014':fmtn(c.price))+'</span>'
    +(c.chg==null?'':' '+pill(c.chg))+'</span></div>';
-  var callBox='';
-  if(v){var side=v.call||'no trade';
-   callBox='<div class=sec><span>today\u2019s read</span></div><div class=card>'
-    +'<div class=row><b style="font-size:15px">'+esc(side)+'</b>'
-    +'<span class=mut style="font-size:12px">'+Math.round((v.confidence||0)*100)+'% confidence \u00b7 '
-    +v.bullish+' bullish / '+v.bearish+' bearish</span></div>'
-    +'<div style="margin-top:8px">'+(v.reasons||[]).map(function(x){
-       return '<div class=mut style="font-size:12px;line-height:1.5">\u00b7 '+esc(x)+'</div>';}).join('')+'</div></div>';}
   el.innerHTML=back+head+'<div class=card>'+idxCandleSVG(c.candles||[])
    +'<div class=mut style="font-size:10.5px;margin-top:6px">15-min candles, estimated from the option chain via put-call parity'
-   +(c.pairs?(' \u00b7 '+c.pairs+' strike pairs'):'')+'</div></div>'+callBox;
+   +(c.pairs?(' \u00b7 '+c.pairs+' strike pairs'):'')+'</div></div>'
+   // the read arrives later and drops in here; it must never hold up the chart
+   +'<div class=sec><span>today\u2019s read</span></div><div id=idxread class=skel>loading\u2026</div>';
+  loadIndexRead(sym);
  }).catch(function(){el.innerHTML=back+'<div class=card><span class=mut>could not load '+esc(sym)+'</span></div>';});}
+function loadIndexRead(sym){
+ api('/v2/api/index-call').then(function(r){
+  var box=document.getElementById('idxread');if(!box)return;
+  var v=(((r.j||{}).calls)||[]).filter(function(x){return x.symbol==sym;})[0];
+  if(!v){box.className='';box.innerHTML='<div class=card><span class=mut>no read for '+esc(sym)+' today</span></div>';return;}
+  box.className='';
+  box.innerHTML='<div class=card><div class=row><b style="font-size:15px">'+esc(v.call||'no trade')+'</b>'
+   +'<span class=mut style="font-size:12px">'+Math.round((v.confidence||0)*100)+'% confidence \u00b7 '
+   +v.bullish+' bullish / '+v.bearish+' bearish</span></div>'
+   +'<div style="margin-top:8px">'+(v.reasons||[]).map(function(x){
+      return '<div class=mut style="font-size:12px;line-height:1.5">\u00b7 '+esc(x)+'</div>';}).join('')+'</div></div>';
+ }).catch(function(){var box=document.getElementById('idxread');
+  if(box){box.className='';box.innerHTML='<div class=card><span class=mut>read unavailable</span></div>';}});}
 function renderStock(sym,mkt,target){
  if(isIndexSym(sym))return renderIndex((sym||'').toUpperCase(),target);
  var el=document.getElementById(target);if(target=='detail')el.innerHTML='<div class=skel>analysing '+sym+'…</div>';
