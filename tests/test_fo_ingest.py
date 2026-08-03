@@ -121,3 +121,63 @@ class NumberTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeldContractLookupTest(unittest.TestCase):
+    """A position must stay priced after the ATM window moves past it.
+
+    _nfo_held filtered the WATCH LIST by held symbols, so a contract that
+    drifted out of the money simply stopped being quoted. On 2026-08-03
+    BANKNIFTY26AUG57500CE had not been priced since 07-31 — the book kept
+    marking it at a three-day-old price and showing 0%, and every exit rule was
+    being evaluated against that stale number.
+    """
+
+    ROWS = [
+        {"tradingsymbol": "BANKNIFTY26AUG57500CE", "instrument_key": "NSE_FO|1",
+         "expiry": "2026-08-26", "strike": "57500", "option_type": "CE",
+         "lot_size": "30", "name": "BANKNIFTY"},
+        {"tradingsymbol": "BANKNIFTY26AUG57400PE", "instrument_key": "NSE_FO|2",
+         "expiry": "2026-08-26", "strike": "57400", "option_type": "PE",
+         "lot_size": "30", "name": "BANKNIFTY"},
+    ]
+
+    def test_a_contract_is_found_by_name(self) -> None:
+        from app import nfo_contracts
+        out = nfo_contracts.by_symbols(["BANKNIFTY26AUG57500CE"], rows=self.ROWS)
+        self.assertEqual(len(out), 1)
+        row = out[0]
+        self.assertEqual(row["symbol"], "BANKNIFTY26AUG57500CE")
+        self.assertEqual(row["upstox_instrument_key"], "NSE_FO|1")
+        self.assertEqual(row["lot_size"], 30.0)
+        self.assertEqual(row["underlying"], "BANKNIFTY")
+        self.assertEqual(row["exchange"], "NSE")   # routes to the India provider
+
+    def test_lookup_is_case_insensitive_and_trims(self) -> None:
+        from app import nfo_contracts
+        self.assertEqual(len(nfo_contracts.by_symbols([" banknifty26aug57500ce "],
+                                                      rows=self.ROWS)), 1)
+
+    def test_unknown_symbols_are_skipped_not_fatal(self) -> None:
+        from app import nfo_contracts
+        out = nfo_contracts.by_symbols(["NOPE", "BANKNIFTY26AUG57500CE"], rows=self.ROWS)
+        self.assertEqual([r["symbol"] for r in out], ["BANKNIFTY26AUG57500CE"])
+
+    def test_empty_input_returns_nothing(self) -> None:
+        from app import nfo_contracts
+        for empty in ([], None, ["", "  "]):
+            self.assertEqual(nfo_contracts.by_symbols(empty, rows=self.ROWS), [])
+
+    def test_a_row_without_an_instrument_key_is_unusable(self) -> None:
+        from app import nfo_contracts
+        rows = [dict(self.ROWS[0], instrument_key="")]
+        self.assertEqual(nfo_contracts.by_symbols(["BANKNIFTY26AUG57500CE"], rows=rows), [])
+
+    def test_the_feed_falls_back_to_the_lookup(self) -> None:
+        """The fix itself: held symbols missing from the watch list must be
+        looked up, not dropped."""
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "scripts" / "v2_quote_feed.py").read_text(encoding="utf-8")
+        self.assertIn("nfo_contracts.by_symbols(missing)", src)
+        self.assertNotIn('return [c for c in contracts if c["symbol"].upper() in held]', src)

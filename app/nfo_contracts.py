@@ -123,6 +123,40 @@ def select(symbol, spot, rows=None, each_side=STRIKES_EACH_SIDE, today=None):
     return sorted(out, key=lambda r: (r["strike"], r["option_type"]))
 
 
+def by_symbols(symbols, rows=None):
+    """Contract rows for EXACT tradingsymbols, whatever the ATM window is doing.
+
+    `select()` returns a window around the money, which is right for scanning
+    candidates and wrong for a position you already hold: the underlying moves,
+    the window slides, and the contract you own drops out of it. On 2026-08-03
+    BANKNIFTY26AUG57500CE had not been quoted since 07-31 for exactly that
+    reason, and the position sat marked at a three-day-old price.
+
+    A held contract is looked up by name, so it stays priced until it is sold.
+    """
+    wanted = {str(s).strip().upper() for s in (symbols or []) if s}
+    if not wanted:
+        return []
+    rows = rows if rows is not None else master()
+    out = []
+    for r in rows or ():
+        ticker = (r.get("tradingsymbol") or "").strip().upper()
+        key = (r.get("instrument_key") or "").strip()
+        if ticker not in wanted or not key:
+            continue
+        out.append({
+            "symbol": ticker,
+            "upstox_instrument_key": key,
+            "exchange": "NSE",
+            "expiry": (r.get("expiry") or "")[:10],
+            "strike": _f(r.get("strike")),
+            "option_type": (r.get("option_type") or "").strip(),
+            "lot_size": _f(r.get("lot_size"), 0.0),
+            "underlying": (r.get("name") or "").strip().upper(),
+        })
+    return out
+
+
 def select_many(spots, each_side=STRIKES_EACH_SIDE, today=None):
     """{symbol: spot} -> flat list of contract rows for every index."""
     rows = master()

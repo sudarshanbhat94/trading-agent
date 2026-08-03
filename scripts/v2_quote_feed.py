@@ -180,7 +180,23 @@ def _nfo_held(contracts):
         con.close()
     except Exception:
         return []
-    return [c for c in contracts if c["symbol"].upper() in held]
+    if not held:
+        return []
+    have = {c["symbol"].upper(): c for c in contracts}
+    out = [have[s] for s in held if s in have]
+    # A held contract that has fallen OUT of the ATM window is looked up by
+    # name instead of being dropped. Filtering the watch list was the bug:
+    # the underlying moves, the window slides, and the position you own stops
+    # being quoted — BANKNIFTY26AUG57500CE went unpriced from 07-31 to 08-03
+    # while the book kept marking it at the last price it ever saw.
+    missing = [s for s in held if s not in have]
+    if missing:
+        try:
+            from app import nfo_contracts
+            out.extend(nfo_contracts.by_symbols(missing))
+        except Exception as exc:
+            print(f"  [NFO] held lookup failed: {str(exc)[:100]}", flush=True)
+    return out
 
 
 def _nfo_worker(interval, hot_interval):
