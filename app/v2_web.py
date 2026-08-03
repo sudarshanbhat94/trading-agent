@@ -3678,7 +3678,7 @@ input[type=date]{width:auto;padding:8px 11px}
 .fd-books .fd-card>.fd-meta:last-child{margin-top:auto;padding-top:10px}
 .fd-hd>div{min-width:0}          /* title wraps inside the card, not through it */
 .fd-books .fd-big{font-size:29px;overflow-wrap:anywhere}
-.fd-obook{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px;
+.fd-obook{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px 10px;margin-top:14px;
  padding-top:12px;border-top:1px solid var(--line)}
 /* clip rather than collide: three columns of un-truncated numbers ran into each
    other and rendered "OVERALLCASH" / "1,27,3001" as one unreadable string */
@@ -3700,7 +3700,20 @@ input[type=date]{width:auto;padding:8px 11px}
  .fd-books .fd-big{font-size:24px}
  .fd-books .fd-chg{font-size:12.5px}
  .fd-books .fd-hd{gap:9px}
- .fd-books .fd-obook{gap:8px}
+}
+/* A NARROW tile is a tall tile, and on a phone the pair ran to 1,104px against
+   an 812px screen — 1.35 screens, a third of the whole page, with the first
+   card not even fitting. This trims the chrome rather than the content: the
+   numbers all survive, the 150px chart does not need to be 150px, and the
+   generous desktop spacing is what made it that tall. Separate threshold from
+   the type rule above on purpose — a 339px tile wants the full 29px headline
+   but has no use for a half-screen chart. */
+@container (max-width:315px){
+ .fd-books .fd-chart svg{height:104px}
+ .fd-books .fd-chart{margin-top:10px}
+ .fd-books .fd-big{margin:10px 0 2px}
+ .fd-books .fd-obook{gap:11px 10px;margin-top:11px;padding-top:10px}
+ .fd-books .fd-card{padding:14px 16px}
 }
 /* Trial / upgrade banner. Sits above the tabs so it is seen without hunting,
    and is display:none until /v2/api/me says there is something to say. */
@@ -4034,13 +4047,15 @@ function bookCard(c){
  var s=c.stats||{},ov=s.overall||0,rl=s.realised||0;
  // percent on its OWN line, not trailing the rupee figure: inline it needed
  // 113px in a 96px cell on a phone and the ellipsis ate the number
+ // ONE grid of six, not two grids of three: each .fd-obook carries a border,
+ // a margin and padding, so a second one cost ~27px of pure chrome per tile on
+ // a phone where the pair already ran past a full screen.
  var stats=s.budget==null?'':
   '<div class=fd-obook>'
    +cell('overall',money(ov),ov>=0?'up':'dn',
          (s.budget?(ov>=0?'+':'')+Math.round(ov/s.budget*10000)/100+'%':''))
    +cell('cash',fmtc(c.ccy,s.cash||0))
    +cell('deployed',fmtc(c.ccy,s.deployed||0))
-  +'</div><div class=fd-obook>'
    +cell('realised',money(rl),rl>=0?'up':'dn')
    +cell('trades',s.trades||0)
    // the sample size is stated NEXT TO the win rate, never on its own: six
@@ -4102,9 +4117,12 @@ function renderOptionsTile(o,ccy){
   // and spreading six trades across a calendar would draw flat stretches that
   // look like holding when it was simply idle
   series:curve,baseline:o.options_budget,
+  // "separate book" is already in the header meta and the greeting line names
+  // both pots, so the footnote does not need to carry the whole explanation \u2014
+  // three wrapped lines of it was the tallest thing in the tile on a phone
   note:curve.length>1
-   ?'one point per closed trade \u00b7 '+(o.options_trades||0)+' so far \u2014 funded '
-    +'separately from the stock book, its profits are not counted there'
+   ?'one point per closed trade \u00b7 '+(o.options_trades||0)+' so far \u00b7 not counted '
+    +'in the stock book'
    :'funded separately from the stock book \u2014 its profits are not counted there',
   stats:{budget:o.options_budget,overall:o.options_overall,cash:o.options_cash,
          deployed:o.options_value,realised:o.options_realised,

@@ -467,9 +467,11 @@ class OptionsTileTest(unittest.TestCase):
         self.assertIn("\u25bc", html)
 
     def test_it_says_the_books_are_separate(self) -> None:
-        """The sentence that stops a reader adding the two percentages
-        together."""
-        self.assertIn("not counted there", self._render(self.BOOK)["html"])
+        """The line that stops a reader adding the two percentages together.
+        Wording is free to change; saying it at all is not."""
+        html = self._render(self.BOOK)["html"]
+        self.assertIn("not counted in the stock book", html)
+        self.assertIn("separate book", html)      # and again in the header meta
 
     def test_an_unavailable_book_renders_nothing(self) -> None:
         """No book is not the same as a book worth zero."""
