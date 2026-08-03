@@ -44,6 +44,16 @@ LIVE_SOURCE = "upstox-live"
 # approximation rather than dressed up as a true weighting.
 HEAVYWEIGHT_N = 15
 NIFTY50_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv"
+# Constituent list per index. BANKNIFTY is twelve banks, not the Nifty 50 — so
+# explaining a Bank Nifty move with Nifty heavyweights would be a confident
+# answer about the wrong basket. Each index is asked about its OWN members.
+INDEX_LISTS = {
+    "NIFTY": "ind_nifty50list.csv",
+    "BANKNIFTY": "ind_niftybanklist.csv",
+    "FINNIFTY": "ind_niftyfinancialserviceslist.csv",
+    "MIDCPNIFTY": "ind_niftymidcapselectlist.csv",
+}
+_LISTS: dict = {}
 _MEMBERS: tuple = (0.0, frozenset())
 MEMBERS_TTL = 12 * 3600
 
@@ -113,6 +123,94 @@ def nifty50(now=None):
     except Exception as exc:
         _LOG.warning("nifty50 list failed: %s", exc)
     return _MEMBERS[1]
+
+
+def members(index_key, now=None):
+    """Constituents of ONE index, cached, with the last good set kept on
+    failure — an NSE outage should narrow the reading, not silently swap the
+    basket for whatever happened to trade."""
+    import time
+    import csv as _csv
+    import io as _io
+    key = str(index_key or "").upper()
+    fname = INDEX_LISTS.get(key)
+    if not fname:
+        return frozenset()
+    stamp = now or time.time()
+    have = _LISTS.get(key)
+    if have and stamp - have[0] < MEMBERS_TTL:
+        return have[1]
+    try:
+        import httpx
+        ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+              "Accept": "*/*", "Referer": "https://www.nseindia.com/"}
+        url = "https://nsearchives.nseindia.com/content/indices/" + fname
+        text = httpx.get(url, headers=ua, timeout=30, follow_redirects=True).text
+        names = {(r.get("Symbol") or "").strip().upper()
+                 for r in _csv.DictReader(_io.StringIO(text))}
+        names.discard("")
+        if names:
+            _LISTS[key] = (stamp, frozenset(names))
+    except Exception as exc:
+        _LOG.warning("constituent list for %s failed: %s", key, exc)
+    return (_LISTS.get(key) or (0, frozenset()))[1]
+
+
+def breakdown(index_key, rows=None, top=8):
+    """WHY the index is doing what it is doing, from its own constituents.
+
+    "heavyweights +0.56%" is a headline, not an explanation. This returns the
+    names underneath it: who is pulling the index up, who is dragging, how the
+    basket splits, and which sectors within it are moving — so a call can be
+    argued with instead of taken on faith.
+
+    Contribution is turnover-weighted. Free-float weights are not in the
+    database and the largest caps are reliably the most traded, so turnover is
+    a stand-in — stated as one rather than dressed up as the real weighting.
+    """
+    rows = rows if rows is not None else snapshot()
+    mem = members(index_key)
+    if not mem:
+        return None                     # no constituent list -> no claim
+    pool = [r for r in rows if r["symbol"] in mem]
+    if not pool:
+        return None
+    total = sum(r["turnover"] for r in pool) or 0.0
+    ranked = sorted(pool, key=lambda r: -r["chg"])
+    up = [r for r in pool if r["chg"] > 0.05]
+    down = [r for r in pool if r["chg"] < -0.05]
+    weighted = (sum(r["chg"] * r["turnover"] for r in pool) / total) if total else 0.0
+
+    def _fmt(r):
+        share = (r["turnover"] / total * 100) if total else 0.0
+        return dict(symbol=r["symbol"], chg=round(r["chg"], 2),
+                    price=round(r["price"], 2), weight_pct=round(share, 1),
+                    # what this name alone did to the index, in index-percent
+                    contribution=round(r["chg"] * share / 100, 3),
+                    sector=r["sector"] or "")
+
+    sect: dict = {}
+    for r in pool:
+        name = r["sector"] or "Other"
+        b = sect.setdefault(name, [0.0, 0.0, 0])
+        b[0] += r["chg"] * r["turnover"]
+        b[1] += r["turnover"]
+        b[2] += 1
+    sectors_out = sorted(
+        (dict(sector=k, chg=round(v[0] / v[1], 2) if v[1] else 0.0, n=v[2])
+         for k, v in sect.items()), key=lambda x: -x["chg"])
+
+    return dict(index=str(index_key).upper(), members=len(pool),
+                weighted_move=round(weighted, 3),
+                advances=len(up), declines=len(down),
+                flat=len(pool) - len(up) - len(down),
+                leaders=[_fmt(r) for r in ranked[:top]],
+                laggards=[_fmt(r) for r in ranked[-top:][::-1]],
+                # the names that MOVED the index most, either way
+                movers=[_fmt(r) for r in sorted(pool, key=lambda r: -abs(
+                    r["chg"] * (r["turnover"] / total if total else 0)))[:top]],
+                sectors=sectors_out)
 
 
 def contribution(rows, top=HEAVYWEIGHT_N, members=None):

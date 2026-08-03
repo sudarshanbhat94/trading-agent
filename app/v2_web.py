@@ -1059,6 +1059,43 @@ def api_admin_user_update(uid: int, payload: dict, user=Depends(require_admin_se
                              active=bool((updated or {}).get("active"))))
 
 
+_index_detail_cache: dict = {}
+INDEX_DETAIL_TTL = 45
+
+
+@router.get("/api/index-detail")
+def api_index_detail(symbol: str = "NIFTY", user=Depends(require_session)):
+    """WHY the index is moving: the constituents underneath it.
+
+    The read alone said "heavyweights +0.56%", which is a headline and not an
+    explanation — you cannot argue with it or check it. This returns the names:
+    who is pulling it up, who is dragging it down, which of them actually moved
+    the index once weighted, how the basket splits, and the sectors inside it.
+
+    Each index is asked about its OWN members. Bank Nifty is twelve banks, not
+    the Nifty 50, and explaining a Bank Nifty move with Nifty heavyweights
+    would be a confident answer about the wrong basket.
+    """
+    from . import market_internals, v2_live
+    key = str(symbol or "").upper()
+    if key not in v2_live.INDEX_ALLOWED:
+        return JSONResponse(dict(error="unknown index"), status_code=400)
+    hit = _index_detail_cache.get(key)
+    if hit and time.time() - hit[0] < INDEX_DETAIL_TTL:
+        return JSONResponse(hit[1])
+    try:
+        data = market_internals.breakdown(key)
+    except Exception as exc:
+        _LOG.warning("index breakdown failed for %s: %s", key, exc)
+        data = None
+    if not data:
+        return JSONResponse(dict(symbol=key, available=False,
+                                 reason="constituent list unavailable"))
+    data["available"] = True
+    _index_detail_cache[key] = (time.time(), data)
+    return JSONResponse(data)
+
+
 @router.get("/api/index-candles")
 def api_index_candles(symbol: str = "NIFTY", limit: int = 120):
     """Intraday candles for an index, plus the live level.
@@ -4342,9 +4379,54 @@ function renderIndex(sym,target,contract){var el=document.getElementById(target)
    +'<div class=mut style="font-size:10.5px;margin-top:6px">15-min candles, estimated from the option chain via put-call parity'
    +(c.pairs?(' \u00b7 '+c.pairs+' strike pairs'):'')+'</div></div>'
    // the read arrives later and drops in here; it must never hold up the chart
-   +'<div class=sec><span>today\u2019s read</span></div><div id=idxread class=skel>loading\u2026</div>';
-  loadIndexRead(sym);
+   +'<div class=sec><span>today\u2019s read</span></div><div id=idxread class=skel>loading\u2026</div>'
+   +'<div id=idxwhy></div>';
+  loadIndexRead(sym);loadIndexWhy(sym);
  }).catch(function(){el.innerHTML=back+'<div class=card><span class=mut>could not load '+esc(sym)+'</span></div>';});}
+function idxNameRow(x,worst){
+ var c=x.chg>=0?'up':'dn';
+ return '<div class=lrow style="display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:10px;align-items:center;padding:7px 0">'
+  +'<span style="min-width:0"><b style="font-size:13px">'+esc(x.symbol)+'</b>'
+   +(x.sector?('<span class="mut" style="display:block;font-size:10.5px">'+esc(x.sector)+'</span>'):'')+'</span>'
+  +'<span class="num mut" style="font-size:11.5px">'+x.weight_pct+'% wt</span>'
+  +'<span class="num '+c+'" style="font-size:13px;font-weight:600;min-width:56px;text-align:right">'+sgn(x.chg)+'%</span>'
+  +'<span class="num '+(x.contribution>=0?'up':'dn')+'" style="font-size:11.5px;min-width:60px;text-align:right">'
+   +sgn(x.contribution)+'%<span class=mut> idx</span></span></div>';}
+function loadIndexWhy(sym){
+ var box=document.getElementById('idxwhy');if(!box)return;
+ box.innerHTML='<div class=sec><span>what is moving it</span></div><div class=skel>loading\u2026</div>';
+ api('/v2/api/index-detail?symbol='+encodeURIComponent(sym)).then(function(r){
+  var d=r.j||{};
+  if(!r.ok||!d.available){
+   box.innerHTML='<div class=sec><span>what is moving it</span></div>'
+    +'<div class=card><span class=mut style="font-size:12px">'
+    +esc((d&&d.reason)||'constituent breakdown unavailable')+'</span></div>';return;}
+  // The point of this block: "heavyweights +0.56%" is a headline. These are the
+  // names underneath it, so the call can be argued with instead of believed.
+  var head='<div class=card style="margin-bottom:10px"><div class=row style="align-items:baseline">'
+   +'<span class=mut style="font-size:12px">'+d.members+' constituents</span>'
+   +'<span><span class="num '+(d.weighted_move>=0?'up':'dn')+'" style="font-size:15px;font-weight:600">'
+   +sgn(d.weighted_move)+'%</span><span class=mut style="font-size:11px"> turnover-weighted</span></span></div>'
+   +'<div class=mut style="font-size:12px;margin-top:6px">'
+   +'<span class=up>'+d.advances+' up</span> \u00b7 <span class=dn>'+d.declines+' down</span>'
+   +(d.flat?(' \u00b7 '+d.flat+' flat'):'')+'</div></div>';
+  var movers=(d.movers||[]).length?('<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:12px 0 4px">biggest effect on the index</div>'
+    +'<div class=card style="padding:2px 15px">'+d.movers.map(function(x){return idxNameRow(x);}).join('')+'</div>'):'';
+  var lead=(d.leaders||[]).length?('<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:14px 0 4px">leading</div>'
+    +'<div class=card style="padding:2px 15px">'+d.leaders.slice(0,5).map(function(x){return idxNameRow(x);}).join('')+'</div>'):'';
+  var lag=(d.laggards||[]).length?('<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:14px 0 4px">dragging</div>'
+    +'<div class=card style="padding:2px 15px">'+d.laggards.slice(0,5).map(function(x){return idxNameRow(x);}).join('')+'</div>'):'';
+  var sec=(d.sectors||[]).length>1?('<div class=mut style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:14px 0 4px">sectors within the index</div>'
+    +'<div class=card style="padding:2px 15px">'+d.sectors.map(function(x){
+      return '<div class=lrow style="display:flex;justify-content:space-between;padding:6px 0">'
+       +'<span style="font-size:12.5px">'+esc(x.sector)+'<span class=mut style="font-size:11px"> \u00b7 '+x.n+'</span></span>'
+       +'<span class="num '+(x.chg>=0?'up':'dn')+'" style="font-size:12.5px;font-weight:600">'+sgn(x.chg)+'%</span></div>';}).join('')
+    +'</div>'):'';
+  box.innerHTML='<div class=sec><span>what is moving it</span></div>'+head+movers+lead+lag+sec
+   +'<div class=mut style="font-size:11px;margin-top:10px;line-height:1.5">'
+   +'"idx" is what each name did to the index once weighted by turnover. Turnover stands in for '
+   +'free-float weight, which is not in the data.</div>';
+ }).catch(function(){box.innerHTML='';});}
 function loadIndexRead(sym){
  api('/v2/api/index-call').then(function(r){
   var box=document.getElementById('idxread');if(!box)return;

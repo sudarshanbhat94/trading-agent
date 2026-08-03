@@ -203,6 +203,7 @@ ROUTE_FEATURES = {
     "/v2/api/attribution": "history_full",
     "/v2/api/stock/{symbol}": "market_internals",
     "/v2/api/index-candles": "index_candles",
+    "/v2/api/index-detail": "market_internals",
     "/v2/api/watchlist": "paper_book",
     "/v2/api/watchlist/{symbol}": "paper_book",
     "/v2/api/alerts": "paper_book",

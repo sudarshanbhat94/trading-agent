@@ -329,3 +329,82 @@ class OptionContractRoutingTest(unittest.TestCase):
         body = active[active.index("function renderStock("):]
         self.assertIn("optionUnderlying(sym)", body[:400])
         self.assertIn("renderIndex(und,target", body[:600])
+
+
+class IndexBreakdownTest(unittest.TestCase):
+    """WHY the index is moving, from its own constituents.
+
+    The read said "heavyweights +0.56% (turnover-weighted): TCS +3.8%…" and
+    stopped. That is a headline, not an explanation — there is nothing in it to
+    check or argue with. And for BANKNIFTY there was no constituent line at all,
+    because the only member list in the code was the Nifty 50.
+    """
+
+    SNAP = [
+        dict(symbol="HDFCBANK", price=1700.0, open=1670.0, high=1705.0, low=1665.0,
+             volume=1_000_000.0, sector="Financial Services", chg=1.80, turnover=1.7e9),
+        dict(symbol="ICICIBANK", price=1460.0, open=1435.0, high=1465.0, low=1430.0,
+             volume=800_000.0, sector="Financial Services", chg=1.74, turnover=1.2e9),
+        dict(symbol="KOTAKBANK", price=1750.0, open=1770.0, high=1775.0, low=1745.0,
+             volume=400_000.0, sector="Financial Services", chg=-1.13, turnover=7.0e8),
+        dict(symbol="RELIANCE", price=1311.0, open=1305.0, high=1315.0, low=1300.0,
+             volume=900_000.0, sector="Oil Gas", chg=0.46, turnover=1.2e9),
+    ]
+    BANKS = frozenset({"HDFCBANK", "ICICIBANK", "KOTAKBANK"})
+
+    def setUp(self) -> None:
+        from app import market_internals as mi
+        self.mi = mi
+        self._orig = mi.members
+        mi.members = lambda key, now=None: self.BANKS if key == "BANKNIFTY" else frozenset()
+
+    def tearDown(self) -> None:
+        self.mi.members = self._orig
+
+    def test_only_the_index_own_members_are_used(self) -> None:
+        """RELIANCE is in the snapshot and is not a bank. Explaining a Bank
+        Nifty move with it would be a confident answer about the wrong
+        basket."""
+        d = self.mi.breakdown("BANKNIFTY", rows=self.SNAP)
+        syms = {x["symbol"] for x in d["movers"]}
+        self.assertNotIn("RELIANCE", syms)
+        self.assertEqual(d["members"], 3)
+
+    def test_it_names_who_is_leading_and_who_is_dragging(self) -> None:
+        d = self.mi.breakdown("BANKNIFTY", rows=self.SNAP)
+        self.assertEqual(d["leaders"][0]["symbol"], "HDFCBANK")
+        self.assertEqual(d["laggards"][0]["symbol"], "KOTAKBANK")
+
+    def test_contribution_is_weighted_not_just_the_percentage_move(self) -> None:
+        """A 2% move in a name worth 5% of the basket is not the same event as
+        a 2% move in one worth 30%, and only the weighted figure says so."""
+        d = self.mi.breakdown("BANKNIFTY", rows=self.SNAP)
+        hdfc = [x for x in d["movers"] if x["symbol"] == "HDFCBANK"][0]
+        self.assertLess(hdfc["contribution"], hdfc["chg"])
+        self.assertAlmostEqual(hdfc["contribution"],
+                               round(hdfc["chg"] * hdfc["weight_pct"] / 100, 3), places=3)
+
+    def test_the_weighted_move_reconciles_with_the_parts(self) -> None:
+        d = self.mi.breakdown("BANKNIFTY", rows=self.SNAP)
+        self.assertAlmostEqual(d["weighted_move"],
+                               round(sum(x["contribution"] for x in d["movers"]), 3), places=2)
+
+    def test_it_counts_the_split_inside_the_index(self) -> None:
+        d = self.mi.breakdown("BANKNIFTY", rows=self.SNAP)
+        self.assertEqual(d["advances"], 2)
+        self.assertEqual(d["declines"], 1)
+
+    def test_sectors_are_from_the_members_not_the_whole_market(self) -> None:
+        d = self.mi.breakdown("BANKNIFTY", rows=self.SNAP)
+        self.assertEqual([x["sector"] for x in d["sectors"]], ["Financial Services"])
+        self.assertEqual(d["sectors"][0]["n"], 3)
+
+    def test_no_member_list_means_no_claim(self) -> None:
+        """An NSE outage must narrow the reading, not invent one from whatever
+        happened to trade."""
+        self.assertIsNone(self.mi.breakdown("NIFTY", rows=self.SNAP))
+
+    def test_every_index_has_its_own_list_configured(self) -> None:
+        for key in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
+            with self.subTest(key=key):
+                self.assertIn(key, self.mi.INDEX_LISTS)
