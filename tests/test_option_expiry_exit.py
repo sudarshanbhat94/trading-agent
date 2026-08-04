@@ -51,15 +51,25 @@ def _ev(p, lq, now_hhmm="11:00", today=TODAY, today_s=TODAY_S):
 
 
 class ExpiryExitTest(unittest.TestCase):
-    def test_a_position_is_closed_on_its_expiry_day(self) -> None:
-        peak, eff, ex, reason = _ev(_pos(), _quote(95.0))
+    def test_a_position_is_closed_at_the_squareoff_on_its_expiry_day(self) -> None:
+        peak, eff, ex, reason = _ev(_pos(), _quote(95.0),
+                                    now_hhmm=v2_live.INDEX_OPT_SQUAREOFF)
         self.assertEqual(reason, "expiry")
         self.assertEqual(ex, 95.0)
+
+    def test_it_is_HELD_earlier_on_expiry_day(self) -> None:
+        """Was: closed for the whole expiry session. That fought the entry rule,
+        which opens positions until EXPIRY_LAST_ENTRY — buy, close seconds later
+        on the 8s cadence, re-buy the same strike. Nineteen round trips of
+        NIFTY2680424450PE on 2026-08-04 for -Rs 2,610."""
+        peak, eff, ex, reason = _ev(_pos(), _quote(95.0), now_hhmm="10:00")
+        self.assertNotEqual(reason, "expiry")
 
     def test_it_closes_on_the_day_not_after(self) -> None:
         """After the close the contract is gone from the feed — there is no
         later chance to sell it at a price."""
         peak, eff, ex, reason = _ev(_pos(expiry="2026-08-04"), _quote(95.0),
+                                    now_hhmm="15:20",
                                     today=date(2026, 8, 4), today_s="2026-08-04")
         self.assertEqual(reason, "expiry")
 
@@ -97,7 +107,8 @@ class ExpiryExitTest(unittest.TestCase):
         """The whole point: an expired contract stops being quoted, so an expiry
         knowable only from a quote is not knowable at all."""
         peak, eff, ex, reason = _ev(_pos(expiry="2026-08-04"), {"price": 95.0,
-                                                                "high": 95.0, "low": 95.0})
+                                                                "high": 95.0, "low": 95.0},
+                                    now_hhmm=v2_live.INDEX_OPT_SQUAREOFF)
         self.assertEqual(reason, "expiry")
 
     def test_a_missing_expiry_does_not_force_an_exit(self) -> None:
@@ -187,7 +198,7 @@ class TargetByExpiryTest(unittest.TestCase):
     def test_the_entry_path_uses_it(self) -> None:
         import inspect
         src = inspect.getsource(v2_live.index_options_pass)
-        self.assertIn("_target_pct(cfg, contract.get(\"expiry\"), today)", src)
+        self.assertIn("_target_pct(cfg, contract.get(\"expiry\"), today,", src)
         self.assertIn("premium * (1 + tgt_pct)", src)
 
 

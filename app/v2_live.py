@@ -2723,7 +2723,8 @@ def index_options_pass(market):
             # Target scaled to the contract's remaining life, so it is a level
             # this option can realistically print rather than a flat number that
             # happens to suit a weekly.
-            tgt_pct = _target_pct(cfg, contract.get("expiry"), today)
+            tgt_pct = _target_pct(cfg, contract.get("expiry"), today,
+                                  contract.get("symbol") or symbol)
             target = premium * (1 + tgt_pct)
             # expiry is PERSISTED, not left to be read off a quote later: once
             # the contract expires it leaves the ATM watch list, and a position
@@ -2977,39 +2978,92 @@ HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intrad
 INDEX_OPT_SQUAREOFF = "15:12"
 
 
-def _target_pct(cfg, expiry, today):
+# Per-index target scaling, measured on the live book.
+#
+# NIFTY moves far less in premium-percentage terms than the bank indices, and
+# the flat DTE ladder never accounted for it. 21 NIFTY option trades: average
+# -0.1%, net -Rs 865, and NOT ONE reached its target — every one rode to expiry
+# and decayed. The best NIFTY trade ever managed +24.1% against a 40-45%
+# target. The 4 BANKNIFTY trades cleared theirs comfortably (+61.7%, +43.7%).
+#
+# A target that cannot be reached is not a target — it is a guarantee of
+# holding to expiry, which is precisely what the exit study says destroys
+# option premium.
+# 0.48 is set so the 0-2 DTE NIFTY target lands at 21.6%, just UNDER the best
+# NIFTY trade the book has ever printed (+24.1%). A target above the observed
+# maximum has a zero hit rate by construction.
+TARGET_INDEX_SCALE = {"NIFTY": 0.48, "BANKNIFTY": 1.0, "FINNIFTY": 0.8,
+                      "MIDCPNIFTY": 0.8}
+
+
+def _index_of(symbol):
+    """Longest-prefix match: MIDCPNIFTY and BANKNIFTY both end in NIFTY."""
+    s = str(symbol or "").upper()
+    best = ""
+    for name in TARGET_INDEX_SCALE:
+        if s.startswith(name) and len(name) > len(best):
+            best = name
+    return best or None
+
+
+def _target_pct(cfg, expiry, today, symbol=None):
     """Target as a fraction of premium, for THIS contract's remaining life.
 
-    See INDEX_OPTIONS["target_by_dte"] for the measurement. The short version:
-    premium percentage moves shrink as time to expiry grows, so one flat number
-    cannot be right for both a 4-day weekly and a 25-day monthly.
+    See INDEX_OPTIONS["target_by_dte"] for the DTE measurement: premium
+    percentage moves shrink as time to expiry grows, so one flat number cannot
+    be right for both a 4-day weekly and a 25-day monthly.
+
+    Then scaled per INDEX — see TARGET_INDEX_SCALE. A NIFTY target set off
+    BANKNIFTY's behaviour is unreachable, and an unreachable target means the
+    position always rides to expiry.
     """
     table = cfg.get("target_by_dte")
     fallback = float(cfg.get("target_pct", 0.60))
-    if not table or not expiry:
-        return fallback
-    try:
-        dte = (date.fromisoformat(str(expiry)[:10]) - today).days
-    except (TypeError, ValueError):
-        return fallback
-    for limit, pct in table:
-        if dte <= limit:
-            return float(pct)
-    return fallback
+    pct = fallback
+    if table and expiry:
+        try:
+            dte = (date.fromisoformat(str(expiry)[:10]) - today).days
+        except (TypeError, ValueError):
+            dte = None
+        if dte is not None:
+            for limit, p in table:
+                if dte <= limit:
+                    pct = float(p)
+                    break
+    idx = _index_of(symbol)
+    if idx:
+        pct *= TARGET_INDEX_SCALE.get(idx, 1.0)
+    return pct
 
 
-def _expired_or_expiring(expiry, today):
-    """True on or after the contract's expiry date.
+def _expired_or_expiring(expiry, today, now_hhmm=None):
+    """True once the contract must be closed.
 
-    Deliberately fires ON expiry day rather than the day after. An option's
-    remaining premium on its last session is almost all decay, and once the
-    session closes the contract is gone from the feed — there is no later
-    chance to sell it at a price.
+    ON EXPIRY DAY THIS IS TIME-AWARE, and that is the whole point. It used to
+    return True for the entire expiry session, while index_options_pass happily
+    opened new positions until EXPIRY_LAST_ENTRY. The two rules fought each
+    other on the 8-second exit cadence: buy a 0-DTE contract, have the expiry
+    rule close it seconds later, re-enter the same strike, repeat.
+
+    On 2026-08-04 that loop ran NINETEEN round trips of NIFTY2680424450PE in one
+    session for -Rs 2,610 — pure churn, no view, every cycle paying the spread
+    and costs. Nineteen of the book's twenty-six option trades were this one
+    contract going nowhere.
+
+    So: a contract past its expiry date always closes. One expiring TODAY closes
+    at the square-off time, and until then is governed by the normal stop and
+    target like any other intraday position.
     """
     try:
-        return date.fromisoformat(str(expiry)[:10]) <= today
+        exp = date.fromisoformat(str(expiry)[:10])
     except (TypeError, ValueError):
         return False
+    if exp < today:
+        return True
+    if exp > today:
+        return False
+    # expiry day: hold until square-off, then flatten
+    return str(now_hhmm or "99:99") >= INDEX_OPT_SQUAREOFF
 
 
 def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
@@ -3081,7 +3135,8 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     # list, so `lq` is either absent — and the loop does `if not lq: continue` —
     # or frozen, and the frozen guard skips it too. Either way the position is
     # never closed and marks at a stale price forever.
-    elif _expired_or_expiring(p.get("expiry") or lq.get("expiry"), today):
+    elif _expired_or_expiring(p.get("expiry") or lq.get("expiry"), today,
+                              now_hhmm or datetime.now(IST).strftime("%H:%M")):
         ex, reason = lq["price"], "expiry"
     # Index options square off intraday on their own clock (see HOLD_DAYS).
     elif p["strategy"] == "index_options" and (
@@ -3159,7 +3214,12 @@ def exit_monitor(market):
         # updating precisely because the contract is gone, so refusing to act on
         # a stale price would strand the position permanently. The last price we
         # saw is the only price that will ever exist for it.
-        if sym in frozen and not _expired_or_expiring(p.get("expiry") or lq.get("expiry"), today):
+        # NB: "23:59" deliberately, not the wall clock — a frozen quote on a
+        # contract expiring today means the contract is already gone from the
+        # feed, so this guard must stay all-day even though the EXIT rule is
+        # now time-aware. Passing the real time here would strand it.
+        if sym in frozen and not _expired_or_expiring(
+                p.get("expiry") or lq.get("expiry"), today, "23:59"):
             continue
         # BACKFILL the expiry while the contract is still quoted. Positions
         # opened before the column existed carry None, and once a contract
