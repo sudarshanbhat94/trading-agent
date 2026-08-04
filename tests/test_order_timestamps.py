@@ -139,7 +139,10 @@ class OrdersEndpointTest(unittest.TestCase):
         orig = v2_web.V2_DB
         v2_web.V2_DB = self.path
         try:
-            return json.loads(v2_web.api_orders(limit=50).body)
+            # scope='ai' + a stub user: this suite is about the HOUSE log's
+            # timestamps, and api_orders now defaults to the caller's own book
+            return json.loads(v2_web.api_orders(
+                limit=50, scope="ai", user={"id": 1}).body)
         finally:
             v2_web.V2_DB = orig
 

@@ -2767,10 +2767,46 @@ def api_trades(limit: int = 60, scope: str = "mine",
     return JSONResponse(out)
 
 
+def _my_orders(uid, limit=120, market="IN"):
+    """The caller's own fills, newest first — same shape as the house log."""
+    from . import books
+    rw = _rw()
+    try:
+        out = []
+        for p in books.positions(rw, uid, market):
+            out.append(dict(side="BUY", status="open", symbol=p["symbol"], market=market,
+                            ccy="₹", strategy=p["strategy"], qty=round(p["shares"], 2),
+                            price=round(p["entry_price"], 2),
+                            value=round(p["entry_price"] * p["shares"]),
+                            when=_ist(p["opened_at"] or p["entry_date"]),
+                            ts=p["entry_date"], today=False, pnl=None, reason=""))
+        for r in _my_trades(uid, limit, market):
+            for side, when, px in (("BUY", r["entry_date"], r["entry_price"]),
+                                   ("SELL", r["closed_at"] or r["exit_date"], r["exit_price"])):
+                out.append(dict(side=side, status="filled", symbol=r["symbol"],
+                                market=market, ccy="₹", strategy=r["strategy"],
+                                qty=round(r["shares"], 2), price=round(px, 2),
+                                value=round(px * r["shares"]),
+                                when=_ist(when), ts=str(when)[:10], today=False,
+                                pnl=(round(r["return_pct"], 2) if side == "SELL" else None),
+                                pnl_amt=(round(r["pnl"], 2) if side == "SELL" else None),
+                                reason=(r["reason"] if side == "SELL" else "")))
+        out.sort(key=lambda o: str(o["ts"]), reverse=True)
+        return out[:limit]
+    finally:
+        rw.close()
+
+
 @router.get("/api/orders")
-def api_orders(limit: int = 120):
+def api_orders(limit: int = 120, scope: str = "mine",
+               user: dict = Depends(require_session)):
     """Full order log: BUY fills (open positions + entries of closed trades) and
-    SELL fills (exits of closed trades), newest first."""
+    SELL fills (exits of closed trades), newest first.
+
+    Defaults to the CALLER'S OWN book. It rendered the engine's log to every
+    subscriber, so "your orders" were somebody else's trades."""
+    if not _wants_ai(scope, user):
+        return JSONResponse(_my_orders(int(user.get("id") or 0), limit))
     v2 = _ro(V2_DB)
     orders = []
     for market, sym, edate, oat, entry, shares, strat in v2.execute(
@@ -2955,7 +2991,21 @@ def api_admin_jobs(market: str = "IN"):
                          "summary": jh.summarise(checks), "checks": checks})
 
 @router.get("/api/stats")
-def api_stats():
+def api_stats(scope: str = "mine", user: dict = Depends(require_session)):
+    """Per-lane performance. Defaults to the caller's own book."""
+    if not _wants_ai(scope, user):
+        from . import books
+        rw = _rw()
+        try:
+            st = books.stats(rw, int(user.get("id") or 0), "IN", _live_map("IN"))
+        finally:
+            rw.close()
+        return JSONResponse([dict(market="IN", ccy="₹", budget=st["budget"],
+                                  equity=st["equity"], cash=st["cash"],
+                                  deployed=st["deployed"], trades=st["trades"],
+                                  win=st["win"], realized=st["realised"],
+                                  unrealized=st["unrealised"], strategies=[],
+                                  curve=[], sharpe=None, maxdd=None)])
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
     # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
@@ -3918,6 +3968,10 @@ button{border-radius:9px}
 .fd-tabs{display:flex;gap:4px;margin-left:auto}
 .fd-tab{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--mut);padding:4px 9px;border-radius:7px;cursor:pointer;background:var(--surf)}
 .fd-tab.on{background:var(--infb);color:var(--inf)}
+.bk-tabs{display:flex;gap:4px;margin:0 0 12px}
+.bk-tab{font-size:11.5px;font-weight:700;letter-spacing:.3px;color:var(--mut);
+ padding:6px 12px;border-radius:8px;cursor:pointer;background:var(--surf)}
+.bk-tab.on{background:var(--infb);color:var(--inf)}
 .fd-big{font-size:33px;font-weight:700;color:var(--hd);margin:14px 0 3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .fd-chg{font-size:14px;font-weight:600}
 .fd-chart{margin:14px -6px 0}.fd-chart svg{width:100%;height:150px;display:block}
@@ -4288,7 +4342,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <div class=sec style="margin-top:22px"><span>engine radar</span><span class=mut style="font-size:12px;font-weight:400">may buy next</span></div>
    <div id=watchlist class=skel>loading…</div></div>
 
-  <div id=positions class=tab>
+  <div id=positions class=tab><div id=bkPos></div>
    <div class=sec><span>portfolio</span><span id=postot style="font-size:13px"></span></div>
    <div class=seg style="margin-bottom:10px"><b id=sbpos class=on onclick="subPos('pos')">Positions · today</b><b id=sbhold onclick="subPos('hold')">Holdings</b></div>
    <div id=poslist class=skel>loading…</div>
@@ -4299,7 +4353,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
    <div class=sec><span>equity curve</span><span id=eqdd class=mut style="font-size:12px;font-weight:400"></span></div>
    <div class=grid2 id=eqcurves></div></div>
 
-  <div id=orders class=tab>
+  <div id=orders class=tab><div id=bkOrd></div>
    <div class=sec><span>orders &amp; activity</span><span id=ordtot class=mut style="font-size:12px;font-weight:400"></span></div>
    <div class=ordbar>
     <div class=seg id=ordrange><b data-d=1 class=on onclick="setOrdRange(this)">Today</b><b data-d=3 onclick="setOrdRange(this)">3 days</b><b data-d=7 onclick="setOrdRange(this)">7 days</b><b data-d=custom onclick="setOrdRange(this)">Custom</b></div>
@@ -4351,7 +4405,7 @@ function go(t,noPush){if(!noPush&&cur&&cur!=t)NAVHIST.push(cur);cur=t;
  ['home','ideas','watch','positions','orders','analyze','account','admin','upgrade','detail'].forEach(x=>{var e=document.getElementById(x);if(e)e.classList.toggle('on',x==t)});
  document.querySelectorAll('.nav a,.side a').forEach(a=>a.classList.toggle('on',a.dataset.t==t));
  var bk=document.getElementById('backbtn');if(bk)bk.style.display=NAVHIST.length?'inline-flex':'none';
- if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='ideas')loadIdeas();if(t=='watch'){loadWL();loadWatch();}if(t=='positions')loadPos();if(t=='orders')loadOrders();if(t=='account')loadAccount();if(t=='admin')loadAdmin();if(t=='upgrade')loadUpgrade();window.scrollTo(0,0)}
+ if(t=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts();}if(t=='ideas')loadIdeas();if(t=='watch'){loadWL();loadWatch();}if(t=='positions'){paintBookTabs();loadPos();}if(t=='orders'){paintBookTabs();loadOrders();}if(t=='account')loadAccount();if(t=='admin')loadAdmin();if(t=='upgrade')loadUpgrade();window.scrollTo(0,0)}
 function goBack(){var p=NAVHIST.pop();go(p||'home',true)}
 function inMkt(m){return MKT=='BOTH'||m==MKT}
 var AUTHMODE='login';
@@ -4581,6 +4635,19 @@ function renderMineTile(m,ccy){
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}})
   +(rows?'<div class=rl-list>'+rows+'</div>':''));}
+// WHICH BOOK the Portfolio/Orders pages are showing. The endpoints default to
+// the caller's own; without a switch there was no way to look at the engine's
+// at all, which is the thing subscribers are actually paying to watch.
+var BOOK='mine';
+function paintBookTabs(){['bkPos','bkOrd'].forEach(function(id){
+ var e=document.getElementById(id);if(e)e.innerHTML=bookTabs();});}
+function setBook(b){BOOK=b;paintBookTabs();
+ document.querySelectorAll('.bk-tab').forEach(function(t){t.classList.toggle('on',t.dataset.b==b)});
+ if(cur=='positions')loadPos();if(cur=='orders')loadOrders();}
+function bookTabs(){return '<div class=bk-tabs>'
+ +'<span class="bk-tab'+(BOOK=='mine'?' on':'')+'" data-b=mine onclick="setBook(\'mine\')">my book</span>'
+ +'<span class="bk-tab'+(BOOK=='ai'?' on':'')+'" data-b=ai onclick="setBook(\'ai\')">OpenStocks AI</span>'
+ +'</div>';}
 var IDEAS=null;
 // Readable names for the two things a subscriber sees on every card. Kept next
 // to the renderer that uses them rather than assumed to exist elsewhere — the
@@ -4767,7 +4834,7 @@ function loadHome(){
    +'<div><div class="fd-sn '+(m.overall_pnl>=0?'up':'dn')+'">'+(m.overall_pnl>=0?'+':'')+(m.overall_pct||0)+'%</div><div class=fd-sl>overall</div></div>'
    +'</div>');
  });
- api('/v2/api/orders?limit=60').then(function(r){var os=(r.j||[]).filter(function(o){return o.today&&inMkt(o.market)});
+ api('/v2/api/orders?limit=60&scope='+BOOK).then(function(r){var os=(r.j||[]).filter(function(o){return o.today&&inMkt(o.market)});
   if(!os.length){fdSet('fdTrades','','');return;}
   var buys=os.filter(function(o){return o.side=='BUY'}),sells=os.filter(function(o){return o.side=='SELL'});
   var trow=function(o){var s=o.ccy,f=(o.ccy=='₹'?INR:USD);
@@ -4776,7 +4843,7 @@ function loadHome(){
   var mk=function(lbl,arr){return arr.length?('<div class=fd-movecol><div class=fd-movelbl>'+lbl+' · '+arr.length+'</div>'+arr.map(trow).join('')+'</div>'):'';};
   fdSet('fdTrades','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--warnb);color:var(--warn)">⇄</span><div><div class=fd-title>Today’s moves</div><div class=fd-meta>'+buys.length+' bought · '+sells.length+' sold</div></div></div><div class=fd-movegrid>'+mk('Bought',buys)+mk('Sold',sells)+'</div>');
  });
- api('/v2/api/positions').then(function(r){var ps=r.j.filter(function(p){return inMkt(p.market)});
+ api('/v2/api/positions?scope='+BOOK).then(function(r){var ps=r.j.filter(function(p){return inMkt(p.market)});
   var pr=ps.map(posRow).join('');
   fdSet('fdHold','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--upb);color:var(--up)">▤</span><div><div class=fd-title>What your AI is holding</div><div class=fd-meta>'+ps.length+' stocks</div></div></div>'+(pr?'<div class=fd-holds>'+pr+'</div>':'<div class=fd-text>No open positions right now.</div>'));
  });}
@@ -4790,7 +4857,7 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  document.getElementById('postot').innerHTML=(t||'—')+' P&L';
  var rows=ps.map(posRow).join('');
  document.getElementById('poslist').innerHTML=rows?('<div class=k-list>'+rows+'</div>'):('<div class=mut style="font-size:12px;padding:14px 16px">'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>');}
-function loadPos(){api('/v2/api/positions').then(r=>{POS=r.j;renderPos();});loadAttrib();loadPortfolio();}
+function loadPos(){api('/v2/api/positions?scope='+BOOK).then(r=>{POS=r.j;renderPos();});loadAttrib();loadPortfolio();}
 function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
  var rows=(d.strategies||[]).filter(s=>inMkt(s.market));
  document.getElementById('attrib').innerHTML=rows.map(s=>{var st=stratTag(s.strategy);var tot=s.realized+s.unrealized;
@@ -4810,7 +4877,7 @@ function applyOrdCustom(){var f=document.getElementById('ordfrom').value,t=docum
 function ordInRange(o){var d=(o.ts||'').slice(0,10);if(!d)return false;
  if(ORD_RANGE.days!=null){var c=new Date(Date.now()-(ORD_RANGE.days-1)*86400000).toISOString().slice(0,10);return d>=c;}
  if(ORD_RANGE.from&&d<ORD_RANGE.from)return false;if(ORD_RANGE.to&&d>ORD_RANGE.to)return false;return true;}
-function loadOrders(){api('/v2/api/orders?limit=500').then(r=>{var os=r.j.filter(o=>inMkt(o.market)).filter(ordInRange);
+function loadOrders(){api('/v2/api/orders?limit=500&scope='+BOOK).then(r=>{var os=r.j.filter(o=>inMkt(o.market)).filter(ordInRange);
  var buys=os.filter(o=>o.side=='BUY'),sells=os.filter(o=>o.side=='SELL');
  document.getElementById('ordtot').textContent=(buys.length+sells.length)?(buys.length+' bought · '+sells.length+' sold'):'';
  var col=function(lbl,arr,cls){return '<div class="ordcol '+cls+'"><div class=ordlbl>'+lbl+' · '+arr.length+'</div>'+(arr.length?('<div class=card style="padding:2px 15px">'+arr.map(ordRow).join('')+'</div>'):'<div class=card style="padding:15px 16px"><span class=mut style="font-size:12px">nothing in this range</span></div>')+'</div>';};
@@ -5677,7 +5744,7 @@ function loadHealth(){api('/v2/api/health').then(r=>{var d=r.j||{};var el=docume
  if(d.ok){el.classList.add('hide');return}
  var bad=(d.checks||[]).filter(c=>!c.ok).map(c=>c.name+' ('+c.detail+')');
  el.textContent='⚠ system check: '+bad.join(' · ');el.classList.remove('hide');});}
-function loadActivity(){api('/v2/api/orders?limit=80').then(r=>{var os=(r.j||[]).filter(o=>o.today&&inMkt(o.market));
+function loadActivity(){api('/v2/api/orders?limit=80&scope='+BOOK).then(r=>{var os=(r.j||[]).filter(o=>o.today&&inMkt(o.market));
  var h=os.map(o=>{var right=o.side=='SELL'?('<span style="display:inline-flex;gap:10px;align-items:center"><span class=mut style="font-size:11px">'+(o.entry?o.ccy+o.entry+' → ':'')+o.ccy+o.price+'</span>'+pill(o.pnl!=null?o.pnl:0)+'</span>'):('<span class=mut style="font-size:11px">@ '+o.ccy+o.price+'</span>');
   return '<div class=lrow style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;cursor:pointer" onclick="stock(\''+o.symbol+'\',\''+o.market+'\')"><span class="badge '+(o.side=='BUY'?'bg-inf':(o.pnl>0?'bg-up':'bg-dn'))+'">'+o.side+'</span><b style="overflow:hidden;text-overflow:ellipsis">'+o.symbol+'</b>'+right+'</div>'}).join('');
  var _a=document.getElementById('activity');if(_a)_a.innerHTML=h||'<div class=mut style="font-size:12px;padding:8px 0">nothing bought or sold yet today</div>';});}

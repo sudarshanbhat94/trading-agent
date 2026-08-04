@@ -331,9 +331,24 @@ class ManualBuyReachesTheBrokerTest(unittest.TestCase):
         self.assertIn("_bk.state(uid)", body)
 
     def test_manual_is_a_mirrored_lane(self) -> None:
-        """Otherwise the single writer is reached and the order is still
-        skipped — a fix that looks complete and does nothing."""
+        """Otherwise api_buy's direct mirror_entry call is skipped and the Buy
+        button silently places nothing."""
         self.assertIn("manual", live_trade.MIRRORED_LANES)
+
+    def test_the_engine_never_fans_a_manual_entry_out(self) -> None:
+        """"manual" in MIRRORED_LANES looks dangerous — record_entry fans out to
+        EVERY linked broker — but no engine path records a manual entry. The
+        only manual mirror is api_buy's direct call, which passes the clicking
+        user's own id. If a lane ever starts recording "manual" through
+        record_entry, this fails and the fan-out has to be reconsidered."""
+        import inspect
+        import pathlib as _pl
+        src = _pl.Path(inspect.getfile(v2_live)).read_text(encoding="utf-8")
+        calls = [ln for ln in src.splitlines()
+                 if "record_entry(v2, market," in ln and "def " not in ln]
+        self.assertTrue(calls)
+        for ln in calls:
+            self.assertNotIn('"manual"', ln)
 
     def test_a_manual_entry_places_a_real_buy(self) -> None:
         v2, main, path = _dbs()
