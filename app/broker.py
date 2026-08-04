@@ -403,6 +403,16 @@ def can_trade(order, st=None, user_id=None, market_is_open=True,
     return True, "ok"
 
 
+# Upstox refuses a MARKET order with market_protection=0:
+#   UDAPI1158 "Market orders are not allowed. Try placing an order with market
+#              protection."
+# It is a PERCENTAGE band around LTP beyond which the order will not fill, so 0
+# reads as "accept any price" and is rejected. 5% is wide enough that a normal
+# equity fill goes through and narrow enough to stop a fat-finger or a thin book
+# filling far away from the price the decision was made at.
+MARKET_PROTECTION_PCT = float(os.getenv("UPSTOX_MARKET_PROTECTION", "5"))
+
+
 def place_order(instrument_key, qty, side="BUY", price=0.0, product="D",
                 order_type="MARKET", tag="openstocks"):
     """Send ONE order. Callers must have passed can_trade first.
@@ -419,7 +429,8 @@ def place_order(instrument_key, qty, side="BUY", price=0.0, product="D",
                    price=float(price or 0), tag=tag, instrument_token=instrument_key,
                    order_type=order_type, transaction_type=side.upper(),
                    disclosed_quantity=0, trigger_price=0, is_amo=False,
-                   market_protection=0)
+                   market_protection=(MARKET_PROTECTION_PCT
+                                      if order_type == "MARKET" else 0))
     r = httpx.post(f"{ORDER_BASE}/order/place", headers={**_headers(),
                    "Content-Type": "application/json"}, json=payload, timeout=25)
     ok = r.status_code < 400

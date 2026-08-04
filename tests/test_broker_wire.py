@@ -112,6 +112,28 @@ class WirePayloadTest(unittest.TestCase):
         self.assertEqual(b["validity"], "DAY")
         self.assertEqual(b["is_amo"], False)
 
+    def test_a_market_order_carries_market_protection(self) -> None:
+        """Live rejection that exposed this:
+            UDAPI1158 "Market orders are not allowed. Try placing an order with
+                       market protection."
+        market_protection is a PERCENTAGE band around LTP, so 0 reads as
+        "fill at any price" and Upstox refuses it."""
+        _res, sent = self._place()
+        self.assertGreater(sent["body"]["market_protection"], 0)
+        self.assertEqual(sent["body"]["order_type"], "MARKET")
+
+    def test_the_band_is_not_absurdly_wide(self) -> None:
+        """It is the only thing standing between a thin book and a fill far
+        from the price the decision was made at."""
+        _res, sent = self._place()
+        self.assertLessEqual(sent["body"]["market_protection"], 10)
+
+    def test_a_limit_order_does_not_send_protection(self) -> None:
+        """The field is meaningless when the price is already bounded."""
+        self.b.place_order("NSE_EQ|INE976G01028", 7, "BUY",
+                           order_type="LIMIT", price=380.0)
+        self.assertEqual(_Upstox.seen[-1]["body"]["market_protection"], 0)
+
     def test_quantity_is_an_int_not_a_float(self) -> None:
         """Upstox rejects a float quantity, and Python division produces one."""
         res, sent = self.b.place_order("NSE_EQ|INE976G01028", 7.0, "BUY"), _Upstox.seen[-1]
