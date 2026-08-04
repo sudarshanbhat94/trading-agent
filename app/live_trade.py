@@ -201,6 +201,8 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
             "sent" if res.get("ok") else "failed",
             "mirror " + strategy, res.get("response"), res.get("order_id"))
     _LOG.info("LIVE BUY %s x%d @~%.2f -> %s", symbol, qty, price, res.get("order_id"))
+    if not res.get("ok"):
+        _alert_failed(user_id, "BUY", symbol, qty, res)
     return "sent" if res.get("ok") else f"failed: {res.get('status')}"
 
 
@@ -231,4 +233,33 @@ def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
             f"mirror exit: {reason}", res.get("response"), res.get("order_id"))
     _LOG.info("LIVE SELL %s x%d @~%.2f (%s) -> %s", symbol, qty, price, reason,
               res.get("order_id"))
+    if not res.get("ok"):
+        # A failed SELL is the worse one: real shares are still held and the
+        # paper book already thinks the position is closed.
+        _alert_failed(user_id, "SELL", symbol, qty, res)
     return "sent" if res.get("ok") else f"failed: {res.get('status')}"
+
+
+def _alert_failed(user_id, side, symbol, qty, res):
+    """Tell the owner their REAL order did not go through.
+
+    Three orders failed today (static-IP block, then market-protection) and the
+    only trace was a row in v2_live_orders. Nothing said so unless somebody
+    opened the panel and looked — an order that silently does not happen is
+    indistinguishable from one that was never wanted.
+    """
+    try:
+        err = ""
+        try:
+            err = ((res.get("response") or {}).get("errors") or [{}])[0].get("message") or ""
+        except Exception:
+            err = ""
+        _LOG.error("LIVE ORDER FAILED u%s %s %s x%s: %s", user_id, side, symbol, qty,
+                   err or res.get("status"))
+        from . import telegram_bot
+        telegram_bot.notify_users([int(user_id)],
+                                 f"⚠️ REAL {side} order FAILED\n{symbol} x{qty}\n"
+                                 f"{err or ('HTTP ' + str(res.get('status')))}\n\n"
+                                 "Your paper book has moved; the broker has not.")
+    except Exception:
+        _LOG.exception("could not alert user %s about a failed order", user_id)

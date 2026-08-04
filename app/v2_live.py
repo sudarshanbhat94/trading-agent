@@ -1436,8 +1436,9 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
 
 def _book_mirror_entry(v2, market, strategy, symbol, price, stop, target):
     from . import books as _books, plans as _plans
-    from .main import db as _db
-    n = _books.mirror_entry(v2, _db, _plans, market, strategy, symbol, price, stop, target)
+    # None -> books builds the auth DB itself; see books._auth_db for why this
+    # must not be `from .main import db` on the engine thread.
+    n = _books.mirror_entry(v2, None, _plans, market, strategy, symbol, price, stop, target)
     if n:
         _LOG.info("user books: %s opened in %d book(s)", symbol, n)
 
@@ -1634,6 +1635,11 @@ def poll_market(market):
     # about what looks good, one of them would be lying and there would be no
     # way to tell which. Wrapped so a failure here can never stop the book from
     # trading — ideas are a product feature, the book is the product.
+    try:
+        from . import books as _bk2, plans as _pl2
+        _bk2.snapshot_all(v2, _pl2, market, live)
+    except Exception:
+        _LOG.exception("user equity snapshot failed")
     try:
         _publish_ideas(v2, market, tails, mdf, asof, rstate, strong,
                        mfloor, live, stale)

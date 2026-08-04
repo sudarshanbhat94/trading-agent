@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS user_trades(
   shares REAL, pnl REAL, return_pct REAL, reason TEXT, opened_at TEXT, closed_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_user_pos ON user_positions(user_id, market, symbol);
 CREATE INDEX IF NOT EXISTS ix_user_trades ON user_trades(user_id, market, exit_date);
+-- One equity point per user per day. Without this a personal book can never
+-- draw a curve, which is most of what makes a book feel like yours.
+CREATE TABLE IF NOT EXISTS user_equity(
+  user_id INTEGER, market TEXT, date TEXT, equity REAL, cash REAL,
+  positions_value REAL, n_positions INTEGER,
+  PRIMARY KEY(user_id, market, date));
 """
 
 
@@ -225,6 +231,52 @@ def stats(con, user_id, market, live):
                 deploy_pct=(round(mtm / budget * 100) if budget else 0))
 
 
+def _auth_db():
+    """The auth DB, without importing app.main from the engine thread.
+
+    `from .main import db` inside the engine pulls in the whole FastAPI app on
+    first call. If that import is mid-flight or fails, the exception is caught
+    by the caller and user books silently stop mirroring — a feature that is
+    off with no error anywhere. Building the Database directly has no such
+    ordering hazard.
+    """
+    from .config import Settings
+    from .db import Database
+    return Database(Settings().database_path)
+
+
+def snapshot_equity(con, user_id, market, live, day=None):
+    """Record today's equity for ONE book. INSERT OR REPLACE keyed on the day,
+    so repeated calls update rather than accumulate."""
+    day = day or datetime.now(IST).date().isoformat()
+    st = stats(con, user_id, market, live)
+    con.execute("INSERT OR REPLACE INTO user_equity(user_id,market,date,equity,cash,"
+                "positions_value,n_positions) VALUES(?,?,?,?,?,?,?)",
+                (int(user_id), market, day, st["equity"], st["cash"],
+                 st["deployed"], st["positions"]))
+    con.commit()
+    return st["equity"]
+
+
+def equity_series(con, user_id, market="IN", limit=90):
+    rows = con.execute("SELECT date,equity FROM user_equity WHERE user_id=? AND market=?"
+                       " ORDER BY date DESC LIMIT ?",
+                       (int(user_id), market, int(limit))).fetchall()
+    return [(r[0], float(r[1])) for r in rows][::-1]
+
+
+def snapshot_all(con, plans_mod, market, live, db=None):
+    """Every subscribed book, once per engine cycle."""
+    n = 0
+    for uid in subscribers(db, plans_mod):
+        try:
+            snapshot_equity(con, uid, market, live)
+            n += 1
+        except Exception:
+            _LOG.exception("equity snapshot failed for user %s", uid)
+    return n
+
+
 def subscribers(db, plans_mod):
     """User ids whose plan includes a paper book.
 
@@ -233,6 +285,7 @@ def subscribers(db, plans_mod):
     """
     out = []
     try:
+        db = db or _auth_db()
         for u in (db.list_users() or []):
             if not u.get("active"):
                 continue

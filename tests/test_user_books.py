@@ -189,3 +189,65 @@ class StatsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EquitySeriesTest(unittest.TestCase):
+    """A personal book with no curve does not feel like yours."""
+
+    def setUp(self) -> None:
+        self.con = _db()
+
+    def test_a_snapshot_is_recorded_and_read_back(self) -> None:
+        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        books.snapshot_equity(self.con, 1, "IN", {"ITC": {"price": 330.0}})
+        series = books.equity_series(self.con, 1)
+        self.assertEqual(len(series), 1)
+        self.assertGreater(series[0][1], 100000.0)
+
+    def test_the_same_day_updates_rather_than_accumulates(self) -> None:
+        books.snapshot_equity(self.con, 1, "IN", {})
+        books.snapshot_equity(self.con, 1, "IN", {})
+        self.assertEqual(len(books.equity_series(self.con, 1)), 1)
+
+    def test_snapshots_are_per_user(self) -> None:
+        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        books.snapshot_equity(self.con, 1, "IN", {"ITC": {"price": 400.0}})
+        books.snapshot_equity(self.con, 2, "IN", {})
+        self.assertNotEqual(books.equity_series(self.con, 1)[0][1],
+                            books.equity_series(self.con, 2)[0][1])
+
+
+class NoAppMainImportTest(unittest.TestCase):
+    """The engine thread must not import app.main.
+
+    `from .main import db` pulls the whole FastAPI app in on first call. If that
+    import is mid-flight or fails, the caller swallows the exception and user
+    books silently stop mirroring — a feature that is off with no error
+    anywhere.
+    """
+
+    @staticmethod
+    def _code(fn):
+        """Executable lines only. Both of these functions EXPLAIN in prose why
+        they avoid `from .main import`, so matching raw source finds the string
+        inside the very comment saying it is not used."""
+        import inspect
+        out = []
+        in_doc = False
+        for ln in inspect.getsource(fn).splitlines():
+            t = ln.strip()
+            if t.startswith('"""') or t.endswith('"""'):
+                in_doc = not in_doc if t.count('"""') == 1 else in_doc
+                continue
+            if in_doc or t.startswith("#"):
+                continue
+            out.append(ln.split("#")[0])
+        return "\n".join(out)
+
+    def test_the_engine_hook_does_not_import_main(self) -> None:
+        self.assertNotIn("from .main import", self._code(v2_live._book_mirror_entry))
+
+    def test_books_can_reach_the_auth_db_on_its_own(self) -> None:
+        self.assertTrue(callable(books._auth_db))
+        self.assertNotIn("from .main import", self._code(books._auth_db))
+        self.assertIn("Database(", self._code(books._auth_db))

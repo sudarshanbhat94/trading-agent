@@ -400,6 +400,15 @@ def api_overview(user: dict = Depends(require_session)):
     markets = []
     for market, budget in _markets(v2):
         s = _market_stats(v2, market, budget, live[market])
+        # HISTORICAL CONTAMINATION. v2_equity was written while the engine
+        # counted option P&L in the equity book, so Rs 26,558 of options sits
+        # inside this curve as a step that the stock lanes never earned. The
+        # headline numbers were separated on 2026-08-03; the SERIES was not, and
+        # cannot be recomputed because only the total was ever stored.
+        #
+        # Rebasing the whole curve by a constant would move history to flatter
+        # today. Instead the offset is reported so the chart can mark it, and the
+        # curve is left as the record of what was actually written.
         eq = [round(r[0]) for r in v2.execute(
             "SELECT equity FROM v2_equity WHERE market=? ORDER BY date DESC LIMIT 40", (market,))][::-1]
         if not eq:
@@ -436,6 +445,16 @@ def api_overview(user: dict = Depends(require_session)):
     # made the headline contradict itself: "managing Rs 1,26,619" while another
     # Rs 1L sat in index options that the same card never mentioned.
     opts = _options_book()
+    # How much of the equity CURVE above is option P&L that the stock book never
+    # earned. Reported, not silently subtracted — see the note by `eq`.
+    try:
+        v2b = _ro(V2_DB)
+        contamination = v2b.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE strategy=?",
+            ("index_options",)).fetchone()[0] or 0.0
+        v2b.close()
+    except Exception:
+        contamination = 0.0
     # THE REAL ACCOUNT, when there is one. Once a broker is connected the paper
     # book stops being the thing the operator cares about, and a dashboard whose
     # headline is simulated money while real money is deployed is actively
@@ -490,6 +509,7 @@ def api_overview(user: dict = Depends(require_session)):
     except Exception:
         _LOG.exception("user book stats failed")
     return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
+                             equity_options_offset=round(contamination, 2),
                              regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
                              as_of=datetime.now(IST).strftime("%H:%M:%S IST")))
@@ -4583,7 +4603,14 @@ function renderHero(){
   // "live paper book" was always a contradiction; with a real account on the
   // page it becomes a dangerous one.
   meta:'OpenStocks AI \u00b7 shared strategy record',tabs:tabs,ccy:m.ccy,
-  equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,note:note,
+  equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,
+  // The step in this curve is option P&L written before the books were split.
+  // Said out loud rather than rebased away: only the total was ever stored, so
+  // the history cannot be recomputed, and shifting it would move the record to
+  // flatter today.
+  note:note+(m.optOffset?' \u00b7 the step is '+m.ccy
+    +Math.round(m.optOffset).toLocaleString('en-IN')
+    +' of option P&L written before the books were split':''),
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}}));
 }
@@ -4814,7 +4841,8 @@ function loadHome(){
    +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
    +(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
      +(ob.options_positions?(' ('+ob.options_positions+' open)'):'')));
-  HERO=m;REAL=d.real||null;MINE=d.mine||null;
+  HERO=m;HERO.optOffset=d.equity_options_offset||0;
+  REAL=d.real||null;MINE=d.mine||null;
   renderRealTile(REAL,m.ccy);renderMineTile(MINE,m.ccy);
   renderHero();renderOptionsTile(d.options||{},m.ccy);
   var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
