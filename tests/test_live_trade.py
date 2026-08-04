@@ -26,20 +26,28 @@ def _fresh_broker(**cfg):
 
 
 def _dbs():
+    """v2 in memory, main on DISK.
+
+    The main DB must be a file: production opens a fresh read-only connection
+    per call and closes it, so an in-memory handle shared across calls is closed
+    after the first one and every later lookup fails. That is a test artifact
+    that would otherwise look exactly like a broken exit.
+    """
     v2 = sqlite3.connect(":memory:")
     v2_live.ensure_schema(v2)
-    main = sqlite3.connect(":memory:")
+    path = os.path.join(tempfile.mkdtemp(), "main.db")
+    main = sqlite3.connect(path)
     main.execute("CREATE TABLE universe(symbol TEXT, upstox_instrument_key TEXT, enabled INT)")
     main.executemany("INSERT INTO universe VALUES(?,?,1)",
                      [("RELIANCE", "NSE_EQ|INE002A01018"), ("KEI", "NSE_EQ|INE878B01027"),
                       ("NOKEY", "")])
     main.commit()
-    return v2, main
+    return v2, main, path
 
 
 class InstrumentKeyTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.v2, self.main = _dbs()
+        self.v2, self.main, self.main_path = _dbs()
 
     def test_a_known_symbol_resolves(self) -> None:
         self.assertEqual(live_trade.instrument_key(self.main, "RELIANCE"),
@@ -82,7 +90,7 @@ class SizingTest(unittest.TestCase):
 
 class MirrorEntryTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.v2, self.main = _dbs()
+        self.v2, self.main, self.main_path = _dbs()
         self.b = _fresh_broker(budget=10000, owner_user_id=2)
 
     def _arm(self):
@@ -163,7 +171,7 @@ class MirrorEntryTest(unittest.TestCase):
 
 class MirrorExitTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.v2, self.main = _dbs()
+        self.v2, self.main, self.main_path = _dbs()
         self.b = _fresh_broker(budget=10000, owner_user_id=2)
         self.b.save_token("t0k")
         self.b.configure(armed=True, kill_switch=False)
@@ -208,11 +216,86 @@ class MirrorExitTest(unittest.TestCase):
         self.assertIn("still held live", reason)
 
 
+class RoundTripThroughTheEngineTest(unittest.TestCase):
+    """Buy AND exit, driven through the real record_entry / record_exit.
+
+    Not through live_trade directly: the question worth answering is whether the
+    ENGINE's own writers fire the mirror, in the right order, with the right
+    size — which is what actually happens in production.
+    """
+
+    def setUp(self) -> None:
+        self.v2, self.main, self.main_path = _dbs()
+        self.b = _fresh_broker(budget=9000, owner_user_id=2)
+        self.b.save_token("t0k")
+        self.b.configure(armed=True, kill_switch=False)
+        self.sent = []
+
+        def fake_place(key, qty, side="BUY", **kw):
+            self.sent.append((side, key, qty))
+            return dict(ok=True, order_id=f"O{len(self.sent)}")
+        self.fake_place = fake_place
+
+    def _ro(self, _path):
+        # a FRESH connection each call, like production — the caller closes it
+        return sqlite3.connect(self.main_path)
+
+    def test_a_full_buy_then_exit_places_both_real_orders(self) -> None:
+        with mock.patch.object(_broker_mod, "place_order", side_effect=self.fake_place), \
+             mock.patch.object(live_trade, "available_margin", return_value=9115.0), \
+             mock.patch.object(v2_live, "_ro", self._ro):
+            # paper opens 12 shares on a Rs 1,00,000 book
+            v2_live.record_entry(self.v2, "IN", "swing_meanrev", "RELIANCE",
+                                 "2026-08-04", 1305.0, 12, 1200.0, 1500.0, 0.0, 0.5, None)
+            pid = self.v2.execute("SELECT id FROM v2_positions").fetchone()[0]
+            # paper closes the same 12 shares
+            v2_live.record_exit(self.v2, "IN", pid, "2026-08-05", 1400.0, 12, "target")
+
+        self.assertEqual(len(self.sent), 2, self.sent)
+        (b_side, b_key, b_qty), (s_side, s_key, s_qty) = self.sent
+        self.assertEqual((b_side, b_key), ("BUY", "NSE_EQ|INE002A01018"))
+        self.assertEqual((s_side, s_key), ("SELL", "NSE_EQ|INE002A01018"))
+        # THE assertion: the sleeve bought 2 and sold 2, while paper did 12
+        self.assertEqual(b_qty, 2)
+        self.assertEqual(s_qty, 2)
+        self.assertEqual(live_trade.live_qty(self.v2, "RELIANCE"), 0)
+
+    def test_the_exit_reads_the_symbol_before_the_row_is_deleted(self) -> None:
+        """All three exit paths DELETE the position after record_exit. If that
+        order ever inverts, the sell silently stops happening and real shares
+        are stranded — so the ordering is pinned here."""
+        import inspect
+        import pathlib
+        root = pathlib.Path(inspect.getfile(v2_live)).parent
+        for name in ("v2_live.py", "v2_web.py"):
+            src = (root / name).read_text(encoding="utf-8")
+            for i, line in enumerate(src.splitlines()):
+                if "DELETE FROM v2_positions WHERE id=?" in line:
+                    # a generous window: there is a multi-line EXIT log between
+                    # the two in the engine's exit_monitor
+                    window = "\n".join(src.splitlines()[max(0, i - 30):i])
+                    with self.subTest(file=name, line=i + 1):
+                        self.assertIn("record_exit(", window,
+                                      "the position row must be deleted AFTER record_exit")
+
+    def test_an_exit_still_sells_when_the_live_buy_was_smaller(self) -> None:
+        """Paper size and live size are independent; the sell follows the live
+        ledger, not the paper position."""
+        with mock.patch.object(_broker_mod, "place_order", side_effect=self.fake_place), \
+             mock.patch.object(live_trade, "available_margin", return_value=3000.0), \
+             mock.patch.object(v2_live, "_ro", self._ro):
+            v2_live.record_entry(self.v2, "IN", "swing_meanrev", "RELIANCE",
+                                 "2026-08-04", 1305.0, 12, 1200.0, 1500.0, 0.0, 0.5, None)
+            pid = self.v2.execute("SELECT id FROM v2_positions").fetchone()[0]
+            v2_live.record_exit(self.v2, "IN", pid, "2026-08-05", 1400.0, 12, "stop")
+        self.assertEqual([q for _s, _k, q in self.sent], [2, 2])
+
+
 class EngineIsolationTest(unittest.TestCase):
     """The paper book must survive the broker."""
 
     def test_a_broker_outage_does_not_stop_the_paper_book(self) -> None:
-        v2, _main = _dbs()
+        v2, _main, _path = _dbs()
         _fresh_broker(budget=10000, owner_user_id=2)
         with mock.patch.object(v2_live, "_live_mirror_entry",
                                side_effect=RuntimeError("broker down")):
@@ -223,7 +306,7 @@ class EngineIsolationTest(unittest.TestCase):
         self.assertEqual(v2.execute("SELECT COUNT(*) FROM v2_positions").fetchone()[0], 1)
 
     def test_the_mirror_is_a_noop_when_not_ready(self) -> None:
-        v2, _main = _dbs()
+        v2, _main, _path = _dbs()
         _fresh_broker(budget=10000)          # disconnected, disarmed
         with mock.patch.object(_broker_mod, "place_order") as po:
             v2_live.record_entry(v2, "IN", "swing_meanrev", "RELIANCE", "2026-08-04",
