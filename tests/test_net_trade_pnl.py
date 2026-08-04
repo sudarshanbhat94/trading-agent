@@ -90,9 +90,12 @@ class SingleDefinitionTest(unittest.TestCase):
         root = pathlib.Path(inspect.getfile(v2_live)).parent
         self.assertIn("record_exit(", inspect.getsource(v2_live.exit_monitor))
         web = (root / "v2_web.py").read_text(encoding="utf-8")
-        self.assertEqual(web.count("record_exit("), 2,
-                         "both manual-sell endpoints must use the single writer")
-        self.assertEqual(web.count("from .v2_live import record_exit"), 2)
+        # ONE now, not two: manual sell moved to the caller's OWN book
+        # (books.sell), leaving only the operator-only house exit here. A
+        # subscriber's sell must never write v2_trades.
+        self.assertEqual(web.count("record_exit("), 1,
+                         "only the house exit may use the single writer")
+        self.assertEqual(web.count("from .v2_live import record_exit"), 1)
         self.assertNotIn("net_trade_pnl(market", web,
                          "the web layer must not compute costs itself any more")
 

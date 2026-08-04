@@ -301,16 +301,21 @@ class ManualBuyReachesTheBrokerTest(unittest.TestCase):
     never bought.
     """
 
-    def test_the_endpoint_uses_the_single_writer(self) -> None:
+    def test_manual_buy_writes_the_callers_book_not_the_house(self) -> None:
+        """Superseded: manual buy used to call record_entry, which writes the
+        HOUSE book and fires the broker mirror — so any subscriber's click
+        placed a real order in the OPERATOR's account. It now writes
+        books.buy() and mirrors only when the caller IS the owner."""
         import inspect
         import pathlib
         from app import v2_web
         src = pathlib.Path(inspect.getfile(v2_web)).read_text(encoding="utf-8")
         start = src.index('@router.post("/api/buy")')
         body = src[start:src.index("@router.post", start + 10)]
-        self.assertIn("record_entry(", body)
-        self.assertNotIn("INSERT INTO v2_positions", body,
-                         "manual buy must not hand-roll the entry insert")
+        self.assertIn("books.buy(", body)
+        self.assertNotIn("record_entry(", body)
+        self.assertNotIn("INSERT INTO v2_positions", body)
+        self.assertIn('int(bst.get("owner_user_id") or -1) == uid', body)
 
     def test_manual_is_a_mirrored_lane(self) -> None:
         """Otherwise the single writer is reached and the order is still

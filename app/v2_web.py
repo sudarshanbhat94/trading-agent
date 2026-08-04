@@ -1735,9 +1735,20 @@ def _market_shut(market):
 
 
 @router.post("/api/buy")
-def api_buy(payload: dict):
-    """Manual paper buy into the v2 book — user-initiated, bypasses the engine's
-    entry gates so the user can act on their own read."""
+def api_buy(payload: dict, user: dict = Depends(require_session)):
+    """Manual buy into the CALLER'S OWN book.
+
+    THIS WROTE TO THE HOUSE BOOK, and that was a real-money defect rather than
+    an accounting one. record_entry fires the live-broker mirror, and the mirror
+    asserts the OWNER's user id when it checks permission — so any Pro or Elite
+    subscriber pressing Buy placed a REAL order in the operator's Upstox
+    account, with the operator's money. It also consumed the engine's six
+    position slots and wrote into v2_positions, the record every measured claim
+    in this codebase is computed from.
+
+    Now: the caller's own paper book, and the broker only when the caller IS the
+    sleeve's owner.
+    """
     sym = str(payload.get("symbol", "")).upper().strip()
     market = payload.get("market", "IN")
     if not sym:
@@ -1748,47 +1759,36 @@ def api_buy(payload: dict):
     px = float((_live_map(market).get(sym) or {}).get("price") or 0)
     if px <= 0:
         return JSONResponse({"error": "no live price for " + sym}, status_code=400)
+    from . import books
+    uid = int(user.get("id") or 0)
     v2 = _rw()
     try:
-        book = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?", (market,)).fetchone()
-        if not book:
-            return JSONResponse({"error": "no book"}, status_code=400)
-        budget, max_pos = book[0], int(book[1])
-        if v2.execute("SELECT 1 FROM v2_positions WHERE market=? AND symbol=?", (market, sym)).fetchone():
+        if sym in books.open_symbols(v2, uid, market):
             return JSONResponse({"error": "already holding " + sym}, status_code=400)
-        # THE OPTIONS BOOK IS SEPARATELY FUNDED and must not consume this one's
-        # slots or cash. _market_stats was fixed for this; this endpoint was
-        # not, so three open index-option contracts counted as 3 of the 6 equity
-        # slots AND their premium was subtracted from the equity budget:
-        # 7/6 slots "book full", cash -Rs 5,539, every manual buy a 400.
-        marks = ",".join("?" * len(EQUITY_EXCLUDED))
-        n = v2.execute(f"SELECT COUNT(*) FROM v2_positions WHERE market=?"
-                       f" AND strategy NOT IN ({marks})",
-                       (market, *EQUITY_EXCLUDED)).fetchone()[0]
-        if n >= max_pos:
-            return JSONResponse({"error": "book full (%d/%d slots) — sell something first" % (n, max_pos)}, status_code=400)
-        realized = v2.execute(f"SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
-                              f" AND strategy NOT IN ({marks})",
-                              (market, *EQUITY_EXCLUDED)).fetchone()[0] or 0
-        invested = v2.execute(f"SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions"
-                              f" WHERE market=? AND strategy NOT IN ({marks})",
-                              (market, *EQUITY_EXCLUDED)).fetchone()[0] or 0
-        cash = budget - invested + realized
-        qty = int(min(budget / max_pos, cash * 0.98) / px)
-        if qty < 1:
-            return JSONResponse({"error": "not enough cash for 1 share (₹%.0f free, ₹%.0f/share)" % (cash, px)}, status_code=400)
         stop, target = round(px * 0.94, 2), round(px * 1.06, 2)
-        # THE SINGLE WRITER, not a hand-rolled INSERT. This endpoint had its own
-        # copy, which is the exact shape of bug this codebase keeps producing:
-        # the live mirror hangs off record_entry, so a manual Buy wrote a paper
-        # position and silently placed NO broker order, while manual Sell — which
-        # already used record_exit — would have tried to sell shares that were
-        # never bought.
-        from .v2_live import record_entry
-        if not record_entry(v2, market, "manual", sym,
-                            datetime.now(IST).date().isoformat(), px, qty,
-                            stop, target, 0.0, 1.0, '{"setup":"manual buy"}'):
-            return JSONResponse({"error": "entry refused (see logs)"}, status_code=400)
+        qty = books.buy(v2, uid, market, "manual", sym, px, None, stop, target)
+        if qty < 1:
+            free = books.cash(v2, uid, market)
+            return JSONResponse(
+                {"error": "not enough cash for 1 share (₹%.0f free, ₹%.0f/share)"
+                          % (free, px)}, status_code=400)
+        # REAL MONEY only for the OWNER of the sleeve, and only for their own
+        # click. Every other subscriber's manual buy is paper, full stop.
+        broker_note = None
+        try:
+            from . import broker as _bk, live_trade as _lt
+            bst = _bk.state()
+            if bst.get("live_ready") and int(bst.get("owner_user_id") or -1) == uid:
+                main = _ro(MAIN_DB)
+                try:
+                    broker_note = _lt.mirror_entry(v2, main, market, sym, px, "manual")
+                finally:
+                    main.close()
+        except Exception:
+            _LOG.exception("broker mirror failed on manual buy %s", sym)
+        # NOTE: record_entry is deliberately NOT called any more. It writes the
+        # HOUSE book and fires the engine's own broker + book mirrors, which is
+        # what made one subscriber's click spend the operator's money.
         v2.commit()
     finally:
         v2.close()
@@ -1849,28 +1849,44 @@ def _reset_house_book(v2):
         pass
 
 @router.post("/api/sell")
-def api_sell(payload: dict):
-    """Manual paper sell — close a held position at the live price."""
+def api_sell(payload: dict, user: dict = Depends(require_session)):
+    """Manual sell from the CALLER'S OWN book.
+
+    Same defect as api_buy, and worse in one respect: it read v2_positions, so
+    a subscriber could close the ENGINE's position — and record_exit fires the
+    broker mirror, placing a real SELL in the operator's account.
+    """
     sym = str(payload.get("symbol", "")).upper().strip()
     market = payload.get("market", "IN")
     shut = _market_shut(market)
     if shut is not None:
         return shut
+    from . import books
+    uid = int(user.get("id") or 0)
     v2 = _rw()
     try:
-        r = v2.execute("SELECT id,entry_price,shares,strategy FROM v2_positions WHERE market=? AND symbol=?",
-                       (market, sym)).fetchone()
-        if not r:
+        held = [p for p in books.positions(v2, uid, market) if p["symbol"] == sym]
+        if not held:
             return JSONResponse({"error": "not holding " + sym}, status_code=400)
-        pid, entry, shares, strat = r
+        entry, shares = held[0]["entry_price"], held[0]["shares"]
         px = float((_live_map(market).get(sym) or {}).get("price") or entry)
-        # ONE writer for v2_trades, which computes the costs itself — a caller
-        # cannot pass a gross figure even by mistake. This INSERT used to be
-        # one of three hand-written copies.
-        from .v2_live import record_exit
-        pnl, ret = record_exit(v2, market, pid, datetime.now(IST).date().isoformat(),
-                               round(px, 2), shares, "manual")
-        v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
+        out = books.sell(v2, uid, market, sym, round(px, 2), "manual")
+        if not out:
+            return JSONResponse({"error": "could not close " + sym}, status_code=400)
+        pnl, ret = out
+        broker_note = None
+        try:
+            from . import broker as _bk, live_trade as _lt
+            bst = _bk.state()
+            if bst.get("connected") and int(bst.get("owner_user_id") or -1) == uid:
+                main = _ro(MAIN_DB)
+                try:
+                    broker_note = _lt.mirror_exit(v2, main, market, sym,
+                                                  round(px, 2), "manual")
+                finally:
+                    main.close()
+        except Exception:
+            _LOG.exception("broker mirror failed on manual sell %s", sym)
         v2.commit()
     finally:
         v2.close()
@@ -2745,7 +2761,18 @@ def api_orders(limit: int = 120):
 
 
 @router.post("/api/positions/{pid}/exit")
-def api_exit(pid: int):
+def api_exit(pid: int, user: dict = Depends(require_session)):
+    """Close a position in the ENGINE's book. OPERATOR ONLY.
+
+    This acts on v2_positions — the house book — and record_exit fires the
+    broker mirror. It was reachable by every Pro and Elite subscriber, so any
+    of them could close the engine's position AND trigger a real SELL in the
+    operator's Upstox account. Subscribers close their own positions through
+    /api/sell, which operates on their own book.
+    """
+    if (user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403,
+                            detail="this is the engine's book — use sell on your own")
     rw = _rw()
     row = rw.execute("SELECT market,strategy,symbol,entry_date,entry_price,shares,conviction,opened_at "
                      "FROM v2_positions WHERE id=?", (pid,)).fetchone()
