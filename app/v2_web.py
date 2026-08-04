@@ -5061,7 +5061,15 @@ var IDXCFG={};
 var BRK=null;
 function loadBroker(){
  if(((ME||{}).role||'').toLowerCase()!='admin')return;
- api('/v2/api/broker').then(function(r){if(!r.ok)return;BRK=r.j;renderBroker();});}
+ api('/v2/api/broker').then(function(r){
+  // 402 is the plan gate, not a failure: connecting a real broker is Elite.
+  // Rendering nothing would look like the feature is broken.
+  if(r.s==402){var el=document.getElementById('brokerBox');if(el)el.innerHTML=
+    '<div class=sec style="margin-top:22px"><span>live broker</span></div>'
+    +'<div class=ig-lock onclick="go(\'upgrade\')"><b>Connecting a real broker is an '
+    +'Elite feature.</b> Elite links your Upstox account so the AI\u2019s calls can be '
+    +'placed with real money, capped and kill-switched. Upgrade \u2192</div>';return;}
+  if(!r.ok)return;BRK=r.j;renderBroker();});}
 function brkPost(path,body,after){
  api('/v2/api/broker/'+path,{method:'POST',body:JSON.stringify(body||{})}).then(function(r){
   if(!r.ok){alert((r.j&&r.j.detail)||'failed');return;}

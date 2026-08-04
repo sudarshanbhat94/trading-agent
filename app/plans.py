@@ -196,15 +196,21 @@ ROUTE_FEATURES = {
     "/v2/api/catalysts": "catalysts",
     "/v2/api/index-call": "index_call",
     "/v2/api/ideas": "ideas",
-    # Live broker routes carry their own OWNER check (a numeric user id), which
-    # is stricter than any plan. Gating them on a tier as well would only mean
-    # the owner loses their own money button when a subscription lapses.
-    "/v2/api/broker": None,
-    "/v2/api/broker/config": None,
-    "/v2/api/broker/auth-url": None,
-    "/v2/api/broker/connect": None,
-    "/v2/api/broker/arm": None,
-    "/v2/api/broker/disconnect": None,
+    # Connecting a real broker is an ELITE feature, and the routes carry an
+    # OWNER check on top. Both, not either: the tier decides who may connect a
+    # broker at all, the owner id decides whose money a given sleeve is.
+    #
+    # Note this means a lapsed Elite subscription locks the owner out of their
+    # own broker panel. That is the correct failure — it stops configuration and
+    # arming, it does NOT close positions or revoke the token, and the fix is
+    # renewing. Leaving it ungated so the operator can never be locked out would
+    # mean every Starter user could connect a brokerage account.
+    "/v2/api/broker": "broker_connect",
+    "/v2/api/broker/config": "broker_connect",
+    "/v2/api/broker/auth-url": "broker_connect",
+    "/v2/api/broker/connect": "broker_connect",
+    "/v2/api/broker/arm": "broker_connect",
+    "/v2/api/broker/disconnect": "broker_connect",
     "/v2/api/movers": "signals",
     "/v2/api/search": "signals",
     "/v2/api/watch": "signals",

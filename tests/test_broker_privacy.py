@@ -116,5 +116,70 @@ class GateShapeTest(unittest.TestCase):
         self.assertIn('int(owner) != int(user.get("id") or -1)', src)
 
 
+
+class EliteOnlyTest(unittest.TestCase):
+    """Connecting a real brokerage account is an Elite feature.
+
+    The routes already carried an OWNER check, but that answers "whose money is
+    this sleeve", not "may this account link a broker at all". Ungated, every
+    Starter subscriber could have pointed the product at a live trading account.
+
+    Both gates apply: tier first (the shared /v2 dependency), ownership second.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.client, self.main = _client(self.tmp)
+        os.environ["BROKER_STATE_PATH"] = os.path.join(self.tmp, "broker.json")
+        import importlib
+        from app import broker
+        self.broker = importlib.reload(broker)
+        self.pw = "Str0ngPassw0rd!x"
+
+    def _as(self, plan, role="admin"):
+        from app.auth import hash_password
+        name = f"{plan}_" + uuid.uuid4().hex[:8]
+        u = self.main.db.create_user(name, hash_password(self.pw), role=role, active=True)
+        self.main.db.update_user(u["id"], account_plan=plan)
+        self.client.cookies.clear()
+        self.client.post("/api/auth/login", json={"username": name, "password": self.pw})
+        return u
+
+    def test_starter_cannot_reach_the_broker_at_all(self) -> None:
+        self._as("watch")
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
+
+    def test_pro_cannot_either(self) -> None:
+        """Pro buys a paper book, not a live brokerage link."""
+        self._as("paper")
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
+
+    def test_elite_can(self) -> None:
+        u = self._as("auto")
+        self.broker.configure(owner_user_id=u["id"])
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 200)
+
+    def test_every_broker_route_is_gated_not_just_the_read(self) -> None:
+        """Six endpoints; gating five would be the same hole."""
+        from app import plans
+        for path in ("/v2/api/broker", "/v2/api/broker/config",
+                     "/v2/api/broker/auth-url", "/v2/api/broker/connect",
+                     "/v2/api/broker/arm", "/v2/api/broker/disconnect"):
+            with self.subTest(path=path):
+                self.assertEqual(plans.ROUTE_FEATURES.get(path), "broker_connect")
+
+    def test_the_arming_endpoint_refuses_a_lower_tier(self) -> None:
+        """The one that spends money."""
+        self._as("paper")
+        r = self.client.post("/v2/api/broker/arm",
+                             json={"armed": True, "confirm": "TRADE REAL MONEY"})
+        self.assertEqual(r.status_code, 402)
+
+    def test_tier_is_checked_before_ownership(self) -> None:
+        """A non-Elite user must get the upgrade signal (402), not a 403 that
+        implies they merely picked the wrong account."""
+        u = self._as("paper")
+        self.broker.configure(owner_user_id=u["id"])
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
 if __name__ == "__main__":
     unittest.main()
