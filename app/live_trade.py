@@ -40,7 +40,7 @@ _LOG = logging.getLogger("openstocks.live")
 
 # Lanes the sleeve is allowed to mirror. gap_momentum is a measured net loser
 # and quarantined from the paper book already; it must not reappear here.
-MIRRORED_LANES = ("swing_meanrev", "mom_breakout", "volume_surge", "btst")
+MIRRORED_LANES = ("swing_meanrev", "mom_breakout", "volume_surge", "btst", "manual")
 
 _margin_cache: dict = {"t": 0.0, "v": None}
 MARGIN_TTL = 60

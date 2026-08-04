@@ -291,6 +291,51 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
         self.assertEqual([q for _s, _k, q in self.sent], [2, 2])
 
 
+class ManualBuyReachesTheBrokerTest(unittest.TestCase):
+    """A manual Buy must place a real order too.
+
+    The endpoint carried its own INSERT INTO v2_positions and never called
+    record_entry, so the live mirror — which hangs off record_entry — never
+    fired. Manual Sell already used record_exit, so the asymmetry was worse than
+    "manual does not trade live": it would have tried to SELL shares the sleeve
+    never bought.
+    """
+
+    def test_the_endpoint_uses_the_single_writer(self) -> None:
+        import inspect
+        import pathlib
+        from app import v2_web
+        src = pathlib.Path(inspect.getfile(v2_web)).read_text(encoding="utf-8")
+        start = src.index('@router.post("/api/buy")')
+        body = src[start:src.index("@router.post", start + 10)]
+        self.assertIn("record_entry(", body)
+        self.assertNotIn("INSERT INTO v2_positions", body,
+                         "manual buy must not hand-roll the entry insert")
+
+    def test_manual_is_a_mirrored_lane(self) -> None:
+        """Otherwise the single writer is reached and the order is still
+        skipped — a fix that looks complete and does nothing."""
+        self.assertIn("manual", live_trade.MIRRORED_LANES)
+
+    def test_a_manual_entry_places_a_real_buy(self) -> None:
+        v2, main, path = _dbs()
+        b = _fresh_broker(budget=9000, owner_user_id=2)
+        b.save_token("t0k")
+        b.configure(armed=True, kill_switch=False)
+        sent = []
+
+        def fake_place(key, qty, side="BUY", **kw):
+            sent.append((side, key, qty))
+            return dict(ok=True, order_id="M1")
+
+        with mock.patch.object(_broker_mod, "place_order", side_effect=fake_place), \
+             mock.patch.object(live_trade, "available_margin", return_value=9115.0), \
+             mock.patch.object(v2_live, "_ro", lambda _p: sqlite3.connect(path)):
+            v2_live.record_entry(v2, "IN", "manual", "RELIANCE", "2026-08-04",
+                                 1305.0, 7, 1226.7, 1383.3, 0.0, 1.0, None)
+        self.assertEqual(sent, [("BUY", "NSE_EQ|INE002A01018", 2)])
+
+
 class EngineIsolationTest(unittest.TestCase):
     """The paper book must survive the broker."""
 

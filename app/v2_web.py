@@ -1711,10 +1711,17 @@ def api_buy(payload: dict):
         if qty < 1:
             return JSONResponse({"error": "not enough cash for 1 share (₹%.0f free, ₹%.0f/share)" % (cash, px)}, status_code=400)
         stop, target = round(px * 0.94, 2), round(px * 1.06, 2)
-        v2.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop,target,trail,peak,conviction,opened_at,why)"
-                   " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (market, "manual", sym, datetime.now(IST).date().isoformat(), px, qty, stop, target, 0.0, px, 1.0,
-                    datetime.now(timezone.utc).isoformat(), '{"setup":"manual buy"}'))
+        # THE SINGLE WRITER, not a hand-rolled INSERT. This endpoint had its own
+        # copy, which is the exact shape of bug this codebase keeps producing:
+        # the live mirror hangs off record_entry, so a manual Buy wrote a paper
+        # position and silently placed NO broker order, while manual Sell — which
+        # already used record_exit — would have tried to sell shares that were
+        # never bought.
+        from .v2_live import record_entry
+        if not record_entry(v2, market, "manual", sym,
+                            datetime.now(IST).date().isoformat(), px, qty,
+                            stop, target, 0.0, 1.0, '{"setup":"manual buy"}'):
+            return JSONResponse({"error": "entry refused (see logs)"}, status_code=400)
         v2.commit()
     finally:
         v2.close()
@@ -4877,11 +4884,28 @@ function brkConnect(){
  brkPost('connect',{code:code,api_secret:sec},function(){
   var e=document.getElementById('brkSecret');if(e)e.value='';
   var c=document.getElementById('brkCode');if(c)c.value='';});}
+// INLINE, not prompt(). A bare browser prompt sitting directly under a budget
+// field was read as "how much?" and answered "9000" — the dialog gave no
+// context, no visible phrase to copy, and no way to tell the two apart. The
+// phrase is now displayed next to the box that wants it, and the button stays
+// disabled until they match, so the confirmation cannot be answered wrongly.
+var ARMPHRASE='TRADE REAL MONEY';
 function brkArm(on){
  if(!on){brkPost('arm',{armed:false});return;}
- var c=prompt('This places REAL orders with real money.\n\nType: TRADE REAL MONEY');
- if(c===null)return;
- brkPost('arm',{armed:true,confirm:c});}
+ var box=document.getElementById('brkArmBox');if(!box)return;
+ box.style.display='block';
+ var i=document.getElementById('brkConfirm');if(i){i.value='';i.focus();}
+ brkArmCheck();}
+function brkArmCancel(){var b=document.getElementById('brkArmBox');if(b)b.style.display='none';}
+function brkArmCheck(){
+ var i=document.getElementById('brkConfirm'),b=document.getElementById('brkArmGo');
+ if(!i||!b)return;
+ var ok=i.value.trim().toUpperCase()===ARMPHRASE;
+ b.disabled=!ok;b.style.opacity=ok?'1':'.45';}
+function brkArmGo(){
+ var i=document.getElementById('brkConfirm');
+ if(!i||i.value.trim().toUpperCase()!==ARMPHRASE)return;
+ brkPost('arm',{armed:true,confirm:ARMPHRASE},brkArmCancel);}
 function val(id){var e=document.getElementById(id);return e?e.value.trim():'';}
 function renderBroker(){
  var el=document.getElementById('brokerBox');if(!el||!BRK)return;var s=BRK;
