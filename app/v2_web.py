@@ -464,7 +464,34 @@ def api_overview(user: dict = Depends(require_session)):
                 real = snap
     except Exception:
         real = None
-    return JSONResponse(dict(markets=markets, options=opts, real=real,
+    # THE CALLER'S OWN BOOK. `markets` stays the house book — the engine's
+    # record, which is what the AI's track record is computed from — and this is
+    # the subscriber's personal one. Two different questions: "how is the
+    # strategy doing" and "how am I doing", and the page was answering the first
+    # while claiming to answer the second.
+    mine = None
+    try:
+        from . import books, plans as _pl
+        plan = _pl.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                             plan_expires_at=user.get("plan_expires_at"))
+        if _pl.allows(plan, "paper_book"):
+            rw = _rw()
+            try:
+                mine = books.stats(rw, int(user.get("id") or 0), "IN", live.get("IN"))
+                mine["ccy"] = "₹"
+                mine["holdings"] = [
+                    dict(p, live=round(float((live.get("IN") or {}).get(p["symbol"], {})
+                                             .get("price") or p["entry_price"]), 2))
+                    for p in books.positions(rw, int(user.get("id") or 0), "IN")]
+                for h in mine["holdings"]:
+                    h["pnl"] = round((h["live"] - h["entry_price"]) * h["shares"], 2)
+                    h["pnl_pct"] = (round((h["live"] / h["entry_price"] - 1) * 100, 2)
+                                    if h["entry_price"] else 0.0)
+            finally:
+                rw.close()
+    except Exception:
+        _LOG.exception("user book stats failed")
+    return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
                              regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
                              as_of=datetime.now(IST).strftime("%H:%M:%S IST")))
@@ -4428,7 +4455,7 @@ function renderHero(){
   icon:(up?'▲':'▼'),title:(up?"You're up ":"Down ")+noun,
   // "live paper book" was always a contradiction; with a real account on the
   // page it becomes a dangerous one.
-  meta:(REAL?'SIMULATED · ':'')+'paper book · '+(m.market||'IN'),tabs:tabs,ccy:m.ccy,
+  meta:'OpenStocks AI \u00b7 shared strategy record',tabs:tabs,ccy:m.ccy,
   equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,note:note,
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}}));
@@ -4459,6 +4486,28 @@ function renderOptionsTile(o,ccy){
          deployed:o.options_value,realised:o.options_realised,
          trades:o.options_trades,win:o.options_win}}));}
 // ---- published ideas -------------------------------------------------------
+var MINE=null;
+// The subscriber's OWN book. Rendered through the same bookCard as everything
+// else so the three books cannot drift into three different-looking things,
+// which is the drift this file has already had to be rescued from once.
+function renderMineTile(m,ccy){
+ if(!m){fdSet('fdMine','','');return;}
+ var f=(ccy=='₹'?INR:USD);
+ var rows=(m.holdings||[]).map(function(h){
+   var up=(h.pnl||0)>=0;
+   return '<div class=rl-row><div class=rl-s>'+h.symbol+'</div>'
+    +'<div class=rl-q>'+h.shares+' @ '+ccy+f.format(h.entry_price)+'</div>'
+    +'<div class="rl-p '+(up?'up':'dn')+'">'+(up?'+':'')+ccy+f.format(Math.round(h.pnl))
+    +'<span class=rl-pc>'+(up?'+':'')+h.pnl_pct+'%</span></div></div>';}).join('');
+ fdSet('fdMine','fd-card',bookCard({
+  icon:'▣',title:'Your paper book',
+  meta:'yours alone · '+(m.positions||0)+' open',ccy:ccy,
+  equity:m.equity,chg:m.overall_pnl,noun:'overall',
+  pct:(m.budget?Math.round((m.overall_pnl||0)/m.budget*10000)/100:0),
+  note:'The AI\u2019s trades, sized to YOUR cash. Resetting this clears only your book.',
+  stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
+         realised:m.realised,trades:m.trades,win:m.win}})
+  +(rows?'<div class=rl-list>'+rows+'</div>':''));}
 var IDEAS=null;
 // Readable names for the two things a subscriber sees on every card. Kept next
 // to the renderer that uses them rather than assumed to exist elsewhere — the
@@ -4612,7 +4661,7 @@ function renderRealTile(r,ccy){
   +'<div class=fd-meta style="margin-top:10px">This is your broker balance, not a '
   +'simulation. The books below are paper.</div>');}
 function loadHome(){
- if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div id=fdReal></div><div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
+ if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div id=fdReal></div><div id=fdMine></div><div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
  api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;
   var ms=(d.markets||[]).filter(function(m){return inMkt(m.market)});var m=ms[0]||{},f=(m.ccy=='₹'?INR:USD);
   var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
@@ -4625,7 +4674,8 @@ function loadHome(){
    +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
    +(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
      +(ob.options_positions?(' ('+ob.options_positions+' open)'):'')));
-  HERO=m;REAL=d.real||null;renderRealTile(REAL,m.ccy);
+  HERO=m;REAL=d.real||null;MINE=d.mine||null;
+  renderRealTile(REAL,m.ccy);renderMineTile(MINE,m.ccy);
   renderHero();renderOptionsTile(d.options||{},m.ccy);
   var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
           ON:['is in risk-on mode','conditions look healthy, so OpenStocks is buying dips, breakouts, and news-driven volume surges'],

@@ -158,6 +158,20 @@ IDEAS = _ideas()
 OVERVIEW = dict(as_of="22 Jul, 13:45 IST", regime={"IN": True},
                 regime_state={"IN": "NEUTRAL"},
                 options=OPTIONS,
+                mine=dict(market="IN", ccy="\u20b9", budget=100000.0, cash=71234.0,
+                          deployed=30120.0, equity=101354.0, overall_pnl=1354.0,
+                          realised=-320.0, unrealised=1674.0, positions=2, trades=4,
+                          win=50, deploy_pct=30,
+                          holdings=[dict(symbol="WABAG", shares=7, entry_price=2206.3,
+                                         live=2261.0, pnl=382.9, pnl_pct=2.48),
+                                    dict(symbol="HCC", shares=520, entry_price=27.1,
+                                         live=27.9, pnl=416.0, pnl_pct=2.95)]),
+                real=dict(cash=6434.7, invested=2706.57, holdings_value=2797.0,
+                          equity=9231.56, unrealised=90.29, n_positions=2, armed=True,
+                          positions=[dict(symbol="ICICIB22", qty=1, avg=26.27, ltp=117.26,
+                                          value=117.26, pnl=90.99, pnl_pct=346.36, kind="holding"),
+                                     dict(symbol="RBLBANK", qty=7, avg=382.9, ltp=382.8,
+                                          value=2679.6, pnl=-0.7, pnl_pct=-0.03, kind="position")]),
                 markets=[_market("IN")])
 
 NEWS = [
