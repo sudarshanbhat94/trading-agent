@@ -337,13 +337,17 @@ class HonestyTest(unittest.TestCase):
         self.assertIn("gives up edge", spa)
 
     def test_the_sample_size_is_shown_next_to_the_win_rate(self) -> None:
+        """Both moved into the credibility strip when the advisory layout
+        landed. The RULE is unchanged — a win rate never appears without its n,
+        and a thin record says so — only where it is rendered."""
         import pathlib
         spa = pathlib.Path("app/v2_web.py").read_text(encoding="utf-8")
         spa = spa[spa.rindex('SPA_HTML = r"""'):]
         block = spa[spa.index("function renderIdeas("):]
         block = block[:block.index("\nfunction ")]
-        self.assertIn("not a track record yet", block)
-        self.assertIn("of '+s.closed", block)
+        self.assertIn("too few to be a track record", block)
+        self.assertIn("of '+st.closed", block)
+        self.assertIn("not as evidence", block)
 
 
 if __name__ == "__main__":
