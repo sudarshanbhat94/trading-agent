@@ -796,6 +796,11 @@ def ensure_schema(v2):
         v2.execute("ALTER TABLE v2_positions ADD COLUMN expiry TEXT")
     except Exception:
         pass
+    try:                                  # per-user paper books (see app/books.py)
+        from . import books as _books
+        _books.ensure_schema(v2)
+    except Exception:
+        _LOG.exception("user-book schema failed; house book unaffected")
     v2.commit()
 
 
@@ -1334,6 +1339,11 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
             _live_mirror_exit(v2, market, row[0], exit_price, reason)
     except Exception:
         _LOG.exception("live mirror (exit) failed for position %s", position_id)
+    try:
+        if row:
+            _book_mirror_exit(v2, market, row[0], exit_price, reason)
+    except Exception:
+        _LOG.exception("user-book mirror (exit) failed for position %s", position_id)
     return net, net_pct
 
 
@@ -1395,7 +1405,29 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
         _live_mirror_entry(v2, market, strategy, symbol, entry_price)
     except Exception:
         _LOG.exception("live mirror (entry) failed for %s — paper book unaffected", symbol)
+    # EVERY SUBSCRIBER'S OWN BOOK gets the same decision, sized to their cash.
+    # Wrapped and after the house row for the same reason as the broker mirror:
+    # the engine's record must survive anything that happens downstream of it.
+    try:
+        _book_mirror_entry(v2, market, strategy, symbol, entry_price, stop, target)
+    except Exception:
+        _LOG.exception("user-book mirror (entry) failed for %s", symbol)
     return True
+
+
+def _book_mirror_entry(v2, market, strategy, symbol, price, stop, target):
+    from . import books as _books, plans as _plans
+    from .main import db as _db
+    n = _books.mirror_entry(v2, _db, _plans, market, strategy, symbol, price, stop, target)
+    if n:
+        _LOG.info("user books: %s opened in %d book(s)", symbol, n)
+
+
+def _book_mirror_exit(v2, market, symbol, price, reason):
+    from . import books as _books, plans as _plans
+    n = _books.mirror_exit(v2, None, _plans, market, symbol, price, reason)
+    if n:
+        _LOG.info("user books: %s closed in %d book(s)", symbol, n)
 
 
 def _live_mirror_entry(v2, market, strategy, symbol, price):

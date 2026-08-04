@@ -1775,49 +1775,51 @@ def api_buy(payload: dict):
 
 @router.post("/api/reset")
 def api_reset(user: dict = Depends(require_session)):
-    """Reset the paper book. OWNER/ADMIN ONLY.
+    """Reset the CALLER'S OWN paper book. Nobody else's, and not the engine's.
 
-    THERE IS ONE BOOK. v2_book, v2_positions, v2_trades and v2_equity carry no
-    user column — every subscriber is looking at the same paper account, the one
-    the engine actually trades. So this endpoint's DELETE statements are not
-    "reset my cash", they are "destroy the engine's open positions and the
-    entire trade history, for everybody".
+    This used to run unqualified DELETEs against v2_positions/v2_trades — the
+    single shared book the engine actually trades — so any Pro subscriber could
+    destroy the open positions and the whole trade history for everyone. It had
+    already happened once (2026-07-28).
 
-    It was reachable by any user on the `manual_trade` feature, i.e. every Pro
-    and Elite subscriber. The book has already been wiped once this way
-    (2026-07-28), taking the live record with it — which is the evidence base
-    every measurement in this codebase depends on.
-
-    Locking it to the operator is the stop-gap. The real fix is per-user books,
-    which is a schema change across the engine and is NOT this.
+    A user now has their own book (app/books.py) and this clears exactly that.
+    An admin additionally gets the house book reset, because somebody has to be
+    able to, and that is a deliberate operator action rather than a button on a
+    subscriber's account page.
     """
-    if (user.get("role") or "").lower() != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="the paper book is shared and reset is operator-only")
+    from . import books
+    uid = int(user.get("id") or 0)
     v2 = _rw()
     try:
-        for t in ("v2_positions", "v2_trades", "v2_equity", "v2_signals"):
-            try:
-                v2.execute("DELETE FROM %s" % t)
-            except Exception:
-                pass
-        now_utc = datetime.now(timezone.utc).isoformat()
-        for market, budget, mp in (("IN", 100000.0, 6), ("US", 20000.0, 6)):
-            if v2.execute("SELECT 1 FROM v2_book WHERE market=?", (market,)).fetchone():
-                v2.execute("UPDATE v2_book SET budget=?, max_pos=?, started_at=? WHERE market=?",
-                           (budget, mp, now_utc, market))
+        books.reset(v2, uid)
+        for m in ("IN", "US"):
+            books.ensure_book(v2, uid, m)
+        if (user.get("role") or "").lower() == "admin" and \
+                str(user.get("username") or "").lower() == "sudarshan":
+            _reset_house_book(v2)
         v2.commit()
     finally:
         v2.close()
-    # reset in-engine throttles/session so it re-arms cleanly next open
+    return JSONResponse({"ok": True, "scope": "your book"})
+
+
+def _reset_house_book(v2):
+    """The ENGINE's book. Operator only, and separate from a user reset."""
+    for t in ("v2_positions", "v2_trades", "v2_equity", "v2_signals"):
+        try:
+            v2.execute("DELETE FROM %s" % t)
+        except Exception:
+            pass
+    now_utc = datetime.now(timezone.utc).isoformat()
+    for market, budget, mp in (("IN", 100000.0, 6), ("US", 20000.0, 6)):
+        if v2.execute("SELECT 1 FROM v2_book WHERE market=?", (market,)).fetchone():
+            v2.execute("UPDATE v2_book SET budget=?, max_pos=?, started_at=? WHERE market=?",
+                       (budget, mp, now_utc, market))
     try:
         from . import v2_live
         v2_live._EQ_SNAP.clear()
     except Exception:
         pass
-    return JSONResponse({"ok": True, "budget": 100000})
-
 
 @router.post("/api/sell")
 def api_sell(payload: dict):

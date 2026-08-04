@@ -36,11 +36,15 @@ class BookIsSharedTest(unittest.TestCase):
             with self.subTest(table=table):
                 self.assertNotIn("user_id", cols)
 
-    def test_reset_deletes_unconditionally(self) -> None:
-        """No WHERE clause: it takes everyone's rows, not the caller's."""
+    def test_reset_is_now_scoped_to_the_caller(self) -> None:
+        """Superseded the stop-gap: reset used to run unqualified DELETEs on
+        the engine's tables. It now clears the caller's own book (books.reset),
+        and the unqualified version survives only as an operator-only helper."""
         src = inspect.getsource(v2_web.api_reset)
-        self.assertIn('"DELETE FROM %s" % t', src)
-        self.assertNotIn("WHERE user_id", src)
+        self.assertIn("books.reset(v2, uid)", src)
+        self.assertNotIn('"DELETE FROM %s" % t', src)
+        house = inspect.getsource(v2_web._reset_house_book)
+        self.assertIn('"DELETE FROM %s" % t', house)
 
 
 class ResetIsOperatorOnlyTest(unittest.TestCase):
@@ -75,14 +79,25 @@ class ResetIsOperatorOnlyTest(unittest.TestCase):
         self.client.post("/api/auth/login", json={"username": name, "password": self.pw})
         return u
 
-    def test_a_paying_subscriber_cannot_wipe_the_book(self) -> None:
-        """Elite reaches manual_trade, which is what used to let it through."""
-        self._login_as("user")
+    def test_a_subscriber_resets_only_their_own_book(self) -> None:
+        """They may reset — it is their book now — and the engine's must be
+        untouched by it."""
+        import sqlite3
+        from app import v2_live as vl
+        u = self._login_as("user")
+        con = sqlite3.connect(v2_web.V2_DB)
+        vl.record_entry(con, "IN", "swing_meanrev", "RELIANCE", "2026-08-04",
+                        1300.0, 12, 1200.0, 1500.0, 0.0, 0.5, None)
+        con.commit(); con.close()
         r = self.client.post("/v2/api/reset")
-        self.assertEqual(r.status_code, 403)
-        self.assertIn("shared", r.json()["detail"])
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scope"], "your book")
+        con = sqlite3.connect(v2_web.V2_DB)
+        left = con.execute("SELECT COUNT(*) FROM v2_positions").fetchone()[0]
+        con.close()
+        self.assertEqual(left, 1, "a subscriber reset must not touch the engine")
 
-    def test_the_operator_still_can(self) -> None:
+    def test_the_operator_can_also_reset_the_house_book(self) -> None:
         self._login_as("admin")
         self.assertEqual(self.client.post("/v2/api/reset").status_code, 200)
 
