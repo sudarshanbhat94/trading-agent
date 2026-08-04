@@ -4249,6 +4249,31 @@ body.has-real .fd-books:hover{opacity:1}
 .ig-foot b{color:var(--tx);font-weight:700}
 .ig-warn{font-size:12px;color:var(--tx);background:var(--warnb);border-radius:9px;
  padding:9px 11px;margin-top:11px;line-height:1.5}
+.ig-side{font-size:9.5px;font-weight:800;letter-spacing:.06em;background:var(--upb);
+ color:var(--up);padding:2px 6px;border-radius:5px;margin-left:8px;vertical-align:middle}
+/* where the price sits between the stop and the first target — the one number a
+   raw price cannot give you, and the thing an advisory card is actually for */
+.ig-track{position:relative;height:6px;border-radius:3px;background:var(--surf);
+ margin-top:12px}
+.ig-track-mid{position:absolute;left:50%;top:-3px;width:1px;height:12px;background:var(--line)}
+.ig-track-fill{position:absolute;top:0;height:6px;border-radius:3px}
+.ig-track-fill.up{background:var(--up);opacity:.55}
+.ig-track-fill.dn{background:var(--dn);opacity:.55}
+.ig-track-dot{position:absolute;top:-3px;width:12px;height:12px;border-radius:50%;
+ background:var(--hd);transform:translateX(-6px);border:2px solid var(--card)}
+.ig-track-ends{display:flex;justify-content:space-between;font-size:10.5px;
+ color:var(--mut);margin-top:5px}
+.ig-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;
+ background:var(--card);border:1px solid var(--line);border-radius:14px;
+ padding:14px 16px;margin-bottom:10px}
+.ig-sn{font-size:19px;font-weight:700;color:var(--hd);font-variant-numeric:tabular-nums}
+.ig-sn.up{color:var(--up)}.ig-sn.dn{color:var(--dn)}
+.ig-sl2{font-size:10.5px;color:var(--mut);margin-top:2px}
+.ig-strip-warn{font-size:11.5px;color:var(--mut);line-height:1.5;margin-bottom:12px;
+ padding:0 2px}
+@media(max-width:520px){.ig-strip{grid-template-columns:1fr 1fr;gap:14px 10px}}
+.ig-how{margin-top:16px}
+.ig-how summary{font-size:12.5px;color:var(--mut);cursor:pointer;padding:4px 0}
 .ig-buy{margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
 .ig-buy .btn{width:100%;font-weight:700}
 .ig-lock{font-size:13px;color:var(--tx);background:var(--surf);border:1px dashed var(--line);
@@ -4430,8 +4455,9 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 
   <div id=ideas class=tab>
    <div class=sec><span>today's ideas</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
-   <div id=ideasHead></div>
+   <div id=ideasStrip></div>
    <div id=ideasList class=skel style="min-height:120px"></div>
+   <div id=ideasHead></div>
    <div class=sec style="margin-top:22px"><span>track record</span><span class=mut style="font-size:12px;font-weight:400">every idea, winners and losers</span></div>
    <div id=ideasStats></div>
    <div id=ideasHist></div>
@@ -4777,25 +4803,43 @@ function ideaCard(r,ccy,d){
  var f=(ccy=='₹'?INR:USD),live=r.live!=null?r.live:r.last_price,
      mv=(r.status=='open'&&r.open_pct!=null)?r.open_pct:r.result_pct,
      up=(mv||0)>=0;
- // the LADDER is the point of the card: entry, where it dies, and the three
- // places it could go. Rendered as one bar so the distances are comparable at a
- // glance rather than six numbers the reader has to subtract in their head.
- function leg(lbl,v,cls){return '<div class=ig-leg><div class=ig-ll>'+lbl+'</div>'
-   +'<div class="ig-lv '+(cls||'')+'">'+ccy+f.format(v)+'</div></div>';}
+ // WHERE IS IT NOW, between the stop and T1. The single most useful thing on an
+ // advisory card and the one number a price alone cannot give you: -100% is the
+ // stop, +100% is the first target.
+ var pos=null;
+ if(live!=null&&r.entry){
+  var span=(live>=r.entry)?(r.t1-r.entry):(r.entry-r.stop);
+  if(span>0)pos=Math.max(-100,Math.min(100,(live-r.entry)/span*100));
+ }
+ var bar='';
+ if(pos!=null){
+  var pct=(pos+100)/2;                       // -100..100 -> 0..100
+  bar='<div class=ig-track><div class=ig-track-mid></div>'
+   +'<div class="ig-track-fill '+(pos>=0?'up':'dn')+'" style="left:'
+   +(pos>=0?50:pct)+'%;width:'+Math.abs(pos)/2+'%"></div>'
+   +'<div class=ig-track-dot style="left:'+pct+'%"></div></div>'
+   +'<div class=ig-track-ends><span>stop '+ccy+f.format(r.stop)+'</span>'
+   +'<span>T1 '+ccy+f.format(r.t1)+'</span></div>';
+ }
  var reached=r.best_target||'';
  function tcls(n){return reached&&('t1t2t3'.indexOf(n)<='t1t2t3'.indexOf(reached))?'up':'';}
+ function leg(lbl,v,cls){return '<div class=ig-leg><div class=ig-ll>'+lbl+'</div>'
+   +'<div class="ig-lv '+(cls||'')+'">'+ccy+f.format(v)+'</div></div>';}
+ // horizon: the engine's own hold clock, said in words
+ var horizon=(r.strategy=='volume_surge'||r.strategy=='intraday_news')?'intraday'
+   :(r.strategy=='btst'?'overnight':'positional · up to 10 days');
  return '<div class=ig-card>'
   +'<div class=ig-top onclick="stock(\''+r.symbol+'\',\''+(r.market||'IN')+'\')">'
-   +'<div class=ig-id><div class=ig-sym>'+r.symbol+'</div>'
-    +'<div class=ig-meta>'+(LANE[r.strategy]||r.strategy)+' · '+d(r.published_date)+'</div></div>'
+   +'<div class=ig-id><div class=ig-sym>'+r.symbol
+    +'<span class=ig-side>BUY</span></div>'
+    +'<div class=ig-meta>'+(LANE[r.strategy]||r.strategy)+' · '+horizon+' · '+d(r.published_date)+'</div></div>'
    +'<div class=ig-right><div class="ig-mv '+(up?'up':'dn')+'">'
     +(mv==null?'—':(up?'+':'')+mv+'%')+'</div>'
     +'<div class="ig-badge '+ideaCls(r)+'">'+ideaStatus(r.status)+'</div></div>'
   +'</div>'
+  +bar
   +'<div class=ig-ladder>'+leg('entry',r.entry)+leg('stop',r.stop,'dn')
    +leg('T1',r.t1,tcls('t1'))+leg('T2',r.t2,tcls('t2'))+leg('T3',r.t3,tcls('t3'))+'</div>'
-  // Two sizes, and the difference is the point: the published one is for the
-  // Rs 1,00,000 reference account, the broker one is what YOUR balance buys.
   +'<div class=ig-foot><span>'
    +(r.broker_qty!=null
      ?'<b>'+r.broker_qty+'</b> shares · '+ccy+f.format(Math.round(r.broker_cost))
@@ -4827,8 +4871,25 @@ function renderIdeas(d){
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
+ var st=d.stats||{};
+ document.getElementById('ideasStrip').innerHTML=
+  '<div class=ig-strip>'
+  +'<div><div class=ig-sn>'+(st.win_pct==null?'—':st.win_pct+'%')+'</div>'
+   +'<div class=ig-sl2>win rate'+(st.closed?' · of '+st.closed:'')+'</div></div>'
+  +'<div><div class="ig-sn '+((st.avg_pct||0)>=0?'up':'dn')+'">'
+   +(st.avg_pct==null?'—':(st.avg_pct>0?'+':'')+st.avg_pct+'%')+'</div>'
+   +'<div class=ig-sl2>avg per idea</div></div>'
+  +'<div><div class=ig-sn>'+(st.published||0)+'</div>'
+   +'<div class=ig-sl2>published</div></div>'
+  +'<div><div class=ig-sn>'+(st.hit_t1||0)+'</div>'
+   +'<div class=ig-sl2>reached T1</div></div>'
+  +'</div>'
+  +(st.closed<20?'<div class=ig-strip-warn>'+(st.closed||0)+' resolved idea'
+    +((st.closed||0)==1?'':'s')+' \u2014 too few to be a track record. Shown so you '
+    +'can watch it build, not as evidence.</div>':'');
  fdSet('ideasHead','fd-card',
-  '<div class=fd-text style="margin-top:0">Sized for a <b>'+ccy+f.format(d.capital)
+  '<details class=ig-how><summary>How these are calculated</summary>'
+  +'<div class=fd-text style="margin-top:0">Sized for a <b>'+ccy+f.format(d.capital)
   +'</b> account risking <b>'+Math.round(d.risk_pct*100)+'%</b> ('+ccy
   +f.format(Math.round(d.capital*d.risk_pct))+') per idea. Stop and targets are '
   +'set from each stock’s own ATR, so T1 is one stop-width of upside — not a '
@@ -4836,7 +4897,7 @@ function renderIdeas(d){
   +'whichever comes first.</div>'
   +'<div class=ig-warn>Our own backtests say a target at T1 <b>gives up edge</b> on '
   +'these lanes — letting winners run scored +0.78%/trade against +0.51% with a '
-  +'tight target. T1 is the safe exit, not the best one.</div>');
+  +'tight target. T1 is the safe exit, not the best one.</div></details>');
  var head='';
  if(d.withheld_today>0)
   head='<div class=ig-lock onclick="go(\'upgrade\')"><b>'+d.withheld_today+' more idea'
