@@ -2259,18 +2259,36 @@ def api_ideas(market: str = "IN", days: int = 30,
     finally:
         v2.close()
     live = _live_map(market, [r["symbol"] for r in rows])
+    # SIZE FOR THE MONEY THAT WOULD ACTUALLY BUY IT. Ideas are published against
+    # a Rs 1,00,000 reference account, but the owner of a connected broker has a
+    # real balance — showing them 15 shares they cannot afford is worse than
+    # useless. The stored levels are NEVER rewritten; only the displayed
+    # quantity is recomputed for the viewer.
+    from . import broker as _broker
+    from . import live_trade as _lt
+    bst = _broker.state()
+    can_buy = bool(bst.get("live_ready")) and bst.get("owner_user_id") == user.get("id")
+    margin = _lt.available_margin() if bst.get("connected") else None
+    sleeve = min(float(bst.get("budget") or 0), margin) if margin is not None else None
     for r in rows:
         q = live.get(r["symbol"]) or {}
         if q.get("price"):
             r["live"] = round(float(q["price"]), 2)
             if r["status"] == _ideas.STATUS_OPEN and r.get("entry"):
                 r["open_pct"] = round((float(q["price"]) / float(r["entry"]) - 1) * 100, 2)
+        if sleeve:
+            px = float(r.get("live") or r.get("entry") or 0)
+            r["broker_qty"] = _lt.size_for_sleeve(px, bst, margin)
+            r["broker_cost"] = round(r["broker_qty"] * px, 2)
+            r["buyable"] = bool(can_buy and r["broker_qty"] > 0
+                                and r["status"] == _ideas.STATUS_OPEN)
     return JSONResponse(dict(
         ideas=rows, stats=_ideas.scoreboard(rows), plan=plan,
         allowance=_ideas.allowance(plan), max_per_day=_ideas.MAX_PER_DAY,
         published_today=published_today,
         withheld_today=max(0, published_today - _ideas.allowance(plan)),
         capital=_ideas.CAPITAL, risk_pct=_ideas.RISK_PCT,
+        broker_ready=can_buy, broker_sleeve=sleeve, broker_margin=margin,
         horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")))
 
 
@@ -3889,6 +3907,8 @@ input[type=date]{width:auto;padding:8px 11px}
 .ig-foot b{color:var(--tx);font-weight:700}
 .ig-warn{font-size:12px;color:var(--tx);background:var(--warnb);border-radius:9px;
  padding:9px 11px;margin-top:11px;line-height:1.5}
+.ig-buy{margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
+.ig-buy .btn{width:100%;font-weight:700}
 .ig-lock{font-size:13px;color:var(--tx);background:var(--surf);border:1px dashed var(--line);
  border-radius:12px;padding:13px 15px;cursor:pointer;line-height:1.55}
 .ig-lock b{color:var(--hd)}
@@ -4386,17 +4406,36 @@ function ideaCard(r,ccy,d){
   +'</div>'
   +'<div class=ig-ladder>'+leg('entry',r.entry)+leg('stop',r.stop,'dn')
    +leg('T1',r.t1,tcls('t1'))+leg('T2',r.t2,tcls('t2'))+leg('T3',r.t3,tcls('t3'))+'</div>'
-  +'<div class=ig-foot><span><b>'+r.qty+'</b> shares · '+ccy+f.format(Math.round(r.notional))
-   +' · risking '+ccy+f.format(Math.round(r.risk_amt))+'</span>'
+  // Two sizes, and the difference is the point: the published one is for the
+  // Rs 1,00,000 reference account, the broker one is what YOUR balance buys.
+  +'<div class=ig-foot><span>'
+   +(r.broker_qty!=null
+     ?'<b>'+r.broker_qty+'</b> shares · '+ccy+f.format(Math.round(r.broker_cost))
+      +' <span class=mut>(your broker)</span>'
+     :'<b>'+r.qty+'</b> shares · '+ccy+f.format(Math.round(r.notional))
+      +' · risking '+ccy+f.format(Math.round(r.risk_amt)))+'</span>'
    +(live!=null?'<span class=mut>now '+ccy+f.format(live)+'</span>':'')+'</div>'
+  +(r.buyable?'<div class=ig-buy><button class="btn danger" onclick="ideaBuy(\''+r.symbol
+    +'\','+r.broker_qty+')">Buy '+r.broker_qty+' in Upstox · '+ccy
+    +f.format(Math.round(r.broker_cost))+'</button></div>':'')
   +'</div>';}
+function ideaBuy(sym,qty){
+ if(!confirm('REAL ORDER\n\nBuy '+qty+' '+sym+' in your Upstox account?\n\n'
+   +'This spends real money. Size comes from your live sleeve, not the paper book.'))return;
+ api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:'IN'})})
+  .then(function(r){
+   if(!r.ok){alert((r.j&&(r.j.error||r.j.detail))||'buy failed');return;}
+   alert('Order sent for '+sym+'. Check Account → live broker for the ledger.');
+   loadIdeas();});}
 function renderIdeas(d){
  var ccy=d.ccy||'₹',f=(ccy=='₹'?INR:USD),rows=d.ideas||[],s=d.stats||{};
  var today=(rows[0]||{}).published_date,
      todays=rows.filter(function(r){return r.published_date==today}),
      older=rows.filter(function(r){return r.published_date!=today});
  document.getElementById('ideasSub').textContent=
-  d.allowance+' a day on '+(PLANLBL[d.plan]||d.plan);
+  d.allowance+' a day on '+(PLANLBL[d.plan]||d.plan)
+  +(d.broker_ready?' · sized for your ₹'+Math.round(d.broker_sleeve).toLocaleString('en-IN')
+    +' broker balance':'');
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
