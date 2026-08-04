@@ -285,6 +285,70 @@ def positions() -> list:
     return (r.json() or {}).get("data") or []
 
 
+def holdings() -> list:
+    """DELIVERY holdings. Separate endpoint from positions, and both are needed:
+    orders placed with product='D' settle into holdings, while intraday and F&O
+    sit in positions. Showing only one of them under-reports the account."""
+    import httpx
+    r = httpx.get(f"{API_BASE}/portfolio/long-term-holdings",
+                  headers=_headers(), timeout=20)
+    r.raise_for_status()
+    return (r.json() or {}).get("data") or []
+
+
+def account_snapshot():
+    """The REAL account: cash, what is held, and what it is worth right now.
+
+    Returns None when the broker cannot be reached, which the caller must treat
+    as "unknown" rather than "empty" — rendering a connected account as Rs 0
+    because a request timed out would read as a wiped-out account.
+    """
+    try:
+        eq = ((funds() or {}).get("data") or {}).get("equity") or {}
+        cash = float(eq.get("available_margin") or 0.0)
+        used = float(eq.get("used_margin") or 0.0)
+        rows = []
+        value = day_pnl = invested = 0.0
+        for h in (holdings() or []):
+            qty = float(h.get("quantity") or 0)
+            if qty <= 0:
+                continue
+            ltp = float(h.get("last_price") or 0)
+            avg = float(h.get("average_price") or 0)
+            rows.append(dict(symbol=h.get("trading_symbol") or h.get("tradingsymbol") or "",
+                             qty=qty, avg=round(avg, 2), ltp=round(ltp, 2),
+                             value=round(qty * ltp, 2),
+                             pnl=round(qty * (ltp - avg), 2),
+                             pnl_pct=(round((ltp / avg - 1) * 100, 2) if avg else 0.0),
+                             kind="holding"))
+            value += qty * ltp
+            invested += qty * avg
+            day_pnl += float(h.get("day_change") or 0) * qty
+        for p in (positions() or []):
+            qty = float(p.get("quantity") or 0)
+            if qty == 0:
+                continue
+            ltp = float(p.get("last_price") or 0)
+            avg = float(p.get("average_price") or p.get("buy_price") or 0)
+            rows.append(dict(symbol=p.get("trading_symbol") or p.get("tradingsymbol") or "",
+                             qty=qty, avg=round(avg, 2), ltp=round(ltp, 2),
+                             value=round(qty * ltp, 2),
+                             pnl=round(float(p.get("pnl") or qty * (ltp - avg)), 2),
+                             pnl_pct=(round((ltp / avg - 1) * 100, 2) if avg else 0.0),
+                             kind="position"))
+            value += qty * ltp
+            invested += qty * avg
+            day_pnl += float(p.get("day_buy_value") or 0) * 0  # day P&L comes from pnl below
+        return dict(cash=round(cash, 2), used_margin=round(used, 2),
+                    holdings_value=round(value, 2), invested=round(invested, 2),
+                    equity=round(cash + value, 2),
+                    unrealised=round(value - invested, 2),
+                    day_pnl=round(day_pnl, 2),
+                    positions=rows, n_positions=len(rows))
+    except Exception:
+        return None
+
+
 def is_option(symbol: str) -> bool:
     """A STRIKE followed by CE/PE — not merely a symbol ending in those letters.
 
