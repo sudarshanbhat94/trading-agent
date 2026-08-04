@@ -1701,11 +1701,23 @@ def api_buy(payload: dict):
         budget, max_pos = book[0], int(book[1])
         if v2.execute("SELECT 1 FROM v2_positions WHERE market=? AND symbol=?", (market, sym)).fetchone():
             return JSONResponse({"error": "already holding " + sym}, status_code=400)
-        n = v2.execute("SELECT COUNT(*) FROM v2_positions WHERE market=?", (market,)).fetchone()[0]
+        # THE OPTIONS BOOK IS SEPARATELY FUNDED and must not consume this one's
+        # slots or cash. _market_stats was fixed for this; this endpoint was
+        # not, so three open index-option contracts counted as 3 of the 6 equity
+        # slots AND their premium was subtracted from the equity budget:
+        # 7/6 slots "book full", cash -Rs 5,539, every manual buy a 400.
+        marks = ",".join("?" * len(EQUITY_EXCLUDED))
+        n = v2.execute(f"SELECT COUNT(*) FROM v2_positions WHERE market=?"
+                       f" AND strategy NOT IN ({marks})",
+                       (market, *EQUITY_EXCLUDED)).fetchone()[0]
         if n >= max_pos:
             return JSONResponse({"error": "book full (%d/%d slots) — sell something first" % (n, max_pos)}, status_code=400)
-        realized = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0
-        invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0
+        realized = v2.execute(f"SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
+                              f" AND strategy NOT IN ({marks})",
+                              (market, *EQUITY_EXCLUDED)).fetchone()[0] or 0
+        invested = v2.execute(f"SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions"
+                              f" WHERE market=? AND strategy NOT IN ({marks})",
+                              (market, *EQUITY_EXCLUDED)).fetchone()[0] or 0
         cash = budget - invested + realized
         qty = int(min(budget / max_pos, cash * 0.98) / px)
         if qty < 1:
