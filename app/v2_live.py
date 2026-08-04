@@ -475,6 +475,12 @@ INDEX_OPTIONS = dict(
     # NIFTY's position size from ~Rs 7k to ~Rs 30k — a four-fold size increase on
     # the one index that actually trades, which is not what was asked for.
     max_premium_pct_by_index={"BANKNIFTY": 0.30, "FINNIFTY": 0.30, "MIDCPNIFTY": 0.30},
+    # THE BINDING CAP: most that may be LOST on one position, as a fraction of
+    # the options book. The premium caps above answer "how much may I spend",
+    # which is the wrong question when the stop is 35% wide — 30% of the book
+    # spent is 10.5% of the book risked. 6% x max_concurrent 3 bounds the lane
+    # at 18% rather than 31%.
+    max_risk_pct=0.06,
     # One position PER INDEX, not one across all of them. At 1 the first fill
     # returned out of the whole pass, so a NIFTY CE opened at 09:40 blocked
     # FINNIFTY and MIDCPNIFTY for the rest of the session even though both had
@@ -2680,7 +2686,22 @@ def index_options_pass(market):
             # also quadruple NIFTY's size (nearest AFFORDABLE strike).
             premium_pct = (cfg.get("max_premium_pct_by_index") or {}).get(
                 symbol, cfg.get("max_premium_pct", 0.10))
-            budget_per_trade = min(options_cash, budget * premium_pct)
+            # RISK CAP, not just a premium cap. The premium cap alone allowed a
+            # position worth 30% of the book; with a -35% stop that is 10.5% of
+            # the whole book riding on one contract, and max_concurrent=3 means
+            # up to 31% at risk at once.
+            #
+            # Live example that exposed it: FINNIFTY26AUG26700CE, 60 x Rs 452 =
+            # Rs 27,120 (27% of the book), stop -35% => Rs 9,492 at risk on ONE
+            # trade. It is currently -18% and -Rs 4,926.
+            #
+            # Cap what can be LOST, then derive the premium allowance from the
+            # stop distance. A contract whose smallest lot breaches this is not
+            # sized down — it is skipped, because one lot is indivisible.
+            stop_pct = float(cfg.get("stop_pct", 0.35)) or 0.35
+            risk_cap = budget * float(cfg.get("max_risk_pct", 0.06))
+            budget_per_trade = min(options_cash, budget * premium_pct,
+                                   risk_cap / stop_pct)
             if budget_per_trade <= 0:
                 _status[market] = "index options: book exhausted"
                 return
