@@ -386,10 +386,29 @@ def cap_overnight_shares(shares: float, entry: float, equity: float, market: str
         shares * entry / equity * 100.0, frac * 100.0,
     )
     return max_shares
-BE_TRIGGER_ATR = 3.0                    # once a trade is up >= this many ATR, lock the stop at breakeven.
-                                        # Backtested NEUTRAL (only arms on rare big winners, so it never cuts
-                                        # normal trades that would recover) - protects against a monster winner
-                                        # round-tripping below entry without harming the edge.
+# BREAKEVEN LOCK: OFF. It was shipped as "backtested NEUTRAL", protecting a
+# monster winner from round-tripping at no cost to the edge. Re-measured against
+# the config the lane ACTUALLY runs today (3 ATR stop, no target, no trail),
+# 19,752 entries, same signals, only the lock varying:
+#
+#     stop3, no BE lock   +0.719%/trade   PF 1.29   worst -29.7%
+#     stop3 + BE @3ATR    +0.693%/trade   PF 1.28   worst -29.7%   <- was live
+#     stop3 + BE @4ATR    +0.706%/trade   PF 1.28   worst -29.7%
+#     stop3 + BE @6ATR    +0.718%/trade   PF 1.29   worst -29.7%
+#
+# The worst trade is IDENTICAL at every trigger, so the lock buys no drawdown
+# protection whatsoever — the thing it was added for. It only converts winners
+# that would have recovered into breakeven exits, at -0.026%/trade, which is 3%
+# of the entry edge.
+#
+# The original "NEUTRAL" result was honest at the time: it was measured when the
+# lane ran a 2 ATR stop with a 3.5 ATR target, where the target capped the
+# winners the lock would otherwise have cut. Once the target was removed the
+# lock started costing money, and nothing re-ran the study.
+#
+# None disables it. The INTRADAY lock (INTRA["lock"], "green never goes red") is
+# a different rule with its own spec and is untouched.
+BE_TRIGGER_ATR = None
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS v2_book(market TEXT PRIMARY KEY, budget REAL, max_pos INTEGER, started_at TEXT);
 CREATE TABLE IF NOT EXISTS v2_positions(id INTEGER PRIMARY KEY AUTOINCREMENT, market TEXT, strategy TEXT, symbol TEXT,
@@ -3172,7 +3191,7 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
     atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
     be = breakeven_price(market, p["entry"])
-    if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
+    if BE_TRIGGER_ATR and atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
         eff = max(eff, be)
     # intraday lanes: once up >= lock%, stop rises to breakeven — a green
     # trade is never allowed to go red (user spec, matches the backtest)

@@ -72,14 +72,20 @@ class IndexOptionEntryDayTest(unittest.TestCase):
         self.assertEqual(reason, "stop")
         self.assertEqual(ex, 50.0)
 
-    def test_the_lock_still_arms_off_a_price_we_actually_held(self) -> None:
-        """peak is persisted from prices seen SINCE entry, so a real run-up
-        arms the lock exactly as before."""
+    def test_peak_is_read_from_prices_we_actually_held(self) -> None:
+        """peak is persisted from prices seen SINCE entry, which is what this
+        test is named for and still guards.
+
+        It used to assert the ATR breakeven lock armed off that peak. The lock
+        is now disabled — measured net-negative, identical worst trade with and
+        without it — so a run-up no longer ratchets the stop, and the position
+        is governed by the stop it opened with. The peak itself is unchanged.
+        """
         p = self.ce(peak=140.0)                 # ratcheted while we held it
         peak, eff, ex, reason = _ev(p, _quote(80.0, 139.45, 67.05))
-        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 87.75))  # NET breakeven
-        self.assertEqual(reason, "stop")
-        self.assertEqual(ex, 80.0)
+        self.assertEqual(peak, 140.0)
+        self.assertLess(eff, v2_live.breakeven_price("IN", 112.90))
+        self.assertIsNone(reason, "no lock, so an 80.0 print is above the stop")
 
     def test_the_day_extremes_are_valid_again_the_next_day(self) -> None:
         """Held overnight, the position was open for the whole session, so the

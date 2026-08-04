@@ -93,27 +93,23 @@ class TrailTest(unittest.TestCase):
 
 
 class BreakevenLockTest(unittest.TestCase):
-    def test_big_winner_locks_the_stop_at_entry(self) -> None:
-        """The lock arms off the ATR implied by the stop, so it moves with
-        atr_stop rather than with a fixed price. swing atr_stop is 3.0, so
-        entry 100 / stop 90 implies ATR 10/3, and BE_TRIGGER_ATR of 3 puts the
-        trigger at exactly entry + 10 = 110."""
-        stop_mult = v2_live.PLAN["swing_meanrev"]["atr_stop"]
-        self.assertEqual(v2_live.BE_TRIGGER_ATR, 3.0)
-        atr = (100.0 - 90.0) / stop_mult
-        trigger = 100.0 + v2_live.BE_TRIGGER_ATR * atr
-        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=trigger), _quote(trigger - 3))
-        # NET breakeven, not the entry price. Locking at entry booked a loss of
-        # the round trip every time it fired — see test_breakeven_lock.py.
-        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 100.0))
-        self.assertGreater(eff, 100.0)
+    def test_the_atr_breakeven_lock_is_disabled(self) -> None:
+        """Measured OFF on 19,752 entries against the config the lane actually
+        runs: the worst trade is -29.7% with the lock at 3, 4 or 6 ATR AND with
+        no lock at all, so it bought no drawdown protection — it only cut
+        winners that would have recovered, at -0.026%/trade.
 
-    def test_below_the_trigger_the_stop_is_untouched(self) -> None:
-        stop_mult = v2_live.PLAN["swing_meanrev"]["atr_stop"]
-        atr = (100.0 - 90.0) / stop_mult
-        trigger = 100.0 + v2_live.BE_TRIGGER_ATR * atr
-        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=trigger - 0.5),
-                                 _quote(trigger - 3))
+        Its original "NEUTRAL" result was honest for the config of the time
+        (2 ATR stop + 3.5 ATR target); removing the target is what turned it
+        negative, and nothing re-ran the study."""
+        self.assertIsNone(v2_live.BE_TRIGGER_ATR)
+
+    def test_a_big_winner_keeps_its_original_stop(self) -> None:
+        """No lock means a runner is governed by the 3 ATR stop it opened
+        with — which is the variant that measured best."""
+        atr = (100.0 - 90.0) / v2_live.PLAN["swing_meanrev"]["atr_stop"]
+        _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=100.0 + 5 * atr),
+                                 _quote(100.0 + 2 * atr))
         self.assertEqual(eff, 90.0)
 
     def test_intraday_lock_arms_just_above_entry(self) -> None:
