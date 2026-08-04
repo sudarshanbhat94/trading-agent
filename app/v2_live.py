@@ -1297,6 +1297,16 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
         "opened_at,? FROM v2_positions WHERE id=?",
         (exit_date, exit_price, shares, net, net_pct, reason,
          closed_at or datetime.now(timezone.utc).isoformat(), position_id))
+    # LIVE MIRROR — sell whatever the sleeve actually holds. Read the symbol
+    # BEFORE the caller deletes the position row, and never pass `shares`: that
+    # is the paper size, roughly ten times the live one.
+    try:
+        row = v2.execute("SELECT symbol FROM v2_positions WHERE id=?",
+                         (position_id,)).fetchone()
+        if row:
+            _live_mirror_exit(v2, market, row[0], exit_price, reason)
+    except Exception:
+        _LOG.exception("live mirror (exit) failed for position %s", position_id)
     return net, net_pct
 
 
@@ -1349,7 +1359,46 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
         (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
          entry_price if peak is None else peak, conviction,
          datetime.now(timezone.utc).isoformat(), why, expiry))
+    # LIVE MIRROR — real money. Runs only when the sleeve is armed AND connected;
+    # `live_ready` is false by default and this is a no-op on every other
+    # install. Placed AFTER the paper row is written and wrapped, so a broker
+    # outage can never prevent the paper book from recording what it decided:
+    # the paper book is the evidence and must survive the broker.
+    try:
+        _live_mirror_entry(v2, market, strategy, symbol, entry_price)
+    except Exception:
+        _LOG.exception("live mirror (entry) failed for %s — paper book unaffected", symbol)
     return True
+
+
+def _live_mirror_entry(v2, market, strategy, symbol, price):
+    from . import broker
+    if not broker.state().get("live_ready"):
+        return
+    from . import live_trade
+    main = _ro(MAIN_DB)
+    try:
+        _LOG.info("live mirror entry %s: %s", symbol,
+                  live_trade.mirror_entry(v2, main, market, symbol, price, strategy))
+    finally:
+        main.close()
+
+
+def _live_mirror_exit(v2, market, symbol, price, reason):
+    from . import broker
+    st = broker.state()
+    # An exit is attempted even when DISARMED, because mirror_exit records the
+    # fact that real shares are still held. A silent skip there would leave a
+    # live position nobody is tracking.
+    if not st.get("connected"):
+        return
+    from . import live_trade
+    main = _ro(MAIN_DB)
+    try:
+        _LOG.info("live mirror exit %s: %s", symbol,
+                  live_trade.mirror_exit(v2, main, market, symbol, price, reason))
+    finally:
+        main.close()
 
 
 def poll_market(market):
