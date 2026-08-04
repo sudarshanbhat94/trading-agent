@@ -39,7 +39,28 @@ from backtest_v2 import DB, DEFAULT_COST, conviction, features, load_market  # n
 THRESHOLD = 0.55            # the swing lane's live entry threshold
 
 
-def simulate(bars, i, atr, hold, cost, stop_atr=None, target_atr=None, trail_atr=None):
+def _live_kwargs():
+    """Exactly what the swing lane applies today, read from the engine."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from app import v2_live
+    pl = v2_live.PLAN["swing_meanrev"]
+    cost_side = v2_live.COST_SIDE.get("IN", 0.0)
+    return dict(stop_atr=pl["atr_stop"] or None,
+                target_atr=pl["atr_target"] or None,
+                trail_atr=(pl["trail"] or None),
+                be_trigger_atr=v2_live.BE_TRIGGER_ATR,
+                # net breakeven, the same formula the live lock now uses
+                be_cost_pct=((1 + cost_side) / (1 - cost_side) - 1) * 100)
+
+
+def _describe_live():
+    k = _live_kwargs()
+    return (f"stop {k['stop_atr']}ATR, target {k['target_atr'] or 'none'}, "
+            f"trail {k['trail_atr'] or 'none'}, BE lock at {k['be_trigger_atr']}ATR")
+
+
+def simulate(bars, i, atr, hold, cost, stop_atr=None, target_atr=None,
+             trail_atr=None, be_trigger_atr=None, be_cost_pct=0.0):
     """One trade from bar i's signal. Entry at i+1's open. Returns net %."""
     if i + 1 >= len(bars):
         return None
@@ -63,6 +84,13 @@ def simulate(bars, i, atr, hold, cost, stop_atr=None, target_atr=None, trail_atr
         if trail_atr:
             lifted = peak - trail_atr * atr
             stop = lifted if stop is None else max(stop, lifted)
+        # BREAKEVEN LOCK, as the live engine applies it: once the trade has run
+        # be_trigger_atr in our favour, the stop rises to NET breakeven. Never
+        # modelled before, which is why "live-equivalent" and the live book
+        # disagreed.
+        if be_trigger_atr and peak >= entry + be_trigger_atr * atr:
+            be = entry * (1 + be_cost_pct / 100.0)
+            stop = be if stop is None else max(stop, be)
     return (float(c[end - 1]) / entry - 1) * 100 - cost
 
 
@@ -119,7 +147,13 @@ def main():
         ("stop 3ATR", dict(stop_atr=3.0)),
         ("stop2 + tgt3.5", dict(stop_atr=2.0, target_atr=3.5)),
         ("stop2 + trail2.5", dict(stop_atr=2.0, trail_atr=2.5)),
-        ("live-equivalent", dict(stop_atr=2.0, target_atr=3.5, trail_atr=2.5)),
+        # LIVE-EQUIVALENT IS READ FROM PLAN, not retyped. It used to be
+        # hardcoded as stop 2.0 / target 3.5 / trail 2.5 — a configuration the
+        # lane STOPPED RUNNING when the stop widened to 3 ATR and the target was
+        # removed. So the headline "-41% of the entry edge" was measuring a
+        # config that no longer exists, and every decision taken from that
+        # number was taken on stale evidence.
+        ("live-equivalent", _live_kwargs()),
     ]
     results = {}
     for name, kwargs in variants:
@@ -130,6 +164,7 @@ def main():
                 rets.append(r)
         results[name] = summarise(name, rets)
 
+    print(f"\n  live config: {_describe_live()}")
     base, live = results.get("hold-only"), results.get("live-equivalent")
     if base and live:
         print()
