@@ -3412,6 +3412,13 @@ SIGNAL_INTERVAL = 300   # heavy signal recompute cadence (s) — daily signals b
                         # compute from starving the web event loop (exits still run every cycle)
 
 
+_EOD_SNAP: dict = {}         # market -> day the close snapshot was written
+
+
+def _today_key():
+    return datetime.now(IST).date().isoformat()
+
+
 _WATCHDOG_DONE: dict = {}
 
 
@@ -3595,6 +3602,32 @@ def loop(interval):
                                   f"preparing candidates for the open{tops}")
                 else:
                     _status[m] = "closed"
+                    # END-OF-DAY EQUITY POINT for every personal book.
+                    #
+                    # The snapshot lived inside poll_market, which only runs
+                    # while the market is open — so a book's "daily" value was
+                    # whatever it happened to be MID-SESSION on the last cycle
+                    # before 15:30, not its close. A curve built from arbitrary
+                    # intraday moments is not a daily curve, it is noise with
+                    # dates on it.
+                    #
+                    # Once per calendar day, after the close, keyed on the day
+                    # so the INSERT OR REPLACE overwrites the intraday value
+                    # with the settled one.
+                    if _EOD_SNAP.get(m) != _today_key():
+                        eod = None
+                        try:
+                            from . import books as _bk3, plans as _pl3
+                            eod = _rw()
+                            n = _bk3.snapshot_all(eod, _pl3, m, _live(m))
+                            _EOD_SNAP[m] = _today_key()
+                            if n:
+                                _LOG.info("end-of-day equity written for %d book(s)", n)
+                        except Exception:
+                            _LOG.exception("end-of-day equity snapshot failed")
+                        finally:
+                            if eod is not None:
+                                eod.close()
             except Exception as exc:
                 _status[m] = f"err {str(exc)[:40]}"
         time.sleep(interval)

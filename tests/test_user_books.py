@@ -349,3 +349,43 @@ class ConnectionHygieneTest(unittest.TestCase):
             self.assertEqual(b.buy(con, 1, "IN", "manual", "ITC", 300.0), 0)
         finally:
             b.open_symbols = real
+
+
+class EndOfDaySnapshotTest(unittest.TestCase):
+    """A daily curve must be built from daily CLOSES.
+
+    The snapshot lived inside poll_market, which only runs while the market is
+    open — so a book's "daily" value was whatever it happened to be mid-session
+    on the last cycle before 15:30. A curve built from arbitrary intraday
+    moments is not a daily curve, it is noise with dates on it.
+    """
+
+    def test_the_engine_snapshots_after_the_close(self) -> None:
+        import inspect
+        src = inspect.getsource(v2_live.loop)
+        self.assertIn("_EOD_SNAP", src)
+        self.assertIn("snapshot_all", src)
+
+    def test_it_runs_once_per_day_not_every_cycle(self) -> None:
+        """The loop ticks every 8 seconds; without the day key this would
+        rewrite every book eight times a minute all night."""
+        import inspect
+        src = inspect.getsource(v2_live.loop)
+        self.assertIn("_EOD_SNAP.get(m) != _today_key()", src)
+
+    def test_the_close_value_overwrites_the_intraday_one(self) -> None:
+        con = _db()
+        books.buy(con, 1, "IN", "manual", "ITC", 100.0, shares=10)
+        books.snapshot_equity(con, 1, "IN", {"ITC": {"price": 150.0}})   # midday
+        midday = books.equity_series(con, 1)[0][1]
+        books.snapshot_equity(con, 1, "IN", {"ITC": {"price": 110.0}})   # close
+        series = books.equity_series(con, 1)
+        self.assertEqual(len(series), 1, "one point per day")
+        self.assertNotEqual(series[0][1], midday)
+
+    def test_the_writer_is_closed(self) -> None:
+        """It runs on the engine thread every 8s once the market shuts; a leaked
+        write connection there would hold the SQLite lock all night."""
+        import inspect
+        src = inspect.getsource(v2_live.loop)
+        self.assertIn("eod.close()", src)
