@@ -47,6 +47,11 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # handed to whoever reads it first.
 STATE_PATH = os.getenv("BROKER_STATE_PATH", os.path.join(_ROOT, "var", "broker.json"))
 API_BASE = os.getenv("UPSTOX_API_BASE_URL", "https://api.upstox.com/v2").rstrip("/")
+# Orders go to the HFT host, which is what the place-order docs specify. Both
+# hosts answered a probe identically, so this is not a bug fix — it is using the
+# documented route for the one call that spends money, rather than assuming the
+# general host will keep accepting it.
+ORDER_BASE = os.getenv("UPSTOX_ORDER_BASE_URL", "https://api-hft.upstox.com/v2").rstrip("/")
 
 # The live sleeve's own money. Deliberately NOT read from BUDGET: the paper book
 # is Rs 1,00,000 of imaginary capital and this is Rs 10,000 of real capital, and
@@ -407,11 +412,15 @@ def place_order(instrument_key, qty, side="BUY", price=0.0, product="D",
     forgot a parameter.
     """
     import httpx
+    # market_protection was missing. Upstox accepted the payload without it, but
+    # it is in the documented body and defaults are not a thing to inherit
+    # silently on the call that spends money.
     payload = dict(quantity=int(qty), product=product, validity="DAY",
                    price=float(price or 0), tag=tag, instrument_token=instrument_key,
                    order_type=order_type, transaction_type=side.upper(),
-                   disclosed_quantity=0, trigger_price=0, is_amo=False)
-    r = httpx.post(f"{API_BASE}/order/place", headers={**_headers(),
+                   disclosed_quantity=0, trigger_price=0, is_amo=False,
+                   market_protection=0)
+    r = httpx.post(f"{ORDER_BASE}/order/place", headers={**_headers(),
                    "Content-Type": "application/json"}, json=payload, timeout=25)
     ok = r.status_code < 400
     body = {}
