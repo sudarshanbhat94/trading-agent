@@ -1511,6 +1511,7 @@ def poll_market(market):
     # (proven OOS on 15mo of real data to turn the net-losing raw signal set into
     # a positive-expectancy one by trading only higher-confidence setups). Wrapped
     # so any failure or a missing model leaves the engine exactly as before.
+    mp, mfloor = {}, None
     try:
         mp = meta_filter.score(sigs, tails, mdf, asof, rstate, strong, market)
         mfloor = meta_filter.floor(market)
@@ -1538,7 +1539,7 @@ def poll_market(market):
     # way to tell which. Wrapped so a failure here can never stop the book from
     # trading — ideas are a product feature, the book is the product.
     try:
-        _publish_ideas(v2, market, cand, live)
+        _publish_ideas(v2, market, sigs, mp, mfloor, live, stale, regime)
     except Exception:
         _LOG.exception("idea publication failed (book unaffected)")
     # strategy balance: hold back slots for swing ONLY when swing actually has
@@ -1710,14 +1711,40 @@ _VOL_CURVE = [(0, 0.02), (5, 0.05), (15, 0.10), (30, 0.16), (60, 0.25),
               (105, 0.35), (165, 0.46), (225, 0.57), (285, 0.70), (345, 0.88), (375, 1.0)]
 
 
-def _publish_ideas(v2, market, cand, live):
+# Cash-parking instruments. The meta model rates them near-certain winners
+# because they drift up a fraction of a percent a day and essentially never
+# fall — LIQUID scored 0.708 today, the highest of anything. They are not
+# trades, and without this they would be the top of every ideas list the moment
+# the ranking stops being the engine's trading gate.
+_CASH_ETF_MARKERS = ("LIQUID", "LIQUIDCASE", "LIQUIDBEES", "GILT", "AAAGILT")
+
+
+def _is_cash_etf(symbol):
+    s = str(symbol or "").upper()
+    return any(m in s for m in _CASH_ETF_MARKERS)
+
+
+def _publish_ideas(v2, market, sigs, mp, mfloor, live, stale, regime):
     """Publish today's ideas and advance the open ones.
 
-    Publication is gated on the market being OPEN. An idea carries a specific
-    entry price and a subscriber cannot act on it outside market hours, so
-    publishing into a closed session would put a price on screen that nobody can
-    get — the same class of mistake as the RELIANCE buy that filled on a
-    Saturday.
+    IDEAS ARE NOT THE BOOK'S BUY LIST, and tying them to it was a design
+    mistake. The book's candidate list answers "would I risk MY capital right
+    now, in this regime, in this lane, with a slot free" — and in a NEUTRAL
+    regime that list is empty, so a subscriber paying for daily ideas saw an
+    empty page. A daily-ideas product that publishes nothing most days is not a
+    product.
+
+    The bar here is the CONFIDENCE MODEL instead: the same p(win) meta-label the
+    engine trusts to decide what is worth trading, applied without the
+    regime gate and without the book's slot and cash constraints, which are
+    facts about the book rather than about the stock.
+
+    What is NOT relaxed: the model floor itself, the stale-quote guard, the
+    minimum price, disabled lanes, and cash-parking ETFs. Those exclude things
+    that are wrong, not things that are merely unavailable today.
+
+    Publication still requires the market to be OPEN — an idea carries a
+    specific entry price and nobody can act on it outside market hours.
     """
     from . import ideas as _ideas
     now = datetime.now(IST)
@@ -1728,7 +1755,21 @@ def _publish_ideas(v2, market, cand, live):
     _ideas.track(v2, market, live, now.isoformat(), today_s)
     if not market_open(market):
         return
-    rows = [dict(s, atr=s.get("atr"), price=s.get("price")) for _pr, _rk, s, _pl in cand]
+    pool = []
+    for s in sigs:
+        sym = s.get("symbol")
+        if s.get("strategy") in DISABLED_LANES or sym in stale:
+            continue
+        if sym in ETF_EXCLUDE or _is_cash_etf(sym):
+            continue
+        if float(s.get("price") or 0) < MIN_PRICE.get(market, 0.0):
+            continue
+        p = mp.get(sym)
+        if mfloor is not None and (p is None or p < mfloor):
+            continue
+        pool.append((p if p is not None else float(s.get("score") or 0), s))
+    pool.sort(key=lambda r: -r[0])
+    rows = [dict(s, meta_p=p) for p, s in pool]
     n = _ideas.publish(v2, market, rows,
                        lambda strat: float(PLAN.get(strat, {}).get("atr_stop") or 0.0),
                        today_s, now.isoformat())
@@ -1737,10 +1778,9 @@ def _publish_ideas(v2, market, cand, live):
     # apart after the fact is a line that says which one happened.
     have = v2.execute("SELECT COUNT(*) FROM v2_ideas WHERE market=? AND published_date=?",
                       (market, today_s)).fetchone()[0]
-    _LOG.info("ideas: %d candidates -> %d new (%d published today)%s",
-              len(rows), n, have,
-              "" if rows else " — no candidate cleared its lane threshold, "
-                             "the regime gate and the meta filter")
+    _LOG.info("ideas: %d qualified (of %d signals) -> %d new (%d today)%s",
+              len(rows), len(sigs), n, have,
+              "" if rows else f" — nothing cleared the p(win) floor {mfloor}")
 
 
 def trading_days_held(entry_date, today, market):

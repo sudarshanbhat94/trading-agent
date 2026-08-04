@@ -268,6 +268,48 @@ class ScoreboardTest(unittest.TestCase):
         self.assertEqual((s["hit_t1"], s["hit_t2"], s["hit_t3"]), (1, 1, 1))
 
 
+class IdeaPoolTest(unittest.TestCase):
+    """Ideas are NOT the book's buy list.
+
+    Tying them together was the original design mistake: the book's candidate
+    list answers "would I risk MY capital right now, in this regime, with a slot
+    free", which is empty in a NEUTRAL regime — so the page a subscriber pays
+    for showed nothing on the days that matter most.
+    """
+
+    def test_cash_parking_etfs_are_excluded(self) -> None:
+        """LIQUID scored 0.708 today, the highest p(win) of anything, because it
+        drifts up and never falls. It is not a trade, and it would top every
+        ideas list the moment the ranking stopped being the trading gate."""
+        for sym in ("LIQUID", "LIQUIDETF", "LIQUID1", "LIQUIDIETF", "LIQUIDCASE",
+                    "LIQUIDBEES"):
+            with self.subTest(symbol=sym):
+                self.assertTrue(v2_live._is_cash_etf(sym))
+
+    def test_real_stocks_are_not_excluded(self) -> None:
+        for sym in ("RELIANCE", "RBLBANK", "SAILIFE", "WELCORP", "ITC"):
+            with self.subTest(symbol=sym):
+                self.assertFalse(v2_live._is_cash_etf(sym))
+
+    def test_the_publisher_no_longer_takes_the_books_candidate_list(self) -> None:
+        """The signature is the fix: it reads raw signals plus the confidence
+        model, not the post-gate `cand` the engine trades from."""
+        import inspect
+        params = list(inspect.signature(v2_live._publish_ideas).parameters)
+        self.assertIn("sigs", params)
+        self.assertIn("mp", params)
+        self.assertNotIn("cand", params)
+
+    def test_the_regime_gate_is_not_applied_to_ideas(self) -> None:
+        """The regime is a fact about whether the BOOK should deploy capital
+        today, not about whether a setup is worth showing. Applying it here is
+        what produced an empty page in a NEUTRAL market."""
+        import inspect
+        src = inspect.getsource(v2_live._publish_ideas)
+        body = src[src.index("pool = []"):src.index("pool.sort")]
+        self.assertNotIn("regime", body)
+
+
 class HonestyTest(unittest.TestCase):
     """The page must not sell a target the evidence says costs money."""
 
