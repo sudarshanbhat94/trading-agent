@@ -385,7 +385,7 @@ def strategy_stats(rows):
 
 
 @router.get("/api/overview")
-def api_overview():
+def api_overview(user: dict = Depends(require_session)):
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
     # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
@@ -441,11 +441,21 @@ def api_overview():
     # headline is simulated money while real money is deployed is actively
     # misleading. Sent alongside rather than instead of, so the UI can label
     # both and the paper book stays available as the control group.
+    #
+    # OWNER ONLY. There is ONE broker account on this deployment and it belongs
+    # to one person; every other user of this multi-user product must never see
+    # its balance or holdings. The first version of this checked only that a
+    # broker was connected, which showed the operator's real money to every
+    # logged-in subscriber. Ownership is the numeric user id, the same check the
+    # trading gate uses — a role would not be enough, since any second admin
+    # would inherit the view.
     real = None
     try:
         from . import broker as _bk
         bst = _bk.state()
-        if bst.get("connected") and not bst.get("stale"):
+        owner = bst.get("owner_user_id")
+        is_owner = owner is not None and int(owner) == int(user.get("id") or -1)
+        if is_owner and bst.get("connected") and not bst.get("stale"):
             snap = _bk.account_snapshot()
             if snap:
                 snap["armed"] = bool(bst.get("armed"))
@@ -2174,9 +2184,16 @@ def _broker_owner_or_403(user):
 def api_broker(user: dict = Depends(require_session)):
     """Redacted live-trading status. Never returns the token."""
     from . import broker
-    if (user.get("role") or "").lower() != "admin":
-        raise HTTPException(status_code=403, detail="admin only")
     st = broker.state()
+    owner = st.get("owner_user_id")
+    if owner is None:
+        # unclaimed: only an admin may see it, so they can claim it
+        if (user.get("role") or "").lower() != "admin":
+            raise HTTPException(status_code=403, detail="admin only")
+    elif int(owner) != int(user.get("id") or -1):
+        # CLAIMED: the owner and nobody else. A second admin promoted for
+        # support must not be able to read someone's real balance.
+        raise HTTPException(status_code=403, detail="not the live-trading owner")
     v2 = _ro(V2_DB)
     try:
         today = datetime.now(IST).date().isoformat()
