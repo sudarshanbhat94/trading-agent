@@ -1729,9 +1729,18 @@ def _publish_ideas(v2, market, cand, live):
     if not market_open(market):
         return
     rows = [dict(s, atr=s.get("atr"), price=s.get("price")) for _pr, _rk, s, _pl in cand]
-    _ideas.publish(v2, market, rows,
-                   lambda strat: float(PLAN.get(strat, {}).get("atr_stop") or 0.0),
-                   today_s, now.isoformat())
+    n = _ideas.publish(v2, market, rows,
+                       lambda strat: float(PLAN.get(strat, {}).get("atr_stop") or 0.0),
+                       today_s, now.isoformat())
+    # ALWAYS log, including the zero case. "No ideas today" and "idea publishing
+    # is broken" look identical from the outside, and the only way to tell them
+    # apart after the fact is a line that says which one happened.
+    have = v2.execute("SELECT COUNT(*) FROM v2_ideas WHERE market=? AND published_date=?",
+                      (market, today_s)).fetchone()[0]
+    _LOG.info("ideas: %d candidates -> %d new (%d published today)%s",
+              len(rows), n, have,
+              "" if rows else " — no candidate cleared its lane threshold, "
+                             "the regime gate and the meta filter")
 
 
 def trading_days_held(entry_date, today, market):
