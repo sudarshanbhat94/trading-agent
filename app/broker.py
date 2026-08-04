@@ -45,7 +45,19 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # var/ is gitignored. If this ever moves, it must move somewhere that stays out
 # of git — the repository is public and a committed token is a funded account
 # handed to whoever reads it first.
-STATE_PATH = os.getenv("BROKER_STATE_PATH", os.path.join(_ROOT, "var", "broker.json"))
+#
+# ONE FILE PER USER. This was a single global broker.json with an owner_user_id
+# field, which made "whose account is this" a value rather than a boundary:
+# every read went through the same state, so a bug anywhere in the gating chain
+# exposed one person's brokerage to another. A user id in the PATH cannot be
+# got wrong by a missing WHERE clause.
+STATE_DIR = os.getenv("BROKER_STATE_DIR", os.path.join(_ROOT, "var", "brokers"))
+# Legacy single-account file, migrated on first read.
+LEGACY_PATH = os.getenv("BROKER_STATE_PATH", os.path.join(_ROOT, "var", "broker.json"))
+
+
+def _path(user_id):
+    return os.path.join(STATE_DIR, f"{int(user_id)}.json")
 API_BASE = os.getenv("UPSTOX_API_BASE_URL", "https://api.upstox.com/v2").rstrip("/")
 # Orders go to the HFT host, which is what the place-order docs specify. Both
 # hosts answered a probe identically, so this is not a bug fix — it is using the
@@ -84,23 +96,66 @@ DEFAULT = dict(
 )
 
 
-def _read() -> dict:
+def _migrate_legacy():
+    """Move the old single-account file to its owner's per-user file, once.
+
+    Without this the operator's working connection would silently vanish on
+    deploy — and a broker that looks disconnected while a token still exists on
+    disk is the worst of both.
+    """
     try:
-        with open(STATE_PATH, encoding="utf-8") as fh:
+        if not os.path.exists(LEGACY_PATH):
+            return
+        with open(LEGACY_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        uid = data.get("owner_user_id")
+        if uid is None:
+            return
+        dest = _path(uid)
+        if not os.path.exists(dest):
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=1)
+            os.chmod(dest, 0o600)
+        os.replace(LEGACY_PATH, LEGACY_PATH + ".migrated")
+    except (OSError, ValueError):
+        pass
+
+
+def _read(user_id) -> dict:
+    _migrate_legacy()
+    try:
+        with open(_path(user_id), encoding="utf-8") as fh:
             data = json.load(fh)
         return {**DEFAULT, **(data if isinstance(data, dict) else {})}
     except (OSError, ValueError):
         return dict(DEFAULT)
 
 
-def _write(state: dict) -> dict:
-    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    tmp = STATE_PATH + ".tmp"
+def _write(user_id, state: dict) -> dict:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    dest = _path(user_id)
+    tmp = dest + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=1)
     os.chmod(tmp, 0o600)         # before the rename, so it is never briefly world-readable
-    os.replace(tmp, STATE_PATH)
+    os.replace(tmp, dest)
     return state
+
+
+def linked_users():
+    """Every user id with a broker file. Used by the engine to fan orders out."""
+    out = []
+    try:
+        for name in os.listdir(STATE_DIR):
+            if name.endswith(".json"):
+                try:
+                    out.append(int(name[:-5]))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return sorted(out)
 
 
 def token_expiry(saved_at=None, now=None):
@@ -117,9 +172,9 @@ def token_expiry(saved_at=None, now=None):
     return cut
 
 
-def state(now=None) -> dict:
+def state(user_id, now=None) -> dict:
     """Redacted status for the UI. NEVER returns the token itself."""
-    s = _read()
+    s = _read(user_id)
     now = now or datetime.now(IST)
     expires = s.get("expires_at") or ""
     stale = True
@@ -152,15 +207,14 @@ def state(now=None) -> dict:
     )
 
 
-def configure(api_key=None, redirect_uri=None, owner_user_id=None, budget=None,
+def configure(user_id, api_key=None, redirect_uri=None, budget=None,
               armed=None, kill_switch=None, allow_options=None) -> dict:
-    s = _read()
+    s = _read(user_id)
+    s["owner_user_id"] = int(user_id)   # the file IS the owner; kept for display
     if api_key is not None:
         s["api_key"] = str(api_key).strip()
     if redirect_uri is not None:
         s["redirect_uri"] = str(redirect_uri).strip()
-    if owner_user_id is not None:
-        s["owner_user_id"] = int(owner_user_id)
     if budget is not None:
         s["budget"] = max(0.0, float(budget))
     if armed is not None:
@@ -171,39 +225,39 @@ def configure(api_key=None, redirect_uri=None, owner_user_id=None, budget=None,
         # Refused rather than accepted-and-ignored: a switch that silently does
         # nothing is worse than one that says no.
         s["allow_options"] = bool(allow_options) and float(s.get("budget") or 0) >= OPTIONS_MIN_BUDGET
-    _write(s)
-    return state()
+    _write(user_id, s)
+    return state(user_id)
 
 
-def save_token(access_token: str, now=None) -> dict:
+def save_token(user_id, access_token: str, now=None) -> dict:
     """Store a token the USER obtained. Nothing here mints credentials."""
     token = str(access_token or "").strip()
     if not token:
         raise ValueError("empty access token")
-    s = _read()
+    s = _read(user_id)
     now = now or datetime.now(IST)
     s["access_token"] = token
     s["token_saved_at"] = now.isoformat()
     s["expires_at"] = token_expiry(now=now).isoformat()
     s["connected"] = True
-    _write(s)
-    return state(now)
+    _write(user_id, s)
+    return state(user_id, now)
 
 
-def disconnect() -> dict:
+def disconnect(user_id) -> dict:
     """Drop the token AND disarm. Disconnecting must never leave a sleeve armed
     against a token that is about to be replaced."""
-    s = _read()
+    s = _read(user_id)
     s.update(access_token="", connected=False, expires_at="", token_saved_at="",
              armed=False, kill_switch=True)
-    _write(s)
-    return state()
+    _write(user_id, s)
+    return state(user_id)
 
 
-def auth_url(api_key=None, redirect_uri=None) -> str:
+def auth_url(user_id, api_key=None, redirect_uri=None) -> str:
     """The Upstox login URL the OPERATOR opens in their own browser."""
     from urllib.parse import urlencode
-    s = _read()
+    s = _read(user_id)
     key = str(api_key or s.get("api_key") or "").strip()
     redir = str(redirect_uri or s.get("redirect_uri") or "").strip()
     if not key:
@@ -237,8 +291,8 @@ def extract_code(pasted: str) -> str:
     return raw
 
 
-def exchange_code(code: str, api_secret: str, api_key=None, redirect_uri=None,
-                  now=None) -> dict:
+def exchange_code(user_id, code: str, api_secret: str, api_key=None,
+                  redirect_uri=None, now=None) -> dict:
     """Swap the operator's one-time login code for a token.
 
     The secret is used for this call and NOT stored: it is only needed at
@@ -246,7 +300,7 @@ def exchange_code(code: str, api_secret: str, api_key=None, redirect_uri=None,
     than the daily token it produces.
     """
     import httpx
-    s = _read()
+    s = _read(user_id)
     key = str(api_key or s.get("api_key") or "").strip()
     redir = str(redirect_uri or s.get("redirect_uri") or "").strip()
     code, secret = extract_code(code), str(api_secret or "").strip()
@@ -263,45 +317,46 @@ def exchange_code(code: str, api_secret: str, api_key=None, redirect_uri=None,
     token = (r.json() or {}).get("access_token")
     if not token:
         raise RuntimeError("Upstox returned no access_token")
-    return save_token(token, now=now)
+    return save_token(user_id, token, now=now)
 
 
-def _token() -> str:
-    return _read().get("access_token") or ""
+def _token(user_id) -> str:
+    return _read(user_id).get("access_token") or ""
 
 
-def _headers() -> dict:
-    return {"accept": "application/json", "Authorization": f"Bearer {_token()}"}
+def _headers(user_id) -> dict:
+    return {"accept": "application/json",
+            "Authorization": f"Bearer {_token(user_id)}"}
 
 
-def funds() -> dict:
+def funds(user_id) -> dict:
     import httpx
     r = httpx.get(f"{API_BASE}/user/get-funds-and-margin",
-                  headers=_headers(), params={"segment": "SEC"}, timeout=20)
+                  headers=_headers(user_id), params={"segment": "SEC"}, timeout=20)
     r.raise_for_status()
     return r.json() or {}
 
 
-def positions() -> list:
+def positions(user_id) -> list:
     import httpx
     r = httpx.get(f"{API_BASE}/portfolio/short-term-positions",
-                  headers=_headers(), timeout=20)
+                  headers=_headers(user_id), timeout=20)
     r.raise_for_status()
     return (r.json() or {}).get("data") or []
 
 
-def holdings() -> list:
+def holdings(user_id) -> list:
     """DELIVERY holdings. Separate endpoint from positions, and both are needed:
     orders placed with product='D' settle into holdings, while intraday and F&O
     sit in positions. Showing only one of them under-reports the account."""
     import httpx
     r = httpx.get(f"{API_BASE}/portfolio/long-term-holdings",
-                  headers=_headers(), timeout=20)
+                  headers=_headers(user_id), timeout=20)
     r.raise_for_status()
     return (r.json() or {}).get("data") or []
 
 
-def account_snapshot():
+def account_snapshot(user_id):
     """The REAL account: cash, what is held, and what it is worth right now.
 
     Returns None when the broker cannot be reached, which the caller must treat
@@ -309,12 +364,12 @@ def account_snapshot():
     because a request timed out would read as a wiped-out account.
     """
     try:
-        eq = ((funds() or {}).get("data") or {}).get("equity") or {}
+        eq = ((funds(user_id) or {}).get("data") or {}).get("equity") or {}
         cash = float(eq.get("available_margin") or 0.0)
         used = float(eq.get("used_margin") or 0.0)
         rows = []
         value = day_pnl = invested = 0.0
-        for h in (holdings() or []):
+        for h in (holdings(user_id) or []):
             qty = float(h.get("quantity") or 0)
             if qty <= 0:
                 continue
@@ -329,7 +384,7 @@ def account_snapshot():
             value += qty * ltp
             invested += qty * avg
             day_pnl += float(h.get("day_change") or 0) * qty
-        for p in (positions() or []):
+        for p in (positions(user_id) or []):
             qty = float(p.get("quantity") or 0)
             if qty == 0:
                 continue
@@ -366,22 +421,26 @@ def is_option(symbol: str) -> bool:
     return bool(re.search(r"\d(CE|PE)$", str(symbol or "").upper()))
 
 
-def can_trade(order, st=None, user_id=None, market_is_open=True,
+def can_trade(order, user_id, st=None, market_is_open=True,
               day_notional=0.0, open_positions=0):
     """(ok, reason). Every lock, in order, with the reason named.
 
     Pure: takes the redacted state and returns a decision, so every refusal
     below is testable without a broker, a token or a network.
     """
-    st = st or state()
+    st = st if st is not None else state(user_id)
     notional = float(order.get("qty") or 0) * float(order.get("price") or 0)
     if st.get("kill_switch", True):
         return False, "kill switch engaged"
     if not st.get("armed"):
         return False, "live trading is not armed"
+    # The STATE ITSELF is per-user now — st came from that user's own file — so
+    # this is a consistency check, not the boundary. The boundary is the path.
+    # Kept because a caller passing a mismatched pair is a bug worth refusing
+    # rather than trading through.
     owner = st.get("owner_user_id")
-    if owner is None or user_id is None or int(owner) != int(user_id):
-        return False, "this account is not the live-trading owner"
+    if user_id is None or (owner is not None and int(owner) != int(user_id)):
+        return False, "broker state does not belong to this account"
     if not st.get("connected"):
         return False, "no broker token — connect Upstox"
     if st.get("stale"):
@@ -413,7 +472,7 @@ def can_trade(order, st=None, user_id=None, market_is_open=True,
 MARKET_PROTECTION_PCT = float(os.getenv("UPSTOX_MARKET_PROTECTION", "5"))
 
 
-def place_order(instrument_key, qty, side="BUY", price=0.0, product="D",
+def place_order(user_id, instrument_key, qty, side="BUY", price=0.0, product="D",
                 order_type="MARKET", tag="openstocks"):
     """Send ONE order. Callers must have passed can_trade first.
 
@@ -431,7 +490,7 @@ def place_order(instrument_key, qty, side="BUY", price=0.0, product="D",
                    disclosed_quantity=0, trigger_price=0, is_amo=False,
                    market_protection=(MARKET_PROTECTION_PCT
                                       if order_type == "MARKET" else 0))
-    r = httpx.post(f"{ORDER_BASE}/order/place", headers={**_headers(),
+    r = httpx.post(f"{ORDER_BASE}/order/place", headers={**_headers(user_id),
                    "Content-Type": "application/json"}, json=payload, timeout=25)
     ok = r.status_code < 400
     body = {}

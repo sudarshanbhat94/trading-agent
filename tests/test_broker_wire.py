@@ -25,6 +25,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from app import broker as _broker_mod
 
+UID = 7
+
 
 class _Upstox(BaseHTTPRequestHandler):
     seen: list = []
@@ -70,16 +72,18 @@ class WirePayloadTest(unittest.TestCase):
 
     def setUp(self) -> None:
         _Upstox.seen.clear()
-        os.environ["BROKER_STATE_PATH"] = os.path.join(tempfile.mkdtemp(), "b.json")
+        tmp = tempfile.mkdtemp()
+        os.environ["BROKER_STATE_DIR"] = os.path.join(tmp, "brokers")
+        os.environ["BROKER_STATE_PATH"] = os.path.join(tmp, "legacy.json")
         os.environ["UPSTOX_ORDER_BASE_URL"] = f"http://127.0.0.1:{self.port}/v2"
         self.b = importlib.reload(_broker_mod)
-        self.b.save_token("TESTTOKEN")
+        self.b.save_token(UID, "TESTTOKEN")
 
     def tearDown(self) -> None:
         os.environ.pop("UPSTOX_ORDER_BASE_URL", None)
 
     def _place(self, **kw):
-        res = self.b.place_order("NSE_EQ|INE976G01028", 7, "BUY", **kw)
+        res = self.b.place_order(UID, "NSE_EQ|INE976G01028", 7, "BUY", **kw)
         return res, _Upstox.seen[-1]
 
     def test_it_hits_the_order_endpoint(self) -> None:
@@ -130,17 +134,17 @@ class WirePayloadTest(unittest.TestCase):
 
     def test_a_limit_order_does_not_send_protection(self) -> None:
         """The field is meaningless when the price is already bounded."""
-        self.b.place_order("NSE_EQ|INE976G01028", 7, "BUY",
+        self.b.place_order(UID, "NSE_EQ|INE976G01028", 7, "BUY",
                            order_type="LIMIT", price=380.0)
         self.assertEqual(_Upstox.seen[-1]["body"]["market_protection"], 0)
 
     def test_quantity_is_an_int_not_a_float(self) -> None:
         """Upstox rejects a float quantity, and Python division produces one."""
-        res, sent = self.b.place_order("NSE_EQ|INE976G01028", 7.0, "BUY"), _Upstox.seen[-1]
+        res, sent = self.b.place_order(UID, "NSE_EQ|INE976G01028", 7.0, "BUY"), _Upstox.seen[-1]
         self.assertIsInstance(sent["body"]["quantity"], int)
 
     def test_a_sell_is_marked_as_one(self) -> None:
-        self.b.place_order("NSE_EQ|INE976G01028", 7, "sell")
+        self.b.place_order(UID, "NSE_EQ|INE976G01028", 7, "sell")
         self.assertEqual(_Upstox.seen[-1]["body"]["transaction_type"], "SELL")
 
     def test_the_order_id_is_read_back(self) -> None:
@@ -152,8 +156,8 @@ class WirePayloadTest(unittest.TestCase):
         """A failed order must never look like a placed one."""
         os.environ["UPSTOX_ORDER_BASE_URL"] = f"http://127.0.0.1:{self.port}/nope"
         b = importlib.reload(_broker_mod)
-        b.save_token("TESTTOKEN")
-        res = b.place_order("NSE_EQ|INE976G01028", 7, "BUY")
+        b.save_token(UID, "TESTTOKEN")
+        res = b.place_order(UID, "NSE_EQ|INE976G01028", 7, "BUY")
         self.assertFalse(res["ok"])
         self.assertIsNone(res["order_id"])
 

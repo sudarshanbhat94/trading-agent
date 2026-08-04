@@ -53,7 +53,8 @@ class OverviewLeakTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp()
         self.client, self.main = _client(self.tmp)
-        os.environ["BROKER_STATE_PATH"] = os.path.join(self.tmp, "broker.json")
+        os.environ["BROKER_STATE_DIR"] = os.path.join(self.tmp, "brokers")
+        os.environ["BROKER_STATE_PATH"] = os.path.join(self.tmp, "legacy.json")
         import importlib
         from app import broker
         self.broker = importlib.reload(broker)
@@ -61,8 +62,8 @@ class OverviewLeakTest(unittest.TestCase):
         self.pw = "Str0ngPassw0rd!x"
         self.owner = self._user("owner_")
         self.other = self._user("other_")
-        self.broker.configure(owner_user_id=self.owner["id"])
-        self.broker.save_token("t0k")
+        self.broker.configure(self.owner["id"])
+        self.broker.save_token(self.owner["id"], "t0k")
 
     def _user(self, prefix, role="user"):
         from app.auth import hash_password
@@ -91,29 +92,40 @@ class OverviewLeakTest(unittest.TestCase):
         admin2 = self._user("admin2_", role="admin")
         self._login(admin2)
         self.assertIsNone(self.client.get("/v2/api/overview").json().get("real"))
-        self.assertEqual(self.client.get("/v2/api/broker").status_code, 403)
+        # they see their OWN broker panel, which is empty — not the operator's
+        own = self.client.get("/v2/api/broker")
+        self.assertEqual(own.status_code, 200)
+        self.assertFalse(own.json()["connected"])
 
-    def test_the_broker_status_endpoint_is_owner_only(self) -> None:
+    def test_the_broker_endpoint_shows_the_callers_own_empty_broker(self) -> None:
+        """Every user may LINK their own Upstox account, and must never see
+        anyone else's. Refusing outright would block them from connecting."""
         self._login(self.other)
-        self.assertEqual(self.client.get("/v2/api/broker").status_code, 403)
+        r = self.client.get("/v2/api/broker")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["connected"])
+        self.assertEqual(r.json()["orders_today"], 0)
 
 
 class GateShapeTest(unittest.TestCase):
     """Pin the shape so this cannot regress into a role check."""
 
-    def test_overview_compares_the_numeric_user_id(self) -> None:
+    def test_overview_reads_the_callers_own_broker_state(self) -> None:
+        """No owner comparison any more: state is per-user, so the id passed in
+        IS the boundary and there is nothing to compare against."""
         src = inspect.getsource(v2_web.api_overview)
-        self.assertIn('int(owner) == int(user.get("id") or -1)', src)
-        self.assertIn("is_owner and", src)
+        self.assertIn("_bk.state(uid)", src)
+        self.assertIn("_bk.account_snapshot(uid)", src)
+        self.assertNotIn("owner_user_id", src)
 
     def test_overview_takes_the_session_user(self) -> None:
         """It took no user at all, which is why it could not check one."""
         self.assertIn("user", inspect.signature(v2_web.api_overview).parameters)
 
-    def test_the_broker_endpoint_prefers_ownership_over_role(self) -> None:
+    def test_the_broker_endpoint_reads_only_the_callers_state(self) -> None:
         src = inspect.getsource(v2_web.api_broker)
-        self.assertIn("not the live-trading owner", src)
-        self.assertIn('int(owner) != int(user.get("id") or -1)', src)
+        self.assertIn("broker.state(_uid(user))", src)
+        self.assertIn("user_id=?", src)      # the ledger is scoped too
 
 
 
@@ -130,7 +142,8 @@ class EliteOnlyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp()
         self.client, self.main = _client(self.tmp)
-        os.environ["BROKER_STATE_PATH"] = os.path.join(self.tmp, "broker.json")
+        os.environ["BROKER_STATE_DIR"] = os.path.join(self.tmp, "brokers")
+        os.environ["BROKER_STATE_PATH"] = os.path.join(self.tmp, "legacy.json")
         import importlib
         from app import broker
         self.broker = importlib.reload(broker)
@@ -156,7 +169,7 @@ class EliteOnlyTest(unittest.TestCase):
 
     def test_elite_can(self) -> None:
         u = self._as("auto")
-        self.broker.configure(owner_user_id=u["id"])
+        self.broker.configure(u["id"])
         self.assertEqual(self.client.get("/v2/api/broker").status_code, 200)
 
     def test_every_broker_route_is_gated_not_just_the_read(self) -> None:
@@ -175,11 +188,10 @@ class EliteOnlyTest(unittest.TestCase):
                              json={"armed": True, "confirm": "TRADE REAL MONEY"})
         self.assertEqual(r.status_code, 402)
 
-    def test_tier_is_checked_before_ownership(self) -> None:
-        """A non-Elite user must get the upgrade signal (402), not a 403 that
-        implies they merely picked the wrong account."""
+    def test_tier_is_checked_even_for_their_own_broker(self) -> None:
+        """A Pro user has their own broker file and still may not use it."""
         u = self._as("paper")
-        self.broker.configure(owner_user_id=u["id"])
+        self.broker.configure(u["id"])
         self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
 if __name__ == "__main__":
     unittest.main()

@@ -42,11 +42,11 @@ _LOG = logging.getLogger("openstocks.live")
 # and quarantined from the paper book already; it must not reappear here.
 MIRRORED_LANES = ("swing_meanrev", "mom_breakout", "volume_surge", "btst", "manual")
 
-_margin_cache: dict = {"t": 0.0, "v": None}
+_margin_cache: dict = {}
 MARGIN_TTL = 60
 
 
-def available_margin(force=False):
+def available_margin(user_id, force=False):
     """Real cash at the broker, cached. None when the broker cannot be reached.
 
     None is NOT treated as "plenty" by the callers below — an unknown balance
@@ -54,18 +54,21 @@ def available_margin(force=False):
     having an order rejected.
     """
     now = time.time()
-    if not force and _margin_cache["v"] is not None and now - _margin_cache["t"] < MARGIN_TTL:
-        return _margin_cache["v"]
+    # cache PER USER: one shared slot would hand one person's balance to
+    # another's sizing calculation
+    slot = _margin_cache.setdefault(int(user_id), {"t": 0.0, "v": None})
+    if not force and slot["v"] is not None and now - slot["t"] < MARGIN_TTL:
+        return slot["v"]
     try:
         from . import broker
-        data = (broker.funds() or {}).get("data") or {}
+        data = (broker.funds(user_id) or {}).get("data") or {}
         eq = data.get("equity") or {}
         val = float(eq.get("available_margin"))
-        _margin_cache.update(t=now, v=val)
+        slot.update(t=now, v=val)
         return val
     except Exception as exc:
-        _LOG.warning("could not read broker margin: %s", exc)
-        _margin_cache.update(t=now, v=None)
+        _LOG.warning("could not read broker margin for %s: %s", user_id, exc)
+        slot.update(t=now, v=None)
         return None
 
 
@@ -86,7 +89,7 @@ def instrument_key(main_db, symbol):
     return key if key and str(key).strip() else None
 
 
-def live_qty(v2, symbol):
+def live_qty(v2, user_id, symbol):
     """Shares the SLEEVE holds, from its own filled orders.
 
     Derived rather than stored: a position table can drift out of step with what
@@ -95,22 +98,24 @@ def live_qty(v2, symbol):
     """
     row = v2.execute(
         "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN qty ELSE -qty END),0)"
-        " FROM v2_live_orders WHERE symbol=? AND status='sent'", (str(symbol),)).fetchone()
+        " FROM v2_live_orders WHERE symbol=? AND status='sent' AND user_id=?",
+        (str(symbol), int(user_id))).fetchone()
     return int(row[0] or 0)
 
 
-def open_symbols(v2):
+def open_symbols(v2, user_id):
     rows = v2.execute(
         "SELECT symbol, SUM(CASE WHEN side='BUY' THEN qty ELSE -qty END) q"
-        " FROM v2_live_orders WHERE status='sent' GROUP BY symbol HAVING q>0")
+        " FROM v2_live_orders WHERE status='sent' AND user_id=?"
+        " GROUP BY symbol HAVING q>0", (int(user_id),))
     return {r[0]: int(r[1]) for r in rows}
 
 
-def day_notional(v2, today_s=None):
+def day_notional(v2, user_id, today_s=None):
     today_s = today_s or datetime.now(IST).date().isoformat()
     row = v2.execute("SELECT COALESCE(SUM(notional),0) FROM v2_live_orders"
-                     " WHERE substr(ts,1,10)=? AND status='sent' AND side='BUY'",
-                     (today_s,)).fetchone()
+                     " WHERE substr(ts,1,10)=? AND status='sent' AND side='BUY'"
+                     " AND user_id=?", (today_s, int(user_id))).fetchone()
     return float(row[0] or 0.0)
 
 
@@ -133,8 +138,15 @@ def size_for_sleeve(price, st, margin=None):
     return max(0, int(target // price))
 
 
-def _record(v2, market, symbol, key, side, qty, price, status, reason,
-            response=None, order_id=None, user_id=None):
+def _record(v2, user_id, market, symbol, key, side, qty, price, status, reason,
+            response=None, order_id=None):
+    """user_id is REQUIRED and positional on purpose.
+
+    It was a trailing keyword defaulting to None, so every call that forgot it
+    wrote a ledger row belonging to nobody — invisible to that user's own
+    history and to the per-user caps. A required positional turns a missed call
+    into a TypeError at import time instead of a silent orphan row.
+    """
     v2.execute(
         "INSERT INTO v2_live_orders(ts,market,symbol,instrument_key,side,qty,price,"
         "notional,status,broker_order_id,reason,response,user_id)"
@@ -145,7 +157,7 @@ def _record(v2, market, symbol, key, side, qty, price, status, reason,
     v2.commit()
 
 
-def mirror_entry(v2, main_db, market, symbol, price, strategy):
+def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
     """Place the sleeve's real BUY for a position the engine just opened.
 
     Returns a short status string. Every refusal is written to v2_live_orders
@@ -157,68 +169,66 @@ def mirror_entry(v2, main_db, market, symbol, price, strategy):
         return "skipped: non-IN market"
     if strategy not in MIRRORED_LANES:
         return f"skipped: {strategy} is not mirrored"
-    st = broker.state()
+    st = broker.state(user_id)
     if not st.get("live_ready"):
         return "skipped: not armed"
     key = instrument_key(main_db, symbol)
     if not key:
-        _record(v2, market, symbol, None, "BUY", 0, price, "skipped",
+        _record(v2, user_id, market, symbol, None, "BUY", 0, price, "skipped",
                 "no upstox instrument key")
         return "skipped: no instrument key"
-    if live_qty(v2, symbol) > 0:
+    if live_qty(v2, user_id, symbol) > 0:
         return "skipped: already held live"
-    margin = available_margin()
+    margin = available_margin(user_id)
     if margin is None:
-        _record(v2, market, symbol, key, "BUY", 0, price, "skipped",
+        _record(v2, user_id, market, symbol, key, "BUY", 0, price, "skipped",
                 "broker margin unreadable")
         return "skipped: margin unknown"
     qty = size_for_sleeve(price, st, margin)
     if qty <= 0:
-        _record(v2, market, symbol, key, "BUY", 0, price, "skipped",
+        _record(v2, user_id, market, symbol, key, "BUY", 0, price, "skipped",
                 f"unaffordable at Rs {float(price):,.2f}")
         return "skipped: unaffordable"
     ok, why = broker.can_trade(
-        dict(symbol=symbol, qty=qty, price=price), st=st,
-        user_id=st.get("owner_user_id"), market_is_open=True,
-        day_notional=day_notional(v2), open_positions=len(open_symbols(v2)))
+        dict(symbol=symbol, qty=qty, price=price), user_id, st=st,
+        market_is_open=True,
+        day_notional=day_notional(v2, user_id), open_positions=len(open_symbols(v2, user_id)))
     if not ok:
-        _record(v2, market, symbol, key, "BUY", qty, price, "skipped", why)
+        _record(v2, user_id, market, symbol, key, "BUY", qty, price, "skipped", why)
         return f"skipped: {why}"
-    res = broker.place_order(key, qty, "BUY", price=0.0)
-    _record(v2, market, symbol, key, "BUY", qty, price,
+    res = broker.place_order(user_id, key, qty, "BUY", price=0.0)
+    _record(v2, user_id, market, symbol, key, "BUY", qty, price,
             "sent" if res.get("ok") else "failed",
-            "mirror " + strategy, res.get("response"), res.get("order_id"),
-            st.get("owner_user_id"))
+            "mirror " + strategy, res.get("response"), res.get("order_id"))
     _LOG.info("LIVE BUY %s x%d @~%.2f -> %s", symbol, qty, price, res.get("order_id"))
     return "sent" if res.get("ok") else f"failed: {res.get('status')}"
 
 
-def mirror_exit(v2, main_db, market, symbol, price, reason):
+def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
     """Sell whatever the SLEEVE holds. Never the paper quantity."""
     from . import broker
     if market != "IN":
         return "skipped: non-IN market"
-    st = broker.state()
-    qty = live_qty(v2, symbol)
+    st = broker.state(user_id)
+    qty = live_qty(v2, user_id, symbol)
     if qty <= 0:
         return "skipped: nothing held live"
     if not st.get("live_ready"):
         # An exit blocked by a disarmed sleeve leaves REAL shares held. That is
         # a position the operator must know about, so it is recorded loudly
         # rather than dropped.
-        _record(v2, market, symbol, None, "SELL", qty, price, "skipped",
+        _record(v2, user_id, market, symbol, None, "SELL", qty, price, "skipped",
                 f"NOT ARMED — {qty} shares still held live")
         return "skipped: not armed (position still open)"
     key = instrument_key(main_db, symbol)
     if not key:
-        _record(v2, market, symbol, None, "SELL", qty, price, "skipped",
+        _record(v2, user_id, market, symbol, None, "SELL", qty, price, "skipped",
                 "no upstox instrument key")
         return "skipped: no instrument key"
-    res = broker.place_order(key, qty, "SELL", price=0.0)
-    _record(v2, market, symbol, key, "SELL", qty, price,
+    res = broker.place_order(user_id, key, qty, "SELL", price=0.0)
+    _record(v2, user_id, market, symbol, key, "SELL", qty, price,
             "sent" if res.get("ok") else "failed",
-            f"mirror exit: {reason}", res.get("response"), res.get("order_id"),
-            st.get("owner_user_id"))
+            f"mirror exit: {reason}", res.get("response"), res.get("order_id"))
     _LOG.info("LIVE SELL %s x%d @~%.2f (%s) -> %s", symbol, qty, price, reason,
               res.get("order_id"))
     return "sent" if res.get("ok") else f"failed: {res.get('status')}"

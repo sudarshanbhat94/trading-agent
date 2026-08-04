@@ -1431,31 +1431,44 @@ def _book_mirror_exit(v2, market, symbol, price, reason):
 
 
 def _live_mirror_entry(v2, market, strategy, symbol, price):
-    from . import broker
-    if not broker.state().get("live_ready"):
+    """Fan the entry out to EVERY user who has linked and armed their own
+    broker. Each order goes to that user's account, sized to their own margin —
+    there is no shared sleeve any more."""
+    from . import broker, live_trade
+    users = [u for u in broker.linked_users()
+             if broker.state(u).get("live_ready")]
+    if not users:
         return
-    from . import live_trade
     main = _ro(MAIN_DB)
     try:
-        _LOG.info("live mirror entry %s: %s", symbol,
-                  live_trade.mirror_entry(v2, main, market, symbol, price, strategy))
+        for uid in users:
+            try:
+                _LOG.info("live mirror entry u%s %s: %s", uid, symbol,
+                          live_trade.mirror_entry(v2, main, uid, market, symbol,
+                                                  price, strategy))
+            except Exception:
+                _LOG.exception("live mirror entry failed for user %s", uid)
     finally:
         main.close()
 
 
 def _live_mirror_exit(v2, market, symbol, price, reason):
-    from . import broker
-    st = broker.state()
-    # An exit is attempted even when DISARMED, because mirror_exit records the
-    # fact that real shares are still held. A silent skip there would leave a
-    # live position nobody is tracking.
-    if not st.get("connected"):
+    """Exit is attempted for every CONNECTED user, armed or not: mirror_exit
+    records that real shares are still held when disarmed, and a silent skip
+    would leave a live position nobody is tracking."""
+    from . import broker, live_trade
+    users = [u for u in broker.linked_users() if broker.state(u).get("connected")]
+    if not users:
         return
-    from . import live_trade
     main = _ro(MAIN_DB)
     try:
-        _LOG.info("live mirror exit %s: %s", symbol,
-                  live_trade.mirror_exit(v2, main, market, symbol, price, reason))
+        for uid in users:
+            try:
+                _LOG.info("live mirror exit u%s %s: %s", uid, symbol,
+                          live_trade.mirror_exit(v2, main, uid, market, symbol,
+                                                 price, reason))
+            except Exception:
+                _LOG.exception("live mirror exit failed for user %s", uid)
     finally:
         main.close()
 

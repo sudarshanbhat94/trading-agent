@@ -452,14 +452,12 @@ def api_overview(user: dict = Depends(require_session)):
     real = None
     try:
         from . import broker as _bk
-        bst = _bk.state()
-        owner = bst.get("owner_user_id")
-        is_owner = owner is not None and int(owner) == int(user.get("id") or -1)
-        if is_owner and bst.get("connected") and not bst.get("stale"):
-            snap = _bk.account_snapshot()
+        uid = int(user.get("id") or 0)
+        bst = _bk.state(uid)
+        if bst.get("connected") and not bst.get("stale"):
+            snap = _bk.account_snapshot(uid)
             if snap:
                 snap["armed"] = bool(bst.get("armed"))
-                snap["owner_user_id"] = bst.get("owner_user_id")
                 snap["budget"] = bst.get("budget")
                 real = snap
     except Exception:
@@ -1777,11 +1775,12 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
         broker_note = None
         try:
             from . import broker as _bk, live_trade as _lt
-            bst = _bk.state()
-            if bst.get("live_ready") and int(bst.get("owner_user_id") or -1) == uid:
+            bst = _bk.state(uid)
+            if bst.get("live_ready"):
                 main = _ro(MAIN_DB)
                 try:
-                    broker_note = _lt.mirror_entry(v2, main, market, sym, px, "manual")
+                    broker_note = _lt.mirror_entry(v2, main, uid, market, sym,
+                                                   px, "manual")
                 finally:
                     main.close()
         except Exception:
@@ -1877,11 +1876,11 @@ def api_sell(payload: dict, user: dict = Depends(require_session)):
         broker_note = None
         try:
             from . import broker as _bk, live_trade as _lt
-            bst = _bk.state()
-            if bst.get("connected") and int(bst.get("owner_user_id") or -1) == uid:
+            bst = _bk.state(uid)
+            if bst.get("connected"):
                 main = _ro(MAIN_DB)
                 try:
-                    broker_note = _lt.mirror_exit(v2, main, market, sym,
+                    broker_note = _lt.mirror_exit(v2, main, uid, market, sym,
                                                   round(px, 2), "manual")
                 finally:
                     main.close()
@@ -2225,73 +2224,52 @@ def _movers_bg():
         _movers_loading.discard("x")
 
 
-def _broker_owner_or_403(user):
-    """Live trading is ONE numeric user id, not the admin role.
-
-    A role is a set that grows: promote a second admin for support and they
-    inherit somebody else's real money. The owner is pinned to an id.
-    """
-    from . import broker
-    st = broker.state()
-    owner = st.get("owner_user_id")
-    if owner is None:
-        if (user.get("role") or "").lower() != "admin":
-            raise HTTPException(status_code=403, detail="admin only")
-        return st                       # first admin to configure claims it
-    if int(owner) != int(user.get("id") or -1):
-        raise HTTPException(status_code=403, detail="not the live-trading owner")
-    return st
+def _uid(user):
+    """The caller's own broker. There is no "owner" any more — each user has
+    their own state file, so the id in the path IS the boundary and cannot be
+    got wrong by a missing check."""
+    return int(user.get("id") or 0)
 
 
 @router.get("/api/broker")
 def api_broker(user: dict = Depends(require_session)):
     """Redacted live-trading status. Never returns the token."""
     from . import broker
-    st = broker.state()
-    owner = st.get("owner_user_id")
-    if owner is None:
-        # unclaimed: only an admin may see it, so they can claim it
-        if (user.get("role") or "").lower() != "admin":
-            raise HTTPException(status_code=403, detail="admin only")
-    elif int(owner) != int(user.get("id") or -1):
-        # CLAIMED: the owner and nobody else. A second admin promoted for
-        # support must not be able to read someone's real balance.
-        raise HTTPException(status_code=403, detail="not the live-trading owner")
+    st = broker.state(_uid(user))
     v2 = _ro(V2_DB)
     try:
         today = datetime.now(IST).date().isoformat()
         row = v2.execute("SELECT COUNT(*),COALESCE(SUM(notional),0) FROM v2_live_orders"
-                         " WHERE substr(ts,1,10)=? AND status='sent'", (today,)).fetchone()
+                         " WHERE substr(ts,1,10)=? AND status='sent' AND user_id=?",
+                         (today, _uid(user))).fetchone()
         recent = [dict(zip(("ts", "symbol", "side", "qty", "price", "notional", "status",
                             "broker_order_id", "reason"), r))
                   for r in v2.execute(
-                      "SELECT ts,symbol,side,qty,price,notional,status,broker_order_id,reason"
-                      " FROM v2_live_orders ORDER BY id DESC LIMIT 25")]
+                      "SELECT ts,symbol,side,qty,price,notional,status,broker_order_id,"
+                      "reason FROM v2_live_orders WHERE user_id=?"
+                      " ORDER BY id DESC LIMIT 25", (_uid(user),))]
     finally:
         v2.close()
     st.update(orders_today=row[0], notional_today=round(row[1] or 0, 2),
-              is_owner=(st.get("owner_user_id") == user.get("id")), recent=recent)
+              is_owner=True, recent=recent)
     return JSONResponse(st)
 
 
 @router.post("/api/broker/config")
 async def api_broker_config(request: Request, user: dict = Depends(require_session)):
     from . import broker
-    _broker_owner_or_403(user)
     body = await request.json()
-    claim = body.get("claim_owner")
     return JSONResponse(broker.configure(
-        api_key=body.get("api_key"), redirect_uri=body.get("redirect_uri"),
-        budget=body.get("budget"), allow_options=body.get("allow_options"),
-        owner_user_id=(user.get("id") if claim else None)))
+        _uid(user), api_key=body.get("api_key"),
+        redirect_uri=body.get("redirect_uri"), budget=body.get("budget"),
+        allow_options=body.get("allow_options")))
 
 
 @router.post("/api/broker/auth-url")
 def api_broker_auth_url(user: dict = Depends(require_session)):
     from . import broker
-    _broker_owner_or_403(user)
     try:
-        return JSONResponse({"auth_url": broker.auth_url()})
+        return JSONResponse({"auth_url": broker.auth_url(_uid(user))})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -2302,15 +2280,15 @@ async def api_broker_connect(request: Request, user: dict = Depends(require_sess
     they already hold. Both paths require the operator to have logged in to
     Upstox themselves — nothing here can mint a credential."""
     from . import broker
-    _broker_owner_or_403(user)
     body = await request.json()
     code = str(body.get("code") or "").strip()
     token = str(body.get("access_token") or "").strip()
     try:
         if code:
-            st = broker.exchange_code(code, str(body.get("api_secret") or ""))
+            st = broker.exchange_code(_uid(user), code,
+                                      str(body.get("api_secret") or ""))
         elif token:
-            st = broker.save_token(token)
+            st = broker.save_token(_uid(user), token)
         else:
             raise HTTPException(status_code=400, detail="paste the code from the redirect URL")
         return JSONResponse(st)
@@ -2329,19 +2307,18 @@ async def api_broker_arm(request: Request, user: dict = Depends(require_session)
     throw it.
     """
     from . import broker
-    _broker_owner_or_403(user)
     body = await request.json()
     on = bool(body.get("armed"))
     if on and str(body.get("confirm") or "") != "TRADE REAL MONEY":
         raise HTTPException(status_code=400, detail="type: TRADE REAL MONEY")
-    return JSONResponse(broker.configure(armed=on, kill_switch=(not on)))
+    return JSONResponse(broker.configure(_uid(user), armed=on,
+                                         kill_switch=(not on)))
 
 
 @router.post("/api/broker/disconnect")
 def api_broker_disconnect(user: dict = Depends(require_session)):
     from . import broker
-    _broker_owner_or_403(user)
-    return JSONResponse(broker.disconnect())
+    return JSONResponse(broker.disconnect(_uid(user)))
 
 
 @router.get("/api/ideas")
@@ -2376,9 +2353,10 @@ def api_ideas(market: str = "IN", days: int = 30,
     # quantity is recomputed for the viewer.
     from . import broker as _broker
     from . import live_trade as _lt
-    bst = _broker.state()
-    can_buy = bool(bst.get("live_ready")) and bst.get("owner_user_id") == user.get("id")
-    margin = _lt.available_margin() if bst.get("connected") else None
+    _uid_i = int(user.get("id") or 0)
+    bst = _broker.state(_uid_i)
+    can_buy = bool(bst.get("live_ready"))
+    margin = _lt.available_margin(_uid_i) if bst.get("connected") else None
     sleeve = min(float(bst.get("budget") or 0), margin) if margin is not None else None
     for r in rows:
         q = live.get(r["symbol"]) or {}

@@ -16,12 +16,16 @@ from unittest import mock
 
 from app import broker as _broker_mod, live_trade, v2_live
 
+UID = 2
+
 
 def _fresh_broker(**cfg):
-    os.environ["BROKER_STATE_PATH"] = os.path.join(tempfile.mkdtemp(), "broker.json")
+    tmp = tempfile.mkdtemp()
+    os.environ["BROKER_STATE_DIR"] = os.path.join(tmp, "brokers")
+    os.environ["BROKER_STATE_PATH"] = os.path.join(tmp, "legacy.json")
     b = importlib.reload(_broker_mod)
     if cfg:
-        b.configure(**cfg)
+        b.configure(UID, **cfg)
     return b
 
 
@@ -65,7 +69,7 @@ class InstrumentKeyTest(unittest.TestCase):
 class SizingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.b = _fresh_broker(budget=10000)
-        self.st = self.b.state()
+        self.st = self.b.state(UID)
 
     def test_it_sizes_to_the_sleeve_not_the_paper_book(self) -> None:
         """Paper runs Rs 1,00,000 over 6 slots (~Rs 16,600 a position). Copying
@@ -91,14 +95,14 @@ class SizingTest(unittest.TestCase):
 class MirrorEntryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.v2, self.main, self.main_path = _dbs()
-        self.b = _fresh_broker(budget=10000, owner_user_id=2)
+        self.b = _fresh_broker(budget=10000)
 
     def _arm(self):
-        self.b.save_token("t0k")
-        self.b.configure(armed=True, kill_switch=False)
+        self.b.save_token(UID, "t0k")
+        self.b.configure(UID, armed=True, kill_switch=False)
 
     def _entry(self, symbol="RELIANCE", price=1300.0, strategy="swing_meanrev"):
-        return live_trade.mirror_entry(self.v2, self.main, "IN", symbol, price, strategy)
+        return live_trade.mirror_entry(self.v2, self.main, UID, "IN", symbol, price, strategy)
 
     def test_disarmed_places_nothing(self) -> None:
         with mock.patch.object(_broker_mod, "place_order") as po:
@@ -112,7 +116,8 @@ class MirrorEntryTest(unittest.TestCase):
                                return_value=dict(ok=True, order_id="OID1")) as po:
             self.assertEqual(self._entry(), "sent")
             po.assert_called_once()
-            key, qty, side = po.call_args[0][0], po.call_args[0][1], po.call_args[0][2]
+            uid_, key, qty, side = po.call_args[0][:4]
+            self.assertEqual(uid_, UID)
             self.assertEqual(key, "NSE_EQ|INE002A01018")
             self.assertEqual(side, "BUY")
             self.assertEqual(qty, 2)
@@ -156,7 +161,7 @@ class MirrorEntryTest(unittest.TestCase):
         self._arm()
         with mock.patch.object(_broker_mod, "place_order") as po:
             self.assertIn("non-IN", live_trade.mirror_entry(
-                self.v2, self.main, "US", "AAPL", 200.0, "swing_meanrev"))
+                self.v2, self.main, UID, "US", "AAPL", 200.0, "swing_meanrev"))
             po.assert_not_called()
 
     def test_a_broker_rejection_is_recorded_as_failed(self) -> None:
@@ -172,44 +177,44 @@ class MirrorEntryTest(unittest.TestCase):
 class MirrorExitTest(unittest.TestCase):
     def setUp(self) -> None:
         self.v2, self.main, self.main_path = _dbs()
-        self.b = _fresh_broker(budget=10000, owner_user_id=2)
-        self.b.save_token("t0k")
-        self.b.configure(armed=True, kill_switch=False)
+        self.b = _fresh_broker(budget=10000)
+        self.b.save_token(UID, "t0k")
+        self.b.configure(UID, armed=True, kill_switch=False)
         with mock.patch.object(live_trade, "available_margin", return_value=9115.0), \
              mock.patch.object(_broker_mod, "place_order",
                                return_value=dict(ok=True, order_id="B1")):
-            live_trade.mirror_entry(self.v2, self.main, "IN", "RELIANCE", 1300.0,
-                                    "swing_meanrev")
+            live_trade.mirror_entry(self.v2, self.main, UID, "IN", "RELIANCE",
+                                    1300.0, "swing_meanrev")
 
     def test_it_sells_the_live_quantity_not_the_paper_one(self) -> None:
         """THE one that matters. Paper holds ~12 shares of this; the sleeve
         holds 2. Selling 12 shorts the account by 10."""
-        self.assertEqual(live_trade.live_qty(self.v2, "RELIANCE"), 2)
+        self.assertEqual(live_trade.live_qty(self.v2, UID, "RELIANCE"), 2)
         with mock.patch.object(_broker_mod, "place_order",
                                return_value=dict(ok=True, order_id="S1")) as po:
-            live_trade.mirror_exit(self.v2, self.main, "IN", "RELIANCE", 1400.0, "target")
-            self.assertEqual(po.call_args[0][1], 2)
-            self.assertEqual(po.call_args[0][2], "SELL")
+            live_trade.mirror_exit(self.v2, self.main, UID, "IN", "RELIANCE", 1400.0, "target")
+            self.assertEqual(po.call_args[0][2], 2)
+            self.assertEqual(po.call_args[0][3], "SELL")
 
     def test_the_position_is_flat_afterwards(self) -> None:
         with mock.patch.object(_broker_mod, "place_order",
                                return_value=dict(ok=True, order_id="S1")):
-            live_trade.mirror_exit(self.v2, self.main, "IN", "RELIANCE", 1400.0, "target")
-        self.assertEqual(live_trade.live_qty(self.v2, "RELIANCE"), 0)
-        self.assertNotIn("RELIANCE", live_trade.open_symbols(self.v2))
+            live_trade.mirror_exit(self.v2, self.main, UID, "IN", "RELIANCE", 1400.0, "target")
+        self.assertEqual(live_trade.live_qty(self.v2, UID, "RELIANCE"), 0)
+        self.assertNotIn("RELIANCE", live_trade.open_symbols(self.v2, UID))
 
     def test_selling_nothing_held_places_no_order(self) -> None:
         with mock.patch.object(_broker_mod, "place_order") as po:
             self.assertIn("nothing held", live_trade.mirror_exit(
-                self.v2, self.main, "IN", "KEI", 100.0, "target"))
+                self.v2, self.main, UID, "IN", "KEI", 100.0, "target"))
             po.assert_not_called()
 
     def test_a_disarmed_exit_records_that_shares_are_still_held(self) -> None:
         """Silence here would leave a real position nobody is tracking."""
-        self.b.configure(armed=False, kill_switch=True)
+        self.b.configure(UID, armed=False, kill_switch=True)
         with mock.patch.object(_broker_mod, "place_order") as po:
             self.assertIn("still open", live_trade.mirror_exit(
-                self.v2, self.main, "IN", "RELIANCE", 1400.0, "stop"))
+                self.v2, self.main, UID, "IN", "RELIANCE", 1400.0, "stop"))
             po.assert_not_called()
         reason = self.v2.execute("SELECT reason FROM v2_live_orders ORDER BY id DESC"
                                  " LIMIT 1").fetchone()[0]
@@ -226,12 +231,12 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.v2, self.main, self.main_path = _dbs()
-        self.b = _fresh_broker(budget=9000, owner_user_id=2)
-        self.b.save_token("t0k")
-        self.b.configure(armed=True, kill_switch=False)
+        self.b = _fresh_broker(budget=9000)
+        self.b.save_token(UID, "t0k")
+        self.b.configure(UID, armed=True, kill_switch=False)
         self.sent = []
 
-        def fake_place(key, qty, side="BUY", **kw):
+        def fake_place(uid, key, qty, side="BUY", **kw):
             self.sent.append((side, key, qty))
             return dict(ok=True, order_id=f"O{len(self.sent)}")
         self.fake_place = fake_place
@@ -258,7 +263,7 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
         # THE assertion: the sleeve bought 2 and sold 2, while paper did 12
         self.assertEqual(b_qty, 2)
         self.assertEqual(s_qty, 2)
-        self.assertEqual(live_trade.live_qty(self.v2, "RELIANCE"), 0)
+        self.assertEqual(live_trade.live_qty(self.v2, UID, "RELIANCE"), 0)
 
     def test_the_exit_reads_the_symbol_before_the_row_is_deleted(self) -> None:
         """All three exit paths DELETE the position after record_exit. If that
@@ -315,7 +320,7 @@ class ManualBuyReachesTheBrokerTest(unittest.TestCase):
         self.assertIn("books.buy(", body)
         self.assertNotIn("record_entry(", body)
         self.assertNotIn("INSERT INTO v2_positions", body)
-        self.assertIn('int(bst.get("owner_user_id") or -1) == uid', body)
+        self.assertIn("_bk.state(uid)", body)
 
     def test_manual_is_a_mirrored_lane(self) -> None:
         """Otherwise the single writer is reached and the order is still
@@ -324,12 +329,12 @@ class ManualBuyReachesTheBrokerTest(unittest.TestCase):
 
     def test_a_manual_entry_places_a_real_buy(self) -> None:
         v2, main, path = _dbs()
-        b = _fresh_broker(budget=9000, owner_user_id=2)
-        b.save_token("t0k")
-        b.configure(armed=True, kill_switch=False)
+        b = _fresh_broker(budget=9000)
+        b.save_token(UID, "t0k")
+        b.configure(UID, armed=True, kill_switch=False)
         sent = []
 
-        def fake_place(key, qty, side="BUY", **kw):
+        def fake_place(uid, key, qty, side="BUY", **kw):
             sent.append((side, key, qty))
             return dict(ok=True, order_id="M1")
 
@@ -346,7 +351,7 @@ class EngineIsolationTest(unittest.TestCase):
 
     def test_a_broker_outage_does_not_stop_the_paper_book(self) -> None:
         v2, _main, _path = _dbs()
-        _fresh_broker(budget=10000, owner_user_id=2)
+        _fresh_broker(budget=10000)
         with mock.patch.object(v2_live, "_live_mirror_entry",
                                side_effect=RuntimeError("broker down")):
             ok = v2_live.record_entry(v2, "IN", "swing_meanrev", "RELIANCE",

@@ -16,10 +16,14 @@ from datetime import datetime, timedelta
 from app import broker as _broker_mod
 
 
+UID = 7          # every test acts as ONE user; the id is now part of the path
+
+
 def _fresh():
-    """A broker module pointed at a throwaway state file."""
+    """A broker module pointed at a throwaway per-user state directory."""
     tmp = tempfile.mkdtemp()
-    os.environ["BROKER_STATE_PATH"] = os.path.join(tmp, "broker.json")
+    os.environ["BROKER_STATE_DIR"] = os.path.join(tmp, "brokers")
+    os.environ["BROKER_STATE_PATH"] = os.path.join(tmp, "legacy.json")
     return importlib.reload(_broker_mod)
 
 
@@ -28,7 +32,7 @@ class DefaultsAreClosedTest(unittest.TestCase):
         self.b = _fresh()
 
     def test_a_fresh_install_is_not_connected_or_armed(self) -> None:
-        s = self.b.state()
+        s = self.b.state(UID)
         self.assertFalse(s["connected"])
         self.assertFalse(s["armed"])
         self.assertTrue(s["kill_switch"])
@@ -36,53 +40,70 @@ class DefaultsAreClosedTest(unittest.TestCase):
 
     def test_it_is_blocked_for_more_than_one_reason(self) -> None:
         """Defence in depth: fixing one switch by accident must not be enough."""
-        s = self.b.state()
+        s = self.b.state(UID)
         reasons = []
         for patch in (dict(kill_switch=False),
                       dict(kill_switch=False, armed=True),
                       dict(kill_switch=False, armed=True, owner_user_id=1)):
-            ok, why = self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0),
-                                       st={**s, **patch}, user_id=1)
+            ok, why = self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0), UID,
+                                       st={**s, **patch})
             self.assertFalse(ok)
             reasons.append(why)
         self.assertEqual(len(set(reasons)), 3, reasons)
 
     def test_options_are_off_and_say_why_in_rupees(self) -> None:
-        s = self.b.state()
+        s = self.b.state(UID)
         self.assertFalse(s["allow_options"])
         self.assertIn("5,704", s["options_blocked_reason"])
 
     def test_options_cannot_be_enabled_under_the_minimum_budget(self) -> None:
         """A switch that silently does nothing is worse than one that says no."""
-        s = self.b.configure(budget=10000, allow_options=True)
+        s = self.b.configure(UID, budget=10000, allow_options=True)
         self.assertFalse(s["allow_options"])
 
     def test_options_can_be_enabled_once_the_sleeve_can_afford_a_lot(self) -> None:
-        s = self.b.configure(budget=60000, allow_options=True)
+        s = self.b.configure(UID, budget=60000, allow_options=True)
         self.assertTrue(s["allow_options"])
 
 
-class OwnershipTest(unittest.TestCase):
+class PerUserStateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.b = _fresh()
-        self.b.configure(owner_user_id=7, armed=True, kill_switch=False)
-        self.b.save_token("t0k")
+        self.b.configure(UID, armed=True, kill_switch=False)
+        self.b.save_token(UID, "t0k")
 
     def _try(self, uid):
-        return self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0), user_id=uid)
+        return self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0), uid)
 
     def test_the_owner_may_trade(self) -> None:
         self.assertTrue(self._try(7)[0])
 
-    def test_another_admin_may_not(self) -> None:
-        """Ownership is a numeric id, not the admin role: a role is a set that
-        grows, and promoting a second admin must not hand them real money."""
-        ok, why = self._try(9)
+    def test_another_user_has_their_own_empty_broker(self) -> None:
+        """THE isolation property. User 9 does not inherit user 7's connection —
+        they get their own default state, which is disarmed and tokenless."""
+        other = self.b.state(9)
+        self.assertFalse(other["connected"])
+        self.assertFalse(other["armed"])
+        self.assertFalse(self._try(9)[0])
+
+    def test_one_users_token_is_not_visible_to_another(self) -> None:
+        self.b.save_token(UID, "SEVENS_TOKEN")
+        self.assertNotIn("SEVENS_TOKEN", repr(self.b.state(9)))
+        self.assertEqual(self.b._token(9), "")
+        self.assertEqual(self.b._token(UID), "SEVENS_TOKEN")
+
+    def test_pairing_one_id_with_anothers_state_is_refused(self) -> None:
+        """The consistency check on top of the path boundary: a caller that
+        hands can_trade a mismatched pair is a bug, not a trade."""
+        st = self.b.state(UID)
+        ok, why = self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0), 9, st=st)
         self.assertFalse(ok)
-        self.assertIn("owner", why)
+        self.assertIn("does not belong", why)
 
     def test_an_anonymous_caller_may_not(self) -> None:
-        self.assertFalse(self._try(None)[0])
+        st = self.b.state(UID)
+        self.assertFalse(self.b.can_trade(
+            dict(symbol="ITC", qty=1, price=100.0), None, st=st)[0])
 
 
 class TokenLifecycleTest(unittest.TestCase):
@@ -101,53 +122,52 @@ class TokenLifecycleTest(unittest.TestCase):
 
     def test_an_expired_token_reads_stale_and_blocks_trading(self) -> None:
         now = datetime(2026, 8, 4, 10, 0, tzinfo=self.b.IST)
-        self.b.configure(owner_user_id=1, armed=True, kill_switch=False)
-        self.b.save_token("t0k", now=now)
+        self.b.configure(UID, armed=True, kill_switch=False)
+        self.b.save_token(UID, "t0k", now=now)
         later = now + timedelta(days=1)          # past the 03:30 cut
-        st = self.b.state(now=later)
+        st = self.b.state(UID, now=later)
         self.assertTrue(st["stale"])
-        ok, why = self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0),
-                                   st=st, user_id=1)
+        ok, why = self.b.can_trade(dict(symbol="ITC", qty=1, price=100.0), UID, st=st)
         self.assertFalse(ok)
         self.assertIn("expired", why)
 
     def test_disconnect_also_disarms(self) -> None:
         """Replacing a token must never leave an armed sleeve behind it."""
-        self.b.configure(owner_user_id=1, armed=True, kill_switch=False)
-        self.b.save_token("t0k")
-        s = self.b.disconnect()
+        self.b.configure(UID, armed=True, kill_switch=False)
+        self.b.save_token(UID, "t0k")
+        s = self.b.disconnect(UID)
         self.assertFalse(s["armed"])
         self.assertTrue(s["kill_switch"])
         self.assertFalse(s["connected"])
 
     def test_the_token_is_never_returned_to_the_ui(self) -> None:
-        self.b.save_token("SUPERSECRET")
-        self.assertNotIn("SUPERSECRET", repr(self.b.state()))
-        self.assertNotIn("access_token", self.b.state())
+        self.b.save_token(UID, "SUPERSECRET")
+        self.assertNotIn("SUPERSECRET", repr(self.b.state(UID)))
+        self.assertNotIn("access_token", self.b.state(UID))
 
     def test_the_api_key_is_shown_only_as_a_fingerprint(self) -> None:
-        self.b.configure(api_key="8561a2f4-a4ae-425d-9c7b-abcdefabcdef")
-        hint = self.b.state()["api_key_hint"]
+        self.b.configure(UID, api_key="8561a2f4-a4ae-425d-9c7b-abcdefabcdef")
+        hint = self.b.state(UID)["api_key_hint"]
         self.assertNotIn("a4ae-425d", hint)
         self.assertTrue(hint.startswith("8561"))
 
     def test_the_state_file_is_not_world_readable(self) -> None:
-        self.b.save_token("t0k")
-        self.assertEqual(os.stat(self.b.STATE_PATH).st_mode & 0o077, 0)
+        self.b.save_token(UID, "t0k")
+        self.assertEqual(os.stat(self.b._path(UID)).st_mode & 0o077, 0)
 
     def test_an_empty_token_is_refused(self) -> None:
         with self.assertRaises(ValueError):
-            self.b.save_token("   ")
+            self.b.save_token(UID, "   ")
 
 
 class CapsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.b = _fresh()
-        self.b.configure(owner_user_id=1, armed=True, kill_switch=False, budget=10000)
-        self.b.save_token("t0k")
+        self.b.configure(UID, armed=True, kill_switch=False, budget=10000)
+        self.b.save_token(UID, "t0k")
 
     def _try(self, qty, price, **kw):
-        return self.b.can_trade(dict(symbol="ITC", qty=qty, price=price), user_id=1, **kw)
+        return self.b.can_trade(dict(symbol="ITC", qty=qty, price=price), UID, **kw)
 
     def test_a_normal_order_passes(self) -> None:
         self.assertTrue(self._try(10, 300.0)[0])
@@ -176,8 +196,7 @@ class CapsTest(unittest.TestCase):
         self.assertFalse(self._try(0, 100.0)[0])
 
     def test_an_option_is_refused_while_options_are_off(self) -> None:
-        ok, why = self.b.can_trade(dict(symbol="BANKNIFTY26AUG57400CE", qty=30, price=100.0),
-                                   user_id=1)
+        ok, why = self.b.can_trade(dict(symbol="BANKNIFTY26AUG57400CE", qty=30, price=100.0), UID)
         self.assertFalse(ok)
         self.assertIn("lot costs", why)
 
@@ -195,8 +214,7 @@ class CapsTest(unittest.TestCase):
                 self.assertFalse(self.b.is_option(equity))
 
     def test_an_equity_order_is_allowed_while_options_are_off(self) -> None:
-        self.assertTrue(self.b.can_trade(dict(symbol="RELIANCE", qty=1, price=1300.0),
-                                         user_id=1)[0])
+        self.assertTrue(self.b.can_trade(dict(symbol="RELIANCE", qty=1, price=1300.0), UID)[0])
 
 
 class ExtractCodeTest(unittest.TestCase):
@@ -249,7 +267,7 @@ class NoCredentialsInRepoTest(unittest.TestCase):
         import subprocess
         b = _fresh()
         default = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(b.__file__))),
-                               "var", "broker.json")
+                               "var", "brokers", "1.json")
         out = subprocess.run(["git", "check-ignore", default],
                              capture_output=True, text=True,
                              cwd=os.path.dirname(os.path.dirname(os.path.abspath(b.__file__))))

@@ -51,9 +51,11 @@ class ManualBuyIsOffTheHouseBookTest(unittest.TestCase):
         """record_entry writes v2_positions AND fires both engine mirrors."""
         self.assertNotIn("record_entry(", self.src)
 
-    def test_only_the_sleeve_owner_reaches_the_broker(self) -> None:
-        """THE fix. Anyone else's manual buy is paper, full stop."""
-        self.assertIn('int(bst.get("owner_user_id") or -1) == uid', self.src)
+    def test_it_reaches_only_the_callers_own_broker(self) -> None:
+        """THE fix. It used to hit whichever broker was configured globally —
+        the operator's. Now the caller's own state, keyed by their id."""
+        self.assertIn("_bk.state(uid)", self.src)
+        self.assertIn("_lt.mirror_entry(v2, main, uid,", self.src)
 
     def test_it_takes_the_session_user(self) -> None:
         self.assertIn("user", inspect.signature(v2_web.api_buy).parameters)
@@ -70,8 +72,9 @@ class ManualSellIsOffTheHouseBookTest(unittest.TestCase):
     def test_it_does_not_call_the_house_writer(self) -> None:
         self.assertNotIn("record_exit(", self.src)
 
-    def test_only_the_owner_reaches_the_broker(self) -> None:
-        self.assertIn('int(bst.get("owner_user_id") or -1) == uid', self.src)
+    def test_it_reaches_only_the_callers_own_broker(self) -> None:
+        self.assertIn("_bk.state(uid)", self.src)
+        self.assertIn("_lt.mirror_exit(v2, main, uid,", self.src)
 
 
 class HouseExitIsOperatorOnlyTest(unittest.TestCase):

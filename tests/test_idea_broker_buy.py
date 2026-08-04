@@ -36,9 +36,12 @@ class SizedForTheBrokerTest(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertNotIn(field, self.src)
 
-    def test_buying_requires_ownership_and_a_live_sleeve(self) -> None:
+    def test_buying_requires_the_callers_own_live_sleeve(self) -> None:
+        """State is per-user now, so there is no owner to compare — the id used
+        to read it IS the boundary."""
         self.assertIn('bst.get("live_ready")', self.src)
-        self.assertIn('bst.get("owner_user_id") == user.get("id")', self.src)
+        self.assertIn("_broker.state(_uid_i)", self.src)
+        self.assertNotIn("owner_user_id", self.src)
 
     def test_a_resolved_idea_is_not_buyable(self) -> None:
         """Buying a stop-hit idea at today's price is not the idea."""
