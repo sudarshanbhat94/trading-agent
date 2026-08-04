@@ -413,6 +413,14 @@ CREATE TABLE IF NOT EXISTS v2_ideas(
   UNIQUE(market, symbol, published_date));
 CREATE INDEX IF NOT EXISTS ix_ideas_date ON v2_ideas(published_date DESC, rank);
 CREATE INDEX IF NOT EXISTS ix_ideas_open ON v2_ideas(status, market);
+-- REAL orders sent to a real broker. Separate table from v2_trades on purpose:
+-- the paper book must never be able to include a live fill in its statistics,
+-- and a live order must never be silently reconciled away as paper.
+CREATE TABLE IF NOT EXISTS v2_live_orders(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, market TEXT, symbol TEXT,
+  instrument_key TEXT, side TEXT, qty INTEGER, price REAL, notional REAL,
+  status TEXT, broker_order_id TEXT, reason TEXT, response TEXT, user_id INTEGER);
+CREATE INDEX IF NOT EXISTS ix_live_orders_day ON v2_live_orders(substr(ts,1,10));
 """
 _HIST: dict = {}
 _EQ_SNAP: dict = {}

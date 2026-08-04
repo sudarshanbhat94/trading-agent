@@ -196,6 +196,15 @@ ROUTE_FEATURES = {
     "/v2/api/catalysts": "catalysts",
     "/v2/api/index-call": "index_call",
     "/v2/api/ideas": "ideas",
+    # Live broker routes carry their own OWNER check (a numeric user id), which
+    # is stricter than any plan. Gating them on a tier as well would only mean
+    # the owner loses their own money button when a subscription lapses.
+    "/v2/api/broker": None,
+    "/v2/api/broker/config": None,
+    "/v2/api/broker/auth-url": None,
+    "/v2/api/broker/connect": None,
+    "/v2/api/broker/arm": None,
+    "/v2/api/broker/disconnect": None,
     "/v2/api/movers": "signals",
     "/v2/api/search": "signals",
     "/v2/api/watch": "signals",

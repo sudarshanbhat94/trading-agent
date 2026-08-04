@@ -210,6 +210,12 @@ class H(BaseHTTPRequestHandler):
             mkt = "US" if "market=US" in self.path else "IN"
             return self._send(json.dumps(_stock(sym, mkt)))
         routes = {
+            "/v2/api/broker": dict(connected=False, stale=True, expires_at="",
+                token_saved_at="", api_key_hint="", redirect_uri="", owner_user_id=1,
+                armed=False, kill_switch=True, allow_options=False, budget=10000.0,
+                max_order=3500.0, live_ready=False, is_owner=True, orders_today=0,
+                notional_today=0.0, recent=[],
+                options_blocked_reason="one index-option lot costs Rs 5,704\u2013Rs 27,669; this sleeve holds Rs 10,000"),
             "/v2/api/ideas": dict(ideas=IDEAS, plan="auto", allowance=5, max_per_day=5,
                                   published_today=5, withheld_today=0, capital=100000.0,
                                   risk_pct=0.01, horizon_days=10, ccy="\u20b9",

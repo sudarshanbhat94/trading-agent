@@ -2115,6 +2115,118 @@ def _movers_bg():
         _movers_loading.discard("x")
 
 
+def _broker_owner_or_403(user):
+    """Live trading is ONE numeric user id, not the admin role.
+
+    A role is a set that grows: promote a second admin for support and they
+    inherit somebody else's real money. The owner is pinned to an id.
+    """
+    from . import broker
+    st = broker.state()
+    owner = st.get("owner_user_id")
+    if owner is None:
+        if (user.get("role") or "").lower() != "admin":
+            raise HTTPException(status_code=403, detail="admin only")
+        return st                       # first admin to configure claims it
+    if int(owner) != int(user.get("id") or -1):
+        raise HTTPException(status_code=403, detail="not the live-trading owner")
+    return st
+
+
+@router.get("/api/broker")
+def api_broker(user: dict = Depends(require_session)):
+    """Redacted live-trading status. Never returns the token."""
+    from . import broker
+    if (user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="admin only")
+    st = broker.state()
+    v2 = _ro(V2_DB)
+    try:
+        today = datetime.now(IST).date().isoformat()
+        row = v2.execute("SELECT COUNT(*),COALESCE(SUM(notional),0) FROM v2_live_orders"
+                         " WHERE substr(ts,1,10)=? AND status='sent'", (today,)).fetchone()
+        recent = [dict(zip(("ts", "symbol", "side", "qty", "price", "notional", "status",
+                            "broker_order_id", "reason"), r))
+                  for r in v2.execute(
+                      "SELECT ts,symbol,side,qty,price,notional,status,broker_order_id,reason"
+                      " FROM v2_live_orders ORDER BY id DESC LIMIT 25")]
+    finally:
+        v2.close()
+    st.update(orders_today=row[0], notional_today=round(row[1] or 0, 2),
+              is_owner=(st.get("owner_user_id") == user.get("id")), recent=recent)
+    return JSONResponse(st)
+
+
+@router.post("/api/broker/config")
+async def api_broker_config(request: Request, user: dict = Depends(require_session)):
+    from . import broker
+    _broker_owner_or_403(user)
+    body = await request.json()
+    claim = body.get("claim_owner")
+    return JSONResponse(broker.configure(
+        api_key=body.get("api_key"), redirect_uri=body.get("redirect_uri"),
+        budget=body.get("budget"), allow_options=body.get("allow_options"),
+        owner_user_id=(user.get("id") if claim else None)))
+
+
+@router.post("/api/broker/auth-url")
+def api_broker_auth_url(user: dict = Depends(require_session)):
+    from . import broker
+    _broker_owner_or_403(user)
+    try:
+        return JSONResponse({"auth_url": broker.auth_url()})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/broker/connect")
+async def api_broker_connect(request: Request, user: dict = Depends(require_session)):
+    """Exchange the operator's own login code for a token, or accept a token
+    they already hold. Both paths require the operator to have logged in to
+    Upstox themselves — nothing here can mint a credential."""
+    from . import broker
+    _broker_owner_or_403(user)
+    body = await request.json()
+    code = str(body.get("code") or "").strip()
+    token = str(body.get("access_token") or "").strip()
+    try:
+        if code:
+            st = broker.exchange_code(code, str(body.get("api_secret") or ""))
+        elif token:
+            st = broker.save_token(token)
+        else:
+            raise HTTPException(status_code=400, detail="paste the code from the redirect URL")
+        return JSONResponse(st)
+    except HTTPException:
+        raise
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/broker/arm")
+async def api_broker_arm(request: Request, user: dict = Depends(require_session)):
+    """Arming is SEPARATE from connecting, and re-arming is explicit every time.
+
+    The confirmation phrase is required because 'armed' is the only switch here
+    that spends real money, and a stray click on a phone should not be able to
+    throw it.
+    """
+    from . import broker
+    _broker_owner_or_403(user)
+    body = await request.json()
+    on = bool(body.get("armed"))
+    if on and str(body.get("confirm") or "") != "TRADE REAL MONEY":
+        raise HTTPException(status_code=400, detail="type: TRADE REAL MONEY")
+    return JSONResponse(broker.configure(armed=on, kill_switch=(not on)))
+
+
+@router.post("/api/broker/disconnect")
+def api_broker_disconnect(user: dict = Depends(require_session)):
+    from . import broker
+    _broker_owner_or_403(user)
+    return JSONResponse(broker.disconnect())
+
+
 @router.get("/api/ideas")
 def api_ideas(market: str = "IN", days: int = 30,
               user: dict = Depends(require_session)):
@@ -3726,6 +3838,20 @@ input[type=date]{width:auto;padding:8px 11px}
 .fd-ol{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
 .fd-ov{font-size:14px;font-weight:600;margin-top:2px}
 .fd-osub{font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
+/* ---- live broker ---- */
+.brk-row{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+.brk-p{font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+ padding:4px 9px;border-radius:7px;background:var(--surf);color:var(--mut)}
+.brk-p.on{background:var(--upb);color:var(--up)}
+.brk-grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:700px){.brk-grid{grid-template-columns:1fr 1fr}}
+.brk-grid label{font-size:11.5px;color:var(--mut);display:block}
+.brk-grid input{width:100%;margin-top:5px;padding:9px 11px;border-radius:9px;
+ border:1px solid var(--line);background:var(--bg);color:var(--tx);font-size:13.5px}
+.brk-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
+.brk-warn{font-size:12.5px;line-height:1.55;color:var(--tx);background:var(--warnb);
+ border-radius:9px;padding:10px 12px;margin-top:12px}
+.btn.danger{background:var(--dnb);color:var(--dn);border-color:transparent;font-weight:700}
 /* ---- published ideas ---- */
 .ig-card{background:var(--card);border:1px solid var(--line);border-radius:14px;
  padding:13px 15px;margin-bottom:10px}
@@ -4707,8 +4833,86 @@ function saveIndexOpts(){var syms=[].slice.call(document.querySelectorAll('.idxs
   .catch(function(){if(m)m.textContent='save failed';});}
 var IDXCFG={};
 
+// ---- live broker (real money) ---------------------------------------------
+// Rendered ONLY for an admin, and every write re-checks ownership server-side.
+// The UI is a convenience; it is not the security boundary.
+var BRK=null;
+function loadBroker(){
+ if(((ME||{}).role||'').toLowerCase()!='admin')return;
+ api('/v2/api/broker').then(function(r){if(!r.ok)return;BRK=r.j;renderBroker();});}
+function brkPost(path,body,after){
+ api('/v2/api/broker/'+path,{method:'POST',body:JSON.stringify(body||{})}).then(function(r){
+  if(!r.ok){alert((r.j&&r.j.detail)||'failed');return;}
+  BRK=Object.assign(BRK||{},r.j);renderBroker();if(after)after(r.j);});}
+function brkSave(){
+ brkPost('config',{api_key:val('brkKey'),redirect_uri:val('brkRedir'),
+  budget:parseFloat(val('brkBudget'))||undefined,claim_owner:true});}
+function brkLogin(){
+ api('/v2/api/broker/auth-url',{method:'POST',body:'{}'}).then(function(r){
+  if(!r.ok){alert((r.j&&r.j.detail)||'failed');return;}
+  window.open(r.j.auth_url,'_blank','noopener');});}
+function brkConnect(){
+ var code=val('brkCode'),sec=val('brkSecret');
+ if(!code){alert('paste the code= value from the URL Upstox redirected you to');return;}
+ brkPost('connect',{code:code,api_secret:sec},function(){
+  var e=document.getElementById('brkSecret');if(e)e.value='';
+  var c=document.getElementById('brkCode');if(c)c.value='';});}
+function brkArm(on){
+ if(!on){brkPost('arm',{armed:false});return;}
+ var c=prompt('This places REAL orders with real money.\n\nType: TRADE REAL MONEY');
+ if(c===null)return;
+ brkPost('arm',{armed:true,confirm:c});}
+function val(id){var e=document.getElementById(id);return e?e.value.trim():'';}
+function renderBroker(){
+ var el=document.getElementById('brokerBox');if(!el||!BRK)return;var s=BRK;
+ var dot=function(ok,txt){return '<span class="brk-p '+(ok?'on':'')+'">'+txt+'</span>'};
+ el.innerHTML=
+  '<div class=sec style="margin-top:22px"><span>live broker</span>'
+   +'<span class=mut style="font-size:12px;font-weight:400">real money · Upstox</span></div>'
+  +'<div class=raise>'
+  +'<div class=brk-row>'+dot(s.connected&&!s.stale,s.connected?(s.stale?'token expired':'connected'):'not connected')
+   +dot(s.armed,s.armed?'ARMED':'disarmed')
+   +dot(!s.kill_switch,s.kill_switch?'kill switch ON':'kill switch off')
+   +dot(s.is_owner,s.is_owner?'you own this':'not your sleeve')+'</div>'
+  +(s.connected&&s.stale?'<div class=brk-warn>Upstox tokens expire at 03:30 IST every '
+    +'day and the standard plan issues no refresh token, so this needs an '
+    +'interactive login each morning. Until you reconnect, no live order will be '
+    +'placed — the engine refuses rather than failing quietly.</div>':'')
+  +'<div class=brk-grid>'
+   +'<label>API key<input id=brkKey value="'+(s.api_key_hint?'':'')+'" placeholder="'
+    +(s.api_key_hint||'paste your Upstox API key')+'" autocomplete=off></label>'
+   +'<label>Redirect URI<input id=brkRedir value="'+(s.redirect_uri||'')
+    +'" placeholder="https://openstocks.in/upstox/callback" autocomplete=off></label>'
+   +'<label>Sleeve budget (₹)<input id=brkBudget value="'+(s.budget||10000)+'" autocomplete=off></label>'
+  +'</div>'
+  +'<div class=brk-btns><button class=btn onclick=brkSave()>Save</button>'
+   +'<button class=btn onclick=brkLogin()>1 · Log in at Upstox →</button></div>'
+  +'<div class=brk-grid style="margin-top:10px">'
+   +'<label>API secret <span class=mut>(used once, never stored)</span>'
+    +'<input id=brkSecret type=password placeholder="paste to exchange the code" autocomplete=off></label>'
+   +'<label>Code from redirect URL<input id=brkCode placeholder="code=..." autocomplete=off></label>'
+  +'</div>'
+  +'<div class=brk-btns><button class=btn onclick=brkConnect()>2 · Connect</button>'
+   +(s.connected?'<button class=btn onclick="brkPost(\'disconnect\',{})">Disconnect</button>':'')
+   +'</div>'
+  +'<div class=brk-warn style="background:var(--dnb)">'
+   +'<b>Arming spends real money.</b> Paper record on the lanes this would trade: '
+   +'<b>−₹1,443 realised over 22 closed trades, 27% win.</b> The options book’s '
+   +'+₹27,301 is six trades, mostly one session. Measured exits give up 42% of '
+   +'the entry edge. Caps: ₹'+Math.round((s.max_order||0)).toLocaleString('en-IN')
+   +' per order, ₹'+Math.round(s.budget||0).toLocaleString('en-IN')+' a day, '
+   +'3 open positions.</div>'
+  +(s.options_blocked_reason?'<div class=brk-warn>Index options are OFF: '
+    +s.options_blocked_reason+'.</div>':'')
+  +'<div class=brk-btns>'
+   +(s.armed?'<button class="btn danger" onclick="brkArm(false)">Disarm</button>'
+            :'<button class="btn danger" onclick="brkArm(true)">Arm live trading</button>')
+   +'</div>'
+  +'<div class=fd-meta style="margin-top:10px">Today: '+(s.orders_today||0)+' live order'
+   +((s.orders_today||0)==1?'':'s')+' · ₹'+Math.round(s.notional_today||0).toLocaleString('en-IN')+'</div>'
+  +'</div>';}
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
- setTimeout(loadIndexOpts,0);
+ setTimeout(loadIndexOpts,0);setTimeout(loadBroker,0);
  el.innerHTML=`<div class=sec>account</div>
  <div class=raise><div style="display:flex;gap:12px;align-items:center"><div class=prof style="width:44px;height:44px;font-size:17px">${(u.username||'U')[0].toUpperCase()}</div><div><div style="font-weight:600">${u.username||'—'}</div><div class=mut style="font-size:12px">${u.role||'user'}${u.credits!=null?' · credits '+u.credits:''}</div></div></div></div>
  <div class=sec>trading mode</div>
@@ -4729,6 +4933,7 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
  <div class=raise><div class=mut style="font-size:13px;margin-bottom:10px">Reset the paper book to a clean ₹1,00,000 — clears all positions, trades and equity history. Paper money only; your Telegram link is kept.</div><button class=pri style="background:var(--dn);border-color:var(--dn)" onclick=doReset()>Reset paper book</button><div id=resetmsg class=mut style="font-size:12px;margin-top:9px"></div></div>`;
  api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});
  if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});
+ el.insertAdjacentHTML('beforeend','<div id=brokerBox></div>');
  loadTelegram();}
 function loadTelegram(){var el=document.getElementById('tgbox');if(!el)return;
  api('/api/me/telegram').then(function(r){var t=r.j||{};

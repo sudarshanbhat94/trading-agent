@@ -32,6 +32,13 @@ SECRET_PATTERNS = {
     "AWS access key id": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     "GitHub personal access token": re.compile(r"\bghp_[A-Za-z0-9]{30,}"),
     "Private key block": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    # A JWT — the shape of an Upstox/broker access token. Three base64url
+    # segments after the standard {"typ":"JWT" header, which always encodes to
+    # the "eyJ" prefix. Narrow enough that prose cannot trip it, and the reason
+    # it is here is that a broker token in a public repo is a funded trading
+    # account handed to whoever reads it first.
+    "JWT / broker access token": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\."
+                                            r"[A-Za-z0-9_-]{10,}"),
 }
 
 # `user@1.2.3.4` — a shell-ready login to a real machine.
