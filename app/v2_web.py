@@ -4890,7 +4890,8 @@ function renderBroker(){
   +'<div class=brk-grid style="margin-top:10px">'
    +'<label>API secret <span class=mut>(used once, never stored)</span>'
     +'<input id=brkSecret type=password placeholder="paste to exchange the code" autocomplete=off></label>'
-   +'<label>Code from redirect URL<input id=brkCode placeholder="code=..." autocomplete=off></label>'
+   +'<label>Code from the redirect URL <span class=mut>(paste the whole URL)</span>'
+    +'<input id=brkCode placeholder="https://…/callback?code=…" autocomplete=off></label>'
   +'</div>'
   +'<div class=brk-btns><button class=btn onclick=brkConnect()>2 · Connect</button>'
    +(s.connected?'<button class=btn onclick="brkPost(\'disconnect\',{})">Disconnect</button>':'')

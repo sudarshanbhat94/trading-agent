@@ -199,6 +199,49 @@ class CapsTest(unittest.TestCase):
                                          user_id=1)[0])
 
 
+class ExtractCodeTest(unittest.TestCase):
+    """The operator copies out of an address bar on a page showing a 404.
+
+    Making them isolate the `code=` value by hand is a needless way to burn a
+    single-use credential that expires in minutes, so both forms are accepted.
+    """
+
+    def setUp(self) -> None:
+        self.b = _fresh()
+
+    def test_a_full_redirect_url(self) -> None:
+        self.assertEqual(
+            self.b.extract_code("https://openstocks.in/upstox/callback?code=AbC123xYz"),
+            "AbC123xYz")
+
+    def test_a_url_with_other_params_in_any_order(self) -> None:
+        self.assertEqual(
+            self.b.extract_code("https://x.in/cb?state=zz&code=AbC123&client_id=k"),
+            "AbC123")
+
+    def test_a_bare_code(self) -> None:
+        self.assertEqual(self.b.extract_code("AbC123xYz"), "AbC123xYz")
+
+    def test_a_key_value_fragment(self) -> None:
+        self.assertEqual(self.b.extract_code("code=AbC123xYz"), "AbC123xYz")
+
+    def test_surrounding_whitespace_and_quotes(self) -> None:
+        self.assertEqual(self.b.extract_code('  "AbC123xYz" '), "AbC123xYz")
+
+    def test_a_url_with_no_code_yields_nothing(self) -> None:
+        """Better to say 'no code' than to send the hostname to Upstox as one."""
+        self.assertEqual(self.b.extract_code("https://openstocks.in/upstox/callback"), "")
+
+    def test_empty_input(self) -> None:
+        for junk in ("", "   ", None):
+            with self.subTest(v=junk):
+                self.assertEqual(self.b.extract_code(junk), "")
+
+    def test_an_error_redirect_is_not_mistaken_for_a_code(self) -> None:
+        self.assertEqual(
+            self.b.extract_code("https://x.in/cb?error=access_denied"), "")
+
+
 class NoCredentialsInRepoTest(unittest.TestCase):
     def test_the_state_file_lives_outside_git(self) -> None:
         """var/ is gitignored. A committed token is a funded account handed to

@@ -209,6 +209,29 @@ def auth_url(api_key=None, redirect_uri=None) -> str:
             + urlencode({"response_type": "code", "client_id": key, "redirect_uri": redir}))
 
 
+def extract_code(pasted: str) -> str:
+    """Accept the whole redirect URL, or just the code.
+
+    The operator is copying out of a browser address bar on a page that shows a
+    404, because nothing is listening at the redirect URI. Demanding they
+    isolate the `code=` value by hand is a needless way to burn a single-use
+    credential that expires in minutes — so take either form.
+    """
+    from urllib.parse import parse_qs, urlparse
+    raw = str(pasted or "").strip().strip('"').strip("'")
+    if not raw:
+        return ""
+    if "code=" in raw:
+        # works for a full URL, a bare query string, or "code=xyz" on its own
+        query = urlparse(raw).query or raw
+        found = parse_qs(query).get("code") or []
+        if found and found[0].strip():
+            return found[0].strip()
+    if "://" in raw or "?" in raw or "&" in raw:
+        return ""                       # a URL that carried no code at all
+    return raw
+
+
 def exchange_code(code: str, api_secret: str, api_key=None, redirect_uri=None,
                   now=None) -> dict:
     """Swap the operator's one-time login code for a token.
@@ -221,7 +244,7 @@ def exchange_code(code: str, api_secret: str, api_key=None, redirect_uri=None,
     s = _read()
     key = str(api_key or s.get("api_key") or "").strip()
     redir = str(redirect_uri or s.get("redirect_uri") or "").strip()
-    code, secret = str(code or "").strip(), str(api_secret or "").strip()
+    code, secret = extract_code(code), str(api_secret or "").strip()
     if not (key and redir and code and secret):
         raise ValueError("api key, secret, redirect URI and code are all required")
     r = httpx.post(f"{API_BASE}/login/authorization/token",
