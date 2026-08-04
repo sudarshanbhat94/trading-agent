@@ -425,6 +425,8 @@ class OptionsTileTest(unittest.TestCase):
         js = "".join(_function_source(src, n)
                      for n in ("fmtc", "bookCard", "renderOptionsTile"))
         stub = ("var INR={format:function(n){return String(n)}},USD=INR;var __out={};\n"
+                "var REAL=null;\n"          # set when a broker is connected
+
                 "function fdSet(id,cls,html){__out={id:id,cls:cls,html:html};}\n"
                 "function heroChart(s,b){return '<svg data-n=\"'+(s||[]).length+'\"></svg>';}\n")
         with tempfile.TemporaryDirectory() as tmp:

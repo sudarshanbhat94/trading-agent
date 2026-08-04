@@ -436,7 +436,25 @@ def api_overview():
     # made the headline contradict itself: "managing Rs 1,26,619" while another
     # Rs 1L sat in index options that the same card never mentioned.
     opts = _options_book()
-    return JSONResponse(dict(markets=markets, options=opts,
+    # THE REAL ACCOUNT, when there is one. Once a broker is connected the paper
+    # book stops being the thing the operator cares about, and a dashboard whose
+    # headline is simulated money while real money is deployed is actively
+    # misleading. Sent alongside rather than instead of, so the UI can label
+    # both and the paper book stays available as the control group.
+    real = None
+    try:
+        from . import broker as _bk
+        bst = _bk.state()
+        if bst.get("connected") and not bst.get("stale"):
+            snap = _bk.account_snapshot()
+            if snap:
+                snap["armed"] = bool(bst.get("armed"))
+                snap["owner_user_id"] = bst.get("owner_user_id")
+                snap["budget"] = bst.get("budget")
+                real = snap
+    except Exception:
+        real = None
+    return JSONResponse(dict(markets=markets, options=opts, real=real,
                              regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
                              as_of=datetime.now(IST).strftime("%H:%M:%S IST")))
@@ -3875,6 +3893,24 @@ input[type=date]{width:auto;padding:8px 11px}
 .fd-ol{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
 .fd-ov{font-size:14px;font-weight:600;margin-top:2px}
 .fd-osub{font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
+/* ---- the REAL account tile ---- */
+.rl-card{border-color:var(--dn)!important;position:relative}
+.rl-badge{margin-left:auto;font-size:10px;font-weight:800;letter-spacing:.08em;
+ background:var(--dnb);color:var(--dn);padding:4px 9px;border-radius:7px;align-self:flex-start}
+.rl-list{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
+.rl-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.rl-row:last-child{border-bottom:none}
+.rl-s{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--hd);
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rl-k{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);
+ margin-left:7px;font-weight:600}
+.rl-q{font-size:12px;color:var(--mut);white-space:nowrap}
+.rl-p{font-size:13.5px;font-weight:700;text-align:right;white-space:nowrap;
+ font-variant-numeric:tabular-nums;min-width:96px}
+.rl-pc{display:block;font-size:11px;font-weight:500;opacity:.8}
+/* when a real account is on the page, visually demote the simulated books */
+body.has-real .fd-books{opacity:.72}
+body.has-real .fd-books:hover{opacity:1}
 /* ---- live broker ---- */
 .brk-row{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px}
 .brk-p{font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
@@ -4353,7 +4389,9 @@ function renderHero(){
  var tabs=['1d','1m','all'].map(function(t){return '<span class="fd-tab'+(t==HEROTAB?' on':'')+'" onclick="setHeroTab(\''+t+'\')">'+t.toUpperCase()+'</span>'}).join('');
  fdSet('fdPerf','fd-card',bookCard({
   icon:(up?'▲':'▼'),title:(up?"You're up ":"Down ")+noun,
-  meta:'live paper book · '+(m.market||'IN'),tabs:tabs,ccy:m.ccy,
+  // "live paper book" was always a contradiction; with a real account on the
+  // page it becomes a dangerous one.
+  meta:(REAL?'SIMULATED · ':'')+'paper book · '+(m.market||'IN'),tabs:tabs,ccy:m.ccy,
   equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,note:note,
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}}));
@@ -4367,7 +4405,7 @@ function renderOptionsTile(o,ccy){
      curve=o.options_curve||[];
  fdSet('fdOpts','fd-card',bookCard({
   icon:'\u25c8',title:'Index options',
-  meta:'separate book \u00b7 '+(o.options_positions||0)+' open',ccy:ccy,
+  meta:(REAL?'SIMULATED \u00b7 ':'')+'separate book \u00b7 '+(o.options_positions||0)+' open',ccy:ccy,
   equity:o.options_equity,chg:o.options_today,pct:todayPct,noun:'today',
   // x-axis is CLOSED TRADES, not time: there is no minute series for this book,
   // and spreading six trades across a calendar would draw flat stretches that
@@ -4503,8 +4541,41 @@ function loadIdeas(){
     '<div class=ig-lock onclick="go(\'upgrade\')"><b>Stock ideas are a paid feature.</b> '
     +'Starter sees 1 a day with its stop, targets and size. Upgrade →</div>';return;}
   if(!r.ok)return;IDEAS=r.j;renderIdeas(r.j);});}
+// ---- the REAL broker account -----------------------------------------------
+// When a broker is connected this is the tile that matters. The paper books stay
+// on the page, clearly labelled SIMULATED, because they are the control group —
+// but a dashboard whose headline is imaginary money while real money is
+// deployed is actively misleading, so the real one leads.
+var REAL=null;
+function renderRealTile(r,ccy){
+ if(!r){fdSet('fdReal','','');document.body.classList.remove('has-real');return;}
+ document.body.classList.add('has-real');
+ var f=(ccy=='₹'?INR:USD),up=(r.unrealised||0)>=0;
+ var rows=(r.positions||[]).map(function(p){
+   var pu=(p.pnl||0)>=0;
+   return '<div class=rl-row><div class=rl-s>'+p.symbol
+    +'<span class=rl-k>'+p.kind+'</span></div>'
+    +'<div class=rl-q>'+p.qty+' @ '+ccy+f.format(p.avg)+'</div>'
+    +'<div class="rl-p '+(pu?'up':'dn')+'">'+(pu?'+':'')+ccy+f.format(Math.round(p.pnl))
+    +'<span class=rl-pc>'+(pu?'+':'')+p.pnl_pct+'%</span></div></div>';}).join('');
+ fdSet('fdReal','fd-card rl-card',
+  '<div class=fd-hd><span class=fd-dot style="background:var(--dnb);color:var(--dn)">●</span>'
+  +'<div><div class=fd-title>Your Upstox account</div>'
+  +'<div class=fd-meta>REAL MONEY · '+(r.armed?'auto-trading ON':'auto-trading off')+'</div></div>'
+  +'<span class=rl-badge>LIVE</span></div>'
+  +'<div class=fd-big>'+fmtc(ccy,r.equity)+'</div>'
+  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+ccy
+   +f.format(Math.abs(Math.round(r.unrealised)))+' unrealised</div>'
+  +'<div class=fd-obook>'
+   +'<div><div class=fd-ol>cash</div><div class=fd-ov>'+fmtc(ccy,r.cash)+'</div></div>'
+   +'<div><div class=fd-ol>invested</div><div class=fd-ov>'+fmtc(ccy,r.invested)+'</div></div>'
+   +'<div><div class=fd-ol>holdings</div><div class=fd-ov>'+(r.n_positions||0)+'</div></div>'
+  +'</div>'
+  +(rows?'<div class=rl-list>'+rows+'</div>':'<div class=fd-text>Nothing held yet.</div>')
+  +'<div class=fd-meta style="margin-top:10px">This is your broker balance, not a '
+  +'simulation. The books below are paper.</div>');}
 function loadHome(){
- if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
+ if(!document.getElementById('fdPerf'))document.getElementById('homefeed').innerHTML='<div id=fdReal></div><div class=fd-books><div id=fdPerf></div><div id=fdOpts></div></div><div id=fdBrain></div><div id=fdScore></div><div id=fdTrades></div><div id=fdHold></div>';
  api('/v2/api/overview').then(function(r){var d=r.j;document.getElementById('clock').textContent=d.as_of;
   var ms=(d.markets||[]).filter(function(m){return inMkt(m.market)});var m=ms[0]||{},f=(m.ccy=='₹'?INR:USD);
   var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
@@ -4517,7 +4588,8 @@ function loadHome(){
    +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
    +(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
      +(ob.options_positions?(' ('+ob.options_positions+' open)'):'')));
-  HERO=m;renderHero();renderOptionsTile(d.options||{},m.ccy);
+  HERO=m;REAL=d.real||null;renderRealTile(REAL,m.ccy);
+  renderHero();renderOptionsTile(d.options||{},m.ccy);
   var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
           ON:['is in risk-on mode','conditions look healthy, so OpenStocks is buying dips, breakouts, and news-driven volume surges'],
           NEUTRAL:['is being selective','the market is choppy, so OpenStocks only takes its highest-conviction setups and stocks with a real news catalyst on strong volume'],
