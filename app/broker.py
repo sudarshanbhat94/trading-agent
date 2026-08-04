@@ -93,6 +93,7 @@ DEFAULT = dict(
     kill_switch=True,            # engaged by default; release is deliberate
     allow_options=False,
     budget=LIVE_BUDGET,
+    token_invalid=False,   # set when Upstox itself rejects the token
 )
 
 
@@ -158,6 +159,53 @@ def linked_users():
     return sorted(out)
 
 
+# Verification results, per user: {uid: (checked_at, ok)}. Upstox can revoke a
+# token before its clock expiry — changing the app's static-IP setting does
+# exactly that — and a token believed good for another twelve hours while every
+# order 401s is the worst failure mode this module has: it looks connected,
+# reports success, and places nothing.
+_verify_cache: dict = {}
+VERIFY_TTL = 120
+
+
+def verify(user_id, force=False):
+    """Ask UPSTOX whether the token works. None when we could not find out.
+
+    Deliberately a cheap authenticated READ rather than a trust of the clock.
+    None is not treated as invalid — a network blip must not disconnect a
+    working account — but it is not treated as valid either; the caller keeps
+    whatever it already believed.
+    """
+    import time as _t
+    slot = _verify_cache.get(int(user_id))
+    if slot and not force and _t.time() - slot[0] < VERIFY_TTL:
+        return slot[1]
+    if not _read(user_id).get("access_token"):
+        return False
+    try:
+        import httpx
+        r = httpx.get(f"{API_BASE}/user/get-funds-and-margin",
+                      headers=_headers(user_id), params={"segment": "SEC"}, timeout=12)
+        ok = r.status_code < 400
+        if r.status_code in (401, 403):
+            ok = False
+        elif r.status_code >= 400:
+            ok = None                      # server-side problem, not our token
+    except Exception:
+        ok = None
+    _verify_cache[int(user_id)] = (_t.time(), ok)
+    if ok is False:
+        s = _read(user_id)
+        s["token_invalid"] = True
+        _write(user_id, s)
+    elif ok is True:
+        s = _read(user_id)
+        if s.get("token_invalid"):
+            s["token_invalid"] = False
+            _write(user_id, s)
+    return ok
+
+
 def token_expiry(saved_at=None, now=None):
     """Upstox tokens die at 03:30 IST, not N hours after issue.
 
@@ -178,7 +226,10 @@ def state(user_id, now=None) -> dict:
     now = now or datetime.now(IST)
     expires = s.get("expires_at") or ""
     stale = True
-    if s.get("access_token") and expires:
+    if s.get("token_invalid"):
+        # Upstox said no. That outranks the clock.
+        stale = True
+    elif s.get("access_token") and expires:
         try:
             stale = datetime.fromisoformat(expires) <= now
         except ValueError:
@@ -240,6 +291,7 @@ def save_token(user_id, access_token: str, now=None) -> dict:
     s["token_saved_at"] = now.isoformat()
     s["expires_at"] = token_expiry(now=now).isoformat()
     s["connected"] = True
+    s["token_invalid"] = False        # a fresh token starts believed-good
     _write(user_id, s)
     return state(user_id, now)
 

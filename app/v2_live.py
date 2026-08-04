@@ -1435,8 +1435,13 @@ def _live_mirror_entry(v2, market, strategy, symbol, price):
     broker. Each order goes to that user's account, sized to their own margin —
     there is no shared sleeve any more."""
     from . import broker, live_trade
-    users = [u for u in broker.linked_users()
-             if broker.state(u).get("live_ready")]
+    # verify() before fanning out: a revoked token must fail the gate here, not
+    # produce a burst of 401s that look like rejected orders
+    users = []
+    for u in broker.linked_users():
+        broker.verify(u)
+        if broker.state(u).get("live_ready"):
+            users.append(u)
     if not users:
         return
     main = _ro(MAIN_DB)

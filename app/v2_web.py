@@ -563,8 +563,26 @@ def _ist(ts):
     return t.astimezone(IST).strftime("%d %b %H:%M IST")
 
 
+def _wants_ai(scope, user):
+    """Which book a page is asking for.
+
+    Default is the CALLER'S OWN. Portfolio, Orders and Trades all rendered the
+    engine's book to every subscriber, so "your portfolio" was somebody else's
+    — the same confusion the home page had before it was split.
+    """
+    if str(scope or "").lower() in ("ai", "house", "engine"):
+        return True
+    from . import plans as _pl
+    plan = _pl.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                         plan_expires_at=user.get("plan_expires_at"))
+    # a user with no book of their own sees the AI's, read-only
+    return not _pl.allows(plan, "paper_book")
+
+
 @router.get("/api/positions")
-def api_positions():
+def api_positions(scope: str = "mine", user: dict = Depends(require_session)):
+    if not _wants_ai(scope, user):
+        return JSONResponse(_my_positions(int(user.get("id") or 0)))
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
     # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
@@ -2235,6 +2253,11 @@ def _uid(user):
 def api_broker(user: dict = Depends(require_session)):
     """Redacted live-trading status. Never returns the token."""
     from . import broker
+    # Ask UPSTOX, do not trust the clock. Cached 120s, so opening the panel is
+    # cheap but a revoked token shows as disconnected instead of "connected"
+    # while every order silently 401s — which is exactly what happened when the
+    # static-IP setting was changed.
+    broker.verify(_uid(user))
     st = broker.state(_uid(user))
     v2 = _ro(V2_DB)
     try:
@@ -2684,8 +2707,53 @@ async def api_stream():
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _my_positions(uid, market="IN"):
+    """The caller's own open positions, priced live."""
+    from . import books
+    live = _live_map(market)
+    rw = _rw()
+    try:
+        out = []
+        for p in books.positions(rw, uid, market):
+            px = float((live.get(p["symbol"]) or {}).get("price") or p["entry_price"])
+            val = px * p["shares"]
+            out.append(dict(id=p["id"], symbol=p["symbol"], market=market, ccy="₹",
+                            strategy=p["strategy"], entry=round(p["entry_price"], 2),
+                            live=round(px, 2), qty=p["shares"], value=round(val, 2),
+                            pnl=round((px / p["entry_price"] - 1) * 100, 2)
+                            if p["entry_price"] else 0.0,
+                            pnl_amt=round((px - p["entry_price"]) * p["shares"], 2),
+                            stop=p["stop"], target=p["target"], trail=False,
+                            headroom=None, since=p["entry_date"], today=False))
+        return out
+    finally:
+        rw.close()
+
+
+def _my_trades(uid, limit=60, market="IN"):
+    from . import books
+    rw = _rw()
+    try:
+        cols = ("market", "strategy", "symbol", "entry_date", "entry_price", "exit_date",
+                "exit_price", "shares", "pnl", "return_pct", "reason", "opened_at",
+                "closed_at")
+        rows = rw.execute(f"SELECT {','.join(cols)} FROM user_trades"
+                          " WHERE user_id=? AND market=? ORDER BY id DESC LIMIT ?",
+                          (int(uid), market, int(limit))).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
+        rw.close()
+
+
 @router.get("/api/trades")
-def api_trades(limit: int = 60):
+def api_trades(limit: int = 60, scope: str = "mine",
+               user: dict = Depends(require_session)):
+    if not _wants_ai(scope, user):
+        rows = _my_trades(int(user.get("id") or 0), limit)
+        return JSONResponse([dict(r, ccy="₹",
+                                  pnl_amt=round(r["pnl"], 2),
+                                  when=_ist(r.get("closed_at") or r.get("exit_date")))
+                             for r in rows])
     v2 = _ro(V2_DB)
     rows = v2.execute(
         "SELECT market,strategy,symbol,entry_date,entry_price,exit_date,exit_price,shares,pnl,"

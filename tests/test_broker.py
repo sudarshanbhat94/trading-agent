@@ -11,6 +11,7 @@ import importlib
 import os
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 
 from app import broker as _broker_mod
@@ -276,3 +277,55 @@ class NoCredentialsInRepoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TokenVerificationTest(unittest.TestCase):
+    """The clock is not evidence. Upstox is.
+
+    A token believed good for another twelve hours while every order 401s is
+    this module's worst failure: it looks connected, reports success, and places
+    nothing. It happened for real — changing the app's static-IP setting revoked
+    the token, and the UI kept saying "connected, not stale" while every order
+    came back UDAPI100050.
+    """
+
+    def setUp(self) -> None:
+        self.b = _fresh()
+        self.b.save_token(UID, "t0k")
+
+    def test_a_rejected_token_reads_stale_whatever_the_clock_says(self) -> None:
+        self.assertFalse(self.b.state(UID)["stale"])       # clock still happy
+        self.b._verify_cache.clear()
+
+        class _R:
+            status_code = 401
+        with mock.patch("httpx.get", return_value=_R()):
+            self.assertFalse(self.b.verify(UID, force=True))
+        self.assertTrue(self.b.state(UID)["stale"])
+        self.assertFalse(self.b.state(UID)["live_ready"])
+
+    def test_a_new_token_clears_the_invalid_flag(self) -> None:
+        s = self.b._read(UID)
+        s["token_invalid"] = True
+        self.b._write(UID, s)
+        self.b.save_token(UID, "fresh")
+        self.assertFalse(self.b.state(UID)["stale"])
+
+    def test_an_unreachable_broker_does_not_disconnect_a_working_account(self) -> None:
+        """None means "could not find out". A network blip must not log the
+        operator out of a broker that is fine."""
+        self.b._verify_cache.clear()
+        with mock.patch("httpx.get", side_effect=OSError("network down")):
+            self.assertIsNone(self.b.verify(UID, force=True))
+        self.assertFalse(self.b.state(UID)["stale"])
+
+    def test_no_token_at_all_is_not_verifiable(self) -> None:
+        b = _fresh()
+        self.assertFalse(b.verify(999))
+
+    def test_the_result_is_cached(self) -> None:
+        self.b._verify_cache.clear()
+        with mock.patch("httpx.get", side_effect=OSError("x")) as g:
+            self.b.verify(UID, force=True)
+            self.b.verify(UID)
+            self.assertEqual(g.call_count, 1)

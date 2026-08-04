@@ -19,11 +19,19 @@ from app import broker as _broker_mod, live_trade, v2_live
 UID = 2
 
 
+def _no_network_verify(b):
+    """verify() asks Upstox whether the token works, and a test token really is
+    invalid — so without this the engine correctly refuses to trade and the
+    tests below would be asserting the verifier, not the mirror."""
+    b.verify = lambda user_id, force=False: True
+    return b
+
+
 def _fresh_broker(**cfg):
     tmp = tempfile.mkdtemp()
     os.environ["BROKER_STATE_DIR"] = os.path.join(tmp, "brokers")
     os.environ["BROKER_STATE_PATH"] = os.path.join(tmp, "legacy.json")
-    b = importlib.reload(_broker_mod)
+    b = _no_network_verify(importlib.reload(_broker_mod))
     if cfg:
         b.configure(UID, **cfg)
     return b
