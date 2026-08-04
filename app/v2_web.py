@@ -1774,9 +1774,27 @@ def api_buy(payload: dict):
 
 
 @router.post("/api/reset")
-def api_reset():
-    """Self-serve paper-book reset — clean ₹1,00,000, clears positions/trades/
-    equity/signals. Keeps telegram_accounts. Paper only."""
+def api_reset(user: dict = Depends(require_session)):
+    """Reset the paper book. OWNER/ADMIN ONLY.
+
+    THERE IS ONE BOOK. v2_book, v2_positions, v2_trades and v2_equity carry no
+    user column — every subscriber is looking at the same paper account, the one
+    the engine actually trades. So this endpoint's DELETE statements are not
+    "reset my cash", they are "destroy the engine's open positions and the
+    entire trade history, for everybody".
+
+    It was reachable by any user on the `manual_trade` feature, i.e. every Pro
+    and Elite subscriber. The book has already been wiped once this way
+    (2026-07-28), taking the live record with it — which is the evidence base
+    every measurement in this codebase depends on.
+
+    Locking it to the operator is the stop-gap. The real fix is per-user books,
+    which is a schema change across the engine and is NOT this.
+    """
+    if (user.get("role") or "").lower() != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="the paper book is shared and reset is operator-only")
     v2 = _rw()
     try:
         for t in ("v2_positions", "v2_trades", "v2_equity", "v2_signals"):
