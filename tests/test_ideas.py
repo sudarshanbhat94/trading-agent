@@ -291,14 +291,26 @@ class IdeaPoolTest(unittest.TestCase):
             with self.subTest(symbol=sym):
                 self.assertFalse(v2_live._is_cash_etf(sym))
 
-    def test_the_publisher_no_longer_takes_the_books_candidate_list(self) -> None:
-        """The signature is the fix: it reads raw signals plus the confidence
-        model, not the post-gate `cand` the engine trades from."""
+    def test_the_publisher_runs_its_own_signal_sweep(self) -> None:
+        """The signature is the fix. It takes the raw history and does its own
+        sweep, because BOTH lists it was previously handed had already been
+        filtered by the book's conviction threshold — first `cand`, then `sigs`
+        from _signals_completed, which applies threshold 0.55 internally. That
+        is why swapping one for the other changed nothing."""
         import inspect
         params = list(inspect.signature(v2_live._publish_ideas).parameters)
-        self.assertIn("sigs", params)
-        self.assertIn("mp", params)
-        self.assertNotIn("cand", params)
+        for needed in ("tails", "mdf", "asof"):
+            self.assertIn(needed, params)
+        for gone in ("cand", "sigs", "mp"):
+            self.assertNotIn(gone, params)
+
+    def test_the_ideas_bar_is_lower_than_the_books(self) -> None:
+        """0.55 is what the book demands before risking capital. Ideas rank on
+        the confidence model instead, so the conviction bar only has to exclude
+        noise — SONACOMS at 0.499 conviction scored p(win) 0.617."""
+        self.assertLess(v2_live.IDEAS_MIN_CONVICTION,
+                        v2_live.PLAN["swing_meanrev"]["threshold"])
+        self.assertGreater(v2_live.IDEAS_MIN_CONVICTION, 0)
 
     def test_the_regime_gate_is_not_applied_to_ideas(self) -> None:
         """The regime is a fact about whether the BOOK should deploy capital

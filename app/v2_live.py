@@ -1539,7 +1539,8 @@ def poll_market(market):
     # way to tell which. Wrapped so a failure here can never stop the book from
     # trading — ideas are a product feature, the book is the product.
     try:
-        _publish_ideas(v2, market, sigs, mp, mfloor, live, stale, regime)
+        _publish_ideas(v2, market, tails, mdf, asof, rstate, strong,
+                       mfloor, live, stale)
     except Exception:
         _LOG.exception("idea publication failed (book unaffected)")
     # strategy balance: hold back slots for swing ONLY when swing actually has
@@ -1724,7 +1725,19 @@ def _is_cash_etf(symbol):
     return any(m in s for m in _CASH_ETF_MARKERS)
 
 
-def _publish_ideas(v2, market, sigs, mp, mfloor, live, stale, regime):
+        # The ideas pool is built from a LOWER conviction threshold than the
+        # book trades on. poll_market's `sigs` is already filtered to >= 0.55 by
+        # _signals_completed, so ideas never saw the names the confidence model
+        # actually likes: today SONACOMS scored p(win) 0.617 on a conviction of
+        # 0.499, and ENDURANCE 0.607 on 0.410. Both were cut upstream, which is
+        # why "publish from the model, not the buy list" changed nothing on its
+        # own — the list handed in had already had the model's best names
+        # removed by a different filter.
+IDEAS_MIN_CONVICTION = 0.15
+
+
+def _publish_ideas(v2, market, tails, mdf, asof, rstate, strong,
+                   mfloor, live, stale):
     """Publish today's ideas and advance the open ones.
 
     IDEAS ARE NOT THE BOOK'S BUY LIST, and tying them to it was a design
@@ -1755,6 +1768,18 @@ def _publish_ideas(v2, market, sigs, mp, mfloor, live, stale, regime):
     _ideas.track(v2, market, live, now.isoformat(), today_s)
     if not market_open(market):
         return
+    # Its OWN signal sweep at a lower conviction bar, then the model ranks it.
+    sigs = []
+    for s in eng.signals_for_date(tails, mdf, asof,
+                                  threshold=IDEAS_MIN_CONVICTION,
+                                  atr_stop=PLAN["swing_meanrev"]["atr_stop"],
+                                  atr_target=PLAN["swing_meanrev"]["atr_target"]):
+        lq = live.get(s["symbol"])
+        sigs.append(dict(symbol=s["symbol"], strategy="swing_meanrev",
+                         score=s["conviction"], atr=s["atr"],
+                         price=(lq["price"] if lq else s["ref_close"])))
+    from . import meta_filter as _mf
+    mp = _mf.score(sigs, tails, mdf, asof, rstate, strong, market)
     pool = []
     for s in sigs:
         sym = s.get("symbol")
