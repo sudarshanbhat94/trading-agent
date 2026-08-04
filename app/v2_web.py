@@ -4069,6 +4069,11 @@ button{border-radius:9px}
 .wlrow:hover .wldel{opacity:.75}
 @media(hover:none),(max-width:859px){.wlrow .wldel{opacity:.55}}   /* touch / mobile has no hover — keep the remove × tappable & visible */
 .fd-tabs{display:flex;gap:4px;margin-left:auto}
+@media(max-width:520px){
+ /* "TRACK RECORD  EVERY IDEA, WINNERS AND LOSERS" ran past 375px side by side */
+ .sec{flex-wrap:wrap;row-gap:2px}
+ .sec>span+span{flex-basis:100%}
+}
 .fd-tab{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--mut);padding:4px 9px;border-radius:7px;cursor:pointer;background:var(--surf)}
 .fd-tab.on{background:var(--infb);color:var(--inf)}
 .bk-tabs{display:flex;gap:4px;margin:0 0 12px}
@@ -4909,24 +4914,17 @@ function renderIdeas(d){
    '<div class=fd-text>No ideas published yet today. They go out when the market opens '
    +'and the engine has a candidate that clears its confidence bar — some days it '
    +'does not, and publishing one anyway would be filler.</div>')+head;
- // The scoreboard counts EVERY published idea, including the ones that lost.
+ // The strip at the top already carries win rate, average, published and
+ // reached-T1. Repeating them here was pure duplication on a phone, where the
+ // two blocks are barely a screen apart. This keeps only the outcomes the strip
+ // has no room for.
  fdSet('ideasStats','fd-card',
   '<div class=fd-obook>'
-  +'<div><div class=fd-ol>published</div><div class=fd-ov>'+s.published+'</div></div>'
-  +'<div><div class=fd-ol>resolved</div><div class=fd-ov>'+s.closed+'</div>'
-   +(s.open?'<div class=fd-osub>'+s.open+' still live</div>':'')+'</div>'
-  +'<div><div class=fd-ol>win</div><div class=fd-ov>'+(s.win_pct==null?'—':s.win_pct+'%')+'</div>'
-   +(s.closed?'<div class=fd-osub>of '+s.closed+'</div>':'')+'</div>'
-  +'<div><div class=fd-ol>avg</div><div class="fd-ov '+((s.avg_pct||0)>=0?'up':'dn')+'">'
-   +(s.avg_pct==null?'—':(s.avg_pct>0?'+':'')+s.avg_pct+'%')+'</div></div>'
-  +'<div><div class=fd-ol>hit T1</div><div class=fd-ov>'+s.hit_t1+'</div>'
-   +'<div class=fd-osub>T2 '+s.hit_t2+' · T3 '+s.hit_t3+'</div></div>'
-  +'<div><div class=fd-ol>stopped</div><div class=fd-ov>'+s.stopped+'</div>'
-   +(s.expired?'<div class=fd-osub>'+s.expired+' expired</div>':'')+'</div>'
-  +'</div>'
-  +(s.closed<20?'<div class=fd-meta style="margin-top:10px">'+s.closed+' resolved idea'
-    +(s.closed==1?'':'s')+' is not a track record yet. Treat these numbers as a log, '
-    +'not as evidence.</div>':''));
+  +'<div><div class=fd-ol>reached T2</div><div class=fd-ov>'+s.hit_t2+'</div></div>'
+  +'<div><div class=fd-ol>reached T3</div><div class=fd-ov>'+s.hit_t3+'</div></div>'
+  +'<div><div class=fd-ol>stopped</div><div class="fd-ov '+(s.stopped?'dn':'')+'">'
+   +s.stopped+'</div>'+(s.expired?'<div class=fd-osub>'+s.expired+' expired</div>':'')+'</div>'
+  +'</div>');
  document.getElementById('ideasHist').innerHTML=
   older.length?older.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):'';
 }
