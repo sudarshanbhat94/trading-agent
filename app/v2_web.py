@@ -3851,6 +3851,11 @@ input[type=date]{width:auto;padding:8px 11px}
 .brk-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
 .brk-warn{font-size:12.5px;line-height:1.55;color:var(--tx);background:var(--warnb);
  border-radius:9px;padding:10px 12px;margin-top:12px}
+.brk-step{font-size:12.5px;line-height:1.55;color:var(--tx);background:var(--infb);
+ border-radius:9px;padding:10px 12px;margin-bottom:12px}
+.brk-step b{color:var(--hd)}
+.brk-alt{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.brk-alt summary{font-size:12px;color:var(--mut);cursor:pointer}
 .btn.danger{background:var(--dnb);color:var(--dn);border-color:transparent;font-weight:700}
 /* ---- published ideas ---- */
 .ig-card{background:var(--card);border:1px solid var(--line);border-radius:14px;
@@ -4845,15 +4850,30 @@ function brkPost(path,body,after){
   if(!r.ok){alert((r.j&&r.j.detail)||'failed');return;}
   BRK=Object.assign(BRK||{},r.j);renderBroker();if(after)after(r.j);});}
 function brkSave(){
- brkPost('config',{api_key:val('brkKey'),redirect_uri:val('brkRedir'),
-  budget:parseFloat(val('brkBudget'))||undefined,claim_owner:true});}
+ // Send only what was actually typed. An empty box means "leave it alone", not
+ // "erase it" — the key and redirect live behind a collapsed <details>, so a
+ // Save from the budget row would otherwise wipe a working configuration.
+ var body={claim_owner:true},k=val('brkKey'),r=val('brkRedir'),b=parseFloat(val('brkBudget'));
+ if(k)body.api_key=k;
+ if(r)body.redirect_uri=r;
+ if(b>0)body.budget=b;
+ brkPost('config',body);}
 function brkLogin(){
  api('/v2/api/broker/auth-url',{method:'POST',body:'{}'}).then(function(r){
   if(!r.ok){alert((r.j&&r.j.detail)||'failed');return;}
   window.open(r.j.auth_url,'_blank','noopener');});}
+// The SIMPLE path. Upstox's own console has a "Generate" button that hands the
+// operator a token directly — no login redirect, no single-use code that
+// expires in minutes. The OAuth dance below exists for the day this needs to be
+// scripted; for one operator connecting one account, this is the whole job.
+function brkToken(){
+ var t=val('brkTok');
+ if(!t){alert('click Generate in the Upstox console, then paste the access token here');return;}
+ brkPost('connect',{access_token:t},function(){
+  var e=document.getElementById('brkTok');if(e)e.value='';});}
 function brkConnect(){
  var code=val('brkCode'),sec=val('brkSecret');
- if(!code){alert('paste the code= value from the URL Upstox redirected you to');return;}
+ if(!code){alert('paste the URL Upstox redirected you to (it contains code=…)');return;}
  brkPost('connect',{code:code,api_secret:sec},function(){
   var e=document.getElementById('brkSecret');if(e)e.value='';
   var c=document.getElementById('brkCode');if(c)c.value='';});}
@@ -4878,12 +4898,23 @@ function renderBroker(){
     +'day and the standard plan issues no refresh token, so this needs an '
     +'interactive login each morning. Until you reconnect, no live order will be '
     +'placed — the engine refuses rather than failing quietly.</div>':'')
+  // EASY WAY FIRST. The Upstox console's own "Generate" button produces a
+  // token with no redirect and no expiring code to race. The OAuth flow is
+  // kept below for anyone who needs it scripted, but it is not the way in.
+  +'<div class=brk-step><b>Easiest:</b> Upstox console → your app → Access Token → '
+   +'<b>Generate</b>, then paste it here. No redirect, no code.</div>'
   +'<div class=brk-grid>'
-   +'<label>API key<input id=brkKey value="'+(s.api_key_hint?'':'')+'" placeholder="'
+   +'<label>Access token<input id=brkTok type=password '
+    +'placeholder="paste the token from Upstox" autocomplete=off></label>'
+  +'</div>'
+  +'<div class=brk-btns><button class=btn onclick=brkToken()>Connect with token</button></div>'
+  +'<details class=brk-alt><summary>Or connect via the login redirect</summary>'
+  +'<div class=brk-grid style="margin-top:10px">'
+   +'<label>API key<input id=brkKey placeholder="'
     +(s.api_key_hint||'paste your Upstox API key')+'" autocomplete=off></label>'
-   +'<label>Redirect URI<input id=brkRedir value="'+(s.redirect_uri||'')
-    +'" placeholder="https://openstocks.in/upstox/callback" autocomplete=off></label>'
-   +'<label>Sleeve budget (₹)<input id=brkBudget value="'+(s.budget||10000)+'" autocomplete=off></label>'
+   +'<label>Redirect URI <span class=mut>(must match Upstox exactly)</span>'
+    +'<input id=brkRedir value="'+(s.redirect_uri||'')
+    +'" placeholder="https://openstocks.in/" autocomplete=off></label>'
   +'</div>'
   +'<div class=brk-btns><button class=btn onclick=brkSave()>Save</button>'
    +'<button class=btn onclick=brkLogin()>1 · Log in at Upstox →</button></div>'
@@ -4891,9 +4922,14 @@ function renderBroker(){
    +'<label>API secret <span class=mut>(used once, never stored)</span>'
     +'<input id=brkSecret type=password placeholder="paste to exchange the code" autocomplete=off></label>'
    +'<label>Code from the redirect URL <span class=mut>(paste the whole URL)</span>'
-    +'<input id=brkCode placeholder="https://…/callback?code=…" autocomplete=off></label>'
+    +'<input id=brkCode placeholder="https://…?code=…" autocomplete=off></label>'
   +'</div>'
-  +'<div class=brk-btns><button class=btn onclick=brkConnect()>2 · Connect</button>'
+  +'<div class=brk-btns><button class=btn onclick=brkConnect()>2 · Connect</button></div>'
+  +'</details>'
+  +'<div class=brk-grid style="margin-top:12px">'
+   +'<label>Sleeve budget (₹)<input id=brkBudget value="'+(s.budget||10000)+'" autocomplete=off></label>'
+  +'</div>'
+  +'<div class=brk-btns><button class=btn onclick=brkSave()>Save budget</button>'
    +(s.connected?'<button class=btn onclick="brkPost(\'disconnect\',{})">Disconnect</button>':'')
    +'</div>'
   +'<div class=brk-warn style="background:var(--dnb)">'
