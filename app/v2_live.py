@@ -1250,6 +1250,27 @@ def _tg_daily_summary(market):
         pass
 
 
+def breakeven_price(market, entry):
+    """The exit price at which a round trip nets EXACTLY zero.
+
+    "Breakeven" was defined in GROSS price terms — entry * 1.001, i.e. +0.1% —
+    while a round trip costs ~0.4% (COST_SIDE both sides). So the lock that was
+    meant to guarantee "a green trade never goes red" was guaranteeing a LOSS of
+    roughly 0.3% every time it fired.
+
+    Measured on the live book: 9 of volume_surge's 25 closed trades exited
+    within 0.15% of entry, every one booked as "stop", every one a loser,
+    together -Rs 693 of pure cost. TATACAP entered 370.95 and exited 371.15 —
+    twenty paise HIGHER — and was recorded as -0.35%.
+
+    Solving  shares*(x-e) - c*shares*(e+x) = 0  for x gives x = e*(1+c)/(1-c).
+    """
+    c = COST_SIDE.get(market, 0.0)
+    if c <= 0 or c >= 1:
+        return float(entry)
+    return float(entry) * (1.0 + c) / (1.0 - c)
+
+
 def net_trade_pnl(market, shares, entry, exit_price):
     """(net_pnl, net_return_pct) after round-trip costs — the ONE definition.
 
@@ -3025,12 +3046,13 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     # breakeven lock on a big winner only (recover ATR from the initial stop)
     atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
     atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
+    be = breakeven_price(market, p["entry"])
     if atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
-        eff = max(eff, p["entry"])
+        eff = max(eff, be)
     # intraday lanes: once up >= lock%, stop rises to breakeven — a green
     # trade is never allowed to go red (user spec, matches the backtest)
     if p["strategy"] in INTRADAY_STRATS and peak >= p["entry"] * (1 + INTRA["lock"]):
-        eff = max(eff, p["entry"] * 1.001)
+        eff = max(eff, be)
     # TRADING days, not calendar days — the backtest validated an 8
     # trading-bar hold; calendar counting was force-selling ~2 sessions
     # early around weekends, truncating the bounce.

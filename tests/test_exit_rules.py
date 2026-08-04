@@ -103,7 +103,10 @@ class BreakevenLockTest(unittest.TestCase):
         atr = (100.0 - 90.0) / stop_mult
         trigger = 100.0 + v2_live.BE_TRIGGER_ATR * atr
         _, eff, _, _ = _evaluate(_pos(entry=100.0, stop=90.0, peak=trigger), _quote(trigger - 3))
-        self.assertEqual(eff, 100.0)
+        # NET breakeven, not the entry price. Locking at entry booked a loss of
+        # the round trip every time it fired — see test_breakeven_lock.py.
+        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 100.0))
+        self.assertGreater(eff, 100.0)
 
     def test_below_the_trigger_the_stop_is_untouched(self) -> None:
         stop_mult = v2_live.PLAN["swing_meanrev"]["atr_stop"]
@@ -120,7 +123,9 @@ class BreakevenLockTest(unittest.TestCase):
                  peak=100.0 * (1 + lock), edate=TODAY_S),
             _quote(100.5),
         )
-        self.assertAlmostEqual(eff, 100.1)     # entry * 1.001, never allowed to go red
+        # was entry * 1.001 (+0.1% GROSS) against a ~0.4% round trip, so
+        # "never allowed to go red" guaranteed a ~0.3% loss on every fire
+        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 100.0))
 
 
 class TargetTest(unittest.TestCase):

@@ -77,7 +77,7 @@ class IndexOptionEntryDayTest(unittest.TestCase):
         arms the lock exactly as before."""
         p = self.ce(peak=140.0)                 # ratcheted while we held it
         peak, eff, ex, reason = _ev(p, _quote(80.0, 139.45, 67.05))
-        self.assertEqual(eff, 87.75)            # breakeven
+        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 87.75))  # NET breakeven
         self.assertEqual(reason, "stop")
         self.assertEqual(ex, 80.0)
 
@@ -106,7 +106,7 @@ class MidSessionEquityEntryTest(unittest.TestCase):
         """Unchanged behaviour: peak carries what we saw while holding."""
         p = _pos("volume_surge", 100.0, 97.5, peak=101.6)
         peak, eff, ex, reason = _ev(p, _quote(100.0, 108.0, 99.0))
-        self.assertAlmostEqual(eff, 100.1, places=4)   # entry * 1.001
+        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 100.0), places=4)
         self.assertEqual(reason, "stop")
 
     def test_a_session_high_from_before_entry_is_also_excluded(self) -> None:
