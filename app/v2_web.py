@@ -492,7 +492,7 @@ def api_overview(user: dict = Depends(require_session)):
         plan = _pl.effective(user.get("account_plan"), user.get("trial_ends_at"),
                              plan_expires_at=user.get("plan_expires_at"))
         if _pl.allows(plan, "paper_book"):
-            rw = _rw()
+            rw = _ro(V2_DB)             # read path
             try:
                 mine = books.stats(rw, int(user.get("id") or 0), "IN", live.get("IN"))
                 mine["ccy"] = "₹"
@@ -2692,10 +2692,10 @@ def _my_attribution(uid, market="IN"):
     """Per-lane attribution for one user's own book."""
     from . import books
     live = _live_map(market)
-    rw = _rw()
+    rw = _ro(V2_DB)                     # read path
     try:
         lanes = {}
-        for r in _my_trades(uid, 500, market):
+        for r in _my_trades(uid, 500, market, con=rw):
             b = lanes.setdefault(r["strategy"], dict(market=market, ccy="₹",
                                                      strategy=r["strategy"], closed=0,
                                                      wins=0, realized=0.0, rets=[],
@@ -2759,7 +2759,7 @@ def _stream_payload(uid=None):
     if uid:
         try:
             from . import books
-            rw = _rw()
+            rw = _ro(V2_DB)             # per-SECOND path: never a writer
             try:
                 st = books.stats(rw, uid, "IN", live.get("IN") or {})
                 mine = dict(equity=round(st["equity"]), overall_pnl=round(st["overall_pnl"], 2),
@@ -2806,7 +2806,7 @@ def _my_positions(uid, market="IN"):
     """The caller's own open positions, priced live."""
     from . import books
     live = _live_map(market)
-    rw = _rw()
+    rw = _ro(V2_DB)                     # read path: must not open a writer
     try:
         out = []
         for p in books.positions(rw, uid, market):
@@ -2825,9 +2825,16 @@ def _my_positions(uid, market="IN"):
         rw.close()
 
 
-def _my_trades(uid, limit=60, market="IN"):
+def _my_trades(uid, limit=60, market="IN", con=None):
+    """`con` lets a caller reuse ITS connection.
+
+    _my_orders and _my_attribution each opened a write connection and then
+    called this, which opened a SECOND one for the same request. SQLite allows
+    one writer, so under any concurrency that is a self-inflicted "database is
+    locked" — and the engine is writing the same file.
+    """
     from . import books
-    rw = _rw()
+    rw = con or _ro(V2_DB)              # read path when it opens its own
     try:
         cols = ("market", "strategy", "symbol", "entry_date", "entry_price", "exit_date",
                 "exit_price", "shares", "pnl", "return_pct", "reason", "opened_at",
@@ -2837,7 +2844,8 @@ def _my_trades(uid, limit=60, market="IN"):
                           (int(uid), market, int(limit))).fetchall()
         return [dict(zip(cols, r)) for r in rows]
     finally:
-        rw.close()
+        if con is None:
+            rw.close()
 
 
 @router.get("/api/trades")
@@ -2865,7 +2873,7 @@ def api_trades(limit: int = 60, scope: str = "mine",
 def _my_orders(uid, limit=120, market="IN"):
     """The caller's own fills, newest first — same shape as the house log."""
     from . import books
-    rw = _rw()
+    rw = _ro(V2_DB)                     # read path
     try:
         out = []
         for p in books.positions(rw, uid, market):
@@ -2875,7 +2883,7 @@ def _my_orders(uid, limit=120, market="IN"):
                             value=round(p["entry_price"] * p["shares"]),
                             when=_ist(p["opened_at"] or p["entry_date"]),
                             ts=p["entry_date"], today=False, pnl=None, reason=""))
-        for r in _my_trades(uid, limit, market):
+        for r in _my_trades(uid, limit, market, con=rw):
             for side, when, px in (("BUY", r["entry_date"], r["entry_price"]),
                                    ("SELL", r["closed_at"] or r["exit_date"], r["exit_price"])):
                 out.append(dict(side=side, status="filled", symbol=r["symbol"],
@@ -3090,7 +3098,7 @@ def api_stats(scope: str = "mine", user: dict = Depends(require_session)):
     """Per-lane performance. Defaults to the caller's own book."""
     if not _wants_ai(scope, user):
         from . import books
-        rw = _rw()
+        rw = _ro(V2_DB)                 # read path
         try:
             st = books.stats(rw, int(user.get("id") or 0), "IN", _live_map("IN"))
         finally:

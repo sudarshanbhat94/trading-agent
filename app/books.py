@@ -85,6 +85,19 @@ def ensure_book(con, user_id, market="IN"):
     return budget
 
 
+def budget_of(con, user_id, market="IN"):
+    """This book's budget WITHOUT creating it.
+
+    ensure_book inserts, and stats() runs on the per-second stream for every
+    connected dashboard — so the read path was opening a write transaction once
+    a second per open tab, against a SQLite file the engine also writes. Reads
+    must not write.
+    """
+    row = con.execute("SELECT budget FROM user_book WHERE user_id=? AND market=?",
+                      (int(user_id), market)).fetchone()
+    return float(row[0]) if row else DEFAULT_BUDGET.get(market, 100000.0)
+
+
 def cash(con, user_id, market="IN"):
     """Budget minus what is deployed plus what has been realised.
 
@@ -92,7 +105,7 @@ def cash(con, user_id, market="IN"):
     can never disagree with its own trade history — the same reason the house
     book computes it this way.
     """
-    budget = ensure_book(con, user_id, market)
+    budget = budget_of(con, user_id, market)
     spent = con.execute("SELECT COALESCE(SUM(entry_price*shares),0) FROM user_positions"
                         " WHERE user_id=? AND market=?",
                         (int(user_id), market)).fetchone()[0] or 0.0
@@ -154,13 +167,18 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
     if qty < 1 or qty * price > cash(con, user_id, market):
         return 0
     now = datetime.now(IST)
-    con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,symbol,"
-                "entry_date,entry_price,shares,stop,target,opened_at,src_id)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (int(user_id), market, strategy, symbol, now.date().isoformat(),
-                 price, qty, stop, target, now.isoformat(), src_id))
+    # OR IGNORE + returning qty regardless was a lie waiting to happen: the
+    # unique index can block this (two mirrors racing on the same symbol) and
+    # the caller would be told shares were bought that do not exist, leaving the
+    # book's cash and its positions permanently disagreeing. rowcount is the
+    # only honest answer.
+    cur = con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,"
+                      "symbol,entry_date,entry_price,shares,stop,target,opened_at,src_id)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                      (int(user_id), market, strategy, symbol, now.date().isoformat(),
+                       price, qty, stop, target, now.isoformat(), src_id))
     con.commit()
-    return qty
+    return qty if cur.rowcount else 0
 
 
 def sell(con, user_id, market, symbol, price, reason="manual"):
@@ -208,7 +226,7 @@ def reset(con, user_id, market=None):
 
 def stats(con, user_id, market, live):
     """Everything the dashboard needs for ONE user's book."""
-    budget = ensure_book(con, user_id, market)
+    budget = budget_of(con, user_id, market)
     pos = positions(con, user_id, market)
     mtm = unreal = 0.0
     for p in pos:

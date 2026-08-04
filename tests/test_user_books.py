@@ -290,3 +290,62 @@ class EveryPageIsScopedTest(unittest.TestCase):
         src = inspect.getsource(v2_web.api_overview)
         self.assertIn("books.equity_series(", src)
         self.assertIn('mine["series"]', src)
+
+
+class ConnectionHygieneTest(unittest.TestCase):
+    """SQLite allows ONE writer, and the engine is writing the same file.
+
+    Three self-inflicted hazards shipped in a day of fast work:
+      * _my_orders and _my_attribution each opened a write connection and then
+        called _my_trades, which opened a SECOND one for the same request;
+      * books.stats ran ensure_book, which INSERTs — and stats is on the
+        per-second stream, so every open dashboard tab opened a write
+        transaction once a second;
+      * books.buy used INSERT OR IGNORE and returned qty regardless, so a
+        blocked insert reported shares that do not exist.
+    """
+
+    def test_no_read_path_opens_a_writer(self) -> None:
+        import inspect
+        from app import v2_web
+        for name in ("_my_positions", "_my_orders", "_my_trades",
+                     "_my_attribution", "_stream_payload"):
+            with self.subTest(fn=name):
+                src = inspect.getsource(getattr(v2_web, name))
+                self.assertNotIn("_rw()", src, f"{name} opens a write connection")
+
+    def test_my_trades_can_reuse_a_callers_connection(self) -> None:
+        import inspect
+        from app import v2_web
+        self.assertIn("con", inspect.signature(v2_web._my_trades).parameters)
+        self.assertIn("con=rw", inspect.getsource(v2_web._my_orders))
+        self.assertIn("con=rw", inspect.getsource(v2_web._my_attribution))
+
+    def test_stats_does_not_write(self) -> None:
+        """It is called once a second per connected dashboard."""
+        import inspect
+        src = inspect.getsource(books.stats) + inspect.getsource(books.cash)
+        self.assertNotIn("ensure_book(", src)
+        self.assertIn("budget_of(", src)
+
+    def test_reading_a_book_that_does_not_exist_creates_nothing(self) -> None:
+        con = _db()
+        before = con.execute("SELECT COUNT(*) FROM user_book").fetchone()[0]
+        st = books.stats(con, 4242, "IN", {})
+        self.assertEqual(st["equity"], 100000.0)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM user_book").fetchone()[0],
+                         before, "a read created a row")
+
+    def test_a_blocked_insert_reports_zero_not_a_phantom_buy(self) -> None:
+        con = _db()
+        con.execute("INSERT INTO user_positions(user_id,market,symbol,entry_price,shares)"
+                    " VALUES(1,'IN','ITC',300,5)")
+        con.commit()
+        # bypass the open_symbols guard to hit the unique index directly
+        import app.books as b
+        real = b.open_symbols
+        b.open_symbols = lambda *a, **k: set()
+        try:
+            self.assertEqual(b.buy(con, 1, "IN", "manual", "ITC", 300.0), 0)
+        finally:
+            b.open_symbols = real
