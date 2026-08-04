@@ -154,6 +154,13 @@ def main():
         # config that no longer exists, and every decision taken from that
         # number was taken on stale evidence.
         ("live-equivalent", _live_kwargs()),
+        # Isolate the BREAKEVEN LOCK: same 3 ATR stop, only the trigger varies.
+        # It was shipped as "backtested NEUTRAL"; this measures it against the
+        # config the lane actually runs rather than the one it ran then.
+        ("stop3, no BE lock", dict(stop_atr=3.0)),
+        ("stop3 + BE @3ATR", dict(stop_atr=3.0, be_trigger_atr=3.0, be_cost_pct=0.401)),
+        ("stop3 + BE @4ATR", dict(stop_atr=3.0, be_trigger_atr=4.0, be_cost_pct=0.401)),
+        ("stop3 + BE @6ATR", dict(stop_atr=3.0, be_trigger_atr=6.0, be_cost_pct=0.401)),
     ]
     results = {}
     for name, kwargs in variants:
