@@ -496,6 +496,10 @@ def api_overview(user: dict = Depends(require_session)):
             try:
                 mine = books.stats(rw, int(user.get("id") or 0), "IN", live.get("IN"))
                 mine["ccy"] = "₹"
+                # the curve, so a personal book can draw one like the others
+                ser = books.equity_series(rw, int(user.get("id") or 0), "IN")
+                mine["series"] = [round(v) for _d, v in ser]
+                mine["series_start"] = ser[0][0] if ser else None
                 mine["holdings"] = [
                     dict(p, live=round(float((live.get("IN") or {}).get(p["symbol"], {})
                                              .get("price") or p["entry_price"]), 2))
@@ -2556,10 +2560,15 @@ def api_catalysts():
 
 
 @router.get("/api/attribution")
-def api_attribution():
+def api_attribution(scope: str = "mine", user: dict = Depends(require_session)):
     """P&L attribution by market x strategy (closed + open) and a daily equity
-    curve with max drawdown per market — the 'is the engine actually working'
-    view."""
+    curve with max drawdown per market.
+
+    Defaults to the CALLER'S OWN book. As the house view this answers "is the
+    engine working"; as a personal view it answers "how am I doing", and the
+    page was giving the first to everyone who asked the second."""
+    if not _wants_ai(scope, user):
+        return JSONResponse(_my_attribution(int(user.get("id") or 0)))
     v2 = _ro(V2_DB)
     live = {"IN": _live_map("IN"), "US": _live_map("US")}
     # Option contracts live in nfo_quotes, not latest_quotes (deliberately, so
@@ -2679,7 +2688,54 @@ def api_engine_status():
     return JSONResponse(dict(engine=st, market_open=sessions))
 
 
-def _stream_payload():
+def _my_attribution(uid, market="IN"):
+    """Per-lane attribution for one user's own book."""
+    from . import books
+    live = _live_map(market)
+    rw = _rw()
+    try:
+        lanes = {}
+        for r in _my_trades(uid, 500, market):
+            b = lanes.setdefault(r["strategy"], dict(market=market, ccy="₹",
+                                                     strategy=r["strategy"], closed=0,
+                                                     wins=0, realized=0.0, rets=[],
+                                                     open=0, unrealized=0.0))
+            b["closed"] += 1
+            b["wins"] += 1 if (r["pnl"] or 0) > 0 else 0
+            b["realized"] += r["pnl"] or 0.0
+            b["rets"].append(r["return_pct"] or 0.0)
+        for p in books.positions(rw, uid, market):
+            b = lanes.setdefault(p["strategy"], dict(market=market, ccy="₹",
+                                                     strategy=p["strategy"], closed=0,
+                                                     wins=0, realized=0.0, rets=[],
+                                                     open=0, unrealized=0.0))
+            px = float((live.get(p["symbol"]) or {}).get("price") or p["entry_price"])
+            b["open"] += 1
+            b["unrealized"] += (px - p["entry_price"]) * p["shares"]
+        out = []
+        for b in lanes.values():
+            rets = b.pop("rets")
+            b["win"] = round(b.pop("wins") / b["closed"] * 100) if b["closed"] else 0
+            b["avg_ret"] = round(sum(rets) / len(rets), 2) if rets else 0.0
+            b["realized"] = round(b["realized"], 2)
+            b["unrealized"] = round(b["unrealized"], 2)
+            out.append(b)
+        out.sort(key=lambda x: -x["realized"])
+        series = books.equity_series(rw, uid, market)
+        eq = [v for _d, v in series]
+        peak, mdd = 0.0, 0.0
+        for v in eq:
+            peak = max(peak, v)
+            if peak:
+                mdd = min(mdd, v / peak - 1)
+        return dict(strategies=out,
+                    equity={market: dict(days=[d for d, _v in series], equity=eq,
+                                         maxdd=round(abs(mdd) * 100, 2))})
+    finally:
+        rw.close()
+
+
+def _stream_payload(uid=None):
     v2 = _ro(V2_DB)
     held = {"IN": set(), "US": set()}
     for m, sym in v2.execute("SELECT market,symbol FROM v2_positions"):
@@ -2699,7 +2755,21 @@ def _stream_payload():
         positions.append(dict(id=pid, ccy="₹" if market == "IN" else "$", live=round(p, 2),
                               pnl=round((p / entry - 1) * 100, 2), pnl_amt=round((p - entry) * shares, 2)))
     v2.close()
+    mine = None
+    if uid:
+        try:
+            from . import books
+            rw = _rw()
+            try:
+                st = books.stats(rw, uid, "IN", live.get("IN") or {})
+                mine = dict(equity=round(st["equity"]), overall_pnl=round(st["overall_pnl"], 2),
+                            positions=st["positions"])
+            finally:
+                rw.close()
+        except Exception:
+            mine = None
     return dict(markets=markets, positions=positions, alerts_fired=_check_alerts(),
+                mine=mine,
                 as_of=datetime.now(IST).strftime("%H:%M:%S IST"))
 
 
@@ -2707,7 +2777,12 @@ STREAM_MAX_SECONDS = 240        # recycle the SSE connection so a restart can la
 
 
 @router.get("/api/stream")
-async def api_stream():
+async def api_stream(user: dict = Depends(require_session)):
+    # The per-second ticker was house-only, so a subscriber watching their own
+    # book saw the ENGINE's equity move. uid is captured once here rather than
+    # read per tick — the session cannot change mid-stream.
+    uid = int(user.get("id") or 0)
+
     async def gen():
         # Bounded, not `while True`. An unbounded stream is an request that never
         # completes, and uvicorn's graceful shutdown waits for exactly that — so
@@ -2718,7 +2793,7 @@ async def api_stream():
         deadline = time.monotonic() + STREAM_MAX_SECONDS
         while time.monotonic() < deadline:
             try:
-                payload = await asyncio.to_thread(_stream_payload)
+                payload = await asyncio.to_thread(_stream_payload, uid)
                 yield "data: " + _jsonmod.dumps(payload) + "\n\n"
             except Exception:
                 yield "data: {}\n\n"
@@ -4658,7 +4733,9 @@ function renderMineTile(m,ccy){
   meta:'yours alone · '+(m.positions||0)+' open',ccy:ccy,
   equity:m.equity,chg:m.overall_pnl,noun:'overall',
   pct:(m.budget?Math.round((m.overall_pnl||0)/m.budget*10000)/100:0),
-  note:'The AI\u2019s trades, sized to YOUR cash. Resetting this clears only your book.',
+  series:(m.series||[]),baseline:m.budget,
+  note:'The AI\u2019s trades, sized to YOUR cash. Resetting this clears only your book.'
+   +((m.series||[]).length>1?' \u00b7 one point per day since '+(m.series_start||''):''),
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}})
   +(rows?'<div class=rl-list>'+rows+'</div>':''));}

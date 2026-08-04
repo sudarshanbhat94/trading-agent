@@ -251,3 +251,42 @@ class NoAppMainImportTest(unittest.TestCase):
         self.assertTrue(callable(books._auth_db))
         self.assertNotIn("from .main import", self._code(books._auth_db))
         self.assertIn("Database(", self._code(books._auth_db))
+
+
+class EveryPageIsScopedTest(unittest.TestCase):
+    """No endpoint may still hand the engine's book to a subscriber by default.
+
+    Home was split first, then positions and trades, then orders and stats.
+    Attribution and the per-second stream were missed each time — which is the
+    pattern: a rule gets applied to the pages someone happened to be looking at,
+    and the rest keep the old behaviour until somebody checks.
+    """
+
+    def test_every_book_endpoint_defaults_to_the_caller(self) -> None:
+        import inspect
+        from app import v2_web
+        for name in ("api_positions", "api_orders", "api_trades", "api_stats",
+                     "api_attribution"):
+            with self.subTest(endpoint=name):
+                fn = getattr(v2_web, name)
+                params = inspect.signature(fn).parameters
+                self.assertIn("scope", params, f"{name} has no scope")
+                self.assertEqual(params["scope"].default, "mine")
+                self.assertIn("_wants_ai", inspect.getsource(fn))
+
+    def test_the_live_stream_carries_the_callers_own_book(self) -> None:
+        import inspect
+        from app import v2_web
+        # the endpoint takes the session user and captures uid once, before the
+        # generator starts — the session cannot change mid-stream
+        self.assertIn("user", inspect.signature(v2_web.api_stream).parameters)
+        self.assertIn("uid = int(user.get", inspect.getsource(v2_web.api_stream))
+        self.assertIn("uid=None", inspect.getsource(v2_web._stream_payload))
+        self.assertIn("mine=mine", inspect.getsource(v2_web._stream_payload))
+
+    def test_the_personal_book_gets_an_equity_curve(self) -> None:
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web.api_overview)
+        self.assertIn("books.equity_series(", src)
+        self.assertIn('mine["series"]', src)
