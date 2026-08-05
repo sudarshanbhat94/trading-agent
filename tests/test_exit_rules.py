@@ -119,9 +119,13 @@ class BreakevenLockTest(unittest.TestCase):
                  peak=100.0 * (1 + lock), edate=TODAY_S),
             _quote(100.5),
         )
-        # was entry * 1.001 (+0.1% GROSS) against a ~0.4% round trip, so
-        # "never allowed to go red" guaranteed a ~0.3% loss on every fire
-        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 100.0))
+        # was entry * 1.001 (+0.1% GROSS) against a real round trip, so
+        # "never allowed to go red" guaranteed a loss on every fire.
+        # SHARES and LANE both matter now: the charge is flat rupees on the
+        # position, and volume_surge is intraday, which costs a quarter of
+        # delivery.
+        self.assertAlmostEqual(
+            eff, v2_live.breakeven_price("IN", 100.0, 65, "volume_surge"))
 
 
 class TargetTest(unittest.TestCase):

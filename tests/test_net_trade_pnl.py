@@ -20,11 +20,27 @@ from app import v2_live
 
 class NetTradePnlTest(unittest.TestCase):
     def test_costs_are_charged_on_both_sides(self) -> None:
-        """Round-trip: cost applies to the buy AND the sell notional."""
-        cside = v2_live.COST_SIDE["IN"]
+        """Round trip: charges apply to the buy AND the sell notional.
+
+        No longer a flat percentage — brokerage is Rs 20 a leg and the DP fee
+        Rs 20 a sell, neither of which scales, so the schedule is computed in
+        app/costs.py from Upstox's published rates."""
+        from app import costs
         net, _pct = v2_live.net_trade_pnl("IN", 10, 100.0, 110.0)
-        expected = 10 * (110.0 - 100.0) - cside * 10 * (100.0 + 110.0)
+        expected = 10 * (110.0 - 100.0) - costs.round_trip(1000.0, 1100.0, costs.DELIVERY)
         self.assertAlmostEqual(net, expected)
+
+    def test_a_small_ticket_costs_proportionally_far_more(self) -> None:
+        """THE reason the flat model had to go: Rs 20 a leg is 2.58% of a
+        Rs 3,000 delivery trade and 0.36% of a Rs 50,000 one."""
+        from app import costs
+        self.assertGreater(costs.round_trip_pct(3000), 2.0)
+        self.assertLess(costs.round_trip_pct(50000), 0.5)
+
+    def test_intraday_costs_a_fraction_of_delivery(self) -> None:
+        from app import costs
+        self.assertLess(costs.round_trip(9000, product=costs.INTRADAY),
+                        costs.round_trip(9000, product=costs.DELIVERY) / 3)
 
     def test_net_is_always_below_gross(self) -> None:
         gross = 10 * (110.0 - 100.0)
@@ -43,9 +59,9 @@ class NetTradePnlTest(unittest.TestCase):
         self.assertLess(pct, 0)
 
     def test_a_breakeven_exit_is_a_loss_of_exactly_the_costs(self) -> None:
-        cside = v2_live.COST_SIDE["IN"]
+        from app import costs
         net, _ = v2_live.net_trade_pnl("IN", 10, 100.0, 100.0)
-        self.assertAlmostEqual(net, -cside * 10 * 200.0)
+        self.assertAlmostEqual(net, -costs.round_trip(1000.0, 1000.0, costs.DELIVERY))
 
     def test_return_pct_is_net_and_on_the_entry_basis(self) -> None:
         net, pct = v2_live.net_trade_pnl("IN", 10, 100.0, 110.0)

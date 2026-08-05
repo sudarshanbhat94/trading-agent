@@ -1288,7 +1288,7 @@ def _tg_daily_summary(market):
         pass
 
 
-def breakeven_price(market, entry):
+def breakeven_price(market, entry, shares=1.0, strategy=None):
     """The exit price at which a round trip nets EXACTLY zero.
 
     "Breakeven" was defined in GROSS price terms — entry * 1.001, i.e. +0.1% —
@@ -1303,13 +1303,40 @@ def breakeven_price(market, entry):
 
     Solving  shares*(x-e) - c*shares*(e+x) = 0  for x gives x = e*(1+c)/(1-c).
     """
-    c = COST_SIDE.get(market, 0.0)
-    if c <= 0 or c >= 1:
-        return float(entry)
-    return float(entry) * (1.0 + c) / (1.0 - c)
+    entry = float(entry or 0)
+    if entry <= 0:
+        return entry
+    if market != "IN":
+        c = COST_SIDE.get(market, 0.0)
+        return entry * (1.0 + c) / (1.0 - c) if 0 < c < 1 else entry
+    # Solve for the exit that nets zero, using the REAL schedule.
+    #
+    # SHARES MATTER. Brokerage and the DP charge are FLAT rupees on the whole
+    # position, so the per-share cost is charge/shares. Computing the charge on
+    # the per-share PRICE — as the first version of this did — prices a
+    # one-share trade and puts the breakeven stop wildly too high on any real
+    # position. One pass is enough; the charge barely moves over the fraction of
+    # a percent involved.
+    from . import costs as _costs
+    shares = max(1.0, float(shares or 1.0))
+    product = _costs.DELIVERY
+    if strategy is not None:
+        try:
+            from . import live_trade as _lt
+            product = _lt.product_for(strategy)
+        except Exception:
+            pass
+    basis = entry * shares
+    # Two passes. The charge is levied on the EXIT value too, so raising the
+    # exit raises the charge slightly; one pass leaves a small residual loss,
+    # which is the whole failure mode this function exists to prevent.
+    x = entry + _costs.round_trip(basis, basis, product) / shares
+    for _ in range(3):
+        x = entry + _costs.round_trip(basis, x * shares, product) / shares
+    return x
 
 
-def net_trade_pnl(market, shares, entry, exit_price):
+def net_trade_pnl(market, shares, entry, exit_price, strategy=None):
     """(net_pnl, net_return_pct) after round-trip costs — the ONE definition.
 
     Exits recorded the GROSS move while the cash ledger was charged costs on
@@ -1320,11 +1347,40 @@ def net_trade_pnl(market, shares, entry, exit_price):
     and two manual-sell endpoints) each had their own copy of the arithmetic;
     this is the shared one, charged on the same basis as the cash ledger so the
     two can no longer disagree.
+
+    COSTS ARE NOW COMPUTED, NOT ASSUMED. This charged a flat 0.40% round trip
+    at every ticket size, which is a fair average for the paper book's
+    Rs 16,666 positions and wrong by 6x for a Rs 3,000 one — because brokerage
+    (Rs 20 a leg) and the DP charge (Rs 20 a sell) do not scale with the trade.
+    A percentage cannot express a fixed fee, and using one meant the book
+    reported profits a smaller live account would never see.
+
+        Rs 3,000 delivery   2.58% real   vs 0.40% modelled
+        Rs 9,000 intraday   0.27% real
+        Rs 50,000 delivery  0.36% real
+
+    `strategy` selects the product, because an intraday round trip costs a
+    quarter of a delivery one at the same size. Omitted, it assumes delivery —
+    the more expensive of the two, so an unknown lane is never flattered.
+
+    US keeps the flat model: COST_SIDE was fitted for it and there is no Indian
+    fee schedule to apply.
     """
-    cside = COST_SIDE.get(market, 0.0)
-    gross = shares * (exit_price - entry)
-    net = gross - cside * shares * (entry + exit_price)
     basis = shares * entry
+    if market != "IN":
+        cside = COST_SIDE.get(market, 0.0)
+        net = shares * (exit_price - entry) - cside * shares * (entry + exit_price)
+        return net, (net / basis * 100) if basis else 0.0
+    from . import costs as _costs
+    product = _costs.DELIVERY
+    if strategy is not None:
+        try:
+            from . import live_trade as _lt
+            product = _lt.product_for(strategy)
+        except Exception:
+            product = _costs.DELIVERY
+    charge = _costs.round_trip(basis, shares * exit_price, product)
+    net = shares * (exit_price - entry) - charge
     return net, (net / basis * 100) if basis else 0.0
 
 
@@ -1348,7 +1404,11 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
     The row is built by SELECT from the position, so strategy, entry price,
     conviction and opened_at carry across rather than being retyped.
     """
-    net, net_pct = net_trade_pnl(market, shares, *_entry_of(v2, position_id, exit_price))
+    row_s = v2.execute("SELECT strategy FROM v2_positions WHERE id=?",
+                       (position_id,)).fetchone()
+    net, net_pct = net_trade_pnl(market, shares,
+                                 *_entry_of(v2, position_id, exit_price),
+                                 strategy=(row_s[0] if row_s else None))
     v2.execute(
         "INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,"
         "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
@@ -3204,7 +3264,7 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     # breakeven lock on a big winner only (recover ATR from the initial stop)
     atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
     atr_est = (p["entry"] - p["stop"]) / atr_stop if atr_stop else 0.0
-    be = breakeven_price(market, p["entry"])
+    be = breakeven_price(market, p["entry"], p.get("shares") or 1.0, p["strategy"])
     if BE_TRIGGER_ATR and atr_est > 0 and peak >= p["entry"] + BE_TRIGGER_ATR * atr_est:
         eff = max(eff, be)
     # intraday lanes: once up >= lock%, stop rises to breakeven — a green

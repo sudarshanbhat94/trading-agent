@@ -112,7 +112,8 @@ class MidSessionEquityEntryTest(unittest.TestCase):
         """Unchanged behaviour: peak carries what we saw while holding."""
         p = _pos("volume_surge", 100.0, 97.5, peak=101.6)
         peak, eff, ex, reason = _ev(p, _quote(100.0, 108.0, 99.0))
-        self.assertAlmostEqual(eff, v2_live.breakeven_price("IN", 100.0), places=4)
+        self.assertAlmostEqual(
+            eff, v2_live.breakeven_price("IN", 100.0, 65, "volume_surge"), places=4)
         self.assertEqual(reason, "stop")
 
     def test_a_session_high_from_before_entry_is_also_excluded(self) -> None:
