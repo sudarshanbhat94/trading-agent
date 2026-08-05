@@ -42,6 +42,28 @@ _LOG = logging.getLogger("openstocks.live")
 # and quarantined from the paper book already; it must not reappear here.
 MIRRORED_LANES = ("swing_meanrev", "mom_breakout", "volume_surge", "btst", "manual")
 
+# UPSTOX PRODUCT CODE, per lane. Every order went out as "D" (delivery),
+# including the lanes that square off the same afternoon — which is not a
+# labelling nicety, it is most of the cost on a small account:
+#
+#   Rs 9,000 round trip    delivery Rs 91 (1.01%)    intraday Rs 24 (0.27%)
+#
+# Three separate reasons, all in the same direction:
+#   * brokerage caps at 0.1% intraday (Rs 9) but is a FLAT Rs 20 on delivery,
+#     so the smaller the ticket the worse delivery is;
+#   * STT is 0.1% on BOTH legs for delivery, 0.025% on the sell only intraday;
+#   * delivery adds a Rs 20 + GST DP charge on every sell.
+#
+# At delivery pricing a 1% intraday move on Rs 9,000 is a LOSS. At intraday
+# pricing it is +Rs 66. The break-even move falls from ~1.0% to ~0.27%.
+#
+# Read from the engine's own INTRADAY_STRATS rather than restated here, so a
+# lane cannot be classified two different ways in two files.
+def product_for(strategy):
+    from . import v2_live
+    same_day = set(v2_live.INTRADAY_STRATS) | {"btst"}
+    return "I" if str(strategy) in same_day else "D"
+
 _margin_cache: dict = {}
 MARGIN_TTL = 60
 
@@ -111,6 +133,20 @@ def open_symbols(v2, user_id):
     return {r[0]: int(r[1]) for r in rows}
 
 
+def entry_product(v2, user_id, symbol, default="D"):
+    """What product this sleeve's OPEN position was bought with.
+
+    Read from the ledger, not re-derived from the lane: the exit may fire from a
+    path that no longer knows the strategy, and an exit that disagrees with its
+    entry is rejected by Upstox or silently converts the position to delivery.
+    """
+    row = v2.execute(
+        "SELECT product FROM v2_live_orders WHERE user_id=? AND symbol=?"
+        " AND side='BUY' AND status='sent' ORDER BY id DESC LIMIT 1",
+        (int(user_id), str(symbol))).fetchone()
+    return (row[0] if row and row[0] else default)
+
+
 def day_notional(v2, user_id, today_s=None):
     today_s = today_s or datetime.now(IST).date().isoformat()
     row = v2.execute("SELECT COALESCE(SUM(notional),0) FROM v2_live_orders"
@@ -139,7 +175,7 @@ def size_for_sleeve(price, st, margin=None):
 
 
 def _record(v2, user_id, market, symbol, key, side, qty, price, status, reason,
-            response=None, order_id=None):
+            response=None, order_id=None, product=None):
     """user_id is REQUIRED and positional on purpose.
 
     It was a trailing keyword defaulting to None, so every call that forgot it
@@ -149,11 +185,11 @@ def _record(v2, user_id, market, symbol, key, side, qty, price, status, reason,
     """
     v2.execute(
         "INSERT INTO v2_live_orders(ts,market,symbol,instrument_key,side,qty,price,"
-        "notional,status,broker_order_id,reason,response,user_id)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "notional,status,broker_order_id,reason,response,user_id,product)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (datetime.now(IST).isoformat(), market, symbol, key or "", side, int(qty or 0),
          float(price or 0), float(qty or 0) * float(price or 0), status, order_id,
-         reason, json.dumps(response)[:2000] if response else None, user_id))
+         reason, json.dumps(response)[:2000] if response else None, user_id, product))
     v2.commit()
 
 
@@ -196,10 +232,11 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
     if not ok:
         _record(v2, user_id, market, symbol, key, "BUY", qty, price, "skipped", why)
         return f"skipped: {why}"
-    res = broker.place_order(user_id, key, qty, "BUY", price=0.0)
+    prod = product_for(strategy)
+    res = broker.place_order(user_id, key, qty, "BUY", price=0.0, product=prod)
     _record(v2, user_id, market, symbol, key, "BUY", qty, price,
             "sent" if res.get("ok") else "failed",
-            "mirror " + strategy, res.get("response"), res.get("order_id"))
+            "mirror " + strategy, res.get("response"), res.get("order_id"), prod)
     _LOG.info("LIVE BUY %s x%d @~%.2f -> %s", symbol, qty, price, res.get("order_id"))
     if not res.get("ok"):
         _alert_failed(user_id, "BUY", symbol, qty, res)
@@ -227,10 +264,14 @@ def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
         _record(v2, user_id, market, symbol, None, "SELL", qty, price, "skipped",
                 "no upstox instrument key")
         return "skipped: no instrument key"
-    res = broker.place_order(user_id, key, qty, "SELL", price=0.0)
+    # SAME product as the entry. Upstox will not let a delivery sell close an
+    # intraday buy, and guessing here would either reject the order or convert
+    # the position to delivery and charge for it.
+    prod = entry_product(v2, user_id, symbol)
+    res = broker.place_order(user_id, key, qty, "SELL", price=0.0, product=prod)
     _record(v2, user_id, market, symbol, key, "SELL", qty, price,
             "sent" if res.get("ok") else "failed",
-            f"mirror exit: {reason}", res.get("response"), res.get("order_id"))
+            f"mirror exit: {reason}", res.get("response"), res.get("order_id"), prod)
     _LOG.info("LIVE SELL %s x%d @~%.2f (%s) -> %s", symbol, qty, price, reason,
               res.get("order_id"))
     if not res.get("ok"):

@@ -438,7 +438,8 @@ CREATE INDEX IF NOT EXISTS ix_ideas_open ON v2_ideas(status, market);
 CREATE TABLE IF NOT EXISTS v2_live_orders(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, market TEXT, symbol TEXT,
   instrument_key TEXT, side TEXT, qty INTEGER, price REAL, notional REAL,
-  status TEXT, broker_order_id TEXT, reason TEXT, response TEXT, user_id INTEGER);
+  status TEXT, broker_order_id TEXT, reason TEXT, response TEXT, user_id INTEGER,
+  product TEXT);
 CREATE INDEX IF NOT EXISTS ix_live_orders_day ON v2_live_orders(substr(ts,1,10));
 """
 _HIST: dict = {}
@@ -807,6 +808,13 @@ def ensure_schema(v2):
             v2.execute(f"ALTER TABLE v2_trades ADD COLUMN {column} TEXT")
         except Exception:
             pass
+    # Additive: the Upstox product code an order was placed with. An intraday
+    # BUY cannot be closed by a delivery SELL, so the exit has to read back what
+    # the entry actually used rather than assume.
+    try:
+        v2.execute("ALTER TABLE v2_live_orders ADD COLUMN product TEXT")
+    except Exception:
+        pass
     # Additive migration: an OPTION position must carry its own expiry. Reading
     # it off the live quote is not enough — once the contract expires it drops
     # out of the ATM watch list, and a position whose expiry is only knowable

@@ -394,3 +394,75 @@ class EngineIsolationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProductCodeTest(unittest.TestCase):
+    """An intraday trade must be placed as intraday.
+
+    Every order went out as "D". On a small account that is most of the cost,
+    not a labelling nicety — Rs 9,000 round trip is Rs 91 (1.01%) as delivery
+    and Rs 24 (0.27%) as intraday, because delivery brokerage is a FLAT Rs 20
+    rather than capped at 0.1%, STT applies to both legs at 4x the rate, and a
+    Rs 20 DP charge lands on every sell. At delivery pricing a 1% intraday move
+    on Rs 9,000 is a LOSS.
+    """
+
+    def test_same_day_lanes_are_intraday(self) -> None:
+        for lane in ("volume_surge", "intraday_news", "intraday_momentum", "btst"):
+            with self.subTest(lane=lane):
+                self.assertEqual(live_trade.product_for(lane), "I")
+
+    def test_multi_day_lanes_stay_delivery(self) -> None:
+        """swing holds 8 sessions and breakout 40 — those really are delivery."""
+        for lane in ("swing_meanrev", "mom_breakout", "manual"):
+            with self.subTest(lane=lane):
+                self.assertEqual(live_trade.product_for(lane), "D")
+
+    def test_the_classification_is_read_from_the_engine(self) -> None:
+        """Not restated here, or a lane could be intraday in one file and
+        delivery in the other."""
+        import inspect
+        self.assertIn("v2_live.INTRADAY_STRATS",
+                      inspect.getsource(live_trade.product_for))
+
+    def test_the_buy_sends_the_lanes_product(self) -> None:
+        v2, main, path = _dbs()
+        b = _fresh_broker(budget=9000)
+        b.save_token(UID, "t0k")
+        b.configure(UID, armed=True, kill_switch=False)
+        seen = {}
+
+        def fake(uid, key, qty, side="BUY", **kw):
+            seen[side] = kw.get("product")
+            return dict(ok=True, order_id="O1")
+
+        with mock.patch.object(_broker_mod, "place_order", side_effect=fake), \
+             mock.patch.object(live_trade, "available_margin", return_value=9000.0):
+            live_trade.mirror_entry(v2, main, UID, "IN", "RELIANCE", 1300.0, "volume_surge")
+        self.assertEqual(seen["BUY"], "I")
+
+    def test_the_sell_matches_the_buy(self) -> None:
+        """Upstox will not close an intraday buy with a delivery sell, and
+        guessing converts the position to delivery and charges for it."""
+        v2, main, path = _dbs()
+        b = _fresh_broker(budget=9000)
+        b.save_token(UID, "t0k")
+        b.configure(UID, armed=True, kill_switch=False)
+        seen = {}
+
+        def fake(uid, key, qty, side="BUY", **kw):
+            seen[side] = kw.get("product")
+            return dict(ok=True, order_id="O" + side)
+
+        with mock.patch.object(_broker_mod, "place_order", side_effect=fake), \
+             mock.patch.object(live_trade, "available_margin", return_value=9000.0):
+            live_trade.mirror_entry(v2, main, UID, "IN", "RELIANCE", 1300.0, "volume_surge")
+            live_trade.mirror_exit(v2, main, UID, "IN", "RELIANCE", 1320.0, "target")
+        self.assertEqual(seen["SELL"], "I")
+        self.assertEqual(seen["SELL"], seen["BUY"])
+
+    def test_an_unknown_history_falls_back_to_delivery(self) -> None:
+        """Delivery is the safe default: selling a delivery holding as intraday
+        would be a short."""
+        v2, _main, _p = _dbs()
+        self.assertEqual(live_trade.entry_product(v2, UID, "NOTHELD"), "D")
