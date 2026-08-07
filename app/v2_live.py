@@ -1729,10 +1729,30 @@ def poll_market(market):
             knives += 1                                 # still falling — not a dip yet
             continue
         cand.append((pl["priority"], -s["score"], s, pl))
-    # ---- meta-label gate: secondary P(win) model on top of the primary engine
-    # (proven OOS on 15mo of real data to turn the net-losing raw signal set into
-    # a positive-expectancy one by trading only higher-confidence setups). Wrapped
-    # so any failure or a missing model leaves the engine exactly as before.
+    # ---- meta-label gate: secondary P(win) model on top of the primary engine.
+    # Wrapped so any failure or a missing model leaves the engine exactly as before.
+    #
+    # THIS GATE DOES NOT CURRENTLY ADD EDGE, and the claim that used to sit here
+    # ("proven OOS on 15mo of real data to turn the net-losing raw signal set
+    # into a positive-expectancy one") did not survive being re-run on 2026-08-07
+    # over 27,731 labelled events, purged walk-forward, 5 folds:
+    #
+    #     BASELINE  23,659 trades  win 42.3%  avg -0.29%/trade  PF 0.91
+    #     META      13,036 trades  win 42.1%  avg -0.32%/trade  PF 0.89
+    #     LIFT      -0.2 pts win,  -0.03 pts avg
+    #
+    # The filter keeps 55% of trades and makes them very slightly worse. The
+    # pooled threshold sweep only turns positive at 0.65 (PF 1.09) and 0.70
+    # (PF 1.24), which keep 8% and 3% of signals — thin slices where the
+    # overfitting risk is highest. Four of the five folds are negative; the one
+    # strongly positive fold is a Mar-May 2026 bull window.
+    #
+    # The floor is left where it is deliberately. It is currently ABOVE what the
+    # shipped model can output at all (see the alarm below), so the daily book
+    # takes nothing — and on these numbers that is the better of the two
+    # mistakes. Do not "unblock" this lane to make it trade again without new
+    # evidence: the raw swing_meanrev signal set is -0.12%/trade over 26,147
+    # events, so switching it on is switching on a measured loser.
     mp, mfloor = {}, None
     try:
         mp = meta_filter.score(sigs, tails, mdf, asof, rstate, strong, market)
@@ -1750,6 +1770,28 @@ def poll_market(market):
                 # rank primarily by model confidence when we have it, else by conviction
                 rankkey = -p if p is not None else negscore
                 kept.append((pr, rankkey, s, pl))
+            # A FLOOR ABOVE THE MODEL'S RANGE IS SILENT. This is how the daily
+            # book died on 2026-08-02 without anyone noticing for five sessions:
+            # the model was retrained, its full-sample outputs came out
+            # compressed (max 0.561 across 163 live signals), and the floor of
+            # 0.60 — a hand-typed `--floor` CLI argument, never checked against
+            # what the model actually emits — rejected literally everything.
+            #
+            # A book taking zero trades looks exactly like a quiet market from
+            # the outside, so nothing alarmed. The floor is NOT transferable
+            # between models: the sweep's thresholds are calibrated per fold on
+            # less data, and the shipped model has a different output
+            # distribution, so a number carried across from one to the other is
+            # meaningless. If a floor is ever re-derived it must be a PERCENTILE
+            # of the shipped model's own outputs, not an absolute probability.
+            if cand and not kept:
+                seen = [p for p in (mp.get(s["symbol"]) for _pr, _k, s, _pl in cand)
+                        if p is not None]
+                _LOG.error(
+                    "META GATE REJECTED ALL %d candidates: floor=%.3f but the "
+                    "model's best output was %.3f. The daily book will take NO "
+                    "trades. This is a threshold/model mismatch, not a quiet "
+                    "market.", len(cand), mfloor, max(seen) if seen else float("nan"))
             cand = kept
     except Exception as _mexc:
         pass
