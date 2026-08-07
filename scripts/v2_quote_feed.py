@@ -16,7 +16,7 @@ import os
 import sys
 import time
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import Settings, settings_from_overrides   # noqa: E402
@@ -188,6 +188,26 @@ def _nfo_write(quotes, contracts):
         con.executemany("INSERT OR REPLACE INTO nfo_quotes(symbol,source,ts,price,open,high,"
                         "low,close,volume,underlying,expiry,strike,option_type,lot_size)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        # PRUNE EXPIRED CONTRACTS. This table was insert-only, so rows for dead
+        # expiries stayed forever, frozen at whatever price they last printed.
+        # An expired contract still reports a healthy underlying, strike, lot
+        # size and volume, so nothing downstream could tell it apart from a live
+        # one by looking at the row: on 2026-08-07 the engine bought and sold
+        # one such contract 83 times in a session for -Rs 7,721.
+        #
+        # The engine has its own guards now (it refuses expired and frozen
+        # quotes at entry), but those defend one reader. Not writing the
+        # garbage in the first place defends every reader, including the two in
+        # v2_web and index_spot that nobody has audited for this.
+        #
+        # Compared against the IST trading date, not UTC: for the five and a
+        # half hours after 18:30 IST, UTC is still on the previous day, and
+        # using it would keep an expired contract alive through the whole
+        # evening.
+        ist_today = (datetime.now(timezone.utc)
+                     + timedelta(hours=5, minutes=30)).date().isoformat()
+        con.execute("DELETE FROM nfo_quotes WHERE expiry IS NOT NULL"
+                    " AND expiry <> '' AND substr(expiry,1,10) < ?", (ist_today,))
         con.commit(); con.close()
         return len(rows)
     except Exception as exc:

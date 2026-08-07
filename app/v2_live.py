@@ -724,29 +724,56 @@ def _option_live(symbols=None):
     equity lanes' universe), which means every consumer of `_live` needs this
     merge or an option position becomes invisible — enterable but never
     exitable.
+
+    Each quote carries `stale`, on the same rule the equity lanes have used
+    since GUJGASLTD sat frozen from Jun 30: a row lagging the chain's FRESHEST
+    row by more than STALE_QUOTE_SEC is fiction. The equity path has had
+    `_stale_symbols` for months; the options path never got it, and that gap is
+    what let the engine round-trip an expired contract 83 times on 2026-08-07 —
+    nfo_quotes is never pruned, so 40 rows from a dead expiry sat there frozen
+    at their last traded price, looking perfectly healthy on every other gate.
+
+    MARKED, NOT DROPPED — deliberately, and see the paragraph above: removing a
+    quote is exactly how a position becomes enterable but never exitable. The
+    exit path must keep seeing the last known price of something it holds. Only
+    the ENTRY path refuses a stale quote.
+
+    The measure is relative (lag behind the freshest row) rather than against
+    the wall clock, so outside market hours the whole chain ages together and
+    nothing is flagged.
     """
     out = {}
     try:
         con = _ro(MAIN_DB)
         rows = con.execute("SELECT symbol, price, open, high, low, volume, lot_size,"
-                           " strike, option_type, underlying, expiry"
+                           " strike, option_type, underlying, expiry, ts"
                            " FROM nfo_quotes").fetchall()
         con.close()
     except Exception:
         return out
+    eps = {}
+    for r in rows:
+        try:
+            eps[str(r[0]).upper()] = datetime.fromisoformat(r[11]).timestamp()
+        except Exception:
+            pass
+    freshest = max(eps.values()) if eps else None
     wanted = {str(s).upper() for s in symbols} if symbols else None
-    for symbol, price, open_, high, low, volume, lot, strike, opt_type, under, expiry in rows:
+    for (symbol, price, open_, high, low, volume, lot, strike, opt_type, under,
+         expiry, _ts) in rows:
         sym = str(symbol).upper()
         if wanted is not None and sym not in wanted:
             continue
         price = _f(price, 0.0)
         if price <= 0:
             continue
+        age = None if (freshest is None or sym not in eps) else freshest - eps[sym]
         out[sym] = dict(price=price, open=_f(open_, price), high=_f(high, price),
                         low=_f(low, price), close=price, vol=_f(volume, 0.0),
                         lot_size=_f(lot, 0.0), strike=_f(strike, 0.0),
                         option_type=(opt_type or "").upper(),
-                        underlying=(under or "").upper(), expiry=expiry)
+                        underlying=(under or "").upper(), expiry=expiry,
+                        stale=bool(age is not None and age > STALE_QUOTE_SEC))
     return out
 
 
@@ -3076,6 +3103,13 @@ def _pick_contract(symbol, side, spot, quotes, max_cost=None, min_vol_share=None
     if today is not None:
         mine = [(sym, q) for sym, q in mine
                 if not _expired_or_expiring(q.get("expiry"), today, now_hhmm)]
+    # And the general form of the same defect: a quote that has stopped
+    # updating. The expiry rule above is precise but narrow — it cannot see a
+    # LIVE contract whose feed has frozen, which is the identical fantasy (a
+    # paper fill at a price nobody is currently quoting) with a date that
+    # happens to check out. `_option_live` flags these; the equity lanes have
+    # skipped them for months via `_stale_symbols`.
+    mine = [(sym, q) for sym, q in mine if not q.get("stale")]
     # LIQUIDITY, judged against this index's own chain rather than an absolute
     # floor. Volume accumulates through the session, so a fixed number would
     # refuse every trade in the morning and accept anything by the afternoon;
