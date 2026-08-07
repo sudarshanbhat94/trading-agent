@@ -31,6 +31,10 @@ BUDGET = {"IN": 100000.0, "US": 20000.0}     # TOTAL paper capital per market
 # Markets the engine actually trades. US is parked while we stabilise India first
 # (add "US" back here to re-enable it — all US config/code below stays intact).
 ENABLED_MARKETS = ["IN"]
+MAX_ROUND_TRIPS_PER_DAY = 3   # per symbol, per market. Churn circuit breaker —
+                              # see record_entry. A lane trades a name once or
+                              # twice a day; past that it is oscillating, not
+                              # deciding. 0 disables.
 MAXPOS = {"IN": 6, "US": 14}                 # max concurrent positions per market.
                                              # IN 14->6 (user call): the meta filter already
                                              # keeps only the top few signals/day, so fewer,
@@ -1476,6 +1480,32 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     if problem:
         _LOG.error("REFUSED %s entry %s/%s: %s", strategy, market, symbol, problem)
         return False
+    # CIRCUIT BREAKER: cap round trips per symbol per day.
+    #
+    # Not aimed at any one bug. Twice now a disagreement between an entry rule
+    # and an exit rule has become an 8-second buy/sell loop that ran until the
+    # bell — 19 round trips of one contract on 2026-08-04, then 83 of another on
+    # 2026-08-07 for -Rs 7,721. Both times the root cause was fixed and both
+    # times NOTHING capped the blast radius, because nothing in the system ever
+    # asked "why am I buying this for the twentieth time today?".
+    #
+    # A lane legitimately trades a symbol once or twice a day. Past that it is
+    # not expressing a view, it is oscillating, and each cycle pays the spread
+    # and costs for a price move of roughly zero. So this cannot cost a real
+    # trade, and it turns the next loop of this shape into a bounded Rs 200
+    # nuisance instead of an all-day bleed.
+    if strategy != "manual" and MAX_ROUND_TRIPS_PER_DAY:
+        try:
+            spun = v2.execute(
+                "SELECT COUNT(*) FROM v2_trades WHERE market=? AND symbol=?"
+                " AND entry_date=?", (market, symbol, entry_date)).fetchone()[0]
+        except Exception:
+            spun = 0
+        if spun >= MAX_ROUND_TRIPS_PER_DAY:
+            _LOG.error("REFUSED %s entry %s/%s: already %d round trips today "
+                       "(cap %d) — churn guard", strategy, market, symbol,
+                       spun, MAX_ROUND_TRIPS_PER_DAY)
+            return False
     v2.execute(
         "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
         "stop,target,trail,peak,conviction,opened_at,why,expiry)"
@@ -2850,7 +2880,8 @@ def index_options_pass(market):
                 return
             contract = _pick_contract(symbol, side, spot, quotes,
                                       max_cost=budget_per_trade,
-                                      min_vol_share=cfg.get("min_volume_share", 0.05))
+                                      min_vol_share=cfg.get("min_volume_share", 0.05),
+                                      today=today, now_hhmm=hm)
             if not contract:
                 _status[market] = (f"index options: no liquid {side} strike under "
                                    f"Rs {budget_per_trade:.0f}")
@@ -3003,7 +3034,8 @@ def _straddle_limit(cfg, expiry, today):
     return base * (dte / base_dte) ** 0.5
 
 
-def _pick_contract(symbol, side, spot, quotes, max_cost=None, min_vol_share=None):
+def _pick_contract(symbol, side, spot, quotes, max_cost=None, min_vol_share=None,
+                   today=None, now_hhmm=None):
     """The closest-to-the-money contract whose ONE LOT fits `max_cost`.
 
     Not simply ATM. Demanding at-the-money and refusing everything else is how
@@ -3025,6 +3057,25 @@ def _pick_contract(symbol, side, spot, quotes, max_cost=None, min_vol_share=None
     mine = [(sym, q) for sym, q in quotes.items()
             if (q.get("underlying") or "").upper() == symbol.upper()
             and (q.get("option_type") or "").upper() == want]
+    # NEVER ENTER WHAT THE EXIT WOULD IMMEDIATELY CLOSE. This is the same
+    # function the exit path uses, deliberately, so the two sides cannot drift
+    # apart again — an entry rule that merely *resembles* the exit rule is how
+    # this bug came back.
+    #
+    # It came back because the first fix was aimed one door down. Making the
+    # exit time-aware killed the 0-DTE loop (buy a contract expiring today,
+    # exit closes it seconds later). It did nothing for a contract that expired
+    # DAYS ago and is still in the feed: nfo_quotes is never pruned, so 40 rows
+    # for the 2026-08-04 expiry sat there frozen at their last traded price and
+    # kept passing every gate here — underlying, type, strike, price, lot and
+    # volume all look perfectly healthy on a dead contract.
+    #
+    # On 2026-08-07 that ran EIGHTY-THREE round trips of NIFTY2680424650CE,
+    # expired three days earlier, for -Rs 7,721. Every cycle was 8 seconds long
+    # and moved 0.80 -> 0.80: no view, no price change, pure transaction cost.
+    if today is not None:
+        mine = [(sym, q) for sym, q in mine
+                if not _expired_or_expiring(q.get("expiry"), today, now_hhmm)]
     # LIQUIDITY, judged against this index's own chain rather than an absolute
     # floor. Volume accumulates through the session, so a fixed number would
     # refuse every trade in the morning and accept anything by the afternoon;
