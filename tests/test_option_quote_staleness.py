@@ -123,6 +123,30 @@ class WriterPrunesExpiredTest(unittest.TestCase):
         self.assertIn("DELETE FROM nfo_quotes WHERE expiry IS NOT NULL", src)
         self.assertIn("hours=5, minutes=30", src)
 
+    def test_it_runs_on_ticks_that_write_nothing(self) -> None:
+        """`_nfo_write` returns early when there are no quotes, which is every
+        tick outside market hours. Pruning only on a successful write leaves a
+        Friday expiry's dead rows in the table for the whole weekend."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_feed_probe", "scripts/v2_quote_feed.py")
+        feed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(feed)
+        self.assertTrue(callable(getattr(feed, "_nfo_prune", None)),
+                        "the prune must be callable without a write")
+        import inspect
+        self.assertIn("_nfo_prune()", inspect.getsource(feed._nfo_worker),
+                      "the worker loop must prune on its own")
+
+    def test_the_prune_is_outside_the_market_open_gate(self) -> None:
+        """Everything else in that loop is skipped when the market is shut."""
+        src = open("scripts/v2_quote_feed.py").read()
+        prune_at = src.index("if time.time() - last_prune")
+        open_at = src.index('market_regions.market_session_for_region("IN").get("is_open")',
+                            prune_at - 2000)
+        self.assertLess(prune_at, open_at,
+                        "pruning inside the is_open branch never runs on a weekend")
+
     def test_it_removes_yesterday_and_keeps_today(self) -> None:
         con = sqlite3.connect(":memory:")
         con.execute("CREATE TABLE nfo_quotes(symbol TEXT, expiry TEXT)")

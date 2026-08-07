@@ -162,6 +162,46 @@ def _nfo_spots():
     return out
 
 
+def _nfo_prune():
+    """Drop quotes for contracts that have expired. Returns rows removed.
+
+    This table was insert-only, so rows for dead expiries stayed forever, frozen
+    at whatever price they last printed. An expired contract still reports a
+    healthy underlying, strike, lot size and volume, so nothing downstream could
+    tell it apart from a live one by looking at the row: on 2026-08-07 the engine
+    bought and sold one such contract 83 times in a session for -Rs 7,721.
+
+    The engine has its own guards now (it refuses expired and frozen quotes at
+    entry), but those defend one reader. Not writing the garbage defends every
+    reader, including the two in v2_web and index_spot that nobody has audited
+    for this.
+
+    SEPARATE FROM THE WRITE, and called unconditionally, because `_nfo_write`
+    returns early when there is nothing to write — which is every tick outside
+    market hours. Pruning only when quotes happen to arrive means the dead rows
+    from a Friday expiry sit there all weekend, exactly when nobody is watching.
+
+    Compared against the IST trading date, not UTC: for the five and a half
+    hours after 18:30 IST, UTC is still on the previous day, and using it would
+    keep an expired contract alive through the whole evening. Expiry day itself
+    is KEPT — the lane trades 0-DTE on purpose.
+    """
+    try:
+        ist_today = (datetime.now(timezone.utc)
+                     + timedelta(hours=5, minutes=30)).date().isoformat()
+        con = sqlite3.connect(MAIN_DB, timeout=20)
+        cur = con.execute("DELETE FROM nfo_quotes WHERE expiry IS NOT NULL"
+                          " AND expiry <> '' AND substr(expiry,1,10) < ?", (ist_today,))
+        n = cur.rowcount or 0
+        con.commit(); con.close()
+        if n:
+            print(f"  [NFO] pruned {n} expired contract rows", flush=True)
+        return n
+    except Exception as exc:
+        print(f"  [NFO] prune failed: {str(exc)[:120]}", flush=True)
+        return 0
+
+
 def _nfo_write(quotes, contracts):
     """Persist option quotes under NFO_SOURCE, keeping them out of the equity feed."""
     if not quotes:
@@ -188,27 +228,8 @@ def _nfo_write(quotes, contracts):
         con.executemany("INSERT OR REPLACE INTO nfo_quotes(symbol,source,ts,price,open,high,"
                         "low,close,volume,underlying,expiry,strike,option_type,lot_size)"
                         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-        # PRUNE EXPIRED CONTRACTS. This table was insert-only, so rows for dead
-        # expiries stayed forever, frozen at whatever price they last printed.
-        # An expired contract still reports a healthy underlying, strike, lot
-        # size and volume, so nothing downstream could tell it apart from a live
-        # one by looking at the row: on 2026-08-07 the engine bought and sold
-        # one such contract 83 times in a session for -Rs 7,721.
-        #
-        # The engine has its own guards now (it refuses expired and frozen
-        # quotes at entry), but those defend one reader. Not writing the
-        # garbage in the first place defends every reader, including the two in
-        # v2_web and index_spot that nobody has audited for this.
-        #
-        # Compared against the IST trading date, not UTC: for the five and a
-        # half hours after 18:30 IST, UTC is still on the previous day, and
-        # using it would keep an expired contract alive through the whole
-        # evening.
-        ist_today = (datetime.now(timezone.utc)
-                     + timedelta(hours=5, minutes=30)).date().isoformat()
-        con.execute("DELETE FROM nfo_quotes WHERE expiry IS NOT NULL"
-                    " AND expiry <> '' AND substr(expiry,1,10) < ?", (ist_today,))
         con.commit(); con.close()
+        _nfo_prune()          # see _nfo_prune: also called on ticks that write nothing
         return len(rows)
     except Exception as exc:
         print(f"  [NFO] write failed: {str(exc)[:120]}", flush=True)
@@ -270,10 +291,18 @@ def _nfo_worker(interval, hot_interval):
     if "IN" not in providers:
         return
     print(f"nfo worker up @ {hot_interval}s held / {interval}s watch", flush=True)
-    contracts, last_watch = [], 0.0
+    contracts, last_watch, last_prune = [], 0.0, 0.0
     while True:
         t0 = time.time()
         try:
+            # OUTSIDE the is_open gate on purpose. Everything else in this loop
+            # is skipped when the market is shut, so pruning in there would
+            # leave a Friday expiry's dead rows sitting in the table until
+            # Monday's open — the whole weekend, unwatched. Throttled to ten
+            # minutes because it is a DELETE against the live DB, not a read.
+            if time.time() - last_prune >= 600:
+                _nfo_prune()
+                last_prune = time.time()
             if market_regions.market_session_for_region("IN").get("is_open"):
                 due = (time.time() - last_watch) >= interval
                 if due or not contracts:
