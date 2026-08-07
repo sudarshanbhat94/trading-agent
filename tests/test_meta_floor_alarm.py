@@ -35,8 +35,19 @@ class AlarmExistsTest(unittest.TestCase):
     def test_rejecting_everything_is_logged_as_an_error(self) -> None:
         src = inspect.getsource(v2_live.poll_market)
         self.assertIn("META GATE REJECTED ALL", src)
-        self.assertIn("if cand and not kept:", src,
-                      "the alarm must fire on total rejection, not on a partial cut")
+
+    def test_it_keys_on_scored_candidates_not_the_whole_list(self) -> None:
+        """The bug in my first attempt at this alarm, caught on the live box.
+
+        The gate is `p is not None and p < thr`, so a signal the model cannot
+        score passes through untouched and lands in `kept`. Live that was
+        cand=100, kept=1 — one unscored straggler would have silenced the alarm
+        while the other 99 were rejected by a floor nothing can reach. So the
+        condition must look at the SCORED population only."""
+        src = inspect.getsource(v2_live.poll_market)
+        self.assertIn("if scored and not passed:", src)
+        self.assertNotIn("if cand and not kept:", src,
+                         "one unscored signal must not be able to silence it")
 
     def test_the_alarm_reports_both_numbers(self) -> None:
         """"Nothing passed" is not actionable. "Floor 0.60, best 0.561" is."""
@@ -44,12 +55,21 @@ class AlarmExistsTest(unittest.TestCase):
         start = src.index("META GATE REJECTED ALL")
         window = src[start:start + 700]
         self.assertIn("mfloor", window, "must report the floor it applied")
-        self.assertIn("max(seen)", window, "must report what the model could reach")
+        self.assertIn("max(p for", window, "must report what the model could reach")
 
-    def test_it_does_not_fire_when_something_survives(self) -> None:
-        src = inspect.getsource(v2_live.poll_market)
-        self.assertNotIn("if not kept:", src.replace("if cand and not kept:", ""),
-                         "an empty candidate list is a quiet market, not a mismatch")
+    def test_the_condition_matches_the_live_numbers(self) -> None:
+        """Replicates the branch on the values measured on the box: 100
+        candidates, 99 scored and all below the floor, 1 unscored."""
+        mfloor = 0.60
+        cand = [({"strategy": "swing_meanrev", "symbol": f"S{i}"}, 0.40 + i * 0.001)
+                for i in range(99)]
+        cand.append(({"strategy": "swing_meanrev", "symbol": "UNSCORED"}, None))
+        scored = [(s, p) for s, p in cand if p is not None]
+        passed = [p for s, p in scored
+                  if p >= mfloor + (0.07 if s["strategy"] == "gap_momentum" else 0.0)]
+        self.assertTrue(scored and not passed, "the alarm must fire on this shape")
+        kept = [s for s, p in cand if p is None or p >= mfloor]
+        self.assertEqual(len(kept), 1, "and the naive condition would not have")
 
 
 class TheClaimIsHonestTest(unittest.TestCase):

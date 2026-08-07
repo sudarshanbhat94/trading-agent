@@ -1784,14 +1784,24 @@ def poll_market(market):
             # distribution, so a number carried across from one to the other is
             # meaningless. If a floor is ever re-derived it must be a PERCENTILE
             # of the shipped model's own outputs, not an absolute probability.
-            if cand and not kept:
-                seen = [p for p in (mp.get(s["symbol"]) for _pr, _k, s, _pl in cand)
-                        if p is not None]
+            # Keyed on the SCORED candidates only. The obvious condition —
+            # "cand went in, nothing came out" — does not work here and I
+            # checked before believing it: the gate is `p is not None and
+            # p < thr`, so a signal the model cannot score passes through
+            # untouched. Live right now that is cand=100, kept=1, and that one
+            # unscored straggler would have silenced the alarm completely while
+            # the other 99 were being rejected by a floor nothing can reach.
+            scored = [(s, mp.get(s["symbol"])) for _pr, _k, s, _pl in cand
+                      if mp.get(s["symbol"]) is not None]
+            passed = [p for s, p in scored
+                      if p >= mfloor + (0.07 if s["strategy"] == "gap_momentum" else 0.0)]
+            if scored and not passed:
                 _LOG.error(
-                    "META GATE REJECTED ALL %d candidates: floor=%.3f but the "
-                    "model's best output was %.3f. The daily book will take NO "
-                    "trades. This is a threshold/model mismatch, not a quiet "
-                    "market.", len(cand), mfloor, max(seen) if seen else float("nan"))
+                    "META GATE REJECTED ALL %d SCORED candidates: floor=%.3f but "
+                    "the model's best output was %.3f. The daily book is taking "
+                    "essentially no trades. This is a threshold/model mismatch, "
+                    "not a quiet market.",
+                    len(scored), mfloor, max(p for _s, p in scored))
             cand = kept
     except Exception as _mexc:
         pass
