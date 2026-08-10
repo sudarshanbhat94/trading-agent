@@ -1692,13 +1692,19 @@ def poll_market(market):
                                      "FROM v2_positions WHERE market=?", (market,))}
     traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
-    cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
+    # Two views, deliberately. The CIRCUIT BREAKER is an account-wide risk guard
+    # and must see the whole book, options included. ENTRIES must see only the
+    # equity lanes' own capital — see _equity_cash for what counting options
+    # against the equity book did.
+    book_cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
+    cash = _equity_cash(v2, market, budget)
+    eq_positions = _equity_positions(positions)
     # ---- portfolio circuit breaker: risk guard, exits always keep running ----
     # No NEW entries when today is badly red (>3% of budget) or the book is in a
     # deep drawdown (>15% off its equity peak). A feed glitch / crash day should
     # stop the buying, not grind through every stop with fresh capital.
     pv_now = sum(p["shares"] * live.get(sym, {}).get("price", p["entry"]) for sym, p in positions.items())
-    equity_now = cash + pv_now
+    equity_now = book_cash + pv_now
     try:
         prev = v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' "
                           "AND substr(date,6,10) < ? ORDER BY date DESC LIMIT 1",
@@ -1884,7 +1890,10 @@ def poll_market(market):
     mcon = _ro(MAIN_DB)
     fills = exits = vetoed = investig = 0
     for _, _, s, pl in cand:
-        if len(positions) >= max_pos or (cash - reserve) < 0.25 * alloc:   # stop when only crumbs remain
+        # eq_positions, not positions: the six-slot cap is the EQUITY book's.
+        # Counting index_options rows here is what tripped it at four equity
+        # holdings (four equity + three options = seven >= six).
+        if len(eq_positions) >= max_pos or (cash - reserve) < 0.25 * alloc:   # stop when only crumbs remain
             break
         sym = s["symbol"]
         if sym in positions or sym in traded:
@@ -1955,7 +1964,7 @@ def poll_market(market):
         stop_atr = pl.get("atr_stop") or BASE_ATR_STOP
         if stop_atr > 0:
             vol_mult *= BASE_ATR_STOP / stop_atr
-        remaining = max(1, max_pos - len(positions))
+        remaining = max(1, max_pos - len(eq_positions))
         base_alloc = equity_now / max_pos
         if DYN_ALLOC.get(market, True):
             base_alloc = max(base_alloc, (cash - reserve) / remaining)   # dynamic: idle cash flows to open slots
@@ -1983,6 +1992,9 @@ def poll_market(market):
             continue
         positions[sym] = dict(id=None, strategy=s["strategy"], entry=entry, shares=shares,
                               stop=entry - pl["atr_stop"] * atr, target=tgt, trail=trail, peak=entry)
+        # eq_positions is a filtered COPY, so it has to be grown too or the slot
+        # cap stops binding after the first fill of a pass.
+        eq_positions[sym] = positions[sym]
         try:
             from . import telegram_bot
             telegram_bot.notify_trade("BUY", sym, (int(shares) if float(shares).is_integer() else round(shares, 2)),
@@ -2231,9 +2243,10 @@ def intraday_news_pass(market):
     if n_intra + n_today >= 2 * INTRA["slots"] and not watch_only:
         v2.close(); return
     traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
-    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
-    invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0.0
-    cash = budget - invested + realised
+    # _equity_cash, not a raw SUM: index_options funds itself, so charging its
+    # positions to the equity book (and crediting it their P&L) is what drove
+    # equity cash negative while three options were open.
+    cash = _equity_cash(v2, market, budget)
     alloc = budget / max_pos
     cside = COST_SIDE[market]
     cands = []
@@ -2362,6 +2375,52 @@ def _prev_close(market):
         pass
     _PREVCLOSE[market] = (today_s, out)
     return out
+
+
+OPTION_LANES = ("index_options",)   # run their OWN budget; see _equity_cash
+
+
+def _equity_cash(v2, market, budget):
+    """Cash available to the EQUITY lanes, with the option lanes excluded.
+
+    index_options funds itself. Its pass computes `budget - spent + realised`
+    over `strategy='index_options'` alone and says so plainly: "the equity book
+    is never touched and never funds an option."
+
+    That isolation was ONE-WAY. Every equity pass computed its cash as
+    `budget - SUM(all v2_positions) + SUM(all v2_trades)`, so option positions
+    were charged against the equity book while their P&L was credited to it.
+    With three options open on 2026-08-10 that put the equity book at
+    cash = -Rs 3,942 on a Rs 100,000 budget, and the entry loop bails at
+    `cash < 0.25 * alloc`. The same query fed `len(positions) >= max_pos`, so
+    seven rows (four equity + three options) tripped a six-slot cap that only
+    four of them belonged to.
+
+    Net effect: the better the options lane did, the more capital and more slots
+    it took away from the equity lanes, until they could not buy at all. The
+    equity book has taken nothing since 2026-07-29 and this is why — not the
+    meta floor, which does still pass signals (three cleared it on 07-31).
+
+    Both halves are excluded together. Netting option P&L into the equity book
+    while excluding its positions would hand the equity lanes profit they did
+    not earn.
+    """
+    marks = ",".join("?" * len(OPTION_LANES))
+    inv = v2.execute(
+        f"SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions"
+        f" WHERE market=? AND strategy NOT IN ({marks})",
+        (market, *OPTION_LANES)).fetchone()[0] or 0.0
+    realised = v2.execute(
+        f"SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
+        f" WHERE market=? AND strategy NOT IN ({marks})",
+        (market, *OPTION_LANES)).fetchone()[0] or 0.0
+    return budget - inv + realised
+
+
+def _equity_positions(positions):
+    """`positions` minus the option lanes — what the equity slot cap applies to."""
+    return {s: p for s, p in positions.items()
+            if p.get("strategy") not in OPTION_LANES}
 
 
 def _stale_symbols(market, lag=STALE_QUOTE_SEC):
@@ -2502,13 +2561,15 @@ def volume_surge_pass(market):
         v2.close(); return
     positions = {r[0]: r[1] for r in v2.execute("SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
     n_vs = sum(1 for st in positions.values() if st == "volume_surge")
-    if n_vs >= VOLSURGE["slots"] or len(positions) >= max_pos:
+    n_eq = sum(1 for st in positions.values() if st not in OPTION_LANES)
+    if n_vs >= VOLSURGE["slots"] or n_eq >= max_pos:
         v2.close(); return
     today_s = now.date().isoformat()
     traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
-    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
-    invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0.0
-    cash = budget - invested + realised
+    # _equity_cash, not a raw SUM: index_options funds itself, so charging its
+    # positions to the equity book (and crediting it their P&L) is what drove
+    # equity cash negative while three options were open.
+    cash = _equity_cash(v2, market, budget)
     alloc = budget / max_pos
     cside = COST_SIDE[market]
     cands = []
@@ -2546,7 +2607,7 @@ def volume_surge_pass(market):
     cands.sort(key=lambda x: -x[0])
     fills = 0
     for _, move, rvol, sym, lq, seeded in cands:
-        if n_vs + fills >= VOLSURGE["slots"] or len(positions) + fills >= max_pos or cash < 0.25 * alloc:
+        if n_vs + fills >= VOLSURGE["slots"] or n_eq + fills >= max_pos or cash < 0.25 * alloc:
             break
         entry = lq["price"]
         # EQUAL RUPEE RISK, derived from this lane's OWN configured stop.
@@ -2664,7 +2725,8 @@ def intraday_momentum_pass(market):
         positions = {r[0]: r[1] for r in v2.execute(
             "SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
         held = sum(1 for st in positions.values() if st == "intraday_momentum")
-        if held >= INTRAMOM["slots"] or len(positions) >= max_pos:
+        n_eq = sum(1 for st in positions.values() if st not in OPTION_LANES)
+        if held >= INTRAMOM["slots"] or n_eq >= max_pos:
             return
 
         today_s = now.date().isoformat()
@@ -2676,11 +2738,7 @@ def intraday_momentum_pass(market):
         if not ranked:
             return
 
-        realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?",
-                              (market,)).fetchone()[0] or 0.0
-        invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions "
-                              "WHERE market=?", (market,)).fetchone()[0] or 0.0
-        cash = budget - invested + realised
+        cash = _equity_cash(v2, market, budget)
         cside = COST_SIDE[market]
         alloc = budget / max_pos
 
@@ -2747,13 +2805,15 @@ def btst_pass(market, force=False):
         v2.close(); return
     positions = {r[0]: r[1] for r in v2.execute("SELECT symbol,strategy FROM v2_positions WHERE market=?", (market,))}
     n_bt = sum(1 for st in positions.values() if st == "btst")
-    if n_bt >= BTST["slots"] or len(positions) >= max_pos:
+    n_eq = sum(1 for st in positions.values() if st not in OPTION_LANES)
+    if n_bt >= BTST["slots"] or n_eq >= max_pos:
         v2.close(); return
     today_s = now.date().isoformat()
     traded = {r[0] for r in v2.execute("SELECT symbol FROM v2_trades WHERE market=? AND entry_date=?", (market, today_s))}
-    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
-    invested = v2.execute("SELECT COALESCE(SUM(shares*entry_price),0) FROM v2_positions WHERE market=?", (market,)).fetchone()[0] or 0.0
-    cash = budget - invested + realised
+    # _equity_cash, not a raw SUM: index_options funds itself, so charging its
+    # positions to the equity book (and crediting it their P&L) is what drove
+    # equity cash negative while three options were open.
+    cash = _equity_cash(v2, market, budget)
     alloc = budget / max_pos
     cside = COST_SIDE[market]
     cands = []
@@ -2785,7 +2845,7 @@ def btst_pass(market, force=False):
     cands.sort(key=lambda x: -x[0])
     fills = 0
     for _, move, rvol, cpos, sym, lq in cands:
-        if n_bt + fills >= BTST["slots"] or len(positions) + fills >= max_pos or cash < 0.25 * alloc:
+        if n_bt + fills >= BTST["slots"] or n_eq + fills >= max_pos or cash < 0.25 * alloc:
             break
         entry = lq["price"]
         shares = float(int(min(alloc * BTST["size_frac"], cash / (1 + cside)) / entry))
