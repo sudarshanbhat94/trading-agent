@@ -143,7 +143,23 @@ PLAN = {
 # Note swing_meanrev held the only positive live record (+Rs 795, PF 1.21 on 23
 # trades), so this trades a small measured edge for focus; say so if it is ever
 # reviewed rather than letting the ledger imply the lane failed.
-DISABLED_LANES = {"gap_momentum", "btst"}
+# 2026-08-10: volume_surge parked, on the same standard that quarantined
+# gap_momentum. 43 trades, -Rs 7,184, and it is the ONLY lane losing money —
+# index_options is +Rs 28,936 over 39 real trades and carries the book.
+#
+# The lane needs a 38% win rate (avg win Rs 653 / avg loss Rs 393) and does 28%.
+# Measured against real 5-minute bars it buys at a median 95% of the day's range
+# after a median +3.8% run, leaving a median +1.01% still to come against a
+# +3.5% target: the target is unreachable for the median trade. Lowering it does
+# not help — a sweep over the replayed trades showed a nearer target caps the few
+# winners while the losers still pay the full stop.
+#
+# Two caveats to keep honest if this is reviewed. Its whole record was made at
+# 1.60x the intended position size (fixed 2026-08-10), so the rupee loss
+# overstates the strategy by roughly a third — but size scales P&L, not win rate,
+# and the win-rate shortfall is what kills it. And no slice of it is positive, so
+# there is no sub-setup here worth rescuing on the evidence available.
+DISABLED_LANES = {"gap_momentum", "btst", "volume_surge"}
 MOM_SLOT_CAP = 2                        # momentum sleeve: at most 2 of the 6-slot book
 # mom_breakout used to require a STRONG market uptrend, which is why on
 # 2026-07-29 — regime OFF — it took zero trades all morning while the operator

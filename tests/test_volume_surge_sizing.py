@@ -102,5 +102,48 @@ class SizingIsWiredInTest(unittest.TestCase):
         self.assertIn("cash / (1 + cside)", src, "must never overdraw the book")
 
 
+class VolumeSurgeIsParkedTest(unittest.TestCase):
+    """Parked 2026-08-10 on the standard that quarantined gap_momentum.
+
+    43 trades, -Rs 7,184, the only lane losing money while index_options is
+    +Rs 28,936 over 39 real trades. Needs a 38% win rate, does 28%.
+
+    Parked, NOT deleted: signals still compute for the radar, the lane just
+    stops buying. The sizing fix above stays in place so that if it is ever
+    unparked it trades at the right size from the first entry.
+    """
+
+    def test_it_is_quarantined(self) -> None:
+        self.assertIn("volume_surge", v2_live.DISABLED_LANES)
+
+    def test_the_pass_honours_the_quarantine(self) -> None:
+        """The flag is worthless if the lane's own entry path ignores it —
+        volume_surge enters via volume_surge_pass, not the daily candidate
+        loop where DISABLED_LANES is checked."""
+        src = inspect.getsource(v2_live.volume_surge_pass)
+        self.assertIn('if "volume_surge" in DISABLED_LANES:', src)
+        head = src[:src.index('if "volume_surge" in DISABLED_LANES:') + 200]
+        self.assertIn("return", head, "the check must bail out, not just log")
+
+    def test_the_profitable_lane_is_untouched(self) -> None:
+        for lane in ("index_options", "intraday_news", "mom_breakout"):
+            with self.subTest(lane=lane):
+                self.assertNotIn(lane, v2_live.DISABLED_LANES)
+
+    def test_the_sizing_fix_survives_the_parking(self) -> None:
+        """So an unpark does not silently restore 1.60x tickets."""
+        src = inspect.getsource(v2_live.volume_surge_pass)
+        self.assertIn("VOLSURGE_RISK_PCT", src)
+        self.assertNotIn("atr_pct = 0.0175", src)
+
+    def test_an_open_position_can_still_be_exited(self) -> None:
+        """Parking blocks BUYING. exit_monitor must keep managing what is
+        already held — there is an open OIL position at the time of parking,
+        and a quarantine that stranded it would be far worse than the lane."""
+        src = inspect.getsource(v2_live.exit_monitor)
+        self.assertNotIn("DISABLED_LANES", src,
+                         "exits must never consult the quarantine list")
+
+
 if __name__ == "__main__":
     unittest.main()

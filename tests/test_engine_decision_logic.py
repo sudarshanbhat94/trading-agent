@@ -240,9 +240,16 @@ class LaneConfigurationTest(unittest.TestCase):
         strongest signals with nothing able to act on them, and it holds the only
         positive live record (+Rs 795, PF 1.21 over 23 trades). gap_momentum
         remains the permanent exclusion (negative live AND backtest); btst stays
-        parked by choice, not because it failed."""
-        self.assertEqual(v2_live.DISABLED_LANES, {"gap_momentum", "btst"})
-        for lane in ("mom_breakout", "volume_surge", "intraday_news", "swing_meanrev"):
+        parked by choice, not because it failed.
+
+        2026-08-10: volume_surge parked, on gap_momentum's standard. 43 trades,
+        -Rs 7,184, and the only lane losing money — index_options is +Rs 28,936
+        over 39 real trades and carries the book. It needs a 38% win rate and
+        does 28%, and against real 5-minute bars it buys at a median 95% of the
+        day's range with a median +1.01% left against a +3.5% target."""
+        self.assertEqual(v2_live.DISABLED_LANES,
+                         {"gap_momentum", "btst", "volume_surge"})
+        for lane in ("mom_breakout", "intraday_news", "swing_meanrev"):
             with self.subTest(lane=lane):
                 self.assertNotIn(lane, v2_live.DISABLED_LANES)
 
