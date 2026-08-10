@@ -2092,7 +2092,16 @@ def _publish_ideas(v2, market, tails, mdf, asof, rstate, strong,
                          score=s["conviction"], atr=s["atr"],
                          price=(lq["price"] if lq else s["ref_close"])))
     from . import meta_filter as _mf
-    mp = _mf.score(sigs, tails, mdf, asof, rstate, strong, market)
+    # Score the WIDE ideas sweep, but measure day_breadth/day_rank against the
+    # BOOK's candidate set — the population the model was trained on. Without
+    # this, sweeping at IDEAS_MIN_CONVICTION (695 names) instead of the book's
+    # threshold (162) inflates every probability purely through list length, and
+    # the ideas page clears a p(win) floor the book itself cannot. See the note
+    # in meta_filter.score.
+    _canon = [s for s in sigs
+              if float(s.get("score") or 0) >= PLAN["swing_meanrev"]["threshold"]]
+    mp = _mf.score(sigs, tails, mdf, asof, rstate, strong, market,
+                   population=_canon)
     pool = []
     for s in sigs:
         sym = s.get("symbol")

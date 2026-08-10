@@ -64,7 +64,7 @@ def _f(row, key):
         return 0.0
 
 
-def score(sigs, tails, mdf, asof, state, strong, market="IN"):
+def score(sigs, tails, mdf, asof, state, strong, market="IN", population=None):
     """Return {symbol: P(win)} for the swing/gap candidates in `sigs`.
 
     Recomputes features with the SAME eng.compute_features used in training, so
@@ -85,9 +85,41 @@ def score(sigs, tails, mdf, asof, state, strong, market="IN"):
             or (s["strategy"] == "swing_meanrev" and state != "OFF")]
     if not cand:
         return out
-    cand_sorted = sorted(cand, key=lambda s: -s["score"])
-    breadth = len(cand_sorted)
-    rank_of = {id(s): r for r, s in enumerate(cand_sorted)}
+    # POPULATION FEATURES DESCRIBE THE DAY, NOT THE STOCK. day_breadth is the
+    # model's #1 feature and day_rank its #4, and training defines both over the
+    # ENGINE's own candidate set for that day (`day_breadth = len(day_events)`
+    # in scripts/meta_label_research.py, built at the engine's threshold).
+    #
+    # Computing them over whatever list happens to be passed in makes a stock's
+    # probability depend on how many OTHER stocks you scored alongside it. The
+    # ideas page swept at conviction 0.15 (695 names) while the book swept at
+    # 0.55 (162), and on 2026-08-10 the same model gave REDINGTON 0.5095 as an
+    # idea and 0.4440 in the book — same stock, same day, +0.066 from list
+    # length alone. Peak probability moved 0.546 -> 0.709, which is the
+    # difference between "nothing qualifies" and "publish a hundred".
+    #
+    # So callers scoring a NON-canonical subset pass the canonical population
+    # explicitly, and breadth/rank are measured against that.
+    pop = cand if population is None else [
+        s for s in population if s["strategy"] == "gap_momentum"
+        or (s["strategy"] == "swing_meanrev" and state != "OFF")]
+    if not pop:
+        pop = cand
+    breadth = len(pop)
+    pop_convs = sorted((float(s["score"]) for s in pop), reverse=True)
+
+    def _rank_for(sc):
+        """Position this conviction would take in the canonical ordering."""
+        lo, hi = 0, len(pop_convs)
+        while lo < hi:                      # count of members ranked strictly higher
+            mid = (lo + hi) // 2
+            if pop_convs[mid] > sc:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    rank_of = {id(s): _rank_for(float(s["score"])) for s in cand}
     try:
         dow = pd.Timestamp(asof).dayofweek
         rows = []
