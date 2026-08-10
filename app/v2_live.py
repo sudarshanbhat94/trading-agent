@@ -337,6 +337,12 @@ VOL_TARGET_ATR = 0.030
 # exit rule changes.
 BASE_ATR_STOP = 2.0
 VOL_SIZE_MIN, VOL_SIZE_MAX = 0.55, 1.60
+# Fraction of the BOOK risked on one volume_surge entry, i.e. what is lost if it
+# stops out. The lane has no ATR to normalise against (it is intraday and its
+# stop is a flat percentage), so it sizes off this and its own configured stop
+# rather than through the ATR model, which it could only ever feed a constant.
+# 0.42% x 6 slots = 2.5% of the book at risk with the lane fully deployed.
+VOLSURGE_RISK_PCT = 0.0042
 # Hard ceiling on what ONE overnight-held position may be worth, as a fraction
 # of equity. This is a guardrail, NOT a re-tuning of the sizing model.
 #
@@ -2527,9 +2533,34 @@ def volume_surge_pass(market):
         if n_vs + fills >= VOLSURGE["slots"] or len(positions) + fills >= max_pos or cash < 0.25 * alloc:
             break
         entry = lq["price"]
-        atr_pct = 0.0175                      # % stop drives sizing (no ATR for intraday)
-        vol_mult = max(VOL_SIZE_MIN, min(VOL_SIZE_MAX, VOL_TARGET_ATR / max(atr_pct, 0.005)))
-        shares = float(int(min(alloc * vol_mult, cash / (1 + cside)) / entry))
+        # EQUAL RUPEE RISK, derived from this lane's OWN configured stop.
+        #
+        # What stood here was volatility-normalised sizing that normalised
+        # nothing:
+        #
+        #     atr_pct  = 0.0175                       # hardcoded, never varies
+        #     vol_mult = clamp(0.030 / 0.0175, 0.55, 1.60)
+        #              = clamp(1.714) = 1.60          # the CAP, on every trade
+        #
+        # A constant fed through a min/max is a constant. Every volume_surge
+        # position was sized at 1.60 x the slot — Rs 26,667 against a Rs 16,667
+        # slot, 27% of the book in one intraday name — and the live ledger shows
+        # it: SKYGOLD 26,639, BLS 26,462, MOTHERSON 26,580, SCI 26,514, STLTECH
+        # 26,440, IMFA 26,046. Six slots at that size need Rs 160,000 of a
+        # Rs 100,000 book, so the lane could never hold more than THREE names and
+        # ran out of cash instead of diversifying.
+        #
+        # The 0.0175 was the stop as it stood before 2026-07-29. When the stop
+        # was widened to 2.5% the size should have shrunk to hold rupee risk
+        # constant; the constant was never touched, so widening the stop quietly
+        # increased risk per trade by 43% instead of leaving it flat. That is the
+        # same failure poll_market's BASE_ATR_STOP/atr_stop scaling exists to
+        # prevent.
+        #
+        # So size off the stop that is ACTUALLY configured. Risk per trade stays
+        # put if the stop moves again, and one slot remains the ceiling.
+        risk_notional = (budget * VOLSURGE_RISK_PCT) / max(VOLSURGE["sl"], 0.001)
+        shares = float(int(min(alloc, risk_notional, cash / (1 + cside)) / entry))
         if shares < 1 or shares * entry < SLOT_MIN_UTIL * alloc:
             continue
         cash -= shares * entry * (1 + cside)
