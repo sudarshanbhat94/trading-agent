@@ -586,6 +586,42 @@ INDEX_OPTIONS = dict(
 # live in v2_web while the engine hardcoded NIFTY, which is how the UI came to
 # present three choices that did nothing.
 INDEX_ALLOWED = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
+OPTION_BUYING_RETIRED = True
+# Buying index option premium is retired. Not paused, not pending better
+# parameters — retired, on measurement.
+#
+# Measured on 1,300 sessions of real F&O bhavcopy (every index, ATM straddle,
+# marked close to close on the SAME contracts):
+#
+#     LONG premium   -1.09%/session, wins 35% of days, median -3.08%
+#     SHORT premium  +1.09%/session, wins 65% of days
+#
+# Every index, no exception: BANKNIFTY -0.86%, FINNIFTY -0.85%,
+# MIDCPNIFTY -0.26%, NIFTY -3.04%. This is not a regime, a parameter or a
+# gate. The direction of the trade is wrong.
+#
+# The other side is not available to us either. Selling naked has the edge but
+# a -217% day and PF 1.22. Defined-risk (iron condor, one-strike wings) caps
+# the tail at -35% but nets -Rs 286/lot/day after real NFO charges, because
+# eight legs of friction cost 1,026% of a +Rs 31 gross edge — and only Rs 160
+# of that is fixed brokerage, so size does not rescue it.
+#
+# The live book agrees: 139 option trades in August, 18% win rate, -Rs 9,230.
+#
+# The whole loss was foreseeable from work already in this file.
+# INDEX_PREMIUM_WARNING has said since the 404-session study that the straddle
+# "implies 2.20% vs 1.13% realised — premium is roughly double the move that
+# actually happens", and the comment above it admits it was "shown next to the
+# tick-box rather than enforced behind it". SEBI's own published data says
+# ~91-93% of individual F&O traders lose money every year since FY22, while
+# prop desks and FPIs took Rs 61,000 crore of gross profit in FY24 running
+# algos on the other side. We built the retail side of that trade.
+#
+# This flag is checked BEFORE the settings file is read, so the persisted
+# `auto_trade: true` in var/index_options.json cannot switch it back on. That
+# is deliberate: a saved UI toggle must not be able to restart a strategy that
+# was retired on evidence.
+
 INDEX_SETTINGS_FILE = os.path.join(os.path.dirname(V2_DB), "index_options.json")
 INDEX_EDITABLE = ("enabled", "auto_trade", "instruments", "expiry",
                   "min_confidence", "budget")
@@ -612,6 +648,9 @@ def index_settings_load():
     for key in INDEX_EDITABLE:
         if key in saved:
             INDEX_OPTIONS[key] = tuple(saved[key]) if key == "instruments" else saved[key]
+    # A saved UI toggle must never restart a strategy retired on evidence.
+    if OPTION_BUYING_RETIRED:
+        INDEX_OPTIONS["auto_trade"] = False
 # Measured on the 404-session study and shown next to the tick-box rather than
 # enforced behind it: buying these is paying materially over the realised move.
 INDEX_PREMIUM_WARNING = {
@@ -2928,6 +2967,12 @@ _SECTOR_ALERTED: dict = {}   # date -> set of sectors already radar-alerted (ded
 def index_options_pass(market):
     """Buy an index CE or PE when the call is strong enough — the execution path.
 
+    *** THIS LANE IS RETIRED. It does not trade. See OPTION_BUYING_RETIRED. ***
+    Everything below is left intact and readable because the analysis it
+    produces still feeds the UI, and because deleting the evidence would make
+    the reasoning below impossible to check.
+
+
     Everything before this produced analysis and nothing consumed it: the
     direction engine, the chain analytics, the levels and the settings toggle
     all existed while INDEX_OPTIONS appeared exactly once in this file, in its
@@ -2955,6 +3000,10 @@ def index_options_pass(market):
     The direction call itself measured at 36% accuracy over 404 sessions. This
     makes the path REAL; it does not make the signal good.
     """
+    if OPTION_BUYING_RETIRED:
+        _status[market] = "index options: RETIRED (long premium is -1.09%/session over 1,300 sessions)"
+        return
+
     index_settings_load()                 # the operator's saved choices, every pass
     cfg = INDEX_OPTIONS
     if not cfg.get("enabled") or not cfg.get("auto_trade"):
