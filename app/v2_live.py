@@ -4158,10 +4158,15 @@ def sleeve_pass(market):
         pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
                  for sym, _st, sh, ep, _sl in positions)
         equity = cash + pv
-        # peak from THIS book epoch only — see the resize note in ensure_schema
+        # Peak from THIS book epoch only. Compared to the SECOND, not the day:
+        # v2_equity.date is "LIVE_<iso>", and snapshots taken earlier on the
+        # same calendar day were denominated in the old capital (Rs 89,182 of
+        # them), so a date-granular compare re-imported the old peak and held
+        # the brake at -88%.
         peak = v2.execute(
             "SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?"
-            " AND substr(date,6) >= ?", (capital, market, epoch_day)).fetchone()[0] or capital
+            " AND substr(date,6) >= ?",
+            (capital, market, epoch_ts[:19])).fetchone()[0] or capital
         peak = max(float(peak), capital)
 
         book = BookState(capital=capital, cash=cash, deployed=deployed,
