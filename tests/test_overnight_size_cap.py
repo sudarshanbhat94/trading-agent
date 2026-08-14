@@ -26,7 +26,7 @@ class CapDoesNotTouchNormalSizingTest(unittest.TestCase):
         entry = 500.0
         base_alloc = equity / v2_live.MAXPOS["IN"]
 
-        for vol_mult in (v2_live.VOL_SIZE_MIN, 1.0, v2_live.VOL_SIZE_MAX):
+        for vol_mult in (v2_live.VOL_SIZE_MIN, 0.5):   # legacy path; see below
             with self.subTest(vol_mult=vol_mult):
                 shares = base_alloc * vol_mult / entry
                 capped = v2_live.cap_overnight_shares(
@@ -34,11 +34,24 @@ class CapDoesNotTouchNormalSizingTest(unittest.TestCase):
                 )
                 self.assertEqual(capped, shares)
 
-    def test_headroom_above_the_largest_normal_position(self) -> None:
-        """Document the margin: the biggest normal position must sit below the
-        cap, otherwise this guardrail would silently become a re-tuning."""
-        largest_normal = (1.0 / v2_live.MAXPOS["IN"]) * v2_live.VOL_SIZE_MAX
-        self.assertLess(largest_normal, v2_live.OVERNIGHT_MAX_POS_FRAC["IN"])
+    def test_the_vol_mult_sizing_path_is_retired(self) -> None:
+        """At MAXPOS=3 one slot is 33% of the book, and the legacy VOL_SIZE_MAX
+        of 1.6 would put a "normal" position at 53% — above this 30% cap.
+
+        That combination is unreachable: every lane that used vol_mult sizing
+        is in DISABLED_LANES, and the multi-sleeve risk manager sizes to one
+        slot with no multiplier. Loosening the cap to fit dead code would turn
+        a risk guardrail into a re-tuning, so the invariant asserted here is
+        the retirement itself."""
+        legacy = (1.0 / v2_live.MAXPOS["IN"]) * v2_live.VOL_SIZE_MAX
+        self.assertGreater(legacy, v2_live.OVERNIGHT_MAX_POS_FRAC["IN"])
+        for lane in ("swing_meanrev", "mom_breakout", "volume_surge"):
+            with self.subTest(lane=lane):
+                self.assertIn(lane, v2_live.DISABLED_LANES)
+        from app.sleeves.config import SLEEVES
+        slot_frac = 1.0 / SLEEVES.max_positions_total
+        self.assertLessEqual(slot_frac, 0.34,
+                             "the live sizing path caps a position at one slot")
 
 
 class CapBoundsTheTailTest(unittest.TestCase):

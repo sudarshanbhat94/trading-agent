@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 IST = timezone(timedelta(hours=5, minutes=30))
 _LOG = logging.getLogger("openstocks.books")
 
-DEFAULT_BUDGET = {"IN": 100000.0, "US": 20000.0}
+DEFAULT_BUDGET = {"IN": 10000.0, "US": 20000.0}   # matches v2_live.BUDGET
 MAX_POSITIONS = 6
 # Fraction of the book one position may take. Mirrors the house rule
 # (budget / max_pos) rather than inventing a second sizing policy.
@@ -77,7 +77,7 @@ def ensure_book(con, user_id, market="IN"):
                       (int(user_id), market)).fetchone()
     if row:
         return float(row[0])
-    budget = DEFAULT_BUDGET.get(market, 100000.0)
+    budget = DEFAULT_BUDGET.get(market, 10000.0)
     con.execute("INSERT OR IGNORE INTO user_book(user_id,market,budget,started_at)"
                 " VALUES(?,?,?,?)",
                 (int(user_id), market, budget, datetime.now(timezone.utc).isoformat()))

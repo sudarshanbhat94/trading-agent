@@ -1,6 +1,6 @@
 """Per-user paper books: one subscriber's actions never touch another's.
 
-Pro is sold as "your own Rs 1,00,000 paper book" and until now there was ONE
+Pro is sold as "your own Rs 10,000 paper book" and until now there was ONE
 book — the engine's — that every subscriber saw and any of them could wipe.
 
 The engine's tables are deliberately untouched. It reads and writes
@@ -66,18 +66,23 @@ class SizingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.con = _db()
 
-    def test_a_position_is_a_sixth_of_the_book(self) -> None:
+    def test_a_position_is_one_slot_of_the_book(self) -> None:
+        """Capital is Rs 10,000 across 3 slots, so a slot is Rs 3,333."""
+        slot = books.DEFAULT_BUDGET["IN"] * books.POSITION_FRACTION
         qty = books.size_for(self.con, 1, "IN", 1000.0)
-        self.assertEqual(qty, 16)              # 100000/6 = 16666 -> 16 shares
+        self.assertEqual(qty, int(slot // 1000.0))
+        self.assertGreater(qty, 0, "a slot must afford at least one share")
 
     def test_it_shrinks_once_cash_is_the_binding_cap(self) -> None:
-        """Two caps: budget/6 per position, and the cash actually free. The
-        first binds on a full book (a sixth of Rs 1,00,000 is Rs 16,666), so
-        the size only falls once free cash drops below that."""
+        """Two caps: one slot per position, and the cash actually free. The
+        slot binds on a full book, so size only falls once free cash drops
+        below it."""
+        slot = books.DEFAULT_BUDGET["IN"] * books.POSITION_FRACTION
         first = books.size_for(self.con, 1, "IN", 1000.0)
-        self.assertEqual(first, 16)
-        books.buy(self.con, 1, "IN", "manual", "BIG", 19000.0, shares=5)  # Rs 95,000
-        self.assertLess(books.cash(self.con, 1), 16666)
+        self.assertEqual(first, int(slot // 1000.0))
+        # spend almost the whole book so CASH becomes the binding cap
+        books.buy(self.con, 1, "IN", "manual", "BIG", 1900.0, shares=5)
+        self.assertLess(books.cash(self.con, 1), slot)
         self.assertLess(books.size_for(self.con, 1, "IN", 1000.0), first)
 
     def test_a_book_never_goes_negative(self) -> None:
@@ -150,7 +155,8 @@ class MirrorTest(unittest.TestCase):
         """Not the house quantity, and not each other's — that is the whole
         point of a personal book. User 1 is spent down below the per-position
         cap so cash becomes the binding constraint for them and not for user 2."""
-        books.buy(self.con, 1, "IN", "manual", "X", 19000.0, shares=5)  # Rs 95,000
+        # drain book 1 to ~Rs 500 free; book 2 stays whole
+        books.buy(self.con, 1, "IN", "manual", "X", 1900.0, shares=5)  # Rs 9,500
         books.mirror_entry(self.con, self.db, self.plans, "IN", "swing_meanrev",
                            "ITC", 300.0)
         p1 = books.positions(self.con, 1)[-1]["shares"]
@@ -175,16 +181,16 @@ class StatsTest(unittest.TestCase):
     def test_an_untouched_book_reports_its_full_budget(self) -> None:
         con = _db()
         s = books.stats(con, 9, "IN", {})
-        self.assertEqual(s["equity"], 100000.0)
+        self.assertEqual(s["equity"], 10000.0)
         self.assertEqual(s["positions"], 0)
-        self.assertEqual(s["cash"], 100000.0)
+        self.assertEqual(s["cash"], 10000.0)
 
     def test_equity_follows_the_live_price(self) -> None:
         con = _db()
         books.buy(con, 1, "IN", "manual", "ITC", 100.0, shares=10)
         s = books.stats(con, 1, "IN", {"ITC": {"price": 120.0}})
         self.assertAlmostEqual(s["unrealised"], 200.0)
-        self.assertAlmostEqual(s["equity"], 100000.0 + 200.0)
+        self.assertAlmostEqual(s["equity"], 10000.0 + 200.0)
 
 
 if __name__ == "__main__":
@@ -202,7 +208,7 @@ class EquitySeriesTest(unittest.TestCase):
         books.snapshot_equity(self.con, 1, "IN", {"ITC": {"price": 330.0}})
         series = books.equity_series(self.con, 1)
         self.assertEqual(len(series), 1)
-        self.assertGreater(series[0][1], 100000.0)
+        self.assertGreater(series[0][1], 10000.0)
 
     def test_the_same_day_updates_rather_than_accumulates(self) -> None:
         books.snapshot_equity(self.con, 1, "IN", {})
@@ -332,7 +338,7 @@ class ConnectionHygieneTest(unittest.TestCase):
         con = _db()
         before = con.execute("SELECT COUNT(*) FROM user_book").fetchone()[0]
         st = books.stats(con, 4242, "IN", {})
-        self.assertEqual(st["equity"], 100000.0)
+        self.assertEqual(st["equity"], 10000.0)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM user_book").fetchone()[0],
                          before, "a read created a row")
 

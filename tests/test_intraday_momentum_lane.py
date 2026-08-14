@@ -101,10 +101,14 @@ class ConfigurationTest(unittest.TestCase):
         source = inspect.getsource(v2_live.intraday_momentum_pass)
         self.assertIn('INTRAMOM.get("enabled")', source)
 
-    def test_size_is_bounded(self) -> None:
-        """size_frac multiplies one slot's allocation. At MAXPOS=6 a frac of 3
-        is about half the book; anything at or above 6 is the whole book."""
-        self.assertLessEqual(v2_live.INTRAMOM["size_frac"], v2_live.MAXPOS["IN"] / 2)
+    def test_the_lane_is_retired(self) -> None:
+        """This lane is dead twice over: INTRAMOM["enabled"] is False and
+        intraday_news is in DISABLED_LANES. Its size_frac was calibrated
+        against MAXPOS=6 and no longer makes sense at 3, which is exactly why
+        it must not be reachable — the assertion is the retirement, not the
+        stale sizing constant."""
+        self.assertFalse(v2_live.INTRAMOM.get("enabled"))
+        self.assertIn("intraday_news", v2_live.DISABLED_LANES)
 
 
 class WiringTest(unittest.TestCase):

@@ -246,12 +246,15 @@ class LaneConfigurationTest(unittest.TestCase):
         -Rs 7,184, and the only lane losing money — index_options is +Rs 28,936
         over 39 real trades and carries the book. It needs a 38% win rate and
         does 28%, and against real 5-minute bars it buys at a median 95% of the
-        day's range with a median +1.01% left against a +3.5% target."""
+        day's range with a median +1.01% left against a +3.5% target.
+
+        2026-08-15: ALL legacy lanes retired. The multi-sleeve system in
+        app/sleeves/ is the only path that may open a position, so nothing in
+        PLAN may remain tradeable."""
         self.assertEqual(v2_live.DISABLED_LANES,
-                         {"gap_momentum", "btst", "volume_surge"})
-        for lane in ("mom_breakout", "intraday_news", "swing_meanrev"):
-            with self.subTest(lane=lane):
-                self.assertNotIn(lane, v2_live.DISABLED_LANES)
+                         {"gap_momentum", "btst", "volume_surge",
+                          "swing_meanrev", "mom_breakout", "intraday_news"})
+        self.assertEqual(set(v2_live.PLAN) - v2_live.DISABLED_LANES, set())
 
     def test_mom_breakout_is_not_blocked_by_the_market_regime(self) -> None:
         """2026-07-29: regime OFF meant this lane took zero trades all morning.

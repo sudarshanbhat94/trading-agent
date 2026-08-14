@@ -125,10 +125,13 @@ class VolumeSurgeIsParkedTest(unittest.TestCase):
         head = src[:src.index('if "volume_surge" in DISABLED_LANES:') + 200]
         self.assertIn("return", head, "the check must bail out, not just log")
 
-    def test_the_profitable_lane_is_untouched(self) -> None:
-        for lane in ("index_options", "intraday_news", "mom_breakout"):
+    def test_every_legacy_lane_is_now_retired(self) -> None:
+        """Superseded 2026-08-15: this once asserted the other lanes were still
+        live. They are all retired now and the sleeve system replaces them."""
+        for lane in ("volume_surge", "intraday_news", "mom_breakout",
+                     "swing_meanrev", "gap_momentum", "btst"):
             with self.subTest(lane=lane):
-                self.assertNotIn(lane, v2_live.DISABLED_LANES)
+                self.assertIn(lane, v2_live.DISABLED_LANES)
 
     def test_the_sizing_fix_survives_the_parking(self) -> None:
         """So an unpark does not silently restore 1.60x tickets."""
