@@ -3965,6 +3965,42 @@ def _market_open_watchdog(market):
 SLEEVE_INTERVAL = 300          # heavy: full panel + universe screen
 
 
+def reset_book_epoch(market, capital=None):
+    """Re-anchor the book's accounting epoch to now.
+
+    `ensure_schema` re-anchors on a capital CHANGE, but that only helps if the
+    re-anchor code is deployed before the change lands. It was not: an earlier
+    build set budget to Rs 10,000 with the plain UPDATE, so by the time the
+    re-anchor shipped the budget already matched and the condition never fired.
+    The epoch stayed at the book's original 2026-07-28 creation, three weeks of
+    old-book P&L kept counting against Rs 10,000 of capital, and the drawdown
+    brake read -105%.
+
+    Sets started_at to now and writes ONE equity snapshot at the current
+    capital, so the new epoch has a defined starting point to measure from.
+    Deletes nothing: the old ledger stays queryable and is still reported in
+    full by sleeves.performance under `legacy`.
+    """
+    v2 = _rw()
+    try:
+        row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
+        if not row:
+            return None
+        cap = float(capital if capital is not None else row[0])
+        now = datetime.now(timezone.utc).isoformat()
+        v2.execute("UPDATE v2_book SET budget=?, started_at=? WHERE market=?",
+                   (cap, now, market))
+        v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,"
+                   "positions_value,n_positions) VALUES(?,?,?,?,?,?)",
+                   (market, "LIVE_" + now[:19], cap, cap, 0.0, 0))
+        v2.commit()
+        _LOG.warning("book epoch re-anchored for %s at Rs %.0f (started_at=%s)",
+                     market, cap, now)
+        return now
+    finally:
+        v2.close()
+
+
 def reconcile_book_capital(market):
     """Close positions the resized book can no longer carry.
 
