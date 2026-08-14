@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from datetime import datetime, timezone
 
 from app import v2_live
 
@@ -160,10 +161,15 @@ class BookSeparationTest(unittest.TestCase):
         for strat, sym, pnl in rows_trades:
             # return_pct must follow the SIGN of pnl, or a loser is recorded as
             # a win and the win-rate assertion tests nothing
+            # closed_at is REQUIRED: _market_stats scopes realised P&L to the
+            # book epoch on this timestamp, and a real exit always writes it.
+            # A row without one predates the column and is legacy by
+            # definition, so omitting it here made the fixture unrepresentative.
             con.execute("INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,"
-                        "exit_date,exit_price,shares,pnl,return_pct,reason)"
-                        " VALUES('IN',?,?,'2026-08-03',100,'2026-08-03',110,10,?,?,'target')",
-                        (strat, sym, pnl, 10.0 if pnl > 0 else -10.0))
+                        "exit_date,exit_price,shares,pnl,return_pct,reason,closed_at)"
+                        " VALUES('IN',?,?,'2026-08-03',100,'2026-08-03',110,10,?,?,'target',?)",
+                        (strat, sym, pnl, 10.0 if pnl > 0 else -10.0,
+                         datetime.now(timezone.utc).isoformat()))
         con.commit()
         live = {sym: {"price": entry} for _s, sym, entry, _sh in rows_positions}
         out = v2_web._market_stats(con, "IN", 100000.0, live)

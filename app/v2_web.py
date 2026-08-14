@@ -269,15 +269,25 @@ EQUITY_EXCLUDED = ("index_options",)
 def _market_stats(v2, market, budget, live):
     today_s = datetime.now(IST).date().isoformat()
     marks = ",".join("?" * len(EQUITY_EXCLUDED))
+    # BOOK EPOCH. Realised P&L is denominated in the capital it was earned
+    # under, so a resized book must not inherit it: with all-time sums this
+    # endpoint served cash -Rs 2,913 and equity -Rs 1,038 against a Rs 10,000
+    # book whose ledger actually reads Rs 9,812. Compared on the closed_at
+    # TIMESTAMP because the legacy ledger shares the resize date.
+    _ep = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
+                     (market,)).fetchone()
+    epoch = (_ep[0] if _ep and _ep[0] else "") or ""
     pos = v2.execute("SELECT symbol,entry_price,shares,entry_date FROM v2_positions"
                      f" WHERE market=? AND strategy NOT IN ({marks})",
                      (market, *EQUITY_EXCLUDED)).fetchall()
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
-                          f" WHERE market=? AND strategy NOT IN ({marks})",
-                          (market, *EQUITY_EXCLUDED)).fetchone()[0] or 0.0
+                          f" WHERE market=? AND strategy NOT IN ({marks})"
+                          " AND COALESCE(closed_at,'')>=?",
+                          (market, *EQUITY_EXCLUDED, epoch)).fetchone()[0] or 0.0
     realised_today = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
-                                f" AND strategy NOT IN ({marks}) AND exit_date=?",
-                                (market, *EQUITY_EXCLUDED, today_s)).fetchone()[0] or 0.0
+                                f" AND strategy NOT IN ({marks}) AND exit_date=?"
+                                " AND COALESCE(closed_at,'')>=?",
+                                (market, *EQUITY_EXCLUDED, today_s, epoch)).fetchone()[0] or 0.0
     mtm = unreal = unreal_today = 0.0
     prevs = _prev_close_map(market, [r[0] for r in pos])
     for sym, entry, shares, edate in pos:
@@ -291,8 +301,9 @@ def _market_stats(v2, market, budget, live):
         unreal_today += (p - base) * shares
     cash = budget - sum(r[1] * r[2] for r in pos) + realised
     rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?"
-                                     f" AND strategy NOT IN ({marks})",
-                                     (market, *EQUITY_EXCLUDED))]
+                                     f" AND strategy NOT IN ({marks})"
+                                     " AND COALESCE(closed_at,'')>=?",
+                                     (market, *EQUITY_EXCLUDED, epoch))]
     wins = [r for r in rets if r > 0]
     loss = [r for r in rets if r <= 0]
     loss_sum = abs(sum(loss))
@@ -421,6 +432,12 @@ def api_overview(user: dict = Depends(require_session)):
             (market, "LIVE_" + utc_d + "%"))]
         prev_row = v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date < ? ORDER BY date DESC LIMIT 1",
                               (market, "LIVE_" + utc_d)).fetchone()
+        # prev_equity is today's baseline. A snapshot from the OLD book
+        # (Rs 88,749 against a Rs 10,000 one) makes every intraday move read as
+        # a catastrophe, so a baseline that cannot belong to this book is
+        # discarded in favour of the budget itself.
+        if prev_row and prev_row[0] and float(prev_row[0]) > budget * 3:
+            prev_row = None
         prev_eq = round(prev_row[0]) if prev_row else round(budget)
         dd = {r[0]: round(r[1]) for r in v2.execute(
             "SELECT date, equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%'", (market,))}
