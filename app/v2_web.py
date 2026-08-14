@@ -4078,7 +4078,15 @@ button{border-radius:9px}
 @media(max-width:560px){.hp-stats{grid-template-columns:1fr 1fr}.hp-hero .hero{font-size:33px}}
 /* ---- AI report feed ---- */
 .fd-greet{padding:8px 2px 2px}
-.fd-hi{font-size:23px;font-weight:700;color:var(--hd);letter-spacing:-.02em}
+.fd-hi{font-size:23px;font-weight:700;color:var(--hd);letter-spacing:-.02em;
+ line-height:1.25;min-width:0;overflow-wrap:anywhere}
+/* The greeting was being clipped by the "live" pill: a flex row with no gap
+   and align-items:center let a tall pill sit on top of a descender-bearing
+   title at large text sizes. Explicit gap + line-height + a pill that cannot
+   shrink the title fixes it at every zoom level. */
+.fd-hdrow{display:flex;justify-content:space-between;align-items:flex-start;
+ gap:12px;padding-top:2px}
+.fd-hdrow .hp-ailive{flex:0 0 auto;align-self:flex-start;margin-top:3px}
 .fd-sub{font-size:14px;color:var(--mut);margin-top:4px}
 #homefeed .fd-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-top:12px}
 .fd-hd{display:flex;gap:12px;align-items:center}
@@ -4146,6 +4154,8 @@ button{border-radius:9px}
     selector stopped matching and the pair was crammed into one column of this
     grid and then split again: two quarter-width cards with overflowing text. */
  #homefeed>.fd-books,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
+ /* three equal tiles on a desktop row, never 1 + 2 */
+ .fd-books{grid-template-columns:repeat(3,minmax(0,1fr))}
  #homefeed>div:empty{display:none}
  /* make the list CONTAINERS full-width (override old per-card grid/width rules) */
  #poslist{display:block!important}
@@ -4206,7 +4216,11 @@ input[type=date]{width:auto;padding:8px 11px}
    auto-fit, not `1fr 1fr`, for the second reason too: when the options book is
    absent its div collapses to :empty and the remaining tile takes the FULL
    width instead of sitting in a half-width column with a hole beside it. */
-.fd-books{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));
+/* auto-fit at 270px produced a ragged 1 + 2 split at common zoom levels: the
+   first tile took a full row and the other two paired below it. A fixed count
+   per breakpoint keeps the row honest — three across when there is room, two
+   when there is not, one on a phone. */
+.fd-books{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
  gap:12px;align-items:stretch}
 /* each tile sizes its own type off ITS width, not the window's — at 1280 the
    pair is 282px each, at 1920 it is 427px, and the same viewport can produce
@@ -4475,7 +4489,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   <div id=home class="tab on"><div class=home-grid>
    <div class=home-main>
     <div class=fd-greet>
-     <div style="display:flex;justify-content:space-between;align-items:center"><div class=fd-hi id=fd-hi>OpenStocks desk</div><span class=hp-ailive><span class=hp-pulse></span> live</span></div>
+     <div class=fd-hdrow><div class=fd-hi id=fd-hi>OpenStocks desk</div><span class=hp-ailive><span class=hp-pulse></span> live</span></div>
      <div class=fd-sub id=fd-sub>&nbsp;</div>
     </div>
     <div id=homefeed></div>
@@ -4614,13 +4628,26 @@ function balOf(){try{var p=ACC&&(ACC.paper||{});var cb=p.cash_by_market||ACC.pap
 function renderBalance(){var mb=document.getElementById('modeb');if(mb){mb.textContent=MODE;mb.className='modepill '+(MODE=='live'?'bg-inf':'bg-warn');}}
 function refresh(){renderBalance();loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos();if(cur=='orders')loadOrders()}
 function engCard(e){return `<div class=card><div class=row><span class=mut style="font-size:12px">${e.market} · ${e.strategy.indexOf('gap')>=0?'gap':'swing'}</span><span class="${col(e.ret)}" style="font-size:13px">${sgn(e.ret)}%</span></div><div class=mut style="font-size:11px;margin-top:3px">win ${e.win}% · PF ${e.pf} · ${e.positions} pos</div></div>`}
+// SLEEVE NAMES. Every position and trade is opened by a sleeve now, and the
+// label has to say which — attribution is the whole point of the multi-sleeve
+// book. Legacy lane names still map to their old tags so historical rows stay
+// readable and are never relabelled as a sleeve that did not open them.
+var SLEEVE_TAG={mean_reversion:['mean-rev','bg-up'],quality_momentum:['quality','bg-inf'],
+ early_momentum:['ignition','bg-warn'],index_directional:['index','bg-inf'],
+ options_overlay:['spread','bg-mut']};
 function stratTag(st){st=st||'';
+ if(SLEEVE_TAG[st])return SLEEVE_TAG[st];
  if(st.indexOf('index_options')>=0)return [st.indexOf('PE')>=0?'PE':'CE','bg-inf'];
  return st.indexOf('gap')>=0?['gap','bg-inf']:(st.indexOf('breakout')>=0?['breakout','bg-up']:['swing','bg-mut'])}
+// Sleeve + the regime it was opened in, as a small caption under a row.
+function sleeveLine(p){var sl=p.sleeve||p.strategy||'';if(!sl)return '';
+ var rg=p.regime||'';var t=(SLEEVE_TAG[sl]?SLEEVE_TAG[sl][0]:sl);
+ return '<div class=mut style="font-size:10px;margin-top:2px">'+t
+  +(rg&&rg!='-'?' · regime '+rg:'')+'</div>'}
 function whyLine(p){if(!p.why)return '';var w=p.why,f=w.factors||{};var bits=(w.reasons||[]).slice(0,2);
  if(!bits.length)bits=['RS '+(f.rel_strength||'-')+' · vol '+(f.volume||'-')];
  return '<div class=mut style="font-size:10px;margin-top:3px" title="entry investigation">why: comp '+(w.composite||'-')+' · '+bits.join(' · ')+'</div>'}
-function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)':'var(--dn)');var s=p.market=='IN'?'₹':'$';var amt=(p.market=='IN'?'₹':'$')+(p.market=='IN'?INR:USD).format(Math.abs(p.pnl_amt));var st=stratTag(p.strategy);
+function posCard(p){var c=p.headroom>40?'var(--up)':(p.headroom>15?'var(--warn)':'var(--dn)');var s=p.market=='IN'?'₹':'$';var amt=(p.market=='IN'?'₹':'$')+(p.market=='IN'?INR:USD).format(Math.abs(p.pnl_amt));var st=stratTag(p.sleeve||p.strategy);
  return `<div class=pos><div class=row><div style="display:flex;gap:8px;align-items:center;cursor:pointer" onclick="stock('${p.symbol}','${p.market}')"><b>${p.symbol}</b><span class="badge ${st[1]}">${st[0]}</span></div>
  <div style="text-align:right"><div class=num id=px_${p.id} data-v="${p.live}">${s}${p.live}</div><div id=pl_${p.id} style="font-size:12px" class="${col(p.pnl)}">${sgn(p.pnl)}% · ${p.pnl_amt<0?'-':'+'}${amt}</div></div></div>
  <div class=bar><i style="width:${p.headroom}%;background:${c}"></i></div>
@@ -5013,13 +5040,18 @@ function loadHome(){
   var hr=new Date().getHours(),greet=hr<12?'Good morning':(hr<17?'Good afternoon':'Good evening'),up=(m.today_pnl||0)>=0;
   var nm=(ME&&ME.username)?(ME.username.charAt(0).toUpperCase()+ME.username.slice(1)):'';
   document.getElementById('fd-hi').textContent=greet+(nm?', '+nm:'');
-  var ob=d.options||{},oeq=(ob.options_equity==null?0:ob.options_equity);
-  // Both books, and the total. Naming only the equity book contradicted itself
-  // against a separately funded Rs 1L in index options.
+  var ob=d.options||{};
+  // The options book is RETIRED. Adding its Rs 92,404 to the headline read as
+  // "managing Rs 1,02,404" beside a Rs 10,000 live book — ten times the capital
+  // the system actually has. A retired book is excluded from the total and
+  // named separately as history, never summed into what is being managed.
+  var optRetired=!!ob.options_retired;
+  var oeq=(ob.options_equity==null||optRetired)?0:ob.options_equity;
   document.getElementById('fd-sub').innerHTML='OpenStocks is managing <b>'+fmtc(m.ccy,(m.equity||0)+oeq)+'</b>'
    +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
-   +(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
-     +(ob.options_positions?(' ('+ob.options_positions+' open)'):'')));
+   +(optRetired?' \u00b7 <span class="muted">index options retired</span>'
+     :(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
+       +(ob.options_positions?(' ('+ob.options_positions+' open)'):''))));
   HERO=m;HERO.optOffset=d.equity_options_offset||0;
   REAL=d.real||null;MINE=d.mine||null;
   renderRealTile(REAL,m.ccy);renderMineTile(MINE,m.ccy);
