@@ -38,7 +38,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 _LOG = logging.getLogger("openstocks.books")
 
 DEFAULT_BUDGET = {"IN": 10000.0, "US": 20000.0}   # matches v2_live.BUDGET
-MAX_POSITIONS = 6
+MAX_POSITIONS = 3          # matches v2_live.MAXPOS["IN"]
 # Fraction of the book one position may take. Mirrors the house rule
 # (budget / max_pos) rather than inventing a second sizing policy.
 POSITION_FRACTION = 1.0 / MAX_POSITIONS
@@ -50,11 +50,12 @@ CREATE TABLE IF NOT EXISTS user_book(
 CREATE TABLE IF NOT EXISTS user_positions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, market TEXT, strategy TEXT,
   symbol TEXT, entry_date TEXT, entry_price REAL, shares REAL, stop REAL,
-  target REAL, opened_at TEXT, src_id INTEGER);
+  target REAL, opened_at TEXT, src_id INTEGER, sleeve TEXT, regime TEXT);
 CREATE TABLE IF NOT EXISTS user_trades(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, market TEXT, strategy TEXT,
   symbol TEXT, entry_date TEXT, entry_price REAL, exit_date TEXT, exit_price REAL,
-  shares REAL, pnl REAL, return_pct REAL, reason TEXT, opened_at TEXT, closed_at TEXT);
+  shares REAL, pnl REAL, return_pct REAL, reason TEXT, opened_at TEXT, closed_at TEXT,
+  sleeve TEXT, regime TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_user_pos ON user_positions(user_id, market, symbol);
 CREATE INDEX IF NOT EXISTS ix_user_trades ON user_trades(user_id, market, exit_date);
 -- One equity point per user per day. Without this a personal book can never
@@ -72,17 +73,55 @@ def ensure_schema(con):
 
 
 def ensure_book(con, user_id, market="IN"):
-    """Create this user's book on first touch. Returns the budget."""
+    """Create this user's book on first touch, and RECONCILE it to the current
+    default. Returns the budget.
+
+    Reconciliation matters as much as creation. This only ever inserted, so
+    every existing book kept the capital it was created with: after the house
+    book moved Rs 1,00,000 -> Rs 10,000 the website still showed eight user
+    books at Rs 1,00,000 carrying the whole legacy ledger (-Rs 44,140 for
+    uid 2), while the box read a clean Rs 10,000. Same defect as v2_book's
+    seed-only ensure_schema, one table over.
+
+    A capital change re-anchors `started_at` for the same reason it does on the
+    house book: user_equity snapshots are denominated in the book they were
+    taken under, so realised P&L and peak equity must be scoped to the current
+    epoch or the numbers stay in the old size forever. Nothing is deleted —
+    reconcile_capital() closes what the smaller book cannot carry.
+    """
+    default = DEFAULT_BUDGET.get(market, 10000.0)
     row = con.execute("SELECT budget FROM user_book WHERE user_id=? AND market=?",
                       (int(user_id), market)).fetchone()
     if row:
+        if abs(float(row[0]) - default) > 1e-9:
+            _LOG.warning("user %s book resized Rs %.0f -> Rs %.0f; epoch re-anchored",
+                         user_id, float(row[0]), default)
+            con.execute("UPDATE user_book SET budget=?, started_at=?"
+                        " WHERE user_id=? AND market=?",
+                        (default, datetime.now(timezone.utc).isoformat(),
+                         int(user_id), market))
+            con.commit()
+            return default
         return float(row[0])
-    budget = DEFAULT_BUDGET.get(market, 10000.0)
+    budget = default
     con.execute("INSERT OR IGNORE INTO user_book(user_id,market,budget,started_at)"
                 " VALUES(?,?,?,?)",
                 (int(user_id), market, budget, datetime.now(timezone.utc).isoformat()))
     con.commit()
     return budget
+
+
+def epoch_of(con, user_id, market="IN") -> str:
+    """When this book's current capital took effect.
+
+    Realised P&L and peak equity are scoped to it. Without that, P&L earned on
+    a Rs 1,00,000 book is charged against a Rs 10,000 one and equity goes
+    permanently negative — which is exactly what pinned the house book's
+    drawdown brake at -105% until it was scoped the same way.
+    """
+    row = con.execute("SELECT started_at FROM user_book WHERE user_id=? AND market=?",
+                      (int(user_id), market)).fetchone()
+    return (row[0] if row and row[0] else "") or ""
 
 
 def budget_of(con, user_id, market="IN"):
@@ -109,9 +148,13 @@ def cash(con, user_id, market="IN"):
     spent = con.execute("SELECT COALESCE(SUM(entry_price*shares),0) FROM user_positions"
                         " WHERE user_id=? AND market=?",
                         (int(user_id), market)).fetchone()[0] or 0.0
+    # Scoped to the current epoch, and compared on the TIMESTAMP: the legacy
+    # ledger shares the calendar date the resize happened, so a date-only
+    # compare drags the whole old book back in.
     realised = con.execute("SELECT COALESCE(SUM(pnl),0) FROM user_trades"
-                           " WHERE user_id=? AND market=?",
-                           (int(user_id), market)).fetchone()[0] or 0.0
+                           " WHERE user_id=? AND market=? AND COALESCE(closed_at,'')>=?",
+                           (int(user_id), market,
+                            epoch_of(con, user_id, market))).fetchone()[0] or 0.0
     return budget - float(spent) + float(realised)
 
 
@@ -340,3 +383,55 @@ def mirror_exit(con, db, plans_mod, market, symbol, price, reason):
         except Exception:
             _LOG.exception("book mirror exit failed for user %s", uid)
     return done
+
+
+def reconcile_capital(con, user_id, market="IN", prices=None):
+    """Close positions this book can no longer carry after a resize.
+
+    A user book that dropped Rs 1,00,000 -> Rs 10,000 still held positions sized
+    for the old capital — one of them alone was several times the whole new
+    book. CLOSED, not deleted: each is written to user_trades at the last known
+    price with reason `book_resize`, so the P&L stays in the ledger and the
+    per-sleeve split still accounts for it.
+
+    Idempotent. A symbol already carrying a book_resize row for today has its
+    stale position row removed without booking a second close.
+    """
+    prices = prices or {}
+    budget = ensure_book(con, user_id, market)
+    slot = budget * POSITION_FRACTION
+    today = datetime.now(timezone.utc).date().isoformat()
+    closed = orphans = 0
+    rows = list(con.execute(
+        "SELECT id,symbol,strategy,shares,entry_price,entry_date,opened_at"
+        " FROM user_positions WHERE user_id=? AND market=?", (int(user_id), market)))
+    for pid, sym, strat, sh, ep, edate, oat in rows:
+        notional = float(sh) * float(ep)
+        if notional <= slot:
+            continue
+        already = con.execute(
+            "SELECT 1 FROM user_trades WHERE user_id=? AND market=? AND symbol=?"
+            " AND reason='book_resize' AND exit_date=?",
+            (int(user_id), market, sym, today)).fetchone()
+        if already:
+            con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
+            orphans += 1
+            continue
+        px = float((prices.get(sym) or {}).get("price") or ep)
+        pnl = float(sh) * (px - float(ep))
+        basis = float(sh) * float(ep)
+        con.execute(
+            "INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"
+            "entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,"
+            "opened_at,closed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (int(user_id), market, strat, sym, edate, float(ep), today, px,
+             float(sh), pnl, (pnl / basis * 100) if basis else 0.0, "book_resize",
+             oat, datetime.now(timezone.utc).isoformat()))
+        con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
+        closed += 1
+    if closed or orphans:
+        con.commit()
+        _LOG.warning("user %s: book_resize closed %d and cleared %d orphan(s) "
+                     "the Rs %.0f book could not carry",
+                     user_id, closed, orphans, budget)
+    return closed
