@@ -4004,6 +4004,7 @@ def reconcile_book_capital(market):
             px = float((live.get(sym) or {}).get("price") or ep)
             net, pct = record_exit(v2, market, pid, today_s, px, float(sh),
                                    "book_resize")
+            v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
             _LOG.warning("book_resize: closed %s %s %.0f x %.2f (Rs %.0f, %.1f%% "
                          "of a Rs %.0f slot) -> net Rs %.0f",
                          strat, sym, float(sh), float(ep), notional,
@@ -4077,22 +4078,29 @@ def sleeve_pass(market):
             per_sleeve[key] = per_sleeve.get(key, 0) + 1
             per_notional[key] = per_notional.get(key, 0.0) + float(sh) * float(ep)
 
-        realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
-                              " WHERE market=?", (market,)).fetchone()[0] or 0.0
+        # Realised from THIS epoch only. P&L earned on the old Rs 1,00,000 book
+        # is not spendable cash in a Rs 10,000 one — carrying -Rs 18,109 across
+        # a resize drove computed equity permanently negative and pinned the
+        # drawdown brake at -107%. The old ledger is still reported in full by
+        # sleeves.performance; it just does not fund or starve the new book.
+        epoch_row = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
+                               (market,)).fetchone()
+        epoch_day = ((epoch_row[0] if epoch_row else "") or "")[:10]
+        realised = v2.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
+            " AND exit_date >= ?", (market, epoch_day)).fetchone()[0] or 0.0
         day_pnl = v2.execute(
             "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND"
-            " substr(exit_date,1,10)=?", (market, today_s)).fetchone()[0] or 0.0
+            " substr(exit_date,1,10)=? AND reason<>'book_resize'",
+            (market, today_s)).fetchone()[0] or 0.0
         cash = capital - deployed + realised
         pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
                  for sym, _st, sh, ep, _sl in positions)
         equity = cash + pv
         # peak from THIS book epoch only — see the resize note in ensure_schema
-        epoch = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
-                           (market,)).fetchone()
-        epoch = (epoch[0] if epoch else "") or ""
         peak = v2.execute(
             "SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?"
-            " AND substr(date,6) >= ?", (capital, market, epoch[:10])).fetchone()[0] or capital
+            " AND substr(date,6) >= ?", (capital, market, epoch_day)).fetchone()[0] or capital
         peak = max(float(peak), capital)
 
         book = BookState(capital=capital, cash=cash, deployed=deployed,
