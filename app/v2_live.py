@@ -317,6 +317,11 @@ MIDSESSION_STRATS = INTRADAY_STRATS + ("index_options", "manual", "btst")
 # ever reduces trading. Both reset next session.
 RISK = dict(
     maxdd_halt=0.06,     # pause new buys if equity is >6% below TODAY's peak
+    maxdd_total=0.15,    # ...or >15% below the ALL-TIME peak. See _risk_halt:
+                         # this limit already existed inside poll_market and was
+                         # applied to the daily lanes ONLY, while the lanes doing
+                         # nearly all the trading checked a today-only guard that
+                         # reset every morning.
     stopguard_n=4,       # pause new buys after this many stop/trail exits today
 )
 STALE_QUOTE_SEC = 600        # a symbol whose quote lags the market's freshest by > this is FROZEN.
@@ -2508,8 +2513,44 @@ def _risk_halt(v2, market):
     """Freqtrade-style protections. Returns (halt_bool, reason). Halts NEW entries
     (never touches open positions) when:
       - StoplossGuard: >= RISK[stopguard_n] stop/trail exits already today, OR
-      - MaxDrawdown:   book equity is > RISK[maxdd_halt] below today's peak."""
+      - MaxDrawdown:   book equity is > RISK[maxdd_halt] below today's peak, OR
+      - TotalDrawdown: book equity is > RISK[maxdd_total] below its ALL-TIME peak.
+
+    THE ALL-TIME CHECK IS THE ONE THAT WAS MISSING, and its absence is the most
+    expensive defect this engine has had. The 15% limit already existed — but
+    only inside poll_market, so it covered the daily equity lanes, which barely
+    trade. Every lane that actually trades (index_options, volume_surge, btst)
+    checks this function and this function only, and it looked exclusively at
+    TODAY's peak, which resets every morning.
+
+    So a book could bleed indefinitely as long as no single session was bad
+    enough, and that is exactly what happened:
+
+        2026-08-03   cumulative  +Rs 25,788   (one day, three trades)
+        2026-08-04   -1,590      2026-08-05  -914      2026-08-06  -1,916
+        2026-08-07   -6,624      2026-08-10  -6,375    2026-08-11  -3,383
+        2026-08-12   -9,725      2026-08-13  -7,736    2026-08-14  -5,109
+        2026-08-14   cumulative  -Rs 17,584   equity 82,354, -34.9% off peak
+
+    Nine consecutive losing sessions, no session individually alarming, no brake.
+    index_options alone ran 142 of the book's 192 trades through that stretch.
+
+    The equity series is whole-book and so is this check: a drawdown is a fact
+    about the account, not about a lane, and the lane that dug the hole is not
+    necessarily the one asking to open the next position.
+    """
     today = datetime.now(IST).date().isoformat()
+    try:
+        row = v2.execute("SELECT MAX(equity) FROM v2_equity WHERE market=?", (market,)).fetchone()
+        cur = v2.execute("SELECT equity FROM v2_equity WHERE market=? ORDER BY date DESC LIMIT 1",
+                         (market,)).fetchone()
+        if row and row[0] and cur and cur[0]:
+            dd = cur[0] / row[0] - 1
+            if dd < -RISK["maxdd_total"]:
+                return True, ("total-drawdown halt (%.1f%% off the all-time peak, "
+                              "limit %.0f%%)" % (dd * 100, RISK["maxdd_total"] * 100))
+    except Exception:
+        pass
     try:
         n_stops = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=? AND substr(exit_date,1,10)=? "
                              "AND reason IN ('stop','trail')", (market, today)).fetchone()[0] or 0
