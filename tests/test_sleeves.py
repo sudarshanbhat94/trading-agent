@@ -279,3 +279,102 @@ class LegacyLanesAreDeadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WiringTest(unittest.TestCase):
+    """The loop must have exactly one entry path."""
+
+    def _loop_src(self):
+        import inspect
+        from app import v2_live
+        return inspect.getsource(v2_live.loop)
+
+    def test_the_loop_calls_the_sleeve_pass(self) -> None:
+        self.assertIn("sleeve_pass(m)", self._loop_src())
+
+    def test_the_loop_calls_no_legacy_pass(self) -> None:
+        src = self._loop_src()
+        for legacy in ("volume_surge_pass(m)", "intraday_momentum_pass(m)",
+                       "btst_pass(m)", "index_options_pass(m)"):
+            with self.subTest(pass_=legacy):
+                self.assertNotIn(legacy, src)
+
+    def test_poll_market_cannot_open_a_position(self) -> None:
+        """It still computes signals and publishes ideas, but returns before
+        the fill loop — the guarantee must not rest on DISABLED_LANES alone."""
+        import inspect
+        from app import v2_live
+        src = inspect.getsource(v2_live.poll_market)
+        self.assertIn("entries via sleeve_pass", src)
+        guard = src.index("entries via sleeve_pass")
+        fill = src.index("record_entry(")
+        self.assertLess(guard, fill, "the guard must precede the fill loop")
+
+    def test_sleeve_pass_records_sleeve_and_regime(self) -> None:
+        import inspect
+        from app import v2_live
+        src = inspect.getsource(v2_live.sleeve_pass)
+        self.assertIn("sleeve=c.sleeve", src)
+        self.assertIn("regime=result.regime.state", src)
+
+    def test_sleeve_pass_routes_equity_only(self) -> None:
+        import inspect
+        from app import v2_live
+        self.assertIn('c.instrument != "EQ"', inspect.getsource(v2_live.sleeve_pass))
+
+    def test_exits_are_not_in_the_sleeve_pass(self) -> None:
+        """exit_monitor owns exits for every position, sleeve or legacy."""
+        import inspect
+        from app import v2_live
+        self.assertNotIn("close_position", inspect.getsource(v2_live.sleeve_pass))
+
+
+class PerformanceSplitTest(unittest.TestCase):
+    def _con(self):
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE v2_trades(market TEXT, sleeve TEXT, regime TEXT,"
+                    " pnl REAL, shares REAL, entry_price REAL, exit_price REAL,"
+                    " entry_date TEXT)")
+        rows = [("IN", "mean_reversion", "ON", 120.0, 10, 100, 113, "2026-08-01"),
+                ("IN", "mean_reversion", "ON", -40.0, 10, 100, 95.5, "2026-08-02"),
+                ("IN", "early_momentum", "NEUTRAL", -60.0, 10, 100, 93.5, "2026-08-03"),
+                ("IN", None, None, -500.0, 10, 100, 49.5, "2026-07-01")]
+        con.executemany("INSERT INTO v2_trades VALUES(?,?,?,?,?,?,?,?)", rows)
+        return con
+
+    def test_split_by_sleeve(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve(self._con())
+        self.assertEqual(out["mean_reversion"]["n"], 2)
+        self.assertEqual(out["mean_reversion"]["wins"], 1)
+        self.assertAlmostEqual(out["mean_reversion"]["net"], 80.0)
+
+    def test_legacy_rows_are_not_folded_into_a_sleeve(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve(self._con())
+        self.assertIn("legacy", out)
+        self.assertEqual(out["legacy"]["n"], 1)
+
+    def test_split_by_regime(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_regime(self._con())
+        self.assertEqual(out["ON"]["n"], 2)
+        self.assertEqual(out["NEUTRAL"]["n"], 1)
+
+    def test_the_cross_tab_separates_sleeve_from_tape(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve_and_regime(self._con())
+        self.assertEqual(out[("mean_reversion", "ON")]["n"], 2)
+        self.assertEqual(out[("early_momentum", "NEUTRAL")]["n"], 1)
+
+    def test_cost_is_reported_separately_from_decisions(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve(self._con())
+        self.assertIn("cost", out["mean_reversion"])
+
+    def test_report_renders(self) -> None:
+        from app.sleeves import performance as perf
+        text = perf.report(self._con())
+        self.assertIn("mean_reversion", text)
+        self.assertIn("regime", text)

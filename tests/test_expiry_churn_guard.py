@@ -100,7 +100,7 @@ class ChurnCircuitBreakerTest(unittest.TestCase):
         con = sqlite3.connect(":memory:")
         con.execute("CREATE TABLE v2_positions(market,strategy,symbol,entry_date,"
                     "entry_price,shares,stop,target,trail,peak,conviction,opened_at,"
-                    "why,expiry)")
+                    "why,expiry,sleeve,regime)")
         con.execute("CREATE TABLE v2_trades(market,symbol,entry_date)")
         return con
 

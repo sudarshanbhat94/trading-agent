@@ -29,10 +29,15 @@ class WiringTest(unittest.TestCase):
     def test_the_pass_exists(self) -> None:
         self.assertTrue(callable(getattr(v2_live, "index_options_pass", None)))
 
-    def test_the_engine_loop_calls_it(self) -> None:
-        """The whole point. A pass nobody calls is dead code."""
+    def test_the_engine_loop_no_longer_calls_it(self) -> None:
+        """Retired 2026-08-15. The lane is gated by OPTION_BUYING_RETIRED and is
+        no longer in the cycle at all — calling it could only walk a universe to
+        reach a `return`. sleeve_pass is the single entry path now."""
+        import inspect
         src = inspect.getsource(v2_live.loop)
-        self.assertIn("index_options_pass(m)", src)
+        self.assertNotIn("index_options_pass(m)", src)
+        self.assertIn("sleeve_pass(m)", src)
+        self.assertTrue(v2_live.OPTION_BUYING_RETIRED)
 
     def test_exits_can_see_option_prices(self) -> None:
         """Options live in nfo_quotes, not latest_quotes. Without this merge a

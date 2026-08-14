@@ -112,25 +112,18 @@ class ConfigurationTest(unittest.TestCase):
 
 
 class WiringTest(unittest.TestCase):
-    def test_engine_loop_runs_the_lane(self) -> None:
+    """Retired 2026-08-15: removed from the engine cycle entirely."""
+
+    def test_the_lane_is_not_in_the_cycle(self) -> None:
         import inspect
-        self.assertIn("intraday_momentum_pass(m)", inspect.getsource(v2_live.loop))
+        src = inspect.getsource(v2_live.loop)
+        self.assertNotIn("intraday_momentum_pass(m)", src)
 
-    def test_lane_is_throttled(self) -> None:
+    def test_the_only_entry_path_is_the_sleeve_pass(self) -> None:
         import inspect
-        self.assertIn("INTRAMOM_INTERVAL", inspect.getsource(v2_live.loop))
-        self.assertGreaterEqual(v2_live.INTRAMOM_INTERVAL, 20)
-
-    def test_lane_respects_the_risk_halt(self) -> None:
-        """It must not add risk while the book is already bleeding."""
-        import inspect
-        self.assertIn("_risk_halt", inspect.getsource(v2_live.intraday_momentum_pass))
-
-    def test_lane_only_trades_india(self) -> None:
-        import inspect
-        source = inspect.getsource(v2_live.intraday_momentum_pass)
-        self.assertIn('market != "IN"', source)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        src = inspect.getsource(v2_live.loop)
+        self.assertIn("sleeve_pass(m)", src)
+        for legacy in ("volume_surge_pass(m)", "btst_pass(m)",
+                       "index_options_pass(m)", "intraday_momentum_pass(m)"):
+            with self.subTest(pass_=legacy):
+                self.assertNotIn(legacy, src)

@@ -933,6 +933,17 @@ def ensure_schema(v2):
         v2.execute("ALTER TABLE v2_positions ADD COLUMN why TEXT")
     except Exception:
         pass
+    # Additive migration: WHICH SLEEVE opened this, and in WHAT REGIME.
+    # Performance has to be splittable by both or there is no way to tell a
+    # sleeve that works from one carried by a regime that happened to be kind.
+    # Carried on the position and copied onto the trade at exit, so the split
+    # survives the close.
+    for _tbl in ("v2_positions", "v2_trades"):
+        for _col in ("sleeve", "regime"):
+            try:
+                v2.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} TEXT")
+            except Exception:
+                pass
     # Additive migration: a closed trade only ever recorded DATES, so the whole
     # sell side of the ledger had no time of day. The UI showed "05:30 IST" for
     # every one of them — midnight UTC shifted into IST, an hour before the
@@ -1547,9 +1558,10 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
                                  strategy=(row_s[0] if row_s else None))
     v2.execute(
         "INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,"
-        "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at)"
+        "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at,"
+        "sleeve,regime)"
         " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,"
-        "opened_at,? FROM v2_positions WHERE id=?",
+        "opened_at,?,sleeve,regime FROM v2_positions WHERE id=?",
         (exit_date, exit_price, shares, net, net_pct, reason,
          closed_at or datetime.now(timezone.utc).isoformat(), position_id))
     # LIVE MIRROR — sell whatever the sleeve actually holds. Read the symbol
@@ -1577,7 +1589,8 @@ def _entry_of(v2, position_id, exit_price):
 
 
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
-                 stop, target, trail, conviction, why, peak=None, expiry=None):
+                 stop, target, trail, conviction, why, peak=None, expiry=None,
+                 sleeve=None, regime=None):
     """THE single writer for v2_positions. Returns True if the row was written.
 
     Every lane had its own copy of this INSERT — five of them, identical column
@@ -1640,11 +1653,11 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
             return False
     v2.execute(
         "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
-        "stop,target,trail,peak,conviction,opened_at,why,expiry)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "stop,target,trail,peak,conviction,opened_at,why,expiry,sleeve,regime)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
          entry_price if peak is None else peak, conviction,
-         datetime.now(timezone.utc).isoformat(), why, expiry))
+         datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime))
     # LIVE MIRROR — real money. Runs only when the sleeve is armed AND connected;
     # `live_ready` is false by default and this is a no-op on every other
     # install. Placed AFTER the paper row is written and wrapped, so a broker
@@ -1965,6 +1978,18 @@ def poll_market(market):
         _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · "
                            f"{len(cand)} candidates · entries at next open")
         return
+    # POLL_MARKET NO LONGER OPENS POSITIONS. It computes signals for the
+    # watchlist and publishes ideas; entries belong to sleeve_pass alone.
+    #
+    # Every lane it could fill is in DISABLED_LANES, so the candidate list is
+    # already empty — but relying on that is exactly how a retired lane leaks
+    # back the day someone edits the set. One explicit return, above the fill
+    # loop, is the guarantee.
+    v2.commit(); v2.close()
+    _status[market] = (f"signals {datetime.now(IST).strftime('%H:%M IST')} · "
+                       f"{len(cand)} candidates · entries via sleeve_pass")
+    return
+
     halt, hreason = _risk_halt(v2, market)         # protections: don't add risk while bleeding
     if halt:
         v2.commit(); v2.close()
@@ -3842,7 +3867,8 @@ def _equity_janitor(market):
 
 
 _last_signal: dict = {}
-_last_vs: dict = {}          # volume_surge throttle
+_last_vs: dict = {}          # (retired lane throttle; kept so nothing breaks)
+_last_sleeve: dict = {}      # multi-sleeve pass throttle — the only entry path
 _last_sw: dict = {}          # sector_watch throttle
 _last_btst: dict = {}        # btst throttle
 _last_preopen: dict = {}     # pre-open warm-up throttle
@@ -3917,6 +3943,167 @@ def _market_open_watchdog(market):
     except Exception:
         pass
     _status[market] = ("watchdog: " + ("; ".join(problems) if problems else "all systems go")) + " · " + _status.get(market, "")
+
+
+SLEEVE_INTERVAL = 300          # heavy: full panel + universe screen
+
+
+def sleeve_pass(market):
+    """THE production entry path. The multi-sleeve system is the only way a new
+    position is opened.
+
+    Everything the old engine did per-lane — its own cash maths, its own slot
+    count, its own sizing — is gone. This assembles the book state ONCE, hands
+    it to the unified risk manager, and writes whatever the allocator funds.
+
+    Exits are NOT here. `exit_monitor` continues to run on its own fast cadence
+    and manages every open position regardless of which sleeve (or retired
+    lane) opened it.
+    """
+    from .sleeves.config import SLEEVES
+    from .sleeves.engine import SleeveEngine
+    from .sleeves.risk import BookState
+
+    global _SLEEVE_ENGINE
+    if _SLEEVE_ENGINE is None:
+        _SLEEVE_ENGINE = SleeveEngine(SLEEVES)
+
+    live = _live(market)
+    if not live:
+        _status[market] = "sleeves: no quotes"
+        return
+    tails, mdf = _hist(market)
+    dates = eng.complete_trading_dates(tails, 0.5)
+    if not dates:
+        _status[market] = "sleeves: no history"
+        return
+    asof = dates[-1]
+
+    v2 = _rw()
+    try:
+        row = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?",
+                         (market,)).fetchone()
+        if not row:
+            return
+        capital = float(row[0])
+        today_s = datetime.now(IST).date().isoformat()
+
+        positions = list(v2.execute(
+            "SELECT symbol,strategy,shares,entry_price,sleeve FROM v2_positions"
+            " WHERE market=?", (market,)))
+        held = {r[0] for r in positions}
+        deployed = sum(float(r[2]) * float(r[3]) for r in positions)
+        per_sleeve, per_notional = {}, {}
+        for sym, strat, sh, ep, slv in positions:
+            key = slv or strat
+            per_sleeve[key] = per_sleeve.get(key, 0) + 1
+            per_notional[key] = per_notional.get(key, 0.0) + float(sh) * float(ep)
+
+        realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
+                              " WHERE market=?", (market,)).fetchone()[0] or 0.0
+        day_pnl = v2.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND"
+            " substr(exit_date,1,10)=?", (market, today_s)).fetchone()[0] or 0.0
+        cash = capital - deployed + realised
+        pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
+                 for sym, _st, sh, ep, _sl in positions)
+        equity = cash + pv
+        peak = v2.execute("SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?",
+                          (capital, market)).fetchone()[0] or capital
+
+        book = BookState(capital=capital, cash=cash, deployed=deployed,
+                         open_positions=len(positions), per_sleeve_positions=per_sleeve,
+                         equity=equity, peak_equity=float(peak), day_pnl=float(day_pnl),
+                         per_sleeve_notional=per_notional)
+
+        result = _SLEEVE_ENGINE.run(
+            tails, mdf, asof, live, book,
+            index_bars=_sleeve_index_bars, options_view=_sleeve_options_view,
+            option_chain=_sleeve_option_chain, india_vix=_sleeve_vix)
+
+        if result.halt_reason:
+            _status[market] = f"sleeves HALTED · {result.halt_reason}"
+            return
+
+        fills = 0
+        for alloc in result.allocations:
+            c = alloc.candidate
+            if c.symbol in held:
+                continue
+            if c.instrument != "EQ":
+                # FUT/OPT_SPREAD plans are produced and logged, but this book
+                # routes equity only. Stated rather than silently dropped.
+                _LOG.info("sleeves: %s/%s is %s — not routed by the equity book",
+                          c.sleeve, c.symbol, c.instrument)
+                continue
+            if record_entry(v2, market, c.sleeve, c.symbol, today_s, c.entry,
+                            float(alloc.shares), c.stop, c.target, c.trail_pct,
+                            c.score, json.dumps(c.why), sleeve=c.sleeve,
+                            regime=result.regime.state):
+                fills += 1
+                held.add(c.symbol)
+        v2.commit()
+        active = [d.sleeve for d in result.decisions if d.active]
+        _status[market] = (f"sleeves {datetime.now(IST).strftime('%H:%M IST')} · "
+                           f"regime {result.regime.state} ({result.regime.breadth:.0%} "
+                           f"breadth) · {len(active)} active · +{fills} new")
+    finally:
+        v2.close()
+
+
+_SLEEVE_ENGINE = None
+
+
+def _sleeve_index_bars(symbol):
+    """Daily index bars for the index sleeve, from the local index series."""
+    try:
+        con = _ro(MAIN_DB)
+        rows = con.execute(
+            "SELECT ts,open,high,low,close FROM index_bars WHERE symbol=?"
+            " ORDER BY ts", (symbol,)).fetchall()
+        con.close()
+        if len(rows) < 30:
+            return None
+        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close"])
+        df["date"] = pd.to_datetime(df["ts"].str[:10])
+        return df.groupby("date").last()[["open", "high", "low", "close"]]
+    except Exception:
+        return None
+
+
+def _sleeve_options_view(symbol):
+    """PCR / max-pain / spot for the index and options sleeves."""
+    try:
+        from . import options_intelligence as oi
+        svc = oi.OptionsIntelligenceService()
+        data = svc.analyze(symbol) if hasattr(svc, "analyze") else {}
+        return data or {}
+    except Exception:
+        return {}
+
+
+def _sleeve_option_chain(symbol):
+    try:
+        con = _ro(MAIN_DB)
+        rows = con.execute(
+            "SELECT strike,option_type,close,lot_size,expiry FROM nfo_quotes"
+            " WHERE underlying=?", (symbol,)).fetchall()
+        con.close()
+        return [dict(strike=r[0], opt_type=r[1], close=r[2], lot_size=r[3],
+                     expiry=r[4]) for r in rows]
+    except Exception:
+        return []
+
+
+def _sleeve_vix():
+    try:
+        con = _ro(MAIN_DB)
+        row = con.execute("SELECT price FROM latest_quotes WHERE symbol IN"
+                          " ('INDIAVIX','INDIA VIX') ORDER BY ts DESC LIMIT 1").fetchone()
+        con.close()
+        return float(row[0]) if row else None
+    except Exception:
+        return None
 
 
 def loop(interval):
@@ -3998,18 +4185,15 @@ def loop(interval):
                     # These scan the WHOLE universe (heavy: full latest_quotes read),
                     # so they must NOT run every 8s — that pegged the CPU and starved
                     # the web app. Throttled: movers caught within 20s, radar every 3min.
-                    if time.time() - _last_vs.get(m, 0) >= VOLSURGE_INTERVAL:
-                        volume_surge_pass(m)                     # day-1 mover catcher (NSE catalyst + volume)
-                        _last_vs[m] = time.time()
-                    if time.time() - _last_im.get(m, 0) >= INTRAMOM_INTERVAL:
-                        intraday_momentum_pass(m)
-                        _last_im[m] = time.time()
-                    if time.time() - _last_btst.get(m, 0) >= BTST_INTERVAL:
-                        btst_pass(m)                             # buy-today-sell-tomorrow (near close, catalyst gap)
-                        _last_btst[m] = time.time()
-                    if time.time() - _last_idx.get(m, 0) >= INDEX_OPT_INTERVAL:
-                        index_options_pass(m)                    # index CE/PE (auto_trade gated)
-                        _last_idx[m] = time.time()
+                    # THE ONLY ENTRY PATH. Every legacy pass is retired: their
+                    # lanes are all in DISABLED_LANES and index option buying is
+                    # retired, so calling them could only ever burn CPU walking
+                    # a universe to reach a `return` at the top. They are removed
+                    # from the cycle rather than left to no-op, so there is one
+                    # place a position can be opened and it is this one.
+                    if time.time() - _last_sleeve.get(m, 0) >= SLEEVE_INTERVAL:
+                        sleeve_pass(m)
+                        _last_sleeve[m] = time.time()
                     if time.time() - _last_sw.get(m, 0) >= SECTOR_WATCH_INTERVAL:
                         sector_watch_pass(m)                     # watch-only radar (sector co-move + NSE spurt)
                         _last_sw[m] = time.time()
@@ -4030,7 +4214,7 @@ def loop(interval):
                             _LOG.exception("alert check failed")
                         _last_alerts[m] = time.time()
                     if time.time() - _last_signal.get(m, 0) >= SIGNAL_INTERVAL:
-                        poll_market(m)                           # heavy signal gen periodically
+                        poll_market(m)                           # signals + published ideas ONLY
                         _last_signal[m] = time.time()
                 elif in_preopen(m):
                     # Warm the signals so the open is spent BUYING, not computing.
