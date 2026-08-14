@@ -926,9 +926,26 @@ def ensure_schema(v2):
             # install kept whatever budget/max_pos it was created with and
             # every later change to BUDGET/MAXPOS was silently inert — the live
             # book still read 1,00,000 with 6 slots after both were changed.
-            v2.execute("UPDATE v2_book SET budget=?, max_pos=? WHERE market=?"
-                       " AND (budget<>? OR max_pos<>?)",
-                       (BUDGET[m], MAXPOS[m], m, BUDGET[m], MAXPOS[m]))
+            cur = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?",
+                             (m,)).fetchone()
+            if cur and (float(cur[0]) != float(BUDGET[m]) or int(cur[1]) != int(MAXPOS[m])):
+                # RE-ANCHOR THE EPOCH when capital changes. v2_equity rows are
+                # denominated in the book they were taken under, so a resize
+                # leaves the all-time peak measured against the OLD capital and
+                # the drawdown brake reads nonsense forever (Rs 1,00,000 -> Rs
+                # 10,000 produced "-106% off peak" and a permanent halt).
+                #
+                # History is NOT deleted. `started_at` moves, and the peak query
+                # only considers snapshots from the current epoch onward, so the
+                # old ledger stays readable while the brake measures the book
+                # that actually exists.
+                _LOG.warning("book resize %s: Rs %s/%s slots -> Rs %s/%s slots; "
+                             "equity epoch re-anchored",
+                             m, f"{cur[0]:,.0f}", cur[1], f"{BUDGET[m]:,.0f}", MAXPOS[m])
+                v2.execute("UPDATE v2_book SET budget=?, max_pos=?, started_at=?"
+                           " WHERE market=?",
+                           (BUDGET[m], MAXPOS[m],
+                            datetime.now(timezone.utc).isoformat(), m))
     try:  # additive migration: entry-time investigation snapshot ("why we bought")
         v2.execute("ALTER TABLE v2_positions ADD COLUMN why TEXT")
     except Exception:
@@ -3948,6 +3965,59 @@ def _market_open_watchdog(market):
 SLEEVE_INTERVAL = 300          # heavy: full panel + universe screen
 
 
+def reconcile_book_capital(market):
+    """Close positions the resized book can no longer carry.
+
+    A resize does not just change a number. Positions opened under the old
+    capital keep their old size, so after Rs 1,00,000 -> Rs 10,000 the live book
+    held Rs 80,590 of stock against Rs 10,000 of capital — 806% deployed, from
+    lanes that are now retired. No allocator can work from that state, and it is
+    not a drawdown to be waited out.
+
+    These are CLOSED, not deleted: record_exit books each one to v2_trades at
+    the last known price with reason `book_resize`, so the P&L lands in the
+    ledger and the performance split still accounts for it under `legacy`.
+
+    Runs once per resize (the epoch check in ensure_schema gates it) and only
+    touches positions that are genuinely unholdable — anything that still fits
+    the new book is left alone for exit_monitor to manage normally.
+    """
+    v2 = _rw()
+    try:
+        row = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?",
+                         (market,)).fetchone()
+        if not row:
+            return 0
+        capital, slots = float(row[0]), int(row[1])
+        slot = capital / max(slots, 1)
+        live = _live(market)
+        live.update(_option_live())
+        today_s = datetime.now(IST).date().isoformat()
+        closed = 0
+        for pid, sym, strat, sh, ep in v2.execute(
+                "SELECT id,symbol,strategy,shares,entry_price FROM v2_positions"
+                " WHERE market=?", (market,)):
+            notional = float(sh) * float(ep)
+            unholdable = notional > slot or strat in DISABLED_LANES
+            if not unholdable:
+                continue
+            px = float((live.get(sym) or {}).get("price") or ep)
+            net, pct = record_exit(v2, market, pid, today_s, px, float(sh),
+                                   "book_resize")
+            _LOG.warning("book_resize: closed %s %s %.0f x %.2f (Rs %.0f, %.1f%% "
+                         "of a Rs %.0f slot) -> net Rs %.0f",
+                         strat, sym, float(sh), float(ep), notional,
+                         notional / slot * 100, slot, net)
+            closed += 1
+        v2.commit()
+        if closed:
+            _LOG.warning("book_resize: closed %d position(s) the Rs %.0f book "
+                         "could not carry", closed, capital)
+        return closed
+    finally:
+        v2.close()
+
+
 def sleeve_pass(market):
     """THE production entry path. The multi-sleeve system is the only way a new
     position is opened.
@@ -3972,6 +4042,14 @@ def sleeve_pass(market):
     if not live:
         _status[market] = "sleeves: no quotes"
         return
+    # one-shot: clear positions a resized book cannot carry (see the function)
+    global _RECONCILED
+    if market not in _RECONCILED:
+        _RECONCILED.add(market)
+        try:
+            reconcile_book_capital(market)
+        except Exception:
+            _LOG.exception("book reconciliation failed; continuing")
     tails, mdf = _hist(market)
     dates = eng.complete_trading_dates(tails, 0.5)
     if not dates:
@@ -4008,8 +4086,14 @@ def sleeve_pass(market):
         pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
                  for sym, _st, sh, ep, _sl in positions)
         equity = cash + pv
-        peak = v2.execute("SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?",
-                          (capital, market)).fetchone()[0] or capital
+        # peak from THIS book epoch only — see the resize note in ensure_schema
+        epoch = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
+                           (market,)).fetchone()
+        epoch = (epoch[0] if epoch else "") or ""
+        peak = v2.execute(
+            "SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?"
+            " AND substr(date,6) >= ?", (capital, market, epoch[:10])).fetchone()[0] or capital
+        peak = max(float(peak), capital)
 
         book = BookState(capital=capital, cash=cash, deployed=deployed,
                          open_positions=len(positions), per_sleeve_positions=per_sleeve,
@@ -4052,6 +4136,7 @@ def sleeve_pass(market):
 
 
 _SLEEVE_ENGINE = None
+_RECONCILED: set = set()
 
 
 def _sleeve_index_bars(symbol):
