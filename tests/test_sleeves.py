@@ -471,9 +471,36 @@ class WebsiteConsistencyTest(unittest.TestCase):
                       inspect.getsource(v2_web.api_overview))
 
     def test_per_user_cash_scopes_to_the_epoch(self) -> None:
+        """Scoping is now STRUCTURAL: rows carry the epoch they were written
+        in, rather than each query remembering a timestamp comparison. That
+        comparison was forgotten in five separate places, and every miss put
+        the old Rs 1,00,000 ledger back on the dashboard."""
         import inspect
         from app import books
-        self.assertIn("epoch_of(con, user_id, market)", inspect.getsource(books.cash))
+        src = inspect.getsource(books.cash)
+        self.assertIn("current_epoch(con, user_id, market)", src)
+        self.assertIn("COALESCE(book_epoch,?)=?", src)
+
+    def test_every_money_read_filters_on_the_stamped_epoch(self) -> None:
+        import inspect
+        from app import books
+        for fn in (books.cash, books.stats, books.positions):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("book_epoch", inspect.getsource(fn))
+
+    def test_writes_stamp_the_epoch(self) -> None:
+        import inspect
+        from app import books
+        for fn in (books.buy, books.sell):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("book_epoch", inspect.getsource(fn))
+
+    def test_a_read_never_creates_a_book(self) -> None:
+        """current_epoch must not bootstrap on a read path — that is how every
+        user who merely loads a page gets a phantom book."""
+        import inspect
+        from app import books
+        self.assertNotIn("ensure_book", inspect.getsource(books.current_epoch))
 
     def test_positions_api_exposes_sleeve_and_regime(self) -> None:
         import inspect

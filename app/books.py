@@ -50,12 +50,13 @@ CREATE TABLE IF NOT EXISTS user_book(
 CREATE TABLE IF NOT EXISTS user_positions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, market TEXT, strategy TEXT,
   symbol TEXT, entry_date TEXT, entry_price REAL, shares REAL, stop REAL,
-  target REAL, opened_at TEXT, src_id INTEGER, sleeve TEXT, regime TEXT);
+  target REAL, opened_at TEXT, src_id INTEGER, sleeve TEXT, regime TEXT,
+  book_epoch TEXT);
 CREATE TABLE IF NOT EXISTS user_trades(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, market TEXT, strategy TEXT,
   symbol TEXT, entry_date TEXT, entry_price REAL, exit_date TEXT, exit_price REAL,
   shares REAL, pnl REAL, return_pct REAL, reason TEXT, opened_at TEXT, closed_at TEXT,
-  sleeve TEXT, regime TEXT);
+  sleeve TEXT, regime TEXT, book_epoch TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_user_pos ON user_positions(user_id, market, symbol);
 CREATE INDEX IF NOT EXISTS ix_user_trades ON user_trades(user_id, market, exit_date);
 -- One equity point per user per day. Without this a personal book can never
@@ -111,6 +112,58 @@ def ensure_book(con, user_id, market="IN"):
     return budget
 
 
+
+LEGACY_EPOCH = "legacy"
+
+
+def current_epoch(con, user_id, market="IN") -> str:
+    """The epoch id this book is currently trading in.
+
+    EVERY read of a book's money filters on this. Scoping by timestamp
+    comparison was tried and failed five separate times — in books.cash,
+    books.stats, v2_web._market_stats, sleeve_pass and the equity series — each
+    one a fresh place to forget the filter, and each forgotten one put the old
+    Rs 1,00,000 ledger back on the dashboard.
+
+    A stamped column cannot be forgotten in the same way: rows carry the epoch
+    they were written in, legacy rows carry `legacy`, and a query that omits
+    the filter returns nothing rather than silently returning everything.
+    """
+    row = con.execute("SELECT started_at FROM user_book WHERE user_id=? AND market=?",
+                      (int(user_id), market)).fetchone()
+    return (row[0] if row and row[0] else LEGACY_EPOCH) or LEGACY_EPOCH
+
+
+def reset_book(con, user_id, market="IN", budget=None):
+    """TRUE fresh start for one user's book.
+
+    Capital, cash, equity and peak all return to the budget; open positions are
+    cleared; realised P&L for the new epoch is zero. Legacy trades are NOT
+    deleted — they are stamped `legacy` and every book read filters them out,
+    so they stay queryable for history while being unable to touch equity,
+    cash, peak, drawdown or the dashboard.
+    """
+    cap = float(budget if budget is not None else DEFAULT_BUDGET.get(market, 10000.0))
+    now = datetime.now(timezone.utc).isoformat()
+    uid = int(user_id)
+    # anything not already stamped belongs to the book that came before
+    for tbl in ("user_trades", "user_positions"):
+        con.execute(f"UPDATE {tbl} SET book_epoch=? WHERE user_id=? AND market=?"
+                    " AND (book_epoch IS NULL OR book_epoch='')",
+                    (LEGACY_EPOCH, uid, market))
+    con.execute("DELETE FROM user_positions WHERE user_id=? AND market=?", (uid, market))
+    con.execute("DELETE FROM user_equity WHERE user_id=? AND market=?", (uid, market))
+    con.execute("INSERT OR REPLACE INTO user_book(user_id,market,budget,started_at)"
+                " VALUES(?,?,?,?)", (uid, market, cap, now))
+    con.execute("INSERT OR REPLACE INTO user_equity(user_id,market,date,equity,cash,"
+                "positions_value,n_positions) VALUES(?,?,?,?,?,?,?)",
+                (uid, market, now[:10], cap, cap, 0.0, 0))
+    con.commit()
+    _LOG.warning("user %s book RESET: capital Rs %.0f, epoch %s, legacy history "
+                 "retained but excluded", uid, cap, now)
+    return now
+
+
 def epoch_of(con, user_id, market="IN") -> str:
     """When this book's current capital took effect.
 
@@ -145,16 +198,16 @@ def cash(con, user_id, market="IN"):
     book computes it this way.
     """
     budget = budget_of(con, user_id, market)
+    ep = current_epoch(con, user_id, market)
     spent = con.execute("SELECT COALESCE(SUM(entry_price*shares),0) FROM user_positions"
-                        " WHERE user_id=? AND market=?",
-                        (int(user_id), market)).fetchone()[0] or 0.0
+                        " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",
+                        (int(user_id), market, LEGACY_EPOCH, ep)).fetchone()[0] or 0.0
     # Scoped to the current epoch, and compared on the TIMESTAMP: the legacy
     # ledger shares the calendar date the resize happened, so a date-only
     # compare drags the whole old book back in.
     realised = con.execute("SELECT COALESCE(SUM(pnl),0) FROM user_trades"
-                           " WHERE user_id=? AND market=? AND COALESCE(closed_at,'')>=?",
-                           (int(user_id), market,
-                            epoch_of(con, user_id, market))).fetchone()[0] or 0.0
+                           " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",
+                           (int(user_id), market, LEGACY_EPOCH, ep)).fetchone()[0] or 0.0
     return budget - float(spent) + float(realised)
 
 
@@ -177,9 +230,11 @@ def size_for(con, user_id, market, price):
 def positions(con, user_id, market="IN"):
     cols = ("id", "market", "strategy", "symbol", "entry_date", "entry_price",
             "shares", "stop", "target", "opened_at", "sleeve", "regime")
+    ep = current_epoch(con, user_id, market)
     rows = con.execute(f"SELECT {','.join(cols)} FROM user_positions"
-                       " WHERE user_id=? AND market=? ORDER BY id",
-                       (int(user_id), market)).fetchall()
+                       " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?"
+                       " ORDER BY id",
+                       (int(user_id), market, LEGACY_EPOCH, ep)).fetchall()
     return [dict(zip(cols, r)) for r in rows]
 
 
@@ -215,11 +270,20 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
     # the caller would be told shares were bought that do not exist, leaving the
     # book's cash and its positions permanently disagreeing. rowcount is the
     # only honest answer.
+    # The book must EXIST before the epoch is stamped. Without this the first
+    # write lands with `legacy`, a later ensure_book creates a real epoch, and
+    # the position silently vanishes from the book that just bought it. Reads
+    # deliberately never create a book, so it has to happen here.
+    ensure_book(con, user_id, market)
+    # book_epoch is stamped at WRITE time. Every money read filters on it, so a
+    # row written without one would be invisible to the book that created it.
     cur = con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,"
-                      "symbol,entry_date,entry_price,shares,stop,target,opened_at,src_id)"
-                      " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                      "symbol,entry_date,entry_price,shares,stop,target,opened_at,"
+                      "src_id,book_epoch)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                       (int(user_id), market, strategy, symbol, now.date().isoformat(),
-                       price, qty, stop, target, now.isoformat(), src_id))
+                       price, qty, stop, target, now.isoformat(), src_id,
+                       current_epoch(con, user_id, market)))
     con.commit()
     return qty if cur.rowcount else 0
 
@@ -243,10 +307,11 @@ def sell(con, user_id, market, symbol, price, reason="manual"):
     now = datetime.now(IST)
     con.execute("INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"
                 "entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,"
-                "opened_at,closed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "opened_at,closed_at,book_epoch)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(user_id), market, strategy, symbol, edate, entry,
                  now.date().isoformat(), price, shares, net, pct, reason,
-                 opened, now.isoformat()))
+                 opened, now.isoformat(), current_epoch(con, user_id, market)))
     con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
     con.commit()
     return net, pct
@@ -276,12 +341,13 @@ def stats(con, user_id, market, live):
         px = float((live or {}).get(p["symbol"], {}).get("price") or p["entry_price"])
         mtm += p["shares"] * px
         unreal += (px - p["entry_price"]) * p["shares"]
+    ep = current_epoch(con, user_id, market)
     realised = con.execute("SELECT COALESCE(SUM(pnl),0) FROM user_trades"
-                           " WHERE user_id=? AND market=?",
-                           (int(user_id), market)).fetchone()[0] or 0.0
+                           " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",
+                           (int(user_id), market, LEGACY_EPOCH, ep)).fetchone()[0] or 0.0
     rets = [r[0] for r in con.execute("SELECT return_pct FROM user_trades"
-                                      " WHERE user_id=? AND market=?",
-                                      (int(user_id), market))]
+                                      " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",
+                                      (int(user_id), market, LEGACY_EPOCH, ep))]
     wins = [r for r in rets if r > 0]
     free = budget - sum(p["entry_price"] * p["shares"] for p in pos) + realised
     return dict(market=market, budget=budget, cash=round(free, 2),
