@@ -450,3 +450,44 @@ class DailyReportTest(unittest.TestCase):
         from app import v2_live
         self.assertIn("risk_amt", inspect.getsource(v2_live.record_entry))
         self.assertIn("risk_amt", inspect.getsource(v2_live.record_exit))
+
+
+class WebsiteConsistencyTest(unittest.TestCase):
+    """The website must show the same book the server holds."""
+
+    def test_overview_scopes_realised_to_the_epoch(self) -> None:
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web._market_stats)
+        self.assertIn("started_at", src)
+        self.assertIn("COALESCE(closed_at,'')>=?", src)
+
+    def test_prev_equity_from_the_old_book_is_discarded(self) -> None:
+        """An Rs 88,749 baseline against a Rs 10,000 book made every move read
+        as a collapse."""
+        import inspect
+        from app import v2_web
+        self.assertIn("float(prev_row[0]) > budget * 3",
+                      inspect.getsource(v2_web.api_overview))
+
+    def test_per_user_cash_scopes_to_the_epoch(self) -> None:
+        import inspect
+        from app import books
+        self.assertIn("epoch_of(con, user_id, market)", inspect.getsource(books.cash))
+
+    def test_positions_api_exposes_sleeve_and_regime(self) -> None:
+        import inspect
+        from app import v2_web, books
+        self.assertIn("sleeve=(p.get(\"sleeve\") or p[\"strategy\"])",
+                      inspect.getsource(v2_web._my_positions))
+        self.assertIn("sleeve", inspect.getsource(books.positions))
+
+    def test_the_options_panel_is_flagged_retired(self) -> None:
+        import inspect
+        from app import v2_web
+        self.assertIn("options_retired", inspect.getsource(v2_web))
+
+    def test_user_books_match_the_house_capital(self) -> None:
+        from app import books, v2_live
+        self.assertEqual(books.DEFAULT_BUDGET["IN"], v2_live.BUDGET["IN"])
+        self.assertEqual(books.MAX_POSITIONS, v2_live.MAXPOS["IN"])

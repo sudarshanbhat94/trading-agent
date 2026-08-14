@@ -869,7 +869,18 @@ def _options_book():
         # guess.
         unreal_today = sum(sh * (float((live.get(sym) or {}).get("price") or entry) - entry)
                            for sym, entry, sh in rows if sym in opened_today)
-        return dict(options_today=round(realised_today + unreal_today, 2),
+        # RETIRED LANE. Option buying is retired (v2_live.OPTION_BUYING_RETIRED),
+        # so this panel describes a book that can no longer trade. It kept
+        # reporting a Rs 1,00,000 budget and Rs 92,404 of equity next to a
+        # Rs 10,000 live book, which reads as ten times the capital the system
+        # actually has. Flagged so the UI can label it rather than show it as a
+        # live sleeve; the historical numbers stay readable.
+        try:
+            from .v2_live import OPTION_BUYING_RETIRED as _opt_retired
+        except Exception:
+            _opt_retired = False
+        return dict(options_retired=bool(_opt_retired),
+                    options_today=round(realised_today + unreal_today, 2),
                     options_overall=round(cash + mtm - budget, 2),
                     options_budget=round(budget, 2),
                     options_cash=round(cash, 2),
@@ -883,7 +894,7 @@ def _options_book():
                     options_win=(round(wins / closed * 100) if closed else None),
                     options_positions=n)
     except Exception:
-        return dict(options_today=None, options_overall=None,
+        return dict(options_retired=True, options_today=None, options_overall=None,
                     options_budget=None, options_cash=None, options_deployed=None,
                     options_value=None, options_equity=None,
                     options_realised=None, options_trades=0, options_win=None,
@@ -2830,7 +2841,14 @@ def _my_positions(uid, market="IN"):
             px = float((live.get(p["symbol"]) or {}).get("price") or p["entry_price"])
             val = px * p["shares"]
             out.append(dict(id=p["id"], symbol=p["symbol"], market=market, ccy="₹",
-                            strategy=p["strategy"], entry=round(p["entry_price"], 2),
+                            strategy=p["strategy"],
+                            # WHICH SLEEVE opened this and in WHAT REGIME. Falls
+                            # back to the legacy strategy name for rows opened
+                            # before the columns existed, so a retired-lane
+                            # holding is never mislabelled as a sleeve.
+                            sleeve=(p.get("sleeve") or p["strategy"]),
+                            regime=(p.get("regime") or "-"),
+                            entry=round(p["entry_price"], 2),
                             live=round(px, 2), qty=p["shares"], value=round(val, 2),
                             pnl=round((px / p["entry_price"] - 1) * 100, 2)
                             if p["entry_price"] else 0.0,

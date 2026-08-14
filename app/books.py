@@ -176,7 +176,7 @@ def size_for(con, user_id, market, price):
 
 def positions(con, user_id, market="IN"):
     cols = ("id", "market", "strategy", "symbol", "entry_date", "entry_price",
-            "shares", "stop", "target", "opened_at")
+            "shares", "stop", "target", "opened_at", "sleeve", "regime")
     rows = con.execute(f"SELECT {','.join(cols)} FROM user_positions"
                        " WHERE user_id=? AND market=? ORDER BY id",
                        (int(user_id), market)).fetchall()
