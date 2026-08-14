@@ -288,8 +288,15 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
                     # the two in the engine's exit_monitor
                     window = "\n".join(src.splitlines()[max(0, i - 30):i])
                     with self.subTest(file=name, line=i + 1):
-                        self.assertIn("record_exit(", window,
-                                      "the position row must be deleted AFTER record_exit")
+                        # ORPHAN CLEANUP is the one legitimate exception: the
+                        # row's exit was already booked AND mirrored on an
+                        # earlier run, so calling record_exit again would
+                        # double-count the close rather than sell anything.
+                        # It must say so in the same window.
+                        self.assertTrue(
+                            "record_exit(" in window or "ORPHAN CLEANUP" in window,
+                            "a position row may only be deleted after record_exit, "
+                            "or as documented orphan cleanup")
 
     def test_an_exit_still_sells_when_the_live_buy_was_smaller(self) -> None:
         """Paper size and live size are independent; the sell follows the live

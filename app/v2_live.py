@@ -3994,12 +3994,21 @@ def reconcile_book_capital(market):
         live.update(_option_live())
         today_s = datetime.now(IST).date().isoformat()
         closed = 0
+        orphans: list = []
         for pid, sym, strat, sh, ep in v2.execute(
                 "SELECT id,symbol,strategy,shares,entry_price FROM v2_positions"
                 " WHERE market=?", (market,)):
             notional = float(sh) * float(ep)
             unholdable = notional > slot or strat in DISABLED_LANES
             if not unholdable:
+                continue
+            # Idempotent. An earlier build booked the exit without deleting the
+            # position, so a second run double-counted the same close. Never
+            # write a book_resize row for a symbol that already has one today.
+            if v2.execute("SELECT 1 FROM v2_trades WHERE market=? AND symbol=?"
+                          " AND reason='book_resize' AND exit_date=?",
+                          (market, sym, today_s)).fetchone():
+                orphans.append((pid, sym))
                 continue
             px = float((live.get(sym) or {}).get("price") or ep)
             net, pct = record_exit(v2, market, pid, today_s, px, float(sh),
@@ -4010,10 +4019,21 @@ def reconcile_book_capital(market):
                          strat, sym, float(sh), float(ep), notional,
                          notional / slot * 100, slot, net)
             closed += 1
+        # ORPHAN CLEANUP — the one place a position row is removed WITHOUT a
+        # matching record_exit, and deliberately so. These already have a
+        # book_resize trade from an earlier run (an earlier build booked the
+        # exit but failed to delete the row), so the sell has already been
+        # recorded and mirrored. Calling record_exit again would double-count
+        # the same close, which is exactly the corruption being cleaned up.
+        for pid, sym in orphans:
+            v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
+            _LOG.warning("book_resize: %s already closed today — removed the "
+                         "orphaned position row without double-booking", sym)
         v2.commit()
-        if closed:
-            _LOG.warning("book_resize: closed %d position(s) the Rs %.0f book "
-                         "could not carry", closed, capital)
+        if closed or orphans:
+            _LOG.warning("book_resize: closed %d position(s) and cleared %d "
+                         "orphan(s) the Rs %.0f book could not carry",
+                         closed, len(orphans), capital)
         return closed
     finally:
         v2.close()
@@ -4085,14 +4105,19 @@ def sleeve_pass(market):
         # sleeves.performance; it just does not fund or starve the new book.
         epoch_row = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
                                (market,)).fetchone()
-        epoch_day = ((epoch_row[0] if epoch_row else "") or "")[:10]
+        epoch_ts = (epoch_row[0] if epoch_row else "") or ""
+        epoch_day = epoch_ts[:10]
+        # `closed_at` carries a TIME; `exit_date` is a date only, and the whole
+        # legacy ledger shares the date the resize happened — comparing dates
+        # pulled Rs 18k of old-book P&L into the new book and pinned the brake.
         realised = v2.execute(
             "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
-            " AND exit_date >= ?", (market, epoch_day)).fetchone()[0] or 0.0
+            " AND COALESCE(closed_at,'') >= ?", (market, epoch_ts)).fetchone()[0] or 0.0
         day_pnl = v2.execute(
             "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND"
-            " substr(exit_date,1,10)=? AND reason<>'book_resize'",
-            (market, today_s)).fetchone()[0] or 0.0
+            " substr(exit_date,1,10)=? AND reason<>'book_resize'"
+            " AND COALESCE(closed_at,'') >= ?",
+            (market, today_s, epoch_ts)).fetchone()[0] or 0.0
         cash = capital - deployed + realised
         pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
                  for sym, _st, sh, ep, _sl in positions)
