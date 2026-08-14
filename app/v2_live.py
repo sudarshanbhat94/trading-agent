@@ -956,7 +956,7 @@ def ensure_schema(v2):
     # Carried on the position and copied onto the trade at exit, so the split
     # survives the close.
     for _tbl in ("v2_positions", "v2_trades"):
-        for _col in ("sleeve", "regime"):
+        for _col in ("sleeve", "regime", "risk_amt"):
             try:
                 v2.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} TEXT")
             except Exception:
@@ -1576,9 +1576,9 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
     v2.execute(
         "INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,"
         "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at,"
-        "sleeve,regime)"
+        "sleeve,regime,risk_amt)"
         " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,"
-        "opened_at,?,sleeve,regime FROM v2_positions WHERE id=?",
+        "opened_at,?,sleeve,regime,risk_amt FROM v2_positions WHERE id=?",
         (exit_date, exit_price, shares, net, net_pct, reason,
          closed_at or datetime.now(timezone.utc).isoformat(), position_id))
     # LIVE MIRROR — sell whatever the sleeve actually holds. Read the symbol
@@ -1670,11 +1670,14 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
             return False
     v2.execute(
         "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
-        "stop,target,trail,peak,conviction,opened_at,why,expiry,sleeve,regime)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "stop,target,trail,peak,conviction,opened_at,why,expiry,sleeve,regime,"
+        "risk_amt)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
          entry_price if peak is None else peak, conviction,
-         datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime))
+         datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime,
+         (float(shares) * max(float(entry_price) - float(stop or 0), 0.0)
+          if stop else None)))
     # LIVE MIRROR — real money. Runs only when the sleeve is armed AND connected;
     # `live_ready` is false by default and this is a no-op on every other
     # install. Placed AFTER the paper row is written and wrapped, so a broker

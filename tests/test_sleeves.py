@@ -335,12 +335,18 @@ class PerformanceSplitTest(unittest.TestCase):
         con = sqlite3.connect(":memory:")
         con.execute("CREATE TABLE v2_trades(market TEXT, sleeve TEXT, regime TEXT,"
                     " pnl REAL, shares REAL, entry_price REAL, exit_price REAL,"
-                    " entry_date TEXT)")
-        rows = [("IN", "mean_reversion", "ON", 120.0, 10, 100, 113, "2026-08-01"),
-                ("IN", "mean_reversion", "ON", -40.0, 10, 100, 95.5, "2026-08-02"),
-                ("IN", "early_momentum", "NEUTRAL", -60.0, 10, 100, 93.5, "2026-08-03"),
-                ("IN", None, None, -500.0, 10, 100, 49.5, "2026-07-01")]
-        con.executemany("INSERT INTO v2_trades VALUES(?,?,?,?,?,?,?,?)", rows)
+                    " entry_date TEXT, risk_amt REAL, closed_at TEXT)")
+        rows = [("IN", "mean_reversion", "ON", 120.0, 10, 100, 113, "2026-08-01", 60.0, "2026-08-01T10:00"),
+                ("IN", "mean_reversion", "ON", -40.0, 10, 100, 95.5, "2026-08-02", 40.0, "2026-08-02T10:00"),
+                ("IN", "early_momentum", "NEUTRAL", -60.0, 10, 100, 93.5, "2026-08-03", 60.0, "2026-08-03T10:00"),
+                ("IN", None, None, -500.0, 10, 100, 49.5, "2026-07-01", None, "2026-07-01T10:00")]
+        con.executemany("INSERT INTO v2_trades VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
+        con.execute("CREATE TABLE v2_book(market TEXT, budget REAL, started_at TEXT)")
+        con.execute("INSERT INTO v2_book VALUES('IN', 10000.0, '2026-07-01T00:00')")
+        con.execute("CREATE TABLE v2_positions(market TEXT, symbol TEXT, sleeve TEXT,"
+                    " strategy TEXT, shares REAL, entry_price REAL, stop REAL)")
+        con.execute("INSERT INTO v2_positions VALUES('IN','ACME','mean_reversion',"
+                    "'mean_reversion', 3, 625.0, 573.0)")
         return con
 
     def test_split_by_sleeve(self) -> None:
@@ -377,4 +383,70 @@ class PerformanceSplitTest(unittest.TestCase):
         from app.sleeves import performance as perf
         text = perf.report(self._con())
         self.assertIn("mean_reversion", text)
-        self.assertIn("regime", text)
+        self.assertIn("BY REGIME", text)
+
+
+class DailyReportTest(unittest.TestCase):
+    def _con(self):
+        return PerformanceSplitTest._con(PerformanceSplitTest())
+
+    def test_book_state_reports_equity_cash_and_positions(self) -> None:
+        from app.sleeves import performance as perf
+        snap = perf.book_state(self._con(), "IN", prices={"ACME": {"price": 650.0}})
+        self.assertEqual(snap.capital, 10_000.0)
+        self.assertEqual(snap.n_positions, 1)
+        self.assertAlmostEqual(snap.positions_value, 1_950.0)
+        self.assertAlmostEqual(snap.equity, snap.cash + snap.positions_value)
+
+    def test_equity_is_cash_plus_positions(self) -> None:
+        from app.sleeves import performance as perf
+        snap = perf.book_state(self._con(), "IN")
+        self.assertAlmostEqual(snap.equity, snap.cash + snap.positions_value, places=6)
+
+    def test_avg_r_uses_recorded_risk(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve(self._con())
+        # +120/60 = +2R and -40/40 = -1R  ->  mean +0.5R
+        self.assertAlmostEqual(out["mean_reversion"]["avg_r"], 0.5, places=6)
+
+    def test_trades_without_recorded_risk_report_no_r(self) -> None:
+        """Excluded from the R column, not counted as zero."""
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve(self._con())
+        self.assertIsNone(out["legacy"]["avg_r"])
+
+    def test_win_rate_per_sleeve(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_sleeve(self._con())
+        self.assertAlmostEqual(out["mean_reversion"]["win_rate"], 50.0)
+        self.assertAlmostEqual(out["early_momentum"]["win_rate"], 0.0)
+
+    def test_regime_split_covers_on_and_neutral(self) -> None:
+        from app.sleeves import performance as perf
+        out = perf.by_regime(self._con())
+        self.assertEqual(out["ON"]["n"], 2)
+        self.assertEqual(out["NEUTRAL"]["n"], 1)
+
+    def test_report_contains_every_required_section(self) -> None:
+        from app.sleeves import performance as perf
+        text = perf.report(self._con(), "IN")
+        for section in ("BOOK", "OPEN POSITIONS", "BY SLEEVE", "BY REGIME",
+                        "SLEEVE x REGIME", "equity", "cash", "avg R"):
+            with self.subTest(section=section):
+                self.assertIn(section, text)
+
+    def test_the_report_is_read_only(self) -> None:
+        """A report must never be able to write to the book."""
+        import inspect
+        from app.sleeves import performance as perf
+        self.assertIn("mode=ro", inspect.getsource(perf.open_readonly))
+        src = inspect.getsource(perf)
+        for verb in ("INSERT ", "UPDATE ", "DELETE "):
+            with self.subTest(verb=verb.strip()):
+                self.assertNotIn(verb, src)
+
+    def test_risk_amt_is_carried_from_entry_to_trade(self) -> None:
+        import inspect
+        from app import v2_live
+        self.assertIn("risk_amt", inspect.getsource(v2_live.record_entry))
+        self.assertIn("risk_amt", inspect.getsource(v2_live.record_exit))
