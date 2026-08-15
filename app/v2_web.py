@@ -4154,8 +4154,6 @@ button{border-radius:9px}
     selector stopped matching and the pair was crammed into one column of this
     grid and then split again: two quarter-width cards with overflowing text. */
  #homefeed>.fd-books,#homefeed>#fdTrades,#homefeed>#fdHold{grid-column:1 / -1}
- /* three equal tiles on a desktop row, never 1 + 2 */
- .fd-books{grid-template-columns:repeat(3,minmax(0,1fr))}
  #homefeed>div:empty{display:none}
  /* make the list CONTAINERS full-width (override old per-card grid/width rules) */
  #poslist{display:block!important}
@@ -4216,11 +4214,7 @@ input[type=date]{width:auto;padding:8px 11px}
    auto-fit, not `1fr 1fr`, for the second reason too: when the options book is
    absent its div collapses to :empty and the remaining tile takes the FULL
    width instead of sitting in a half-width column with a hole beside it. */
-/* auto-fit at 270px produced a ragged 1 + 2 split at common zoom levels: the
-   first tile took a full row and the other two paired below it. A fixed count
-   per breakpoint keeps the row honest — three across when there is room, two
-   when there is not, one on a phone. */
-.fd-books{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+.fd-books{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));
  gap:12px;align-items:stretch}
 /* each tile sizes its own type off ITS width, not the window's — at 1280 the
    pair is 282px each, at 1920 it is 427px, and the same viewport can produce
