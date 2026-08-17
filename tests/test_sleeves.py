@@ -601,3 +601,21 @@ class IdeasComeFromSleevesTest(unittest.TestCase):
         from app import v2_live
         self.assertIn('c.instrument != "EQ"',
                       inspect.getsource(v2_live._publish_sleeve_ideas))
+
+    def test_legacy_ideas_are_hidden_from_the_page(self) -> None:
+        """102 ideas on record came from the retired path. They stay in the
+        table for history, but a reader must not be handed a recommendation
+        from an engine that has been switched off."""
+        import inspect
+        from app import ideas
+        src = inspect.getsource(ideas.visible)
+        self.assertIn("strategy IN ({smarks})", src)
+        for sleeve in ("mean_reversion", "early_momentum"):
+            with self.subTest(sleeve=sleeve):
+                self.assertIn(sleeve, ideas.SLEEVE_SOURCES)
+
+    def test_no_legacy_lane_is_a_permitted_idea_source(self) -> None:
+        from app import ideas, v2_live
+        for lane in v2_live.DISABLED_LANES:
+            with self.subTest(lane=lane):
+                self.assertNotIn(lane, ideas.SLEEVE_SOURCES)

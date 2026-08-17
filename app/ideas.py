@@ -70,6 +70,10 @@ HORIZON_DAYS = 10
 # so a Starter subscriber gets the SAME top idea an Elite one does — the paid
 # tiers add breadth, not a better first pick. Selling a "better" idea to the
 # higher tier would mean deliberately publishing a worse one to everybody else.
+#: Only these may appear on the ideas page. The multi-sleeve engine is the only
+#: thing that publishes now; anything else on record came from a retired lane.
+SLEEVE_SOURCES = ("mean_reversion", "quality_momentum", "early_momentum",
+                  "index_directional", "options_overlay")
 PER_DAY = {"free": 0, "watch": 1, "paper": 3, "auto": 5}
 MAX_PER_DAY = 5
 
@@ -305,12 +309,21 @@ def visible(v2, market, plan, days=30, limit=200):
     if not allowed:
         return []
     marks = ",".join("?" * len(allowed))
+    # ONLY SLEEVE-SOURCED IDEAS ARE SHOWN. The 102 ideas already on record were
+    # published by the legacy path — its own signal sweep at conviction 0.15
+    # against a retired lane's ATR plan — and they describe a system that no
+    # longer exists. They stay in the table for history and for the resolved
+    # scoreboard, but a reader must not be handed a recommendation from an
+    # engine that has been switched off.
+    smarks = ",".join("?" * len(SLEEVE_SOURCES))
     rows = v2.execute(
         "SELECT " + ",".join(COLUMNS) + " FROM v2_ideas WHERE market=?"
         f" AND tier IN ({marks})"
+        f" AND strategy IN ({smarks})"
         " AND published_date >= date('now', ?)"
         " ORDER BY published_date DESC, rank ASC LIMIT ?",
-        (market, *allowed, f"-{int(days)} day", int(limit))).fetchall()
+        (market, *allowed, *SLEEVE_SOURCES, f"-{int(days)} day",
+         int(limit))).fetchall()
     return [row_to_dict(r) for r in rows]
 
 

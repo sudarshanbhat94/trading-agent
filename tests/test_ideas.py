@@ -19,7 +19,10 @@ def _db():
     return con
 
 
-def _cand(symbol="WABAG", price=1000.0, atr=20.0, strategy="swing_meanrev", **kw):
+# Ideas are published by SLEEVES now; `visible()` filters anything else out as
+# a retired-lane leftover. A fixture publishing under a legacy lane name would
+# be testing a path the product no longer has.
+def _cand(symbol="WABAG", price=1000.0, atr=20.0, strategy="mean_reversion", **kw):
     return dict(symbol=symbol, price=price, atr=atr, strategy=strategy, **kw)
 
 
