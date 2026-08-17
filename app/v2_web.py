@@ -4784,18 +4784,19 @@ function renderHero(){
  var up=(chg||0)>=0;
  var tabs=['1d','1m','all'].map(function(t){return '<span class="fd-tab'+(t==HEROTAB?' on':'')+'" onclick="setHeroTab(\''+t+'\')">'+t.toUpperCase()+'</span>'}).join('');
  fdSet('fdPerf','fd-card',bookCard({
-  icon:(up?'▲':'▼'),title:(up?"You're up ":"Down ")+noun,
-  // "live paper book" was always a contradiction; with a real account on the
-  // page it becomes a dangerous one.
-  meta:'OpenStocks AI \u00b7 shared strategy record',tabs:tabs,ccy:m.ccy,
+  // NAME THE BOOK, don't name the mood. The title was generated from
+  // performance — "You're up today" / "Down today" — which says nothing about
+  // WHICH of the two books this is, and sat directly beside a card called
+  // "Your paper book" holding different numbers. Two books that look like two
+  // moods of the same book is the confusion. The move is the subtitle's job.
+  icon:(up?'▲':'▼'),title:'OpenStocks AI book',
+  meta:'shared strategy record \u00b7 '+(up?'up ':'down ')+noun,tabs:tabs,ccy:m.ccy,
   equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,
-  // The step in this curve is option P&L written before the books were split.
-  // Said out loud rather than rebased away: only the total was ever stored, so
-  // the history cannot be recomputed, and shifting it would move the record to
-  // flatter today.
-  note:note+(m.optOffset?' \u00b7 the step is '+m.ccy
-    +Math.round(m.optOffset).toLocaleString('en-IN')
-    +' of option P&L written before the books were split':''),
+  // The options footnote is gone with the book it described. It explained a
+  // step in a curve drawn from a pre-split history that this reset book no
+  // longer carries, so on a clean Rs 10,000 book it referred to nothing on
+  // screen while quoting -Rs 7,596 next to a flat line.
+  note:note,
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}}));
 }
