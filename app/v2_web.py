@@ -427,6 +427,10 @@ def api_overview(user: dict = Depends(require_session)):
         # hero chart data — series with a MEANING, not "last 40 rows in whatever
         # order": today's minute equity vs yesterday's close, plus daily closes.
         utc_d = datetime.now(timezone.utc).date().isoformat()
+        # this book's accounting epoch — every series below is scoped to it
+        _epr = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
+                          (market,)).fetchone()
+        epoch = (_epr[0] if _epr and _epr[0] else "") or ""
         today_eq = [round(r[0]) for r in v2.execute(
             "SELECT equity FROM v2_equity WHERE market=? AND date LIKE ? ORDER BY date",
             (market, "LIVE_" + utc_d + "%"))]
@@ -439,10 +443,19 @@ def api_overview(user: dict = Depends(require_session)):
         if prev_row and prev_row[0] and float(prev_row[0]) > budget * 3:
             prev_row = None
         prev_eq = round(prev_row[0]) if prev_row else round(budget)
+        # EPOCH-SCOPED, like every other money read. Unfiltered, this series ran
+        # from the old Rs 1,00,000 book's Rs 126,583 peak down to a Rs 10,000
+        # one, and _risk_metrics dutifully reported that as -106.8% max drawdown
+        # and -6.39 Sharpe — printed on the same card as "0 trades", which is
+        # what makes it obviously wrong rather than merely wrong.
+        _eday = epoch[:10]
         dd = {r[0]: round(r[1]) for r in v2.execute(
-            "SELECT date, equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%'", (market,))}
+            "SELECT date, equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%'"
+            " AND date >= ?", (market, _eday))}
         for r in v2.execute("SELECT substr(date,6,10) d, equity, MAX(date) FROM v2_equity "
-                            "WHERE market=? AND date LIKE 'LIVE_%' GROUP BY substr(date,6,10)", (market,)):
+                            "WHERE market=? AND date LIKE 'LIVE_%'"
+                            " AND substr(date,6) >= ? GROUP BY substr(date,6,10)",
+                            (market, epoch[:19])):
             dd[r[0]] = round(r[1])   # per-day close from the last LIVE snapshot wins
         days = sorted(dd)[-90:]
         dser = [dd[k] for k in days]
