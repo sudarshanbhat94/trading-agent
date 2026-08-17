@@ -879,7 +879,22 @@ def _options_book():
             from .v2_live import OPTION_BUYING_RETIRED as _opt_retired
         except Exception:
             _opt_retired = False
-        return dict(options_retired=bool(_opt_retired),
+        if _opt_retired:
+            # A retired book has no live capital, no cash, no deployment and no
+            # "today". Reporting those at all is what let a closed Rs 1,00,000
+            # book sit on the dashboard beside a Rs 10,000 live one. Only the
+            # historical record survives, and it is explicitly labelled.
+            return dict(options_retired=True,
+                        options_budget=None, options_cash=None,
+                        options_deployed=None, options_value=None,
+                        options_equity=None, options_today=None,
+                        options_overall=None, options_curve=[],
+                        options_positions=0,
+                        # history, for the retired card only
+                        options_realised=round(realised, 2),
+                        options_trades=int(closed or 0),
+                        options_win=(round(wins / closed * 100) if closed else None))
+        return dict(options_retired=False,
                     options_today=round(realised_today + unreal_today, 2),
                     options_overall=round(cash + mtm - budget, 2),
                     options_budget=round(budget, 2),
@@ -4788,6 +4803,25 @@ function renderOptionsTile(o,ccy){
  // The SECOND book. It is separately funded, so it gets its own tile rather
  // than a clause in someone else's sentence — mixing them is what let option
  // profits read as equity performance.
+ // RETIRED is checked FIRST: a retired book reports no equity, so the
+ // null-guard below would blank the card before this branch was ever reached.
+ // RETIRED BOOK. Option buying is retired, so this must not render as a live
+ // book: an Rs 92,404 equity, -Rs 7,596 realised and a 142-trade record shown
+ // in the same shape as the live tiles reads as capital the system still runs.
+ // History stays reachable, but it is labelled and stripped of the live
+ // affordances (today's change, the sparkline, the deployed/cash grid).
+ if(o.options_retired){
+  fdSet('fdOpts','fd-card',
+   '<div class=row style="align-items:flex-start">'
+   +'<div><div style="font-weight:600">Index options</div>'
+   +'<div class=mut style="font-size:12px;margin-top:2px">RETIRED \u00b7 historical only</div></div>'
+   +'<span class=tag style="background:#3a2a2a;color:#e88">RETIRED</span></div>'
+   +'<div class=mut style="font-size:12px;margin-top:10px;line-height:1.5">'
+   +'This book is closed and is not part of the Rs 10,000 the system manages.<br>'
+   +'Historical record: '+(o.options_trades||0)+' trades, '
+   +fmtc(ccy,o.options_realised||0)+' realised, '
+   +((o.options_win==null)?'\u2014':o.options_win+'% win')+'.</div>');
+  return;}
  if(o.options_equity==null){fdSet('fdOpts','','');return;}
  var todayPct=o.options_budget?Math.round((o.options_today||0)/o.options_budget*10000)/100:0,
      curve=o.options_curve||[];

@@ -1961,11 +1961,11 @@ def poll_market(market):
         _bk2.snapshot_all(v2, _pl2, market, live)
     except Exception:
         _LOG.exception("user equity snapshot failed")
-    try:
-        _publish_ideas(v2, market, tails, mdf, asof, rstate, strong,
-                       mfloor, live, stale)
-    except Exception:
-        _LOG.exception("idea publication failed (book unaffected)")
+    # LEGACY IDEA PATH RETIRED. _publish_ideas ran its own signal sweep at
+    # IDEAS_MIN_CONVICTION against swing_meanrev's ATR plan — a retired lane's
+    # thresholds. Ideas now come from the sleeve engine in sleeve_pass, so this
+    # is not called; the function is kept only so the published-idea TRACKING
+    # it shares with ideas.track stays readable in history.
     # strategy balance: hold back slots for swing ONLY when swing actually has
     # eligible candidates, so we never leave cash idle in a gap-only (risk-off) tape
     strat_count = {}
@@ -3968,6 +3968,45 @@ def _market_open_watchdog(market):
 SLEEVE_INTERVAL = 300          # heavy: full panel + universe screen
 
 
+def _publish_sleeve_ideas(v2, market, result, today_s, live):
+    """Publish today's ideas from the multi-sleeve engine's candidates.
+
+    Replaces the legacy path, which ran its OWN `signals_for_date` sweep at
+    IDEAS_MIN_CONVICTION (0.15) against swing_meanrev's ATR plan — a retired
+    lane's thresholds, entirely disconnected from what the engine now trades.
+    Ideas and the book must describe the same view of the market or one of them
+    is lying.
+
+    Candidates carry their sleeve, entry, stop and target already, so the idea's
+    levels are exactly the plan the sleeve proposed rather than a second
+    computation that can drift from it.
+    """
+    from . import ideas as _ideas
+    now_iso = datetime.now(IST).isoformat()
+    _ideas.track(v2, market, live, now_iso, today_s)
+    if not market_open(market):
+        return 0
+    rows = []
+    for dec in result.decisions:
+        for c in dec.candidates:
+            if c.instrument != "EQ":
+                continue          # only equity ideas are actionable by a reader
+            atr = max((c.entry - c.stop) / 2.0, 1e-9)   # implied by the plan
+            rows.append(dict(symbol=c.symbol, strategy=c.sleeve,
+                             score=float(c.score), conviction=float(c.score),
+                             atr=atr, price=float(c.entry),
+                             stop=float(c.stop), target=float(c.target or 0.0),
+                             meta_p=None, sleeve=c.sleeve,
+                             regime=result.regime.state))
+    rows.sort(key=lambda r: -r["score"])
+    n = _ideas.publish(v2, market, rows, lambda _s: 2.0, today_s, now_iso)
+    have = v2.execute("SELECT COUNT(*) FROM v2_ideas WHERE market=? AND published_date=?",
+                      (market, today_s)).fetchone()[0]
+    _LOG.info("ideas: %d sleeve candidate(s) -> %d new (%d today, regime %s)",
+              len(rows), n, have, result.regime.state)
+    return n
+
+
 def reset_book_epoch(market, capital=None):
     """Re-anchor the book's accounting epoch to now.
 
@@ -4185,6 +4224,17 @@ def sleeve_pass(market):
         if result.halt_reason:
             _status[market] = f"sleeves HALTED · {result.halt_reason}"
             return
+
+        # IDEAS COME FROM THE SLEEVES. Every candidate the sleeves proposed is
+        # publishable, whether or not the risk manager could fund it — a
+        # Rs 10,000 book routinely cannot take a name that is still a perfectly
+        # good idea, and that distinction is the whole reason ideas are not
+        # simply the buy list. What they must NOT be is a separate legacy sweep
+        # with its own threshold, which is what they were.
+        try:
+            _publish_sleeve_ideas(v2, market, result, today_s, live)
+        except Exception:
+            _LOG.exception("idea publication failed (book unaffected)")
 
         fills = 0
         for alloc in result.allocations:

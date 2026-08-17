@@ -518,3 +518,86 @@ class WebsiteConsistencyTest(unittest.TestCase):
         from app import books, v2_live
         self.assertEqual(books.DEFAULT_BUDGET["IN"], v2_live.BUDGET["IN"])
         self.assertEqual(books.MAX_POSITIONS, v2_live.MAXPOS["IN"])
+
+
+class RetiredOptionsBookTest(unittest.TestCase):
+    """A closed book must not render as a live one."""
+
+    def test_the_api_reports_no_live_capital_when_retired(self) -> None:
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web)
+        i = src.index("if _opt_retired:")
+        window = src[i:i + 900]
+        for field in ("options_budget=None", "options_cash=None",
+                      "options_equity=None", "options_today=None"):
+            with self.subTest(field=field):
+                self.assertIn(field, window)
+
+    def test_history_survives_retirement(self) -> None:
+        """Retired is not deleted — the record stays readable."""
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web)
+        window = src[src.index("if _opt_retired:"):][:900]
+        for field in ("options_realised", "options_trades", "options_win"):
+            with self.subTest(field=field):
+                self.assertIn(field, window)
+
+    def test_the_retired_check_precedes_the_null_guard(self) -> None:
+        """A retired book reports no equity, so a null-guard placed first would
+        blank the card before the retired branch could render."""
+        from app import v2_web
+        src = v2_web.SPA_HTML if hasattr(v2_web, "SPA_HTML") else inspect_src()
+        i_ret = src.index("if(o.options_retired)")
+        i_null = src.index("if(o.options_equity==null)", src.index("renderOptionsTile"))
+        self.assertLess(i_ret, i_null)
+
+    def test_the_headline_excludes_a_retired_book(self) -> None:
+        import inspect
+        from app import v2_web
+        src = inspect.getsource(v2_web)
+        self.assertIn("(ob.options_equity==null||optRetired)?0:ob.options_equity", src)
+
+
+def inspect_src():
+    import inspect
+    from app import v2_web
+    return inspect.getsource(v2_web)
+
+
+class IdeasComeFromSleevesTest(unittest.TestCase):
+    def test_the_legacy_publisher_is_not_called(self) -> None:
+        import inspect
+        from app import v2_live
+        src = inspect.getsource(v2_live.poll_market)
+        self.assertNotIn("_publish_ideas(v2, market, tails", src)
+        self.assertIn("LEGACY IDEA PATH RETIRED", src)
+
+    def test_sleeve_pass_publishes_ideas(self) -> None:
+        import inspect
+        from app import v2_live
+        self.assertIn("_publish_sleeve_ideas(v2, market, result",
+                      inspect.getsource(v2_live.sleeve_pass))
+
+    def test_ideas_carry_the_sleeve_and_regime(self) -> None:
+        import inspect
+        from app import v2_live
+        src = inspect.getsource(v2_live._publish_sleeve_ideas)
+        self.assertIn("sleeve=c.sleeve", src)
+        self.assertIn("regime=result.regime.state", src)
+
+    def test_idea_levels_come_from_the_sleeve_plan(self) -> None:
+        """Not a second computation that can drift from what the sleeve
+        proposed."""
+        import inspect
+        from app import v2_live
+        src = inspect.getsource(v2_live._publish_sleeve_ideas)
+        self.assertIn("stop=float(c.stop)", src)
+        self.assertIn("target=float(c.target", src)
+
+    def test_only_equity_ideas_are_published(self) -> None:
+        import inspect
+        from app import v2_live
+        self.assertIn('c.instrument != "EQ"',
+                      inspect.getsource(v2_live._publish_sleeve_ideas))
