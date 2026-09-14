@@ -216,8 +216,10 @@ class WatchWindowCentringTest(unittest.TestCase):
                  "expiry": "2026-08-26", "strike": str(k), "option_type": "CE",
                  "lot_size": "30", "name": "BANKNIFTY"}
                 for k in range(56500, 57900, 100)]
-        stale = {int(r["strike"]) for r in nfo_contracts.select("BANKNIFTY", 57147.5, rows=rows)}
-        live = {int(r["strike"]) for r in nfo_contracts.select("BANKNIFTY", 57249.3, rows=rows)}
+        stale = {int(r["strike"]) for r in nfo_contracts.select(
+            "BANKNIFTY", 57147.5, rows=rows, today="2026-08-01")}
+        live = {int(r["strike"]) for r in nfo_contracts.select(
+            "BANKNIFTY", 57249.3, rows=rows, today="2026-08-01")}
         self.assertNotIn(57500, stale, "the bhavcopy window is what dropped the held strike")
         self.assertIn(57500, live, "the live window keeps it")
 

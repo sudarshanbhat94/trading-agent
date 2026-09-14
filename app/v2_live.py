@@ -340,7 +340,14 @@ INTRADAY_STRATS = ("intraday_news", "volume_surge", "intraday_momentum")   # sha
 # 3-ATR breakeven lock armed off the day HIGH of 139.45 and the stop then fired
 # against the day LOW of 67.05, booking breakeven on a contract that closed at
 # 106.75 — up 21.7%. Neither extreme was necessarily reached while we held it.
-MIDSESSION_STRATS = INTRADAY_STRATS + ("index_options", "manual", "btst")
+# sleeve_pass runs after the open and then every few minutes. Its positions do
+# not own the session high/low printed before their actual entry. Treat every
+# routed sleeve as a mid-session entry so exit_monitor only uses prices observed
+# while the position existed on day one.
+MIDSESSION_STRATS = INTRADAY_STRATS + (
+    "index_options", "manual", "btst", "mean_reversion", "quality_momentum",
+    "early_momentum", "index_directional", "options_overlay",
+)
 # Freqtrade-style protections: temporarily HALT new entries when the book is
 # bleeding, so a bad tape can't chew through the whole book. Pure safety — only
 # ever reduces trading. Both reset next session.
@@ -1423,11 +1430,16 @@ def _tg_daily_summary(market):
         v2 = _ro(V2_DB)
         budget = (v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone() or [BUDGET.get(market, 0.0)])[0]
         rows = v2.execute("SELECT symbol, entry_price, shares FROM v2_positions WHERE market=?", (market,)).fetchall()
-        realized_all = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
-        realized_today = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND substr(exit_date,1,10)=?",
-                                    (market, ds)).fetchone()[0] or 0.0
-        total_tr = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0
-        wins = v2.execute("SELECT COUNT(*) FROM v2_trades WHERE market=? AND pnl>0", (market,)).fetchone()[0] or 0
+        epoch = (v2.execute("SELECT started_at FROM v2_book WHERE market=?",
+                            (market,)).fetchone() or [""])[0] or ""
+        realized_all = _epoch_pnl(v2, market)
+        realized_today = _epoch_pnl(v2, market, ds)
+        total_tr = v2.execute(
+            "SELECT COUNT(*) FROM v2_trades WHERE market=?"
+            " AND COALESCE(closed_at,'')>=?", (market, epoch)).fetchone()[0] or 0
+        wins = v2.execute(
+            "SELECT COUNT(*) FROM v2_trades WHERE market=? AND pnl>0"
+            " AND COALESCE(closed_at,'')>=?", (market, epoch)).fetchone()[0] or 0
         v2.close()
         live = _live(market)
         cost = sum(ep * sh for _, ep, sh in rows)
@@ -1605,6 +1617,25 @@ def _entry_of(v2, position_id, exit_price):
     return (float(row[0]) if row else 0.0), exit_price
 
 
+def _epoch_pnl(v2, market, day=None):
+    """Realised P&L belonging to the capital currently in ``v2_book``.
+
+    Historical rows remain queryable, but they cannot fund current cash or an
+    equity snapshot. ``closed_at`` is the boundary because old and new books
+    can share the same calendar date.
+    """
+    row = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
+                     (market,)).fetchone()
+    epoch = (row[0] if row and row[0] else "") or ""
+    sql = ("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
+           " AND COALESCE(closed_at,'')>=?")
+    args = [market, epoch]
+    if day is not None:
+        sql += " AND substr(exit_date,1,10)=?"
+        args.append(day)
+    return float(v2.execute(sql, tuple(args)).fetchone()[0] or 0.0)
+
+
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
                  stop, target, trail, conviction, why, peak=None, expiry=None,
                  sleeve=None, regime=None):
@@ -1691,17 +1722,20 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     # Wrapped and after the house row for the same reason as the broker mirror:
     # the engine's record must survive anything that happens downstream of it.
     try:
-        _book_mirror_entry(v2, market, strategy, symbol, entry_price, stop, target)
+        _book_mirror_entry(v2, market, strategy, symbol, entry_price, stop, target,
+                           sleeve, regime)
     except Exception:
         _LOG.exception("user-book mirror (entry) failed for %s", symbol)
     return True
 
 
-def _book_mirror_entry(v2, market, strategy, symbol, price, stop, target):
+def _book_mirror_entry(v2, market, strategy, symbol, price, stop, target,
+                       sleeve=None, regime=None):
     from . import books as _books, plans as _plans
     # None -> books builds the auth DB itself; see books._auth_db for why this
     # must not be `from .main import db` on the engine thread.
-    n = _books.mirror_entry(v2, None, _plans, market, strategy, symbol, price, stop, target)
+    n = _books.mirror_entry(v2, None, _plans, market, strategy, symbol, price,
+                            stop, target, sleeve=sleeve, regime=regime)
     if n:
         _LOG.info("user books: %s opened in %d book(s)", symbol, n)
 
@@ -3556,7 +3590,8 @@ def sector_watch_pass(market):
 
 
 HOLD_DAYS = {"swing_meanrev": 8, "gap_momentum": 20, "mom_breakout": 40, "intraday_news": 1,
-             "volume_surge": 1,
+             "volume_surge": 1, "mean_reversion": 8, "quality_momentum": 45,
+             "early_momentum": 4, "index_directional": 5,
              # MEASURED on 405 sessions / 229,229 affordable index-option entries.
              # Same entries, same -35%/+60% exits, only the hold varies:
              #   1 day -5.2% | 2 days -7.3% | 3 days -8.3% | 5 days -8.9% | 10 days -9.2%
@@ -3686,7 +3721,10 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     if not use_live:
         peak = max(peak, lq["high"], sess_row[1] if sess_row else 0.0)
     eff = p["stop"]
-    if p["trail"]:
+    # A trailing stop protects a move that happened while we held the trade.
+    # At entry there is no profit to trail; applying it immediately silently
+    # replaces the ATR stop with a much tighter percentage stop.
+    if p["trail"] and peak > p["entry"]:
         eff = max(eff, peak * (1 - p["trail"]))
     # breakeven lock on a big winner only (recover ATR from the initial stop)
     atr_stop = PLAN.get(p["strategy"], {}).get("atr_stop", 2.0)
@@ -3775,7 +3813,7 @@ def exit_monitor(market):
         # the engine is ALIVE on an empty/fresh book (equity = cash = budget+realized).
         if time.time() - _EQ_SNAP.get(market, 0) >= 60:
             _EQ_SNAP[market] = time.time()
-            realized = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+            realized = _epoch_pnl(v2, market)
             eqv = budget + realized
             try:
                 v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
@@ -3793,7 +3831,7 @@ def exit_monitor(market):
     live.update(_option_live(positions.keys()))
     sess = _session_opens(market, live)          # session high ratchets US trails between samples
     frozen = _stale_symbols(market)              # don't mark/exit off a stale (frozen) quote
-    realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?", (market,)).fetchone()[0] or 0.0
+    realised = _epoch_pnl(v2, market)
     cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
     exits = 0
     for sym, p in list(positions.items()):

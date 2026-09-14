@@ -124,6 +124,17 @@ class MidSessionEquityEntryTest(unittest.TestCase):
         self.assertEqual(peak, 100.2)
         self.assertEqual(eff, 97.5)
 
+    def test_new_sleeves_do_not_exit_on_a_pre_entry_low(self) -> None:
+        """All sleeve entries are placed by the intraday production pass. The
+        day's earlier low therefore cannot stop or trail a newly opened trade."""
+        for strat in ("mean_reversion", "quality_momentum", "early_momentum"):
+            with self.subTest(strategy=strat):
+                p = _pos(strat, 100.0, 92.0, trail=0.06)
+                peak, eff, ex, reason = _ev(p, _quote(100.2, 108.0, 90.0))
+                self.assertEqual(peak, 100.2)
+                self.assertIsNone(ex)
+                self.assertIsNone(reason)
+
 
 class OpeningEntryUnaffectedTest(unittest.TestCase):
     """swing/momentum enter at the OPEN, so every extreme of the day is theirs.
@@ -153,7 +164,9 @@ class GuardMembershipTest(unittest.TestCase):
         """index_options was the one missing, and it is the one that cost
         Rs 1,210 on 30 Jul."""
         for strat in ("intraday_news", "volume_surge", "intraday_momentum",
-                      "index_options", "manual", "btst"):
+                      "index_options", "manual", "btst", "mean_reversion",
+                      "quality_momentum", "early_momentum",
+                      "index_directional", "options_overlay"):
             self.assertIn(strat, v2_live.MIDSESSION_STRATS, strat)
 
     def test_opening_lanes_are_not_covered(self) -> None:

@@ -163,7 +163,7 @@ class PublishTest(unittest.TestCase):
         self._pub([_cand(f"S{i}") for i in range(5)])
         for plan, n in (("free", 0), ("watch", 1), ("paper", 3), ("auto", 5)):
             with self.subTest(plan=plan):
-                self.assertEqual(len(ideas.visible(self.con, "IN", plan)), n)
+                self.assertEqual(len(ideas.visible(self.con, "IN", plan, days=365)), n)
 
     def test_conviction_prefers_the_meta_model(self) -> None:
         """meta_p is the number the engine ranks on when it has one."""
@@ -182,7 +182,7 @@ class TrackTest(unittest.TestCase):
     def _track(self, price, high, low, today="2026-08-04"):
         ideas.track(self.con, "IN", {"A": dict(price=price, high=high, low=low)},
                     "2026-08-04T14:00+05:30", today)
-        return ideas.visible(self.con, "IN", "auto")[0]
+        return ideas.visible(self.con, "IN", "auto", days=365)[0]
 
     def test_an_untouched_idea_stays_open(self) -> None:
         r = self._track(1010, 1020, 995)
@@ -232,12 +232,12 @@ class TrackTest(unittest.TestCase):
         """A stock with no live price must stay open rather than being marked
         against a stale or zero price."""
         ideas.track(self.con, "IN", {}, "2026-08-04T14:00+05:30", "2026-08-04")
-        self.assertEqual(ideas.visible(self.con, "IN", "auto")[0]["status"], "open")
+        self.assertEqual(ideas.visible(self.con, "IN", "auto", days=365)[0]["status"], "open")
 
     def test_a_feed_without_ohlc_still_tracks_on_the_last_price(self) -> None:
         ideas.track(self.con, "IN", {"A": dict(price=935)},
                     "2026-08-04T14:00+05:30", "2026-08-04")
-        self.assertEqual(ideas.visible(self.con, "IN", "auto")[0]["status"], "stopped")
+        self.assertEqual(ideas.visible(self.con, "IN", "auto", days=365)[0]["status"], "stopped")
 
 
 class ScoreboardTest(unittest.TestCase):

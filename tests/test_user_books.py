@@ -176,6 +176,17 @@ class MirrorTest(unittest.TestCase):
         self.assertEqual(
             books.mirror_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target"), 1)
 
+    def test_sleeve_and_regime_survive_the_user_book_round_trip(self) -> None:
+        books.mirror_entry(self.con, self.db, self.plans, "IN", "mean_reversion",
+                           "ITC", 300.0, sleeve="mean_reversion", regime="NEUTRAL")
+        p = books.positions(self.con, 1)[0]
+        self.assertEqual(p["sleeve"], "mean_reversion")
+        self.assertEqual(p["regime"], "NEUTRAL")
+        books.mirror_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target")
+        row = self.con.execute(
+            "SELECT sleeve,regime FROM user_trades WHERE user_id=1").fetchone()
+        self.assertEqual(row, ("mean_reversion", "NEUTRAL"))
+
 
 class StatsTest(unittest.TestCase):
     def test_an_untouched_book_reports_its_full_budget(self) -> None:

@@ -462,6 +462,19 @@ class WebsiteConsistencyTest(unittest.TestCase):
         self.assertIn("started_at", src)
         self.assertIn("COALESCE(closed_at,'')>=?", src)
 
+    def test_engine_snapshots_scope_realised_to_the_epoch(self) -> None:
+        import sqlite3
+        from app import v2_live
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE v2_book(market TEXT, started_at TEXT)")
+        con.execute("CREATE TABLE v2_trades(market TEXT,pnl REAL,closed_at TEXT,exit_date TEXT)")
+        con.execute("INSERT INTO v2_book VALUES('IN','2026-08-15T00:00:00')")
+        con.executemany("INSERT INTO v2_trades VALUES('IN',?,?,?)", [
+            (-5000.0, "2026-08-14T12:00:00", "2026-08-14"),
+            (-100.0, "2026-08-16T12:00:00", "2026-08-16"),
+        ])
+        self.assertEqual(v2_live._epoch_pnl(con, "IN"), -100.0)
+
     def test_prev_equity_from_the_old_book_is_discarded(self) -> None:
         """An Rs 88,749 baseline against a Rs 10,000 book made every move read
         as a collapse."""

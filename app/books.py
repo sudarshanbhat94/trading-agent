@@ -245,7 +245,7 @@ def open_symbols(con, user_id, market="IN"):
 
 
 def buy(con, user_id, market, strategy, symbol, price, shares=None,
-        stop=None, target=None, src_id=None):
+        stop=None, target=None, src_id=None, sleeve=None, regime=None):
     """Open a position in ONE user's book. Returns shares bought, or 0.
 
     Zero is a normal outcome, not a failure: a book too small for one share of
@@ -279,10 +279,10 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
     # row written without one would be invisible to the book that created it.
     cur = con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,"
                       "symbol,entry_date,entry_price,shares,stop,target,opened_at,"
-                      "src_id,book_epoch)"
-                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                      "src_id,sleeve,regime,book_epoch)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (int(user_id), market, strategy, symbol, now.date().isoformat(),
-                       price, qty, stop, target, now.isoformat(), src_id,
+                       price, qty, stop, target, now.isoformat(), src_id, sleeve, regime,
                        current_epoch(con, user_id, market)))
     con.commit()
     return qty if cur.rowcount else 0
@@ -290,12 +290,13 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
 
 def sell(con, user_id, market, symbol, price, reason="manual"):
     """Close a position in ONE user's book. Returns (pnl, return_pct) or None."""
-    row = con.execute("SELECT id,strategy,entry_date,entry_price,shares,opened_at"
+    row = con.execute("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
+                      "sleeve,regime"
                       " FROM user_positions WHERE user_id=? AND market=? AND symbol=?",
                       (int(user_id), market, symbol)).fetchone()
     if not row:
         return None
-    pid, strategy, edate, entry, shares, opened = row
+    pid, strategy, edate, entry, shares, opened, sleeve, regime = row
     price = float(price or 0)
     if price <= 0:
         return None
@@ -303,15 +304,16 @@ def sell(con, user_id, market, symbol, price, reason="manual"):
     # while the engine reported net would make the two incomparable, which is
     # the whole reason for running them side by side.
     from .v2_live import net_trade_pnl
-    net, pct = net_trade_pnl(market, shares, float(entry), price)
+    net, pct = net_trade_pnl(market, shares, float(entry), price, strategy=strategy)
     now = datetime.now(IST)
     con.execute("INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"
                 "entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,"
-                "opened_at,closed_at,book_epoch)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "opened_at,closed_at,sleeve,regime,book_epoch)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(user_id), market, strategy, symbol, edate, entry,
                  now.date().isoformat(), price, shares, net, pct, reason,
-                 opened, now.isoformat(), current_epoch(con, user_id, market)))
+                 opened, now.isoformat(), sleeve, regime,
+                 current_epoch(con, user_id, market)))
     con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
     con.commit()
     return net, pct
@@ -426,12 +428,13 @@ def subscribers(db, plans_mod):
 
 
 def mirror_entry(con, db, plans_mod, market, strategy, symbol, price,
-                 stop=None, target=None, src_id=None):
+                 stop=None, target=None, src_id=None, sleeve=None, regime=None):
     """Fan the house book's entry out to every subscriber's own book."""
     done = 0
     for uid in subscribers(db, plans_mod):
         try:
-            if buy(con, uid, market, strategy, symbol, price, None, stop, target, src_id):
+            if buy(con, uid, market, strategy, symbol, price, None, stop, target,
+                   src_id, sleeve, regime):
                 done += 1
         except Exception:
             _LOG.exception("book mirror entry failed for user %s", uid)

@@ -91,6 +91,21 @@ class TrailTest(unittest.TestCase):
         peak, _, _, _ = _evaluate(_pos(peak=130.0), _quote(105.0, high=106.0))
         self.assertEqual(peak, 130.0)
 
+    def test_trail_does_not_replace_atr_stop_before_profit(self) -> None:
+        p = _pos(strategy="mean_reversion", entry=100.0, stop=90.0,
+                 trail=0.06, peak=100.0, edate=TODAY_S)
+        _, eff, ex, reason = _evaluate(p, _quote(95.0, high=95.0, low=95.0))
+        self.assertEqual(eff, 90.0)
+        self.assertIsNone(ex)
+        self.assertIsNone(reason)
+
+
+class SleeveHoldPeriodTest(unittest.TestCase):
+    def test_production_exit_clock_matches_each_sleeve(self) -> None:
+        self.assertEqual(v2_live.HOLD_DAYS["mean_reversion"], 8)
+        self.assertEqual(v2_live.HOLD_DAYS["early_momentum"], 4)
+        self.assertEqual(v2_live.HOLD_DAYS["quality_momentum"], 45)
+
 
 class BreakevenLockTest(unittest.TestCase):
     def test_the_atr_breakeven_lock_is_disabled(self) -> None:
