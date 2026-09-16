@@ -7,11 +7,9 @@ purely short-horizon, where flat charges dominate.
 Ranking combines:
 
   * QUALITY  — ROE, leverage and earnings stability where fundamentals are
-    available. Where they are not (the common case on this install, which has
-    no fundamentals feed), quality is PROXIED from price behaviour: low
-    drawdown from the 252-day high, low realised volatility, and a smooth
-    equity curve. That is a proxy for durable compounding, and it is stated
-    plainly rather than dressed up as a fundamental score.
+    available. Production requires dated fundamentals and rejects missing
+    coverage. Research contexts can explicitly use a price-behaviour proxy;
+    that proxy is never represented as fundamental confirmation.
   * MOMENTUM — 6-12 month return EXCLUDING the most recent month. Skipping the
     last month is deliberate and is the standard construction: recent
     one-month returns mean-revert and pollute the momentum signal.
@@ -79,7 +77,11 @@ class QualityMomentumSleeve(Sleeve):
                                 f"< {MIN_MOMENTUM*100:.0f}%")
                 continue
 
-            q, why = self._quality(gi)
+            if ctx.require_reference_data:
+                q = (ctx.quality_scores or {}).get(sym)
+                why = "point-in-time fundamentals unavailable"
+            else:
+                q, why = self._quality(gi)
             if q is None:
                 dec.reject(sym, why)
                 continue
@@ -97,7 +99,8 @@ class QualityMomentumSleeve(Sleeve):
                 entry=entry, stop=entry - ATR_STOP * atr, target=0.0,
                 trail_pct=0.12, max_hold_days=MAX_HOLD_DAYS,
                 why=dict(setup="quality_momentum", momentum=round(mom, 4),
-                         quality=round(q, 4), regime=regime)))
+                         quality=round(q, 4), quality_source=("fundamentals" if ctx.require_reference_data else "price_proxy"),
+                         fundamentals_available=ctx.require_reference_data, regime=regime)))
 
         scored = self._sane_only(scored, dec)
         cfg = getattr(ctx.settings, self.name)

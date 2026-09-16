@@ -242,6 +242,7 @@ def poll(main_db, v2, markets, cost_side, dry=False):
 
 
 def main():
+    raise SystemExit("Retired writer: use app.v2_live for production; this legacy CLI cannot open a book.")
     ap = argparse.ArgumentParser()
     ap.add_argument("--main-db", default="/opt/opentrade/var/trading_agent.db")
     ap.add_argument("--v2-db", default="/opt/opentrade/var/v2_paper.db")

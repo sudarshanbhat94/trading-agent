@@ -186,7 +186,7 @@ def verify(user_id, force=False):
         import httpx
         r = httpx.get(f"{API_BASE}/user/get-funds-and-margin",
                       headers=_headers(user_id), params={"segment": "SEC"}, timeout=12)
-        ok = r.status_code < 400
+        ok = 200 <= r.status_code < 300
         if r.status_code in (401, 403):
             ok = False
         elif r.status_code >= 400:
@@ -246,13 +246,13 @@ def state(user_id, now=None) -> dict:
         owner_user_id=s.get("owner_user_id"), armed=bool(s.get("armed")),
         kill_switch=bool(s.get("kill_switch", True)),
         allow_options=bool(s.get("allow_options")),
-        budget=float(s.get("budget") or LIVE_BUDGET),
-        max_order=round(float(s.get("budget") or LIVE_BUDGET) * MAX_ORDER_PCT, 2),
+        budget=float(s.get("budget") if s.get("budget") is not None else LIVE_BUDGET),
+        max_order=round(float(s.get("budget") if s.get("budget") is not None else LIVE_BUDGET) * MAX_ORDER_PCT, 2),
         options_blocked_reason=(
-            "" if float(s.get("budget") or LIVE_BUDGET) >= OPTIONS_MIN_BUDGET
+            "" if float(s.get("budget") if s.get("budget") is not None else LIVE_BUDGET) >= OPTIONS_MIN_BUDGET
             else f"one index-option lot costs Rs {min(LOT_COSTS.values()):,}–"
                  f"Rs {max(LOT_COSTS.values()):,}; this sleeve holds "
-                 f"Rs {float(s.get('budget') or LIVE_BUDGET):,.0f}"),
+                 f"Rs {float(s.get('budget') if s.get('budget') is not None else LIVE_BUDGET):,.0f}"),
         live_ready=bool(s.get("access_token")) and not stale
         and bool(s.get("armed")) and not bool(s.get("kill_switch", True)),
     )
@@ -387,6 +387,18 @@ def funds(user_id) -> dict:
                   headers=_headers(user_id), params={"segment": "SEC"}, timeout=20)
     r.raise_for_status()
     return r.json() or {}
+
+
+def orders(user_id):
+    """Broker order snapshots for today; absence is not a rejection."""
+    import httpx
+    r = httpx.get(f"{API_BASE}/order/retrieve-all", headers=_headers(user_id), timeout=20)
+    r.raise_for_status()
+    body = r.json()
+    rows = body if isinstance(body, list) else body.get("data")
+    if not isinstance(rows, list):
+        raise ValueError("broker order book unavailable")
+    return rows
 
 
 def positions(user_id) -> list:
@@ -544,11 +556,11 @@ def place_order(user_id, instrument_key, qty, side="BUY", price=0.0, product="D"
                                       if order_type == "MARKET" else 0))
     r = httpx.post(f"{ORDER_BASE}/order/place", headers={**_headers(user_id),
                    "Content-Type": "application/json"}, json=payload, timeout=25)
-    ok = r.status_code < 400
+    ok = 200 <= r.status_code < 300
     body = {}
     try:
         body = r.json() or {}
     except ValueError:
         body = {"raw": r.text[:400]}
-    return dict(ok=ok, status=r.status_code, order_id=(body.get("data") or {}).get("order_id"),
+    return dict(ok=ok and body.get("status") == "success" and bool((body.get("data") or {}).get("order_id")), status=r.status_code, order_id=(body.get("data") or {}).get("order_id"),
                 response=body)

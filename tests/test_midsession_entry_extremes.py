@@ -87,12 +87,12 @@ class IndexOptionEntryDayTest(unittest.TestCase):
         self.assertLess(eff, v2_live.breakeven_price("IN", 112.90))
         self.assertIsNone(reason, "no lock, so an 80.0 print is above the stop")
 
-    def test_the_day_extremes_are_valid_again_the_next_day(self) -> None:
-        """Held overnight, the position was open for the whole session, so the
-        day low is a price it genuinely traded through."""
+    def test_later_session_does_not_reuse_cumulative_extremes(self) -> None:
+        """A sampled live exit cannot infer ordering from daily extrema."""
         p = self.ce(edate="2026-07-29")
         peak, eff, ex, reason = _ev(p, _quote(106.75, 139.45, 50.0))
-        self.assertEqual(reason, "stop")
+        self.assertEqual(reason, "time")
+        self.assertEqual(ex, 106.75)
 
 
 class MidSessionEquityEntryTest(unittest.TestCase):

@@ -41,7 +41,8 @@ class BookIsSharedTest(unittest.TestCase):
         the engine's tables. It now clears the caller's own book (books.reset),
         and the unqualified version survives only as an operator-only helper."""
         src = inspect.getsource(v2_web.api_reset)
-        self.assertIn("books.reset(v2, uid)", src)
+        self.assertIn("books.reset_book(v2, uid, m)", src)
+        self.assertNotIn("_reset_house_book(v2)", src)
         self.assertNotIn('"DELETE FROM %s" % t', src)
         house = inspect.getsource(v2_web._reset_house_book)
         self.assertIn('"DELETE FROM %s" % t', house)

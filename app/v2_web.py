@@ -150,24 +150,24 @@ def _live_map(market, symbols=None):
             if not syms:
                 con.close()
                 return {}
-            q = ("SELECT symbol,price,open,high,low,close FROM latest_quotes WHERE source=? AND symbol IN (%s)"
+            q = ("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
                  % ",".join("?" * len(syms)))
             rows = con.execute(q, [LIVE_SOURCE[market], *syms]).fetchall()
         else:
-            rows = con.execute("SELECT symbol,price,open,high,low,close FROM latest_quotes WHERE source=?",
+            rows = con.execute("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=?",
                                (LIVE_SOURCE[market],)).fetchall()
         con.close()
     except Exception:
         return {}
     out = {}
-    for sym, p, o, h, l, c in rows:
+    for sym, p, o, h, l, c, ts in rows:
         try:
             price = float(p)
         except (TypeError, ValueError):
             continue
         if price > 0:
             out[sym] = dict(price=price, open=_n(o, price), high=_n(h, price),
-                            low=_n(l, price), prev=_n(c, price))
+                            low=_n(l, price), prev=_n(c, price), ts=ts)
     return out
 
 
@@ -199,9 +199,8 @@ def _regime_bg(market):
         syms, mdf = _panel(market)
         d = eng.complete_trading_dates(syms, 0.5)
         if d:
-            state = eng.regime_state(mdf, d[-1], eng.DEFAULTS["regime_lookback"])
-            if state == "ON" and eng.regime_strong(mdf, d[-1], eng.DEFAULTS["regime_lookback"]):
-                state = "STRONG"
+            from .sleeves.regime import RegimeGate
+            state = RegimeGate().view(syms, mdf, d[-1]).state
         else:
             state = "OFF"
         _regime_cache[market] = (time.time(), state)
@@ -282,11 +281,11 @@ def _market_stats(v2, market, budget, live):
                      (market, *EQUITY_EXCLUDED)).fetchall()
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
                           f" WHERE market=? AND strategy NOT IN ({marks})"
-                          " AND COALESCE(closed_at,'')>=?",
+                          " AND julianday(closed_at)>=COALESCE(julianday(?),0)",
                           (market, *EQUITY_EXCLUDED, epoch)).fetchone()[0] or 0.0
     realised_today = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
                                 f" AND strategy NOT IN ({marks}) AND exit_date=?"
-                                " AND COALESCE(closed_at,'')>=?",
+                                " AND julianday(closed_at)>=COALESCE(julianday(?),0)",
                                 (market, *EQUITY_EXCLUDED, today_s, epoch)).fetchone()[0] or 0.0
     mtm = unreal = unreal_today = 0.0
     prevs = _prev_close_map(market, [r[0] for r in pos])
@@ -302,7 +301,7 @@ def _market_stats(v2, market, budget, live):
     cash = budget - sum(r[1] * r[2] for r in pos) + realised
     rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?"
                                      f" AND strategy NOT IN ({marks})"
-                                     " AND COALESCE(closed_at,'')>=?",
+                                     " AND julianday(closed_at)>=COALESCE(julianday(?),0)",
                                      (market, *EQUITY_EXCLUDED, epoch))]
     wins = [r for r in rets if r > 0]
     loss = [r for r in rets if r <= 0]
@@ -420,42 +419,41 @@ def api_overview(user: dict = Depends(require_session)):
         # Rebasing the whole curve by a constant would move history to flatter
         # today. Instead the offset is reported so the chart can mark it, and the
         # curve is left as the record of what was actually written.
-        eq = [round(r[0]) for r in v2.execute(
-            "SELECT equity FROM v2_equity WHERE market=? ORDER BY date DESC LIMIT 40", (market,))][::-1]
-        if not eq:
-            eq = [round(budget)]
         # hero chart data — series with a MEANING, not "last 40 rows in whatever
         # order": today's minute equity vs yesterday's close, plus daily closes.
-        utc_d = datetime.now(timezone.utc).date().isoformat()
+        today_ist = datetime.now(IST).date().isoformat()
+        midnight = today_ist + "T00:00:00+05:30"
         # this book's accounting epoch — every series below is scoped to it
         _epr = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
                           (market,)).fetchone()
         epoch = (_epr[0] if _epr and _epr[0] else "") or ""
+        stamp_sql = "CASE WHEN date LIKE 'LIVE_%' THEN substr(date,6) ELSE date END"
+        eq = [round(r[0]) for r in v2.execute(
+            f"SELECT equity FROM v2_equity WHERE market=? AND julianday({stamp_sql})>=COALESCE(julianday(?),0) "
+            f"ORDER BY julianday({stamp_sql}) DESC LIMIT 40", (market, epoch))][::-1] or [round(budget)]
         today_eq = [round(r[0]) for r in v2.execute(
-            "SELECT equity FROM v2_equity WHERE market=? AND date LIKE ? ORDER BY date",
-            (market, "LIVE_" + utc_d + "%"))]
-        prev_row = v2.execute("SELECT equity FROM v2_equity WHERE market=? AND date < ? ORDER BY date DESC LIMIT 1",
-                              (market, "LIVE_" + utc_d)).fetchone()
-        # prev_equity is today's baseline. A snapshot from the OLD book
-        # (Rs 88,749 against a Rs 10,000 one) makes every intraday move read as
-        # a catastrophe, so a baseline that cannot belong to this book is
-        # discarded in favour of the budget itself.
-        if prev_row and prev_row[0] and float(prev_row[0]) > budget * 3:
-            prev_row = None
+            "SELECT equity FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' "
+            "AND julianday(substr(date,6))>=julianday(?) "
+            "AND julianday(substr(date,6))<julianday(?)+1 "
+            "AND julianday(substr(date,6))>=COALESCE(julianday(?),0) ORDER BY julianday(substr(date,6))",
+            (market, midnight, midnight, epoch))]
+        prev_row = v2.execute(
+            f"SELECT equity FROM v2_equity WHERE market=? AND julianday({stamp_sql})<julianday(?) "
+            f"AND julianday({stamp_sql})>=COALESCE(julianday(?),0) "
+            f"ORDER BY julianday({stamp_sql}) DESC LIMIT 1", (market, midnight, epoch)).fetchone()
         prev_eq = round(prev_row[0]) if prev_row else round(budget)
         # EPOCH-SCOPED, like every other money read. Unfiltered, this series ran
         # from the old Rs 1,00,000 book's Rs 126,583 peak down to a Rs 10,000
         # one, and _risk_metrics dutifully reported that as -106.8% max drawdown
         # and -6.39 Sharpe — printed on the same card as "0 trades", which is
         # what makes it obviously wrong rather than merely wrong.
-        _eday = epoch[:10]
         dd = {r[0]: round(r[1]) for r in v2.execute(
             "SELECT date, equity FROM v2_equity WHERE market=? AND date NOT LIKE 'LIVE_%'"
-            " AND date >= ?", (market, _eday))}
-        for r in v2.execute("SELECT substr(date,6,10) d, equity, MAX(date) FROM v2_equity "
+            " AND julianday(date)>=COALESCE(julianday(?),0)", (market, epoch))}
+        for r in v2.execute("SELECT date(substr(date,6),'+5 hours','+30 minutes') d, equity, MAX(julianday(substr(date,6))) FROM v2_equity "
                             "WHERE market=? AND date LIKE 'LIVE_%'"
-                            " AND substr(date,6) >= ? GROUP BY substr(date,6,10)",
-                            (market, epoch[:19])):
+                            " AND julianday(substr(date,6)) >= COALESCE(julianday(?),0) GROUP BY d",
+                            (market, epoch)):
             dd[r[0]] = round(r[1])   # per-day close from the last LIVE snapshot wins
         days = sorted(dd)[-90:]
         dser = [dd[k] for k in days]
@@ -466,6 +464,7 @@ def api_overview(user: dict = Depends(require_session)):
                         "daily_start": (days[0] if days else None),
                         "budget": round(s["budget"]), "equity": round(s["equity"]), "equity_series": eq,
                         "cash": round(s["cash"]), "deployed": round(s["deployed"]), "deploy_pct": s["deploy_pct"],
+                        "realised": s["realised"],
                         "today_pnl": round(s["today_pnl"], 2), "overall_pnl": round(s["overall_pnl"], 2),
                         "today_pct": round(s["today_pnl"] / s["budget"] * 100, 2) if s["budget"] else 0,
                         "overall_pct": round(s["overall_pnl"] / s["budget"] * 100, 2) if s["budget"] else 0,
@@ -773,7 +772,9 @@ def api_index_settings():
 
 
 @router.post("/api/index-settings")
-def api_index_settings_save(payload: dict):
+def api_index_settings_save(payload: dict, user: dict = Depends(require_session)):
+    if user.get("role") != "admin":
+        return JSONResponse({"error": "shared index configuration requires admin"}, status_code=403)
     from . import v2_live
     saved = {}
     if "enabled" in payload:
@@ -1852,7 +1853,9 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     shut = _market_shut(market)
     if shut is not None:
         return shut
-    px = float((_live_map(market).get(sym) or {}).get("price") or 0)
+    from .sleeves.feeds import fresh_quotes
+    quotes = fresh_quotes(_live_map(market, [sym]), datetime.now(timezone.utc))
+    px = float((quotes.get(sym) or {}).get("price") or 0)
     if px <= 0:
         return JSONResponse({"error": "no live price for " + sym}, status_code=400)
     from . import books
@@ -1861,6 +1864,10 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     try:
         if sym in books.open_symbols(v2, uid, market):
             return JSONResponse({"error": "already holding " + sym}, status_code=400)
+        from . import broker as _bk
+        from .broker_access import may_open
+        if _bk.state(uid).get("live_ready") and not may_open(user):
+            return JSONResponse({"error": "Elite is required for new live orders"}, status_code=403)
         stop, target = round(px * 0.94, 2), round(px * 1.06, 2)
         qty = books.buy(v2, uid, market, "manual", sym, px, None, stop, target)
         if qty < 1:
@@ -1878,10 +1885,11 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
                 main = _ro(MAIN_DB)
                 try:
                     broker_note = _lt.mirror_entry(v2, main, uid, market, sym,
-                                                   px, "manual")
+                                                   px, "manual", stop=stop, target=target)
                 finally:
                     main.close()
         except Exception:
+            broker_note = "unknown: reconciliation required"
             _LOG.exception("broker mirror failed on manual buy %s", sym)
         # NOTE: record_entry is deliberately NOT called any more. It writes the
         # HOUSE book and fires the engine's own broker + book mirrors, which is
@@ -1894,7 +1902,8 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
         telegram_bot.notify_trade("BUY", sym, qty, round(px, 2), market, strategy="manual", stop=stop, target=target)
     except Exception:
         pass
-    return JSONResponse({"ok": True, "symbol": sym, "qty": qty, "entry": round(px, 2)})
+    return JSONResponse({"ok": True, "symbol": sym, "qty": qty, "entry": round(px, 2),
+                         "broker_status": broker_note, "paper_recorded": True})
 
 
 @router.post("/api/reset")
@@ -1907,20 +1916,14 @@ def api_reset(user: dict = Depends(require_session)):
     already happened once (2026-07-28).
 
     A user now has their own book (app/books.py) and this clears exactly that.
-    An admin additionally gets the house book reset, because somebody has to be
-    able to, and that is a deliberate operator action rather than a button on a
-    subscriber's account page.
+    Resetting a personal book never resets the shared engine book.
     """
     from . import books
     uid = int(user.get("id") or 0)
     v2 = _rw()
     try:
-        books.reset(v2, uid)
         for m in ("IN", "US"):
-            books.ensure_book(v2, uid, m)
-        if (user.get("role") or "").lower() == "admin" and \
-                str(user.get("username") or "").lower() == "sudarshan":
-            _reset_house_book(v2)
+            books.reset_book(v2, uid, m)
         v2.commit()
     finally:
         v2.close()
@@ -1929,16 +1932,21 @@ def api_reset(user: dict = Depends(require_session)):
 
 def _reset_house_book(v2):
     """The ENGINE's book. Operator only, and separate from a user reset."""
-    for t in ("v2_positions", "v2_trades", "v2_equity", "v2_signals"):
+    from .v2_live import BUDGET, MAXPOS
+    # Preserve the old ledger and observed equity curve under their old epoch.
+    for t in ("v2_positions", "v2_signals"):
         try:
             v2.execute("DELETE FROM %s" % t)
         except Exception:
             pass
     now_utc = datetime.now(timezone.utc).isoformat()
-    for market, budget, mp in (("IN", 100000.0, 6), ("US", 20000.0, 6)):
+    for market, budget in BUDGET.items():
+        mp = MAXPOS[market]
         if v2.execute("SELECT 1 FROM v2_book WHERE market=?", (market,)).fetchone():
             v2.execute("UPDATE v2_book SET budget=?, max_pos=?, started_at=? WHERE market=?",
                        (budget, mp, now_utc, market))
+            v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) "
+                       "VALUES(?,?,?,?,0,0)", (market,"LIVE_"+now_utc,budget,budget))
     try:
         from . import v2_live
         v2_live._EQ_SNAP.clear()
@@ -1963,14 +1971,22 @@ def api_sell(payload: dict, user: dict = Depends(require_session)):
     v2 = _rw()
     try:
         held = [p for p in books.positions(v2, uid, market) if p["symbol"] == sym]
-        if not held:
+        from . import live_trade as _lt, order_journal
+        broker_held = _lt.live_qty(v2, uid, sym)
+        if not held and broker_held <= 0 and not order_journal.unresolved(v2, uid, sym):
             return JSONResponse({"error": "not holding " + sym}, status_code=400)
-        entry, shares = held[0]["entry_price"], held[0]["shares"]
-        px = float((_live_map(market).get(sym) or {}).get("price") or entry)
-        out = books.sell(v2, uid, market, sym, round(px, 2), "manual")
-        if not out:
-            return JSONResponse({"error": "could not close " + sym}, status_code=400)
-        pnl, ret = out
+        entry = held[0]["entry_price"] if held else 0
+        shares = held[0]["shares"] if held else broker_held
+        from .sleeves.feeds import fresh_quotes
+        quotes = fresh_quotes(_live_map(market, [sym]), datetime.now(timezone.utc))
+        px = float((quotes.get(sym) or {}).get("price") or 0)
+        if px <= 0:
+            return JSONResponse({"error": "current quote unavailable; position retained"}, status_code=409)
+        # Record the durable live exit obligation before deleting any paper row.
+        if broker_held > 0 or order_journal.unresolved(v2, uid, sym):
+            order_journal.request_exit(v2, uid, sym, "manual")
+        out = books.sell(v2, uid, market, sym, round(px, 2), "manual") if held else None
+        pnl, ret = out or (0, 0)
         broker_note = None
         try:
             from . import broker as _bk, live_trade as _lt
@@ -1983,6 +1999,7 @@ def api_sell(payload: dict, user: dict = Depends(require_session)):
                 finally:
                     main.close()
         except Exception:
+            broker_note = "unknown: reconciliation required"
             _LOG.exception("broker mirror failed on manual sell %s", sym)
         v2.commit()
     finally:
@@ -1992,7 +2009,8 @@ def api_sell(payload: dict, user: dict = Depends(require_session)):
         telegram_bot.notify_trade("SELL", sym, shares, round(px, 2), market, pnl_pct=round(ret, 2), strategy="manual")
     except Exception:
         pass
-    return JSONResponse({"ok": True, "symbol": sym, "pnl_pct": round(ret, 2)})
+    return JSONResponse({"ok": True, "symbol": sym, "pnl_pct": round(ret, 2),
+                         "paper_recorded": bool(out), "broker_status": broker_note})
 
 
 @router.delete("/api/alerts/{aid}")
@@ -2342,18 +2360,19 @@ def api_broker(user: dict = Depends(require_session)):
     v2 = _ro(V2_DB)
     try:
         today = datetime.now(IST).date().isoformat()
-        row = v2.execute("SELECT COUNT(*),COALESCE(SUM(notional),0) FROM v2_live_orders"
-                         " WHERE substr(ts,1,10)=? AND status='sent' AND user_id=?",
+        row = v2.execute("SELECT COUNT(*),COALESCE(SUM(filled_qty*average_price),0) FROM v2_live_orders"
+                         " WHERE date(ts,'+5 hours','+30 minutes')=? AND filled_qty>0 AND user_id=?",
                          (today, _uid(user))).fetchone()
         recent = [dict(zip(("ts", "symbol", "side", "qty", "price", "notional", "status",
-                            "broker_order_id", "reason"), r))
+                            "broker_order_id", "reason", "filled_qty", "average_price"), r))
                   for r in v2.execute(
                       "SELECT ts,symbol,side,qty,price,notional,status,broker_order_id,"
-                      "reason FROM v2_live_orders WHERE user_id=?"
+                      "reason,filled_qty,average_price FROM v2_live_orders WHERE user_id=?"
                       " ORDER BY id DESC LIMIT 25", (_uid(user),))]
     finally:
         v2.close()
-    st.update(orders_today=row[0], notional_today=round(row[1] or 0, 2),
+    from .broker_access import may_open
+    st.update(can_connect=may_open(user), orders_today=row[0], notional_today=round(row[1] or 0, 2),
               is_owner=True, recent=recent)
     return JSONResponse(st)
 
@@ -2412,6 +2431,12 @@ async def api_broker_arm(request: Request, user: dict = Depends(require_session)
     from . import broker
     body = await request.json()
     on = bool(body.get("armed"))
+    if on:
+        from . import plans
+        plan = plans.effective(user.get("account_plan"), user.get("trial_ends_at"),
+                               plan_expires_at=user.get("plan_expires_at"))
+        if not plans.allows(plan, "broker_connect"):
+            raise HTTPException(status_code=403, detail="Elite is required to arm live trading")
     if on and str(body.get("confirm") or "") != "TRADE REAL MONEY":
         raise HTTPException(status_code=400, detail="type: TRADE REAL MONEY")
     return JSONResponse(broker.configure(_uid(user), armed=on,
@@ -2458,7 +2483,7 @@ def api_ideas(market: str = "IN", days: int = 30,
     from . import live_trade as _lt
     _uid_i = int(user.get("id") or 0)
     bst = _broker.state(_uid_i)
-    can_buy = bool(bst.get("live_ready"))
+    can_buy = bool(bst.get("live_ready")) and plans.allows(plan, "broker_connect")
     margin = _lt.available_margin(_uid_i) if bst.get("connected") else None
     sleeve = min(float(bst.get("budget") or 0), margin) if margin is not None else None
     for r in rows:
@@ -4417,6 +4442,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
 .skel{color:var(--mut)}
 .toastmsg{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);box-shadow:0 8px 28px rgba(16,24,40,.18);padding:11px 20px;border-radius:12px;z-index:99;font-size:13px;animation:fade .3s}
 .ticker{overflow:hidden;white-space:nowrap;align-items:center;height:34px;margin:0 -16px 4px;padding:0;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
+@media(max-width:600px){.ticker{margin-left:-14px;margin-right:-14px}}
 .ticker .track{display:inline-flex;gap:24px;padding-left:16px;animation:tick 70s linear infinite;will-change:transform}
 .ticker:hover .track{animation-play-state:paused}
 .tk{display:inline-flex;gap:6px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums;cursor:pointer}
@@ -4827,14 +4853,17 @@ function renderOptionsTile(o,ccy){
  if(o.options_retired){
   fdSet('fdOpts','fd-card',
    '<div class=row style="align-items:flex-start">'
-   +'<div><div style="font-weight:600">Index options</div>'
-   +'<div class=mut style="font-size:12px;margin-top:2px">RETIRED \u00b7 historical only</div></div>'
-   +'<span class=tag style="background:#3a2a2a;color:#e88">RETIRED</span></div>'
+   +'<div><div style="font-weight:600">Index intelligence</div>'
+   +'<div class=mut style="font-size:12px;margin-top:2px">NIFTY \u00b7 BANKNIFTY</div></div>'
+   +'<span class=tag>ANALYSIS</span></div>'
    +'<div class=mut style="font-size:12px;margin-top:10px;line-height:1.5">'
-   +'This book is closed and is not part of the Rs 10,000 the system manages.<br>'
-   +'Historical record: '+(o.options_trades||0)+' trades, '
+   +'Index charts and signals remain available. Futures and option-spread execution is not enabled.'
+   +'</div><div class=brk-btns><button class=btn onclick="stock(\'NIFTY\',\'IN\')">Nifty 50</button>'
+   +'<button class=btn onclick="stock(\'BANKNIFTY\',\'IN\')">Bank Nifty</button></div>'
+   +'<details class=mut style="font-size:12px"><summary>Historical options book · retired</summary>'
+   +'<p>Excluded from active capital. Historical record: '+(o.options_trades||0)+' trades, '
    +fmtc(ccy,o.options_realised||0)+' realised, '
-   +((o.options_win==null)?'\u2014':o.options_win+'% win')+'.</div>');
+   +((o.options_win==null)?'\u2014':o.options_win+'% win')+'.</p></details>');
   return;}
  if(o.options_equity==null){fdSet('fdOpts','','');return;}
  var todayPct=o.options_budget?Math.round((o.options_today||0)/o.options_budget*10000)/100:0,
@@ -4966,7 +4995,7 @@ function ideaBuy(sym,qty){
  api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:'IN'})})
   .then(function(r){
    if(!r.ok){alert((r.j&&(r.j.error||r.j.detail))||'buy failed');return;}
-   alert('Order sent for '+sym+'. Check Account → live broker for the ledger.');
+   alert(r.j.broker_status?('Broker: '+r.j.broker_status+'. Check Account → live broker for confirmed fills.'):'Paper purchase recorded; no broker order submitted.');
    loadIdeas();});}
 function renderIdeas(d){
  var ccy=d.ccy||'₹',f=(ccy=='₹'?INR:USD),rows=d.ideas||[],s=d.stats||{};
@@ -5091,21 +5120,21 @@ function loadHome(){
   var oeq=(ob.options_equity==null||optRetired)?0:ob.options_equity;
   document.getElementById('fd-sub').innerHTML='OpenStocks is managing <b>'+fmtc(m.ccy,(m.equity||0)+oeq)+'</b>'
    +' \u2014 <b>'+fmtc(m.ccy,m.equity)+'</b> across '+(m.positions||0)+' stock'+((m.positions==1)?'':'s')
-   +(optRetired?' \u00b7 <span class="muted">index options retired</span>'
+   +(optRetired?' \u00b7 <span class="muted">index analysis available</span>'
      :(ob.options_equity==null?'':(' and <b>'+fmtc(m.ccy,oeq)+'</b> in index options'
        +(ob.options_positions?(' ('+ob.options_positions+' open)'):''))));
   HERO=m;HERO.optOffset=d.equity_options_offset||0;
   REAL=d.real||null;MINE=d.mine||null;
   renderRealTile(REAL,m.ccy);renderMineTile(MINE,m.ccy);
   renderHero();renderOptionsTile(d.options||{},m.ccy);
-  var RS={STRONG:['is deploying into strength','the market is trending up hard, so OpenStocks is adding momentum names — and buying stocks moving on fresh news + heavy volume'],
-          ON:['is in risk-on mode','conditions look healthy, so OpenStocks is buying dips, breakouts, and news-driven volume surges'],
-          NEUTRAL:['is being selective','the market is choppy, so OpenStocks only takes its highest-conviction setups and stocks with a real news catalyst on strong volume'],
-          OFF:['is playing defense','the market is weak, so OpenStocks paused routine dip-buys — but still catches individual stocks breaking out on fresh news + volume']};
+  var RS={STRONG:['is assessing opportunities','supportive conditions allow eligible sleeves to propose trades; data, sizing and book risk checks still apply'],
+          ON:['is assessing opportunities','supportive conditions allow eligible sleeves to propose trades; data, sizing and book risk checks still apply'],
+          NEUTRAL:['is being selective','only eligible mean-reversion and early-momentum setups can proceed, subject to data and book risk checks'],
+          OFF:['is playing defense','the regime gate blocks all new equity longs; existing positions remain under exit management']};
   var rg=(d.regime_state||{})[m.market]||'NEUTRAL',rv=RS[rg]||RS.NEUTRAL;
   fdSet('fdBrain','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--infb);color:var(--inf)">◆</span><div><div class=fd-title>OpenStocks '+rv[0]+'</div><div class=fd-meta>market read</div></div></div>'
    +'<div class=fd-text>'+rv[1].charAt(0).toUpperCase()+rv[1].slice(1)+'. Right now <b>'+(m.deploy_pct||0)+'%</b> of your capital is working across <b>'+(m.positions||0)+' stocks</b>, with <b>'+fmtc(m.ccy,m.cash)+'</b> kept in reserve.</div>');
-  fdSet('fdScore','fd-card','<div class=fd-hd><span class=fd-dot style="background:#efe9ff;color:#7a4bff">★</span><div><div class=fd-title>Track record</div><div class=fd-meta>this book, all-time</div></div></div>'
+  fdSet('fdScore','fd-card','<div class=fd-hd><span class=fd-dot style="background:#efe9ff;color:#7a4bff">★</span><div><div class=fd-title>Track record</div><div class=fd-meta>this book, current epoch</div></div></div>'
    +'<div class=fd-scored>'
    +'<div><div class=fd-sn>'+(m.win!=null?m.win+'%':'—')+'</div><div class=fd-sl>win rate</div></div>'
    +'<div><div class=fd-sn>'+(m.pf!=null?m.pf:'—')+'</div><div class=fd-sl>profit factor</div></div>'
@@ -5481,7 +5510,6 @@ var IDXCFG={};
 // The UI is a convenience; it is not the security boundary.
 var BRK=null;
 function loadBroker(){
- if(((ME||{}).role||'').toLowerCase()!='admin')return;
  api('/v2/api/broker').then(function(r){
   // 402 is the plan gate, not a failure: connecting a real broker is Elite.
   // Rendering nothing would look like the feature is broken.
@@ -5548,6 +5576,11 @@ function brkArmGo(){
 function val(id){var e=document.getElementById(id);return e?e.value.trim():'';}
 function renderBroker(){
  var el=document.getElementById('brokerBox');if(!el||!BRK)return;var s=BRK;
+ if(!s.can_connect){el.innerHTML='<div class=sec>your broker</div><div class=raise>'
+   +'<p>Elite is required to connect or arm new live trading.</p>'
+   +(s.connected?'<p>Your connection remains yours. You can disarm or disconnect below.</p>':'')
+   +'<button class=btn onclick="brkArm(false)">Disarm</button> '
+   +'<button class=btn onclick="brkPost(\'disconnect\',{})">Disconnect</button></div>';return;}
  var dot=function(ok,txt){return '<span class="brk-p '+(ok?'on':'')+'">'+txt+'</span>'};
  el.innerHTML=
   '<div class=sec style="margin-top:22px"><span>live broker</span>'
@@ -5596,10 +5629,8 @@ function renderBroker(){
    +(s.connected?'<button class=btn onclick="brkPost(\'disconnect\',{})">Disconnect</button>':'')
    +'</div>'
   +'<div class=brk-warn style="background:var(--dnb)">'
-   +'<b>Arming spends real money.</b> Paper record on the lanes this would trade: '
-   +'<b>−₹1,443 realised over 22 closed trades, 27% win.</b> The options book’s '
-   +'+₹27,301 is six trades, mostly one session. Measured exits give up 42% of '
-   +'the entry edge. Caps: ₹'+Math.round((s.max_order||0)).toLocaleString('en-IN')
+   +'<b>Arming spends real money.</b> Accepted orders remain pending until broker fills are confirmed. '
+   +'Caps: ₹'+Math.round((s.max_order||0)).toLocaleString('en-IN')
    +' per order, ₹'+Math.round(s.budget||0).toLocaleString('en-IN')+' a day, '
    +'3 open positions.</div>'
   +(s.options_blocked_reason?'<div class=brk-warn>Index options are OFF: '
@@ -5608,8 +5639,11 @@ function renderBroker(){
    +(s.armed?'<button class="btn danger" onclick="brkArm(false)">Disarm</button>'
             :'<button class="btn danger" onclick="brkArm(true)">Arm live trading</button>')
    +'</div>'
-  +'<div class=fd-meta style="margin-top:10px">Today: '+(s.orders_today||0)+' live order'
-   +((s.orders_today||0)==1?'':'s')+' · ₹'+Math.round(s.notional_today||0).toLocaleString('en-IN')+'</div>'
+  +'<div class=fd-meta style="margin-top:10px">Today: '+(s.orders_today||0)+' order with fills'
+   +' · ₹'+Math.round(s.notional_today||0).toLocaleString('en-IN')+' filled value</div>'
+  +(s.recent||[]).map(function(o){return '<div class=lrow><b>'+esc(o.side)+' '+esc(o.symbol)
+    +'</b><div>'+esc(o.status)+' · filled '+(o.filled_qty||0)+' / '+o.qty
+    +(o.filled_qty?' @ ₹'+o.average_price:'')+'</div><small>'+esc(o.reason||'')+'</small></div>';}).join('')
   +'</div>';}
 function loadAccount(){var el=document.getElementById('account');var u=ME||{};var b=balOf();
  setTimeout(loadIndexOpts,0);setTimeout(loadBroker,0);
@@ -5967,11 +6001,11 @@ function doReset(){if(!confirm('Reset the paper book to a clean ₹1,00,000? Thi
  api('/v2/api/reset',{method:'POST'}).then(function(r){if(r.ok){if(m)m.textContent='✅ book reset to ₹'+INR.format(r.j.budget||100000);toast('✅ paper book reset — clean slate');refresh();}else{if(m)m.textContent='⚠ '+(r.j.error||'failed');}});}
 function doBuy(sym,mkt){if(!confirm('Paper buy '+sym+' at the live price?'))return;
  api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(function(r){
-  if(r.ok){toast('✅ Bought '+r.j.symbol+' ×'+r.j.qty+' @ '+(mkt=='IN'?'₹':'$')+r.j.entry);renderStock(sym,mkt,'detail');refresh();}
+  if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper bought '+r.j.symbol+' ×'+r.j.qty));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'buy failed'));});}
 function doSell(sym,mkt){if(!confirm('Sell your '+sym+' position at the live price?'))return;
  api('/v2/api/sell',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt})}).then(function(r){
-  if(r.ok){toast('✅ Sold '+r.j.symbol+' ('+(r.j.pnl_pct>=0?'+':'')+r.j.pnl_pct+'%)');renderStock(sym,mkt,'detail');refresh();}
+  if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper sold '+r.j.symbol+' ('+r.j.pnl_pct+'%)'));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'sell failed'));});}
 function wlRow(w){
   var up=w.chg>0,dn=w.chg<0,cl=up?'up':(dn?'dn':'mut'),a=up?'▲ ':(dn?'▼ ':'');

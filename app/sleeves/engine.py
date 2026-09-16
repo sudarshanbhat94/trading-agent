@@ -14,7 +14,7 @@ scarce Rs 10,000 book, and the overlay is allocated last from whatever remains.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import pandas as pd
@@ -55,6 +55,11 @@ class SleeveContext:
     delivery_pct: Callable | None = None
     catalyst_score: Callable | None = None
     options_day_pnl: Callable | None = None
+    require_live_quotes: bool = False
+    routable_instruments: tuple | None = None
+    quality_scores: dict | None = None
+    eligible_symbols: set | None = None
+    require_reference_data: bool = False
 
 
 @dataclass
@@ -101,14 +106,42 @@ class SleeveEngine:
             if not cfg.enabled:
                 _LOG.info("sleeve %s: disabled by feature flag", name)
                 continue
+            if ctx.require_reference_data and name in ("mean_reversion", "quality_momentum", "early_momentum") and ctx.eligible_symbols is None:
+                result.decisions.append(SleeveDecision(name, regime.state, False, note="Nifty membership snapshot unavailable"))
+                continue
             try:
-                dec = sleeve.propose(ctx)
+                # Filter before ranking so ineligible names cannot crowd out
+                # eligible candidates. The regime above uses the full panel.
+                sleeve_ctx = ctx
+                if name in ("mean_reversion", "quality_momentum", "early_momentum"):
+                    sleeve_ctx = replace(ctx, tails={sym: frame for sym, frame in tails.items()
+                        if (ctx.eligible_symbols is None or sym in ctx.eligible_symbols)
+                        and (not ctx.require_live_quotes or sym in live)})
+                dec = sleeve.propose(sleeve_ctx)
             except Exception:
                 _LOG.exception("sleeve %s raised; skipping it this pass", name)
                 continue
-            dec.log()
             result.decisions.append(dec)
-            ordered.extend(dec.candidates)
+            accepted = []
+            for cand in dec.candidates:
+                sane, why = cand.is_sane()
+                if not sane:
+                    dec.reject(cand.symbol, why)
+                elif not sleeve.may_run(regime.state):
+                    dec.reject(cand.symbol, f"regime {regime.state} blocks entry")
+                elif ctx.require_live_quotes and cand.instrument == "EQ" and cand.symbol not in live:
+                    dec.reject(cand.symbol, "fresh entry quote unavailable")
+                elif cand.instrument == "EQ" and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols:
+                    dec.reject(cand.symbol, "outside verified liquid NSE universe")
+                elif ctx.routable_instruments is not None and cand.instrument not in ctx.routable_instruments:
+                    dec.reject(cand.symbol, "instrument routing unavailable")
+                else:
+                    ordered.append(cand)
+                    accepted.append(cand)
+            # Ideas consume this same validated list. Refused proposals must
+            # not leak into actionable recommendations through a second path.
+            dec.candidates = accepted
+            dec.log()
 
         result.allocations = self.risk.allocate(ordered, book)
         self._summarise(result)

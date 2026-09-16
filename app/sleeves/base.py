@@ -8,6 +8,7 @@ doing its own capital maths, and five copies of that logic drifted apart.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Iterable, Literal, Sequence
 
@@ -36,6 +37,8 @@ class Candidate:
 
     def is_sane(self) -> tuple[bool, str]:
         """Reject anything broken on arrival rather than sizing it."""
+        if not all(math.isfinite(v) for v in (self.entry, self.stop, self.target, self.score, self.trail_pct)):
+            return False, "non-finite candidate"
         if self.entry <= 0:
             return False, "entry<=0"
         if self.stop <= 0:

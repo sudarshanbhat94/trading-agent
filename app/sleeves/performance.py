@@ -77,7 +77,7 @@ def book_state(con, market: str = "IN", prices: dict | None = None) -> BookSnaps
 
     realised = con.execute(
         "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
-        " AND COALESCE(closed_at,'') >= ?", (market, epoch)).fetchone()[0] or 0.0
+        " AND julianday(closed_at) >= COALESCE(julianday(?),0)", (market, epoch)).fetchone()[0] or 0.0
 
     return BookSnapshot(capital=capital, cash=capital - cost + float(realised),
                         positions_value=mv, n_positions=len(positions),
@@ -90,10 +90,10 @@ def _rows(con, market: str, since: str | None, epoch: str | None):
          " shares*(exit_price-entry_price), risk_amt FROM v2_trades WHERE market=?")
     args: list = [market]
     if since:
-        q += " AND entry_date>=?"
+        q += " AND exit_date>=?"
         args.append(since)
     if epoch:
-        q += " AND COALESCE(closed_at,'')>=?"
+        q += " AND julianday(closed_at)>=COALESCE(julianday(?),0)"
         args.append(epoch)
     return list(con.execute(q, args))
 

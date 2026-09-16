@@ -923,36 +923,14 @@ _status: dict = {m: "init" for m in ENABLED_MARKETS}
 
 def ensure_schema(v2):
     v2.executescript(SCHEMA)
+    from . import order_journal
+    order_journal.ensure_schema(v2)
     for m in ENABLED_MARKETS:
         if not v2.execute("SELECT 1 FROM v2_book WHERE market=?", (m,)).fetchone():
             v2.execute("INSERT INTO v2_book(market,budget,max_pos,started_at) VALUES(?,?,?,?)",
                        (m, BUDGET[m], MAXPOS[m], datetime.now(timezone.utc).isoformat()))
-        else:
-            # BOOK PARAMETERS FOLLOW THE CODE, not the row written on first run.
-            # The seed above only fires on an empty table, so an existing
-            # install kept whatever budget/max_pos it was created with and
-            # every later change to BUDGET/MAXPOS was silently inert — the live
-            # book still read 1,00,000 with 6 slots after both were changed.
-            cur = v2.execute("SELECT budget,max_pos FROM v2_book WHERE market=?",
-                             (m,)).fetchone()
-            if cur and (float(cur[0]) != float(BUDGET[m]) or int(cur[1]) != int(MAXPOS[m])):
-                # RE-ANCHOR THE EPOCH when capital changes. v2_equity rows are
-                # denominated in the book they were taken under, so a resize
-                # leaves the all-time peak measured against the OLD capital and
-                # the drawdown brake reads nonsense forever (Rs 1,00,000 -> Rs
-                # 10,000 produced "-106% off peak" and a permanent halt).
-                #
-                # History is NOT deleted. `started_at` moves, and the peak query
-                # only considers snapshots from the current epoch onward, so the
-                # old ledger stays readable while the brake measures the book
-                # that actually exists.
-                _LOG.warning("book resize %s: Rs %s/%s slots -> Rs %s/%s slots; "
-                             "equity epoch re-anchored",
-                             m, f"{cur[0]:,.0f}", cur[1], f"{BUDGET[m]:,.0f}", MAXPOS[m])
-                v2.execute("UPDATE v2_book SET budget=?, max_pos=?, started_at=?"
-                           " WHERE market=?",
-                           (BUDGET[m], MAXPOS[m],
-                            datetime.now(timezone.utc).isoformat(), m))
+        # Existing capital, epoch and position limits are accounting state.
+        # Schema setup must not reset them when defaults/configuration change.
     try:  # additive migration: entry-time investigation snapshot ("why we bought")
         v2.execute("ALTER TABLE v2_positions ADD COLUMN why TEXT")
     except Exception:
@@ -1220,20 +1198,20 @@ def _live(market, symbols=None):
     if symbols:
         syms = list(symbols)
         rows = con.execute(
-            "SELECT symbol,price,open,high,low,close,volume FROM latest_quotes WHERE source=? AND symbol IN (%s)"
+            "SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
             % ",".join("?" * len(syms)), (LIVE_SOURCE[market], *syms)).fetchall()
     else:
-        rows = con.execute("SELECT symbol,price,open,high,low,close,volume FROM latest_quotes WHERE source=?",
+        rows = con.execute("SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=?",
                            (LIVE_SOURCE[market],)).fetchall()
     con.close()
     out = {}
-    for sym, p, o, h, l, c, v in rows:
+    for sym, p, o, h, l, c, v, ts in rows:
         try:
             price = float(p)
         except (TypeError, ValueError):
             continue
         if price > 0:
-            out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0))
+            out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0), ts=ts)
     return out
 
 
@@ -1436,10 +1414,10 @@ def _tg_daily_summary(market):
         realized_today = _epoch_pnl(v2, market, ds)
         total_tr = v2.execute(
             "SELECT COUNT(*) FROM v2_trades WHERE market=?"
-            " AND COALESCE(closed_at,'')>=?", (market, epoch)).fetchone()[0] or 0
+            " AND julianday(closed_at)>=COALESCE(julianday(?),0)", (market, epoch)).fetchone()[0] or 0
         wins = v2.execute(
             "SELECT COUNT(*) FROM v2_trades WHERE market=? AND pnl>0"
-            " AND COALESCE(closed_at,'')>=?", (market, epoch)).fetchone()[0] or 0
+            " AND julianday(closed_at)>=COALESCE(julianday(?),0)", (market, epoch)).fetchone()[0] or 0
         v2.close()
         live = _live(market)
         cost = sum(ep * sh for _, ep, sh in rows)
@@ -1628,7 +1606,7 @@ def _epoch_pnl(v2, market, day=None):
                      (market,)).fetchone()
     epoch = (row[0] if row and row[0] else "") or ""
     sql = ("SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
-           " AND COALESCE(closed_at,'')>=?")
+           " AND julianday(closed_at)>=COALESCE(julianday(?),0)")
     args = [market, epoch]
     if day is not None:
         sql += " AND substr(exit_date,1,10)=?"
@@ -1765,9 +1743,16 @@ def _live_mirror_entry(v2, market, strategy, symbol, price):
     try:
         for uid in users:
             try:
+                from .broker_access import may_open, read_user
+                if not may_open(read_user(main, uid)):
+                    continue
+                terms = v2.execute("SELECT stop,target FROM v2_positions WHERE market=? AND symbol=?",
+                                   (market, symbol)).fetchone()
                 _LOG.info("live mirror entry u%s %s: %s", uid, symbol,
                           live_trade.mirror_entry(v2, main, uid, market, symbol,
-                                                  price, strategy))
+                                                  price, strategy,
+                                                  stop=terms[0] if terms else None,
+                                                  target=terms[1] if terms else None))
             except Exception:
                 _LOG.exception("live mirror entry failed for user %s", uid)
     finally:
@@ -3713,7 +3698,10 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     # high and the session high — arming a breakeven lock off a price the trade
     # never saw, then exiting against a low it never saw either.
     same_day = str(p.get("edate"))[:10] == today_s
-    use_live = p["strategy"] in MIDSESSION_STRATS and same_day
+    # Sampled live exits cannot use cumulative session extrema: the low may
+    # precede the high which raised a trailing stop. Use ordered observations
+    # for these strategies on EVERY held session, not just the entry day.
+    use_live = p["strategy"] in MIDSESSION_STRATS
     # `p["peak"]` starts at the entry price and is persisted, so it already
     # carries every price observed SINCE entry — on a mid-session entry day that
     # is the only honest high available.
@@ -3750,7 +3738,7 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     # swing/gap/momentum enter at the OPEN, so their day low/high are valid from
     # the first tick and `use_live` is False for them. Everything in
     # MIDSESSION_STRATS gets the LIVE price as its only reference on the entry
-    # day; on any later held day the day extremes are legitimate again.
+    # and every later held day; cumulative extrema have no event ordering.
     lo_ref = lq["price"] if use_live else lq["low"]
     hi_ref = lq["price"] if use_live else lq["high"]
     if lo_ref <= eff or lq["price"] <= eff:
@@ -3862,12 +3850,12 @@ def exit_monitor(market):
                 pass
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
-            cash += p["shares"] * ex * (1 - cside)
             # ONE writer, which computes the costs itself — see record_exit.
             # Its return feeds the log below, so the number recorded and the
             # number logged cannot drift apart.
             net, net_pct = record_exit(v2, market, p["id"], today_s, ex,
                                        p["shares"], reason)
+            cash += p["shares"] * p["entry"] + net
             # Log the FULL decision, not just the outcome. On 2026-07-29
             # HINDUNILVR exited at its entry price with reason "stop" while its
             # day high was only +0.05% above entry — neither breakeven trigger
@@ -4179,20 +4167,26 @@ def sleeve_pass(market):
     if not live:
         _status[market] = "sleeves: no quotes"
         return
-    # one-shot: clear positions a resized book cannot carry (see the function)
-    global _RECONCILED
-    if market not in _RECONCILED:
-        _RECONCILED.add(market)
-        try:
-            reconcile_book_capital(market)
-        except Exception:
-            _LOG.exception("book reconciliation failed; continuing")
+    from .sleeves.feeds import fresh_quotes
+    live = fresh_quotes(live, datetime.now(timezone.utc))
+    if not live:
+        _status[market] = "sleeves: no fresh entry quotes"
+        return
+    # Accounting migrations must never liquidate positions on engine startup.
+    # Oversized books are denied new risk; normal exit management continues.
     tails, mdf = _hist(market)
     dates = eng.complete_trading_dates(tails, 0.5)
+    today = datetime.now(IST).date()
+    # Daily signals must use a completed session, never a partially ingested
+    # current-day candle or an old panel combined with a fresh quote.
+    dates = [d for d in dates if pd.Timestamp(d).date() < today]
     if not dates:
-        _status[market] = "sleeves: no history"
+        _status[market] = "sleeves: no completed-session history"
         return
     asof = dates[-1]
+    if trading_days_held(str(asof)[:10], today, market) > 1:
+        _status[market] = "sleeves: completed-session history stale; exits continue"
+        return
 
     v2 = _rw()
     try:
@@ -4206,6 +4200,9 @@ def sleeve_pass(market):
         positions = list(v2.execute(
             "SELECT symbol,strategy,shares,entry_price,sleeve FROM v2_positions"
             " WHERE market=?", (market,)))
+        if any(r[0] not in live for r in positions):
+            _status[market] = "sleeves: held-position marks stale; no new risk"
+            return
         held = {r[0] for r in positions}
         deployed = sum(float(r[2]) * float(r[3]) for r in positions)
         per_sleeve, per_notional = {}, {}
@@ -4228,16 +4225,22 @@ def sleeve_pass(market):
         # pulled Rs 18k of old-book P&L into the new book and pinned the brake.
         realised = v2.execute(
             "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"
-            " AND COALESCE(closed_at,'') >= ?", (market, epoch_ts)).fetchone()[0] or 0.0
+            " AND julianday(closed_at) >= COALESCE(julianday(?),0)", (market, epoch_ts)).fetchone()[0] or 0.0
         day_pnl = v2.execute(
             "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=? AND"
             " substr(exit_date,1,10)=? AND reason<>'book_resize'"
-            " AND COALESCE(closed_at,'') >= ?",
+            " AND julianday(closed_at) >= COALESCE(julianday(?),0)",
             (market, today_s, epoch_ts)).fetchone()[0] or 0.0
         cash = capital - deployed + realised
         pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
                  for sym, _st, sh, ep, _sl in positions)
         equity = cash + pv
+        from .sleeves.accounting import session_pnl
+        day_pnl = session_pnl(v2, market, equity, today_s, epoch_ts,
+                              capital, bool(positions))
+        if day_pnl is None:
+            _status[market] = "sleeves: daily equity baseline unavailable; exits continue"
+            return
         # Peak from THIS book epoch only. Compared to the SECOND, not the day:
         # v2_equity.date is "LIVE_<iso>", and snapshots taken earlier on the
         # same calendar day were denominated in the old capital (Rs 89,182 of
@@ -4245,19 +4248,41 @@ def sleeve_pass(market):
         # the brake at -88%.
         peak = v2.execute(
             "SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?"
-            " AND substr(date,6) >= ?",
-            (capital, market, epoch_ts[:19])).fetchone()[0] or capital
+            " AND julianday(substr(date,6)) >= julianday(?)",
+            (capital, market, epoch_ts)).fetchone()[0] or capital
         peak = max(float(peak), capital)
 
         book = BookState(capital=capital, cash=cash, deployed=deployed,
                          open_positions=len(positions), per_sleeve_positions=per_sleeve,
                          equity=equity, peak_equity=float(peak), day_pnl=float(day_pnl),
-                         per_sleeve_notional=per_notional)
+                         per_sleeve_notional=per_notional,
+                         open_risk=sum(float(sh)*max(0, float(live.get(sym, {}).get("price") or ep)-float(stop or 0))
+                             for sym,sh,ep,stop in v2.execute("SELECT symbol,shares,entry_price,stop "
+                                                          "FROM v2_positions WHERE market=?", (market,))))
 
-        result = _SLEEVE_ENGINE.run(
-            tails, mdf, asof, live, book,
-            index_bars=_sleeve_index_bars, options_view=_sleeve_options_view,
-            option_chain=_sleeve_option_chain, india_vix=_sleeve_vix)
+        last_rebalance = v2.execute("SELECT MAX(entry_date) FROM ("
+            "SELECT entry_date FROM v2_positions WHERE market=? AND strategy='quality_momentum' "
+            "UNION ALL SELECT entry_date FROM v2_trades WHERE market=? AND strategy='quality_momentum' "
+            "AND julianday(closed_at)>=julianday(?))", (market, market, epoch_ts)).fetchone()[0]
+        feed_db = _ro(MAIN_DB)
+        try:
+            from .sleeves.feeds import delivery_reader
+            from .sleeves.reference import snapshot, refresh_membership
+            if market == "IN":
+                refresh_membership()
+            eligible, quality_scores = snapshot(datetime.now(timezone.utc))
+            result = _SLEEVE_ENGINE.run(
+                tails, mdf, asof, live, book,
+                index_bars=_sleeve_index_bars, options_view=_sleeve_options_view,
+                option_chain=_sleeve_option_chain, india_vix=_sleeve_vix,
+                delivery_pct=delivery_reader(feed_db, asof),
+                sessions_since_rebalance=(trading_days_held(last_rebalance, datetime.now(IST).date(), market)
+                                          if last_rebalance else None),
+                require_live_quotes=True, routable_instruments=("EQ",),
+                eligible_symbols=eligible, quality_scores=quality_scores,
+                require_reference_data=(market == "IN"))
+        finally:
+            feed_db.close()
 
         if result.halt_reason:
             _status[market] = f"sleeves HALTED · {result.halt_reason}"
@@ -4301,7 +4326,6 @@ def sleeve_pass(market):
 
 
 _SLEEVE_ENGINE = None
-_RECONCILED: set = set()
 
 
 def _sleeve_index_bars(symbol):
@@ -4316,18 +4340,33 @@ def _sleeve_index_bars(symbol):
             return None
         df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close"])
         df["date"] = pd.to_datetime(df["ts"].str[:10])
-        return df.groupby("date").last()[["open", "high", "low", "close"]]
+        return df.groupby("date").agg(open=("open", "first"), high=("high", "max"),
+                                      low=("low", "min"), close=("close", "last"))
     except Exception:
         return None
 
 
 def _sleeve_options_view(symbol):
-    """PCR / max-pain / spot for the index and options sleeves."""
+    """Read the actual options service output; never instantiate an unwired service."""
     try:
-        from . import options_intelligence as oi
-        svc = oi.OptionsIntelligenceService()
-        data = svc.analyze(symbol) if hasattr(svc, "analyze") else {}
-        return data or {}
+        con = _ro(MAIN_DB)
+        try:
+            row = con.execute("SELECT value FROM agent_state WHERE key='options_intelligence_context'").fetchone()
+        finally:
+            con.close()
+        if not row:
+            return {}
+        data = json.loads(row[0])
+        item = (data.get("indices") or {}).get(symbol) or {}
+        from .sleeves.feeds import fresh_quotes
+        fresh = fresh_quotes({symbol: dict(price=item.get("underlying_price"),
+                    ts=item.get("updated_at") or data.get("updated_at"))},
+                    datetime.now(timezone.utc), max_age_seconds=300)
+        if symbol not in fresh or not item.get("available"):
+            return {}
+        return dict(pcr=item.get("pcr_oi"), max_pain=item.get("max_pain"),
+                    spot=item.get("underlying_price"), source=item.get("source"),
+                    updated_at=item.get("updated_at"))
     except Exception:
         return {}
 
@@ -4336,11 +4375,14 @@ def _sleeve_option_chain(symbol):
     try:
         con = _ro(MAIN_DB)
         rows = con.execute(
-            "SELECT strike,option_type,close,lot_size,expiry FROM nfo_quotes"
+            "SELECT strike,option_type,price,lot_size,expiry,ts FROM nfo_quotes"
             " WHERE underlying=?", (symbol,)).fetchall()
         con.close()
-        return [dict(strike=r[0], opt_type=r[1], close=r[2], lot_size=r[3],
-                     expiry=r[4]) for r in rows]
+        from .sleeves.feeds import fresh_quotes
+        today = datetime.now(IST).date().isoformat()
+        return [dict(strike=r[0], opt_type=r[1], close=r[2], lot_size=r[3], expiry=r[4])
+                for r in rows if str(r[4])[:10] >= today and fresh_quotes(
+                    {"contract":dict(price=r[2],ts=r[5])},datetime.now(timezone.utc))]
     except Exception:
         return []
 
@@ -4348,10 +4390,14 @@ def _sleeve_option_chain(symbol):
 def _sleeve_vix():
     try:
         con = _ro(MAIN_DB)
-        row = con.execute("SELECT price FROM latest_quotes WHERE symbol IN"
-                          " ('INDIAVIX','INDIA VIX') ORDER BY ts DESC LIMIT 1").fetchone()
-        con.close()
-        return float(row[0]) if row else None
+        try:
+            row = con.execute("SELECT price,ts FROM latest_quotes WHERE symbol IN"
+                              " ('INDIAVIX','INDIA VIX') ORDER BY ts DESC LIMIT 1").fetchone()
+        finally:
+            con.close()
+        from .sleeves.feeds import fresh_quotes
+        return float(row[0]) if row and fresh_quotes(
+            {"VIX":dict(price=row[0],ts=row[1])}, datetime.now(timezone.utc), 300) else None
     except Exception:
         return None
 
@@ -4431,6 +4477,18 @@ def loop(interval):
                         except Exception:
                             _LOG.exception("index spot sample failed")
                     exit_monitor(m)                              # fast exits every cycle (held symbols only — cheap)
+                    if m == "IN":
+                        try:
+                            from . import live_trade
+                            managed = _rw()
+                            main = _ro(MAIN_DB)
+                            try:
+                                live_trade.service(managed, main, _live(m))
+                            finally:
+                                main.close()
+                                managed.close()
+                        except Exception:
+                            _LOG.exception("broker reconciliation/protection failed")
                     _market_open_watchdog(m)                     # once ~09:20 IST: alert if feed/engine/catalysts broken
                     # These scan the WHOLE universe (heavy: full latest_quotes read),
                     # so they must NOT run every 8s — that pegged the CPU and starved

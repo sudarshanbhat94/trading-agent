@@ -21,6 +21,7 @@ Allocation rules, in order:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 from .base import Candidate
@@ -46,6 +47,7 @@ class BookState:
     peak_equity: float
     day_pnl: float
     per_sleeve_notional: dict = field(default_factory=dict)
+    open_risk: float = 0.0
 
 
 @dataclass
@@ -68,12 +70,15 @@ class RiskManager:
     # -- book-level brakes ------------------------------------------------
     def halted(self, book: BookState) -> tuple[bool, str]:
         """True when no new risk may be opened, for any sleeve."""
+        if not all(math.isfinite(v) for v in (book.capital, book.cash, book.deployed,
+                   book.equity, book.peak_equity, book.day_pnl, book.open_risk)) or book.capital <= 0 or book.open_risk < 0:
+            return True, "invalid book valuation"
         if book.peak_equity > 0:
             dd = book.equity / book.peak_equity - 1
-            if dd < -self.s.max_drawdown:
+            if book.equity <= book.peak_equity * (1 - self.s.max_drawdown):
                 return True, (f"drawdown halt: {dd*100:.1f}% off peak "
                               f"(limit {self.s.max_drawdown*100:.0f}%)")
-        if book.capital > 0 and book.day_pnl / book.capital < -self.s.daily_loss_limit:
+        if book.day_pnl <= -book.capital * self.s.daily_loss_limit:
             return True, (f"daily loss limit: {book.day_pnl/book.capital*100:.1f}% "
                           f"(limit {self.s.daily_loss_limit*100:.1f}%)")
         if book.capital > 0 and book.deployed / book.capital >= self.s.max_deployed:
@@ -86,6 +91,11 @@ class RiskManager:
 
     # -- per-candidate sizing --------------------------------------------
     def size(self, cand: Candidate, book: BookState) -> Allocation:
+        halted, why = self.halted(book)
+        if halted:
+            return Allocation(cand, 0, 0.0, 0.0, why)
+        if not all(math.isfinite(v) for v in (cand.entry, cand.stop, cand.target)) or cand.entry <= 0:
+            return Allocation(cand, 0, 0.0, 0.0, "invalid candidate price")
         cfg = getattr(self.s, cand.sleeve, None)
         if cfg is None:
             return Allocation(cand, 0, 0.0, 0.0, "unknown sleeve")
@@ -109,7 +119,8 @@ class RiskManager:
         # (below), because multiplying it into per-trade risk double-discounts:
         # on a Rs 10,000 book that produced a Rs 20 risk budget, which cannot
         # buy one share of anything, and every sleeve sized to zero.
-        risk_budget = book.capital * self.s.risk_per_trade
+        risk_budget = min(book.capital * self.s.risk_per_trade,
+                          max(0, book.capital * self.s.daily_loss_limit + book.day_pnl - book.open_risk))
         by_risk = risk_budget / rps
 
         slot = book.capital / max(self.s.max_positions_total, 1)
@@ -120,7 +131,8 @@ class RiskManager:
                           - book.per_sleeve_notional.get(cand.sleeve, 0.0), 0.0)
         by_sleeve = sleeve_room / cand.entry
 
-        shares = int(min(by_risk, by_slot, by_cash, by_sleeve))
+        by_deployment = max(book.capital * self.s.max_deployed - book.deployed, 0) / cand.entry
+        shares = int(min(by_risk, by_slot, by_cash, by_sleeve, by_deployment))
         if shares < 1:
             return Allocation(cand, 0, 0.0, 0.0,
                               f"sizes to <1 share (risk Rs {risk_budget:.0f}, "
@@ -136,6 +148,9 @@ class RiskManager:
         # the move on offer must beat the round trip by a sensible margin
         if cand.target:
             edge = (cand.target / cand.entry - 1) * 100
+            if cand.instrument == "EQ":
+                from ..costs import round_trip
+                edge -= round_trip(notional, shares * cand.target, "D") / notional * 100
             if edge < self.s.min_edge_pct:
                 return Allocation(cand, 0, notional, 0.0,
                                   f"target offers {edge:.1f}% < {self.s.min_edge_pct:.1f}% "
@@ -153,24 +168,32 @@ class RiskManager:
 
         out: list[Allocation] = []
         cash = book.cash
+        deployed = book.deployed
+        open_risk = book.open_risk
+        seen = set()
         opened = book.open_positions
         per_sleeve = dict(book.per_sleeve_positions)
         per_notional = dict(book.per_sleeve_notional)
 
         for cand in candidates:
+            if cand.symbol in seen:
+                continue
             if opened >= self.s.max_positions_total:
                 _LOG.info("risk: stopping, book position cap reached")
                 break
-            probe = BookState(capital=book.capital, cash=cash, deployed=book.deployed,
+            probe = BookState(capital=book.capital, cash=cash, deployed=deployed,
                               open_positions=opened, per_sleeve_positions=per_sleeve,
                               per_sleeve_notional=per_notional,
                               equity=book.equity, peak_equity=book.peak_equity,
-                              day_pnl=book.day_pnl)
+                              day_pnl=book.day_pnl, open_risk=open_risk)
             alloc = self.size(cand, probe)
             if not alloc.ok:
                 _LOG.info("risk: %s/%s refused — %s", cand.sleeve, cand.symbol, alloc.reason)
                 continue
             cash -= alloc.notional
+            deployed += alloc.notional
+            open_risk += alloc.risk_amount
+            seen.add(cand.symbol)
             opened += 1
             per_sleeve[cand.sleeve] = per_sleeve.get(cand.sleeve, 0) + 1
             per_notional[cand.sleeve] = per_notional.get(cand.sleeve, 0.0) + alloc.notional

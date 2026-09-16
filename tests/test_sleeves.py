@@ -460,7 +460,7 @@ class WebsiteConsistencyTest(unittest.TestCase):
         from app import v2_web
         src = inspect.getsource(v2_web._market_stats)
         self.assertIn("started_at", src)
-        self.assertIn("COALESCE(closed_at,'')>=?", src)
+        self.assertIn("julianday(closed_at)>=COALESCE(julianday(?),0)", src)
 
     def test_engine_snapshots_scope_realised_to_the_epoch(self) -> None:
         import sqlite3
@@ -480,7 +480,7 @@ class WebsiteConsistencyTest(unittest.TestCase):
         as a collapse."""
         import inspect
         from app import v2_web
-        self.assertIn("float(prev_row[0]) > budget * 3",
+        self.assertIn("julianday({stamp_sql})>=COALESCE(julianday(?),0)",
                       inspect.getsource(v2_web.api_overview))
 
     def test_per_user_cash_scopes_to_the_epoch(self) -> None:

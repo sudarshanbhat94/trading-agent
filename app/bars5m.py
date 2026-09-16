@@ -17,6 +17,8 @@ cautionary tale for both of those choices.
 from __future__ import annotations
 
 import logging
+import csv
+import io
 import os
 import sqlite3
 import time
@@ -56,13 +58,9 @@ def fetch_members():
         if response.status_code != 200:
             _LOG.warning("nifty500 list HTTP %s", response.status_code)
             return frozenset()
-        rows = response.text.strip().splitlines()[1:]      # drop the header
-        out = set()
-        for row in rows:
-            parts = row.split(",")
-            if len(parts) > 2 and parts[2].strip():
-                out.add(parts[2].strip().upper())
-        return frozenset(out)
+        rows = csv.DictReader(io.StringIO(response.text.lstrip("\ufeff")))
+        return frozenset(row["Symbol"].strip().upper() for row in rows
+                         if row.get("Symbol", "").strip())
     except Exception as exc:
         _LOG.warning("nifty500 list failed: %s", exc)
         return frozenset()

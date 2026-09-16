@@ -22,9 +22,9 @@ IGNITION SCORE combines six components, each 0..1, weighted:
     0.12  proximity         close to, but not through, resistance
     0.08  catalyst          news / bulk deal / FII-DII footprint when present
 
-`delivery` and `catalyst` degrade gracefully to neutral when their feeds are
-unavailable, so the sleeve still works on price+volume alone rather than
-silently scoring everything zero.
+Production requires delivery confirmation; missing delivery rejects the
+candidate. Optional catalyst data remains neutral when unavailable. Research
+contexts can still examine the price/volume hypothesis without those feeds.
 
 ENTRY is a controlled pullback or a measured breakout — never the day's high.
 EXITS are faster and tighter than the other equity sleeves: this is a tactical
@@ -80,6 +80,8 @@ class EarlyMomentumSleeve(Sleeve):
             if g is None or ctx.asof not in g.index:
                 continue
             gi = g.loc[:ctx.asof]
+            gi = gi.copy()
+            gi.attrs["symbol"] = sym
             if len(gi) < 60:
                 continue
             lq = ctx.live.get(sym) or {}
@@ -160,6 +162,8 @@ class EarlyMomentumSleeve(Sleeve):
 
             # 4. delivery % — degrades to neutral when the feed is absent
             s_deliv, deliv_note = self._delivery(gi, ctx)
+            if ctx.require_reference_data and deliv_note == "unavailable":
+                return None, {}, "completed-session delivery confirmation unavailable"
 
             # 5. proximity to resistance without having blown through it
             hi20 = float(h.tail(20).max())

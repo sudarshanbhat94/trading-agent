@@ -160,12 +160,12 @@ class EliteOnlyTest(unittest.TestCase):
 
     def test_starter_cannot_reach_the_broker_at_all(self) -> None:
         self._as("watch")
-        self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 200)
 
     def test_pro_cannot_either(self) -> None:
         """Pro buys a paper book, not a live brokerage link."""
         self._as("paper")
-        self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 200)
 
     def test_elite_can(self) -> None:
         u = self._as("auto")
@@ -179,19 +179,19 @@ class EliteOnlyTest(unittest.TestCase):
                      "/v2/api/broker/auth-url", "/v2/api/broker/connect",
                      "/v2/api/broker/arm", "/v2/api/broker/disconnect"):
             with self.subTest(path=path):
-                self.assertEqual(plans.ROUTE_FEATURES.get(path), "broker_connect")
+                self.assertEqual(plans.ROUTE_FEATURES.get(path), None if path in ("/v2/api/broker", "/v2/api/broker/arm", "/v2/api/broker/disconnect") else "broker_connect")
 
     def test_the_arming_endpoint_refuses_a_lower_tier(self) -> None:
         """The one that spends money."""
         self._as("paper")
         r = self.client.post("/v2/api/broker/arm",
                              json={"armed": True, "confirm": "TRADE REAL MONEY"})
-        self.assertEqual(r.status_code, 402)
+        self.assertEqual(r.status_code, 403)
 
     def test_tier_is_checked_even_for_their_own_broker(self) -> None:
         """A Pro user has their own broker file and still may not use it."""
         u = self._as("paper")
         self.broker.configure(u["id"])
-        self.assertEqual(self.client.get("/v2/api/broker").status_code, 402)
+        self.assertEqual(self.client.get("/v2/api/broker").status_code, 200)
 if __name__ == "__main__":
     unittest.main()

@@ -49,7 +49,7 @@ def main() -> int:
     ap.add_argument("--market", default="IN")
     ap.add_argument("--db", default=V2_DB)
     ap.add_argument("--since", default=None,
-                    help="only trades entered on/after this date (YYYY-MM-DD)")
+                    help="only trades closed on/after this date (YYYY-MM-DD)")
     ap.add_argument("--today", action="store_true", help="shorthand for --since today")
     ap.add_argument("--epoch", action="store_true",
                     help="only trades closed in the CURRENT book epoch")

@@ -83,11 +83,11 @@ ONE_LINERS = {
 HIGHLIGHTS = {
     "watch": ["1 stock idea a day, with stop and targets", "Daily CE/PE index call",
               "Live NSE announcements", "Top movers and radar"],
-    "paper": ["Everything in Starter", "3 stock ideas a day", "Your own ₹1L paper book",
+    "paper": ["Everything in Starter", "3 stock ideas a day", "Your own ₹10,000 paper book",
               "Market internals: breadth, FII, VIX", "Option chain and index candles",
               "Full trade history and per-lane stats",
               "Telegram alerts"],
-    "auto": ["Everything in Pro", "5 stock ideas a day", "Index options auto-trading",
+    "auto": ["Everything in Pro", "5 stock ideas a day", "Index analysis and execution readiness",
              "Connect your own broker", "Data export"],
 }
 
@@ -200,17 +200,14 @@ ROUTE_FEATURES = {
     # OWNER check on top. Both, not either: the tier decides who may connect a
     # broker at all, the owner id decides whose money a given sleeve is.
     #
-    # Note this means a lapsed Elite subscription locks the owner out of their
-    # own broker panel. That is the correct failure — it stops configuration and
-    # arming, it does NOT close positions or revoke the token, and the fix is
-    # renewing. Leaving it ungated so the operator can never be locked out would
-    # mean every Starter user could connect a brokerage account.
-    "/v2/api/broker": "broker_connect",
+    # Existing owners retain status, disarm and disconnect on every plan.
+    # The arm handler checks Elite only when enabling new risk.
+    "/v2/api/broker": None,
     "/v2/api/broker/config": "broker_connect",
     "/v2/api/broker/auth-url": "broker_connect",
     "/v2/api/broker/connect": "broker_connect",
-    "/v2/api/broker/arm": "broker_connect",
-    "/v2/api/broker/disconnect": "broker_connect",
+    "/v2/api/broker/arm": None,
+    "/v2/api/broker/disconnect": None,
     "/v2/api/movers": "signals",
     "/v2/api/search": "signals",
     "/v2/api/watch": "signals",

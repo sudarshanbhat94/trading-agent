@@ -40,7 +40,7 @@ _LOG = logging.getLogger("openstocks.live")
 
 # Lanes the sleeve is allowed to mirror. gap_momentum is a measured net loser
 # and quarantined from the paper book already; it must not reappear here.
-MIRRORED_LANES = ("swing_meanrev", "mom_breakout", "volume_surge", "btst", "manual")
+MIRRORED_LANES = ("mean_reversion", "quality_momentum", "early_momentum", "manual")
 
 # UPSTOX PRODUCT CODE, per lane. Every order went out as "D" (delivery),
 # including the lanes that square off the same afternoon — which is not a
@@ -119,16 +119,16 @@ def live_qty(v2, user_id, symbol):
     sent. Never read from the paper position — its size is 10x this.
     """
     row = v2.execute(
-        "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN qty ELSE -qty END),0)"
-        " FROM v2_live_orders WHERE symbol=? AND status='sent' AND user_id=?",
+        "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty ELSE -filled_qty END),0)"
+        " FROM v2_live_orders WHERE symbol=? AND user_id=?",
         (str(symbol), int(user_id))).fetchone()
     return int(row[0] or 0)
 
 
 def open_symbols(v2, user_id):
     rows = v2.execute(
-        "SELECT symbol, SUM(CASE WHEN side='BUY' THEN qty ELSE -qty END) q"
-        " FROM v2_live_orders WHERE status='sent' AND user_id=?"
+        "SELECT symbol, SUM(CASE WHEN side='BUY' THEN filled_qty ELSE -filled_qty END) q"
+        " FROM v2_live_orders WHERE user_id=?"
         " GROUP BY symbol HAVING q>0", (int(user_id),))
     return {r[0]: int(r[1]) for r in rows}
 
@@ -142,7 +142,7 @@ def entry_product(v2, user_id, symbol, default="D"):
     """
     row = v2.execute(
         "SELECT product FROM v2_live_orders WHERE user_id=? AND symbol=?"
-        " AND side='BUY' AND status='sent' ORDER BY id DESC LIMIT 1",
+        " AND side='BUY' AND filled_qty>0 ORDER BY id DESC LIMIT 1",
         (int(user_id), str(symbol))).fetchone()
     return (row[0] if row and row[0] else default)
 
@@ -150,7 +150,7 @@ def entry_product(v2, user_id, symbol, default="D"):
 def day_notional(v2, user_id, today_s=None):
     today_s = today_s or datetime.now(IST).date().isoformat()
     row = v2.execute("SELECT COALESCE(SUM(notional),0) FROM v2_live_orders"
-                     " WHERE substr(ts,1,10)=? AND status='sent' AND side='BUY'"
+                     " WHERE date(ts,'+5 hours','+30 minutes')=? AND status NOT IN ('skipped','failed','rejected') AND side='BUY'"
                      " AND user_id=?", (today_s, int(user_id))).fetchone()
     return float(row[0] or 0.0)
 
@@ -193,7 +193,7 @@ def _record(v2, user_id, market, symbol, key, side, qty, price, status, reason,
     v2.commit()
 
 
-def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
+def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=None, target=None):
     """Place the sleeve's real BUY for a position the engine just opened.
 
     Returns a short status string. Every refusal is written to v2_live_orders
@@ -208,6 +208,11 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
     st = broker.state(user_id)
     if not st.get("live_ready"):
         return "skipped: not armed"
+    from . import order_journal as journal
+    if not journal.refresh(v2, user_id):
+        return "skipped: broker reconciliation unavailable"
+    if journal.unresolved(v2, user_id):
+        return "pending: broker reconciliation required"
     key = instrument_key(main_db, symbol)
     if not key:
         _record(v2, user_id, market, symbol, None, "BUY", 0, price, "skipped",
@@ -221,6 +226,28 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
                 "broker margin unreadable")
         return "skipped: margin unknown"
     qty = size_for_sleeve(price, st, margin)
+    # Respect the SAME stop-risk and sleeve exposure limits as paper. No
+    # strategy can enlarge its risk by falling back to equal-notional sizing.
+    if strategy != "manual":
+        from .sleeves.config import SLEEVES
+        if stop is None or not 0 < stop < price:
+            return "skipped: initial risk unavailable"
+        cfg = getattr(SLEEVES, strategy)
+        used = deployed = count = 0
+        for held_symbol, held_qty in open_symbols(v2, user_id).items():
+            row = v2.execute("SELECT average_price,reason FROM v2_live_orders "
+                             "WHERE user_id=? AND symbol=? AND side='BUY' AND filled_qty>0 "
+                             "ORDER BY id DESC LIMIT 1", (user_id, held_symbol)).fetchone()
+            value = held_qty * row[0]
+            deployed += value
+            if row[1] == 'mirror '+strategy:
+                used += value
+                count += 1
+        if count >= cfg.max_positions:
+            return "skipped: sleeve position cap"
+        qty = min(qty, int(st['budget'] * SLEEVES.risk_per_trade / (price-stop)),
+                  max(0, int((st['budget'] * cfg.risk_share - used) / price)),
+                  max(0, int((st['budget'] * SLEEVES.max_deployed - deployed) / price)))
     if qty <= 0:
         _record(v2, user_id, market, symbol, key, "BUY", 0, price, "skipped",
                 f"unaffordable at Rs {float(price):,.2f}")
@@ -233,14 +260,10 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy):
         _record(v2, user_id, market, symbol, key, "BUY", qty, price, "skipped", why)
         return f"skipped: {why}"
     prod = product_for(strategy)
-    res = broker.place_order(user_id, key, qty, "BUY", price=0.0, product=prod)
-    _record(v2, user_id, market, symbol, key, "BUY", qty, price,
-            "sent" if res.get("ok") else "failed",
-            "mirror " + strategy, res.get("response"), res.get("order_id"), prod)
-    _LOG.info("LIVE BUY %s x%d @~%.2f -> %s", symbol, qty, price, res.get("order_id"))
-    if not res.get("ok"):
-        _alert_failed(user_id, "BUY", symbol, qty, res)
-    return "sent" if res.get("ok") else f"failed: {res.get('status')}"
+    return journal.submit(v2, user_id, market, symbol, key, "BUY", qty, price, prod,
+                          "mirror " + strategy,
+                          stop=stop if stop is not None else price*.94,
+                          target=target if target is not None else (price*1.06 if strategy == "manual" else 0))
 
 
 def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
@@ -248,7 +271,13 @@ def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
     from . import broker
     if market != "IN":
         return "skipped: non-IN market"
+    from . import order_journal as journal
+    journal.request_exit(v2, user_id, symbol, reason)
     st = broker.state(user_id)
+    if st.get("live_ready") and not journal.refresh(v2, user_id):
+        return "pending: broker reconciliation unavailable"
+    if journal.unresolved(v2, user_id, symbol):
+        return "pending: broker reconciliation required"
     qty = live_qty(v2, user_id, symbol)
     if qty <= 0:
         return "skipped: nothing held live"
@@ -268,17 +297,8 @@ def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
     # intraday buy, and guessing here would either reject the order or convert
     # the position to delivery and charge for it.
     prod = entry_product(v2, user_id, symbol)
-    res = broker.place_order(user_id, key, qty, "SELL", price=0.0, product=prod)
-    _record(v2, user_id, market, symbol, key, "SELL", qty, price,
-            "sent" if res.get("ok") else "failed",
-            f"mirror exit: {reason}", res.get("response"), res.get("order_id"), prod)
-    _LOG.info("LIVE SELL %s x%d @~%.2f (%s) -> %s", symbol, qty, price, reason,
-              res.get("order_id"))
-    if not res.get("ok"):
-        # A failed SELL is the worse one: real shares are still held and the
-        # paper book already thinks the position is closed.
-        _alert_failed(user_id, "SELL", symbol, qty, res)
-    return "sent" if res.get("ok") else f"failed: {res.get('status')}"
+    return journal.submit(v2, user_id, market, symbol, key, "SELL", qty, price, prod,
+                          f"mirror exit: {reason}")
 
 
 def _alert_failed(user_id, side, symbol, qty, res):
@@ -304,3 +324,35 @@ def _alert_failed(user_id, side, symbol, qty, res):
                                  "Your paper book has moved; the broker has not.")
     except Exception:
         _LOG.exception("could not alert user %s about a failed order", user_id)
+
+
+_SERVICED = {}
+
+
+def service(v2, main_db, quotes):
+    """Reconcile fills and retain exit obligations independently of paper rows."""
+    from . import broker, order_journal as journal
+    from .sleeves.feeds import fresh_quotes
+    quotes = fresh_quotes(quotes, datetime.now(timezone.utc))
+    for uid in broker.linked_users():
+        now = time.time()
+        if now - _SERVICED.get(uid, 0) < 60:
+            continue
+        _SERVICED[uid] = now
+        if not broker.state(uid).get("live_ready") or not journal.refresh(v2, uid):
+            continue
+        rows = list(v2.execute("SELECT symbol,stop,target,exit_reason FROM v2_live_protection "
+                               "WHERE user_id=?", (uid,)))
+        for symbol, stop, target, reason in rows:
+            if live_qty(v2, uid, symbol) <= 0 and not journal.unresolved(v2, uid, symbol):
+                v2.execute("DELETE FROM v2_live_protection WHERE user_id=? AND symbol=?", (uid, symbol))
+                v2.commit()
+                continue
+            px = (quotes.get(symbol) or {}).get("price")
+            if px is None:
+                continue
+            if not reason and live_qty(v2, uid, symbol) > 0:
+                reason = "stop" if stop and px <= stop else ("target" if target and px >= target else None)
+            if reason:
+                result = mirror_exit(v2, main_db, uid, "IN", symbol, px, reason)
+                _LOG.info("broker protection u%s %s: %s", uid, symbol, result)
