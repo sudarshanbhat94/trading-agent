@@ -86,11 +86,12 @@ class BoundaryTest(unittest.TestCase):
                     Candidate("TEST", "mean_reversion", .9,100,95,120)]
                 now = datetime.now(timezone.utc)
                 stack.enter_context(patch.object(v2_live,"_SLEEVE_ENGINE",engine))
+                stack.enter_context(patch.object(v2_live,"market_open",return_value=True))
                 stack.enter_context(patch.object(v2_live,"_rw",side_effect=lambda:sqlite3.connect(path)))
                 stack.enter_context(patch.object(v2_live,"_ro",side_effect=lambda _:sqlite3.connect(":memory:")))
                 stack.enter_context(patch.object(v2_live,"_live",return_value={"TEST":dict(price=100,ts=now.isoformat())}))
                 stack.enter_context(patch.object(v2_live,"_hist",return_value=({"TEST":None},None)))
-                stack.enter_context(patch.object(v2_live.eng,"complete_trading_dates",return_value=[now.date()-timedelta(days=1)]))
+                stack.enter_context(patch.object(v2_live.eng,"complete_trading_dates",return_value=[now.astimezone(v2_live.IST).date()-timedelta(days=1)]))
                 stack.enter_context(patch("app.sleeves.reference.refresh_membership"))
                 stack.enter_context(patch("app.sleeves.reference.snapshot",return_value=({"TEST"},{})))
                 stack.enter_context(patch.object(v2_live,"_publish_sleeve_ideas"))
@@ -115,8 +116,10 @@ class BoundaryTest(unittest.TestCase):
 
     def test_production_rejects_stale_and_incomplete_history_before_writing(self):
         now = datetime.now(timezone.utc)
-        for dates in ([now.date()], [now.date()-timedelta(days=10)]):
+        today = now.astimezone(v2_live.IST).date()
+        for dates in ([today], [today-timedelta(days=10)]):
             with self.subTest(dates=dates), \
+                 patch.object(v2_live,"market_open",return_value=True), \
                  patch.object(v2_live,"_live",return_value={"TEST":dict(price=100,ts=now.isoformat())}), \
                  patch.object(v2_live,"_hist",return_value=({},None)), \
                  patch.object(v2_live.eng,"complete_trading_dates",return_value=dates), \

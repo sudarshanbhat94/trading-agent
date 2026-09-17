@@ -410,6 +410,8 @@ def api_overview(user: dict = Depends(require_session)):
     markets = []
     for market, budget in _markets(v2):
         s = _market_stats(v2, market, budget, live[market])
+        from .sleeves.readiness import book_readiness
+        readiness = book_readiness(v2, market, live[market])
         # HISTORICAL CONTAMINATION. v2_equity was written while the engine
         # counted option P&L in the equity book, so Rs 26,558 of options sits
         # inside this curve as a step that the stock lanes never earned. The
@@ -459,6 +461,7 @@ def api_overview(user: dict = Depends(require_session)):
         dser = [dd[k] for k in days]
         sharpe, maxdd = _risk_metrics(dser)     # institutional risk metrics (borrowed idea)
         markets.append({"market": s["market"], "ccy": "₹" if market == "IN" else "$",
+                        "readiness": readiness,
                         "today_series": today_eq, "prev_equity": prev_eq,
                         "daily_series": dser, "sharpe": sharpe, "maxdd": maxdd,
                         "daily_start": (days[0] if days else None),
@@ -2369,11 +2372,15 @@ def api_broker(user: dict = Depends(require_session)):
                       "SELECT ts,symbol,side,qty,price,notional,status,broker_order_id,"
                       "reason,filled_qty,average_price FROM v2_live_orders WHERE user_id=?"
                       " ORDER BY id DESC LIMIT 25", (_uid(user),))]
+        from .order_journal import ACTIVE
+        unresolved = v2.execute("SELECT COUNT(*) FROM v2_live_orders WHERE user_id=? "
+                                "AND status IN (?,?,?,?,?)", (_uid(user),*ACTIVE)).fetchone()[0]
     finally:
         v2.close()
     from .broker_access import may_open
     st.update(can_connect=may_open(user), orders_today=row[0], notional_today=round(row[1] or 0, 2),
-              is_owner=True, recent=recent)
+              is_owner=True, recent=recent, unresolved_orders=unresolved,
+              order_gate_open=bool(st.get("live_ready")) and may_open(user) and not unresolved)
     return JSONResponse(st)
 
 
@@ -5132,8 +5139,11 @@ function loadHome(){
           NEUTRAL:['is being selective','only eligible mean-reversion and early-momentum setups can proceed, subject to data and book risk checks'],
           OFF:['is playing defense','the regime gate blocks all new equity longs; existing positions remain under exit management']};
   var rg=(d.regime_state||{})[m.market]||'NEUTRAL',rv=RS[rg]||RS.NEUTRAL;
+  var risk=m.readiness||{},riskText=risk.halted
+   ?'New paper entries are blocked: '+risk.reason+'. Existing positions remain under exit management.'
+   :rv[1].charAt(0).toUpperCase()+rv[1].slice(1)+'.';
   fdSet('fdBrain','fd-card','<div class=fd-hd><span class=fd-dot style="background:var(--infb);color:var(--inf)">◆</span><div><div class=fd-title>OpenStocks '+rv[0]+'</div><div class=fd-meta>market read</div></div></div>'
-   +'<div class=fd-text>'+rv[1].charAt(0).toUpperCase()+rv[1].slice(1)+'. Right now <b>'+(m.deploy_pct||0)+'%</b> of your capital is working across <b>'+(m.positions||0)+' stocks</b>, with <b>'+fmtc(m.ccy,m.cash)+'</b> kept in reserve.</div>');
+   +'<div class=fd-text>'+riskText+' The house book has <b>'+(m.deploy_pct||0)+'%</b> deployed across <b>'+(m.positions||0)+' stocks</b>, with <b>'+fmtc(m.ccy,m.cash)+'</b> in cash.</div>');
   fdSet('fdScore','fd-card','<div class=fd-hd><span class=fd-dot style="background:#efe9ff;color:#7a4bff">★</span><div><div class=fd-title>Track record</div><div class=fd-meta>this book, current epoch</div></div></div>'
    +'<div class=fd-scored>'
    +'<div><div class=fd-sn>'+(m.win!=null?m.win+'%':'—')+'</div><div class=fd-sl>win rate</div></div>'
@@ -5586,6 +5596,7 @@ function renderBroker(){
   '<div class=sec style="margin-top:22px"><span>live broker</span>'
    +'<span class=mut style="font-size:12px;font-weight:400">real money · Upstox</span></div>'
   +'<div class=raise>'
+  +(s.unresolved_orders?'<div class=brk-warn>'+s.unresolved_orders+' broker order(s) need confirmed-fill reconciliation. New live orders are blocked; accepted does not mean filled.</div>':'')
   +'<div class=brk-row>'+dot(s.connected&&!s.stale,s.connected?(s.stale?'token expired':'connected'):'not connected')
    +dot(s.armed,s.armed?'ARMED':'disarmed')
    +dot(!s.kill_switch,s.kill_switch?'kill switch ON':'kill switch off')

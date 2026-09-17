@@ -90,3 +90,26 @@ isolated books and assert ON/OFF gating, sizing and no real broker calls.
 
 No paper capital reset, strategy edge claim or live deployment is implied by
 these checks. No broker acceptance is presented as a completed purchase.
+
+## Session boundary and dashboard release
+
+**TRADING BEHAVIOUR CHANGED:** `sleeve_pass()` rejects direct calls outside
+the exchange session, in addition to the existing loop gate. Diagnostics must
+not bypass the exchange calendar. No conviction thresholds were changed.
+
+The dashboard exposes the current house-book halt reason from the unified risk
+manager, with stale held-position quotes explicitly marked provisional. Broker
+status reports unresolved orders separately from connection status. These are
+specific gates, not a certification that the broker account is ready for live use.
+
+Independent public daily-price attribution can be generated read-only:
+
+```sh
+.venv/bin/python scripts/audit_market_prices.py --book /path/to/paper.db \
+  --since YYYY-MM-DD --out /private/path/to/audit
+```
+
+The output retains raw public responses, checksums, missing-data counts and
+per-trade gross/net results. Daily-range checks allow 0.5% tolerance and cannot
+validate intraday execution or establish out-of-sample profitability. Keep
+reports containing account history outside the public repository.

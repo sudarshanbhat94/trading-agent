@@ -4159,6 +4159,12 @@ def sleeve_pass(market):
     from .sleeves.engine import SleeveEngine
     from .sleeves.risk import BookState
 
+    # Defence at the production boundary as well as in loop(). An operator
+    # diagnostic or accidental direct call must not open an off-session trade.
+    if not market_open(market):
+        _status[market] = "sleeves: market closed; no new entries"
+        return
+
     global _SLEEVE_ENGINE
     if _SLEEVE_ENGINE is None:
         _SLEEVE_ENGINE = SleeveEngine(SLEEVES)
