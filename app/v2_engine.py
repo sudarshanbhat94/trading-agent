@@ -175,6 +175,7 @@ def signals_for_date(syms: dict, market_df: pd.DataFrame, asof,
             "target_from_entry_atr": atr_target,
             "mom20": round(float(row["mom20"]), 4),
             "rs20": round(float(row["rs20"]), 4),
+            "rvol": float(row["rvol"]),
             "atr_pct": round(float(row["atr_pct"]), 4),
             "dist_hi20": round(float(row["dist_hi20"]), 4),
         })

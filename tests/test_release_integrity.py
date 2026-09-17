@@ -1,7 +1,7 @@
 import sqlite3
 import unittest
 from unittest.mock import patch
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app import v2_live
 from app.sleeves.readiness import book_readiness
@@ -9,6 +9,41 @@ from scripts.audit_market_prices import bars_from_response, range_check
 
 
 class ReleaseIntegrityTest(unittest.TestCase):
+    def test_actual_signal_delivers_volume_confirmation_and_missing_values_fail_closed(self):
+        import numpy as np
+        import pandas as pd
+        from app import v2_engine
+        from app.sleeves.mean_reversion import MeanReversionSleeve
+        ix=pd.bdate_range('2025-01-01',periods=100)
+        close=np.linspace(80,110,100);close[-1]=106
+        frame=pd.DataFrame(dict(close=close,open=close,high=close*1.08,low=close*.97,volume=1000),index=ix)
+        market=pd.DataFrame(dict(mkt_cum=np.ones(100)),index=ix)
+        sig=v2_engine.signals_for_date({'TEST':frame},market,ix[-1],0,2,3.5)[0]
+        self.assertEqual(sig['rvol'],1)
+        self.assertTrue(MeanReversionSleeve._confirm(frame,sig)[0])
+        for bad in (None,0,.8,float('nan'),float('inf')):
+            with self.subTest(volume=bad):
+                self.assertFalse(MeanReversionSleeve._confirm(frame,dict(sig,rvol=bad))[0])
+        self.assertTrue(MeanReversionSleeve._confirm(frame,dict(sig,rs20=0))[0])
+
+    def test_dashboard_regime_uses_completed_session_and_does_not_invent_missing_state(self):
+        from app import v2_web
+        import pandas as pd
+        today=datetime.now(v2_web.IST).date()
+        prior=pd.Timestamp(today-timedelta(days=1))
+        with patch.object(v2_web,'_panel',return_value=({},None)), \
+             patch.object(v2_web.eng,'complete_trading_dates',return_value=[prior,pd.Timestamp(today)]), \
+             patch.object(v2_live,'trading_days_held',return_value=1), \
+             patch('app.sleeves.regime.RegimeGate') as gate, \
+             patch.dict(v2_web._regime_cache,{},clear=True):
+            gate.return_value.view.return_value.state='OFF'
+            v2_web._regime_bg('IN')
+            self.assertEqual(gate.return_value.view.call_args.args[2],prior)
+            self.assertEqual(v2_web._regime_cache['IN'][1],'OFF')
+            gate.return_value.view.side_effect=ValueError('no data')
+            v2_web._regime_bg('IN')
+            self.assertIsNone(v2_web._regime_cache['IN'][1])
+
     def test_direct_production_pass_cannot_open_outside_market_hours(self):
         with patch.object(v2_live,'market_open',return_value=False), patch.object(v2_live,'_rw') as writer:
             v2_live.sleeve_pass('IN')

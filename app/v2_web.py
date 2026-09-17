@@ -197,15 +197,20 @@ _regime_loading: set = set()
 def _regime_bg(market):
     try:
         syms, mdf = _panel(market)
-        d = eng.complete_trading_dates(syms, 0.5)
+        today = datetime.now(IST).date()
+        d = [day for day in eng.complete_trading_dates(syms, 0.5)
+             if str(day)[:10] < today.isoformat()]
+        from .v2_live import trading_days_held
+        if d and trading_days_held(str(d[-1])[:10], today, market) > 1:
+            d = []
         if d:
             from .sleeves.regime import RegimeGate
             state = RegimeGate().view(syms, mdf, d[-1]).state
         else:
-            state = "OFF"
+            state = None
         _regime_cache[market] = (time.time(), state)
     except Exception:
-        _regime_cache[market] = (time.time(), "OFF")
+        _regime_cache[market] = (time.time(), None)
     finally:
         _regime_loading.discard(market)
 
@@ -4773,7 +4778,7 @@ function setHeroTab(t){HEROTAB=t;renderHero();}
 // no chart — so two views of the same kind of object read as two products.
 // Anything that should look the same on both belongs in here, not in a caller.
 function bookCard(c){
- var f=(c.ccy=='₹'?INR:USD),up=(c.chg||0)>=0;
+ var f=(c.ccy=='₹'?INR:USD),up=(c.chg||0)>=0,flat=(c.chg||0)===0;
  function money(v){return (v>=0?'+':'−')+c.ccy+f.format(Math.abs(Math.round(v||0)));}
  function cell(label,value,cls,sub){
   return '<div><div class=fd-ol>'+label+'</div><div class="fd-ov '+(cls||'')+'">'+value+'</div>'
@@ -4801,8 +4806,8 @@ function bookCard(c){
   +'<div><div class=fd-title>'+c.title+'</div><div class=fd-meta>'+c.meta+'</div></div>'
   +(c.tabs?'<div class=fd-tabs>'+c.tabs+'</div>':'')+'</div>'
   +'<div class=fd-big>'+fmtc(c.ccy,c.equity)+'</div>'
-  +'<div class="fd-chg '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+c.ccy
-   +f.format(Math.abs(Math.round(c.chg||0)))+' ('+(up?'+':'')+c.pct+'%) '+c.noun+'</div>'
+  +'<div class="fd-chg '+(flat?'mut':(up?'up':'dn'))+'">'+(flat?'':(up?'▲ +':'▼ '))+c.ccy
+   +f.format(Math.abs(Math.round(c.chg||0)))+' ('+(up&&!flat?'+':'')+c.pct+'%) '+c.noun+'</div>'
   +stats
   +(c.series&&c.series.length>1?'<div class=fd-chart>'+heroChart(c.series,c.baseline)+'</div>':'')
   +'<div class=fd-meta style="margin-top:8px">'+c.note+'</div>';}
@@ -4835,8 +4840,8 @@ function renderHero(){
   // WHICH of the two books this is, and sat directly beside a card called
   // "Your paper book" holding different numbers. Two books that look like two
   // moods of the same book is the confusion. The move is the subtitle's job.
-  icon:(up?'▲':'▼'),title:'OpenStocks AI book',
-  meta:'shared strategy record \u00b7 '+(up?'up ':'down ')+noun,tabs:tabs,ccy:m.ccy,
+  icon:((chg||0)===0?'—':(up?'▲':'▼')),title:'OpenStocks AI book',
+  meta:'shared strategy record \u00b7 '+((chg||0)===0?'flat ':(up?'up ':'down '))+noun,tabs:tabs,ccy:m.ccy,
   equity:m.equity,chg:chg,pct:pct,noun:noun,series:series,baseline:baseline,
   // The options footnote is gone with the book it described. It explained a
   // step in a curve drawn from a pre-split history that this reset book no
@@ -5137,8 +5142,9 @@ function loadHome(){
   var RS={STRONG:['is assessing opportunities','supportive conditions allow eligible sleeves to propose trades; data, sizing and book risk checks still apply'],
           ON:['is assessing opportunities','supportive conditions allow eligible sleeves to propose trades; data, sizing and book risk checks still apply'],
           NEUTRAL:['is being selective','only eligible mean-reversion and early-momentum setups can proceed, subject to data and book risk checks'],
-          OFF:['is playing defense','the regime gate blocks all new equity longs; existing positions remain under exit management']};
-  var rg=(d.regime_state||{})[m.market]||'NEUTRAL',rv=RS[rg]||RS.NEUTRAL;
+          OFF:['is playing defense','the regime gate blocks all new equity longs; existing positions remain under exit management'],
+          UNKNOWN:['is checking market data','a current regime reading is not available yet']};
+  var rg=(d.regime_state||{})[m.market]||'UNKNOWN',rv=RS[rg]||RS.UNKNOWN;
   var risk=m.readiness||{},riskText=risk.halted
    ?'New paper entries are blocked: '+risk.reason+'. Existing positions remain under exit management.'
    :rv[1].charAt(0).toUpperCase()+rv[1].slice(1)+'.';

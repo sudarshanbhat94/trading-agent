@@ -113,11 +113,12 @@ class MeanReversionSleeve(Sleeve):
             if dip > MAX_DIP:
                 return False, f"{dip*100:.1f}% off the high — damage, not a dip"
 
-            if float(sig.get("rs20") or -1) < MIN_RS20:
+            rs20 = float(sig["rs20"])
+            if not np.isfinite(rs20) or rs20 < MIN_RS20:
                 return False, "underperforming the market over 20 sessions"
 
             gf_rvol = float(sig.get("rvol") or 0.0)
-            if gf_rvol and gf_rvol < MIN_RVOL:
+            if not np.isfinite(gf_rvol) or gf_rvol < MIN_RVOL:
                 return False, f"rvol {gf_rvol:.2f} — no participation on the dip"
 
             if len(c) >= 50:

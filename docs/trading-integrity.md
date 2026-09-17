@@ -102,6 +102,13 @@ manager, with stale held-position quotes explicitly marked provisional. Broker
 status reports unresolved orders separately from connection status. These are
 specific gates, not a certification that the broker account is ready for live use.
 
+**TRADING BEHAVIOUR CHANGED:** mean-reversion signals now carry their computed
+relative volume into the existing confirmation check. Missing, non-finite and
+below-threshold volume is rejected instead of bypassing confirmation. The
+existing relative-strength threshold now accepts its exact zero boundary.
+No thresholds were tuned. The UI uses completed-session regime data and labels
+an unavailable reading as unknown instead of inventing NEUTRAL or OFF.
+
 Independent public daily-price attribution can be generated read-only:
 
 ```sh
