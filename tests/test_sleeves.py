@@ -6,7 +6,10 @@ independently of whatever the market is doing on any given day.
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -615,8 +618,11 @@ class IdeasComeFromSleevesTest(unittest.TestCase):
                             decisions=[SleeveDecision("index_directional", "OFF", False,
                                                      note="regime OFF blocks Nifty exposure")],
                             halt_reason="drawdown halt")
-        v2_live._remember_sleeve_view("IN", result, "2026-09-21", "2026-09-22")
-        view = v2_live.sleeve_view("IN")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+                v2_live, "_SLEEVE_VIEW_FILE", str(Path(tmp) / "view.json")):
+            v2_live._remember_sleeve_view("IN", result, "2026-09-21", "2026-09-22")
+            v2_live._sleeve_views.clear()  # prove a service restart can reload it
+            view = v2_live.sleeve_view("IN")
         self.assertEqual(view["state"], "STAND ASIDE")
         self.assertEqual(view["reason"], "regime OFF blocks Nifty exposure")
         self.assertEqual(view["regime"], "OFF")

@@ -920,6 +920,8 @@ REENTRY_WINDOW_SEC = 5 * 3600
 _started = False
 _status: dict = {m: "init" for m in ENABLED_MARKETS}
 _sleeve_views: dict = {}
+_SLEEVE_VIEW_FILE = os.environ.get(
+    "SLEEVE_VIEW_FILE", os.path.join(os.path.dirname(V2_DB), "sleeve_view.json"))
 
 
 def _remember_sleeve_view(market, result, asof, today_s):
@@ -958,10 +960,27 @@ def _remember_sleeve_view(market, result, asof, today_s):
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
         cadence="first NSE session of each month", decisions=decisions)
+    # Survive service restarts and closed-market deployments. This is display
+    # state only; failure to persist it must never affect the trading pass.
+    try:
+        tmp = _SLEEVE_VIEW_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(_sleeve_views, handle)
+        os.replace(tmp, _SLEEVE_VIEW_FILE)
+    except Exception:
+        _LOG.exception("could not persist sleeve decision view")
 
 
 def sleeve_view(market="IN"):
     """Last completed production sleeve decision; safe for read-only APIs."""
+    if market not in _sleeve_views:
+        try:
+            with open(_SLEEVE_VIEW_FILE, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            if isinstance(saved, dict):
+                _sleeve_views.update(saved)
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            pass
     return dict(_sleeve_views.get(market) or {})
 
 
