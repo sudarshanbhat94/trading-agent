@@ -164,10 +164,19 @@ def set_prefs(user_id: int, buy: bool, sell: bool, radar: bool = True, summary: 
     c.close()
 
 
-def notify_alert(symbol, market, kind, value, price):
-    """A user-set watchlist price alert fired — fan out to opted-in users."""
+def notify_alert(symbol, market, kind, value, price, user_id=None):
+    """A personal alert is delivered only to its opted-in owner."""
+    if user_id is None:
+        return
     try:
-        rows = _recipients("alerts_price")
+        ensure_schema()
+        c = _db()
+        try:
+            rows = c.execute('SELECT bot_token,chat_id FROM telegram_accounts '
+                             'WHERE user_id=? AND alerts_price=1 AND bot_token IS NOT NULL '
+                             'AND chat_id IS NOT NULL', (int(user_id),)).fetchall()
+        finally:
+            c.close()
     except Exception:
         return
     if not rows:

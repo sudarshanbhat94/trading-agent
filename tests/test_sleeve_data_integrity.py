@@ -82,15 +82,16 @@ class BoundaryTest(unittest.TestCase):
                 engine.gate.view = Mock(return_value=RegimeView(regime,True,.7,regime,"test"))
                 for name, sleeve in engine.sleeves.items():
                     sleeve.propose = Mock(return_value=SleeveDecision(name,regime,True))
-                engine.sleeves["mean_reversion"].propose.return_value.candidates = [
-                    Candidate("TEST", "mean_reversion", .9,100,95,120)]
+                engine.sleeves["index_directional"].propose.return_value.candidates = [
+                    Candidate("NIFTYBEES", "index_directional", .9, 100, 75,
+                              allocation_pct=.35)]
                 now = datetime.now(timezone.utc)
                 stack.enter_context(patch.object(v2_live,"_SLEEVE_ENGINE",engine))
                 stack.enter_context(patch.object(v2_live,"market_open",return_value=True))
                 stack.enter_context(patch.object(v2_live,"_rw",side_effect=lambda:sqlite3.connect(path)))
                 stack.enter_context(patch.object(v2_live,"_ro",side_effect=lambda _:sqlite3.connect(":memory:")))
-                stack.enter_context(patch.object(v2_live,"_live",return_value={"TEST":dict(price=100,ts=now.isoformat())}))
-                stack.enter_context(patch.object(v2_live,"_hist",return_value=({"TEST":None},None)))
+                stack.enter_context(patch.object(v2_live,"_live",return_value={"NIFTYBEES":dict(price=100,ts=now.isoformat())}))
+                stack.enter_context(patch.object(v2_live,"_hist",return_value=({"NIFTYBEES":None},None)))
                 stack.enter_context(patch.object(v2_live.eng,"complete_trading_dates",return_value=[now.astimezone(v2_live.IST).date()-timedelta(days=1)]))
                 stack.enter_context(patch("app.sleeves.reference.refresh_membership"))
                 stack.enter_context(patch("app.sleeves.reference.snapshot",return_value=({"TEST"},{})))
@@ -103,10 +104,10 @@ class BoundaryTest(unittest.TestCase):
                 rows = con.execute("SELECT symbol,sleeve,regime,shares,entry_price,risk_amt FROM v2_positions").fetchall()
                 if regime == "ON":
                     self.assertEqual(len(rows),1)
-                    self.assertEqual(rows[0][:3],("TEST","mean_reversion","ON"))
-                    self.assertLessEqual(float(rows[0][5]),150)
+                    self.assertEqual(rows[0][:3],("NIFTYBEES","index_directional","ON"))
+                    self.assertLessEqual(float(rows[0][5]),875)
                     self.assertLessEqual(rows[0][3]*rows[0][4],9000)
-                    self.assertEqual(live_mirror.call_count,1)
+                    self.assertEqual(live_mirror.call_count, 1)
                 else:
                     self.assertEqual(rows,[])
                     live_mirror.assert_not_called()
@@ -132,19 +133,18 @@ class BoundaryTest(unittest.TestCase):
         engine.gate.view = Mock(return_value=RegimeView("ON",True,.7,"ON","test"))
         for name, sleeve in engine.sleeves.items():
             sleeve.propose = Mock(return_value=SleeveDecision(name,"ON",True))
-        candidates = [Candidate(s,"mean_reversion",.9,100,95,120)
-                      for s in ("GOOD","STALE","OUTSIDE")]
-        candidates.append(Candidate("INDEX","mean_reversion",.9,100,95,120,instrument="FUT"))
-        engine.sleeves["mean_reversion"].propose.return_value.candidates = candidates
+        candidates = [Candidate("GOOD","index_directional",.9,100,75,allocation_pct=.35),
+                      Candidate("STALE","index_directional",.9,100,75,allocation_pct=.35),
+                      Candidate("FUT","index_directional",.9,100,75,instrument="FUT",allocation_pct=.35),
+                      Candidate("BAD","index_directional",.9,100,100,allocation_pct=.35)]
+        engine.sleeves["index_directional"].propose.return_value.candidates = candidates
         book = BookState(10000,10000,0,0,{},10000,10000,0)
-        result = engine.run({s:None for s in ("GOOD","STALE","OUTSIDE")},None,None,
-                            {s:{"price":100} for s in ("GOOD","OUTSIDE","INDEX")}, book,
+        result = engine.run({s:None for s in ("GOOD","STALE","FUT","BAD")},None,None,
+                            {s:{"price":100} for s in ("GOOD","FUT","BAD")}, book,
                             require_live_quotes=True, require_reference_data=True,
                             eligible_symbols={"GOOD","STALE"}, routable_instruments=("EQ",))
         self.assertEqual([c.symbol for c in result.decisions[0].candidates],["GOOD"])
         self.assertEqual(len(result.decisions[0].rejected),3)
-        ctx = engine.sleeves["mean_reversion"].propose.call_args.args[0]
-        self.assertEqual(set(ctx.tails),{"GOOD"})
         self.assertEqual([a.candidate.symbol for a in result.allocations],["GOOD"])
         with patch.object(v2_live,"market_open",return_value=True), \
              patch("app.ideas.track"), patch("app.ideas.publish",return_value=0) as publish:

@@ -67,12 +67,13 @@ class SizingTest(unittest.TestCase):
     def test_every_idea_risks_the_same_rupees(self) -> None:
         """The point of risk-based sizing: a Rs 27 stock and a Rs 5,500 stock
         both put ~1% of the account at risk, so one cannot quietly dominate."""
-        for entry, stop in ((27.1, 24.4), (563.0, 508.4), (5529.5, 5287.5)):
+        for entry, stop in ((27.1, 24.4), (563.0, 508.4), (900.0, 858.0)):
             with self.subTest(entry=entry):
                 qty = ideas.size(entry, stop)
                 risk = qty * (entry - stop)
-                self.assertLessEqual(risk, 1000.0)
-                self.assertGreater(risk, 900.0)
+                target = ideas.CAPITAL * ideas.RISK_PCT
+                self.assertLessEqual(risk, target)
+                self.assertGreater(risk, target - (entry - stop))
 
     def test_a_tight_stop_cannot_ask_for_more_than_the_account(self) -> None:
         """Rs 2 of risk on a Rs 900 stock is 500 shares = Rs 450,000 of a
@@ -95,21 +96,19 @@ class TierTest(unittest.TestCase):
         pick would mean deliberately publishing a worse one to everyone else."""
         self.assertEqual(ideas.tier_for_rank(1), "watch")
 
-    def test_the_paid_tiers_add_breadth(self) -> None:
-        self.assertEqual([ideas.tier_for_rank(r) for r in (1, 2, 3, 4, 5)],
-                         ["watch", "paper", "paper", "auto", "auto"])
+    def test_the_active_universe_never_promises_filler(self) -> None:
+        self.assertEqual(ideas.MAX_PER_DAY, 1)
+        self.assertEqual({ideas.allowance(p) for p in ("watch", "paper", "auto")}, {1})
 
     def test_free_sees_none(self) -> None:
         self.assertEqual(ideas.allowance("free"), 0)
 
     def test_the_tiers_and_the_allowance_cannot_disagree(self) -> None:
-        """tier_for_rank is derived FROM PER_DAY, so the gate and the pricing
-        page are the same fact."""
-        for tier, n in ideas.PER_DAY.items():
-            if not n:
-                continue
+        """Every paid plan can see the one publishable rank."""
+        self.assertEqual(ideas.tier_for_rank(1), "watch")
+        for tier in ("watch", "paper", "auto"):
             with self.subTest(tier=tier):
-                self.assertEqual(ideas.tier_for_rank(n), tier)
+                self.assertGreaterEqual(ideas.allowance(tier), 1)
 
 
 class PublishTest(unittest.TestCase):
@@ -117,8 +116,8 @@ class PublishTest(unittest.TestCase):
         self.con = _db()
         self.atr_stop = lambda s: v2_live.PLAN.get(s, {}).get("atr_stop") or 3.0
 
-    def _pub(self, cands, date="2026-08-04", ts="2026-08-04T09:20:00+05:30"):
-        return ideas.publish(self.con, "IN", cands, self.atr_stop, date, ts)
+    def _pub(self, cands, date="2026-08-04", ts="2026-08-04T09:20:00+05:30", limit=5):
+        return ideas.publish(self.con, "IN", cands, self.atr_stop, date, ts, limit=limit)
 
     def test_it_writes_the_days_ideas(self) -> None:
         self.assertEqual(self._pub([_cand("A"), _cand("B")]), 2)
@@ -145,7 +144,7 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(self._pub([_cand("A")], date="2026-08-05"), 1)
 
     def test_it_publishes_at_most_five(self) -> None:
-        self.assertEqual(self._pub([_cand(f"S{i}") for i in range(9)]), 5)
+        self.assertEqual(self._pub([_cand(f"S{i}") for i in range(9)], limit=ideas.MAX_PER_DAY), 1)
 
     def test_engine_order_is_preserved(self) -> None:
         """Ideas come out in the engine's own ranked order, after the meta
@@ -161,9 +160,10 @@ class PublishTest(unittest.TestCase):
 
     def test_visible_respects_the_plan(self) -> None:
         self._pub([_cand(f"S{i}") for i in range(5)])
-        for plan, n in (("free", 0), ("watch", 1), ("paper", 3), ("auto", 5)):
+        for plan, n in (("free", 0), ("watch", 1), ("paper", 1), ("auto", 1)):
             with self.subTest(plan=plan):
-                self.assertEqual(len(ideas.visible(self.con, "IN", plan, days=365)), n)
+                self.assertEqual(len(ideas.visible(
+                    self.con, "IN", plan, days=365, sources=("mean_reversion",))), n)
 
     def test_conviction_prefers_the_meta_model(self) -> None:
         """meta_p is the number the engine ranks on when it has one."""
@@ -182,7 +182,8 @@ class TrackTest(unittest.TestCase):
     def _track(self, price, high, low, today="2026-08-04"):
         ideas.track(self.con, "IN", {"A": dict(price=price, high=high, low=low)},
                     "2026-08-04T14:00+05:30", today)
-        return ideas.visible(self.con, "IN", "auto", days=365)[0]
+        return ideas.visible(
+            self.con, "IN", "auto", days=365, sources=("mean_reversion",))[0]
 
     def test_an_untouched_idea_stays_open(self) -> None:
         r = self._track(1010, 1020, 995)
@@ -232,12 +233,21 @@ class TrackTest(unittest.TestCase):
         """A stock with no live price must stay open rather than being marked
         against a stale or zero price."""
         ideas.track(self.con, "IN", {}, "2026-08-04T14:00+05:30", "2026-08-04")
-        self.assertEqual(ideas.visible(self.con, "IN", "auto", days=365)[0]["status"], "open")
+        self.assertEqual(ideas.visible(
+            self.con, "IN", "auto", days=365, sources=("mean_reversion",))[0]["status"], "open")
 
     def test_a_feed_without_ohlc_still_tracks_on_the_last_price(self) -> None:
         ideas.track(self.con, "IN", {"A": dict(price=935)},
                     "2026-08-04T14:00+05:30", "2026-08-04")
-        self.assertEqual(ideas.visible(self.con, "IN", "auto", days=365)[0]["status"], "stopped")
+        self.assertEqual(ideas.visible(
+            self.con, "IN", "auto", days=365, sources=("mean_reversion",))[0]["status"], "stopped")
+
+    def test_index_ideas_use_the_monthly_horizon(self) -> None:
+        self.con.execute("UPDATE v2_ideas SET strategy='index_directional'")
+        ideas.track(self.con, "IN", {"A": dict(price=1010)},
+                    "2026-08-20T14:00+05:30", "2026-08-20")
+        row = self.con.execute("SELECT status FROM v2_ideas").fetchone()
+        self.assertEqual(row[0], "open")
 
 
 class ScoreboardTest(unittest.TestCase):
@@ -337,7 +347,8 @@ class HonestyTest(unittest.TestCase):
         import pathlib
         spa = pathlib.Path("app/v2_web.py").read_text(encoding="utf-8")
         spa = spa[spa.rindex('SPA_HTML = r"""'):]
-        self.assertIn("gives up edge", spa)
+        self.assertIn("completed 200-session trend", spa)
+        self.assertIn("There is no fixed profit target", spa)
 
     def test_the_sample_size_is_shown_next_to_the_win_rate(self) -> None:
         """Both moved into the credibility strip when the advisory layout

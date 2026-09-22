@@ -17,6 +17,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC = open(os.path.join(_ROOT, "app", "v2_web.py"), encoding="utf-8").read()
 SPA_HTML = list(re.finditer(r'SPA_HTML = r"""(.*?)"""', _SRC, re.S))[-1].group(1)
+sys.path.insert(0,_ROOT)
+from app.desk_ui import enhance
+SPA_HTML = enhance(SPA_HTML)
 
 BOOT = """<script>
 window.ME={id:1,username:'demo',role:'admin',signal_execution_mode:'paper'};
@@ -104,21 +107,19 @@ ORDERS = [
 
 def _market(mkt):
     ccy = "₹" if mkt == "IN" else "$"
-    budget = 100000 if mkt == "IN" else 20000
-    eq = [round(budget * (1 + 0.0009 * i + (0.012 if i % 6 == 0 else -0.004))) for i in range(40)]
-    # hero mock: a DOWN day (today dips below yesterday's close) over an UP
-    # month — exercises the exact contradiction the redesign fixes
-    prev_eq = round(budget * 1.025)
-    today = [round(prev_eq * (1 + 0.004 * (i / 60.0) - 0.018 * (i / 75.0) ** 0.7 + 0.006 * (1 if i % 17 == 0 else 0))) for i in range(75)]
-    daily = [round(budget * (1 + 0.0012 * i + (0.008 if i % 7 == 0 else -0.002))) for i in range(55)] + [today[-1]]
-    return dict(market=mkt, ccy=ccy, budget=budget, equity=today[-1], equity_series=eq,
-                today_series=today, prev_equity=prev_eq, daily_series=daily, daily_start="2026-05-12",
-                cash=round(budget * 0.07), deployed=round(budget * 0.93), deploy_pct=93,
-                today_pnl=today[-1] - prev_eq, overall_pnl=round(today[-1] - budget),
-                today_pct=round((today[-1] - prev_eq) / prev_eq * 100, 2),
-                overall_pct=round((today[-1] - budget) / budget * 100, 2),
-                sharpe=1.84, maxdd=-4.2,
-                positions=5, trades=11, win=64, pf=1.7, realised=-1443.0)
+    budget = 10000 if mkt == "IN" else 20000
+    equity = 8951.81 if mkt == "IN" else 20000
+    series = [10000, 9811.99, 9320.17, equity] if mkt == "IN" else [budget, equity]
+    return dict(market=mkt, ccy=ccy, budget=budget, equity=equity,
+                equity_series=series, today_series=[equity], prev_equity=equity,
+                daily_series=series, daily_start="2026-08-14", cash=equity,
+                deployed=0, deploy_pct=0, today_pnl=0,
+                overall_pnl=round(equity-budget, 2), today_pct=0,
+                overall_pct=round((equity-budget)/budget*100, 2),
+                sharpe=None, maxdd=round((equity/budget-1)*100, 2),
+                positions=0, trades=11, win=18, pf=0.31,
+                realised=round(equity-budget, 2),
+                readiness=dict(halted=True, reason="drawdown brake: forward paper entry paused"))
 
 
 # The options book, with the LIVE 2026-08-03 figures — six digits with grouping
@@ -132,25 +133,14 @@ OPTIONS = dict(options_today=25666.0, options_overall=27300.92, options_budget=1
 
 
 def _ideas():
-    """Mock ideas covering every status the card has to render: live, T1 hit,
-    stopped, and expired — a preview that only shows winners proves nothing."""
-    def one(sym, strat, entry, atr, rank, status, best=None, res=None, live=None, day="2026-08-04"):
-        r = entry - atr * 3
-        return dict(symbol=sym, strategy=strat, published_date=day, rank=rank,
-                    tier=["watch", "paper", "paper", "auto", "auto"][rank - 1],
-                    entry=entry, atr=atr, stop=round(r, 2), t1=round(entry + (entry - r), 2),
-                    t2=round(entry + 2 * (entry - r), 2), t3=round(entry + 3 * (entry - r), 2),
-                    qty=int(1000 // (entry - r)) or 1, risk_amt=998.0,
-                    notional=round((int(1000 // (entry - r)) or 1) * entry, 2),
-                    status=status, best_target=best, result_pct=res, live=live,
-                    open_pct=(round((live / entry - 1) * 100, 2) if live and status == "open" else None),
-                    mfe=4.2, mae=-2.1, last_price=live or entry)
-    return [one("WABAG", "swing_meanrev", 2206.3, 52.4, 1, "open", live=2261.0),
-            one("JKCEMENT", "mom_breakout", 5529.5, 121.0, 2, "open", live=5480.0),
-            one("HCC", "swing_meanrev", 27.1, 0.9, 3, "open", live=27.9),
-            one("PGEL", "swing_meanrev", 563.0, 18.2, 4, "t1", "t2", 9.7, 618.0, "2026-08-01"),
-            one("ZENTEC", "mom_breakout", 1998.6, 61.0, 5, "stopped", None, -9.2, 1815.0, "2026-08-01"),
-            one("SWIGGY", "swing_meanrev", 448.2, 12.0, 1, "expired", "t1", 1.4, 454.5, "2026-07-21")]
+    """The sole production idea source: the monthly NIFTYBEES sleeve."""
+    return [dict(symbol="NIFTYBEES", strategy="index_directional",
+                 published_date="2026-09-01", rank=1, tier="watch",
+                 entry=267.88, atr=3.42, stop=200.91, t1=0, t2=0, t3=0,
+                 qty=13, risk_amt=870.61, notional=3482.44,
+                 status="open", best_target=None, result_pct=None,
+                 live=265.02, open_pct=-1.07, mfe=1.2, mae=-2.1,
+                 last_price=265.02)]
 
 
 IDEAS = _ideas()
@@ -158,14 +148,11 @@ IDEAS = _ideas()
 OVERVIEW = dict(as_of="22 Jul, 13:45 IST", regime={"IN": True},
                 regime_state={"IN": "NEUTRAL"},
                 options=OPTIONS,
-                mine=dict(market="IN", ccy="\u20b9", budget=100000.0, cash=71234.0,
-                          deployed=30120.0, equity=101354.0, overall_pnl=1354.0,
-                          realised=-320.0, unrealised=1674.0, positions=2, trades=4,
-                          win=50, deploy_pct=30,
-                          holdings=[dict(symbol="WABAG", shares=7, entry_price=2206.3,
-                                         live=2261.0, pnl=382.9, pnl_pct=2.48),
-                                    dict(symbol="HCC", shares=520, entry_price=27.1,
-                                         live=27.9, pnl=416.0, pnl_pct=2.95)]),
+                mine=dict(market="IN", ccy="\u20b9", budget=10000.0, cash=8958.89,
+                          deployed=0.0, equity=8958.89, overall_pnl=-1041.11,
+                          realised=-1041.11, unrealised=0.0, positions=0, trades=11,
+                          win=18, deploy_pct=0, series=[10000, 9588.2, 8958.89],
+                          holdings=[]),
                 real=dict(cash=6434.7, invested=2706.57, holdings_value=2797.0,
                           equity=9231.56, unrealised=90.29, n_positions=2, armed=True,
                           positions=[dict(symbol="ICICIB22", qty=1, avg=26.27, ltp=117.26,
@@ -230,12 +217,12 @@ class H(BaseHTTPRequestHandler):
                 max_order=3500.0, live_ready=False, is_owner=True, orders_today=0,
                 notional_today=0.0, recent=[],
                 options_blocked_reason="one index-option lot costs Rs 5,704\u2013Rs 27,669; this sleeve holds Rs 10,000"),
-            "/v2/api/ideas": dict(ideas=IDEAS, plan="auto", allowance=5, max_per_day=5,
-                                  published_today=5, withheld_today=0, capital=100000.0,
-                                  risk_pct=0.01, horizon_days=10, ccy="\u20b9",
-                                  stats=dict(published=6, open=3, closed=3, wins=2, win_pct=67,
-                                             avg_pct=0.63, hit_t1=2, hit_t2=1, hit_t3=0,
-                                             stopped=1, expired=1)),
+            "/v2/api/ideas": dict(ideas=IDEAS, plan="auto", allowance=1, max_per_day=1,
+                                  published_today=1, withheld_today=0, capital=10000.0,
+                                  risk_pct=0.01, horizon_days=35, ccy="\u20b9",
+                                  stats=dict(published=1, open=1, closed=0, wins=0, win_pct=None,
+                                             avg_pct=None, hit_t1=0, hit_t2=0, hit_t3=0,
+                                             stopped=0, expired=0)),
             "/v2/api/overview": OVERVIEW,
             "/v2/api/positions": POSITIONS,
             "/v2/api/orders": ORDERS,

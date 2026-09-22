@@ -401,6 +401,15 @@ def orders(user_id):
     return rows
 
 
+def cancel_order(user_id, order_id):
+    """Request cancellation; only a later order snapshot proves termination."""
+    import httpx
+    response = httpx.delete(f"{ORDER_BASE}/order/cancel", headers=_headers(user_id),
+                            params={"order_id": str(order_id)}, timeout=20)
+    response.raise_for_status()
+    return response.json()
+
+
 def positions(user_id) -> list:
     import httpx
     r = httpx.get(f"{API_BASE}/portfolio/short-term-positions",

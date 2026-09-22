@@ -80,7 +80,7 @@ class SleeveSettings:
             note="primary; hardened v2 dip-buying, ON/NEUTRAL only")
         self.quality_momentum = SleeveConfig(
             enabled=_bool("SLEEVE_QUALITY_MOMENTUM", True),
-            risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.25),
+            risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.05),
             max_positions=1,
             note="secondary; quality + 6-12m momentum, ON only, slow rebalance")
         self.early_momentum = SleeveConfig(
@@ -90,9 +90,9 @@ class SleeveSettings:
             note="tactical; ignition detector, tighter stops and faster exits")
         self.index_directional = SleeveConfig(
             enabled=_bool("SLEEVE_INDEX_DIRECTIONAL", True),
-            risk_share=_float("SHARE_INDEX_DIRECTIONAL", 0.15),
+            risk_share=_float("SHARE_INDEX_DIRECTIONAL", 0.35),
             max_positions=1,
-            note="NIFTY/BANKNIFTY directional; index risk stays below equity")
+            note="NIFTYBEES trend; the only independently positive candidate")
         self.options_overlay = SleeveConfig(
             enabled=_bool("SLEEVE_OPTIONS_OVERLAY", True),
             risk_share=_float("SHARE_OPTIONS_OVERLAY", 0.00),

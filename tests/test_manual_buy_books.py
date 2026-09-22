@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import unittest
 
-from app import v2_web
+from app import manual_execution, v2_web
 
 
 def _body(fn):
@@ -52,10 +52,11 @@ class ManualBuyIsOffTheHouseBookTest(unittest.TestCase):
         self.assertNotIn("record_entry(", self.src)
 
     def test_it_reaches_only_the_callers_own_broker(self) -> None:
-        """THE fix. It used to hit whichever broker was configured globally —
-        the operator's. Now the caller's own state, keyed by their id."""
-        self.assertIn("_bk.state(uid)", self.src)
-        self.assertIn("_lt.mirror_entry(v2, main, uid,", self.src)
+        """Live mode is explicit and its router is keyed by the session uid."""
+        route = inspect.getsource(manual_execution.live_action)
+        self.assertIn("broker.state(uid)", route)
+        self.assertIn("live_trade.mirror_entry(con,main,uid,", route)
+        self.assertIn("mode == \"live\"", self.src)
 
     def test_it_takes_the_session_user(self) -> None:
         self.assertIn("user", inspect.signature(v2_web.api_buy).parameters)
@@ -73,8 +74,10 @@ class ManualSellIsOffTheHouseBookTest(unittest.TestCase):
         self.assertNotIn("record_exit(", self.src)
 
     def test_it_reaches_only_the_callers_own_broker(self) -> None:
-        self.assertIn("_bk.state(uid)", self.src)
-        self.assertIn("_lt.mirror_exit(v2, main, uid,", self.src)
+        route = inspect.getsource(manual_execution.live_action)
+        self.assertIn("broker.state(uid)", route)
+        self.assertIn("live_trade.mirror_exit(con,main,uid,", route)
+        self.assertIn("mode == \"live\"", self.src)
 
 
 class HouseExitIsOperatorOnlyTest(unittest.TestCase):

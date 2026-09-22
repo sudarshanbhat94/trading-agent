@@ -29,6 +29,7 @@ class Candidate:
     trail_pct: float = 0.0
     max_hold_days: int = 0       # 0 = no time stop
     instrument: str = "EQ"       # EQ | FUT | OPT_SPREAD
+    allocation_pct: float = 0.0  # long-duration allocation; 0 = risk-sized
     why: dict = field(default_factory=dict)
 
     @property
@@ -37,7 +38,8 @@ class Candidate:
 
     def is_sane(self) -> tuple[bool, str]:
         """Reject anything broken on arrival rather than sizing it."""
-        if not all(math.isfinite(v) for v in (self.entry, self.stop, self.target, self.score, self.trail_pct)):
+        if not all(math.isfinite(v) for v in (self.entry, self.stop, self.target, self.score,
+                                               self.trail_pct, self.allocation_pct)):
             return False, "non-finite candidate"
         if self.entry <= 0:
             return False, "entry<=0"
@@ -51,6 +53,8 @@ class Candidate:
             return False, "zero risk per share"
         if self.risk_per_share / self.entry > 0.25:
             return False, "stop wider than 25% (not a trade, a hope)"
+        if not 0 <= self.allocation_pct <= 1:
+            return False, "allocation outside 0..1"
         return True, ""
 
 

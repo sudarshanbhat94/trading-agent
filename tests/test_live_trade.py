@@ -352,7 +352,9 @@ class ManualBuyReachesTheBrokerTest(unittest.TestCase):
         self.assertIn("books.buy(", body)
         self.assertNotIn("record_entry(", body)
         self.assertNotIn("INSERT INTO v2_positions", body)
-        self.assertIn("_bk.state(uid)", body)
+        self.assertIn('mode == "live"', body)
+        self.assertIn("live_action", body)
+        self.assertIn('"mode": "paper"', body)
 
     def test_manual_is_a_mirrored_lane(self) -> None:
         """Otherwise api_buy's direct mirror_entry call is skipped and the Buy

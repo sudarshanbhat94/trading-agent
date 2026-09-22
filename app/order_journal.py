@@ -17,7 +17,8 @@ TERMINAL = ("filled", "cancelled", "rejected")
 def ensure_schema(con):
     cols = {r[1] for r in con.execute("PRAGMA table_info(v2_live_orders)")}
     for name, kind in (("intent_key", "TEXT"), ("filled_qty", "INTEGER DEFAULT 0"),
-                       ("average_price", "REAL DEFAULT 0"), ("reconciled_at", "TEXT")):
+                       ("average_price", "REAL DEFAULT 0"), ("reconciled_at", "TEXT"),
+                       ("cancel_requested_at", "TEXT")):
         if name not in cols:
             con.execute(f"ALTER TABLE v2_live_orders ADD COLUMN {name} {kind}")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_live_intent "
@@ -87,6 +88,36 @@ def refresh(con, uid):
     except Exception:
         # Outage is not proof of zero fills or of rejection.
         return False
+
+
+def finish_entry_before_exit(con, uid, symbol):
+    """Cancel an outstanding entry before selling its confirmed filled part.
+
+    Reserve the cancellation before sending, so concurrent exit passes do not
+    repeat it. A timeout or accepted cancellation is never proof of zero
+    remaining shares: the sell waits for terminal broker evidence.
+    """
+    from . import broker
+    rows = list(con.execute(
+        "SELECT id,broker_order_id,side,cancel_requested_at FROM v2_live_orders "
+        "WHERE user_id=? AND symbol=? AND status IN (?,?,?,?,?)",
+        (uid, symbol, *ACTIVE)))
+    for rid, oid, side, requested in rows:
+        if side != 'BUY' or not oid or requested:
+            continue
+        cursor = con.execute(
+            "UPDATE v2_live_orders SET cancel_requested_at=? WHERE id=? AND user_id=? "
+            "AND cancel_requested_at IS NULL AND status IN (?,?,?,?,?)",
+            (datetime.now(timezone.utc).isoformat(), rid, uid, *ACTIVE))
+        con.commit()
+        if cursor.rowcount:
+            try:
+                broker.cancel_order(uid, oid)
+            except Exception:
+                pass  # Uncertain cancellation retains the reservation.
+    if rows:
+        refresh(con, uid)
+    return not unresolved(con, uid, symbol)
 
 
 def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,

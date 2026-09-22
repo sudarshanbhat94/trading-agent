@@ -1,14 +1,13 @@
-"""Multi-sleeve trading architecture.
+"""Research sleeves behind one production allowlist and one risk manager.
 
-Five independent sleeves share ONE Rs 10,000 paper book. Each proposes
-candidates; the unified risk manager in `risk.py` decides what actually gets
-capital, and the regime gate in `regime.py` is the master switch above all of
-them.
+Only `index_directional` is promoted to the Rs 10,000 paper book. Each other
+sleeve remains importable for replay and reporting but cannot submit a live
+paper proposal through the production orchestrator.
 
     mean_reversion    primary   — hardened v2 dip-buying, ON/NEUTRAL only
     quality_momentum  secondary — quality + intermediate momentum, ON only
     early_momentum    tactical  — pre-top-gainer ignition detector
-    index_directional index     — NIFTY / BANKNIFTY directional
+    index_directional index     — monthly NIFTYBEES trend exposure
     options_overlay   overlay   — defined-risk spreads only
 
 Design rules that apply to every sleeve, enforced by `base.Sleeve`:
@@ -20,8 +19,8 @@ Design rules that apply to every sleeve, enforced by `base.Sleeve`:
   * every accept AND reject is logged with a reason, so an idle book can always
     be distinguished from a broken one.
 
-Feature flags live in `config.SLEEVES`; each sleeve can be switched off
-independently without touching the others.
+The hard production allowlist lives in `engine.ACTIVE_SLEEVES`; environment
+flags cannot promote a failed research sleeve by accident.
 """
 from __future__ import annotations
 

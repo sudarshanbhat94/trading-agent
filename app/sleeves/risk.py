@@ -121,10 +121,16 @@ class RiskManager:
         # buy one share of anything, and every sleeve sized to zero.
         risk_budget = min(book.capital * self.s.risk_per_trade,
                           max(0, book.capital * self.s.daily_loss_limit + book.day_pnl - book.open_risk))
-        by_risk = risk_budget / rps
-
-        slot = book.capital / max(self.s.max_positions_total, 1)
-        by_slot = slot / cand.entry
+        if cand.allocation_pct:
+            # Strategic index exposure is controlled by portfolio allocation
+            # and the book drawdown brake. Applying one-day stop-risk sizing to
+            # a multi-month trend rule changes it into a different strategy.
+            by_risk = book.capital * cand.allocation_pct / cand.entry
+            by_slot = by_risk
+        else:
+            by_risk = risk_budget / rps
+            slot = book.capital / max(self.s.max_positions_total, 1)
+            by_slot = slot / cand.entry
         by_cash = max(book.cash, 0.0) / cand.entry
         # this sleeve may not hold more than its share of the book at once
         sleeve_room = max(book.capital * cfg.risk_share

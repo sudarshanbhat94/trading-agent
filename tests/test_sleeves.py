@@ -6,14 +6,16 @@ independently of whatever the market is doing on any given day.
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 
 from app.sleeves.base import Candidate, Sleeve, SleeveDecision
 from app.sleeves.config import SLEEVES
-from app.sleeves.engine import PRIORITY, SleeveEngine
+from app.sleeves.engine import ACTIVE_SLEEVES, PRIORITY, SleeveEngine
 from app.sleeves.options_overlay import OptionsOverlaySleeve, Spread
+from app.sleeves.index_directional import IndexDirectionalSleeve
 from app.sleeves.regime import BREADTH_NEUTRAL, BREADTH_ON, RegimeGate
 from app.sleeves.risk import BookState, RiskManager
 from app.sleeves.universe import MAX_PRICE, MIN_PRICE, MIN_TURNOVER, liquid_universe
@@ -97,6 +99,28 @@ class RegimeIsTheMasterGateTest(unittest.TestCase):
                 self.assertTrue(sleeve.allowed_regimes)
                 self.assertNotIn("OFF", sleeve.allowed_regimes,
                                  "no sleeve may open longs in an OFF regime")
+
+    def test_nifty_200_day_slope_compares_like_with_like(self) -> None:
+        nifty = _panel(n_days=260, drift=.001, vol=0, seed=9)
+        mdf = self._mdf(rising=True).reindex(nifty.index).ffill().bfill()
+        broad = {"NIFTYBEES": nifty}
+        broad.update({f"S{i}": _panel(n_days=260, drift=.001, vol=0, seed=i)
+                      for i in range(20)})
+        view = RegimeGate().view(broad, mdf, nifty.index[-1])
+        self.assertEqual(view.state, "ON")
+
+
+class EvidenceBackedIndexSleeveTest(unittest.TestCase):
+    def test_nifty_etf_is_the_only_routable_index_candidate(self) -> None:
+        bars = _panel(n_days=260, drift=.001, vol=0, seed=7)
+        regime = SimpleNamespace(state="ON")
+        ctx = SimpleNamespace(regime=regime, tails={"NIFTYBEES":bars},
+                              asof=bars.index[-1], trade_date=bars.index[-1] + pd.offsets.MonthBegin(),
+                              live={"NIFTYBEES":{"price":float(bars.close.iloc[-1])}})
+        decision = IndexDirectionalSleeve().propose(ctx)
+        self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
+        self.assertEqual(decision.candidates[0].instrument, "EQ")
+        self.assertEqual(decision.candidates[0].allocation_pct, .35)
 
 
 class RiskManagerTest(unittest.TestCase):
@@ -245,7 +269,7 @@ class EngineWiringTest(unittest.TestCase):
     def test_all_five_sleeves_exist_and_are_prioritised(self) -> None:
         eng = SleeveEngine()
         self.assertEqual(sorted(eng.sleeves), sorted(PRIORITY))
-        self.assertEqual(PRIORITY[0], "mean_reversion", "primary gets first claim")
+        self.assertEqual(PRIORITY[0], "index_directional", "retrospectively positive candidate gets first claim")
         self.assertEqual(PRIORITY[-1], "options_overlay", "overlay is allocated last")
 
     def test_every_sleeve_has_a_feature_flag(self) -> None:
@@ -254,6 +278,9 @@ class EngineWiringTest(unittest.TestCase):
                 cfg = getattr(SLEEVES, name, None)
                 self.assertIsNotNone(cfg)
                 self.assertIsInstance(cfg.enabled, bool)
+
+    def test_only_evidence_backed_sleeve_is_active(self) -> None:
+        self.assertEqual(ACTIVE_SLEEVES, ("index_directional",))
 
     def test_a_halted_book_produces_no_allocations(self) -> None:
         eng = SleeveEngine()
@@ -623,9 +650,7 @@ class IdeasComeFromSleevesTest(unittest.TestCase):
         from app import ideas
         src = inspect.getsource(ideas.visible)
         self.assertIn("strategy IN ({smarks})", src)
-        for sleeve in ("mean_reversion", "early_momentum"):
-            with self.subTest(sleeve=sleeve):
-                self.assertIn(sleeve, ideas.SLEEVE_SOURCES)
+        self.assertEqual(ideas.SLEEVE_SOURCES, ("index_directional",))
 
     def test_no_legacy_lane_is_a_permitted_idea_source(self) -> None:
         from app import ideas, v2_live

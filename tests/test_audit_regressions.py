@@ -163,3 +163,15 @@ class JournalTest(unittest.TestCase):
         self.submit(); self.update(10)
         self.update(0,status="open")
         self.assertEqual(self.con.execute("SELECT status FROM v2_live_orders").fetchone()[0],"filled")
+
+    def test_partial_entry_is_cancelled_and_terminal_before_exit(self):
+        self.submit(); self.update(4, status="open")
+        snapshot = [dict(order_id="BUY", filled_quantity=4, average_price=100,
+                         status="cancelled", instrument_token="NSE_EQ|TEST",
+                         transaction_type="BUY", product="D")]
+        with patch.object(broker, "cancel_order", return_value={"status":"success"}) as cancel, \
+             patch.object(broker, "orders", return_value=snapshot):
+            self.assertTrue(order_journal.finish_entry_before_exit(self.con, 1, "X"))
+        cancel.assert_called_once_with(1, "BUY")
+        self.assertEqual(live_trade.live_qty(self.con, 1, "X"), 4)
+        self.assertEqual(self.con.execute("SELECT status FROM v2_live_orders").fetchone()[0], "cancelled")

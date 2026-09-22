@@ -922,6 +922,8 @@ _status: dict = {m: "init" for m in ENABLED_MARKETS}
 
 
 def ensure_schema(v2):
+    from .personal_alerts import ensure_schema as ensure_personal_alerts
+    ensure_personal_alerts(v2)
     v2.executescript(SCHEMA)
     from . import order_journal
     order_journal.ensure_schema(v2)
@@ -4022,6 +4024,7 @@ def _publish_sleeve_ideas(v2, market, result, today_s, live):
                              score=float(c.score), conviction=float(c.score),
                              atr=atr, price=float(c.entry),
                              stop=float(c.stop), target=float(c.target or 0.0),
+                             allocation_pct=float(c.allocation_pct or 0.0),
                              meta_p=None, sleeve=c.sleeve,
                              regime=result.regime.state))
     rows.sort(key=lambda r: -r["score"])
@@ -4279,6 +4282,7 @@ def sleeve_pass(market):
             eligible, quality_scores = snapshot(datetime.now(timezone.utc))
             result = _SLEEVE_ENGINE.run(
                 tails, mdf, asof, live, book,
+                trade_date=today,
                 index_bars=_sleeve_index_bars, options_view=_sleeve_options_view,
                 option_chain=_sleeve_option_chain, india_vix=_sleeve_vix,
                 delivery_pct=delivery_reader(feed_db, asof),
@@ -4290,9 +4294,19 @@ def sleeve_pass(market):
         finally:
             feed_db.close()
 
-        if result.halt_reason:
-            _status[market] = f"sleeves HALTED · {result.halt_reason}"
-            return
+        # This long-duration index rule exits when its master trend gate turns
+        # OFF. Exit obligations continue even if another book brake is active.
+        from .sleeves.index_directional import monthly_rebalance
+        if result.regime.state == "OFF" and monthly_rebalance(asof, today):
+            for pid, sym, shares in v2.execute(
+                    "SELECT id,symbol,shares FROM v2_positions WHERE market=? "
+                    "AND sleeve='index_directional'", (market,)).fetchall():
+                price = float((live.get(sym) or {}).get("price") or 0)
+                if price > 0:
+                    record_exit(v2, market, pid, today_s, price, float(shares), "regime_off")
+                    v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
+                    held.discard(sym)
+            v2.commit()
 
         # IDEAS COME FROM THE SLEEVES. Every candidate the sleeves proposed is
         # publishable, whether or not the risk manager could fund it — a
@@ -4304,6 +4318,10 @@ def sleeve_pass(market):
             _publish_sleeve_ideas(v2, market, result, today_s, live)
         except Exception:
             _LOG.exception("idea publication failed (book unaffected)")
+
+        if result.halt_reason:
+            _status[market] = f"sleeves HALTED · {result.halt_reason}"
+            return
 
         fills = 0
         for alloc in result.allocations:

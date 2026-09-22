@@ -276,7 +276,8 @@ def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
     st = broker.state(user_id)
     if st.get("live_ready") and not journal.refresh(v2, user_id):
         return "pending: broker reconciliation unavailable"
-    if journal.unresolved(v2, user_id, symbol):
+    if journal.unresolved(v2, user_id, symbol) and not (
+            st.get("live_ready") and journal.finish_entry_before_exit(v2, user_id, symbol)):
         return "pending: broker reconciliation required"
     qty = live_qty(v2, user_id, symbol)
     if qty <= 0:

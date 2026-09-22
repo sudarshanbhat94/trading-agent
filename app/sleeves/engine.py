@@ -8,8 +8,8 @@ One pass:
     4. hand the ordered list to the unified risk manager
     5. log regime, per-sleeve activity, and every accept/reject with a reason
 
-Priority is fixed and deliberate: the primary sleeve gets first claim on a
-scarce Rs 10,000 book, and the overlay is allocated last from whatever remains.
+Production currently promotes only the NIFTYBEES monthly trend sleeve. The
+other implementations remain research modules and cannot submit proposals.
 """
 from __future__ import annotations
 
@@ -32,8 +32,14 @@ from .risk import Allocation, BookState, RiskManager
 _LOG = logging.getLogger("openstocks.sleeves.engine")
 
 #: first claim on capital goes leftmost
-PRIORITY = ["mean_reversion", "quality_momentum", "early_momentum",
-            "index_directional", "options_overlay"]
+PRIORITY = ["index_directional", "mean_reversion", "quality_momentum",
+            "early_momentum", "options_overlay"]
+
+# Only the candidate that passed the frozen retrospective checks may submit
+# PAPER proposals. Two holdout trades are not live proof; broker mirroring for
+# this sleeve remains disabled. The other modules stay available for research
+# and historic rows but cannot leak a production proposal.
+ACTIVE_SLEEVES = ("index_directional",)
 
 
 @dataclass
@@ -45,6 +51,7 @@ class SleeveContext:
     live: dict
     regime: RegimeView
     settings: object = field(default_factory=lambda: SLEEVES)
+    trade_date: object | None = None
     force: bool = False
     sessions_since_rebalance: int | None = None
     # optional feeds — sleeves degrade gracefully when these are absent
@@ -97,12 +104,15 @@ class SleeveEngine:
         if halted:
             result.halt_reason = why
             _LOG.warning("PASS HALTED: %s (exits continue to run)", why)
-            return result
 
         ordered: list[Candidate] = []
         for name in PRIORITY:
             sleeve = self.sleeves[name]
             cfg = getattr(self.settings, name)
+            if name not in ACTIVE_SLEEVES:
+                result.decisions.append(SleeveDecision(
+                    name, regime.state, False, note="not promoted: independent replay failed or unavailable"))
+                continue
             if not cfg.enabled:
                 _LOG.info("sleeve %s: disabled by feature flag", name)
                 continue
@@ -131,7 +141,8 @@ class SleeveEngine:
                     dec.reject(cand.symbol, f"regime {regime.state} blocks entry")
                 elif ctx.require_live_quotes and cand.instrument == "EQ" and cand.symbol not in live:
                     dec.reject(cand.symbol, "fresh entry quote unavailable")
-                elif cand.instrument == "EQ" and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols:
+                elif (cand.instrument == "EQ" and cand.sleeve != "index_directional"
+                      and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols):
                     dec.reject(cand.symbol, "outside verified liquid NSE universe")
                 elif ctx.routable_instruments is not None and cand.instrument not in ctx.routable_instruments:
                     dec.reject(cand.symbol, "instrument routing unavailable")
@@ -143,7 +154,7 @@ class SleeveEngine:
             dec.candidates = accepted
             dec.log()
 
-        result.allocations = self.risk.allocate(ordered, book)
+        result.allocations = [] if halted else self.risk.allocate(ordered, book)
         self._summarise(result)
         return result
 

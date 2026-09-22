@@ -1,17 +1,8 @@
-"""The master gate. Nothing enters in any sleeve without passing here first.
+"""Master market gate, read from completed NIFTYBEES sessions.
 
-Wraps the existing validated `v2_engine.regime_state` and tightens it. The old
-engine treated NEUTRAL as tradeable for everything, which is how dip-buying ran
-through a flat, directionless tape. Here:
-
-    ON       full system: every sleeve may propose
-    NEUTRAL  primary mean-reversion only, and only its very best setup
-    OFF      no new equity longs at all, from any sleeve
-
-The tightening is the `breadth` and `vol` confirmation added on top of the raw
-index-vs-mean test. A market can sit above its 50-day mean on the back of five
-heavyweights while the median name is falling; that is not a regime a
-dip-buying book should be long into, and the raw test cannot see it.
+ON means the latest completed close is above its 200-session mean; NEUTRAL is
+the narrow boundary around that mean; OFF blocks all new production entries.
+The legacy synthetic regime is used only when the benchmark is unavailable.
 """
 from __future__ import annotations
 
@@ -57,14 +48,30 @@ class RegimeGate:
     def view(self, tails: dict, market_df: pd.DataFrame, asof) -> RegimeView:
         raw = eng.regime_state(market_df, asof, self.lookback)
         strong = eng.regime_strong(market_df, asof, self.lookback)
+        benchmark = tails.get("NIFTYBEES")
+        benchmark_used = False
+        if benchmark is not None:
+            try:
+                close = benchmark["close"].loc[:asof]
+                if len(close) >= 200:
+                    benchmark_used = True
+                    price, sma = float(close.iloc[-1]), float(close.tail(200).mean())
+                    earlier = float(close.iloc[:-20].tail(200).mean()) if len(close) >= 220 else sma
+                    slope = sma / earlier - 1 if earlier else 0.0
+                    distance = price / sma - 1
+                    raw = "ON" if distance > .001 else ("NEUTRAL" if distance >= -.001 else "OFF")
+                    strong = raw == "ON" and distance > .03 and slope > 0
+            except Exception:
+                raw = "OFF"
         breadth = self._breadth(tails, asof)
 
-        state, reason = raw, "matches v2_engine"
-        if raw == "ON" and breadth < BREADTH_ON:
+        state, reason = raw, ("Nifty ETF versus its 200-session trend"
+                              if benchmark_used else "synthetic fallback")
+        if not benchmark_used and raw == "ON" and breadth < BREADTH_ON:
             state = "NEUTRAL"
             reason = (f"index says ON but breadth is {breadth:.0%} "
                       f"(<{BREADTH_ON:.0%}) — index-led, not broad")
-        elif raw == "NEUTRAL" and breadth < BREADTH_NEUTRAL:
+        elif not benchmark_used and raw == "NEUTRAL" and breadth < BREADTH_NEUTRAL:
             state = "OFF"
             reason = (f"NEUTRAL with breadth {breadth:.0%} "
                       f"(<{BREADTH_NEUTRAL:.0%}) — the median name is falling")

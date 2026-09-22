@@ -1,50 +1,8 @@
-"""Published stock ideas: entry, stop, three targets, size — and a tracker.
+"""Immutable ideas published from the production sleeve decision.
 
-WHAT MAKES THIS DIFFERENT FROM THE PAPER BOOK
-The book decides what IT will do with ITS capital and its six position slots.
-An idea is a recommendation to a subscriber who has their own money, their own
-existing holdings and no slot limit. Same signal, different question, so the
-sizing and the exits are stated explicitly instead of being implied by whatever
-the engine happened to have room for.
-
-Ideas are published FROM the engine's own ranked candidate list, after the meta
-filter, in the engine's own order. They are not a second opinion computed
-somewhere else — if the ideas page and the book ever disagreed about what looked
-good, one of them would be lying, and there would be no way to tell which.
-
-THE TARGETS, AND AN HONEST WARNING ABOUT THEM
-The operator asked for T1/T2/T3 "calculated properly, not a blind target". So
-they are R-multiples of each lane's OWN measured ATR stop, not percentages
-someone liked the look of:
-
-    R      = atr_stop x ATR       (the lane's measured stop distance)
-    stop   = entry - R
-    T1/2/3 = entry + 1R / 2R / 3R
-
-Using the lane's own stop as the unit is what makes them comparable across a
-Rs 200 stock and a Rs 5,000 one, and it means a target moves when the evidence
-behind the stop moves.
-
-But the evidence in PLAN says plainly that targets COST money on these lanes:
-
-    swing_meanrev, same 19,510 entries, avg net % per trade
-        hold-only                +0.775
-        stop 3ATR                +0.680
-        stop 2ATR + target 3.5   +0.506   <- what the lane used to run
-    mom_breakout, 2,201 entries
-        trail-only +0.896 | 8xATR +0.833 | 4xATR +0.565 | 3xATR +0.351
-
-Both studies found the same thing independently: targets clip the winners that
-pay for the losers. T1 at 1R is INSIDE the range those tests measured as
-harmful. The ladder is built because it was asked for and because a subscriber
-managing their own money reasonably wants defined exits — but `t1_costs_edge`
-is exposed so the UI can say so next to the number rather than in a footnote
-nobody reads. Do not quietly present T1 as the recommended exit.
-
-TRACKING
-The scoreboard closes an idea at the FIRST of stop or T1 (the operator's choice
-when asked). `best_target` keeps recording T2/T3 afterwards because it is free
-and because it is the evidence that would justify changing the T1 rule later.
+The active index idea uses its portfolio allocation and monthly trend exit.
+Legacy R-multiple helpers remain for querying historical idea records, but
+`visible()` hides every source outside the production allowlist.
 """
 from __future__ import annotations
 
@@ -54,17 +12,17 @@ import math
 # unknown and asking for it would be a KYC question we have no business asking,
 # so every idea is sized for ONE stated number and the UI says which — a
 # quantity with no capital attached to it is not actionable.
-CAPITAL = 100000.0
-RISK_PCT = 0.01                 # 1% of capital at risk per idea, i.e. Rs 1,000
+CAPITAL = 10000.0
+RISK_PCT = 0.01                 # 1% of the stated paper capital at risk
 # No single idea may commit more than this fraction of the account. Without it a
-# very tight stop produces a mathematically correct but absurd size: a Rs 2 stop
-# on a Rs 900 stock asks for 500 shares, Rs 450,000 of a Rs 100,000 account.
+# very tight stop produces a mathematically correct but absurd size.
 MAX_NOTIONAL_PCT = 0.25
 # How long an unresolved idea stays open before it is retired at the last price.
 # The swing lane's own hold is 8 trading days and the breakout's is 40; 10 is
 # chosen to match the horizon the entry edge was actually measured over
 # (+3.93% per 10 days for the top conviction decile) rather than either lane.
 HORIZON_DAYS = 10
+INDEX_HORIZON_DAYS = 35
 
 # How many ideas each tier sees per day. Rank 1 is the engine's best candidate,
 # so a Starter subscriber gets the SAME top idea an Elite one does — the paid
@@ -72,10 +30,11 @@ HORIZON_DAYS = 10
 # higher tier would mean deliberately publishing a worse one to everybody else.
 #: Only these may appear on the ideas page. The multi-sleeve engine is the only
 #: thing that publishes now; anything else on record came from a retired lane.
-SLEEVE_SOURCES = ("mean_reversion", "quality_momentum", "early_momentum",
-                  "index_directional", "options_overlay")
-PER_DAY = {"free": 0, "watch": 1, "paper": 3, "auto": 5}
-MAX_PER_DAY = 5
+SLEEVE_SOURCES = ("index_directional",)
+# The promoted production universe currently contains one instrument. Promise
+# one real decision, not five filler cards from retired research lanes.
+PER_DAY = {"free": 0, "watch": 1, "paper": 1, "auto": 1}
+MAX_PER_DAY = 1
 
 STATUS_OPEN = "open"
 STATUS_T1, STATUS_T2, STATUS_T3 = "t1", "t2", "t3"
@@ -151,9 +110,14 @@ def build(candidate: dict, atr_stop: float, rank: int,
     lv = levels(entry, candidate.get("atr"), atr_stop)
     if not lv:
         return {}
-    qty = size(entry, lv["stop"], capital)
+    allocation = float(candidate.get("allocation_pct") or 0.0)
+    qty = (int(capital * allocation // entry) if allocation else
+           size(entry, lv["stop"], capital))
     if qty <= 0:
         return {}
+    if candidate.get("strategy") == "index_directional":
+        lv.update(stop=round(float(candidate.get("stop") or lv["stop"]), 2),
+                  t1=0.0, t2=0.0, t3=0.0)
     return dict(symbol=candidate.get("symbol"), strategy=candidate.get("strategy"),
                 entry=round(entry, 2), atr=round(float(candidate.get("atr") or 0), 4),
                 conviction=candidate.get("meta_p") if candidate.get("meta_p") is not None
@@ -184,6 +148,8 @@ def resolve(idea: dict, high: float, low: float) -> dict:
     if lo > 0 and lo <= float(idea["stop"]):
         return dict(status=STATUS_STOPPED, hit_price=float(idea["stop"]),
                     result_pct=round((float(idea["stop"]) / entry - 1) * 100, 3))
+    if idea.get("strategy") == "index_directional":
+        return {}
     # best_target keeps climbing after the scoreboard has closed at T1
     best = idea.get("best_target") or ""
     for name, level in (("t3", idea["t3"]), ("t2", idea["t2"]), ("t1", idea["t1"])):
@@ -267,7 +233,9 @@ def track(v2, market, live, now_iso, today_s=None, horizon_days=HORIZON_DAYS):
         upd.update(excursion(idea, hi, lo))
         upd.update(resolve(idea, hi, lo))
         if today_s and idea["status"] == STATUS_OPEN and "status" not in upd:
-            if _sessions_since(idea["published_date"], today_s) >= horizon_days:
+            limit_days = (INDEX_HORIZON_DAYS if idea.get("strategy") == "index_directional"
+                          else horizon_days)
+            if _sessions_since(idea["published_date"], today_s) >= limit_days:
                 upd.update(status=STATUS_EXPIRED, hit_price=price,
                            result_pct=round((price / float(idea["entry"]) - 1) * 100, 3))
         if upd.get("status") in RESOLVED:
@@ -297,12 +265,11 @@ def _sessions_since(published_date, today_s):
     return (b - a).days
 
 
-def visible(v2, market, plan, days=30, limit=200):
+def visible(v2, market, plan, days=30, limit=200, sources=SLEEVE_SOURCES):
     """The ideas this plan may see, newest first.
 
-    The tier gate is applied in SQL against the idea's OWN stored tier, not
-    recomputed from its rank at read time — an idea a subscriber was shown must
-    not vanish because the per-tier allowance changed afterwards.
+    Both the stored tier and the current rank allowance are enforced. The rank
+    cap prevents equal plan allowances from exposing retired extra rows.
     """
     allowed = [t for t in ("watch", "paper", "auto")
                if PER_DAY.get(t, 0) <= PER_DAY.get(str(plan or "").lower(), 0)]
@@ -315,14 +282,18 @@ def visible(v2, market, plan, days=30, limit=200):
     # longer exists. They stay in the table for history and for the resolved
     # scoreboard, but a reader must not be handed a recommendation from an
     # engine that has been switched off.
-    smarks = ",".join("?" * len(SLEEVE_SOURCES))
+    sources = tuple(sources or ())
+    if not sources:
+        return []
+    smarks = ",".join("?" * len(sources))
     rows = v2.execute(
         "SELECT " + ",".join(COLUMNS) + " FROM v2_ideas WHERE market=?"
         f" AND tier IN ({marks})"
+        " AND rank<=?"
         f" AND strategy IN ({smarks})"
         " AND published_date >= date('now', ?)"
         " ORDER BY published_date DESC, rank ASC LIMIT ?",
-        (market, *allowed, *SLEEVE_SOURCES, f"-{int(days)} day",
+        (market, *allowed, allowance(plan), *sources, f"-{int(days)} day",
          int(limit))).fetchall()
     return [row_to_dict(r) for r in rows]
 
