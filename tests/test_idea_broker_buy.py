@@ -90,6 +90,12 @@ class BuyButtonTest(unittest.TestCase):
         self.assertIn("Paper execution halted", block)
         self.assertNotIn("No ideas published yet today", block)
 
+    def test_expired_session_does_not_leave_a_blank_ideas_page(self) -> None:
+        block = self.spa[self.spa.index("function loadIdeas("):]
+        block = block[:block.index("\n// ----")]
+        self.assertIn("r.s==401", block)
+        self.assertIn("Session expired. Sign in again.", block)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5071,6 +5071,8 @@ function fmtDay(s){try{var p=String(s).split('-');
 }catch(e){return s||''}}
 function loadIdeas(){
  api('/v2/api/ideas?market='+(MKT=='BOTH'?'IN':MKT)).then(function(r){
+  if(r.s==401){ME=null;show('login');hide('app');
+   document.getElementById('lerr').textContent='Session expired. Sign in again.';return;}
   if(r.s==402){document.getElementById('ideasList').className='';
    document.getElementById('ideasList').innerHTML=
     '<div class=ig-lock onclick="go(\'upgrade\')"><b>Stock ideas are a paid feature.</b> '
