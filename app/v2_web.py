@@ -226,7 +226,17 @@ def _regime_state(market):
         _regime_loading.add(market)
         import threading
         threading.Thread(target=_regime_bg, args=(market,), daemon=True).start()
-    return c[1] if c else None
+    if c:
+        return c[1]
+    # The heavy panel refresh is asynchronous. After a service restart the
+    # dashboard previously displayed UNKNOWN even though the last completed
+    # sleeve decision was persisted and the Ideas page correctly showed OFF.
+    # Use that completed-session state while the identical calculation warms.
+    try:
+        from . import v2_live
+        return (v2_live.sleeve_view(market) or {}).get("regime")
+    except Exception:
+        return None
 
 
 def _regime(market):

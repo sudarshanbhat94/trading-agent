@@ -45,6 +45,15 @@ class ReleaseIntegrityTest(unittest.TestCase):
             v2_web._regime_bg('IN')
             self.assertIsNone(v2_web._regime_cache['IN'][1])
 
+    def test_dashboard_uses_persisted_completed_regime_while_warming(self):
+        from app import v2_web
+        with patch.dict(v2_web._regime_cache, {}, clear=True), \
+             patch.object(v2_web, '_regime_loading', set()), \
+             patch('threading.Thread') as thread, \
+             patch.object(v2_live, 'sleeve_view', return_value={'regime':'OFF'}):
+            self.assertEqual(v2_web._regime_state('IN'), 'OFF')
+            thread.assert_called_once()
+
     def test_direct_production_pass_cannot_open_outside_market_hours(self):
         with patch.object(v2_live,'market_open',return_value=False), patch.object(v2_live,'_rw') as writer:
             v2_live.sleeve_pass('IN')
