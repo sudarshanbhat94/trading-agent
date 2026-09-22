@@ -2429,6 +2429,28 @@ def api_broker_disconnect(user: dict = Depends(require_session)):
     return JSONResponse(broker.disconnect(_uid(user)))
 
 
+def _decision_with_live_readiness(market, decision):
+    """Replace cached book-risk fields with the current paper-book state.
+
+    Sleeve diagnostics are persisted between the monthly review cycles so the
+    Ideas page can explain an OFF regime after a restart.  Book readiness is
+    different: a reset, exit or fresh mark can change it immediately.  Keeping
+    the cached drawdown flag made a clean Rs 10,000 epoch still look halted
+    until the next market-open sleeve cycle.
+    """
+    from .sleeves.readiness import book_readiness
+    v2 = _ro(V2_DB)
+    try:
+        readiness = book_readiness(v2, market, _live_map(market))
+    finally:
+        v2.close()
+    current = dict(decision or {})
+    current["execution_halted"] = bool(readiness["halted"])
+    current["halt_reason"] = readiness["reason"]
+    current["paper_book"] = readiness
+    return current
+
+
 @router.get("/api/ideas")
 def api_ideas(market: str = "IN", days: int = 30,
               user: dict = Depends(require_session)):
@@ -2485,7 +2507,7 @@ def api_ideas(market: str = "IN", days: int = 30,
                                 and r["status"] == _ideas.STATUS_OPEN)
     try:
         from . import v2_live as _v2_live
-        decision = _v2_live.sleeve_view(market)
+        decision = _decision_with_live_readiness(market, _v2_live.sleeve_view(market))
     except Exception:
         decision = {}
     return JSONResponse(dict(

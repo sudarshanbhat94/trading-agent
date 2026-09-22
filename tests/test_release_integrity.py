@@ -1,4 +1,5 @@
 import sqlite3
+import tempfile
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timezone, timedelta
@@ -74,6 +75,24 @@ class ReleaseIntegrityTest(unittest.TestCase):
         self.assertTrue(got['halted'])
         self.assertFalse(got['valuation_complete'])
         self.assertIn('stale',got['reason'])
+
+    def test_ideas_replaces_a_stale_cached_halt_after_book_reset(self):
+        from app import v2_web
+        with tempfile.NamedTemporaryFile(suffix='.db') as tmp:
+            c=sqlite3.connect(tmp.name)
+            v2_live.ensure_schema(c)
+            c.execute("UPDATE v2_book SET budget=10000, started_at='2026-09-22T12:00:00+00:00' WHERE market='IN'")
+            c.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) "
+                      "VALUES('IN','LIVE_2026-09-22T12:00:00',10000,10000,0,0)")
+            c.commit(); c.close()
+            stale={'execution_halted':True, 'halt_reason':'drawdown halt: -10.5% off peak'}
+            with patch.object(v2_web,'V2_DB',tmp.name), patch.object(v2_web,'_live_map',return_value={}):
+                got=v2_web._decision_with_live_readiness('IN',stale)
+        self.assertFalse(got['execution_halted'])
+        self.assertEqual(got['halt_reason'],'')
+        self.assertEqual((got['paper_book']['capital'],got['paper_book']['cash'],
+                          got['paper_book']['equity'],got['paper_book']['positions']),
+                         (10000,10000,10000,0))
 
     def test_external_daily_range_audit_discloses_missing_data_and_splits(self):
         body={'chart':{'result':[{'timestamp':[1789530300], 'indicators':{'quote':[
