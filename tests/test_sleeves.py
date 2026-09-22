@@ -607,6 +607,21 @@ def inspect_src():
 
 
 class IdeasComeFromSleevesTest(unittest.TestCase):
+    def test_zero_candidate_pass_is_visible_to_the_ideas_page(self) -> None:
+        from app import v2_live
+        from app.sleeves.engine import PassResult
+        from app.sleeves.regime import RegimeView
+        result = PassResult(RegimeView("OFF", True, .34, "OFF", "below trend"),
+                            decisions=[SleeveDecision("index_directional", "OFF", False,
+                                                     note="regime OFF blocks Nifty exposure")],
+                            halt_reason="drawdown halt")
+        v2_live._remember_sleeve_view("IN", result, "2026-09-21", "2026-09-22")
+        view = v2_live.sleeve_view("IN")
+        self.assertEqual(view["state"], "STAND ASIDE")
+        self.assertEqual(view["reason"], "regime OFF blocks Nifty exposure")
+        self.assertEqual(view["regime"], "OFF")
+        self.assertTrue(view["execution_halted"])
+
     def test_the_legacy_publisher_is_not_called(self) -> None:
         import inspect
         from app import v2_live

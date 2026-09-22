@@ -2466,7 +2466,9 @@ def api_ideas(market: str = "IN", days: int = 30,
     _uid_i = int(user.get("id") or 0)
     bst = _broker.state(_uid_i)
     can_buy = bool(bst.get("live_ready")) and plans.allows(plan, "broker_connect")
-    margin = _lt.available_margin(_uid_i) if bst.get("connected") else None
+    # A stale token may still have the historical `connected` bit. Do not hit
+    # Upstox on every Ideas-page load unless the broker is actually live-ready.
+    margin = _lt.available_margin(_uid_i) if bst.get("live_ready") else None
     sleeve = min(float(bst.get("budget") or 0), margin) if margin is not None else None
     for r in rows:
         q = live.get(r["symbol"]) or {}
@@ -2481,6 +2483,11 @@ def api_ideas(market: str = "IN", days: int = 30,
             r["buyable"] = bool(can_buy and r["strategy"] in _lt.MIRRORED_LANES
                                 and r["broker_qty"] > 0
                                 and r["status"] == _ideas.STATUS_OPEN)
+    try:
+        from . import v2_live as _v2_live
+        decision = _v2_live.sleeve_view(market)
+    except Exception:
+        decision = {}
     return JSONResponse(dict(
         ideas=rows, stats=_ideas.scoreboard(rows), plan=plan,
         allowance=_ideas.allowance(plan), max_per_day=_ideas.MAX_PER_DAY,
@@ -2488,6 +2495,8 @@ def api_ideas(market: str = "IN", days: int = 30,
         withheld_today=max(0, published_today - _ideas.allowance(plan)),
         capital=_ideas.CAPITAL, risk_pct=_ideas.RISK_PCT,
         broker_ready=can_buy, broker_sleeve=sleeve, broker_margin=margin,
+        decision=decision, source_sleeves=list(_ideas.SLEEVE_SOURCES),
+        cadence="monthly",
         horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")))
 
 
@@ -4359,6 +4368,11 @@ body.has-real .fd-books:hover{opacity:1}
 @media(max-width:520px){.ig-strip{grid-template-columns:1fr 1fr;gap:14px 10px}}
 .ig-how{margin-top:16px}
 .ig-how summary{font-size:12.5px;color:var(--mut);cursor:pointer;padding:4px 0}
+.ig-stand{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.ig-stand-tag{display:inline-block;padding:4px 8px;border-radius:999px;background:var(--warnb);
+ color:var(--warn);font-size:10px;font-weight:700;letter-spacing:.08em}
+.ig-stand-title{font-size:17px;font-weight:650;margin-top:10px;color:var(--tx)}
+.ig-stand-meta{font-size:12px;color:var(--mut);line-height:1.55;margin-top:6px}
 .ig-buy{margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
 .ig-buy .btn{width:100%;font-weight:700}
 .ig-lock{font-size:13px;color:var(--tx);background:var(--surf);border:1px dashed var(--line);
@@ -4986,12 +5000,13 @@ function ideaBuy(sym,qty){
    loadIdeas();});}
 function renderIdeas(d){
  var ccy=d.ccy||'₹',f=(ccy=='₹'?INR:USD),rows=d.ideas||[],s=d.stats||{};
- var allTrend=rows.length&&rows.every(function(r){return r.strategy=='index_directional';});
+ var allTrend=(d.source_sleeves||[]).length==1&&d.source_sleeves[0]=='index_directional';
+ var dec=d.decision||{};
  var today=(rows[0]||{}).published_date,
      todays=rows.filter(function(r){return r.published_date==today}),
      older=rows.filter(function(r){return r.published_date!=today});
  document.getElementById('ideasSub').textContent=
-  d.allowance+' a day on '+(PLANLBL[d.plan]||d.plan)
+  (d.cadence=='monthly'?'monthly review':d.allowance+' a day')+' · '+(PLANLBL[d.plan]||d.plan)
   +(d.broker_ready?' · sized for your ₹'+Math.round(d.broker_sleeve).toLocaleString('en-IN')
     +' broker balance':'');
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
@@ -5026,11 +5041,17 @@ function renderIdeas(d){
    +(d.withheld_today>1?'s':'')+' published today.</b> '
    +'Upgrade to view it →</div>';
  document.getElementById('ideasList').className='';
+ var stand='<div class=ig-stand><span class=ig-stand-tag>'
+   +esc(dec.state||'WAITING')+'</span><div class=ig-stand-title>'
+   +esc(dec.reason||'Waiting for the first completed engine cycle')+'</div>'
+   +'<div class=ig-stand-meta>Regime: '+esc(dec.regime||'—')
+   +(dec.breadth!=null?' · breadth '+esc(dec.breadth)+'%':'')
+   +(dec.asof?' · data through '+esc(dec.asof):'')
+   +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
+   +'<br>Next scheduled review: '+esc(dec.cadence||'first NSE session of each month')+'</div></div>';
  document.getElementById('ideasList').innerHTML=
   (todays.length?todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
-   '<div class=fd-text>No ideas published yet today. They go out when the market opens '
-   +'and the engine has a candidate that clears its confidence bar — some days it '
-   +'does not, and publishing one anyway would be filler.</div>')+head;
+   stand)+head;
  // The strip at the top already carries win rate, average, published and
  // reached-T1. Repeating them here was pure duplication on a phone, where the
  // two blocks are barely a screen apart. This keeps only the outcomes the strip

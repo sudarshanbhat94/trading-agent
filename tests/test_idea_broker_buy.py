@@ -50,6 +50,12 @@ class SizedForTheBrokerTest(unittest.TestCase):
     def test_an_unaffordable_idea_is_not_buyable(self) -> None:
         self.assertIn('r["broker_qty"] > 0', self.src)
 
+    def test_stale_broker_token_does_not_trigger_margin_call(self) -> None:
+        self.assertIn('available_margin(_uid_i) if bst.get("live_ready")', self.src)
+
+    def test_api_returns_the_engine_decision_behind_an_empty_list(self) -> None:
+        self.assertIn("sleeve_view(market)", self.src)
+
 
 class BuyButtonTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -76,6 +82,13 @@ class BuyButtonTest(unittest.TestCase):
     def test_the_card_shows_the_broker_size_when_there_is_one(self) -> None:
         self.assertIn("r.broker_qty!=null", self.spa)
         self.assertIn("(your broker)", self.spa)
+
+    def test_empty_ideas_show_the_real_stand_aside_reason(self) -> None:
+        block = self.spa[self.spa.index("function renderIdeas("):]
+        block = block[:block.index("\nfunction ")]
+        self.assertIn("dec.reason", block)
+        self.assertIn("Paper execution halted", block)
+        self.assertNotIn("No ideas published yet today", block)
 
 
 if __name__ == "__main__":

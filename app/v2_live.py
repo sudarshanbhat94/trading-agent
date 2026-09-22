@@ -919,6 +919,50 @@ ENTRY_WINDOW_SEC = 30 * 60               # "at the open" — the validated fill 
 REENTRY_WINDOW_SEC = 5 * 3600
 _started = False
 _status: dict = {m: "init" for m in ENABLED_MARKETS}
+_sleeve_views: dict = {}
+
+
+def _remember_sleeve_view(market, result, asof, today_s):
+    """Keep the last production decision readable by the Ideas page.
+
+    A zero-candidate pass is a real decision, not missing data. The previous
+    UI discarded it and made a deliberate regime block look like a broken
+    publisher.
+    """
+    decisions = []
+    for dec in result.decisions:
+        if dec.note.startswith("not promoted:"):
+            continue
+        rejected = [dict(symbol=s, reason=r) for s, r in dec.rejected[:5]]
+        decisions.append(dict(
+            sleeve=dec.sleeve, active=bool(dec.active), note=dec.note,
+            candidates=len(dec.candidates), rejected=rejected))
+    primary = next((d for d in decisions if d["sleeve"] == "index_directional"),
+                   decisions[0] if decisions else None)
+    count = sum(d["candidates"] for d in decisions)
+    if count:
+        reason = f"{count} candidate{'s' if count != 1 else ''} cleared every gate"
+        state = "ACTIONABLE"
+    elif primary and primary["note"]:
+        reason = primary["note"]
+        state = "STAND ASIDE"
+    elif primary and primary["rejected"]:
+        reason = primary["rejected"][0]["reason"]
+        state = "STAND ASIDE"
+    else:
+        reason = "no production candidate cleared every gate"
+        state = "STAND ASIDE"
+    _sleeve_views[market] = dict(
+        state=state, reason=reason, regime=result.regime.state,
+        regime_reason=result.regime.reason, breadth=round(result.regime.breadth * 100, 1),
+        asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
+        execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
+        cadence="first NSE session of each month", decisions=decisions)
+
+
+def sleeve_view(market="IN"):
+    """Last completed production sleeve decision; safe for read-only APIs."""
+    return dict(_sleeve_views.get(market) or {})
 
 
 def ensure_schema(v2):
@@ -4293,6 +4337,8 @@ def sleeve_pass(market):
                 require_reference_data=(market == "IN"))
         finally:
             feed_db.close()
+
+        _remember_sleeve_view(market, result, asof, today_s)
 
         # This long-duration index rule exits when its master trend gate turns
         # OFF. Exit obligations continue even if another book brake is active.
