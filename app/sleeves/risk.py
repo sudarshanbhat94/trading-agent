@@ -25,14 +25,12 @@ import math
 from dataclasses import dataclass, field
 
 from .base import Candidate
-from .config import SLEEVES
+from .config import PRODUCTION_SLEEVES, SLEEVES
 
 _LOG = logging.getLogger("openstocks.sleeves.risk")
 
 # A future edit must not be able to over-allocate the single book.
-_TOTAL_SHARE = (SLEEVES.mean_reversion.risk_share + SLEEVES.quality_momentum.risk_share
-                + SLEEVES.early_momentum.risk_share + SLEEVES.index_directional.risk_share
-                + SLEEVES.options_overlay.risk_share)
+_TOTAL_SHARE = sum(getattr(SLEEVES, name).risk_share for name in PRODUCTION_SLEEVES)
 assert _TOTAL_SHARE <= 1.0 + 1e-9, f"sleeve risk shares sum to {_TOTAL_SHARE} (>1.0)"
 
 

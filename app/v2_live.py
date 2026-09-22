@@ -4338,6 +4338,19 @@ def sleeve_pass(market):
             "SELECT entry_date FROM v2_positions WHERE market=? AND strategy='quality_momentum' "
             "UNION ALL SELECT entry_date FROM v2_trades WHERE market=? AND strategy='quality_momentum' "
             "AND julianday(closed_at)>=julianday(?))", (market, market, epoch_ts)).fetchone()[0]
+        # One immediate evaluation after a true fresh start.  Without this, a
+        # reset on the second session of a month could remain empty for four
+        # weeks even when the independently tested trend gate was already ON.
+        # Any current/closed index position in this epoch consumes the grant;
+        # it is never a daily re-entry loophole.
+        index_seen = any((slv or strat) == "index_directional"
+                         for _sym, strat, _sh, _ep, slv in positions)
+        if not index_seen:
+            index_seen = bool(v2.execute(
+                "SELECT 1 FROM v2_trades WHERE market=? "
+                "AND COALESCE(sleeve,strategy)='index_directional' "
+                "AND julianday(closed_at)>=julianday(?) LIMIT 1",
+                (market, epoch_ts)).fetchone())
         feed_db = _ro(MAIN_DB)
         try:
             from .sleeves.feeds import delivery_reader
@@ -4355,7 +4368,8 @@ def sleeve_pass(market):
                                           if last_rebalance else None),
                 require_live_quotes=True, routable_instruments=("EQ",),
                 eligible_symbols=eligible, quality_scores=quality_scores,
-                require_reference_data=(market == "IN"))
+                require_reference_data=(market == "IN"),
+                bootstrap_entry=not index_seen)
         finally:
             feed_db.close()
 

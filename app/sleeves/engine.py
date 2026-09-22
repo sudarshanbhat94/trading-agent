@@ -20,7 +20,7 @@ from typing import Callable
 import pandas as pd
 
 from .base import Candidate, SleeveDecision
-from .config import SLEEVES
+from .config import PRODUCTION_SLEEVES, SLEEVES
 from .early_momentum import EarlyMomentumSleeve
 from .index_directional import IndexDirectionalSleeve
 from .mean_reversion import MeanReversionSleeve
@@ -39,7 +39,7 @@ PRIORITY = ["index_directional", "mean_reversion", "quality_momentum",
 # PAPER proposals. Two holdout trades are not live proof; broker mirroring for
 # this sleeve remains disabled. The other modules stay available for research
 # and historic rows but cannot leak a production proposal.
-ACTIVE_SLEEVES = ("index_directional",)
+ACTIVE_SLEEVES = PRODUCTION_SLEEVES
 
 
 @dataclass
@@ -67,6 +67,10 @@ class SleeveContext:
     quality_scores: dict | None = None
     eligible_symbols: set | None = None
     require_reference_data: bool = False
+    # A newly reset book must not sit idle until the next calendar month when
+    # the already-completed trend signal is ON.  This grants one immediate
+    # evaluation; after the book has traded, normal monthly cadence resumes.
+    bootstrap_entry: bool = False
 
 
 @dataclass

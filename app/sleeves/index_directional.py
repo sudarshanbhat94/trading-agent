@@ -10,7 +10,10 @@ from __future__ import annotations
 from .base import Candidate, Sleeve
 
 SYMBOL = "NIFTYBEES"
-ALLOCATION_PCT = 0.35
+# Frozen external replay, Rs 10,000 and full delivery costs at 20 bps slip:
+# development +28.45% / -9.36% DD; holdout +4.86% / -6.87% DD.  Larger
+# allocations breached the book's 10% development drawdown limit.
+ALLOCATION_PCT = 0.50
 
 
 def monthly_rebalance(asof, trade_date) -> bool:
@@ -28,6 +31,7 @@ class IndexDirectionalSleeve(Sleeve):
     def propose(self, ctx):
         regime = ctx.regime.state
         dec = self._decision(regime)
+        bootstrap = bool(getattr(ctx, "bootstrap_entry", False))
         bars = ctx.tails.get(SYMBOL)
         quote = ctx.live.get(SYMBOL) or {}
         if bars is None or ctx.asof not in bars.index or len(bars.loc[:ctx.asof]) < 200:
@@ -43,13 +47,14 @@ class IndexDirectionalSleeve(Sleeve):
             live_price=round(entry, 2), sma200=round(sma200, 2),
             distance_pct=round((reference / sma200 - 1) * 100, 2) if sma200 else None,
             trigger="completed close above 200-session mean",
-            review_today=monthly_rebalance(ctx.asof, ctx.trade_date),
+            review_today=(monthly_rebalance(ctx.asof, ctx.trade_date) or bootstrap),
+            bootstrap_entry=bootstrap,
             allocation_pct=ALLOCATION_PCT)
         if not self.may_run(regime):
             dec.active = False
             dec.note = f"regime {regime} blocks Nifty exposure"
             return dec
-        if not monthly_rebalance(ctx.asof, ctx.trade_date):
+        if not monthly_rebalance(ctx.asof, ctx.trade_date) and not bootstrap:
             dec.active = False
             dec.note = "monthly rule; next rebalance has not arrived"
             return dec
@@ -63,12 +68,13 @@ class IndexDirectionalSleeve(Sleeve):
             dec.reject(SYMBOL, "trend invalidated before entry")
             return dec
         score = min(1.0, .60 + max(0.0, reference / sma200 - 1) * 4)
-        dec.note = "NIFTYBEES only; BANKBEES failed the independent replay"
+        dec.note = ("fresh-book trend entry" if bootstrap else "monthly trend entry")
         dec.candidates = [Candidate(
             symbol=SYMBOL, sleeve=self.name, score=score, entry=entry,
             stop=stop, target=0.0, trail_pct=0.0, max_hold_days=0,
             instrument="EQ", allocation_pct=ALLOCATION_PCT,
             why=dict(setup="nifty_monthly_200d_trend",
                 completed_close=reference, sma200=sma200, regime=regime,
+                bootstrap_entry=bootstrap,
                 research_status="positive candidate; forward paper proof required"))]
         return dec

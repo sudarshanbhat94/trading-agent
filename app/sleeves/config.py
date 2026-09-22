@@ -10,6 +10,13 @@ import os
 from dataclasses import dataclass
 
 
+# Hard production boundary. Research sleeves retain their own sizing defaults
+# for isolated replay and tests, but only these shares can consume the live
+# paper book. Keeping the allowlist beside allocation prevents inactive
+# research modules from making a promoted sleeve look over-allocated.
+PRODUCTION_SLEEVES = ("index_directional",)
+
+
 def _bool(key: str, default: bool) -> bool:
     return os.getenv(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
@@ -90,9 +97,9 @@ class SleeveSettings:
             note="tactical; ignition detector, tighter stops and faster exits")
         self.index_directional = SleeveConfig(
             enabled=_bool("SLEEVE_INDEX_DIRECTIONAL", True),
-            risk_share=_float("SHARE_INDEX_DIRECTIONAL", 0.35),
+            risk_share=_float("SHARE_INDEX_DIRECTIONAL", 0.50),
             max_positions=1,
-            note="NIFTYBEES trend; the only independently positive candidate")
+            note="NIFTYBEES trend; 50% passed development and holdout after costs")
         self.options_overlay = SleeveConfig(
             enabled=_bool("SLEEVE_OPTIONS_OVERLAY", True),
             risk_share=_float("SHARE_OPTIONS_OVERLAY", 0.00),

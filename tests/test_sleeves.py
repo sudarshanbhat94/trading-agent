@@ -59,7 +59,7 @@ class CapitalIsTenThousandTest(unittest.TestCase):
         self.assertEqual(books.DEFAULT_BUDGET["IN"], 10_000.0)
 
     def test_shares_cannot_over_allocate_the_book(self) -> None:
-        total = sum(getattr(SLEEVES, n).risk_share for n in PRIORITY)
+        total = sum(getattr(SLEEVES, n).risk_share for n in ACTIVE_SLEEVES)
         self.assertLessEqual(total, 1.0 + 1e-9)
 
     def test_slots_fit_inside_the_book(self) -> None:
@@ -123,7 +123,29 @@ class EvidenceBackedIndexSleeveTest(unittest.TestCase):
         decision = IndexDirectionalSleeve().propose(ctx)
         self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
         self.assertEqual(decision.candidates[0].instrument, "EQ")
-        self.assertEqual(decision.candidates[0].allocation_pct, .35)
+        self.assertEqual(decision.candidates[0].allocation_pct, .50)
+
+    def test_fresh_book_can_enter_midmonth_once(self) -> None:
+        bars = _panel(n_days=260, drift=.001, vol=0, seed=17)
+        asof = bars.index[-2]
+        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON"),
+                              tails={"NIFTYBEES": bars}, asof=asof,
+                              trade_date=bars.index[-1], bootstrap_entry=True,
+                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
+        decision = IndexDirectionalSleeve().propose(ctx)
+        self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
+        self.assertTrue(decision.diagnostics["bootstrap_entry"])
+
+    def test_nonfresh_book_still_waits_for_monthly_review(self) -> None:
+        bars = _panel(n_days=260, drift=.001, vol=0, seed=18)
+        asof = bars.index[-2]
+        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON"),
+                              tails={"NIFTYBEES": bars}, asof=asof,
+                              trade_date=bars.index[-1], bootstrap_entry=False,
+                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
+        decision = IndexDirectionalSleeve().propose(ctx)
+        self.assertEqual(decision.candidates, [])
+        self.assertIn("monthly", decision.note)
 
     def test_off_regime_still_explains_the_live_index_gate(self) -> None:
         bars = _panel(n_days=260, drift=-.0002, vol=0, seed=8)
