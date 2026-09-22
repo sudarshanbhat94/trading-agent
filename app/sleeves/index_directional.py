@@ -28,6 +28,23 @@ class IndexDirectionalSleeve(Sleeve):
     def propose(self, ctx):
         regime = ctx.regime.state
         dec = self._decision(regime)
+        bars = ctx.tails.get(SYMBOL)
+        quote = ctx.live.get(SYMBOL) or {}
+        if bars is None or ctx.asof not in bars.index or len(bars.loc[:ctx.asof]) < 200:
+            dec.active = False
+            dec.note = "200 completed NIFTYBEES sessions unavailable"
+            return dec
+        close = bars["close"].loc[:ctx.asof]
+        reference = float(close.iloc[-1])
+        sma200 = float(close.tail(200).mean())
+        entry = float(quote.get("price") or reference)
+        dec.diagnostics = dict(
+            symbol=SYMBOL, completed_close=round(reference, 2),
+            live_price=round(entry, 2), sma200=round(sma200, 2),
+            distance_pct=round((reference / sma200 - 1) * 100, 2) if sma200 else None,
+            trigger="completed close above 200-session mean",
+            review_today=monthly_rebalance(ctx.asof, ctx.trade_date),
+            allocation_pct=ALLOCATION_PCT)
         if not self.may_run(regime):
             dec.active = False
             dec.note = f"regime {regime} blocks Nifty exposure"
@@ -36,15 +53,6 @@ class IndexDirectionalSleeve(Sleeve):
             dec.active = False
             dec.note = "monthly rule; next rebalance has not arrived"
             return dec
-        bars = ctx.tails.get(SYMBOL)
-        quote = ctx.live.get(SYMBOL) or {}
-        if bars is None or ctx.asof not in bars.index or len(bars.loc[:ctx.asof]) < 200:
-            dec.reject(SYMBOL, "200 completed sessions unavailable")
-            return dec
-        close = bars["close"].loc[:ctx.asof]
-        reference = float(close.iloc[-1])
-        sma200 = float(close.tail(200).mean())
-        entry = float(quote.get("price") or reference)
         if entry <= sma200:
             dec.reject(SYMBOL, "not above the 200-session trend")
             return dec

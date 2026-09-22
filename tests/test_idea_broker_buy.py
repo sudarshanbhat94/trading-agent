@@ -89,6 +89,9 @@ class BuyButtonTest(unittest.TestCase):
         self.assertIn("dec.reason", block)
         self.assertIn("Paper execution halted", block)
         self.assertNotIn("No ideas published yet today", block)
+        self.assertIn("NIFTYBEES close", block)
+        self.assertIn("200-session gate", block)
+        self.assertIn("ideasTrack", block)
 
     def test_expired_session_does_not_leave_a_blank_ideas_page(self) -> None:
         block = self.spa[self.spa.index("function loadIdeas("):]

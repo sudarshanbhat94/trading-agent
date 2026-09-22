@@ -125,6 +125,18 @@ class EvidenceBackedIndexSleeveTest(unittest.TestCase):
         self.assertEqual(decision.candidates[0].instrument, "EQ")
         self.assertEqual(decision.candidates[0].allocation_pct, .35)
 
+    def test_off_regime_still_explains_the_live_index_gate(self) -> None:
+        bars = _panel(n_days=260, drift=-.0002, vol=0, seed=8)
+        ctx = SimpleNamespace(regime=SimpleNamespace(state="OFF"),
+                              tails={"NIFTYBEES": bars}, asof=bars.index[-1],
+                              trade_date=bars.index[-1] + pd.offsets.Day(),
+                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
+        decision = IndexDirectionalSleeve().propose(ctx)
+        self.assertEqual(decision.candidates, [])
+        self.assertEqual(decision.note, "regime OFF blocks Nifty exposure")
+        self.assertIn("sma200", decision.diagnostics)
+        self.assertIn("distance_pct", decision.diagnostics)
+
 
 class RiskManagerTest(unittest.TestCase):
     def setUp(self) -> None:

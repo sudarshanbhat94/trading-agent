@@ -938,7 +938,8 @@ def _remember_sleeve_view(market, result, asof, today_s):
         rejected = [dict(symbol=s, reason=r) for s, r in dec.rejected[:5]]
         decisions.append(dict(
             sleeve=dec.sleeve, active=bool(dec.active), note=dec.note,
-            candidates=len(dec.candidates), rejected=rejected))
+            candidates=len(dec.candidates), rejected=rejected,
+            diagnostics=dict(dec.diagnostics or {})))
     primary = next((d for d in decisions if d["sleeve"] == "index_directional"),
                    decisions[0] if decisions else None)
     count = sum(d["candidates"] for d in decisions)
@@ -959,7 +960,8 @@ def _remember_sleeve_view(market, result, asof, today_s):
         regime_reason=result.regime.reason, breadth=round(result.regime.breadth * 100, 1),
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
-        cadence="first NSE session of each month", decisions=decisions)
+        cadence="first NSE session of each month", decisions=decisions,
+        diagnostics=(primary.get("diagnostics", {}) if primary else {}))
     # Survive service restarts and closed-market deployments. This is display
     # state only; failure to persist it must never affect the trading pass.
     try:

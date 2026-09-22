@@ -73,6 +73,7 @@ class SleeveDecision:
     candidates: list[Candidate] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)  # (symbol, reason)
     note: str = ""
+    diagnostics: dict = field(default_factory=dict)
 
     def reject(self, symbol: str, reason: str) -> None:
         self.rejected.append((symbol, reason))

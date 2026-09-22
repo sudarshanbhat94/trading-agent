@@ -4554,11 +4554,11 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   </div></div>
 
   <div id=ideas class=tab>
-   <div class=sec><span>today's ideas</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
+   <div class=sec><span>market decision</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
    <div id=ideasStrip></div>
    <div id=ideasList class=skel style="min-height:120px"></div>
    <div id=ideasHead></div>
-   <div class=sec style="margin-top:22px"><span>track record</span><span class=mut style="font-size:12px;font-weight:400">every idea, winners and losers</span></div>
+   <div id=ideasTrack class=sec style="margin-top:22px"><span>track record</span><span class=mut style="font-size:12px;font-weight:400">every idea, winners and losers</span></div>
    <div id=ideasStats></div>
    <div id=ideasHist></div>
   </div>
@@ -5006,14 +5006,20 @@ function renderIdeas(d){
      todays=rows.filter(function(r){return r.published_date==today}),
      older=rows.filter(function(r){return r.published_date!=today});
  document.getElementById('ideasSub').textContent=
-  (d.cadence=='monthly'?'monthly review':d.allowance+' a day')+' · '+(PLANLBL[d.plan]||d.plan)
+  (d.cadence=='monthly'?'live gate · monthly trade review':d.allowance+' a day')+' · '+(PLANLBL[d.plan]||d.plan)
   +(d.broker_ready?' · sized for your ₹'+Math.round(d.broker_sleeve).toLocaleString('en-IN')
     +' broker balance':'');
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
- var st=d.stats||{};
- document.getElementById('ideasStrip').innerHTML=
+ var st=d.stats||{},dx=dec.diagnostics||{};
+ document.getElementById('ideasStrip').innerHTML=!rows.length?
+  '<div class=ig-strip>'
+  +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'
+  +'<div><div class=ig-sn>'+(dec.breadth==null?'—':esc(dec.breadth)+'%')+'</div><div class=ig-sl2>market breadth</div></div>'
+  +'<div><div class=ig-sn>'+(dx.completed_close==null?'—':ccy+f.format(dx.completed_close))+'</div><div class=ig-sl2>NIFTYBEES close</div></div>'
+  +'<div><div class=ig-sn>'+(dx.sma200==null?'—':ccy+f.format(dx.sma200))+'</div><div class=ig-sl2>200-session gate</div></div>'
+  +'</div>':
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+(st.win_pct==null?'—':st.win_pct+'%')+'</div>'
    +'<div class=ig-sl2>win rate'+(st.closed?' · of '+st.closed:'')+'</div></div>'
@@ -5047,6 +5053,8 @@ function renderIdeas(d){
    +'<div class=ig-stand-meta>Regime: '+esc(dec.regime||'—')
    +(dec.breadth!=null?' · breadth '+esc(dec.breadth)+'%':'')
    +(dec.asof?' · data through '+esc(dec.asof):'')
+   +(dx.distance_pct!=null?'<br>NIFTYBEES is '+Math.abs(dx.distance_pct)+'% '
+     +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
    +'<br>Next scheduled review: '+esc(dec.cadence||'first NSE session of each month')+'</div></div>';
  document.getElementById('ideasList').innerHTML=
@@ -5065,6 +5073,8 @@ function renderIdeas(d){
   +'</div>');
  document.getElementById('ideasHist').innerHTML=
   older.length?older.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):'';
+ document.getElementById('ideasTrack').style.display=rows.length?'':'none';
+ document.getElementById('ideasStats').style.display=rows.length?'':'none';
 }
 function fmtDay(s){try{var p=String(s).split('-');
  return p[2]+' '+['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+p[1]-1];
