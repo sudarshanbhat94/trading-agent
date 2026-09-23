@@ -4961,21 +4961,22 @@ var IDEAS=null;
 // renders "undefined" rather than throwing.
 var LANE={swing_meanrev:'dip buy',mom_breakout:'52-week breakout',
  gap_momentum:'gap',volume_surge:'volume surge',intraday_news:'news momentum',
- btst:'overnight',manual:'manual'};
+ btst:'overnight',manual:'manual',quality_momentum:'large-cap quality'};
 var PLANLBL={free:'Free',watch:'Starter',paper:'Pro',auto:'Elite'};
 function ideaStatus(s){return {open:'live',t1:'T1 hit',t2:'T2 hit',t3:'T3 hit',
- stopped:'stopped',expired:'expired'}[s]||s;}
+ stopped:'stopped',expired:'expired',closed:'closed'}[s]||s;}
 function ideaCls(r){if(r.status=='stopped')return 'dn';if(r.status=='open')return '';
  return (r.result_pct||0)>=0?'up':'dn';}
 function ideaCard(r,ccy,d){
  var f=(ccy=='₹'?INR:USD),live=r.live!=null?r.live:r.last_price,
      mv=(r.status=='open'&&r.open_pct!=null)?r.open_pct:r.result_pct,
-     up=(mv||0)>=0,isTrend=r.strategy=='index_directional';
+     up=(mv||0)>=0,isTrend=r.strategy=='index_directional',
+     isFactor=r.strategy=='quality_momentum',isManaged=isTrend||isFactor;
  // WHERE IS IT NOW, between the stop and T1. The single most useful thing on an
  // advisory card and the one number a price alone cannot give you: -100% is the
  // stop, +100% is the first target.
  var pos=null;
- if(!isTrend&&live!=null&&r.entry){
+ if(!isManaged&&live!=null&&r.entry){
   var span=(live>=r.entry)?(r.t1-r.entry):(r.entry-r.stop);
   if(span>0)pos=Math.max(-100,Math.min(100,(live-r.entry)/span*100));
  }
@@ -4994,10 +4995,12 @@ function ideaCard(r,ccy,d){
  function leg(lbl,v,cls){return '<div class=ig-leg><div class=ig-ll>'+lbl+'</div>'
    +'<div class="ig-lv '+(cls||'')+'">'+ccy+f.format(v)+'</div></div>';}
  // horizon: the engine's own hold clock, said in words
- var horizon=isTrend?'monthly trend review':((r.strategy=='volume_surge'||r.strategy=='intraday_news')?'intraday'
-   :(r.strategy=='btst'?'overnight':'positional · up to 10 days'));
+ var horizon=isTrend?'monthly trend review':(isFactor?'managed · up to 45 sessions':((r.strategy=='volume_surge'||r.strategy=='intraday_news')?'intraday'
+   :(r.strategy=='btst'?'overnight':'positional · up to 10 days')));
  var ladder=isTrend?'<div class=ig-ladder>'+leg('entry',r.entry)+leg('disaster stop',r.stop,'dn')
    +'<div class=ig-leg style="grid-column:span 3"><div class=ig-ll>exit rule</div><div class=ig-lv>monthly close below 200-day trend</div></div></div>'
+   :isFactor?'<div class=ig-ladder>'+leg('entry',r.entry)+leg('ATR stop',r.stop,'dn')
+    +'<div class=ig-leg style="grid-column:span 3"><div class=ig-ll>exit rule</div><div class=ig-lv>12% trail or 45-session time stop</div></div></div>'
    :'<div class=ig-ladder>'+leg('entry',r.entry)+leg('stop',r.stop,'dn')
    +leg('T1',r.t1,tcls('t1'))+leg('T2',r.t2,tcls('t2'))+leg('T3',r.t3,tcls('t3'))+'</div>';
  return '<div class=ig-card>'
@@ -5032,8 +5035,9 @@ function ideaBuy(sym,qty){
    loadIdeas();});}
 function renderIdeas(d){
  var ccy=d.ccy||'₹',f=(ccy=='₹'?INR:USD),rows=d.ideas||[],s=d.stats||{};
- var allTrend=(d.source_sleeves||[]).length==1&&d.source_sleeves[0]=='index_directional';
+ var allManaged=(d.source_sleeves||[]).every(function(s){return s=='index_directional'||s=='quality_momentum';});
  var dec=d.decision||{};
+ var stockDec=(dec.decisions||[]).find(function(x){return x.sleeve=='quality_momentum';})||{};
  var today=(rows[0]||{}).published_date,
      todays=rows.filter(function(r){return r.published_date==today}),
      older=rows.filter(function(r){return r.published_date!=today});
@@ -5060,17 +5064,19 @@ function renderIdeas(d){
    +'<div class=ig-sl2>avg per idea</div></div>'
   +'<div><div class=ig-sn>'+(st.published||0)+'</div>'
    +'<div class=ig-sl2>published</div></div>'
-  +'<div><div class=ig-sn>'+(allTrend?(st.open||0):(st.hit_t1||0))+'</div>'
-   +'<div class=ig-sl2>'+(allTrend?'open':'reached T1')+'</div></div>'
+  +'<div><div class=ig-sn>'+(allManaged?(st.open||0):(st.hit_t1||0))+'</div>'
+   +'<div class=ig-sl2>'+(allManaged?'open':'reached T1')+'</div></div>'
   +'</div>'
   +(st.closed<20?'<div class=ig-strip-warn>'+(st.closed||0)+' resolved idea'
     +((st.closed||0)==1?'':'s')+' \u2014 too few to be a track record. Shown so you '
     +'can watch it build, not as evidence.</div>':'');
  fdSet('ideasHead','fd-card',
   '<details class=ig-how><summary>How this is calculated</summary>'
-  +(allTrend?'<div class=fd-text style="margin-top:0">NIFTYBEES may use up to <b>35%</b> of the '
-   +ccy+f.format(d.capital)+' paper book. It is reviewed on the first market session of each month, '
-   +'enters only above the completed 200-session trend, and exits when that trend turns OFF. There is no fixed profit target.</div>'
+  +(allManaged?'<div class=fd-text style="margin-top:0">Funded entries use the '
+   +ccy+f.format(d.capital)+' shared paper book. NIFTYBEES follows the completed 200-session trend; '
+   +'large-cap stocks require verified NSE factor membership and a strong ON regime. '
+   +'Both are reviewed monthly and sized by one risk manager. There is no fixed profit target. '
+   +'Real-broker mirroring is disabled for these ideas.</div>'
    :'<div class=fd-text style="margin-top:0">Historical ideas retain their published stop and target levels.</div>')
   +'</details>');
  var head='';
@@ -5087,6 +5093,7 @@ function renderIdeas(d){
    +(dec.asof?' · data through '+esc(dec.asof):'')
    +(dx.distance_pct!=null?'<br>NIFTYBEES is '+Math.abs(dx.distance_pct)+'% '
      +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
+   +(stockDec.note?'<br>Large-cap stocks: '+esc(stockDec.note):'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
    +'<br>Next scheduled review: '+esc(dec.cadence||'first NSE session of each month')+'</div></div>';
  document.getElementById('ideasList').innerHTML=
@@ -5098,10 +5105,9 @@ function renderIdeas(d){
  // has no room for.
  fdSet('ideasStats','fd-card',
   '<div class=fd-obook>'
-  +'<div><div class=fd-ol>reached T2</div><div class=fd-ov>'+s.hit_t2+'</div></div>'
-  +'<div><div class=fd-ol>reached T3</div><div class=fd-ov>'+s.hit_t3+'</div></div>'
-  +'<div><div class=fd-ol>stopped</div><div class="fd-ov '+(s.stopped?'dn':'')+'">'
-   +s.stopped+'</div>'+(s.expired?'<div class=fd-osub>'+s.expired+' expired</div>':'')+'</div>'
+  +'<div><div class=fd-ol>closed</div><div class=fd-ov>'+s.closed+'</div></div>'
+  +'<div><div class=fd-ol>profitable</div><div class=fd-ov>'+s.wins+'</div></div>'
+  +'<div><div class=fd-ol>loss-making</div><div class="fd-ov '+(s.closed-s.wins?'dn':'')+'">'+(s.closed-s.wins)+'</div></div>'
   +'</div>');
  document.getElementById('ideasHist').innerHTML=
   older.length?older.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):'';

@@ -1,6 +1,6 @@
-"""Immutable ideas published from the production sleeve decision.
+"""Immutable ideas published from funded production paper entries.
 
-The active index idea uses its portfolio allocation and monthly trend exit.
+The index and factor-stock ideas use their actual funded paper quantities.
 Legacy R-multiple helpers remain for querying historical idea records, but
 `visible()` hides every source outside the production allowlist.
 """
@@ -22,7 +22,6 @@ MAX_NOTIONAL_PCT = 0.25
 # chosen to match the horizon the entry edge was actually measured over
 # (+3.93% per 10 days for the top conviction decile) rather than either lane.
 HORIZON_DAYS = 10
-INDEX_HORIZON_DAYS = 35
 
 # How many ideas each tier sees per day. Rank 1 is the engine's best candidate,
 # so a Starter subscriber gets the SAME top idea an Elite one does — the paid
@@ -30,17 +29,16 @@ INDEX_HORIZON_DAYS = 35
 # higher tier would mean deliberately publishing a worse one to everybody else.
 #: Only these may appear on the ideas page. The multi-sleeve engine is the only
 #: thing that publishes now; anything else on record came from a retired lane.
-SLEEVE_SOURCES = ("index_directional",)
-# The promoted production universe currently contains one instrument. Promise
-# one real decision, not five filler cards from retired research lanes.
-PER_DAY = {"free": 0, "watch": 1, "paper": 1, "auto": 1}
-MAX_PER_DAY = 1
+SLEEVE_SOURCES = ("index_directional", "quality_momentum")
+PER_DAY = {"free": 0, "watch": 1, "paper": 1, "auto": 2}
+MAX_PER_DAY = 2
 
 STATUS_OPEN = "open"
 STATUS_T1, STATUS_T2, STATUS_T3 = "t1", "t2", "t3"
 STATUS_STOPPED = "stopped"
 STATUS_EXPIRED = "expired"
-RESOLVED = (STATUS_T1, STATUS_T2, STATUS_T3, STATUS_STOPPED, STATUS_EXPIRED)
+STATUS_CLOSED = "closed"
+RESOLVED = (STATUS_T1, STATUS_T2, STATUS_T3, STATUS_STOPPED, STATUS_EXPIRED, STATUS_CLOSED)
 
 
 def levels(entry: float, atr: float, atr_stop: float) -> dict:
@@ -111,11 +109,12 @@ def build(candidate: dict, atr_stop: float, rank: int,
     if not lv:
         return {}
     allocation = float(candidate.get("allocation_pct") or 0.0)
-    qty = (int(capital * allocation // entry) if allocation else
-           size(entry, lv["stop"], capital))
+    qty = (int(candidate["shares"]) if candidate.get("shares") is not None
+           else (int(capital * allocation // entry) if allocation else
+                 size(entry, lv["stop"], capital)))
     if qty <= 0:
         return {}
-    if candidate.get("strategy") == "index_directional":
+    if candidate.get("strategy") in SLEEVE_SOURCES:
         lv.update(stop=round(float(candidate.get("stop") or lv["stop"]), 2),
                   t1=0.0, t2=0.0, t3=0.0)
     return dict(symbol=candidate.get("symbol"), strategy=candidate.get("strategy"),
@@ -148,7 +147,7 @@ def resolve(idea: dict, high: float, low: float) -> dict:
     if lo > 0 and lo <= float(idea["stop"]):
         return dict(status=STATUS_STOPPED, hit_price=float(idea["stop"]),
                     result_pct=round((float(idea["stop"]) / entry - 1) * 100, 3))
-    if idea.get("strategy") == "index_directional":
+    if idea.get("strategy") in SLEEVE_SOURCES:
         return {}
     # best_target keeps climbing after the scoreboard has closed at T1
     best = idea.get("best_target") or ""
@@ -221,24 +220,33 @@ def track(v2, market, live, now_iso, today_s=None, horizon_days=HORIZON_DAYS):
     changed = []
     for row in rows:
         idea = row_to_dict(row)
+        trade = (v2.execute(
+            "SELECT exit_price,return_pct,closed_at FROM v2_trades WHERE market=?"
+            " AND strategy=? AND symbol=? AND entry_date=?"
+            " ORDER BY id DESC LIMIT 1",
+            (market, idea["strategy"], idea["symbol"], idea["published_date"])).fetchone()
+            if idea["strategy"] in SLEEVE_SOURCES else None)
         q = (live or {}).get(idea["symbol"])
-        if not q:
+        if not q and not trade:
             continue
-        price = float(q.get("price") or 0)
+        price = float(trade[0] if trade else (q or {}).get("price") or 0)
         if price <= 0:
             continue
-        hi = float(q.get("high") or 0) or price
-        lo = float(q.get("low") or 0) or price
+        hi = (price if trade else float((q or {}).get("high") or 0) or price)
+        lo = (price if trade else float((q or {}).get("low") or 0) or price)
         upd = dict(last_price=price, last_at=now_iso)
         upd.update(excursion(idea, hi, lo))
-        upd.update(resolve(idea, hi, lo))
-        if today_s and idea["status"] == STATUS_OPEN and "status" not in upd:
-            limit_days = (INDEX_HORIZON_DAYS if idea.get("strategy") == "index_directional"
-                          else horizon_days)
-            if _sessions_since(idea["published_date"], today_s) >= limit_days:
-                upd.update(status=STATUS_EXPIRED, hit_price=price,
-                           result_pct=round((price / float(idea["entry"]) - 1) * 100, 3))
-        if upd.get("status") in RESOLVED:
+        if trade:
+            upd.update(status=STATUS_CLOSED, hit_price=float(trade[0]),
+                       result_pct=round(float(trade[1]), 3),
+                       closed_at=trade[2] or now_iso)
+        elif idea["strategy"] not in SLEEVE_SOURCES:
+            upd.update(resolve(idea, hi, lo))
+            if today_s and idea["status"] == STATUS_OPEN and "status" not in upd:
+                if _sessions_since(idea["published_date"], today_s) >= horizon_days:
+                    upd.update(status=STATUS_EXPIRED, hit_price=price,
+                               result_pct=round((price / float(idea["entry"]) - 1) * 100, 3))
+        if upd.get("status") in RESOLVED and "closed_at" not in upd:
             upd["closed_at"] = now_iso
         cols = ",".join(f"{k}=?" for k in upd)
         v2.execute(f"UPDATE v2_ideas SET {cols} WHERE id=?",

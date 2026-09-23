@@ -754,7 +754,7 @@ class IdeasComeFromSleevesTest(unittest.TestCase):
         from app import ideas
         src = inspect.getsource(ideas.visible)
         self.assertIn("strategy IN ({smarks})", src)
-        self.assertEqual(ideas.SLEEVE_SOURCES, ("index_directional",))
+        self.assertEqual(ideas.SLEEVE_SOURCES, ("index_directional", "quality_momentum"))
 
     def test_no_legacy_lane_is_a_permitted_idea_source(self) -> None:
         from app import ideas, v2_live

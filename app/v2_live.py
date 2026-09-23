@@ -4061,8 +4061,8 @@ def _market_open_watchdog(market):
 SLEEVE_INTERVAL = 300          # heavy: full panel + universe screen
 
 
-def _publish_sleeve_ideas(v2, market, result, today_s, live):
-    """Publish today's ideas from the multi-sleeve engine's candidates.
+def _publish_sleeve_ideas(v2, market, result, today_s, live, funded=None):
+    """Publish only entries actually written to the shared paper book.
 
     Replaces the legacy path, which ran its OWN `signals_for_date` sweep at
     IDEAS_MIN_CONVICTION (0.15) against swing_meanrev's ATR plan — a retired
@@ -4070,9 +4070,8 @@ def _publish_sleeve_ideas(v2, market, result, today_s, live):
     Ideas and the book must describe the same view of the market or one of them
     is lying.
 
-    Candidates carry their sleeve, entry, stop and target already, so the idea's
-    levels are exactly the plan the sleeve proposed rather than a second
-    computation that can drift from it.
+    The funded allocation carries the book's share count. Publishing an
+    unfunded proposal as actionable was why Ideas could disagree with the book.
     """
     from . import ideas as _ideas
     now_iso = datetime.now(IST).isoformat()
@@ -4080,19 +4079,18 @@ def _publish_sleeve_ideas(v2, market, result, today_s, live):
     if not market_open(market):
         return 0
     rows = []
-    for dec in result.decisions:
-        for c in dec.candidates:
-            if c.instrument != "EQ":
-                continue          # only equity ideas are actionable by a reader
-            atr = max((c.entry - c.stop) / 2.0, 1e-9)   # implied by the plan
-            rows.append(dict(symbol=c.symbol, strategy=c.sleeve,
-                             score=float(c.score), conviction=float(c.score),
-                             atr=atr, price=float(c.entry),
-                             stop=float(c.stop), target=float(c.target or 0.0),
-                             allocation_pct=float(c.allocation_pct or 0.0),
-                             meta_p=None, sleeve=c.sleeve,
-                             regime=result.regime.state))
-    rows.sort(key=lambda r: -r["score"])
+    for alloc in (result.allocations if funded is None else funded):
+        c = alloc.candidate
+        if c.instrument != "EQ":
+            continue
+        atr = max((c.entry - c.stop) / 2.0, 1e-9)
+        rows.append(dict(symbol=c.symbol, strategy=c.sleeve,
+                         score=float(c.score), conviction=float(c.score),
+                         atr=atr, price=float(c.entry), shares=int(alloc.shares),
+                         stop=float(c.stop), target=float(c.target or 0.0),
+                         allocation_pct=float(c.allocation_pct or 0.0),
+                         meta_p=None, sleeve=c.sleeve,
+                         regime=result.regime.state))
     n = _ideas.publish(v2, market, rows, lambda _s: 2.0, today_s, now_iso)
     have = v2.execute("SELECT COUNT(*) FROM v2_ideas WHERE market=? AND published_date=?",
                       (market, today_s)).fetchone()[0]
@@ -4399,22 +4397,16 @@ def sleeve_pass(market):
                     held.discard(sym)
             v2.commit()
 
-        # IDEAS COME FROM THE SLEEVES. Every candidate the sleeves proposed is
-        # publishable, whether or not the risk manager could fund it — a
-        # Rs 10,000 book routinely cannot take a name that is still a perfectly
-        # good idea, and that distinction is the whole reason ideas are not
-        # simply the buy list. What they must NOT be is a separate legacy sweep
-        # with its own threshold, which is what they were.
-        try:
-            _publish_sleeve_ideas(v2, market, result, today_s, live)
-        except Exception:
-            _LOG.exception("idea publication failed (book unaffected)")
-
         if result.halt_reason:
+            try:
+                _publish_sleeve_ideas(v2, market, result, today_s, live, [])
+            except Exception:
+                _LOG.exception("idea tracking failed (book unaffected)")
             _status[market] = f"sleeves HALTED · {result.halt_reason}"
             return
 
         fills = 0
+        filled_allocs = []
         for alloc in result.allocations:
             c = alloc.candidate
             if c.symbol in held:
@@ -4431,7 +4423,12 @@ def sleeve_pass(market):
                             regime=result.regime.state):
                 fills += 1
                 held.add(c.symbol)
+                filled_allocs.append(alloc)
         v2.commit()
+        try:
+            _publish_sleeve_ideas(v2, market, result, today_s, live, filled_allocs)
+        except Exception:
+            _LOG.exception("idea publication failed (book unaffected)")
         active = [d.sleeve for d in result.decisions if d.active]
         _status[market] = (f"sleeves {datetime.now(IST).strftime('%H:%M IST')} · "
                            f"regime {result.regime.state} ({result.regime.breadth:.0%} "

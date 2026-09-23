@@ -97,8 +97,8 @@ class TierTest(unittest.TestCase):
         self.assertEqual(ideas.tier_for_rank(1), "watch")
 
     def test_the_active_universe_never_promises_filler(self) -> None:
-        self.assertEqual(ideas.MAX_PER_DAY, 1)
-        self.assertEqual({ideas.allowance(p) for p in ("watch", "paper", "auto")}, {1})
+        self.assertEqual(ideas.MAX_PER_DAY, 2)
+        self.assertEqual([ideas.allowance(p) for p in ("watch", "paper", "auto")], [1, 1, 2])
 
     def test_free_sees_none(self) -> None:
         self.assertEqual(ideas.allowance("free"), 0)
@@ -144,7 +144,7 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(self._pub([_cand("A")], date="2026-08-05"), 1)
 
     def test_it_publishes_at_most_five(self) -> None:
-        self.assertEqual(self._pub([_cand(f"S{i}") for i in range(9)], limit=ideas.MAX_PER_DAY), 1)
+        self.assertEqual(self._pub([_cand(f"S{i}") for i in range(9)], limit=ideas.MAX_PER_DAY), 2)
 
     def test_engine_order_is_preserved(self) -> None:
         """Ideas come out in the engine's own ranked order, after the meta
@@ -160,7 +160,7 @@ class PublishTest(unittest.TestCase):
 
     def test_visible_respects_the_plan(self) -> None:
         self._pub([_cand(f"S{i}") for i in range(5)])
-        for plan, n in (("free", 0), ("watch", 1), ("paper", 1), ("auto", 1)):
+        for plan, n in (("free", 0), ("watch", 1), ("paper", 1), ("auto", 2)):
             with self.subTest(plan=plan):
                 self.assertEqual(len(ideas.visible(
                     self.con, "IN", plan, days=365, sources=("mean_reversion",))), n)
@@ -248,6 +248,23 @@ class TrackTest(unittest.TestCase):
                     "2026-08-20T14:00+05:30", "2026-08-20")
         row = self.con.execute("SELECT status FROM v2_ideas").fetchone()
         self.assertEqual(row[0], "open")
+
+    def test_factor_idea_uses_funded_size_and_paper_exit_result(self) -> None:
+        cand = _cand("ASIANPAINT", price=2440.0, atr=67.5,
+                     strategy="quality_momentum", stop=2305.0, shares=1)
+        self.assertEqual(ideas.publish(self.con, "IN", [cand], lambda _: 2.0,
+                                       "2026-08-05", "2026-08-05T09:20+05:30"), 1)
+        self.assertEqual(self.con.execute(
+            "SELECT qty,t1 FROM v2_ideas WHERE symbol='ASIANPAINT'").fetchone(), (1, 0.0))
+        self.con.execute(
+            "INSERT INTO v2_trades(market,strategy,symbol,entry_date,exit_price,"
+            "return_pct,closed_at) VALUES(?,?,?,?,?,?,?)",
+            ("IN", "quality_momentum", "ASIANPAINT", "2026-08-05",
+             2400.0, -2.35, "2026-08-20T10:30:00+05:30"))
+        ideas.track(self.con, "IN", {}, "2026-08-20T10:35+05:30", "2026-08-20")
+        row = ideas.visible(self.con, "IN", "auto", days=365)[0]
+        self.assertEqual((row["status"], row["qty"], row["result_pct"]),
+                         ("closed", 1, -2.35))
 
 
 class ScoreboardTest(unittest.TestCase):
