@@ -82,16 +82,15 @@ class QualityMomentumSleeve(Sleeve):
                      "return_6m_ex_recent": round(r6, 4),
                      "return_12m_ex_recent": round(r12, 4),
                      "median_turnover_inr": round(turnover),
-                     "research_status": "experimental paper; no validated net profit track",
+                     "research_status": "research only; no validated net profit track",
                      "regime": ctx.regime.state})))
         scored.sort(key=lambda item: (-item[0], item[1].symbol))
         if scored:
             top = max(scored[0][0], 1e-9)
             for raw, cand in scored:
                 cand.score = round(min(max(raw / top, 0.0), 1.0), 4)
-        # Offer three ranked names to the unified risk manager. At Rs 10k the
-        # top score can be unaffordable even when the second fits one slot.
-        # max_positions still enforces at most one funded stock.
+        # Expose three ranked names for research. The orchestrator removes
+        # these before allocation until an independent after-cost test passes.
         dec.candidates = [] if gate else [cand for _, cand in scored[:3]]
         dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
                            "source": "NSE Nifty500 Quality 50 + completed-session momentum and liquidity",

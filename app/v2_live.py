@@ -920,6 +920,7 @@ REENTRY_WINDOW_SEC = 5 * 3600
 _started = False
 _status: dict = {m: "init" for m in ENABLED_MARKETS}
 _sleeve_views: dict = {}
+_forward_updated_day: dict = {}
 _SLEEVE_VIEW_FILE = os.environ.get(
     "SLEEVE_VIEW_FILE", os.path.join(os.path.dirname(V2_DB), "sleeve_view.json"))
 
@@ -4382,6 +4383,13 @@ def sleeve_pass(market):
             feed_db.close()
 
         _remember_sleeve_view(market, result, asof, today_s)
+        if market == "IN" and _forward_updated_day.get(market) != today_s:
+            try:
+                from .sleeves.forward_watch import update as update_quality_forward
+                update_quality_forward(result, tails, asof, today_s)
+                _forward_updated_day[market] = today_s
+            except Exception:
+                _LOG.exception("quality forward observation failed (paper book unaffected)")
 
         # This long-duration index rule exits when its master trend gate turns
         # OFF. Exit obligations continue even if another book brake is active.
