@@ -5083,7 +5083,7 @@ function renderIdeas(d){
   '<details class=ig-how><summary>How this is calculated</summary>'
   +(allManaged?'<div class=fd-text style="margin-top:0">Funded NIFTYBEES entries use the '
    +ccy+f.format(d.capital)+' shared paper book and the completed 200-session trend. '
-   +'There is no fixed profit target. The large-cap stock screen is research only: '
+   +'There is no fixed profit target. The NSE Quality 50 stock screen is research only: '
    +'it cannot open paper trades or publish buy ideas after its negative retrospective holdout. '
    +'Real-broker mirroring is disabled for these ideas.</div>'
    :'<div class=fd-text style="margin-top:0">Historical ideas retain their published stop and target levels.</div>')
@@ -5102,11 +5102,11 @@ function renderIdeas(d){
    +(dec.asof?' · data through '+esc(dec.asof):'')
    +(dx.distance_pct!=null?'<br>NIFTYBEES is '+Math.abs(dx.distance_pct)+'% '
      +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
-   +(stockDec.note?'<br>Large-cap stocks: '+esc(stockDec.note):'')
+   +(stockDec.note?'<br>Quality stocks: '+esc(stockDec.note):'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
    +'<br>Next scheduled review: '+esc(dec.cadence||'first NSE session of each month')+'</div></div>';
  var stockDx=stockDec.diagnostics||{},watch=stockDx.watch||[],rejected=stockDec.rejected||[];
- var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>Large-cap stock screen</b><span>'
+ var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>NSE Quality 50 stock screen</b><span>'
    +(stockDx.verified_members==null?'verified feed unavailable':esc(stockDx.passed||0)
      +' passed / '+esc(stockDx.verified_members)+' verified')+'</span></div>'
    +'<div class=ig-watch-note>Research watch only · not funded paper entries. '+esc(stockDec.note||'Entry gates are closed')+'.</div>'
