@@ -10,9 +10,10 @@ Allocation rules, in order:
  1. Book-level brakes first. Daily loss limit, all-time drawdown, and a cap on
     total deployed capital. If any trips, NOTHING is allocated — exits are
     unaffected and run elsewhere.
- 2. Risk-based sizing. shares = (book * risk_per_trade) / (entry - stop).
-    Equal rupee risk per trade, so a wider stop buys a smaller position rather
-    than a bigger loss.
+ 2. Risk-based sizing. Start from the price stop, then shrink whole-share
+    quantity until the estimated stop loss includes delivery charges and
+    20 bp slippage on both sides. A wide stop or expensive small ticket
+    therefore cannot breach the cash loss budget unnoticed.
  3. Hard caps. One slot's notional, remaining cash, the sleeve's EXPOSURE share
     of the book, the sleeve's own position count, and the book-wide count.
  4. Viability. A ticket below `min_ticket` is refused: flat charges do not
@@ -26,12 +27,27 @@ from dataclasses import dataclass, field
 
 from .base import Candidate
 from .config import PRODUCTION_SLEEVES, SLEEVES
+from ..costs import round_trip
 
 _LOG = logging.getLogger("openstocks.sleeves.risk")
 
 # A future edit must not be able to over-allocate the single book.
 _TOTAL_SHARE = sum(getattr(SLEEVES, name).risk_share for name in PRODUCTION_SLEEVES)
 assert _TOTAL_SHARE <= 1.0 + 1e-9, f"sleeve risk shares sum to {_TOTAL_SHARE} (>1.0)"
+
+# A stop is not a Rs-only price move. This is the same conservative 20 bp per
+# side assumed by the frozen stock replay. Delivery charges include flat
+# brokerage and DP, which dominate a Rs 1,500-3,000 ticket.
+SLIPPAGE = 0.002
+
+
+def stop_loss_including_costs(entry: float, stop: float, shares: float) -> float:
+    """Estimated cash lost at an equity stop, including both execution legs."""
+    if shares <= 0 or not 0 < stop <= entry:
+        return 0.0
+    buy = shares * entry * (1 + SLIPPAGE)
+    sell = shares * stop * (1 - SLIPPAGE)
+    return buy - sell + round_trip(buy, sell, "D")
 
 
 @dataclass
@@ -94,7 +110,8 @@ class RiskManager:
         halted, why = self.halted(book)
         if halted:
             return Allocation(cand, 0, 0.0, 0.0, why)
-        if not all(math.isfinite(v) for v in (cand.entry, cand.stop, cand.target)) or cand.entry <= 0:
+        if (not all(math.isfinite(v) for v in (cand.entry, cand.stop, cand.target))
+                or cand.entry <= 0 or not 0 < cand.stop < cand.entry):
             return Allocation(cand, 0, 0.0, 0.0, "invalid candidate price")
         cfg = getattr(self.s, cand.sleeve, None)
         if cfg is None:
@@ -140,7 +157,7 @@ class RiskManager:
             by_risk = risk_budget / rps
             slot = book.capital / max(self.s.max_positions_total, 1)
             by_slot = slot / cand.entry
-        by_cash = max(book.cash, 0.0) / cand.entry
+        by_cash = max(book.cash, 0.0) / (cand.entry * (1 + SLIPPAGE))
         # this sleeve may not hold more than its share of the book at once
         sleeve_room = max(book.capital * cfg.risk_share
                           - book.per_sleeve_notional.get(cand.sleeve, 0.0), 0.0)
@@ -148,10 +165,14 @@ class RiskManager:
 
         by_deployment = max(book.capital * self.s.max_deployed - book.deployed, 0) / cand.entry
         shares = int(min(by_risk, by_slot, by_cash, by_sleeve, by_deployment))
+        if cand.instrument == "EQ":
+            while shares > 0 and stop_loss_including_costs(
+                    cand.entry, cand.stop, shares) > risk_budget + 1e-9:
+                shares -= 1
         if shares < 1:
             return Allocation(cand, 0, 0.0, 0.0,
-                              f"sizes to <1 share (risk Rs {risk_budget:.0f}, "
-                              f"stop Rs {rps:.2f}, price Rs {cand.entry:.2f})")
+                              f"sizes to <1 share after stop, fees and slippage "
+                              f"(risk Rs {risk_budget:.0f}, price Rs {cand.entry:.2f})")
 
         notional = shares * cand.entry
         if notional < self.s.min_ticket:
@@ -164,14 +185,17 @@ class RiskManager:
         if cand.target:
             edge = (cand.target / cand.entry - 1) * 100
             if cand.instrument == "EQ":
-                from ..costs import round_trip
-                edge -= round_trip(notional, shares * cand.target, "D") / notional * 100
+                buy = notional * (1 + SLIPPAGE)
+                sell = shares * cand.target * (1 - SLIPPAGE)
+                edge = (sell - buy - round_trip(buy, sell, "D")) / buy * 100
             if edge < self.s.min_edge_pct:
                 return Allocation(cand, 0, notional, 0.0,
                                   f"target offers {edge:.1f}% < {self.s.min_edge_pct:.1f}% "
                                   f"minimum edge")
 
-        return Allocation(cand, shares, notional, shares * rps)
+        loss = (stop_loss_including_costs(cand.entry, cand.stop, shares)
+                if cand.instrument == "EQ" else shares * rps)
+        return Allocation(cand, shares, notional, loss)
 
     # -- the pass ---------------------------------------------------------
     def allocate(self, candidates: list[Candidate], book: BookState) -> list[Allocation]:

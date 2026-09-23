@@ -75,6 +75,12 @@ class RecordEntryTest(unittest.TestCase):
         stamp = self.db.execute("SELECT opened_at FROM v2_positions").fetchone()[0]
         self.assertTrue(stamp and stamp.startswith("20"), stamp)
 
+    def test_allocated_after_cost_risk_is_recorded(self) -> None:
+        self.call(risk_amount=123.45)
+        # Existing books added this column with TEXT affinity; readers cast it.
+        self.assertEqual(float(self.db.execute(
+            "SELECT risk_amt FROM v2_positions").fetchone()[0]), 123.45)
+
     # ---- refusals: each of these is a position that is broken on arrival ----
 
     def test_stop_at_or_above_entry_is_refused(self) -> None:

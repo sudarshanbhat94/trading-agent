@@ -47,11 +47,9 @@ class SleeveSettings:
     # Mirrors v2_live.BUDGET["IN"]. Fixed by operator instruction.
     capital: float = _float("PAPER_CAPITAL_INR", 10_000.0)
 
-    # Risk per trade, as a fraction of the BOOK. 2% of Rs 10,000 = Rs 200.
-    # A Rs 3,333 slot with a 6% ATR stop risks Rs 200, so this binds only on
-    # unusually WIDE stops, where it correctly shrinks the position. Lower
-    # values cannot fill a slot at all at this capital: at 0.5% the budget is
-    # Rs 50, which buys zero shares of a Rs 2,000 stock with a Rs 300 stop.
+    # Ceiling on tactical trade risk. The daily-loss allowance can be lower,
+    # and sizing includes flat delivery charges plus estimated slippage;
+    # Rs 200 of gross stop distance is NOT a Rs 200 possible cash loss.
     risk_per_trade: float = _float("RISK_PER_TRADE", 0.02)
 
     # Hard stop on a single day's realised + unrealised loss.

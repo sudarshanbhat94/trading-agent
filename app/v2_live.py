@@ -943,15 +943,22 @@ def _remember_sleeve_view(market, result, asof, today_s):
             diagnostics=dict(dec.diagnostics or {})))
     primary = next((d for d in decisions if d["sleeve"] == "index_directional"),
                    decisions[0] if decisions else None)
-    count = sum(d["candidates"] for d in decisions)
+    count = len(result.allocations)
     if count:
-        reason = f"{count} candidate{'s' if count != 1 else ''} cleared every gate"
+        reason = f"{count} funded paper entr{'ies' if count != 1 else 'y'} cleared every gate"
         state = "ACTIONABLE"
+    elif result.risk_rejections:
+        symbol, why = result.risk_rejections[0]
+        reason = f"{symbol}: {why}"
+        state = "STAND ASIDE"
     elif primary and primary["note"]:
         reason = primary["note"]
         state = "STAND ASIDE"
     elif primary and primary["rejected"]:
         reason = primary["rejected"][0]["reason"]
+        state = "STAND ASIDE"
+    elif result.halt_reason:
+        reason = result.halt_reason
         state = "STAND ASIDE"
     else:
         reason = "no production candidate cleared every gate"
@@ -960,6 +967,7 @@ def _remember_sleeve_view(market, result, asof, today_s):
         state=state, reason=reason, regime=result.regime.state,
         regime_reason=result.regime.reason, breadth=round(result.regime.breadth * 100, 1),
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
+        risk_rejections=[dict(symbol=s, reason=r) for s, r in result.risk_rejections[:5]],
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
         cadence="first NSE session of each month", decisions=decisions,
         diagnostics=(primary.get("diagnostics", {}) if primary else {}))
@@ -1684,7 +1692,7 @@ def _epoch_pnl(v2, market, day=None):
 
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
                  stop, target, trail, conviction, why, peak=None, expiry=None,
-                 sleeve=None, regime=None):
+                 sleeve=None, regime=None, risk_amount=None):
     """THE single writer for v2_positions. Returns True if the row was written.
 
     Every lane had its own copy of this INSERT — five of them, identical column
@@ -1753,7 +1761,8 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
         (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
          entry_price if peak is None else peak, conviction,
          datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime,
-         (float(shares) * max(float(entry_price) - float(stop or 0), 0.0)
+         (float(risk_amount) if risk_amount is not None else
+          float(shares) * max(float(entry_price) - float(stop or 0), 0.0)
           if stop else None)))
     # LIVE MIRROR — real money. Runs only when the sleeve is armed AND connected;
     # `live_ready` is false by default and this is a no-op on every other
@@ -4328,9 +4337,15 @@ def sleeve_pass(market):
         risk_rows = v2.execute(
             "SELECT symbol,shares,entry_price,stop,COALESCE(sleeve,strategy) "
             "FROM v2_positions WHERE market=?", (market,)).fetchall()
-        stop_risks = [(strat, float(sh) * max(
-            0, float(live.get(sym, {}).get("price") or ep) - float(stop or 0)))
-            for sym, sh, ep, stop, strat in risk_rows if stop]
+        from .sleeves.risk import stop_loss_including_costs
+        stop_risks = []
+        for sym, sh, ep, stop, strat in risk_rows:
+            if not stop:
+                continue
+            mark = float(live.get(sym, {}).get("price") or ep)
+            risk = (stop_loss_including_costs(mark, min(float(stop), mark), float(sh))
+                    if market == "IN" else float(sh) * max(0, mark - float(stop)))
+            stop_risks.append((strat, risk))
         book = BookState(capital=capital, cash=cash, deployed=deployed,
                          open_positions=len(positions), per_sleeve_positions=per_sleeve,
                          equity=equity, peak_equity=float(peak), day_pnl=float(day_pnl),
@@ -4428,7 +4443,8 @@ def sleeve_pass(market):
             if record_entry(v2, market, c.sleeve, c.symbol, today_s, c.entry,
                             float(alloc.shares), c.stop, c.target, c.trail_pct,
                             c.score, json.dumps(c.why), sleeve=c.sleeve,
-                            regime=result.regime.state):
+                            regime=result.regime.state,
+                            risk_amount=alloc.risk_amount):
                 fills += 1
                 held.add(c.symbol)
                 filled_allocs.append(alloc)

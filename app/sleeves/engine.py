@@ -78,6 +78,7 @@ class PassResult:
     decisions: list[SleeveDecision] = field(default_factory=list)
     allocations: list[Allocation] = field(default_factory=list)
     halt_reason: str = ""
+    risk_rejections: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def traded(self) -> bool:
@@ -176,6 +177,12 @@ class SleeveEngine:
             dec.log()
 
         result.allocations = [] if halted else self.risk.allocate(ordered, book)
+        if ordered and not result.allocations and not halted:
+            # A technically valid signal can still be unaffordable after
+            # fees, slippage, cash and the daily loss cap. Keep the reason for
+            # the UI; never label an unfunded proposal ACTIONABLE.
+            result.risk_rejections = [(c.symbol, self.risk.size(c, book).reason)
+                                      for c in ordered]
         self._summarise(result)
         return result
 

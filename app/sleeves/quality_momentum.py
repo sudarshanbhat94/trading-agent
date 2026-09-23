@@ -10,6 +10,7 @@ import math
 import pandas as pd
 from .base import Candidate, Sleeve
 from .index_directional import monthly_rebalance
+from .risk import stop_loss_including_costs
 
 MIN_TURNOVER = 250_000_000
 MAX_PRICE = 3_300
@@ -92,15 +93,34 @@ class QualityMomentumSleeve(Sleeve):
         # Expose three ranked names for research. The orchestrator removes
         # these before allocation until an independent after-cost test passes.
         dec.candidates = [] if gate else [cand for _, cand in scored[:3]]
+        risk_cap = ctx.settings.capital * ctx.settings.daily_loss_limit
+        sleeve_notional_cap = (ctx.settings.capital *
+                               ctx.settings.quality_momentum.risk_share)
+
+        def minimum_trade(cand):
+            minimum = max(1, math.ceil(ctx.settings.min_ticket / cand.entry))
+            notional = minimum * cand.entry
+            risk = stop_loss_including_costs(cand.entry, cand.stop, minimum)
+            return round(notional), round(risk), risk <= risk_cap and notional <= sleeve_notional_cap
+
+        def watch_row(cand):
+            notional, risk, fits = minimum_trade(cand)
+            return dict(symbol=cand.symbol, price=round(cand.entry, 2),
+                        price_source=("live" if (ctx.live.get(cand.symbol) or {}).get("price")
+                                      else "completed close"),
+                        score=cand.score,
+                        return_6m_pct=round(cand.why["return_6m_ex_recent"] * 100, 1),
+                        return_12m_pct=round(cand.why["return_12m_ex_recent"] * 100, 1),
+                        min_ticket_notional=notional,
+                        min_ticket_stop_risk=risk,
+                        fresh_book_risk_cap=round(risk_cap),
+                        fresh_book_risk_fit=fits)
+
         dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
+                           "fresh_book_risk_fit": sum(minimum_trade(cand)[2]
+                                                       for _, cand in scored),
                            "source": "NSE Nifty500 Quality 50 + completed-session momentum and liquidity",
-                           "watch": [dict(symbol=cand.symbol, price=round(cand.entry, 2),
-                                          price_source=("live" if (ctx.live.get(cand.symbol) or {}).get("price")
-                                                        else "completed close"),
-                                          score=cand.score,
-                                          return_6m_pct=round(cand.why["return_6m_ex_recent"] * 100, 1),
-                                          return_12m_pct=round(cand.why["return_12m_ex_recent"] * 100, 1))
-                                     for _, cand in scored[:3]]}
+                           "watch": [watch_row(cand) for _, cand in scored[:3]]}
         if gate:
             dec.active = False
             dec.note = gate

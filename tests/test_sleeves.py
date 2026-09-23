@@ -165,7 +165,7 @@ class RiskManagerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.rm = RiskManager()
 
-    def _cand(self, price=250.0, stop=235.0, sleeve="mean_reversion", target=None):
+    def _cand(self, price=250.0, stop=242.0, sleeve="mean_reversion", target=None):
         return Candidate(symbol="ACME", sleeve=sleeve, score=0.8, entry=price,
                          stop=stop, target=target if target is not None else price * 1.08)
 
@@ -185,10 +185,10 @@ class RiskManagerTest(unittest.TestCase):
     def test_index_and_stock_share_one_hard_stop_budget(self) -> None:
         index = Candidate("NIFTYBEES", "index_directional", .8, 260, 195,
                           allocation_pct=.50)
-        stock = Candidate("ASIANPAINT", "quality_momentum", .8, 2440, 2305)
+        stock = Candidate("QUALITY", "quality_momentum", .8, 500, 485)
         funded = self.rm.allocate([index, stock], _book())
         self.assertEqual([a.candidate.symbol for a in funded],
-                         ["NIFTYBEES", "ASIANPAINT"])
+                         ["NIFTYBEES", "QUALITY"])
         self.assertLessEqual(sum(a.risk_amount for a in funded),
                              SLEEVES.capital * SLEEVES.max_drawdown)
         self.assertLessEqual(funded[0].risk_amount,
@@ -196,6 +196,19 @@ class RiskManagerTest(unittest.TestCase):
                                                 SLEEVES.daily_loss_limit))
         self.assertLessEqual(funded[1].risk_amount,
                              SLEEVES.capital * SLEEVES.daily_loss_limit)
+
+    def test_flat_delivery_charges_are_inside_the_stop_risk_cap(self) -> None:
+        from app.sleeves.risk import stop_loss_including_costs
+        expensive = Candidate("QUALITY", "quality_momentum", .8, 2179, 2043.4)
+        self.assertGreater(stop_loss_including_costs(2179, 2043.4, 1), 200)
+        a = self.rm.size(expensive, _book())
+        self.assertFalse(a.ok)
+        self.assertIn("fees and slippage", a.reason)
+        affordable = self.rm.size(self._cand(), _book())
+        self.assertTrue(affordable.ok)
+        self.assertAlmostEqual(affordable.risk_amount, stop_loss_including_costs(
+            affordable.candidate.entry, affordable.candidate.stop, affordable.shares))
+        self.assertLessEqual(affordable.risk_amount, 150)
 
     def test_old_oversized_index_position_cannot_fund_new_stock(self) -> None:
         stock = Candidate("ASIANPAINT", "quality_momentum", .8, 2440, 2305)
@@ -359,10 +372,31 @@ class EngineWiringTest(unittest.TestCase):
                              require_live_quotes=True, routable_instruments=("EQ",))
         stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
         self.assertEqual([r["symbol"] for r in stock.diagnostics["watch"]], ["TEST"])
+        self.assertGreater(stock.diagnostics["watch"][0]["min_ticket_stop_risk"], 0)
+        self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_risk_cap"], 150)
+        self.assertIn("fresh_book_risk_fit", stock.diagnostics)
         self.assertEqual(stock.candidates, [])
         self.assertFalse(stock.active)
         self.assertIn("research only", stock.note)
         self.assertEqual(result.allocations, [])
+
+    def test_unaffordable_signal_is_reported_not_called_actionable(self) -> None:
+        from app import v2_live
+        from app.sleeves.engine import PassResult
+        result = PassResult(
+            RegimeView("ON", True, .7, "ON", "test"),
+            decisions=[SleeveDecision("index_directional", "ON", True,
+                                      candidates=[Candidate("X", "index_directional",
+                                                            .8, 5000, 3750,
+                                                            allocation_pct=.5)])],
+            risk_rejections=[("X", "sizes to <1 share after stop, fees and slippage")])
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+                v2_live, "_SLEEVE_VIEW_FILE", str(Path(tmp) / "view.json")):
+            v2_live._remember_sleeve_view("IN", result, "2026-09-22", "2026-09-23")
+            view = v2_live.sleeve_view("IN")
+        self.assertEqual(view["state"], "STAND ASIDE")
+        self.assertEqual(view["candidate_count"], 0)
+        self.assertIn("fees and slippage", view["reason"])
 
     def test_observed_stock_screen_uses_completed_close_during_quote_warmup(self) -> None:
         bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)

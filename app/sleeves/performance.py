@@ -10,8 +10,10 @@ The cross-tab is what separates those two, and its absence is why the old
 engine's entire positive record turned out to be three trades on one day with
 nothing in the dashboard saying so.
 
-R-MULTIPLE. `risk_amt` is the rupees at risk at entry — shares x (entry - stop)
-— stored on the position and copied onto the trade at exit. R = pnl/risk_amt,
+R-MULTIPLE. `risk_amt` is the rupees at risk at entry. New sleeve entries include
+estimated delivery fees and 20 bp slippage on both sides of a stop; older
+entries stored only shares x (entry - stop). It is copied to the exit trade.
+R = pnl/risk_amt,
 so +1R means the trade made exactly what it was prepared to lose. Trades from
 before the column existed have no risk_amt and are excluded from the R column
 (shown as "-") rather than silently counted as zero.

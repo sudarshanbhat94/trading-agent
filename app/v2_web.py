@@ -5104,15 +5104,20 @@ function renderIdeas(d){
      +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
    +(stockDec.note?'<br>Quality stocks: '+esc(stockDec.note):'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
-   +'<br>Next scheduled review: '+esc(dec.cadence||'first NSE session of each month')+'</div></div>';
+   +'<br>Market checked during every NSE session; Nifty entries reviewed monthly.</div></div>';
  var stockDx=stockDec.diagnostics||{},watch=stockDx.watch||[],rejected=stockDec.rejected||[];
  var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>NSE Quality 50 stock screen</b><span>'
    +(stockDx.verified_members==null?'verified feed unavailable':esc(stockDx.passed||0)
-     +' passed / '+esc(stockDx.verified_members)+' verified')+'</span></div>'
+     +' passed / '+esc(stockDx.verified_members)+' verified'
+     +(stockDx.fresh_book_risk_fit==null?'':' · '+esc(stockDx.fresh_book_risk_fit)
+       +' fit ₹10k paper risk'))+'</span></div>'
    +'<div class=ig-watch-note>Research watch only · not funded paper entries. '+esc(stockDec.note||'Entry gates are closed')+'.</div>'
    +(watch.length?watch.map(function(w){return '<div class=ig-watch-row><b>'+esc(w.symbol)+'</b><span>'
       +esc(w.price_source||'price')+' ₹'+INR.format(w.price)+' · 6m '+esc(w.return_6m_pct)
-      +'% · 12m '+esc(w.return_12m_pct)+'%</span></div>';}).join('')
+      +'% · 12m '+esc(w.return_12m_pct)+'%'
+      +(w.min_ticket_stop_risk==null?'':'<br>Minimum ticket stop-loss estimate ₹'
+        +INR.format(w.min_ticket_stop_risk)+' incl. costs · fresh-book risk cap ₹'
+        +INR.format(w.fresh_book_risk_cap))+'</span></div>';}).join('')
     :'<div class=ig-watch-note style="margin-top:10px">'
      +(stockDx.verified_members==null?'The verified NSE feed is unavailable. Screening is paused.'
        :'No verified stock passed the price, liquidity and momentum screen.')+'</div>'
