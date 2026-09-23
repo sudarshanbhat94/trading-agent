@@ -23,22 +23,20 @@ class QualityMomentumSleeve(Sleeve):
     def propose(self, ctx):
         dec = self._decision(ctx.regime.state)
         members = getattr(ctx, "factor_symbols", None)
+        # A regime block stops orders, not observation. Screen the same verified
+        # universe so the Ideas page can explain what the engine sees while it
+        # stands aside. Observations never enter dec.candidates.
+        gate = ""
         if not self.may_run(ctx.regime.state):
-            dec.active = False
-            dec.note = f"regime {ctx.regime.state} blocks new stock longs"
-            return dec
-        if not getattr(ctx.regime, "strong", False):
-            dec.active = False
-            dec.note = "ON regime lacks the existing strong-trend confirmation"
-            return dec
+            gate = f"regime {ctx.regime.state} blocks new stock longs"
+        elif not getattr(ctx.regime, "strong", False):
+            gate = "ON regime lacks the existing strong-trend confirmation"
         if ctx.require_reference_data and not members:
             dec.active = False
             dec.note = "verified NSE quality/momentum constituents unavailable"
             return dec
-        if not monthly_rebalance(ctx.asof, ctx.trade_date):
-            dec.active = False
-            dec.note = "monthly review has not arrived"
-            return dec
+        if not gate and not monthly_rebalance(ctx.asof, ctx.trade_date):
+            gate = "monthly review has not arrived"
 
         scored = []
         universe = members if members is not None else set(ctx.tails)
@@ -92,10 +90,19 @@ class QualityMomentumSleeve(Sleeve):
         # Offer three ranked names to the unified risk manager. At Rs 10k the
         # top score can be unaffordable even when the second fits one slot.
         # max_positions still enforces at most one funded stock.
-        dec.candidates = [cand for _, cand in scored[:3]]
+        dec.candidates = [] if gate else [cand for _, cand in scored[:3]]
         dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
-                           "source": "NSE Nifty100 intersection Momentum Quality 50"}
-        dec.note = f"{len(scored)} verified large caps passed price and liquidity checks"
+                           "source": "NSE Nifty100 intersection Momentum Quality 50",
+                           "watch": [dict(symbol=cand.symbol, price=round(cand.entry, 2),
+                                          score=cand.score,
+                                          return_6m_pct=round(cand.why["return_6m_ex_recent"] * 100, 1),
+                                          return_12m_pct=round(cand.why["return_12m_ex_recent"] * 100, 1))
+                                     for _, cand in scored[:3]]}
+        if gate:
+            dec.active = False
+            dec.note = gate
+        else:
+            dec.note = f"{len(scored)} verified large caps passed price and liquidity checks"
         return dec
 
     @staticmethod

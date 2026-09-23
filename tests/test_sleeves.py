@@ -362,7 +362,16 @@ class EngineWiringTest(unittest.TestCase):
         self.assertEqual(sleeve.propose(ctx).candidates,[])
         ctx.factor_symbols = {"TEST"}
         ctx.regime.state = "OFF"
-        self.assertEqual(sleeve.propose(ctx).candidates,[])
+        off = sleeve.propose(ctx)
+        self.assertEqual(off.candidates, [])
+        self.assertFalse(off.active)
+        self.assertEqual([row["symbol"] for row in off.diagnostics["watch"]], ["TEST"])
+        self.assertIn("regime OFF", off.note)
+        ctx.regime.state = "ON"
+        ctx.trade_date = asof  # no monthly entry, but the diagnostic still runs
+        later = sleeve.propose(ctx)
+        self.assertEqual(later.candidates, [])
+        self.assertEqual([row["symbol"] for row in later.diagnostics["watch"]], ["TEST"])
 
     def test_factor_stock_cannot_be_sent_to_real_broker(self) -> None:
         from app import live_trade

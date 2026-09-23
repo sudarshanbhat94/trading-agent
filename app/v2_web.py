@@ -4405,6 +4405,15 @@ body.has-real .fd-books:hover{opacity:1}
  color:var(--warn);font-size:10px;font-weight:700;letter-spacing:.08em}
 .ig-stand-title{font-size:17px;font-weight:650;margin-top:10px;color:var(--tx)}
 .ig-stand-meta{font-size:12px;color:var(--mut);line-height:1.55;margin-top:6px}
+.ig-watch{margin-top:14px;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:16px 18px}
+.ig-watch-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap}
+.ig-watch-head b{font-size:14px;color:var(--tx)}
+.ig-watch-head span,.ig-watch-note{font-size:11px;color:var(--mut);line-height:1.5}
+.ig-watch-row{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line);font-size:12px}
+.ig-watch-row:first-of-type{margin-top:10px}
+.ig-watch-row b{color:var(--tx);font-size:13px}
+.ig-watch-row span{text-align:right;color:var(--mut)}
+@media(max-width:520px){.ig-watch-row{flex-direction:column;gap:3px}.ig-watch-row span{text-align:left}}
 .ig-buy{margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
 .ig-buy .btn{width:100%;font-weight:700}
 .ig-lock{font-size:13px;color:var(--tx);background:var(--surf);border:1px dashed var(--line);
@@ -5096,9 +5105,22 @@ function renderIdeas(d){
    +(stockDec.note?'<br>Large-cap stocks: '+esc(stockDec.note):'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
    +'<br>Next scheduled review: '+esc(dec.cadence||'first NSE session of each month')+'</div></div>';
+ var stockDx=stockDec.diagnostics||{},watch=stockDx.watch||[],rejected=stockDec.rejected||[];
+ var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>Large-cap stock screen</b><span>'
+   +(stockDx.verified_members==null?'verified feed unavailable':esc(stockDx.passed||0)
+     +' passed / '+esc(stockDx.verified_members)+' verified')+'</span></div>'
+   +'<div class=ig-watch-note>Research watch only · not funded paper entries. '+esc(stockDec.note||'Entry gates are closed')+'.</div>'
+   +(watch.length?watch.map(function(w){return '<div class=ig-watch-row><b>'+esc(w.symbol)+'</b><span>₹'
+      +INR.format(w.price)+' · 6m '+esc(w.return_6m_pct)+'% · 12m '+esc(w.return_12m_pct)+'%</span></div>';}).join('')
+    :'<div class=ig-watch-note style="margin-top:10px">'
+     +(stockDx.verified_members==null?'The verified NSE feed is unavailable. Screening is paused.'
+       :'No verified stock passed the price, liquidity and momentum screen.')+'</div>'
+     +rejected.slice(0,3).map(function(r){return '<div class=ig-watch-row><b>'+esc(r.symbol)
+      +'</b><span>'+esc(r.reason)+'</span></div>';}).join(''))
+   +'</div>':'';
  document.getElementById('ideasList').innerHTML=
   (todays.length?todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
-   stand)+head;
+   stand+screening)+head;
  // The strip at the top already carries win rate, average, published and
  // reached-T1. Repeating them here was pure duplication on a phone, where the
  // two blocks are barely a screen apart. This keeps only the outcomes the strip

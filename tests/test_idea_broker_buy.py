@@ -11,6 +11,11 @@ quantity is recomputed per viewer.
 from __future__ import annotations
 
 import inspect
+import json
+import pathlib
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from app import v2_web
@@ -98,6 +103,38 @@ class BuyButtonTest(unittest.TestCase):
         block = block[:block.index("\n// ----")]
         self.assertIn("r.s==401", block)
         self.assertIn("Session expired. Sign in again.", block)
+
+    @unittest.skipUnless(shutil.which("node"), "node required")
+    def test_off_regime_renders_stock_research_without_buy_action(self) -> None:
+        """Execute the shipped renderer, not a Python copy of the layout."""
+        block = self.spa[self.spa.index("function renderIdeas("):]
+        block = block[:block.index("\nfunction ")]
+        payload = dict(
+            ccy="₹", ideas=[], stats=dict(closed=0, wins=0), plan="elite",
+            allowance=2, cadence="monthly", capital=10000, source_sleeves=["index_directional", "quality_momentum"],
+            decision=dict(state="STAND ASIDE", reason="regime OFF blocks Nifty exposure",
+                          regime="OFF", breadth=36.6, asof="2026-09-22",
+                          diagnostics=dict(completed_close=266.64, sma200=277.5),
+                          decisions=[dict(sleeve="quality_momentum", active=False, candidates=0,
+                                          note="regime OFF blocks new stock longs",
+                                          diagnostics=dict(verified_members=10, passed=1,
+                                                           watch=[dict(symbol="ASIANPAINT", price=2440,
+                                                                       return_6m_pct=8.2, return_12m_pct=14.4)]))]))
+        js = ("const nodes={}; const document={getElementById:id=>nodes[id]||(nodes[id]={style:{}})};\n"
+              "const INR=new Intl.NumberFormat('en-IN'),USD=INR,PLANLBL={elite:'Elite'};\n"
+              "function esc(x){return String(x??'').replace(/</g,'&lt;')}\n"
+              "function fdSet(id,cls,html){document.getElementById(id).innerHTML=html}\n"
+              "function fmtDay(x){return x}\n" + block + "\n"
+              + f"renderIdeas({json.dumps(payload)}); console.log(nodes.ideasList.innerHTML);\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "ideas.js"
+            path.write_text(js, encoding="utf-8")
+            out = subprocess.run(["node", str(path)], capture_output=True, text=True, timeout=20)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("ASIANPAINT", out.stdout)
+        self.assertIn("Research watch only", out.stdout)
+        self.assertIn("regime OFF blocks new stock longs", out.stdout)
+        self.assertNotIn("Buy ", out.stdout)
 
 
 if __name__ == "__main__":
