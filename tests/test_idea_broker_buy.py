@@ -119,6 +119,7 @@ class BuyButtonTest(unittest.TestCase):
                                           note="regime OFF blocks new stock longs",
                                           diagnostics=dict(verified_members=10, passed=1,
                                                            watch=[dict(symbol="ASIANPAINT", price=2440,
+                                                                       price_source="completed close",
                                                                        return_6m_pct=8.2, return_12m_pct=14.4)]))]))
         js = ("const nodes={}; const document={getElementById:id=>nodes[id]||(nodes[id]={style:{}})};\n"
               "const INR=new Intl.NumberFormat('en-IN'),USD=INR,PLANLBL={elite:'Elite'};\n"
@@ -132,6 +133,7 @@ class BuyButtonTest(unittest.TestCase):
             out = subprocess.run(["node", str(path)], capture_output=True, text=True, timeout=20)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("ASIANPAINT", out.stdout)
+        self.assertIn("completed close ₹2,440", out.stdout)
         self.assertIn("Research watch only", out.stdout)
         self.assertIn("regime OFF blocks new stock longs", out.stdout)
         self.assertNotIn("Buy ", out.stdout)

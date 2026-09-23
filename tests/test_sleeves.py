@@ -364,6 +364,23 @@ class EngineWiringTest(unittest.TestCase):
         self.assertIn("research only", stock.note)
         self.assertEqual(result.allocations, [])
 
+    def test_observed_stock_screen_uses_completed_close_during_quote_warmup(self) -> None:
+        bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)
+        bars.volume = 2_000_000.0
+        asof = bars.index[-1]
+        eng = SleeveEngine()
+        with patch.object(eng.gate, "view", return_value=RegimeView(
+                "ON", True, .8, "ON", "synthetic strong trend")):
+            result = eng.run({"TEST": bars}, pd.DataFrame(index=bars.index), asof,
+                             {}, _book(), trade_date=asof + pd.offsets.MonthBegin(),
+                             factor_symbols={"TEST"}, require_reference_data=True,
+                             require_live_quotes=True, routable_instruments=("EQ",))
+        stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
+        self.assertEqual(stock.diagnostics["watch"][0]["symbol"], "TEST")
+        self.assertEqual(stock.diagnostics["watch"][0]["price_source"], "completed close")
+        self.assertEqual(stock.candidates, [])
+        self.assertEqual(result.allocations, [])
+
     def test_factor_stock_needs_verified_membership_and_on_regime(self) -> None:
         bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)
         bars.volume = 2_000_000.0

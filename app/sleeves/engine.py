@@ -134,7 +134,7 @@ class SleeveEngine:
                     allowed = ctx.factor_symbols if name == "quality_momentum" else ctx.eligible_symbols
                     sleeve_ctx = replace(ctx, tails={sym: frame for sym, frame in tails.items()
                         if (allowed is None or sym in allowed)
-                        and (not ctx.require_live_quotes or sym in live)})
+                        and (name in OBSERVATION_SLEEVES or not ctx.require_live_quotes or sym in live)})
                 dec = sleeve.propose(sleeve_ctx)
             except Exception:
                 _LOG.exception("sleeve %s raised; skipping it this pass", name)

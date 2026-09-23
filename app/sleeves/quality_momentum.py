@@ -50,7 +50,8 @@ class QualityMomentumSleeve(Sleeve):
                 dec.reject(sym, "less than 253 completed sessions")
                 continue
             close = gi.close.astype(float)
-            price = float((ctx.live.get(sym) or {}).get("price") or close.iloc[-1])
+            quote = (ctx.live.get(sym) or {}).get("price")
+            price = float(quote or close.iloc[-1])
             turnover = float((gi.close * gi.volume).tail(20).median())
             if not 50 <= price <= MAX_PRICE or turnover < MIN_TURNOVER:
                 dec.reject(sym, "price or turnover outside liquid Rs 10k universe")
@@ -94,6 +95,8 @@ class QualityMomentumSleeve(Sleeve):
         dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
                            "source": "NSE Nifty100 intersection Momentum Quality 50",
                            "watch": [dict(symbol=cand.symbol, price=round(cand.entry, 2),
+                                          price_source=("live" if (ctx.live.get(cand.symbol) or {}).get("price")
+                                                        else "completed close"),
                                           score=cand.score,
                                           return_6m_pct=round(cand.why["return_6m_ex_recent"] * 100, 1),
                                           return_12m_pct=round(cand.why["return_12m_ex_recent"] * 100, 1))

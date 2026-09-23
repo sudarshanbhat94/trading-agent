@@ -5110,8 +5110,9 @@ function renderIdeas(d){
    +(stockDx.verified_members==null?'verified feed unavailable':esc(stockDx.passed||0)
      +' passed / '+esc(stockDx.verified_members)+' verified')+'</span></div>'
    +'<div class=ig-watch-note>Research watch only · not funded paper entries. '+esc(stockDec.note||'Entry gates are closed')+'.</div>'
-   +(watch.length?watch.map(function(w){return '<div class=ig-watch-row><b>'+esc(w.symbol)+'</b><span>₹'
-      +INR.format(w.price)+' · 6m '+esc(w.return_6m_pct)+'% · 12m '+esc(w.return_12m_pct)+'%</span></div>';}).join('')
+   +(watch.length?watch.map(function(w){return '<div class=ig-watch-row><b>'+esc(w.symbol)+'</b><span>'
+      +esc(w.price_source||'price')+' ₹'+INR.format(w.price)+' · 6m '+esc(w.return_6m_pct)
+      +'% · 12m '+esc(w.return_12m_pct)+'%</span></div>';}).join('')
     :'<div class=ig-watch-note style="margin-top:10px">'
      +(stockDx.verified_members==null?'The verified NSE feed is unavailable. Screening is paused.'
        :'No verified stock passed the price, liquidity and momentum screen.')+'</div>'
