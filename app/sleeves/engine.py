@@ -8,8 +8,8 @@ One pass:
     4. hand the ordered list to the unified risk manager
     5. log regime, per-sleeve activity, and every accept/reject with a reason
 
-Production paper promotes the NIFTYBEES and verified large-cap factor sleeves.
-No stock sleeve is broker-mirrored.
+Production paper promotes only the NIFTYBEES sleeve. The large-cap factor
+screen remains visible for research but cannot allocate capital.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from typing import Callable
 import pandas as pd
 
 from .base import Candidate, SleeveDecision
-from .config import PRODUCTION_SLEEVES, SLEEVES
+from .config import OBSERVATION_SLEEVES, PRODUCTION_SLEEVES, SLEEVES
 from .early_momentum import EarlyMomentumSleeve
 from .index_directional import IndexDirectionalSleeve
 from .mean_reversion import MeanReversionSleeve
@@ -35,8 +35,9 @@ _LOG = logging.getLogger("openstocks.sleeves.engine")
 PRIORITY = ["index_directional", "mean_reversion", "quality_momentum",
             "early_momentum", "options_overlay"]
 
-# Explicit paper allowlist. Neither promoted sleeve is broker-mirrored.
-ACTIVE_SLEEVES = PRODUCTION_SLEEVES
+# Explicit paper allowlist. Observed sleeves may explain the tape, but only
+# PRODUCTION_SLEEVES can ever send candidates to the risk manager.
+ACTIVE_SLEEVES = PRODUCTION_SLEEVES + OBSERVATION_SLEEVES
 
 
 @dataclass
@@ -137,6 +138,16 @@ class SleeveEngine:
                 dec = sleeve.propose(sleeve_ctx)
             except Exception:
                 _LOG.exception("sleeve %s raised; skipping it this pass", name)
+                continue
+            if name in OBSERVATION_SLEEVES:
+                # The prior paper promotion had no positive after-cost
+                # holdout. Preserve diagnostics but hard-block its orders.
+                dec.diagnostics["entry_gate"] = dec.note
+                dec.note = "research only: retrospective stock holdout lost money after costs"
+                dec.active = False
+                dec.candidates = []
+                result.decisions.append(dec)
+                dec.log()
                 continue
             result.decisions.append(dec)
             accepted = []

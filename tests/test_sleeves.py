@@ -15,12 +15,12 @@ import numpy as np
 import pandas as pd
 
 from app.sleeves.base import Candidate, Sleeve, SleeveDecision
-from app.sleeves.config import SLEEVES
+from app.sleeves.config import OBSERVATION_SLEEVES, PRODUCTION_SLEEVES, SLEEVES
 from app.sleeves.engine import ACTIVE_SLEEVES, PRIORITY, SleeveEngine
 from app.sleeves.options_overlay import OptionsOverlaySleeve, Spread
 from app.sleeves.index_directional import IndexDirectionalSleeve
 from app.sleeves.quality_momentum import QualityMomentumSleeve
-from app.sleeves.regime import BREADTH_NEUTRAL, BREADTH_ON, RegimeGate
+from app.sleeves.regime import BREADTH_NEUTRAL, BREADTH_ON, RegimeGate, RegimeView
 from app.sleeves.risk import BookState, RiskManager
 from app.sleeves.universe import MAX_PRICE, MIN_PRICE, MIN_TURNOVER, liquid_universe
 
@@ -340,8 +340,29 @@ class EngineWiringTest(unittest.TestCase):
                 self.assertIsNotNone(cfg)
                 self.assertIsInstance(cfg.enabled, bool)
 
-    def test_only_index_and_verified_factor_sleeves_are_active(self) -> None:
+    def test_only_index_can_open_paper_trades(self) -> None:
         self.assertEqual(ACTIVE_SLEEVES, ("index_directional", "quality_momentum"))
+        self.assertEqual(PRODUCTION_SLEEVES, ("index_directional",))
+        self.assertEqual(OBSERVATION_SLEEVES, ("quality_momentum",))
+
+    def test_positive_stock_screen_never_reaches_allocator(self) -> None:
+        bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)
+        bars.volume = 2_000_000.0
+        asof = bars.index[-1]
+        eng = SleeveEngine()
+        with patch.object(eng.gate, "view", return_value=RegimeView(
+                "ON", True, .8, "ON", "synthetic strong trend")):
+            result = eng.run({"TEST": bars}, pd.DataFrame(index=bars.index), asof,
+                             {"TEST": {"price": float(bars.close.iloc[-1])}},
+                             _book(), trade_date=asof + pd.offsets.MonthBegin(),
+                             factor_symbols={"TEST"}, require_reference_data=True,
+                             require_live_quotes=True, routable_instruments=("EQ",))
+        stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
+        self.assertEqual([r["symbol"] for r in stock.diagnostics["watch"]], ["TEST"])
+        self.assertEqual(stock.candidates, [])
+        self.assertFalse(stock.active)
+        self.assertIn("research only", stock.note)
+        self.assertEqual(result.allocations, [])
 
     def test_factor_stock_needs_verified_membership_and_on_regime(self) -> None:
         bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)

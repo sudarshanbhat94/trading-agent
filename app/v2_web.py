@@ -5081,10 +5081,10 @@ function renderIdeas(d){
     +'can watch it build, not as evidence.</div>':'');
  fdSet('ideasHead','fd-card',
   '<details class=ig-how><summary>How this is calculated</summary>'
-  +(allManaged?'<div class=fd-text style="margin-top:0">Funded entries use the '
-   +ccy+f.format(d.capital)+' shared paper book. NIFTYBEES follows the completed 200-session trend; '
-   +'large-cap stocks require verified NSE factor membership and a strong ON regime. '
-   +'Both are reviewed monthly and sized by one risk manager. There is no fixed profit target. '
+  +(allManaged?'<div class=fd-text style="margin-top:0">Funded NIFTYBEES entries use the '
+   +ccy+f.format(d.capital)+' shared paper book and the completed 200-session trend. '
+   +'There is no fixed profit target. The large-cap stock screen is research only: '
+   +'it cannot open paper trades or publish buy ideas after its negative retrospective holdout. '
    +'Real-broker mirroring is disabled for these ideas.</div>'
    :'<div class=fd-text style="margin-top:0">Historical ideas retain their published stop and target levels.</div>')
   +'</details>');
