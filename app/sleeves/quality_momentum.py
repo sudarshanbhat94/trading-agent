@@ -1,7 +1,8 @@
-"""Paper-only NSE large-cap quality/momentum screen.
+"""Research-only NSE quality/momentum screen.
 
-Quality means verified membership in NSE's Momentum Quality 50 index,
-intersected with Nifty 100. Missing constituent data blocks entries.
+Quality means verified membership in NSE's Nifty500 Quality 50 index.
+Momentum and liquidity use completed price history. Missing constituents
+block the screen; this sleeve cannot fund paper entries.
 """
 from __future__ import annotations
 
@@ -76,7 +77,7 @@ class QualityMomentumSleeve(Sleeve):
                 symbol=sym, sleeve=self.name, score=0.5, entry=price,
                 stop=price - ATR_STOP * atr, target=0.0, trail_pct=0.12,
                 max_hold_days=MAX_HOLD_DAYS,
-                why={"setup": "large_cap_quality_momentum",
+                why={"setup": "quality_momentum",
                      "quality_source": "NSE factor-index membership",
                      "return_6m_ex_recent": round(r6, 4),
                      "return_12m_ex_recent": round(r12, 4),
@@ -93,7 +94,7 @@ class QualityMomentumSleeve(Sleeve):
         # max_positions still enforces at most one funded stock.
         dec.candidates = [] if gate else [cand for _, cand in scored[:3]]
         dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
-                           "source": "NSE Nifty100 intersection Momentum Quality 50",
+                           "source": "NSE Nifty500 Quality 50 + completed-session momentum and liquidity",
                            "watch": [dict(symbol=cand.symbol, price=round(cand.entry, 2),
                                           price_source=("live" if (ctx.live.get(cand.symbol) or {}).get("price")
                                                         else "completed close"),
@@ -105,7 +106,7 @@ class QualityMomentumSleeve(Sleeve):
             dec.active = False
             dec.note = gate
         else:
-            dec.note = f"{len(scored)} verified large caps passed price and liquidity checks"
+            dec.note = f"{len(scored)} verified quality stocks passed momentum and liquidity checks"
         return dec
 
     @staticmethod

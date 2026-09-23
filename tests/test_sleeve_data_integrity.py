@@ -60,14 +60,13 @@ class ReferenceTest(unittest.TestCase):
             client.return_value.__enter__.return_value.get.return_value = response
             self.assertEqual(bars5m.fetch_members(),frozenset({"EXAMPLE"}))
 
-    def test_factor_pair_is_point_in_time_and_expires(self):
-        large = [f"S{i}" for i in range(100)]
-        factor = [f"S{i}" for i in range(10)] + [f"F{i}" for i in range(40)]
+    def test_quality_index_is_point_in_time_and_expires(self):
+        factor = [f"S{i}" for i in range(50)]
         reference.import_snapshot(self.con, dict(
             source=reference.FACTOR_SOURCE, known_at=self.now.isoformat(),
-            membership={"NIFTY100": large, "NIFTY500_MQ50": factor}), now=self.now)
+            membership={"NIFTY500_Q50": factor}), now=self.now)
         self.assertIsNone(reference.factor_members(self.now-timedelta(seconds=1),self.path))
-        self.assertEqual(reference.factor_members(self.now,self.path),set(large[:10]))
+        self.assertEqual(reference.factor_members(self.now,self.path),set(factor))
         self.assertIsNone(reference.factor_members(self.now+timedelta(days=8),self.path))
 
     def test_factor_csv_rejects_partial_and_duplicate_files(self):

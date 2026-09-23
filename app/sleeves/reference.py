@@ -26,10 +26,9 @@ CREATE TABLE IF NOT EXISTS membership(
 
 _LAST_REFRESH = 0.0
 _FACTOR_LAST_ATTEMPT = 0.0
-FACTOR_SOURCE = "NSE Nifty100 and Nifty500 Multicap Momentum Quality 50 constituent files"
+FACTOR_SOURCE = "NSE Nifty500 Quality 50 constituent file"
 FACTOR_URLS = {
-    "NIFTY100": "https://www.niftyindices.com/IndexConstituent/ind_nifty100list.csv",
-    "NIFTY500_MQ50": "https://www.niftyindices.com/IndexConstituent/ind_nifty500MulticapMomentumQuality50_list.csv",
+    "NIFTY500_Q50": "https://www.niftyindices.com/IndexConstituent/ind_nifty500Quality50_list.csv",
 }
 
 
@@ -54,7 +53,7 @@ def _parse_constituents(body: str, expected: int) -> list[str]:
 
 
 def refresh_factor_membership(path=PATH):
-    """Fetch both official files as one dated batch; fail closed on errors."""
+    """Fetch the official quality index constituents; fail closed on errors."""
     global _FACTOR_LAST_ATTEMPT
     now = datetime.now(timezone.utc)
     if factor_members(now, path) is not None and time.time() - _FACTOR_LAST_ATTEMPT < 86400:
@@ -70,10 +69,7 @@ def refresh_factor_membership(path=PATH):
             for name, url in FACTOR_URLS.items():
                 response = client.get(url)
                 response.raise_for_status()
-                membership[name] = _parse_constituents(response.text, 100 if name == "NIFTY100" else 50)
-        overlap = set(membership["NIFTY100"]) & set(membership["NIFTY500_MQ50"])
-        if not 5 <= len(overlap) <= 15:
-            raise ValueError("unexpected large-cap factor intersection")
+                membership[name] = _parse_constituents(response.text, 50)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(path, timeout=10)
         try:
@@ -90,25 +86,25 @@ def refresh_factor_membership(path=PATH):
 
 
 def factor_members(now, path=PATH):
-    """Large-cap names in the NSE quality+momentum index, known within 7 days."""
+    """NSE quality-index members known within seven days; momentum is screened separately."""
     try:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             stamp = now.astimezone(timezone.utc).isoformat()
             rows = con.execute(
-                "SELECT symbol,index_name FROM membership WHERE source=? AND known_at=("
-                "SELECT MAX(known_at) FROM membership WHERE source=? AND index_name='NIFTY100' "
-                "AND julianday(known_at)<=julianday(?) AND julianday(known_at)>=julianday(?)-7)",
+                "SELECT symbol FROM membership WHERE source=? AND index_name='NIFTY500_Q50' "
+                "AND known_at=(SELECT MAX(known_at) FROM membership WHERE source=? "
+                "AND index_name='NIFTY500_Q50' AND julianday(known_at)<=julianday(?) "
+                "AND julianday(known_at)>=julianday(?)-7)",
                 (FACTOR_SOURCE, FACTOR_SOURCE, stamp, stamp)).fetchall()
         finally:
             con.close()
     except sqlite3.OperationalError:
         return None
-    large = {s for s, index in rows if index == "NIFTY100"}
-    factor = {s for s, index in rows if index == "NIFTY500_MQ50"}
-    if len(large) != 100 or len(factor) != 50 or not 5 <= len(large & factor) <= 15:
+    factor = {s for (s,) in rows}
+    if len(factor) != 50:
         return None
-    return large & factor
+    return factor
 
 
 def refresh_membership(path=PATH):
@@ -152,7 +148,8 @@ def import_snapshot(con, data, now=None):
     members = []
     for index_name, symbols in data.get("membership", {}).items():
         bounds = {"NIFTY50": (45, 60), "NIFTY100": (90, 115),
-                  "NIFTY500": (400, 600), "NIFTY500_MQ50": (50, 50)}
+                  "NIFTY500": (400, 600), "NIFTY500_MQ50": (50, 50),
+                  "NIFTY500_Q50": (50, 50)}
         if index_name not in bounds or not isinstance(symbols, list):
             raise ValueError("membership must be a complete named NSE index snapshot")
         symbols = {str(s).strip().upper() for s in symbols}

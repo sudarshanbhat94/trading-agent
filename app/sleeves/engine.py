@@ -8,7 +8,7 @@ One pass:
     4. hand the ordered list to the unified risk manager
     5. log regime, per-sleeve activity, and every accept/reject with a reason
 
-Production paper promotes only the NIFTYBEES sleeve. The large-cap factor
+Production paper promotes only the NIFTYBEES sleeve. The quality-stock
 screen remains visible for research but cannot allocate capital.
 """
 from __future__ import annotations
@@ -124,7 +124,7 @@ class SleeveEngine:
                 continue
             if ctx.require_reference_data and name == "quality_momentum" and not ctx.factor_symbols:
                 result.decisions.append(SleeveDecision(name, regime.state, False,
-                                                       note="verified NSE factor constituents unavailable"))
+                                                       note="verified NSE quality constituents unavailable"))
                 continue
             try:
                 # Filter before ranking so ineligible names cannot crowd out
@@ -161,7 +161,7 @@ class SleeveEngine:
                     dec.reject(cand.symbol, "fresh entry quote unavailable")
                 elif (cand.instrument == "EQ" and cand.sleeve == "quality_momentum"
                       and ctx.factor_symbols is not None and cand.symbol not in ctx.factor_symbols):
-                    dec.reject(cand.symbol, "outside verified NSE factor intersection")
+                    dec.reject(cand.symbol, "outside verified NSE quality index")
                 elif (cand.instrument == "EQ" and cand.sleeve in ("mean_reversion", "early_momentum")
                       and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols):
                     dec.reject(cand.symbol, "outside verified liquid NSE universe")

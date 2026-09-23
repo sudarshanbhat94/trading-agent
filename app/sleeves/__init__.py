@@ -1,8 +1,8 @@
 """Research sleeves behind one production allowlist and one risk manager.
 
-`index_directional` and `quality_momentum` can submit Rs 10,000 paper-book
-proposals. The stock sleeve uses a verified NSE constituent intersection and
-is not eligible for real-broker mirroring. Other sleeves remain research-only.
+Only `index_directional` can submit Rs 10,000 paper-book proposals. The
+quality-stock screen uses current NSE Quality 50 constituents and cannot
+allocate paper cash. Other sleeves remain research-only.
 
     mean_reversion    primary   — hardened v2 dip-buying, ON/NEUTRAL only
     quality_momentum  secondary — quality + intermediate momentum, ON only
@@ -19,8 +19,8 @@ Design rules that apply to every sleeve, enforced by `base.Sleeve`:
   * every accept AND reject is logged with a reason, so an idle book can always
     be distinguished from a broken one.
 
-The hard production allowlist lives in `engine.ACTIVE_SLEEVES`; environment
-flags cannot promote a failed research sleeve by accident.
+The hard paper-production allowlist lives in `config.PRODUCTION_SLEEVES`;
+environment flags cannot promote a failed research sleeve by accident.
 """
 from __future__ import annotations
 

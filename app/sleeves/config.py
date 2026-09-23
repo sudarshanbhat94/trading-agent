@@ -92,7 +92,7 @@ class SleeveSettings:
             enabled=_bool("SLEEVE_QUALITY_MOMENTUM", True),
             risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.30),
             max_positions=1,
-            note="paper-only; verified NSE large-cap quality/momentum, monthly")
+            note="research-only; NSE Quality 50 with completed-session momentum, monthly")
         self.early_momentum = SleeveConfig(
             enabled=_bool("SLEEVE_EARLY_MOMENTUM", True),
             risk_share=_float("SHARE_EARLY_MOMENTUM", 0.20),
