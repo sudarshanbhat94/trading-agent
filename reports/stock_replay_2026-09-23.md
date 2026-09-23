@@ -29,7 +29,35 @@ after costs in the later window. The current factor intersection was also
 checked separately using the same frozen rule: seven names had usable
 split-free candles. Strong-index entry returned +0.64% in development and
 **−3.95%** in the retrospective holdout (three trades). That small sample
-cannot prove a persistent loss, but it cannot justify promotion either.
+cannot prove a persistent loss, but it cannot justify promotion either. These
+figures also predate the executable sizing correction below.
+
+## Correction: executable sizing audit
+
+The original replay sized on gross price-to-stop loss. Production's unified
+allocator includes delivery fees and 20 bp slippage on both legs in the ₹150
+stop-loss allowance, and tries the next ranked idea if the first is unfundable.
+The original table therefore **is not a production-executable P&L estimate**.
+Version 2 of the same research harness applies the paper allocator to the
+cached source responses (67 usable symbols, same 33 exclusions):
+
+| Period | Rule | Net return | Trades | Wins |
+| --- | --- | ---: | ---: | ---: |
+| 2021–23 development | Strong index regime | −1.27% | 1 | 0 |
+| 2021–23 development | Stock strength regardless of index | −0.44% | 2 | 1 |
+| 2024–Sep 2026 retrospective holdout | Strong index regime | +1.23% | 1 | 1 |
+| 2024–Sep 2026 retrospective holdout | Stock strength regardless of index | +1.23% | 1 | 1 |
+
+One winning holdout trade is not evidence of a repeatable edge. The stronger
+conclusion is that the ₹10,000 book rarely funds this screen at its stated
+risk limit, and the prior negative returns were partly from trades that the
+current allocator would reject. This replay still lacks historical membership,
+complete split-adjusted candles, and actual forward fills. The stock sleeve
+remains observation-only; no trading threshold or paper order path changed.
+In the strong-regime holdout, 16 monthly reviews had ranked candidates; 15
+could not fund any of the top three. Without the index gate, 30 of 31 ranked
+reviews were unfundable. More frequent scans would not solve this ticket
+economics problem.
 
 ## Limits and next evidence needed
 

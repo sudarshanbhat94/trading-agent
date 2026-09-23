@@ -1778,19 +1778,20 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     # the engine's record must survive anything that happens downstream of it.
     try:
         _book_mirror_entry(v2, market, strategy, symbol, entry_price, stop, target,
-                           sleeve, regime)
+                           sleeve, regime, shares)
     except Exception:
         _LOG.exception("user-book mirror (entry) failed for %s", symbol)
     return True
 
 
 def _book_mirror_entry(v2, market, strategy, symbol, price, stop, target,
-                       sleeve=None, regime=None):
+                       sleeve=None, regime=None, max_shares=None):
     from . import books as _books, plans as _plans
     # None -> books builds the auth DB itself; see books._auth_db for why this
     # must not be `from .main import db` on the engine thread.
     n = _books.mirror_entry(v2, None, _plans, market, strategy, symbol, price,
-                            stop, target, sleeve=sleeve, regime=regime)
+                            stop, target, sleeve=sleeve, regime=regime,
+                            max_shares=max_shares)
     if n:
         _LOG.info("user books: %s opened in %d book(s)", symbol, n)
 

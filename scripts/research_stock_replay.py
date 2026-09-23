@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,11 +24,13 @@ import httpx
 import pandas as pd
 
 from app.costs import round_trip
+from app.sleeves.base import Candidate
+from app.sleeves.risk import BookState, RiskManager
 from scripts.audit_market_prices import bars_from_response
 
 
 SPEC = {
-    "version": 1,
+    "version": 2,
     "warmup_start": "2018-01-01",
     "development": ["2021-01-01", "2023-12-31"],
     "retrospective_holdout": ["2024-01-01", "2026-09-22"],
@@ -38,18 +41,51 @@ SPEC = {
     "slippage_bps_each_side": 20,
     "rules": ["strong_index_regime", "stock_strength_regardless_of_index"],
     "review": "first session of each month, prior completed close to next open",
-    "rank": "top one 6/12-month volatility-adjusted momentum, excluding last month",
+    "rank": "top three 6/12-month volatility-adjusted momentum, excluding last month; first risk-funded name",
     "eligibility": "Rs 50-3300, median 20-day turnover >=Rs 250m, 6m and 12m positive, <=110% of 50-day mean",
     "exit": "3 ATR stop, 12% trail from prior peak, 45-session time stop; gap through stop at open",
     "costs": "OpenStocks delivery round trip plus 20 bps entry and exit slippage",
+    "sizing": "production unified risk manager: 30% sleeve, Rs 150 tactical loss cap including fees/slippage, Rs 1500 minimum ticket",
     "promotion": "forbidden: current constituents create survivorship bias and fundamentals are absent",
 }
 
+# Frozen replay settings. Do not silently inherit a later production config
+# change and rewrite this experiment's historical result.
+REPLAY_SETTINGS = SimpleNamespace(
+    capital=10_000., risk_per_trade=.02, daily_loss_limit=.015,
+    max_drawdown=.10, max_deployed=.90, max_positions_total=3,
+    min_ticket=1_500., min_edge_pct=3.,
+    quality_momentum=SimpleNamespace(enabled=True, risk_share=.30, max_positions=1),
+)
 
-def _download(symbol: str, out: Path) -> tuple[str, str]:
+
+def _funded_entry(ranked, frames, day, cash, peak, previous_equity):
+    """Use the same allocator as paper for each of the three ranked ideas."""
+    rm = RiskManager(REPLAY_SETTINGS)
+    for _, symbol, reference, atr in ranked[:3]:
+        open_price = float(frames[symbol].loc[day, "open"])
+        stop = reference - 3 * atr
+        candidate = Candidate(symbol=symbol, sleeve="quality_momentum", score=1.,
+                              entry=open_price, stop=stop)
+        sane, _ = candidate.is_sane()
+        if not sane:
+            continue
+        book = BookState(capital=SPEC["capital"], cash=cash, deployed=0.,
+                         open_positions=0, per_sleeve_positions={}, equity=cash,
+                         peak_equity=peak, day_pnl=cash-previous_equity)
+        allocation = rm.size(candidate, book)
+        if allocation.ok:
+            return symbol, open_price, stop, allocation.shares
+    return None
+
+
+def _download(symbol: str, out: Path, cache_from: Path | None = None) -> tuple[str, str]:
     path = out / (hashlib.sha256(symbol.encode()).hexdigest()[:16] + ".json")
     if path.exists():
         return symbol, str(path)
+    if cache_from is not None:
+        cached = cache_from / path.name
+        return symbol, str(cached) if cached.is_file() else ""
     start = int(pd.Timestamp(SPEC["warmup_start"], tz="UTC").timestamp())
     end = int(pd.Timestamp("2026-09-23", tz="UTC").timestamp())
     url = "https://query1.finance.yahoo.com/v8/finance/chart/" + quote(symbol + ".NS")
@@ -129,6 +165,7 @@ def replay(frames: dict[str, pd.DataFrame], benchmark: pd.DataFrame,
     position = None
     trades = []
     curve = []
+    eligible_reviews = ranked_reviews = unfunded_reviews = 0
     slip = SPEC["slippage_bps_each_side"] / 10_000
     dates = benchmark.loc[window[0]:window[1]].index
     for i, day in enumerate(dates):
@@ -165,6 +202,7 @@ def replay(frames: dict[str, pd.DataFrame], benchmark: pd.DataFrame,
         if position is None and not exited and first_session:
             eligible = rule != "strong_index_regime" or _strong_index(benchmark, asof)
             if eligible:
+                eligible_reviews += 1
                 ranked = []
                 for sym, frame in frames.items():
                     if asof not in frame.index or day not in frame.index:
@@ -174,18 +212,19 @@ def replay(frames: dict[str, pd.DataFrame], benchmark: pd.DataFrame,
                         ranked.append(candidate)
                 ranked.sort(key=lambda item: (-item[0], item[1]))
                 if ranked:
-                    _, sym, ref, atr = ranked[0]
-                    entry = float(frames[sym].loc[day, "open"]) * (1 + slip)
-                    stop = ref - 3 * atr
-                    risk_per_share = entry - stop
-                    if 0 < risk_per_share <= entry * .25 and entry > stop:
-                        qty = int(min(capital * .30 / entry, 150 / risk_per_share,
-                                      cash / entry))
-                        if qty >= 1 and qty * entry >= SPEC["minimum_ticket"]:
-                            cash -= qty * entry
-                            position = dict(symbol=sym, qty=qty, entry=entry,
-                                            stop=stop, peak=entry, mark=entry,
-                                            date=str(day.date()), day=i)
+                    ranked_reviews += 1
+                    previous_equity = curve[-1][1] if curve else capital
+                    funded = _funded_entry(ranked, frames, day, cash, peak,
+                                           previous_equity)
+                    if funded:
+                        sym, open_price, stop, qty = funded
+                        entry = open_price * (1 + slip)
+                        cash -= qty * entry
+                        position = dict(symbol=sym, qty=qty, entry=entry,
+                                        stop=stop, peak=entry, mark=entry,
+                                        date=str(day.date()), day=i)
+                    else:
+                        unfunded_reviews += 1
         if position is not None:
             sym = position["symbol"]
             if day in frames[sym].index:
@@ -213,6 +252,8 @@ def replay(frames: dict[str, pd.DataFrame], benchmark: pd.DataFrame,
                 trades=len(trades), wins=sum(t["pnl"] > 0 for t in trades),
                 gross=round(sum(t["gross"] for t in trades), 2),
                 fees=round(sum(t["fees"] for t in trades), 2),
+                eligible_reviews=eligible_reviews, ranked_reviews=ranked_reviews,
+                unfunded_reviews=unfunded_reviews,
                 closed_trades=trades)
 
 
@@ -220,14 +261,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbols-file", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--cache-from", type=Path,
+                        help="Read existing vendor responses offline; never fetch missing files")
     args = parser.parse_args()
     symbols = sorted(set(args.symbols_file.read_text().split()))
     if not 80 <= len(symbols) <= 110:
         raise SystemExit("expected a complete Nifty100 snapshot")
     args.out.mkdir(parents=True, exist_ok=True)
     manifest = args.out / "frozen-spec.json"
+    allocator_source = Path(__file__).resolve().parents[1] / "app" / "sleeves" / "risk.py"
     protocol = dict(SPEC, symbols=symbols,
-                    snapshot_sha256=hashlib.sha256(args.symbols_file.read_bytes()).hexdigest())
+                    snapshot_sha256=hashlib.sha256(args.symbols_file.read_bytes()).hexdigest(),
+                    allocator_sha256=hashlib.sha256(allocator_source.read_bytes()).hexdigest())
     encoded = json.dumps(protocol, sort_keys=True, indent=2)
     if manifest.exists() and manifest.read_text() != encoded:
         raise SystemExit("frozen protocol changed; use a new output directory")
@@ -235,7 +280,8 @@ def main():
     cache = args.out / "candles"
     cache.mkdir(exist_ok=True)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        downloaded = dict(pool.map(lambda s: _download(s, cache), symbols + ["NIFTYBEES"]))
+        downloaded = dict(pool.map(lambda s: _download(s, cache, args.cache_from),
+                                   symbols + ["NIFTYBEES"]))
     frames, excluded, source_hashes = {}, {}, {}
     for sym, path in downloaded.items():
         frame, why = _load(sym, path)
@@ -256,7 +302,8 @@ def main():
     (args.out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"usable_symbols": len(frames), "excluded": len(excluded),
                       "results": {label: {rule: {k: v[k] for k in (
-                          "return_pct", "max_drawdown_pct", "trades", "wins", "gross", "fees")}
+                          "return_pct", "max_drawdown_pct", "trades", "wins", "gross", "fees",
+                          "eligible_reviews", "ranked_reviews", "unfunded_reviews")}
                           for rule, v in runs.items()} for label, runs in results.items()}}, indent=2))
 
 

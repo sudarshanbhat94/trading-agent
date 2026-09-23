@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 # Hard production boundary. Research sleeves retain their own sizing defaults
 # for isolated replay and tests, but only these shares can consume the live
-# paper book. The quality stock rule failed an after-cost retrospective
-# holdout, so it is observed for research only and cannot consume paper cash.
+# paper book. The executable after-cost stock replay has only one holdout
+# trade, so it is observed for research only and cannot consume paper cash.
 # Keeping the allowlist beside allocation prevents inactive research modules
 # from making a promoted sleeve look over-allocated.
 PRODUCTION_SLEEVES = ("index_directional",)

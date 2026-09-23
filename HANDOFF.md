@@ -5,9 +5,10 @@ This is a dated orientation, not a live portfolio or broker-status report. Verif
 ## Current trading path
 
 - `app/v2_live.py:loop()` calls `sleeve_pass()` for paper entries. `app/sleeves/config.py` lists `index_directional` as the only production sleeve; `quality_momentum` is observation-only. Legacy lanes remain disabled. `app/sleeves/risk.py` applies unified limits.
+- Subscriber paper-book mirrors cap their quantity at the house-approved shares and their own available cash. They do not independently validate strategy profitability.
 - The default paper capital is ₹10,000. The current regime gate may intentionally hold cash. Do not equate an idle cycle with a broken feed, or a displayed research watch with a funded trade.
 - `app/live_trade.py:MIRRORED_LANES` does not include `index_directional`; the production sleeve therefore cannot automatically mirror its entries to a broker. Do not claim automatic live trading works without verifying this path and broker readiness.
-- The existing stock replay, `reports/stock_replay_2026-09-23.md`, did **not** establish an after-cost equity edge. Its retrospective sample has survivorship and coverage limits. There is no verified consistently profitable engine.
+- The corrected stock replay in `reports/stock_replay_2026-09-23.md` applies the production allocator. It yielded just one holdout trade and did **not** establish an after-cost equity edge. Its retrospective sample has survivorship and coverage limits. There is no verified consistently profitable engine.
 
 ## Next product objective
 

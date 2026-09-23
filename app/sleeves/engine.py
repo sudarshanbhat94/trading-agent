@@ -141,10 +141,10 @@ class SleeveEngine:
                 _LOG.exception("sleeve %s raised; skipping it this pass", name)
                 continue
             if name in OBSERVATION_SLEEVES:
-                # The prior paper promotion had no positive after-cost
-                # holdout. Preserve diagnostics but hard-block its orders.
+                # An executable risk-sized replay left just one holdout
+                # trade. Preserve diagnostics but hard-block its orders.
                 dec.diagnostics["entry_gate"] = dec.note
-                dec.note = "research only: retrospective stock holdout lost money after costs"
+                dec.note = "research only: no reliable after-cost stock edge established"
                 dec.active = False
                 dec.candidates = []
                 result.decisions.append(dec)

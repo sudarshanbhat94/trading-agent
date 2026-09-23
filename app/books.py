@@ -13,11 +13,12 @@ So the engine keeps its book, untouched, as the house record. Users get their
 own tables here, and the two never share a row.
 
 WHAT A USER'S BOOK IS
-Pro is sold as "your own Rs 1,00,000 paper book". That means the engine's
-decisions applied to THEIR cash:
+Each subscribed user has an independent Rs 10,000 paper book. The engine's
+decisions are applied to THEIR cash:
 
   * when the house book opens a position, every subscribed user's book opens
-    the same symbol, SIZED TO THEIR OWN CASH — not the house quantity;
+    the same symbol, sized to their own cash and capped by the house-approved
+    quantity so a mirror cannot enlarge the engine's risk decision;
   * when the house closes it, their book closes it too;
   * manual buys and sells hit only the book of whoever pressed the button;
   * a reset clears only the caller's rows.
@@ -428,12 +429,15 @@ def subscribers(db, plans_mod):
 
 
 def mirror_entry(con, db, plans_mod, market, strategy, symbol, price,
-                 stop=None, target=None, src_id=None, sleeve=None, regime=None):
-    """Fan the house book's entry out to every subscriber's own book."""
+                 stop=None, target=None, src_id=None, sleeve=None, regime=None,
+                 max_shares=None):
+    """Fan out the decision without exceeding its approved share count."""
     done = 0
     for uid in subscribers(db, plans_mod):
         try:
-            if buy(con, uid, market, strategy, symbol, price, None, stop, target,
+            own_qty = size_for(con, uid, market, price)
+            qty = min(own_qty, int(max_shares)) if max_shares is not None else own_qty
+            if qty > 0 and buy(con, uid, market, strategy, symbol, price, qty, stop, target,
                    src_id, sleeve, regime):
                 done += 1
         except Exception:

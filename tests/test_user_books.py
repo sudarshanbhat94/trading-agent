@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from unittest.mock import patch
 
 from app import books, v2_live
 
@@ -162,6 +163,36 @@ class MirrorTest(unittest.TestCase):
         p1 = books.positions(self.con, 1)[-1]["shares"]
         p2 = books.positions(self.con, 2)[-1]["shares"]
         self.assertLess(p1, p2)
+
+    def test_mirror_never_exceeds_the_house_approved_quantity(self) -> None:
+        # Before this cap, a house risk decision for one expensive share
+        # became two or more shares in every subscriber's paper book.
+        n = books.mirror_entry(self.con, self.db, self.plans, "IN",
+                               "quality_momentum", "QUALITY", 1200.0,
+                               stop=1150.0, max_shares=1)
+        self.assertEqual(n, 2)
+        self.assertEqual(books.positions(self.con, 1)[0]["shares"], 1)
+        self.assertEqual(books.positions(self.con, 2)[0]["shares"], 1)
+
+    def test_house_writer_passes_approved_quantity_to_user_mirror(self) -> None:
+        with patch.object(v2_live, "_live_mirror_entry"), patch.object(
+                v2_live, "_book_mirror_entry") as mirrored:
+            ok = v2_live.record_entry(
+                self.con, "IN", "quality_momentum", "QUALITY",
+                "2026-09-23", 1200.0, 1, 1150.0, 0.0, 0.12, 0.8,
+                "test", sleeve="quality_momentum", regime="ON")
+        self.assertTrue(ok)
+        self.assertEqual(mirrored.call_args.args[-1], 1)
+
+    def test_house_cap_does_not_override_a_users_smaller_cash(self) -> None:
+        books.buy(self.con, 1, "IN", "manual", "X", 1900.0, shares=5)
+        books.mirror_entry(self.con, self.db, self.plans, "IN",
+                           "quality_momentum", "QUALITY", 300.0,
+                           stop=285.0, max_shares=5)
+        p1 = books.positions(self.con, 1)[-1]["shares"]
+        p2 = books.positions(self.con, 2)[-1]["shares"]
+        self.assertLess(p1, p2)
+        self.assertLessEqual(p2, 5)
 
     def test_the_exit_closes_every_book_holding_it(self) -> None:
         books.mirror_entry(self.con, self.db, self.plans, "IN", "swing_meanrev",
