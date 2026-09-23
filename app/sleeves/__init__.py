@@ -1,8 +1,8 @@
 """Research sleeves behind one production allowlist and one risk manager.
 
-Only `index_directional` is promoted to the Rs 10,000 paper book. Each other
-sleeve remains importable for replay and reporting but cannot submit a live
-paper proposal through the production orchestrator.
+`index_directional` and `quality_momentum` can submit Rs 10,000 paper-book
+proposals. The stock sleeve uses a verified NSE constituent intersection and
+is not eligible for real-broker mirroring. Other sleeves remain research-only.
 
     mean_reversion    primary   — hardened v2 dip-buying, ON/NEUTRAL only
     quality_momentum  secondary — quality + intermediate momentum, ON only

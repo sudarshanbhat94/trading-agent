@@ -60,6 +60,25 @@ class ReferenceTest(unittest.TestCase):
             client.return_value.__enter__.return_value.get.return_value = response
             self.assertEqual(bars5m.fetch_members(),frozenset({"EXAMPLE"}))
 
+    def test_factor_pair_is_point_in_time_and_expires(self):
+        large = [f"S{i}" for i in range(100)]
+        factor = [f"S{i}" for i in range(10)] + [f"F{i}" for i in range(40)]
+        reference.import_snapshot(self.con, dict(
+            source=reference.FACTOR_SOURCE, known_at=self.now.isoformat(),
+            membership={"NIFTY100": large, "NIFTY500_MQ50": factor}), now=self.now)
+        self.assertIsNone(reference.factor_members(self.now-timedelta(seconds=1),self.path))
+        self.assertEqual(reference.factor_members(self.now,self.path),set(large[:10]))
+        self.assertIsNone(reference.factor_members(self.now+timedelta(days=8),self.path))
+
+    def test_factor_csv_rejects_partial_and_duplicate_files(self):
+        lines = ["Company Name,Symbol,Series,ISIN Code"]
+        lines += [f"Example {i},S{i},EQ,INE000000{i:03d}" for i in range(50)]
+        self.assertEqual(len(reference._parse_constituents("\n".join(lines),50)),50)
+        with self.assertRaises(ValueError):
+            reference._parse_constituents("\n".join(lines[:-1]),50)
+        with self.assertRaises(ValueError):
+            reference._parse_constituents("\n".join(lines+[lines[-1]]),51)
+
     def test_delivery_reader_uses_only_completed_data(self):
         self.con.execute("CREATE TABLE delivery_data(symbol,date,delivery_pct)")
         self.con.executemany("INSERT INTO delivery_data VALUES('X',?,?)",
@@ -94,6 +113,8 @@ class BoundaryTest(unittest.TestCase):
                 stack.enter_context(patch.object(v2_live,"_hist",return_value=({"NIFTYBEES":None},None)))
                 stack.enter_context(patch.object(v2_live.eng,"complete_trading_dates",return_value=[now.astimezone(v2_live.IST).date()-timedelta(days=1)]))
                 stack.enter_context(patch("app.sleeves.reference.refresh_membership"))
+                stack.enter_context(patch("app.sleeves.reference.refresh_factor_membership"))
+                stack.enter_context(patch("app.sleeves.reference.factor_members",return_value=None))
                 stack.enter_context(patch("app.sleeves.reference.snapshot",return_value=({"TEST"},{})))
                 stack.enter_context(patch.object(v2_live,"_publish_sleeve_ideas"))
                 live_mirror = stack.enter_context(patch.object(v2_live,"_live_mirror_entry"))

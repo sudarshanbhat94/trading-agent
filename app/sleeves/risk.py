@@ -46,6 +46,7 @@ class BookState:
     day_pnl: float
     per_sleeve_notional: dict = field(default_factory=dict)
     open_risk: float = 0.0
+    strategic_open_risk: float = 0.0
 
 
 @dataclass
@@ -69,7 +70,8 @@ class RiskManager:
     def halted(self, book: BookState) -> tuple[bool, str]:
         """True when no new risk may be opened, for any sleeve."""
         if not all(math.isfinite(v) for v in (book.capital, book.cash, book.deployed,
-                   book.equity, book.peak_equity, book.day_pnl, book.open_risk)) or book.capital <= 0 or book.open_risk < 0:
+                   book.equity, book.peak_equity, book.day_pnl, book.open_risk,
+                   book.strategic_open_risk)) or book.capital <= 0 or book.open_risk < 0 or book.strategic_open_risk < 0 or book.strategic_open_risk > book.open_risk:
             return True, "invalid book valuation"
         if book.peak_equity > 0:
             dd = book.equity / book.peak_equity - 1
@@ -117,14 +119,23 @@ class RiskManager:
         # (below), because multiplying it into per-trade risk double-discounts:
         # on a Rs 10,000 book that produced a Rs 20 risk budget, which cannot
         # buy one share of anything, and every sleeve sized to zero.
-        risk_budget = min(book.capital * self.s.risk_per_trade,
-                          max(0, book.capital * self.s.daily_loss_limit + book.day_pnl - book.open_risk))
+        total_room = max(0.0, book.capital * self.s.max_drawdown - book.open_risk)
+        tactical_risk = book.open_risk - book.strategic_open_risk
+        tactical_room = max(0.0, book.capital * self.s.daily_loss_limit
+                            + min(book.day_pnl, 0.0) - tactical_risk)
+        strategic_room = max(0.0, book.capital *
+                             (self.s.max_drawdown - self.s.daily_loss_limit)
+                             - book.strategic_open_risk)
+        risk_budget = min(total_room, strategic_room if cand.allocation_pct
+                          else min(book.capital * self.s.risk_per_trade,
+                                   tactical_room))
         if cand.allocation_pct:
-            # Strategic index exposure is controlled by portfolio allocation
-            # and the book drawdown brake. Applying one-day stop-risk sizing to
-            # a multi-month trend rule changes it into a different strategy.
-            by_risk = book.capital * cand.allocation_pct / cand.entry
-            by_slot = by_risk
+            # The index has a wide disaster stop. At Rs 10k, blindly filling
+            # 50% would risk >10% of the whole book and starve stock entries.
+            # Reserve the daily tactical budget, then cap index shares by
+            # actual stop loss as well as the intended allocation.
+            by_risk = risk_budget / rps
+            by_slot = book.capital * cand.allocation_pct / cand.entry
         else:
             by_risk = risk_budget / rps
             slot = book.capital / max(self.s.max_positions_total, 1)
@@ -174,6 +185,7 @@ class RiskManager:
         cash = book.cash
         deployed = book.deployed
         open_risk = book.open_risk
+        strategic_open_risk = book.strategic_open_risk
         seen = set()
         opened = book.open_positions
         per_sleeve = dict(book.per_sleeve_positions)
@@ -189,7 +201,8 @@ class RiskManager:
                               open_positions=opened, per_sleeve_positions=per_sleeve,
                               per_sleeve_notional=per_notional,
                               equity=book.equity, peak_equity=book.peak_equity,
-                              day_pnl=book.day_pnl, open_risk=open_risk)
+                              day_pnl=book.day_pnl, open_risk=open_risk,
+                              strategic_open_risk=strategic_open_risk)
             alloc = self.size(cand, probe)
             if not alloc.ok:
                 _LOG.info("risk: %s/%s refused — %s", cand.sleeve, cand.symbol, alloc.reason)
@@ -197,6 +210,8 @@ class RiskManager:
             cash -= alloc.notional
             deployed += alloc.notional
             open_risk += alloc.risk_amount
+            if cand.allocation_pct:
+                strategic_open_risk += alloc.risk_amount
             seen.add(cand.symbol)
             opened += 1
             per_sleeve[cand.sleeve] = per_sleeve.get(cand.sleeve, 0) + 1

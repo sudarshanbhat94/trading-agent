@@ -19,6 +19,7 @@ from app.sleeves.config import SLEEVES
 from app.sleeves.engine import ACTIVE_SLEEVES, PRIORITY, SleeveEngine
 from app.sleeves.options_overlay import OptionsOverlaySleeve, Spread
 from app.sleeves.index_directional import IndexDirectionalSleeve
+from app.sleeves.quality_momentum import QualityMomentumSleeve
 from app.sleeves.regime import BREADTH_NEUTRAL, BREADTH_ON, RegimeGate
 from app.sleeves.risk import BookState, RiskManager
 from app.sleeves.universe import MAX_PRICE, MIN_PRICE, MIN_TURNOVER, liquid_universe
@@ -128,7 +129,7 @@ class EvidenceBackedIndexSleeveTest(unittest.TestCase):
     def test_fresh_book_can_enter_midmonth_once(self) -> None:
         bars = _panel(n_days=260, drift=.001, vol=0, seed=17)
         asof = bars.index[-2]
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON"),
+        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON", strong=True),
                               tails={"NIFTYBEES": bars}, asof=asof,
                               trade_date=bars.index[-1], bootstrap_entry=True,
                               live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
@@ -180,6 +181,29 @@ class RiskManagerTest(unittest.TestCase):
                 a = self.rm.size(self._cand(price, stop), _book())
                 if a.ok:
                     self.assertLessEqual(a.risk_amount, cap + price)
+
+    def test_index_and_stock_share_one_hard_stop_budget(self) -> None:
+        index = Candidate("NIFTYBEES", "index_directional", .8, 260, 195,
+                          allocation_pct=.50)
+        stock = Candidate("ASIANPAINT", "quality_momentum", .8, 2440, 2305)
+        funded = self.rm.allocate([index, stock], _book())
+        self.assertEqual([a.candidate.symbol for a in funded],
+                         ["NIFTYBEES", "ASIANPAINT"])
+        self.assertLessEqual(sum(a.risk_amount for a in funded),
+                             SLEEVES.capital * SLEEVES.max_drawdown)
+        self.assertLessEqual(funded[0].risk_amount,
+                             SLEEVES.capital * (SLEEVES.max_drawdown-
+                                                SLEEVES.daily_loss_limit))
+        self.assertLessEqual(funded[1].risk_amount,
+                             SLEEVES.capital * SLEEVES.daily_loss_limit)
+
+    def test_old_oversized_index_position_cannot_fund_new_stock(self) -> None:
+        stock = Candidate("ASIANPAINT", "quality_momentum", .8, 2440, 2305)
+        book = _book(cash=5060, deployed=4940, open_positions=1,
+                     per_sleeve_positions={"index_directional":1},
+                     per_sleeve_notional={"index_directional":4940},
+                     open_risk=1235, strategic_open_risk=1235)
+        self.assertFalse(self.rm.size(stock, book).ok)
 
     def test_a_wider_stop_buys_a_smaller_position(self) -> None:
         tight = self.rm.size(self._cand(250.0, 243.0), _book())
@@ -316,8 +340,33 @@ class EngineWiringTest(unittest.TestCase):
                 self.assertIsNotNone(cfg)
                 self.assertIsInstance(cfg.enabled, bool)
 
-    def test_only_evidence_backed_sleeve_is_active(self) -> None:
-        self.assertEqual(ACTIVE_SLEEVES, ("index_directional",))
+    def test_only_index_and_verified_factor_sleeves_are_active(self) -> None:
+        self.assertEqual(ACTIVE_SLEEVES, ("index_directional", "quality_momentum"))
+
+    def test_factor_stock_needs_verified_membership_and_on_regime(self) -> None:
+        bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)
+        bars.volume = 2_000_000.0
+        asof = bars.index[-1]
+        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON", strong=True),
+                              factor_symbols={"TEST"}, require_reference_data=True,
+                              tails={"TEST":bars}, asof=asof,
+                              trade_date=asof+pd.offsets.MonthBegin(),
+                              live={"TEST":{"price":float(bars.close.iloc[-1])}},
+                              settings=SLEEVES)
+        sleeve = QualityMomentumSleeve()
+        dec = sleeve.propose(ctx)
+        self.assertEqual([c.symbol for c in dec.candidates],["TEST"])
+        self.assertEqual(dec.candidates[0].why["quality_source"],
+                         "NSE factor-index membership")
+        ctx.factor_symbols = None
+        self.assertEqual(sleeve.propose(ctx).candidates,[])
+        ctx.factor_symbols = {"TEST"}
+        ctx.regime.state = "OFF"
+        self.assertEqual(sleeve.propose(ctx).candidates,[])
+
+    def test_factor_stock_cannot_be_sent_to_real_broker(self) -> None:
+        from app import live_trade
+        self.assertNotIn("quality_momentum", live_trade.MIRRORED_LANES)
 
     def test_a_halted_book_produces_no_allocations(self) -> None:
         eng = SleeveEngine()

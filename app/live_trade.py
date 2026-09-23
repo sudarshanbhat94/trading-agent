@@ -40,7 +40,7 @@ _LOG = logging.getLogger("openstocks.live")
 
 # Lanes the sleeve is allowed to mirror. gap_momentum is a measured net loser
 # and quarantined from the paper book already; it must not reappear here.
-MIRRORED_LANES = ("mean_reversion", "quality_momentum", "early_momentum", "manual")
+MIRRORED_LANES = ("mean_reversion", "early_momentum", "manual")
 
 # UPSTOX PRODUCT CODE, per lane. Every order went out as "D" (delivery),
 # including the lanes that square off the same afternoon — which is not a

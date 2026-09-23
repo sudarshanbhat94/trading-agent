@@ -1,38 +1,18 @@
-"""Sleeve 2 (secondary): quality + intermediate momentum.
+"""Paper-only NSE large-cap quality/momentum screen.
 
-Buys businesses that are compounding and whose price agrees, and holds them for
-weeks rather than days. This is the slow sleeve — it exists so the book is not
-purely short-horizon, where flat charges dominate.
-
-Ranking combines:
-
-  * QUALITY  — ROE, leverage and earnings stability where fundamentals are
-    available. Production requires dated fundamentals and rejects missing
-    coverage. Research contexts can explicitly use a price-behaviour proxy;
-    that proxy is never represented as fundamental confirmation.
-  * MOMENTUM — 6-12 month return EXCLUDING the most recent month. Skipping the
-    last month is deliberate and is the standard construction: recent
-    one-month returns mean-revert and pollute the momentum signal.
-
-Runs in ON only (or ON with `strong`), rebalances slowly, and carries a wider
-stop than the tactical sleeves because it is a position, not a trade.
+Quality means verified membership in NSE's Momentum Quality 50 index,
+intersected with Nifty 100. Missing constituent data blocks entries.
 """
 from __future__ import annotations
 
-import numpy as np
+import math
 import pandas as pd
+from .base import Candidate, Sleeve
+from .index_directional import monthly_rebalance
 
-from .base import Candidate, Sleeve, SleeveDecision
-from .universe import liquid_universe
-
-MOM_LOOKBACK = 252            # ~12 months
-MOM_SKIP = 21                 # skip the most recent month
-MIN_MOMENTUM = 0.10           # must be up >=10% over the measured window
-MAX_VOL = 0.045               # daily realised vol ceiling (~4.5% ATR-equivalent)
-MAX_DD_FROM_HIGH = 0.20       # a compounding name is not 20% off its high
-REBALANCE_DAYS = 14           # bi-weekly
-
-ATR_STOP = 3.0                # wider: this is a position, not a trade
+MIN_TURNOVER = 250_000_000
+MAX_PRICE = 3_300
+ATR_STOP = 3.0
 MAX_HOLD_DAYS = 45
 
 
@@ -40,129 +20,86 @@ class QualityMomentumSleeve(Sleeve):
     name = "quality_momentum"
     allowed_regimes = ("ON",)
 
-    def propose(self, ctx) -> SleeveDecision:
-        regime = ctx.regime.state
-        dec = self._decision(regime)
-
-        if not self.may_run(regime):
+    def propose(self, ctx):
+        dec = self._decision(ctx.regime.state)
+        members = getattr(ctx, "factor_symbols", None)
+        if not self.may_run(ctx.regime.state):
             dec.active = False
-            dec.note = f"regime {regime}; this sleeve is ON-only"
+            dec.note = f"regime {ctx.regime.state} blocks new stock longs"
             return dec
-        if not ctx.regime.strong and not ctx.force:
+        if not getattr(ctx.regime, "strong", False):
             dec.active = False
-            dec.note = "ON but not STRONG — quality-momentum waits for confirmation"
+            dec.note = "ON regime lacks the existing strong-trend confirmation"
             return dec
-        if ctx.sessions_since_rebalance is not None and \
-                ctx.sessions_since_rebalance < REBALANCE_DAYS:
+        if ctx.require_reference_data and not members:
             dec.active = False
-            dec.note = (f"rebalanced {ctx.sessions_since_rebalance} sessions ago "
-                        f"(every {REBALANCE_DAYS})")
+            dec.note = "verified NSE quality/momentum constituents unavailable"
+            return dec
+        if not monthly_rebalance(ctx.asof, ctx.trade_date):
+            dec.active = False
+            dec.note = "monthly review has not arrived"
             return dec
 
-        allowed = liquid_universe(ctx.tails, ctx.asof)
-        scored: list[Candidate] = []
-
-        for sym in allowed:
+        scored = []
+        universe = members if members is not None else set(ctx.tails)
+        for sym in sorted(universe):
             g = ctx.tails.get(sym)
             if g is None or ctx.asof not in g.index:
+                dec.reject(sym, "completed price history unavailable")
                 continue
             gi = g.loc[:ctx.asof]
-            if len(gi) < MOM_LOOKBACK:
-                dec.reject(sym, "less than a year of history")
+            if len(gi) < 253:
+                dec.reject(sym, "less than 253 completed sessions")
                 continue
-
-            mom = self._momentum(gi)
-            if mom is None or mom < MIN_MOMENTUM:
-                dec.reject(sym, f"momentum {0 if mom is None else mom*100:.0f}% "
-                                f"< {MIN_MOMENTUM*100:.0f}%")
+            close = gi.close.astype(float)
+            price = float((ctx.live.get(sym) or {}).get("price") or close.iloc[-1])
+            turnover = float((gi.close * gi.volume).tail(20).median())
+            if not 50 <= price <= MAX_PRICE or turnover < MIN_TURNOVER:
+                dec.reject(sym, "price or turnover outside liquid Rs 10k universe")
                 continue
-
-            if ctx.require_reference_data:
-                q = (ctx.quality_scores or {}).get(sym)
-                why = "point-in-time fundamentals unavailable"
-            else:
-                q, why = self._quality(gi)
-            if q is None:
-                dec.reject(sym, why)
+            # Six/twelve-month momentum, excluding the most recent month.
+            r6 = float(close.iloc[-22] / close.iloc[-127] - 1)
+            r12 = float(close.iloc[-22] / close.iloc[-253] - 1)
+            vol = float(close.pct_change().tail(252).std())
+            sma50 = float(close.tail(50).mean())
+            if min(r6, r12) <= 0 or not math.isfinite(vol) or vol <= 0:
+                dec.reject(sym, "intermediate momentum absent")
                 continue
-
-            close = float(gi["close"].iloc[-1])
+            if price > sma50 * 1.10:
+                dec.reject(sym, "more than 10% above 50-session mean")
+                continue
             atr = self._atr(gi)
-            if atr <= 0:
-                dec.reject(sym, "no ATR")
+            if not math.isfinite(atr) or atr <= 0 or price - ATR_STOP * atr <= 0:
+                dec.reject(sym, "ATR stop unavailable")
                 continue
-
-            entry = float(ctx.live.get(sym, {}).get("price") or close)
-            score = 0.55 * min(mom / 0.60, 1.0) + 0.45 * q
-            scored.append(Candidate(
-                symbol=sym, sleeve=self.name, score=round(float(score), 4),
-                entry=entry, stop=entry - ATR_STOP * atr, target=0.0,
-                trail_pct=0.12, max_hold_days=MAX_HOLD_DAYS,
-                why=dict(setup="quality_momentum", momentum=round(mom, 4),
-                         quality=round(q, 4), quality_source=("fundamentals" if ctx.require_reference_data else "price_proxy"),
-                         fundamentals_available=ctx.require_reference_data, regime=regime)))
-
-        scored = self._sane_only(scored, dec)
-        cfg = getattr(ctx.settings, self.name)
-        dec.candidates = self._rank(scored, cfg.max_positions)
-        dec.note = f"{len(scored)} passed quality+momentum screen"
+            raw = (r6 + r12) / (2 * vol * math.sqrt(252))
+            scored.append((raw, Candidate(
+                symbol=sym, sleeve=self.name, score=0.5, entry=price,
+                stop=price - ATR_STOP * atr, target=0.0, trail_pct=0.12,
+                max_hold_days=MAX_HOLD_DAYS,
+                why={"setup": "large_cap_quality_momentum",
+                     "quality_source": "NSE factor-index membership",
+                     "return_6m_ex_recent": round(r6, 4),
+                     "return_12m_ex_recent": round(r12, 4),
+                     "median_turnover_inr": round(turnover),
+                     "research_status": "experimental paper; no validated net profit track",
+                     "regime": ctx.regime.state})))
+        scored.sort(key=lambda item: (-item[0], item[1].symbol))
+        if scored:
+            top = max(scored[0][0], 1e-9)
+            for raw, cand in scored:
+                cand.score = round(min(max(raw / top, 0.0), 1.0), 4)
+        # Offer three ranked names to the unified risk manager. At Rs 10k the
+        # top score can be unaffordable even when the second fits one slot.
+        # max_positions still enforces at most one funded stock.
+        dec.candidates = [cand for _, cand in scored[:3]]
+        dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
+                           "source": "NSE Nifty100 intersection Momentum Quality 50"}
+        dec.note = f"{len(scored)} verified large caps passed price and liquidity checks"
         return dec
 
-    # -- factors -------------------------------------------------------
     @staticmethod
-    def _momentum(gi: pd.DataFrame) -> float | None:
-        """12-month return skipping the most recent month."""
-        try:
-            c = gi["close"]
-            if len(c) < MOM_LOOKBACK:
-                return None
-            past = float(c.iloc[-MOM_LOOKBACK])
-            recent = float(c.iloc[-MOM_SKIP])
-            return (recent / past - 1) if past > 0 else None
-        except Exception:
-            return None
-
-    @staticmethod
-    def _quality(gi: pd.DataFrame) -> tuple[float | None, str]:
-        """Price-behaviour proxy for durable compounding.
-
-        Fundamentals (ROE, leverage, earnings stability) are used when a feed
-        provides them; this install has none, so the proxy is explicit:
-        shallow drawdown + low volatility + a smooth path.
-        """
-        try:
-            c = gi["close"]
-            hi252 = float(c.tail(252).max())
-            close = float(c.iloc[-1])
-            if hi252 <= 0:
-                return None, "no 252d high"
-            dd = 1 - close / hi252
-            if dd > MAX_DD_FROM_HIGH:
-                return None, f"{dd*100:.0f}% off its 1y high"
-
-            rets = c.pct_change().tail(252).dropna()
-            if len(rets) < 100:
-                return None, "too few returns"
-            vol = float(rets.std())
-            if vol > MAX_VOL:
-                return None, f"realised vol {vol*100:.1f}% too high"
-
-            # smoothness: share of up days, a crude but honest path measure
-            smooth = float((rets > 0).mean())
-
-            q = (0.40 * (1 - dd / MAX_DD_FROM_HIGH)
-                 + 0.35 * (1 - vol / MAX_VOL)
-                 + 0.25 * min(max((smooth - 0.45) / 0.15, 0.0), 1.0))
-            return float(min(max(q, 0.0), 1.0)), ""
-        except Exception as exc:
-            return None, f"quality error: {type(exc).__name__}"
-
-    @staticmethod
-    def _atr(gi: pd.DataFrame, window: int = 14) -> float:
-        try:
-            h, l, c = gi["high"], gi["low"], gi["close"]
-            tr = pd.concat([(h - l), (h - c.shift()).abs(), (l - c.shift()).abs()],
-                           axis=1).max(axis=1)
-            return float(tr.rolling(window).mean().iloc[-1])
-        except Exception:
-            return 0.0
+    def _atr(gi: pd.DataFrame) -> float:
+        h, l, c = gi.high, gi.low, gi.close
+        tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+        return float(tr.tail(14).mean())

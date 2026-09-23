@@ -14,7 +14,7 @@ from dataclasses import dataclass
 # for isolated replay and tests, but only these shares can consume the live
 # paper book. Keeping the allowlist beside allocation prevents inactive
 # research modules from making a promoted sleeve look over-allocated.
-PRODUCTION_SLEEVES = ("index_directional",)
+PRODUCTION_SLEEVES = ("index_directional", "quality_momentum")
 
 
 def _bool(key: str, default: bool) -> bool:
@@ -87,9 +87,9 @@ class SleeveSettings:
             note="primary; hardened v2 dip-buying, ON/NEUTRAL only")
         self.quality_momentum = SleeveConfig(
             enabled=_bool("SLEEVE_QUALITY_MOMENTUM", True),
-            risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.05),
+            risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.30),
             max_positions=1,
-            note="secondary; quality + 6-12m momentum, ON only, slow rebalance")
+            note="paper-only; verified NSE large-cap quality/momentum, monthly")
         self.early_momentum = SleeveConfig(
             enabled=_bool("SLEEVE_EARLY_MOMENTUM", True),
             risk_share=_float("SHARE_EARLY_MOMENTUM", 0.20),

@@ -4326,13 +4326,19 @@ def sleeve_pass(market):
             (capital, market, epoch_ts)).fetchone()[0] or capital
         peak = max(float(peak), capital)
 
+        risk_rows = v2.execute(
+            "SELECT symbol,shares,entry_price,stop,COALESCE(sleeve,strategy) "
+            "FROM v2_positions WHERE market=?", (market,)).fetchall()
+        stop_risks = [(strat, float(sh) * max(
+            0, float(live.get(sym, {}).get("price") or ep) - float(stop or 0)))
+            for sym, sh, ep, stop, strat in risk_rows if stop]
         book = BookState(capital=capital, cash=cash, deployed=deployed,
                          open_positions=len(positions), per_sleeve_positions=per_sleeve,
                          equity=equity, peak_equity=float(peak), day_pnl=float(day_pnl),
                          per_sleeve_notional=per_notional,
-                         open_risk=sum(float(sh)*max(0, float(live.get(sym, {}).get("price") or ep)-float(stop or 0))
-                             for sym,sh,ep,stop in v2.execute("SELECT symbol,shares,entry_price,stop "
-                                                          "FROM v2_positions WHERE market=?", (market,))))
+                         open_risk=sum(risk for _, risk in stop_risks),
+                         strategic_open_risk=sum(risk for strat, risk in stop_risks
+                                                 if strat == "index_directional"))
 
         last_rebalance = v2.execute("SELECT MAX(entry_date) FROM ("
             "SELECT entry_date FROM v2_positions WHERE market=? AND strategy='quality_momentum' "
@@ -4354,10 +4360,13 @@ def sleeve_pass(market):
         feed_db = _ro(MAIN_DB)
         try:
             from .sleeves.feeds import delivery_reader
-            from .sleeves.reference import snapshot, refresh_membership
+            from .sleeves.reference import (snapshot, refresh_membership,
+                                            refresh_factor_membership, factor_members)
             if market == "IN":
                 refresh_membership()
+                refresh_factor_membership()
             eligible, quality_scores = snapshot(datetime.now(timezone.utc))
+            factors = factor_members(datetime.now(timezone.utc)) if market == "IN" else None
             result = _SLEEVE_ENGINE.run(
                 tails, mdf, asof, live, book,
                 trade_date=today,
@@ -4368,6 +4377,7 @@ def sleeve_pass(market):
                                           if last_rebalance else None),
                 require_live_quotes=True, routable_instruments=("EQ",),
                 eligible_symbols=eligible, quality_scores=quality_scores,
+                factor_symbols=factors,
                 require_reference_data=(market == "IN"),
                 bootstrap_entry=not index_seen)
         finally:

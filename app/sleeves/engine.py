@@ -8,8 +8,8 @@ One pass:
     4. hand the ordered list to the unified risk manager
     5. log regime, per-sleeve activity, and every accept/reject with a reason
 
-Production currently promotes only the NIFTYBEES monthly trend sleeve. The
-other implementations remain research modules and cannot submit proposals.
+Production paper promotes the NIFTYBEES and verified large-cap factor sleeves.
+No stock sleeve is broker-mirrored.
 """
 from __future__ import annotations
 
@@ -35,10 +35,7 @@ _LOG = logging.getLogger("openstocks.sleeves.engine")
 PRIORITY = ["index_directional", "mean_reversion", "quality_momentum",
             "early_momentum", "options_overlay"]
 
-# Only the candidate that passed the frozen retrospective checks may submit
-# PAPER proposals. Two holdout trades are not live proof; broker mirroring for
-# this sleeve remains disabled. The other modules stay available for research
-# and historic rows but cannot leak a production proposal.
+# Explicit paper allowlist. Neither promoted sleeve is broker-mirrored.
 ACTIVE_SLEEVES = PRODUCTION_SLEEVES
 
 
@@ -65,6 +62,7 @@ class SleeveContext:
     require_live_quotes: bool = False
     routable_instruments: tuple | None = None
     quality_scores: dict | None = None
+    factor_symbols: set | None = None
     eligible_symbols: set | None = None
     require_reference_data: bool = False
     # A newly reset book must not sit idle until the next calendar month when
@@ -120,16 +118,21 @@ class SleeveEngine:
             if not cfg.enabled:
                 _LOG.info("sleeve %s: disabled by feature flag", name)
                 continue
-            if ctx.require_reference_data and name in ("mean_reversion", "quality_momentum", "early_momentum") and ctx.eligible_symbols is None:
+            if ctx.require_reference_data and name in ("mean_reversion", "early_momentum") and ctx.eligible_symbols is None:
                 result.decisions.append(SleeveDecision(name, regime.state, False, note="Nifty membership snapshot unavailable"))
+                continue
+            if ctx.require_reference_data and name == "quality_momentum" and not ctx.factor_symbols:
+                result.decisions.append(SleeveDecision(name, regime.state, False,
+                                                       note="verified NSE factor constituents unavailable"))
                 continue
             try:
                 # Filter before ranking so ineligible names cannot crowd out
                 # eligible candidates. The regime above uses the full panel.
                 sleeve_ctx = ctx
                 if name in ("mean_reversion", "quality_momentum", "early_momentum"):
+                    allowed = ctx.factor_symbols if name == "quality_momentum" else ctx.eligible_symbols
                     sleeve_ctx = replace(ctx, tails={sym: frame for sym, frame in tails.items()
-                        if (ctx.eligible_symbols is None or sym in ctx.eligible_symbols)
+                        if (allowed is None or sym in allowed)
                         and (not ctx.require_live_quotes or sym in live)})
                 dec = sleeve.propose(sleeve_ctx)
             except Exception:
@@ -145,7 +148,10 @@ class SleeveEngine:
                     dec.reject(cand.symbol, f"regime {regime.state} blocks entry")
                 elif ctx.require_live_quotes and cand.instrument == "EQ" and cand.symbol not in live:
                     dec.reject(cand.symbol, "fresh entry quote unavailable")
-                elif (cand.instrument == "EQ" and cand.sleeve != "index_directional"
+                elif (cand.instrument == "EQ" and cand.sleeve == "quality_momentum"
+                      and ctx.factor_symbols is not None and cand.symbol not in ctx.factor_symbols):
+                    dec.reject(cand.symbol, "outside verified NSE factor intersection")
+                elif (cand.instrument == "EQ" and cand.sleeve in ("mean_reversion", "early_momentum")
                       and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols):
                     dec.reject(cand.symbol, "outside verified liquid NSE universe")
                 elif ctx.routable_instruments is not None and cand.instrument not in ctx.routable_instruments:
