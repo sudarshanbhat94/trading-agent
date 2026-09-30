@@ -374,6 +374,10 @@ class EngineWiringTest(unittest.TestCase):
         self.assertEqual([r["symbol"] for r in stock.diagnostics["watch"]], ["TEST"])
         self.assertGreater(stock.diagnostics["watch"][0]["min_ticket_stop_risk"], 0)
         self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_risk_cap"], 150)
+        self.assertLess(stock.diagnostics["watch"][0]["planned_stop"],
+                        stock.diagnostics["watch"][0]["price"])
+        self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_notional_cap"], 3000)
+        self.assertTrue(stock.diagnostics["screen_gate_open"])
         self.assertIn("fresh_book_risk_fit", stock.diagnostics)
         self.assertEqual(stock.candidates, [])
         self.assertFalse(stock.active)

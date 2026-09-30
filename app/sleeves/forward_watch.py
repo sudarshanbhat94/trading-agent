@@ -15,16 +15,15 @@ from pathlib import Path
 import pandas as pd
 
 from ..costs import round_trip
+from .risk import SLIPPAGE, stop_loss_including_costs
 
 PATH = os.getenv("QUALITY_FORWARD_DB", str(Path(__file__).resolve().parents[2] / "var" / "quality_forward.db"))
-TICKET = 3_000.0
-MIN_TICKET = 1_500.0
-SLIPPAGE = 0.002  # 20 bp each side, as in the frozen stock replay
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS quality_forward(
  observed_on TEXT NOT NULL, signal_asof TEXT NOT NULL, symbol TEXT NOT NULL,
  regime TEXT NOT NULL, score REAL NOT NULL, reference_close REAL NOT NULL,
+ planned_stop REAL, risk_cap REAL, notional_cap REAL, min_ticket REAL,
  entry_on TEXT, entry_price REAL, qty INTEGER, net5_pct REAL, net20_pct REAL,
  status TEXT NOT NULL DEFAULT 'pending',
  PRIMARY KEY(observed_on,symbol));
@@ -36,6 +35,15 @@ def _connect(path):
     con = sqlite3.connect(path, timeout=10)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(quality_forward)")}
+    for name in ("planned_stop", "risk_cap", "notional_cap", "min_ticket"):
+        if name not in cols:
+            con.execute(f"ALTER TABLE quality_forward ADD COLUMN {name} REAL")
+    # Old rows assumed a fixed Rs 3k fill with no stop-risk check. Preserve
+    # them for audit, but never count them as executable performance.
+    con.execute("UPDATE quality_forward SET status='legacy_unverified' "
+                "WHERE planned_stop IS NULL AND status IN ('pending','complete','unfillable')")
+    con.commit()
     return con
 
 
@@ -44,7 +52,9 @@ def update(result, tails, asof, observed_on, path=PATH):
     if pd.Timestamp(asof).date() > pd.Timestamp(observed_on).date():
         raise ValueError("signal close cannot postdate its observation")
     decision = next((d for d in result.decisions if d.sleeve == "quality_momentum"), None)
-    watch = (decision.diagnostics or {}).get("watch", []) if decision else []
+    diagnostics = (decision.diagnostics or {}) if decision else {}
+    watch = diagnostics.get("watch", [])
+    screen_gate_open = bool(diagnostics.get("screen_gate_open"))
     asof_s = str(asof)[:10]
     with closing(_connect(path)) as con, con:
         for item in watch:
@@ -54,16 +64,30 @@ def update(result, tails, asof, observed_on, path=PATH):
                 continue
             close = float(frame.loc[asof, "close"])
             score = float(item.get("score") or 0)
-            if not math.isfinite(close) or close <= 0 or not math.isfinite(score):
+            stop = float(item.get("planned_stop") or 0)
+            risk_cap = float(item.get("fresh_book_risk_cap") or 0)
+            notional_cap = float(item.get("fresh_book_notional_cap") or 0)
+            min_ticket = float(item.get("min_ticket") or 0)
+            if not all(math.isfinite(v) for v in
+                       (close, score, stop, risk_cap, notional_cap, min_ticket)):
                 continue
+            if (close <= 0 or not 0 < stop < close or risk_cap <= 0
+                    or notional_cap <= 0 or min_ticket <= 0):
+                continue
+            status = ("pending" if result.regime.state == "ON" and screen_gate_open
+                      else "entry_blocked")
             con.execute("INSERT OR IGNORE INTO quality_forward"
-                        "(observed_on,signal_asof,symbol,regime,score,reference_close)"
-                        " VALUES(?,?,?,?,?,?)",
-                        (observed_on, asof_s, symbol, result.regime.state, score, close))
+                        "(observed_on,signal_asof,symbol,regime,score,reference_close,"
+                        "planned_stop,risk_cap,notional_cap,min_ticket,status)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (observed_on, asof_s, symbol, result.regime.state, score,
+                         close, stop, risk_cap, notional_cap, min_ticket, status))
 
-        rows = con.execute("SELECT observed_on,signal_asof,symbol,reference_close "
+        rows = con.execute("SELECT observed_on,signal_asof,symbol,reference_close,"
+                           "planned_stop,risk_cap,notional_cap,min_ticket "
                            "FROM quality_forward WHERE status='pending'").fetchall()
-        for day, signal_asof, symbol, original_close in rows:
+        for (day, signal_asof, symbol, original_close, stop, risk_cap,
+             notional_cap, min_ticket) in rows:
             frame = tails.get(symbol)
             if frame is None or signal_asof not in frame.index:
                 continue
@@ -79,9 +103,13 @@ def update(result, tails, asof, observed_on, path=PATH):
                                (frame.index <= pd.Timestamp(asof))]
             if future.empty:
                 continue
-            entry = float(future.iloc[0]["open"]) * (1 + SLIPPAGE)
-            qty = int(TICKET // entry) if math.isfinite(entry) and entry > 0 else 0
-            if qty * entry < MIN_TICKET:
+            open_price = float(future.iloc[0]["open"])
+            entry = open_price * (1 + SLIPPAGE)
+            qty = (int(notional_cap // entry)
+                   if math.isfinite(entry) and entry > stop else 0)
+            while qty > 0 and stop_loss_including_costs(open_price, stop, qty) > risk_cap:
+                qty -= 1
+            if qty * entry < min_ticket:
                 con.execute("UPDATE quality_forward SET status='unfillable' "
                             "WHERE observed_on=? AND symbol=?", (day, symbol))
                 continue
@@ -105,14 +133,20 @@ def update(result, tails, asof, observed_on, path=PATH):
 
 
 def summary(path=PATH):
-    """Counts and after-cost outcomes by observed regime; no profit claim."""
+    """Risk-feasible next-open/20-close diagnostics, not stop-managed trade P&L."""
     if not Path(path).exists():
         return []
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as con:
         rows = con.execute("SELECT regime,COUNT(*),"
-                           "SUM(CASE WHEN net20_pct IS NOT NULL THEN 1 ELSE 0 END),"
-                           "SUM(CASE WHEN net20_pct>0 THEN 1 ELSE 0 END),"
-                           "AVG(net20_pct) FROM quality_forward GROUP BY regime").fetchall()
-    return [dict(regime=regime, observed=observed, matured=matured or 0,
+                           "SUM(CASE WHEN status='entry_blocked' THEN 1 ELSE 0 END),"
+                           "SUM(CASE WHEN status='unfillable' THEN 1 ELSE 0 END),"
+                           "SUM(CASE WHEN status='legacy_unverified' THEN 1 ELSE 0 END),"
+                           "SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END),"
+                           "SUM(CASE WHEN status='complete' AND net20_pct>0 THEN 1 ELSE 0 END),"
+                           "AVG(CASE WHEN status='complete' THEN net20_pct END) "
+                           "FROM quality_forward GROUP BY regime").fetchall()
+    return [dict(regime=regime, observed=observed, entry_blocked=blocked or 0,
+                 unfillable=unfillable or 0,
+                 legacy_unverified=legacy or 0, matured=matured or 0,
                  winners=winners or 0, avg_net20_pct=round(avg, 3) if avg is not None else None)
-            for regime, observed, matured, winners, avg in rows]
+            for regime, observed, blocked, unfillable, legacy, matured, winners, avg in rows]

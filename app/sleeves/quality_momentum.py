@@ -94,8 +94,10 @@ class QualityMomentumSleeve(Sleeve):
         # these before allocation until an independent after-cost test passes.
         dec.candidates = [] if gate else [cand for _, cand in scored[:3]]
         risk_cap = ctx.settings.capital * ctx.settings.daily_loss_limit
-        sleeve_notional_cap = (ctx.settings.capital *
-                               ctx.settings.quality_momentum.risk_share)
+        sleeve_notional_cap = min(
+            ctx.settings.capital * ctx.settings.quality_momentum.risk_share,
+            ctx.settings.capital / ctx.settings.max_positions_total,
+            ctx.settings.capital * ctx.settings.max_deployed)
 
         def minimum_trade(cand):
             minimum = max(1, math.ceil(ctx.settings.min_ticket / cand.entry))
@@ -106,6 +108,7 @@ class QualityMomentumSleeve(Sleeve):
         def watch_row(cand):
             notional, risk, fits = minimum_trade(cand)
             return dict(symbol=cand.symbol, price=round(cand.entry, 2),
+                        planned_stop=cand.stop,
                         price_source=("live" if (ctx.live.get(cand.symbol) or {}).get("price")
                                       else "completed close"),
                         score=cand.score,
@@ -113,10 +116,13 @@ class QualityMomentumSleeve(Sleeve):
                         return_12m_pct=round(cand.why["return_12m_ex_recent"] * 100, 1),
                         min_ticket_notional=notional,
                         min_ticket_stop_risk=risk,
-                        fresh_book_risk_cap=round(risk_cap),
+                        fresh_book_risk_cap=risk_cap,
+                        fresh_book_notional_cap=sleeve_notional_cap,
+                        min_ticket=ctx.settings.min_ticket,
                         fresh_book_risk_fit=fits)
 
         dec.diagnostics = {"verified_members": len(universe), "passed": len(scored),
+                           "screen_gate_open": not gate,
                            "fresh_book_risk_fit": sum(minimum_trade(cand)[2]
                                                        for _, cand in scored),
                            "source": "NSE Nifty500 Quality 50 + completed-session momentum and liquidity",

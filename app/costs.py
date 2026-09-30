@@ -16,26 +16,26 @@ large one they vanish. A single percentage cannot express that, and using one
 means the paper book reports profits the live account will not see — the
 specific way a backtest lies about a small account.
 
-Rates are Upstox's published equity schedule (verified 2026-08-05). They are
+Rates are Upstox's published equity schedule (checked 2026-09-30). They are
 constants here rather than settings because getting them wrong is not a
 preference, and a broker change should be a visible edit.
 
-  https://upstox.com/calculator/brokerage-calculator/
+  https://upstox.com/brokerage-charges/
 """
 from __future__ import annotations
 
 # Per LEG unless noted.
 BROKERAGE_FLAT = 20.0            # Rs per executed order, both products
-BROKERAGE_PCT_DELIVERY = 0.025   # ...or 2.5%, whichever is LOWER
 BROKERAGE_PCT_INTRADAY = 0.001   # ...or 0.1%, whichever is lower
 STT_DELIVERY = 0.001             # both legs
 STT_INTRADAY_SELL = 0.00025      # sell leg only
-EXCHANGE_TXN = 0.0000322         # NSE equity, both legs
+EXCHANGE_TXN = 0.0000307         # NSE equity from 1 Mar 2026, both legs
+IPFT_TURNOVER = 1e-9            # Rs 0.01 per crore, both legs
 STAMP_DELIVERY = 0.00015         # BUY leg only
 STAMP_INTRADAY = 0.00003         # BUY leg only
 SEBI_TURNOVER = 1e-7             # Rs 10 per crore, both legs
 DP_CHARGE = 20.0                 # delivery SELL only, per scrip per day
-GST = 0.18                       # on brokerage + exchange charges
+GST = 0.18                       # on brokerage + transaction + DP + IPFT
 
 INTRADAY = "I"
 DELIVERY = "D"
@@ -52,9 +52,9 @@ def round_trip(buy_value: float, sell_value: float = None, product: str = DELIVE
     if buy_value <= 0:
         return 0.0
     intraday = str(product).upper() == INTRADAY
-    pct = BROKERAGE_PCT_INTRADAY if intraday else BROKERAGE_PCT_DELIVERY
-    brokerage = (min(BROKERAGE_FLAT, buy_value * pct)
-                 + min(BROKERAGE_FLAT, sell_value * pct))
+    brokerage = (min(BROKERAGE_FLAT, buy_value * BROKERAGE_PCT_INTRADAY)
+                 + min(BROKERAGE_FLAT, sell_value * BROKERAGE_PCT_INTRADAY)
+                 if intraday else 2 * BROKERAGE_FLAT)
     if intraday:
         stt = sell_value * STT_INTRADAY_SELL
         stamp = buy_value * STAMP_INTRADAY
@@ -64,9 +64,10 @@ def round_trip(buy_value: float, sell_value: float = None, product: str = DELIVE
         stamp = buy_value * STAMP_DELIVERY
         dp = DP_CHARGE
     exchange = (buy_value + sell_value) * EXCHANGE_TXN
+    ipft = (buy_value + sell_value) * IPFT_TURNOVER
     sebi = (buy_value + sell_value) * SEBI_TURNOVER
-    gst = (brokerage + exchange + dp) * GST
-    return brokerage + stt + exchange + stamp + sebi + dp + gst
+    gst = (brokerage + exchange + ipft + dp) * GST
+    return brokerage + stt + exchange + ipft + stamp + sebi + dp + gst
 
 
 def round_trip_pct(buy_value: float, sell_value: float = None,

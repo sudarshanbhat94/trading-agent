@@ -7,4 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.sleeves.forward_watch import PATH, summary
 
 if __name__ == "__main__":
-    print(json.dumps(dict(source=PATH, by_regime=summary()), indent=2))
+    print(json.dumps(dict(
+        source=PATH,
+        meaning="Risk-feasible next-open to 20-session-close observation; "
+                "no intraperiod stop or actual paper execution. Not a profit track record.",
+        by_regime=summary()), indent=2))

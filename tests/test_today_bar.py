@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 import pandas as pd
 
 from app import v2_live
 
 IST = v2_live.IST
-TODAY = pd.Timestamp(datetime.now(IST).date())
+TODAY = pd.Timestamp("2026-09-30")
 COLS = ["symbol", "ts", "open", "high", "low", "close", "volume", "ret1"]
 
 
@@ -42,6 +43,14 @@ QUOTE = {"price": 110.0, "open": 101.0, "high": 112.0, "low": 99.0, "vol": 5000.
 
 
 class AppendTodayBarTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Pin the clock: a module-level "today" drifts from the engine's
+        # datetime.now at midnight and makes three otherwise valid tests fail.
+        clock = patch.object(v2_live, "datetime")
+        mocked_datetime = clock.start()
+        self.addCleanup(clock.stop)
+        mocked_datetime.now.return_value = datetime(2026, 9, 30, tzinfo=IST)
+
     def test_todays_bar_is_appended(self) -> None:
         out, _ = v2_live.append_today_bar({"TCS": hist()}, mkt(), "IN", {"TCS": QUOTE})
         self.assertEqual(out["TCS"].index[-1], TODAY)

@@ -20,6 +20,19 @@ from app import v2_live
 
 
 class NetTradePnlTest(unittest.TestCase):
+    def test_current_upstox_nse_equity_charge_schedule(self) -> None:
+        from app import costs
+        turnover = 1_000.0  # Rs 500 buy and Rs 500 sell
+        exchange = turnover * 0.0000307
+        ipft = turnover * 1e-9
+        sebi = turnover * 1e-7
+        delivery = (40 + turnover * .001 + exchange + ipft + sebi
+                    + 500 * .00015 + 20 + (40 + exchange + ipft + 20) * .18)
+        intraday = (1 + 500 * .00025 + exchange + ipft + sebi
+                    + 500 * .00003 + (1 + exchange + ipft) * .18)
+        self.assertAlmostEqual(costs.round_trip(500, product="D"), delivery)
+        self.assertAlmostEqual(costs.round_trip(500, product="I"), intraday)
+
     def test_costs_are_charged_on_both_sides(self) -> None:
         """Round trip: charges apply to the buy AND the sell notional.
 
