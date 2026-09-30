@@ -2494,7 +2494,7 @@ def api_screen(market: str = "IN", user: dict = Depends(require_session)):
     """Shared, non-actionable research evidence. Never writes a paper book."""
     screen = _evidence_screen(market)
     screen["stock_plans"] = _stock_plans(screen, market, user)
-    return JSONResponse(screen)
+    return JSONResponse(screen, headers={"Cache-Control": "private, no-store"})
 
 
 def _stock_plans(screen, market, user):
@@ -2507,7 +2507,18 @@ def _stock_plans(screen, market, user):
     con = _ro(V2_DB)
     try:
         book, error = preview.account_state(con, int(user["id"]), quotes, now)
-        return preview.shortlist(screen, book, quotes, now, error)
+        result = preview.shortlist(screen, book, quotes, now, error)
+        try:
+            result["watchlisted"] = [r[0] for r in con.execute(
+                "SELECT symbol FROM user_watchlist WHERE user_id=? AND market='IN'",
+                (int(user["id"]),))]
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            result["watchlisted"] = []
+        from .v2_live import market_open
+        result["market_open"] = bool(market_open("IN"))
+        return result
     finally:
         con.close()
 
@@ -2583,7 +2594,8 @@ def api_ideas(market: str = "IN", days: int = 30,
         decision=decision, source_sleeves=list(_ideas.SLEEVE_SOURCES),
         evidence_screen=screen, stock_plans=stock_plans,
         cadence="monthly",
-        horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")))
+        horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")),
+        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/api/movers")
@@ -4459,13 +4471,52 @@ body.has-real .fd-books:hover{opacity:1}
  color:var(--warn);font-size:10px;font-weight:700;letter-spacing:.08em}
 .ig-stand-title{font-size:17px;font-weight:650;margin-top:10px;color:var(--tx)}
 .ig-stand-meta{font-size:12px;color:var(--mut);line-height:1.55;margin-top:6px}
-.ig-plans{margin-top:18px}.ig-plan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
-.ig-plan{margin:0;padding:20px;min-width:0}.ig-plan-state{color:var(--mut);font-size:11px}
-.ig-plan-entry{display:flex;justify-content:space-between;gap:12px;margin-top:18px;font-size:13px}
-.ig-plan-entry b{color:var(--hd)}.ig-plan-levels{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:12px}
-.ig-plan-reason{font-size:12px;line-height:1.6;margin:12px 0 6px}.ig-plan-detail{margin-top:12px;font-size:12px}
-@media(max-width:900px){.ig-plan-grid{grid-template-columns:1fr}}
-@media(max-width:520px){.ig-plan{padding:15px}.ig-plan-entry{flex-direction:column;gap:5px}.ig-plan .ig-plan-levels{grid-template-columns:repeat(2,minmax(0,1fr))}.ig-plan .ig-foot{flex-wrap:wrap;gap:6px}}
+.ideas-hero{display:flex;justify-content:space-between;gap:24px;align-items:center;padding:12px 0 26px}
+.ideas-eyebrow{font-size:11px;letter-spacing:.12em;font-weight:700;color:var(--up)}
+.ideas-hero h1{font-size:30px;line-height:1.2;letter-spacing:-.6px;color:var(--hd);margin:8px 0}
+.ideas-hero p{font-size:14px;color:var(--mut);margin:0;line-height:1.6}
+.ideas-account{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 20px;min-width:240px}
+.ideas-account div{display:flex;justify-content:space-between;gap:24px;font-size:12px;color:var(--mut);line-height:1.8}
+.ideas-account b{font-size:16px;color:var(--hd)}.ideas-account small{font-size:11px;color:var(--mut);display:block;margin-top:5px}
+.ideas-toolbar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:16px}
+.ideas-tabs{display:flex;gap:6px;background:var(--surf);border:1px solid var(--line);padding:4px;border-radius:12px}
+.ideas-tabs button{border:0;border-radius:8px;color:var(--mut);background:transparent;min-height:42px;padding:8px 16px;font:inherit;font-size:14px;cursor:pointer}
+.ideas-tabs button[aria-pressed=true]{color:var(--hd);background:var(--card);box-shadow:var(--sh);font-weight:600}
+.ideas-tabs span{font-size:11px;border-radius:5px;background:var(--surf);padding:2px 6px;margin-left:7px}
+.idea-text-button{border:0;background:transparent;color:var(--inf);font:inherit;font-size:13px;min-height:42px;cursor:pointer;padding:4px 0}
+.ideas-filters{display:grid;grid-template-columns:minmax(200px,1fr) 190px 190px;gap:12px;margin:20px 0 14px}
+.ideas-filters input,.ideas-filters select{width:100%;min-width:0;box-sizing:border-box;min-height:44px;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font:inherit;font-size:13px;color:var(--tx);background:var(--card)}
+.ideas-context{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12px;margin-bottom:20px;line-height:1.5}
+.ig-plan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.ig-plan{margin:0;padding:24px;min-width:0;border-radius:18px}
+.idea-card-head{display:flex;align-items:center;gap:12px}
+.idea-avatar{height:44px;width:44px;flex-shrink:0;border-radius:12px;display:grid;place-items:center;background:var(--infb);color:var(--inf);font-size:16px;font-weight:700}
+.idea-stock-id{flex:1;min-width:0}.idea-symbol{color:var(--hd);font:inherit;font-size:17px;font-weight:700;letter-spacing:.2px;cursor:pointer;background:none;border:0;text-align:left;padding:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.idea-stock-id div{color:var(--mut);font-size:12px;margin-top:4px}
+.idea-star{height:44px;width:44px;flex-shrink:0;display:grid;place-items:center;background:transparent;border:1px solid var(--line);border-radius:11px;color:var(--mut);font-size:25px;cursor:pointer}
+.idea-star.saved{color:var(--warn);background:var(--warnb);border-color:transparent}.idea-star:disabled{opacity:.5;cursor:wait}
+.idea-price-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:22px 0 18px}
+.idea-price-row b{font-size:23px;letter-spacing:-.4px;color:var(--hd);display:block}.idea-price-row div>span{font-size:11px;color:var(--mut);display:block;margin-top:4px}
+.idea-state{border-radius:6px;background:var(--surf);padding:6px 9px;font-size:11px;color:var(--mut)}.idea-state.up{color:var(--up);background:var(--upb)}.idea-state.warn{color:var(--warn);background:var(--warnb)}
+.idea-entry{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:13px;font-size:12px;color:var(--mut)}
+.idea-entry b{font-size:15px;color:var(--hd);font-variant-numeric:tabular-nums}
+.idea-levels{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 18px}
+.idea-levels>div{background:var(--surf);border-radius:9px;padding:11px 10px;min-width:0}.idea-levels span{display:block;font-size:11px;color:var(--mut);margin-bottom:7px}.idea-levels b{font-size:14px;display:block;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.idea-allocation{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;border-bottom:1px solid var(--line);padding:0 0 18px}
+.idea-allocation b{display:block;font-size:13px;font-weight:600;color:var(--hd)}.idea-allocation b.dn{color:var(--dn)}.idea-allocation span{display:block;font-size:11px;color:var(--mut);margin-top:5px;line-height:1.5}
+.idea-thesis{margin:18px 0}.idea-thesis>span{font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--mut)}.idea-thesis p{font-size:13px;line-height:1.6;margin:6px 0;color:var(--tx);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:42px}
+.idea-card-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}.idea-primary,.idea-secondary{font:inherit;font-size:13px;font-weight:600;min-height:44px;padding:10px 16px;border-radius:10px;cursor:pointer}
+.idea-primary{background:var(--up);color:var(--bg);border:1px solid transparent}.idea-secondary{background:transparent;color:var(--tx);border:1px solid var(--line2)}.idea-primary:disabled{background:var(--surf);border-color:var(--line);color:var(--mut);cursor:not-allowed}
+.ideas-desk button:focus-visible,.ideas-desk input:focus-visible,.ideas-desk select:focus-visible,.idea-dialog button:focus-visible{outline:2px solid var(--inf);outline-offset:3px}
+.ideas-empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:18px;padding:36px;text-align:center;color:var(--mut)}.ideas-empty b{color:var(--hd);font-size:18px}.ideas-empty p{font-size:14px;line-height:1.6}
+.idea-dialog{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:20px;padding:0;width:min(640px,calc(100vw - 32px));max-height:85vh;overflow:auto;box-sizing:border-box}
+.idea-dialog::backdrop{background:rgba(0,0,0,.65);backdrop-filter:blur(4px)}
+.idea-dialog-head{display:flex;align-items:center;justify-content:space-between;padding:24px 24px 16px;gap:12px}.idea-dialog-head span{font-size:10px;letter-spacing:.1em;color:var(--mut)}.idea-dialog-head h2{font-size:24px;color:var(--hd);margin:6px 0 0}.idea-dialog-close{width:44px;height:44px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--tx);font-size:24px;cursor:pointer}
+.idea-dialog-note{font-size:12px;color:var(--mut);line-height:1.6;padding:0 24px 20px}.idea-review-summary{display:grid;grid-template-columns:1fr 1fr;gap:18px;background:var(--surf);margin:0 24px;padding:16px;border-radius:12px}.idea-review-summary span{font-size:11px;color:var(--mut);display:block;margin-bottom:6px}.idea-review-summary b{font-size:14px;color:var(--hd)}.idea-review-summary .dn{color:var(--dn)}
+.idea-dialog-section{padding:20px 24px;border-bottom:1px solid var(--line)}.idea-dialog-section h3{font-size:15px;color:var(--hd);margin:0 0 14px}.idea-dialog-section p{font-size:12px;color:var(--mut);line-height:1.65;margin:8px 0}.idea-dialog-section summary{font-size:13px;cursor:pointer}
+.idea-check{display:flex;gap:12px;margin:16px 0}.idea-check>span{font-size:17px}.idea-check b{font-size:13px;color:var(--hd)}.idea-check p{margin:4px 0}.idea-dialog-footer{padding:20px 24px}.idea-dialog-footer button{width:100%}.idea-dialog-footer p{font-size:11px;color:var(--mut);line-height:1.6}
+@media(max-width:1000px){.ig-plan-grid{grid-template-columns:1fr}.ideas-hero{align-items:flex-start}.ideas-account{min-width:200px}}
+@media(max-width:600px){.ideas-hero{flex-direction:column;gap:16px;padding-bottom:22px}.ideas-hero h1{font-size:26px}.ideas-hero p{font-size:13px}.ideas-account{width:100%;min-width:0;box-sizing:border-box}.ideas-filters{grid-template-columns:1fr 1fr;gap:10px}.ideas-filters input{grid-column:1/-1}.ideas-toolbar{gap:8px}.ideas-tabs button{padding:8px 12px;font-size:13px}.ig-plan{padding:18px}.idea-entry{align-items:flex-start;flex-direction:column;gap:7px}.idea-levels{grid-template-columns:1fr 1fr}.idea-price-row b{font-size:22px}.idea-allocation{gap:8px}.idea-allocation b{font-size:12px}.idea-card-actions{gap:10px}.idea-dialog-head{padding:18px}.idea-dialog-note{padding:0 18px 18px}.idea-review-summary{margin:0 18px}.idea-dialog-section,.idea-dialog-footer{padding:18px}.ideas-empty{padding:24px}}
 .ig-watch{margin-top:14px;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:16px 18px}
 .ig-watch-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap}
 .ig-watch-head b{font-size:14px;color:var(--tx)}
@@ -4656,7 +4707,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   </div></div>
 
   <div id=ideas class=tab>
-   <div class=sec><span>Stock ideas &amp; trade plans</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
+   <div class=sec><span>Ideas</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
    <div id=ideasStrip></div>
    <div id=ideasList class=skel style="min-height:120px"></div>
    <div id=ideasHead></div>
@@ -5105,31 +5156,95 @@ function ideaBuy(sym,qty){
    loadIdeas();});}
 function renderStockPlans(p){
  if(!p)return '';
- function money(v){return '₹'+INR.format(v);}
- function leg(label,value,cls){return '<div class=ig-leg><div class=ig-ll>'+label+'</div><div class="ig-lv '+(cls||'')+'">'+money(value)+'</div></div>';}
- var intro='<div class=ig-watch-head><b>Top '+esc(p.count)+' stock trade plans</b><span>Conditional · prices through '+esc(p.price_asof)+'</span></div>'
-  +'<div class=ig-watch-note>Your paper capital '+money(p.capital)+' · cash '+money(p.cash)
-  +'. Choose one alternative; these are not ten simultaneous buys. Stock auto-trading is not enabled.</div>';
- var cards=(p.ideas||[]).map(function(r){return '<article class="ig-card ig-plan">'
-  +'<div class=ig-watch-head><b>'+esc(r.rank)+'. '+esc(r.symbol)+'</b><span class=ig-plan-state>'+esc(r.state)+'</span></div>'
-  +'<div class=ig-meta>'+esc(r.sector)+' · '+esc(r.horizon)+'</div>'
-  +'<div class=ig-plan-entry><span>Entry range</span><b>'+money(r.entry_low)+' – '+money(r.entry_high)+'</b></div>'
-  +'<div class="ig-ladder ig-plan-levels">'+leg('Stop-loss',r.stop,'dn')+leg('Target 1',r.t1,'up')+leg('Target 2',r.t2,'up')+leg('Target 3',r.t3,'up')+'</div>'
-  +'<div class=ig-foot><span><b>'+esc(r.qty)+' shares</b> · up to '+money(r.notional)+'</span><span class=dn>Estimated stop loss '+money(r.estimated_stop_loss)+'</span></div>'
-  +'<div class=ig-watch-note>Net if all shares exit at T3: '+money(r.estimated_net_at_targets[2])+' ('+esc(r.net_r_at_targets[2])+'× estimated stop loss). Targets are scenarios.</div>'
-  +'<p class=ig-plan-reason>'+esc(r.why)+'</p><div class=ig-watch-note>'+esc(r.buy_condition)+'. '+esc(r.invalidation)+'.</div>'
-  +'<details class=ig-plan-detail><summary>Target calculation, costs and evidence</summary><div class=ig-watch-note>'
-  +esc(r.target_method)+'. Estimated net at T1 / T2 / T3: '+r.estimated_net_at_targets.map(money).join(' / ')
-  +' after fees and 0.2% slippage each way, assuming the whole position exits at that level.'
-  +'<br>Net reward / estimated stop loss: '+r.net_r_at_targets.map(function(v){return esc(v)+'R';}).join(' / ')
-  +'. Stops can slip or gap; loss is an estimate.'
-  +'<br>Research score '+esc(r.score)+'/100; not a win probability. '
-  +'ROE '+esc((r.evidence.fundamentals||{}).roe_pct)+'% · delivery '+esc((r.evidence.participation||{}).delivery_pct)+'%.'
-  +'<br>'+esc(r.quote_price==null?'No fresh live quote; levels use the completed session.':'Fresh quote '+money(r.quote_price)+' at '+r.quote_at)
-  +'<br>No validated stock track record; these are planning scenarios, not approved execution signals.</div></details></article>';}).join('');
- var empty='<div class=ig-watch-note>No complete stock plan fits the current evidence and account limits. '+esc(p.book_error||'')+'</div>';
- return '<section class=ig-plans>'+intro+'<div class=ig-plan-grid>'+(cards||empty)+'</div>'
-  +(p.count<10?'<div class=ig-watch-note>'+esc(p.count)+' of 10 requested; unsuitable stocks are excluded.</div>':'')+'</section>';
+ var watched=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
+ var sectors=Array.from(new Set((p.ideas||[]).map(function(r){return r.sector;}))).sort();
+ return '<section class=ideas-desk><div class=ideas-toolbar><div class=ideas-tabs role=group aria-label="Idea view">'
+  +'<button type=button data-idea-view=discover aria-pressed="'+(IDEA_UI.view=='discover')+'" onclick="ideaSetView(\'discover\')">Discover <span>'+p.count+'</span></button>'
+  +'<button type=button data-idea-view=saved aria-pressed="'+(IDEA_UI.view=='saved')+'" onclick="ideaSetView(\'saved\')">Watchlisted <span id=ideaSavedCount>'+watched+'</span></button></div>'
+  +'<button type=button class=idea-text-button onclick="go(\'watch\')">Open my watchlist ↗</button></div>'
+  +'<div class=ideas-filters><input type=search id=ideaSearch aria-label="Search stock ideas" placeholder="Search stocks or sectors" value="'+esc(IDEA_UI.search)+'" oninput="ideaFilter(this.value)">'
+  +'<select aria-label="Filter ideas by sector" onchange="ideaSector(this.value)"><option value=all>All sectors</option>'
+  +sectors.map(function(s){return '<option '+(IDEA_UI.sector==s?'selected ':'')+'value="'+esc(s)+'">'+esc(s)+'</option>';}).join('')+'</select>'
+  +'<select aria-label="Sort stock ideas" onchange="ideaSort(this.value)"><option value=rank '+(IDEA_UI.sort=='rank'?'selected':'')+'>Top ranked</option><option value=risk '+(IDEA_UI.sort=='risk'?'selected':'')+'>Lowest estimated risk</option></select></div>'
+  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' conditional plans · prices through '+esc(p.price_asof)+'</span><span>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<div class=ig-plan-grid id=ideaCards>'+ideaCards(p)+'</div>'
+  +'<dialog id=ideaPlanDialog class=idea-dialog aria-labelledby=ideaDialogTitle><div id=ideaDialogBody></div></dialog></section>';
+}
+var IDEA_UI={view:'discover',search:'',sector:'all',sort:'rank',pending:{}};
+function ideaMoney(v){return v==null?'—':'₹'+Number(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function ideaStatus(r){return ({'STALE PLAN':['Refresh needed','warn'],'INVALIDATED':['Plan invalidated','warn'],
+ 'IN ZONE · CONFIRMATION NEEDED':['Entry zone · confirm first','up'],'BELOW ENTRY ZONE':['Below entry zone','warn']})[r.state]||['Watch for entry',''];}
+function ideaFiltered(p){
+ var term=IDEA_UI.search.trim().toLowerCase();
+ return (p.ideas||[]).filter(function(r){return (IDEA_UI.view!='saved'||(p.watchlisted||[]).includes(r.symbol))
+  &&(IDEA_UI.sector=='all'||r.sector==IDEA_UI.sector)&&(!term||(r.symbol+' '+r.sector).toLowerCase().includes(term));})
+  .slice().sort(function(a,b){return IDEA_UI.sort=='risk'?a.estimated_stop_loss-b.estimated_stop_loss:a.rank-b.rank;});
+}
+function ideaCards(p){
+ var rows=ideaFiltered(p);
+ if(!rows.length)return '<div class=ideas-empty><b>'+(IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
+  +esc(p.book_error||(IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector. Incomplete evidence and account limits can reduce the shortlist.'))+'</p>'
+  +'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button></div>';
+ return rows.map(function(r){
+  var saved=(p.watchlisted||[]).includes(r.symbol),status=ideaStatus(r),m=r.evidence.metrics||{};
+  function level(label,value,cls){return '<div><span>'+label+'</span><b class="'+(cls||'')+'">'+ideaMoney(value)+'</b></div>';}
+  return '<article class="ig-card ig-plan" aria-label="'+esc(r.symbol)+' trade plan"><div class=idea-card-head>'
+   +'<div class=idea-avatar aria-hidden=true>'+esc(r.symbol.slice(0,2))+'</div><div class=idea-stock-id><button class=idea-symbol type=button data-symbol="'+esc(r.symbol)+'" onclick="stock(this.dataset.symbol,\'IN\')">'+esc(r.symbol)+'</button><div>'+esc(r.sector)+'</div></div>'
+   +'<button type=button class="idea-star '+(saved?'saved':'')+'" data-symbol="'+esc(r.symbol)+'" aria-label="'+(saved?'Remove ':'Add ')+esc(r.symbol)+(saved?' from':' to')+' watchlist" aria-pressed="'+saved+'" '+(IDEA_UI.pending[r.symbol]?'disabled ':'')+'onclick="ideaToggleWatch(this.dataset.symbol)">'+(saved?'★':'☆')+'</button></div>'
+   +'<div class=idea-price-row><div><b>'+ideaMoney(r.quote_price==null?m.price:r.quote_price)+'</b><span>'+(r.quote_price==null?'Last close':'Live quote')+'</span></div><span class="idea-state '+status[1]+'">'+status[0]+'</span></div>'
+   +'<div class=idea-entry><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div>'
+   +'<div class=idea-levels>'+level('Stop-loss',r.stop,'dn')+level('Target 1',r.t1,'up')+level('Target 2',r.t2,'up')+level('Target 3',r.t3,'up')+'</div>'
+   +'<div class=idea-allocation><div><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b><span>'+ideaMoney(r.notional)+' allocation</span></div><div><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b><span>Estimated stop loss</span></div><div><b>4–8 weeks</b><span>Planning horizon</span></div></div>'
+   +'<div class=idea-thesis><span>WHY THIS STOCK</span><p>'+esc(r.why)+'</p></div>'
+   +'<div class=idea-card-actions><button class=idea-secondary type=button data-symbol="'+esc(r.symbol)+'" onclick="ideaOpenPlan(this.dataset.symbol,false)">View plan</button>'
+   +'<button class=idea-primary type=button data-symbol="'+esc(r.symbol)+'" onclick="ideaOpenPlan(this.dataset.symbol,true)">Review buy →</button></div></article>';
+ }).join('');
+}
+function ideaRepaint(){
+ if(!IDEAS||!IDEAS.stock_plans)return;
+ var p=IDEAS.stock_plans,grid=document.getElementById('ideaCards');if(grid)grid.innerHTML=ideaCards(p);
+ var count=document.getElementById('ideaSavedCount');if(count)count.textContent=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
+ var result=document.getElementById('ideaResultCount');if(result)result.textContent=ideaFiltered(p).length+' of '+p.count+' conditional plans · prices through '+p.price_asof;
+ document.querySelectorAll('[data-idea-view]').forEach(function(b){b.setAttribute('aria-pressed',b.dataset.ideaView==IDEA_UI.view);});
+}
+function ideaSetView(v){IDEA_UI.view=v;ideaRepaint();}
+function ideaFilter(v){IDEA_UI.search=v;ideaRepaint();}
+function ideaSector(v){IDEA_UI.sector=v;ideaRepaint();}
+function ideaSort(v){IDEA_UI.sort=v;ideaRepaint();}
+function ideaClearFilters(){IDEA_UI.view='discover';IDEA_UI.search='';IDEA_UI.sector='all';IDEA_UI.sort='rank';renderIdeas(IDEAS);}
+async function ideaToggleWatch(sym){
+ if(!IDEAS||!IDEAS.stock_plans||IDEA_UI.pending[sym])return;
+ var p=IDEAS.stock_plans,saved=(p.watchlisted||[]).includes(sym);IDEA_UI.pending[sym]=true;ideaRepaint();
+ try{
+  var r=await api(saved?'/v2/api/watchlist/'+encodeURIComponent(sym)+'?market=IN':'/v2/api/watchlist',
+   saved?{method:'DELETE'}:{method:'POST',body:JSON.stringify({symbol:sym,market:'IN'})});
+  if(!r.ok){toast((r.j&&(r.j.error||r.j.detail))||'Could not update your watchlist');return;}
+  p.watchlisted=(p.watchlisted||[]).filter(function(s){return s!=sym;});if(!saved)p.watchlisted.push(sym);
+  toast(saved?'Removed '+sym+' from watchlist':'Added '+sym+' to watchlist');loadWL();
+ }catch(_){toast('Connection interrupted. Reload Ideas to check your watchlist.');}
+ finally{delete IDEA_UI.pending[sym];ideaRepaint();}
+}
+function ideaOpenPlan(sym,review){
+ var p=IDEAS&&IDEAS.stock_plans,r=p&&(p.ideas||[]).find(function(x){return x.symbol==sym;});if(!r)return;
+ var d=IDEAS.decision||{},f=r.evidence.fundamentals||{},n=r.evidence.news||{},v=r.evidence.participation||{};
+ var checks=[['Strategy approval',false,'This stock plan is research-only. Stock execution has not been approved.'],
+  ['Market session',p.market_open,p.market_open?'NSE session is open':'NSE is closed; no order can be placed now'],
+  ['Live price',r.quote_price!=null,r.quote_price==null?'Waiting for a fresh quote':ideaMoney(r.quote_price)+' · '+r.quote_at],
+  ['Entry confirmation',false,r.buy_condition],
+  ['Market gate',!d.decision_stale&&d.regime=='ON',d.decision_stale?'Waiting for a fresh engine review':'Execution regime: '+(d.regime||'unavailable')]];
+ var html='<div class=idea-dialog-head><div><span>'+(review?'ORDER REVIEW · PAPER':'CONDITIONAL TRADE PLAN')+'</span><h2 id=ideaDialogTitle>'+esc(sym)+'</h2></div><button class=idea-dialog-close type=button aria-label="Close trade plan" onclick="this.closest(\'dialog\').close()">×</button></div>'
+  +'<div class=idea-dialog-note>Research plan · prices through '+esc(p.price_asof)+'. Targets are scenarios; no validated stock track record.</div>'
+  +'<div class=idea-review-summary><div><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div><div><span>Quantity</span><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b></div><div><span>Allocation</span><b>'+ideaMoney(r.notional)+'</b></div><div><span>Estimated stop loss</span><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b></div></div>'
+  +'<div class=idea-dialog-section><h3>Stop-loss &amp; target scenarios</h3><div class=idea-levels><div><span>Stop-loss</span><b class=dn>'+ideaMoney(r.stop)+'</b></div>'
+  +[r.t1,r.t2,r.t3].map(function(t,i){return '<div><span>Target '+(i+1)+'</span><b class=up>'+ideaMoney(t)+'</b></div>';}).join('')+'</div>'
+  +'<p>'+esc(r.target_method)+'.</p><p>Estimated net at T1 / T2 / T3: '+r.estimated_net_at_targets.map(ideaMoney).join(' / ')
+  +'. Net reward / estimated stop loss: '+r.net_r_at_targets.map(function(v){return v+'R';}).join(' / ')+'. Assumes a full exit at each scenario, after fees and 0.2% slippage each way. Gaps can increase the loss.</p></div>'
+  +'<div class=idea-dialog-section><h3>'+(review?'Buy eligibility':'Entry &amp; invalidation')+'</h3>'
+  +(review?checks.map(function(c){return '<div class=idea-check><span class="'+(c[1]?'up':'mut')+'">'+(c[1]?'✓':'○')+'</span><div><b>'+c[0]+'</b><p>'+esc(c[2])+'</p></div></div>';}).join(''):'<p>'+esc(r.buy_condition)+'.</p><p>'+esc(r.invalidation)+'.</p><p>'+esc(r.horizon)+'.</p>')+'</div>'
+  +'<details class=idea-dialog-section><summary>Research &amp; source details</summary><p>'+esc(r.why)+'. Research score '+r.score+'/100; not a win probability.</p><p>ROE '+esc(f.roe_pct)+'% · delivery '+esc(v.delivery_pct)+'% · earnings period '+esc(f.period_end||'unavailable')+'. '+esc(f.reliability||'')+'</p><p>Official filings checked '+esc(n.checked_at||'unavailable')+'. News and earnings evidence are in the full evidence panel below the shortlist.</p></details>'
+  +'<div class=idea-dialog-footer>'+(review?'<button class=idea-primary type=button disabled>Buy unavailable · research plan</button><p>This review submits no order. The manual Buy flow has separate exit rules and cannot execute this plan.</p>':'<button class=idea-primary type=button data-symbol="'+esc(sym)+'" onclick="ideaOpenPlan(this.dataset.symbol,true)">Review buy eligibility →</button>')+'</div>';
+ document.getElementById('ideaDialogBody').innerHTML=html;
+ var dialog=document.getElementById('ideaPlanDialog');if(!dialog.open)dialog.showModal();
 }
 function renderEvidenceScreen(e){
  if(!e||e.status=='unavailable')return '<div class=ig-watch><b>Equity and index evidence screen</b><div class=ig-watch-note>'
@@ -5193,18 +5308,15 @@ function renderIdeas(d){
      todays=rows.filter(function(r){return r.published_date==today}),
      older=rows.filter(function(r){return r.published_date!=today});
  document.getElementById('ideasSub').textContent=
-  (dec.decision_stale?'waiting for fresh paper decision':(d.cadence=='monthly'?'live gate · monthly trade review':d.allowance+' a day'))+' · '+(PLANLBL[d.plan]||d.plan)
-  +(d.broker_ready?' · sized for your ₹'+Math.round(d.broker_sleeve).toLocaleString('en-IN')
+  (d.stock_plans?'Research shortlist · NSE':dec.decision_stale?'waiting for fresh paper decision':(d.cadence=='monthly'?'live gate · monthly trade review':d.allowance+' a day'))+' · '+(PLANLBL[d.plan]||d.plan)
+  +(!d.stock_plans&&d.broker_ready?' · sized for your ₹'+Math.round(d.broker_sleeve).toLocaleString('en-IN')
     +' broker balance':'');
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
  var st=d.stats||{},dx=dec.diagnostics||{},preview=d.stock_plans;
- document.getElementById('ideasStrip').innerHTML=preview?'<div class=ig-strip>'
-  +'<div><div class=ig-sn>'+esc(preview.count)+'</div><div class=ig-sl2>conditional stock plans</div></div>'
-  +'<div><div class=ig-sn>'+ccy+f.format(preview.cash)+'</div><div class=ig-sl2>your paper cash</div></div>'
-  +'<div><div class=ig-sn>'+ccy+f.format(preview.risk_cap)+'</div><div class=ig-sl2>remaining tactical loss budget</div></div>'
-  +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>execution regime</div></div></div>':!rows.length?
+ document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Your stock shortlist</h1><p>Entry levels, exit scenarios and risk, sized for your paper book.</p></div>'
+  +'<div class=ideas-account><div><span>Paper cash</span><b>'+ccy+f.format(preview.cash)+'</b></div><div><span>Available risk budget</span><b>'+ccy+f.format(preview.risk_cap)+'</b></div><small>Paper automation · '+esc(dec.execution_halted?'Risk halt':dec.decision_stale?'Awaiting engine review':dec.regime=='OFF'?'Entries paused':'Regime '+(dec.regime||'unavailable'))+'</small></div></div>' :!rows.length?
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'
   +'<div><div class=ig-sn>'+(dec.breadth==null?'—':esc(dec.breadth)+'%')+'</div><div class=ig-sl2>market breadth</div></div>'
@@ -5277,7 +5389,7 @@ function renderIdeas(d){
    +'</div>':'';
  document.getElementById('ideasList').innerHTML=
   renderStockPlans(preview)+(todays.length?'<div class=ig-watch-head><b>Funded paper ideas</b></div>'+todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
-   (preview?'<details class=ig-watch><summary>Paper execution status</summary>'+stand+'</details>':stand+screening))+renderEvidenceScreen(d.evidence_screen)+head;
+   (preview?'<details class=ig-watch><summary>Paper automation status</summary>'+stand+'</details>':stand+screening))+(preview?'<details class=ig-watch><summary>Market context &amp; full research evidence</summary>'+renderEvidenceScreen(d.evidence_screen)+'</details>':renderEvidenceScreen(d.evidence_screen))+head;
  // The strip at the top already carries win rate, average, published and
  // reached-T1. Repeating them here was pure duplication on a phone, where the
  // two blocks are barely a screen apart. This keeps only the outcomes the strip
@@ -5298,13 +5410,19 @@ function fmtDay(s){try{var p=String(s).split('-');
 }catch(e){return s||''}}
 function loadIdeas(){
  api('/v2/api/ideas?market='+(MKT=='BOTH'?'IN':MKT)).then(function(r){
-  if(r.s==401){ME=null;show('login');hide('app');
+  if(r.s==401){IDEAS=null;ME=null;show('login');hide('app');
    document.getElementById('lerr').textContent='Session expired. Sign in again.';return;}
-  if(r.s==402){document.getElementById('ideasList').className='';
+  if(r.s==402){IDEAS=null;document.getElementById('ideasStrip').innerHTML='';document.getElementById('ideasList').className='';
    document.getElementById('ideasList').innerHTML=
     '<div class=ig-lock onclick="go(\'upgrade\')"><b>Stock ideas are a paid feature.</b> '
     +'Starter sees 1 a day with its stop, targets and size. Upgrade →</div>';return;}
-  if(!r.ok)return;IDEAS=r.j;renderIdeas(r.j);});}
+  if(!r.ok){ideaLoadError((r.j&&(r.j.error||r.j.detail))||'Unable to load your stock ideas.');return;}
+  IDEAS=r.j;renderIdeas(r.j);}).catch(function(){ideaLoadError('Connection interrupted. Please try again.');});}
+function ideaLoadError(message){
+ IDEAS=null;document.getElementById('ideasStrip').innerHTML='';document.getElementById('ideasHead').innerHTML='';
+ document.getElementById('ideasTrack').style.display='none';document.getElementById('ideasStats').style.display='none';
+ document.getElementById('ideasList').className='';document.getElementById('ideasList').innerHTML='<div class=ideas-empty><b>Ideas could not load</b><p>'+esc(message)+'</p><button class=idea-secondary onclick="loadIdeas()">Try again</button></div>';
+}
 // ---- the REAL broker account -----------------------------------------------
 // When a broker is connected this is the tile that matters. The paper books stay
 // on the page, clearly labelled SIMULATED, because they are the control group —

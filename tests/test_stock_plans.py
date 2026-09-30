@@ -101,11 +101,12 @@ def test_screen_and_ideas_share_personal_preview_without_publishing():
     with patch.object(v2_web,'_evidence_screen',return_value=data), patch.object(v2_web,'_stock_plans',return_value={'count':1}) as preview:
         response=v2_web.api_screen(user={'id':2})
     assert json.loads(response.body)['stock_plans']=={'count':1}
+    assert response.headers['cache-control']=='private, no-store'
     preview.assert_called_once_with(data,'IN',{'id':2})
 
 
 @pytest.mark.skipif(not shutil.which('node'),reason='node required')
-def test_actual_card_renderer_shows_entry_stop_targets_size_and_no_order_button(tmp_path):
+def test_actual_card_renderer_shows_levels_size_watchlist_and_review_actions(tmp_path):
     spa=v2_web.SPA_HTML
     start=spa.index('function renderStockPlans(');end=spa.index('function renderEvidenceScreen(',start)
     js="const INR=new Intl.NumberFormat('en-IN'); function esc(x){return String(x??'').replace(/</g,'&lt;')}\n"
@@ -113,7 +114,7 @@ def test_actual_card_renderer_shows_entry_stop_targets_size_and_no_order_button(
     path=tmp_path/'renderer.js';path.write_text(js)
     result=subprocess.run(['node',str(path)],capture_output=True,text=True,timeout=20)
     assert result.returncode==0,result.stderr
-    for text in ('STOCK0','Entry range','Stop-loss','Target 1','Target 2','Target 3','2 shares','Estimated stop loss','confirmation','No validated stock track record','Net if all shares exit at T3'):
+    for text in ('STOCK0','Entry range','Stop-loss','Target 1','Target 2','Target 3','2 shares','Estimated stop loss','View plan','Review buy','Add STOCK0 to watchlist','Last close'):
         assert text in result.stdout
-    assert '<button' not in result.stdout
+    assert 'ideaToggleWatch' in result.stdout
     assert 'ideaBuy(' not in result.stdout

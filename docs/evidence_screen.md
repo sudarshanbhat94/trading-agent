@@ -115,3 +115,19 @@ required. Quotes older than two minutes cannot imply current entry readiness.
 Stale screens are labelled. No new broker or paper order endpoint is added;
 stock execution stays unpromoted. Existing funded ideas retain actual exit
 rules and their independent, honestly labelled performance statistics.
+
+## Ideas product controls
+
+The Ideas page separates Discover and Watchlisted stock plans, with search,
+sector filtering and sorting. Stars add/remove only the signed-in user's
+existing watchlist; state is returned from that user's persisted rows on reload.
+Failed requests preserve the previous state and show an error. Pending requests
+block duplicate taps. The complete personal watchlist is linked separately.
+
+Cards show the latest fresh quote or a labelled completed-session close, entry
+range, stop/targets, quantity, allocation and estimated risk. View Plan opens
+an accessible dialog with target arithmetic, net proceeds, confirmation,
+invalidation and evidence. Review Buy shows paper order eligibility; research
+plans have a disabled submit button and never call an order endpoint. Existing
+manual buys have different exit rules and are not offered as execution of the
+research plan. Current strategy/risk rules and funded-idea buying are unchanged.
