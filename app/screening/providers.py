@@ -3,6 +3,8 @@
 All captures carry first-observed time. Fiscal period ends are never used as
 publication dates. Numerical fundamentals are not inferred from headlines.
 """
+import csv
+import io
 import math
 import re
 import statistics
@@ -174,3 +176,51 @@ def fetch_chain(http, symbol, now):
     if not rows:
         raise ValueError("no rows for selected expiry")
     return records.get("underlyingValue"), rows, published, expiry
+
+
+def fetch_delivery(http, session):
+    url = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_"+session.strftime("%d%m%Y")+".csv"
+    response = http.get(url)
+    response.raise_for_status()
+    reader = csv.DictReader(io.StringIO(response.text.lstrip("\ufeff")))
+    if not reader.fieldnames or not {"SYMBOL", "SERIES", "DATE1", "DELIV_PER"} <= {k.strip() for k in reader.fieldnames}:
+        raise ValueError("delivery report columns changed")
+    out = {}
+    for raw in reader:
+        row = {k.strip():str(v or "").strip() for k,v in raw.items() if k}
+        if row.get("SERIES") != "EQ": continue
+        if datetime.strptime(row["DATE1"], "%d-%b-%Y").date() != session.date():
+            raise ValueError("delivery report returned a different session")
+        try:
+            pct = float(row["DELIV_PER"])
+            if math.isfinite(pct) and 0 <= pct <= 100: out[row["SYMBOL"]] = pct
+        except ValueError:
+            continue
+    if not out: raise ValueError("empty delivery report")
+    return out
+
+
+def fetch_sectors(http):
+    response = http.get("https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv")
+    response.raise_for_status()
+    reader = csv.DictReader(io.StringIO(response.text.lstrip("\ufeff")))
+    if not reader.fieldnames or not {"Symbol", "Industry", "Series"} <= set(reader.fieldnames):
+        raise ValueError("sector constituent columns changed")
+    out = {row["Symbol"].strip().upper():row["Industry"].strip() for row in reader
+           if row.get("Series") == "EQ" and row.get("Symbol") and row.get("Industry")}
+    if not 400 <= len(out) <= 600: raise ValueError("incomplete sector constituent file")
+    return out
+
+
+def fetch_flows(http, session):
+    response = http.get(NSE+"/api/fiidiiTradeReact")
+    response.raise_for_status()
+    out = []
+    for row in response.json():
+        day = datetime.strptime(row["date"], "%d-%b-%Y").date()
+        value = float(str(row["netValue"]).replace(",", ""))
+        if row.get("category") in ("DII", "FII/FPI") and day == session.date() and math.isfinite(value):
+            out.append(dict(session=day.isoformat(), category=row["category"], net_inr_crore=value))
+    if {r["category"] for r in out} != {"DII", "FII/FPI"}:
+        raise ValueError("current-session institutional flows unavailable")
+    return out

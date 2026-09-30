@@ -19,7 +19,10 @@ blocked. `/v2/api/screen` returns the same shared, authenticated evidence.
   and 20-session relative strength against NIFTYBEES. The ETF benchmark is
   explicitly labelled a proxy. Missing benchmark data earns no RS points.
 - Participation (15): completed-session delivery above its preceding average
-  and volume >=2x the **preceding** 20 sessions. Bulk disclosures are shown as
+  and volume >=2x the **preceding** 20 sessions. Current-session delivery,
+  sector mapping and FII/DII flows are fetched directly from official NSE
+  reports, independently of lagging legacy ingestion. Delivery comparisons
+  require all 20 prior observations within 45 calendar days. Bulk disclosures are shown as
   context and never interpreted as proof of institutional accumulation.
 - Sector (15): sector-median 20-session return above the benchmark; requires
   at least three liquid peers and a real sector mapping.

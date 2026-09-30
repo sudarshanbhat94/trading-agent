@@ -141,6 +141,7 @@ def build(tails, eligible, sectors, con, now, asof):
                       participation=part_score, sector=sector_score)
         status = "RESEARCH" if not flags else "REVIEW REQUIRED"
         rows.append(dict(symbol=symbol, sector=sector, status=status,
+            sector_evidence=latest(con, symbol, "sector", now, 7),
             score=round(sum(points.values()), 2), components=points,
             metrics=dict(feat, rs_vs_nifty20_pct=round(rs, 2) if rs is not None else None,
                          sector_rs20_pct=round(sector_rs, 2) if sector_rs is not None else None),
@@ -157,6 +158,9 @@ def build(tails, eligible, sectors, con, now, asof):
         if row["fundamentals"]:
             row["fundamentals"]["sector_median_pe"] = sorted(peers)[len(peers)//2] if len(peers) >= 3 else None
     market = latest(con, "MARKET", "market", now, 7)
+    market = dict(market or {}, breadth_above50_pct=round(
+        sum(features[s]["above50"] for s in universe)/len(universe)*100, 1) if universe else None,
+        breadth_session=str(asof)[:10])
     indices = []
     for index, proxy in BENCHMARKS.items():
         feat = features.get(proxy)

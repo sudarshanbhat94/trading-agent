@@ -36,18 +36,22 @@ def _rows(con, sql, params=()):
         return []
 
 
-def capture_participation(main, evidence, symbols, asof, now):
+def capture_participation(main, evidence, symbols, asof, now, fresh_delivery=None, fresh_flows=None):
     stamp = str(asof)[:10]
     for symbol in symbols:
         rows = _rows(main, "SELECT date,delivery_pct FROM delivery_data WHERE symbol=? "
-                     "AND date<=? ORDER BY date DESC LIMIT 21", (symbol, stamp))
-        valid = [float(p) for _, p in rows[1:] if p is not None and 0 <= float(p) <= 100]
+                     "AND date<=? AND date>=? ORDER BY date DESC LIMIT 21", (symbol, stamp,
+                     (asof-timedelta(days=45)).date().isoformat()))
+        valid = [float(p) for d, p in rows if d < stamp and p is not None and 0 <= float(p) <= 100][:20]
+        current = (fresh_delivery or {}).get(symbol)
+        if current is None and rows and rows[0][0] == stamp:
+            current = rows[0][1]
         deals = _rows(main, "SELECT date,side,quantity,price FROM bulk_deals "
                       "WHERE symbol=? AND date<=? AND date>=?", (symbol, stamp,
                       (asof-timedelta(days=7)).date().isoformat()))
-        payload = dict(session=rows[0][0] if rows else None,
-            delivery_pct=rows[0][1] if rows and rows[0][1] is not None and 0 <= rows[0][1] <= 100 else None,
-            delivery_avg20_pct=sum(valid)/len(valid) if len(valid) >= 10 else None,
+        payload = dict(session=stamp if current is not None else None,
+            delivery_pct=current if current is not None and 0 <= current <= 100 else None,
+            delivery_avg20_pct=sum(valid)/len(valid) if len(valid) == 20 else None,
             bulk_deals=[dict(session=d, side=s, quantity=q, price=p) for d,s,q,p in deals],
             note="Completed-session delivery; bulk deals are disclosures, not proof of accumulation")
         seen = datetime.now(timezone.utc)
@@ -59,7 +63,7 @@ def capture_participation(main, evidence, symbols, asof, now):
                "WHERE date=(SELECT MAX(date) FROM participant_oi WHERE date<=?)", (stamp,))
     seen = datetime.now(timezone.utc)
     store.save(evidence, "MARKET", "market", "NSE daily market reports", dict(
-        fii_dii=[dict(session=d, category=c, net_inr_crore=v) for d,c,v in flows],
+        fii_dii=fresh_flows if fresh_flows is not None else [dict(session=d, category=c, net_inr_crore=v) for d,c,v in flows],
         india_vix=dict(session=vix[0][0], value=vix[0][1]) if vix else None,
         participant_oi=[dict(session=d, category=c, futures_long=l, futures_short=s) for d,c,l,s in oi]), seen.isoformat(), seen)
 
@@ -142,16 +146,39 @@ def run(args):
         dates = [g.index[-1] for g in tails.values() if not g.empty]
         if not dates: raise ValueError("completed-session prices unavailable")
         asof = max(dates)
-        sectors = {s:sec for s,sec in _rows(main, "SELECT symbol,sector FROM universe WHERE exchange='NSE'")}
+        sectors = {}
         wanted = []
         for s in sorted(eligible or []):
             f = _features(tails[s], asof) if s in tails else None
             if f and f["turnover"] >= MIN_TURNOVER and f["price"] >= 50: wanted.append(s)
-        capture_participation(main, con, wanted, asof, now)
         headers = {"User-Agent":"Mozilla/5.0", "Referer":providers.NSE+"/"}
         with httpx.Client(timeout=15, follow_redirects=True, headers=headers) as http:
             try: http.get(providers.NSE)
             except httpx.HTTPError: pass
+            try:
+                sector_file = providers.fetch_sectors(http)
+                seen = datetime.now(timezone.utc)
+                for symbol in wanted:
+                    if symbol in sector_file:
+                        store.save(con, symbol, "sector", "NSE Nifty 500 constituent industry", dict(
+                            industry=sector_file[symbol]), seen.isoformat(), seen)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                errors.append("NSE sectors unavailable: "+type(exc).__name__)
+            seen = datetime.now(timezone.utc)
+            for symbol in wanted:
+                sector = store.latest(con, symbol, "sector", seen, 7)
+                if sector: sectors[symbol] = sector["industry"]
+            try:
+                delivery = providers.fetch_delivery(http, asof)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                delivery = None
+                errors.append("NSE delivery unavailable: "+type(exc).__name__)
+            try:
+                flows = providers.fetch_flows(http, asof)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                flows = None
+                errors.append("NSE current-session flows unavailable: "+type(exc).__name__)
+            capture_participation(main, con, wanted, asof, now, delivery, flows)
             capture_events(http, con, wanted, now, errors)
             capture_options(http, con, now, errors)
             missing = [s for s in wanted if store.latest(con, s, "fundamentals", now, 7) is None]

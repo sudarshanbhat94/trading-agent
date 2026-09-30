@@ -5084,7 +5084,8 @@ function renderEvidenceScreen(e){
  function filingUrl(url){try{var u=new URL(url);return u.protocol=='https:'&&
   (u.hostname=='nseindia.com'||u.hostname.endsWith('.nseindia.com'))?u.href:null;}catch(_){return null;}}
  var head='<div class=ig-watch><div class=ig-watch-head><b>Equity and index evidence screen</b><span>'
-  +esc(e.liquid_count||0)+' liquid / '+esc(e.universe_count||0)+' NSE members</span></div>'
+  +esc(e.liquid_count||0)+' liquid / '+esc(e.universe_count||0)+' NSE members · '
+  +esc((e.equities||[]).filter(function(x){return !!x.fundamentals;}).length)+' with statements</span></div>'
   +'<div class=ig-watch-note>Prices through '+esc(e.price_asof)+' · evidence checked '
   +esc(e.generated_at)+(e.stale||e.price_stale?' · STALE':'')
   +'<br>Research ranking / 100, not a profit probability or a buy instruction. '
@@ -5119,9 +5120,10 @@ function renderEvidenceScreen(e){
    +'Price proxy '+esc(r.price_proxy)+' ₹'+(m.price==null?'unavailable':INR.format(m.price))
    +' · 20-session return '+num(m.return20_pct)+'% · PCR '+num(o.pcr_oi)
    +' · max pain '+num(o.max_pain)+' · India VIX '+num(v.value)+' ('+esc(v.session||'unavailable')+')'
+   +' · liquid-stock breadth above 50-session mean '+num(mk.breadth_above50_pct)+'%'
    +'<br>'+esc(r.note)+' · '+esc((r.flags||[]).join('; '))
    +(!r.options&&last.published_at?'<br>Historical chain '+esc(last.published_at)+' · expiry '+esc(last.expiry)
-     +' · PCR '+num(last.pcr_oi)+' · max pain '+num(last.max_pain)+' (context only)':'')
+     +' · spot '+num(last.underlying_price)+' · PCR '+num(last.pcr_oi)+' · max pain '+num(last.max_pain)+' (context only)':'')
    +'<br>FII/DII: '+esc((mk.fii_dii||[]).map(function(x){return x.category+' '+num(x.net_inr_crore)+' crore ('+x.session+')';}).join('; ')||'unavailable')
    +'</div></div>';
  }).join('');

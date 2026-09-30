@@ -221,3 +221,26 @@ def test_current_nse_chain_request_selects_nearest_unexpired_contract():
     assert calls[-1][0].endswith('/option-chain-v3')
     assert calls[-1][1]=={'type':'Indices','symbol':'NIFTY','expiry':'06-Oct-2026'}
     assert published.hour==15
+
+
+def test_delivery_is_the_requested_session_and_excludes_bonds():
+    class Response:
+        text='SYMBOL, SERIES, DATE1, DELIV_PER\nTEST, EQ, 30-Sep-2026, 55\nBOND, N1, 30-Sep-2026, 80\nUNKNOWN, EQ, 30-Sep-2026, -\n'
+        def raise_for_status(self):pass
+    class Http:
+        def get(self,url):return Response()
+    assert providers.fetch_delivery(Http(),pd.Timestamp('2026-09-30'))=={'TEST':55}
+    with pytest.raises(ValueError,match='different session'):
+        providers.fetch_delivery(Http(),pd.Timestamp('2026-09-29'))
+
+
+def test_current_session_flow_sign_is_preserved_without_using_future_day():
+    class Response:
+        def raise_for_status(self):pass
+        def json(self):return [dict(date='30-Sep-2026',category='FII/FPI',netValue='-1,000.2'),
+                              dict(date='30-Sep-2026',category='DII',netValue='900.3')]
+    class Http:
+        def get(self,url):return Response()
+    rows=providers.fetch_flows(Http(),pd.Timestamp('2026-09-30'))
+    assert rows[0]['net_inr_crore']==-1000.2
+    with pytest.raises(ValueError):providers.fetch_flows(Http(),pd.Timestamp('2026-09-29'))
