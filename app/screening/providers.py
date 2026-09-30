@@ -149,3 +149,28 @@ def fetch_statements(http, symbol, now):
         period1=int((now - timedelta(days=5*366)).timestamp()), period2=int(now.timestamp())))
     response.raise_for_status()
     return statements(response.json(), now)
+
+
+def fetch_chain(http, symbol, now):
+    """Use the current expiry-specific request used by NSE's own chain page."""
+    response = http.get(NSE+"/api/option-chain-contract-info", params={"symbol":symbol})
+    response.raise_for_status()
+    today = now.astimezone(IST).date()
+    expiries = sorted(datetime.strptime(x, "%d-%b-%Y").date()
+                      for x in response.json()["expiryDates"]
+                      if datetime.strptime(x, "%d-%b-%Y").date() >= today)
+    if not expiries:
+        raise ValueError("no unexpired index options")
+    expiry = expiries[0].strftime("%d-%b-%Y")
+    response = http.get(NSE+"/api/option-chain-v3", params={
+        "type":"Indices", "symbol":symbol, "expiry":expiry})
+    response.raise_for_status()
+    records = response.json()["records"]
+    published = exchange_time(records["timestamp"])
+    if not 0 <= (now-published).total_seconds() <= 4*86400:
+        raise ValueError("option chain too old or future dated")
+    rows = [dict(row, expiryDate=expiry) for row in records["data"]
+            if (row.get("expiryDates") or row.get("expiryDate")) == expiry]
+    if not rows:
+        raise ValueError("no rows for selected expiry")
+    return records.get("underlyingValue"), rows, published, expiry

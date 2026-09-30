@@ -76,4 +76,14 @@ def report(path, now=None):
             if not 0 <= age <= 300:
                 row["options"] = None
                 row.setdefault("flags", []).append("option chain expired since screen capture")
+        historical = row.get("last_option_snapshot")
+        if historical:
+            try:
+                age = (now - timestamp(historical["published_at"])).total_seconds()
+                expiry = datetime.strptime(historical["expiry"], "%d-%b-%Y").date()
+                valid = 0 <= age <= 4*86400 and expiry >= now.date()
+            except (KeyError, ValueError, TypeError):
+                valid = False
+            if not valid:
+                row["last_option_snapshot"] = None
     return data

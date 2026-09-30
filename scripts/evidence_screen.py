@@ -101,24 +101,15 @@ def capture_options(http, con, now, errors):
     from app.options_intelligence import _analyze_option_chain
     for symbol in ("NIFTY", "BANKNIFTY"):
         try:
-            r = http.get(providers.NSE+"/api/option-chain-indices", params={"symbol":symbol})
-            r.raise_for_status()
-            records = r.json()["records"]
-            published = providers.exchange_time(records["timestamp"])
-            if not 0 <= (now-published).total_seconds() <= 300:
-                raise ValueError("option chain is stale")
-            today = now.astimezone(providers.IST).date()
-            expiries = sorted(datetime.strptime(x, "%d-%b-%Y").date()
-                              for x in records["expiryDates"] if datetime.strptime(x, "%d-%b-%Y").date() >= today)
-            if not expiries: raise ValueError("no unexpired option chain")
-            expiry = expiries[0].strftime("%d-%b-%Y")
-            rows = [row for row in records["data"] if row.get("expiryDate") == expiry]
-            result = _analyze_option_chain(symbol, rows, records.get("underlyingValue"),
+            spot, rows, published, expiry = providers.fetch_chain(http, symbol, now)
+            result = _analyze_option_chain(symbol, rows, spot,
                                           "NSE nearest unexpired index option chain", -.08)
             result["published_at"] = published.isoformat()
             result["expiry"] = expiry
             seen = datetime.now(timezone.utc)
-            store.save(con, symbol, "options", "NSE index option chain", result, seen.isoformat(), seen)
+            store.save(con, symbol, "options_snapshot", "NSE index option chain", result, seen.isoformat(), seen)
+            if 0 <= (seen-published).total_seconds() <= 300:
+                store.save(con, symbol, "options", "NSE index option chain", result, seen.isoformat(), seen)
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             errors.append(symbol+" options unavailable: "+type(exc).__name__)
 

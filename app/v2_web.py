@@ -5114,12 +5114,14 @@ function renderEvidenceScreen(e){
    +'<br>Review: '+esc((r.flags||[]).join('; ')||'No screen flags; independent validation still required')
    +'</div></details></div>';
  }).join('');
- var indices=(e.indices||[]).map(function(r){var m=r.metrics||{},o=r.options||{},mk=r.market||{},v=mk.india_vix||{};
+ var indices=(e.indices||[]).map(function(r){var m=r.metrics||{},o=r.options||{},last=r.last_option_snapshot||{},mk=r.market||{},v=mk.india_vix||{};
   return '<div class=ig-watch-row style="display:block"><b>'+esc(r.symbol)+'</b><div class=ig-watch-note>'
    +'Price proxy '+esc(r.price_proxy)+' ₹'+(m.price==null?'unavailable':INR.format(m.price))
    +' · 20-session return '+num(m.return20_pct)+'% · PCR '+num(o.pcr_oi)
    +' · max pain '+num(o.max_pain)+' · India VIX '+num(v.value)+' ('+esc(v.session||'unavailable')+')'
    +'<br>'+esc(r.note)+' · '+esc((r.flags||[]).join('; '))
+   +(!r.options&&last.published_at?'<br>Historical chain '+esc(last.published_at)+' · expiry '+esc(last.expiry)
+     +' · PCR '+num(last.pcr_oi)+' · max pain '+num(last.max_pain)+' (context only)':'')
    +'<br>FII/DII: '+esc((mk.fii_dii||[]).map(function(x){return x.category+' '+num(x.net_inr_crore)+' crore ('+x.session+')';}).join('; ')||'unavailable')
    +'</div></div>';
  }).join('');

@@ -35,7 +35,8 @@ blocked. `/v2/api/screen` returns the same shared, authenticated evidence.
   remain unknown. A meeting within two days is flagged. Latest notice wins.
 - Indices: Nifty and Bank Nifty each show their completed-session ETF proxy,
   fresh nearest-unexpired options PCR/OI/max-pain context when obtainable,
-  plus dated India VIX, FII/DII and participant positioning. Cash index prices,
+  plus a clearly historical, timestamped chain when the market is closed, and
+  dated India VIX, FII/DII and participant positioning. Cash index prices,
   futures execution and stock-level option coverage are not implied.
 
 Numerical statements come from Yahoo Finance's public financial-statement

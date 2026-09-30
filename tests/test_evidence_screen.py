@@ -199,3 +199,25 @@ def test_cached_web_report_expires_option_chain_by_exchange_time(tmp_path):
         store.initialise(con)
         con.execute('INSERT INTO screens VALUES(?,?)',(NOW.isoformat(),json.dumps(data)))
     assert store.report(path,NOW+timedelta(minutes=6))['indices'][0]['options'] is None
+
+
+def test_current_nse_chain_request_selects_nearest_unexpired_contract():
+    calls=[]
+    class Response:
+        def __init__(self, data): self.data=data
+        def raise_for_status(self): pass
+        def json(self): return self.data
+    class Http:
+        def get(self, url, params):
+            calls.append((url,params))
+            if url.endswith('contract-info'):
+                return Response({'expiryDates':['29-Sep-2026','13-Oct-2026','06-Oct-2026']})
+            return Response({'records':{'timestamp':'30-Sep-2026 15:40:00','underlyingValue':22000,
+                'data':[{'expiryDates':'06-Oct-2026','strikePrice':22000},
+                        {'expiryDates':'13-Oct-2026','strikePrice':22100}]}})
+    spot,rows,published,expiry=providers.fetch_chain(Http(),'NIFTY',NOW)
+    assert expiry=='06-Oct-2026'
+    assert len(rows)==1 and spot==22000
+    assert calls[-1][0].endswith('/option-chain-v3')
+    assert calls[-1][1]=={'type':'Indices','symbol':'NIFTY','expiry':'06-Oct-2026'}
+    assert published.hour==15

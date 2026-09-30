@@ -161,8 +161,9 @@ def build(tails, eligible, sectors, con, now, asof):
     for index, proxy in BENCHMARKS.items():
         feat = features.get(proxy)
         options = latest(con, index, "options", now, 5/1440)
+        historical_options = latest(con, index, "options_snapshot", now, 4)
         indices.append(dict(symbol=index, price_proxy=proxy, metrics=feat,
-            options=options, market=market, actionable=False,
+            options=options, last_option_snapshot=historical_options, market=market, actionable=False,
             flags=(["price proxy history unavailable"] if not feat else []) +
                   (["fresh option chain unavailable"] if options is None else []),
             note="ETF completed-session price proxy; no futures / options execution claim"))
