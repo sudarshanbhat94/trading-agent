@@ -2492,7 +2492,24 @@ def _evidence_screen(market):
 @router.get("/api/screen")
 def api_screen(market: str = "IN", user: dict = Depends(require_session)):
     """Shared, non-actionable research evidence. Never writes a paper book."""
-    return JSONResponse(_evidence_screen(market))
+    screen = _evidence_screen(market)
+    screen["stock_plans"] = _stock_plans(screen, market, user)
+    return JSONResponse(screen)
+
+
+def _stock_plans(screen, market, user):
+    """Personal, read-only conditional previews; no publishing or order calls."""
+    if market != "IN" or screen.get("status") != "ok":
+        return None
+    from .screening import plans as preview
+    quotes = _live_map(market)
+    now = datetime.now(timezone.utc)
+    con = _ro(V2_DB)
+    try:
+        book, error = preview.account_state(con, int(user["id"]), quotes, now)
+        return preview.shortlist(screen, book, quotes, now, error)
+    finally:
+        con.close()
 
 
 @router.get("/api/ideas")
@@ -2554,6 +2571,8 @@ def api_ideas(market: str = "IN", days: int = 30,
         decision = _decision_with_live_readiness(market, _v2_live.sleeve_view(market))
     except Exception:
         decision = {}
+    screen = _evidence_screen(market)
+    stock_plans = _stock_plans(screen, market, user)
     return JSONResponse(dict(
         ideas=rows, stats=_ideas.scoreboard(rows), plan=plan,
         allowance=_ideas.allowance(plan), max_per_day=_ideas.MAX_PER_DAY,
@@ -2562,7 +2581,7 @@ def api_ideas(market: str = "IN", days: int = 30,
         capital=_ideas.CAPITAL, risk_pct=_ideas.RISK_PCT,
         broker_ready=can_buy, broker_sleeve=sleeve, broker_margin=margin,
         decision=decision, source_sleeves=list(_ideas.SLEEVE_SOURCES),
-        evidence_screen=_evidence_screen(market),
+        evidence_screen=screen, stock_plans=stock_plans,
         cadence="monthly",
         horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")))
 
@@ -4440,6 +4459,13 @@ body.has-real .fd-books:hover{opacity:1}
  color:var(--warn);font-size:10px;font-weight:700;letter-spacing:.08em}
 .ig-stand-title{font-size:17px;font-weight:650;margin-top:10px;color:var(--tx)}
 .ig-stand-meta{font-size:12px;color:var(--mut);line-height:1.55;margin-top:6px}
+.ig-plans{margin-top:18px}.ig-plan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.ig-plan{margin:0;padding:20px;min-width:0}.ig-plan-state{color:var(--mut);font-size:11px}
+.ig-plan-entry{display:flex;justify-content:space-between;gap:12px;margin-top:18px;font-size:13px}
+.ig-plan-entry b{color:var(--hd)}.ig-plan-levels{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:12px}
+.ig-plan-reason{font-size:12px;line-height:1.6;margin:12px 0 6px}.ig-plan-detail{margin-top:12px;font-size:12px}
+@media(max-width:900px){.ig-plan-grid{grid-template-columns:1fr}}
+@media(max-width:520px){.ig-plan{padding:15px}.ig-plan-entry{flex-direction:column;gap:5px}.ig-plan .ig-plan-levels{grid-template-columns:repeat(2,minmax(0,1fr))}.ig-plan .ig-foot{flex-wrap:wrap;gap:6px}}
 .ig-watch{margin-top:14px;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:16px 18px}
 .ig-watch-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap}
 .ig-watch-head b{font-size:14px;color:var(--tx)}
@@ -4630,7 +4656,7 @@ input:focus,select:focus{border-color:var(--inf);box-shadow:0 0 0 3px var(--infb
   </div></div>
 
   <div id=ideas class=tab>
-   <div class=sec><span>market decision</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
+   <div class=sec><span>Stock ideas &amp; trade plans</span><span class=mut id=ideasSub style="font-size:12px;font-weight:400"></span></div>
    <div id=ideasStrip></div>
    <div id=ideasList class=skel style="min-height:120px"></div>
    <div id=ideasHead></div>
@@ -5077,6 +5103,34 @@ function ideaBuy(sym,qty){
    if(!r.ok){alert((r.j&&(r.j.error||r.j.detail))||'buy failed');return;}
    alert(r.j.broker_status?('Broker: '+r.j.broker_status+'. Check Account → live broker for confirmed fills.'):'Paper purchase recorded; no broker order submitted.');
    loadIdeas();});}
+function renderStockPlans(p){
+ if(!p)return '';
+ function money(v){return '₹'+INR.format(v);}
+ function leg(label,value,cls){return '<div class=ig-leg><div class=ig-ll>'+label+'</div><div class="ig-lv '+(cls||'')+'">'+money(value)+'</div></div>';}
+ var intro='<div class=ig-watch-head><b>Top '+esc(p.count)+' stock trade plans</b><span>Conditional · prices through '+esc(p.price_asof)+'</span></div>'
+  +'<div class=ig-watch-note>Your paper capital '+money(p.capital)+' · cash '+money(p.cash)
+  +'. Choose one alternative; these are not ten simultaneous buys. Stock auto-trading is not enabled.</div>';
+ var cards=(p.ideas||[]).map(function(r){return '<article class="ig-card ig-plan">'
+  +'<div class=ig-watch-head><b>'+esc(r.rank)+'. '+esc(r.symbol)+'</b><span class=ig-plan-state>'+esc(r.state)+'</span></div>'
+  +'<div class=ig-meta>'+esc(r.sector)+' · '+esc(r.horizon)+'</div>'
+  +'<div class=ig-plan-entry><span>Entry range</span><b>'+money(r.entry_low)+' – '+money(r.entry_high)+'</b></div>'
+  +'<div class="ig-ladder ig-plan-levels">'+leg('Stop-loss',r.stop,'dn')+leg('Target 1',r.t1,'up')+leg('Target 2',r.t2,'up')+leg('Target 3',r.t3,'up')+'</div>'
+  +'<div class=ig-foot><span><b>'+esc(r.qty)+' shares</b> · up to '+money(r.notional)+'</span><span class=dn>Estimated stop loss '+money(r.estimated_stop_loss)+'</span></div>'
+  +'<div class=ig-watch-note>Net if all shares exit at T3: '+money(r.estimated_net_at_targets[2])+' ('+esc(r.net_r_at_targets[2])+'× estimated stop loss). Targets are scenarios.</div>'
+  +'<p class=ig-plan-reason>'+esc(r.why)+'</p><div class=ig-watch-note>'+esc(r.buy_condition)+'. '+esc(r.invalidation)+'.</div>'
+  +'<details class=ig-plan-detail><summary>Target calculation, costs and evidence</summary><div class=ig-watch-note>'
+  +esc(r.target_method)+'. Estimated net at T1 / T2 / T3: '+r.estimated_net_at_targets.map(money).join(' / ')
+  +' after fees and 0.2% slippage each way, assuming the whole position exits at that level.'
+  +'<br>Net reward / estimated stop loss: '+r.net_r_at_targets.map(function(v){return esc(v)+'R';}).join(' / ')
+  +'. Stops can slip or gap; loss is an estimate.'
+  +'<br>Research score '+esc(r.score)+'/100; not a win probability. '
+  +'ROE '+esc((r.evidence.fundamentals||{}).roe_pct)+'% · delivery '+esc((r.evidence.participation||{}).delivery_pct)+'%.'
+  +'<br>'+esc(r.quote_price==null?'No fresh live quote; levels use the completed session.':'Fresh quote '+money(r.quote_price)+' at '+r.quote_at)
+  +'<br>No validated stock track record; these are planning scenarios, not approved execution signals.</div></details></article>';}).join('');
+ var empty='<div class=ig-watch-note>No complete stock plan fits the current evidence and account limits. '+esc(p.book_error||'')+'</div>';
+ return '<section class=ig-plans>'+intro+'<div class=ig-plan-grid>'+(cards||empty)+'</div>'
+  +(p.count<10?'<div class=ig-watch-note>'+esc(p.count)+' of 10 requested; unsuitable stocks are excluded.</div>':'')+'</section>';
+}
 function renderEvidenceScreen(e){
  if(!e||e.status=='unavailable')return '<div class=ig-watch><b>Equity and index evidence screen</b><div class=ig-watch-note>'
   +esc((e||{}).note||'Waiting for the first evidence refresh')+'</div></div>';
@@ -5127,7 +5181,7 @@ function renderEvidenceScreen(e){
    +'<br>FII/DII: '+esc((mk.fii_dii||[]).map(function(x){return x.category+' '+num(x.net_inr_crore)+' crore ('+x.session+')';}).join('; ')||'unavailable')
    +'</div></div>';
  }).join('');
- return head+(stocks||'<div class=ig-watch-note>No stock has complete liquid-universe price coverage.</div>')
+ return head+'<details><summary>Ranked stock evidence and official filings</summary>'+(stocks||'<div class=ig-watch-note>No stock has complete liquid-universe price coverage.</div>')+'</details>'
   +indices+'<div class=ig-watch-note>'+esc((e.validation||{}).note||'No validated profit record')+'</div></div>';
 }
 function renderIdeas(d){
@@ -5145,8 +5199,12 @@ function renderIdeas(d){
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
- var st=d.stats||{},dx=dec.diagnostics||{};
- document.getElementById('ideasStrip').innerHTML=!rows.length?
+ var st=d.stats||{},dx=dec.diagnostics||{},preview=d.stock_plans;
+ document.getElementById('ideasStrip').innerHTML=preview?'<div class=ig-strip>'
+  +'<div><div class=ig-sn>'+esc(preview.count)+'</div><div class=ig-sl2>conditional stock plans</div></div>'
+  +'<div><div class=ig-sn>'+ccy+f.format(preview.cash)+'</div><div class=ig-sl2>your paper cash</div></div>'
+  +'<div><div class=ig-sn>'+ccy+f.format(preview.risk_cap)+'</div><div class=ig-sl2>remaining tactical loss budget</div></div>'
+  +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>execution regime</div></div></div>':!rows.length?
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'
   +'<div><div class=ig-sn>'+(dec.breadth==null?'—':esc(dec.breadth)+'%')+'</div><div class=ig-sl2>market breadth</div></div>'
@@ -5218,8 +5276,8 @@ function renderIdeas(d){
       +'</b><span>'+esc(r.reason)+'</span></div>';}).join(''))
    +'</div>':'';
  document.getElementById('ideasList').innerHTML=
-  (todays.length?todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
-   stand+screening)+renderEvidenceScreen(d.evidence_screen)+head;
+  renderStockPlans(preview)+(todays.length?'<div class=ig-watch-head><b>Funded paper ideas</b></div>'+todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
+   (preview?'<details class=ig-watch><summary>Paper execution status</summary>'+stand+'</details>':stand+screening))+renderEvidenceScreen(d.evidence_screen)+head;
  // The strip at the top already carries win rate, average, published and
  // reached-T1. Repeating them here was pure duplication on a phone, where the
  // two blocks are barely a screen apart. This keeps only the outcomes the strip

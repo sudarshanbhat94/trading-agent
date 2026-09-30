@@ -3,7 +3,7 @@
 This is a research screen, not a new trading strategy. It does not change sleeve
 parameters, regime gates, paper capital, ideas publication or order routing.
 The Ideas page displays it separately from funded ideas, even when entries are
-blocked. `/v2/api/screen` returns the same shared, authenticated evidence.
+blocked. `/v2/api/screen` returns shared, authenticated evidence plus a personal conditional stock-plan preview.
 
 ## Data and ranking
 
@@ -83,8 +83,35 @@ do not starve other names. No credentials or paid feeds are required.
 The UI shows the last price session, capture timestamp, source, review flags,
 filing links and stale status. Reports older than two hours are visibly stale.
 The full ranked universe and index evidence remain available in the API;
-the page displays eight stocks for readability.
+the page shows up to ten conditional stock plans, with the wider evidence list expandable.
 
 `screening.db` retains dated inputs and immutable screen snapshots for future
 forward assessment and metric-ablation studies after actual data accumulates.
 No retrospective or forward profit record is invented in this pass.
+
+## Conditional stock plans on Ideas
+
+`app/screening/plans.py` turns a completed-session screen into explicit **planning
+scenarios**, without publishing funded ideas or changing strategy configuration.
+The top ten alternatives exclude review flags and require positive stock/sector
+relative strength, positive six-month momentum and price above its 50-session mean.
+If fewer names fit the evidence and account limits, the page shows fewer.
+
+For completed close C and 14-session ATR A: entry range is C−1.25A to C−A,
+stop is C−2A, and T1/T2/T3 are upper entry +2R/+3R/+4R, where R is upper
+entry minus stop. These targets are price-risk scenarios, **not forecasts,
+validated signals, or the managed production sleeve's exit rules**. Quantities
+use the existing unified allocator and the viewer's current paper epoch, cash,
+positions, loss allowance and drawdown. Missing held quotes/stops block sizing.
+Fees and 0.2% slippage on both sides are included in estimated stop loss and
+target proceeds. Net reward/loss is shown separately from price R. A gap can
+lose more than the estimate. Each quantity is one alternative; the ten cannot
+be combined without a new portfolio-wide allocation.
+
+Cards show entry, stop, targets, quantity, reason, confirmation needed,
+invalidation, horizon and dated evidence. A fresh quote in the zone does not
+become BUY NOW: rebound/volume confirmation and strategy validation remain
+required. Quotes older than two minutes cannot imply current entry readiness.
+Stale screens are labelled. No new broker or paper order endpoint is added;
+stock execution stays unpromoted. Existing funded ideas retain actual exit
+rules and their independent, honestly labelled performance statistics.

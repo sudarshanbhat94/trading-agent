@@ -107,7 +107,7 @@ class BuyButtonTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node required")
     def test_off_regime_renders_stock_research_without_buy_action(self) -> None:
         """Execute the shipped renderer, not a Python copy of the layout."""
-        start = self.spa.index("function renderEvidenceScreen(")
+        start = self.spa.index("function renderStockPlans(")
         end = self.spa.index("\nfunction ", self.spa.index("function renderIdeas("))
         block = self.spa[start:end]
         payload = dict(
