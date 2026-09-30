@@ -194,6 +194,19 @@ _regime_cache: dict = {}
 _regime_loading: set = set()
 
 
+def _decision_is_stale(market, asof):
+    """A persisted decision is context, never a current gate after missing bars."""
+    if not asof:
+        return True
+    try:
+        from .v2_live import trading_days_held
+        today = datetime.now(IST if market == "IN" else timezone.utc).date()
+        day = datetime.fromisoformat(str(asof)[:10]).date()
+        return day > today or trading_days_held(day.isoformat(), today, market) > 1
+    except (TypeError, ValueError):
+        return True
+
+
 def _regime_bg(market):
     try:
         syms, mdf = _panel(market)
@@ -234,7 +247,8 @@ def _regime_state(market):
     # Use that completed-session state while the identical calculation warms.
     try:
         from . import v2_live
-        return (v2_live.sleeve_view(market) or {}).get("regime")
+        saved = v2_live.sleeve_view(market) or {}
+        return None if _decision_is_stale(market, saved.get("asof")) else saved.get("regime")
     except Exception:
         return None
 
@@ -2458,6 +2472,12 @@ def _decision_with_live_readiness(market, decision):
     current["execution_halted"] = bool(readiness["halted"])
     current["halt_reason"] = readiness["reason"]
     current["paper_book"] = readiness
+    current["decision_stale"] = _decision_is_stale(market, current.get("asof"))
+    if current["decision_stale"]:
+        current["last_regime"] = current.get("regime")
+        current["regime"] = None
+        current["state"] = "WAITING FOR DATA"
+        current["reason"] = "Last paper decision is stale; waiting for a fresh completed-session cycle"
     return current
 
 
@@ -5051,7 +5071,7 @@ function renderIdeas(d){
      todays=rows.filter(function(r){return r.published_date==today}),
      older=rows.filter(function(r){return r.published_date!=today});
  document.getElementById('ideasSub').textContent=
-  (d.cadence=='monthly'?'live gate · monthly trade review':d.allowance+' a day')+' · '+(PLANLBL[d.plan]||d.plan)
+  (dec.decision_stale?'waiting for fresh paper decision':(d.cadence=='monthly'?'live gate · monthly trade review':d.allowance+' a day'))+' · '+(PLANLBL[d.plan]||d.plan)
   +(d.broker_ready?' · sized for your ₹'+Math.round(d.broker_sleeve).toLocaleString('en-IN')
     +' broker balance':'');
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
@@ -5097,23 +5117,28 @@ function renderIdeas(d){
  var stand='<div class=ig-stand><span class=ig-stand-tag>'
    +esc(dec.state||'WAITING')+'</span><div class=ig-stand-title>'
    +esc(dec.reason||'Waiting for the first completed engine cycle')+'</div>'
-   +'<div class=ig-stand-meta>Regime: '+esc(dec.regime||'—')
+   +'<div class=ig-stand-meta>'+(dec.decision_stale?'Last decision regime: ':'Regime: ')
+   +esc(dec.decision_stale?(dec.last_regime||'—'):(dec.regime||'—'))
    +(dec.breadth!=null?' · breadth '+esc(dec.breadth)+'%':'')
    +(dec.asof?' · data through '+esc(dec.asof):'')
    +(dx.distance_pct!=null?'<br>NIFTYBEES is '+Math.abs(dx.distance_pct)+'% '
      +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
    +(stockDec.note?'<br>Quality stocks: '+esc(stockDec.note):'')
+   +(dec.decision_stale?'<br>No new entries until a fresh completed-session paper cycle.':'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
    +'<br>Market checked during every NSE session; Nifty entries reviewed monthly.</div></div>';
  var stockDx=stockDec.diagnostics||{},watch=stockDx.watch||[],rejected=stockDec.rejected||[];
- var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>NSE Quality 50 stock screen</b><span>'
+ var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>'
+   +(dec.decision_stale?'Last NSE Quality 50 screen':'NSE Quality 50 stock screen')+'</b><span>'
    +(stockDx.verified_members==null?'verified feed unavailable':esc(stockDx.passed||0)
      +' passed / '+esc(stockDx.verified_members)+' verified'
      +(stockDx.fresh_book_risk_fit==null?'':' · '+esc(stockDx.fresh_book_risk_fit)
        +' fit ₹10k paper risk'))+'</span></div>'
-   +'<div class=ig-watch-note>Research watch only · not funded paper entries. '+esc(stockDec.note||'Entry gates are closed')+'.</div>'
+   +'<div class=ig-watch-note>Research watch only · not funded paper entries. '
+   +(dec.decision_stale?'Data through '+esc(dec.asof||'unknown')+'. ':'')
+   +esc(stockDec.note||'Entry gates are closed')+'.</div>'
    +(watch.length?watch.map(function(w){return '<div class=ig-watch-row><b>'+esc(w.symbol)+'</b><span>'
-      +esc(w.price_source||'price')+' ₹'+INR.format(w.price)+' · 6m '+esc(w.return_6m_pct)
+      +esc(dec.decision_stale?'last cycle quote':(w.price_source||'price'))+' ₹'+INR.format(w.price)+' · 6m '+esc(w.return_6m_pct)
       +'% · 12m '+esc(w.return_12m_pct)+'%'
       +(w.min_ticket_stop_risk==null?'':'<br>Minimum ticket stop-loss estimate ₹'
         +INR.format(w.min_ticket_stop_risk)+' incl. costs · fresh-book risk cap ₹'

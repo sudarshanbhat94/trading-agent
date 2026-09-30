@@ -15,6 +15,10 @@ class DeskStatusCopyTest(unittest.TestCase):
         self.assertNotIn("A trading halt does not erase previous losses", source)
         self.assertIn("house.positions?'No new entries; existing positions", source)
 
+    def test_index_panel_names_only_the_executable_paper_sleeve(self):
+        self.assertIn("Only NIFTYBEES can receive automated paper entries", desk_ui.JS)
+        self.assertIn("Quality stock names are research-only", desk_ui.JS)
+
 
 if __name__ == "__main__":
     unittest.main()

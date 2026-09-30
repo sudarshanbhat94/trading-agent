@@ -50,9 +50,34 @@ class ReleaseIntegrityTest(unittest.TestCase):
         with patch.dict(v2_web._regime_cache, {}, clear=True), \
              patch.object(v2_web, '_regime_loading', set()), \
              patch('threading.Thread') as thread, \
-             patch.object(v2_live, 'sleeve_view', return_value={'regime':'OFF'}):
+             patch.object(v2_web, '_decision_is_stale', return_value=False), \
+             patch.object(v2_live, 'sleeve_view', return_value={'regime':'OFF','asof':'2026-09-29'}):
             self.assertEqual(v2_web._regime_state('IN'), 'OFF')
             thread.assert_called_once()
+
+    def test_stale_completed_decision_is_not_presented_as_current(self):
+        from app import v2_web
+        with patch.object(v2_live, 'trading_days_held', return_value=2):
+            self.assertTrue(v2_web._decision_is_stale('IN', '2026-09-29'))
+        with patch.dict(v2_web._regime_cache, {}, clear=True), \
+             patch.object(v2_web, '_regime_loading', set()), \
+             patch('threading.Thread'), \
+             patch.object(v2_web, '_decision_is_stale', return_value=True), \
+             patch.object(v2_live, 'sleeve_view', return_value={'regime':'OFF','asof':'2026-09-29'}):
+            self.assertIsNone(v2_web._regime_state('IN'))
+        with tempfile.NamedTemporaryFile(suffix='.db') as tmp:
+            con=sqlite3.connect(tmp.name)
+            v2_live.ensure_schema(con)
+            con.close()
+            with patch.object(v2_web,'V2_DB',tmp.name), \
+                 patch.object(v2_web,'_live_map',return_value={}), \
+                 patch.object(v2_web,'_decision_is_stale',return_value=True):
+                got=v2_web._decision_with_live_readiness('IN',
+                    {'asof':'2026-09-29','regime':'OFF','state':'STAND ASIDE',
+                     'reason':'regime OFF blocks Nifty exposure'})
+        self.assertEqual((got['state'], got['regime'], got['last_regime']),
+                         ('WAITING FOR DATA', None, 'OFF'))
+        self.assertIn('Last paper decision is stale',got['reason'])
 
     def test_direct_production_pass_cannot_open_outside_market_hours(self):
         with patch.object(v2_live,'market_open',return_value=False), patch.object(v2_live,'_rw') as writer:

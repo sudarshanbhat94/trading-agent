@@ -60,6 +60,10 @@ class ExpectedSessionTest(unittest.TestCase):
         run = datetime(2026, 7, 27, 20, 30, tzinfo=timezone.utc)   # 02:00 IST Tue
         self.assertEqual(ci.expected_session(run), "2026-07-27")
 
+    def test_the_0010_ist_retry_targets_the_just_closed_session(self) -> None:
+        run = datetime(2026, 7, 27, 18, 40, tzinfo=timezone.utc)
+        self.assertEqual(ci.expected_session(run), "2026-07-27")
+
     def test_accepts_utc_input(self) -> None:
         # 10:30 UTC Monday = 16:00 IST Monday, after the close.
         run = datetime(2026, 7, 27, 10, 30, tzinfo=timezone.utc)

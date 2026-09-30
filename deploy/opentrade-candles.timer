@@ -2,8 +2,11 @@
 Description=Refresh OpenTrade daily candles after each market close
 
 [Timer]
-# ~30min after IN close (10:00 UTC) and after US close (20:00 UTC), weekdays
+# Try after IN close; retry once the daily provider has usually published
+# (~00:10 IST), with a 02:00 IST fallback. The 16:00 IST run alone can be
+# one completed session behind even when the market traded normally.
 OnCalendar=Mon..Fri 10:30 UTC
+OnCalendar=Mon..Fri 18:40 UTC
 OnCalendar=Mon..Fri 20:30 UTC
 Persistent=true
 
