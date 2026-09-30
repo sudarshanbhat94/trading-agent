@@ -196,6 +196,7 @@ ROUTE_FEATURES = {
     "/v2/api/catalysts": "catalysts",
     "/v2/api/index-call": "index_call",
     "/v2/api/ideas": "ideas",
+    "/v2/api/screen": "ideas",
     # Connecting a real broker is an ELITE feature, and the routes carry an
     # OWNER check on top. Both, not either: the tier decides who may connect a
     # broker at all, the owner id decides whose money a given sleeve is.

@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenStocks independent equity and index evidence screen
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python -u scripts/evidence_screen.py
+TimeoutStartSec=15min
+Nice=10

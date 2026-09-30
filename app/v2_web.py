@@ -2481,6 +2481,20 @@ def _decision_with_live_readiness(market, decision):
     return current
 
 
+def _evidence_screen(market):
+    if market != "IN":
+        return dict(status="unavailable", equities=[], indices=[], note="NSE evidence screen only")
+    from .screening.store import report
+    path = os.environ.get("SCREENING_DB", os.path.join(os.path.dirname(MAIN_DB), "screening.db"))
+    return report(path)
+
+
+@router.get("/api/screen")
+def api_screen(market: str = "IN", user: dict = Depends(require_session)):
+    """Shared, non-actionable research evidence. Never writes a paper book."""
+    return JSONResponse(_evidence_screen(market))
+
+
 @router.get("/api/ideas")
 def api_ideas(market: str = "IN", days: int = 30,
               user: dict = Depends(require_session)):
@@ -2548,6 +2562,7 @@ def api_ideas(market: str = "IN", days: int = 30,
         capital=_ideas.CAPITAL, risk_pct=_ideas.RISK_PCT,
         broker_ready=can_buy, broker_sleeve=sleeve, broker_margin=margin,
         decision=decision, source_sleeves=list(_ideas.SLEEVE_SOURCES),
+        evidence_screen=_evidence_screen(market),
         cadence="monthly",
         horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")))
 
@@ -5062,6 +5077,55 @@ function ideaBuy(sym,qty){
    if(!r.ok){alert((r.j&&(r.j.error||r.j.detail))||'buy failed');return;}
    alert(r.j.broker_status?('Broker: '+r.j.broker_status+'. Check Account → live broker for confirmed fills.'):'Paper purchase recorded; no broker order submitted.');
    loadIdeas();});}
+function renderEvidenceScreen(e){
+ if(!e||e.status=='unavailable')return '<div class=ig-watch><b>Equity and index evidence screen</b><div class=ig-watch-note>'
+  +esc((e||{}).note||'Waiting for the first evidence refresh')+'</div></div>';
+ function num(v){return v==null?'unavailable':Number(v).toFixed(1);}
+ function filingUrl(url){try{var u=new URL(url);return u.protocol=='https:'&&
+  (u.hostname=='nseindia.com'||u.hostname.endsWith('.nseindia.com'))?u.href:null;}catch(_){return null;}}
+ var head='<div class=ig-watch><div class=ig-watch-head><b>Equity and index evidence screen</b><span>'
+  +esc(e.liquid_count||0)+' liquid / '+esc(e.universe_count||0)+' NSE members</span></div>'
+  +'<div class=ig-watch-note>Prices through '+esc(e.price_asof)+' · evidence checked '
+  +esc(e.generated_at)+(e.stale||e.price_stale?' · STALE':'')
+  +'<br>Research ranking / 100, not a profit probability or a buy instruction. '
+  +'News flags require review; missing evidence remains visible.</div>';
+ var stocks=(e.equities||[]).slice(0,8).map(function(r){
+  var m=r.metrics||{},f=r.fundamentals||{},p=r.participation||{},n=r.news||{},er=r.earnings||{};
+  return '<div class=ig-watch-row style="display:block"><div class=ig-watch-head><b>'+esc(r.symbol)
+   +' · '+esc(r.sector)+'</b><span>'+num(r.score)+' / 100 · '+esc(r.status)+'</span></div>'
+   +'<div class=ig-watch-note>₹'+INR.format(m.price)+' · '+esc(m.setup)+' · RS vs Nifty '
+   +num(m.rs_vs_nifty20_pct)+'pp · volume '+num(m.relative_volume)+'× · delivery '
+   +num(p.delivery_pct)+'% (average '+num(p.delivery_avg20_pct)+'%)</div>'
+   +'<details style="margin-top:6px"><summary>Evidence, news and risks</summary><div class=ig-watch-note>'
+   +'ROE proxy (ending equity) '+num(f.roe_pct)+'% · earnings growth '+num(f.earnings_growth_pct)
+   +'% · revenue growth '+num(f.revenue_growth_pct)+'% · debt/equity '+num(f.debt_equity)
+   +' · cash conversion '+num(f.cash_conversion)+' · annual P/E '+num(f.price_to_annual_eps)
+   +' (sector median '+num(f.sector_median_pe)+') · earnings-growth variability '
+   +num(f.earnings_growth_std_pct)+'pp'
+   +'<br>Statements: '+esc(f.period_end||'unavailable')+' · '+esc(f.statement_currency||'unknown currency')+' · '+esc(f.source||'no source')
+   +' · '+esc(f.reliability||'')+'<br>Results meeting: '+esc(er.date||'unknown')
+   +'<br>Sector RS '+num(m.sector_rs20_pct)+'pp · ATR '+num(m.atr_pct)+'% · resistance ₹'
+   +INR.format(m.resistance)+' · support ₹'+INR.format(m.support)
+   +'<br>Bulk disclosures: '+esc((p.bulk_deals||[]).length)+' (direction alone does not prove accumulation)'
+   +'<br>Official news: '+(r.news?esc(n.event_count||0)+' filings; checked '+esc(n.checked_at):'unavailable')
+   +(n.events||[]).slice(0,3).map(function(x){var url=filingUrl(x.url);return '<br>'
+     +esc(x.classification)+' · '+(url?'<a target="_blank" rel="noopener noreferrer" href="'+esc(url)+'">'+esc(x.title)+'</a>':esc(x.title))
+     +' · '+esc(x.published_at);}).join('')
+   +'<br>Review: '+esc((r.flags||[]).join('; ')||'No screen flags; independent validation still required')
+   +'</div></details></div>';
+ }).join('');
+ var indices=(e.indices||[]).map(function(r){var m=r.metrics||{},o=r.options||{},mk=r.market||{},v=mk.india_vix||{};
+  return '<div class=ig-watch-row style="display:block"><b>'+esc(r.symbol)+'</b><div class=ig-watch-note>'
+   +'Price proxy '+esc(r.price_proxy)+' ₹'+(m.price==null?'unavailable':INR.format(m.price))
+   +' · 20-session return '+num(m.return20_pct)+'% · PCR '+num(o.pcr_oi)
+   +' · max pain '+num(o.max_pain)+' · India VIX '+num(v.value)+' ('+esc(v.session||'unavailable')+')'
+   +'<br>'+esc(r.note)+' · '+esc((r.flags||[]).join('; '))
+   +'<br>FII/DII: '+esc((mk.fii_dii||[]).map(function(x){return x.category+' '+num(x.net_inr_crore)+' crore ('+x.session+')';}).join('; ')||'unavailable')
+   +'</div></div>';
+ }).join('');
+ return head+(stocks||'<div class=ig-watch-note>No stock has complete liquid-universe price coverage.</div>')
+  +indices+'<div class=ig-watch-note>'+esc((e.validation||{}).note||'No validated profit record')+'</div></div>';
+}
 function renderIdeas(d){
  var ccy=d.ccy||'₹',f=(ccy=='₹'?INR:USD),rows=d.ideas||[],s=d.stats||{};
  var allManaged=(d.source_sleeves||[]).every(function(s){return s=='index_directional'||s=='quality_momentum';});
@@ -5151,7 +5215,7 @@ function renderIdeas(d){
    +'</div>':'';
  document.getElementById('ideasList').innerHTML=
   (todays.length?todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
-   stand+screening)+head;
+   stand+screening)+renderEvidenceScreen(d.evidence_screen)+head;
  // The strip at the top already carries win rate, average, published and
  // reached-T1. Repeating them here was pure duplication on a phone, where the
  // two blocks are barely a screen apart. This keeps only the outcomes the strip

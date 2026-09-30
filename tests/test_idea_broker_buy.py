@@ -107,8 +107,9 @@ class BuyButtonTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node required")
     def test_off_regime_renders_stock_research_without_buy_action(self) -> None:
         """Execute the shipped renderer, not a Python copy of the layout."""
-        block = self.spa[self.spa.index("function renderIdeas("):]
-        block = block[:block.index("\nfunction ")]
+        start = self.spa.index("function renderEvidenceScreen(")
+        end = self.spa.index("\nfunction ", self.spa.index("function renderIdeas("))
+        block = self.spa[start:end]
         payload = dict(
             ccy="₹", ideas=[], stats=dict(closed=0, wins=0), plan="elite",
             allowance=2, cadence="monthly", capital=10000, source_sleeves=["index_directional", "quality_momentum"],
@@ -121,6 +122,13 @@ class BuyButtonTest(unittest.TestCase):
                                                            watch=[dict(symbol="ASIANPAINT", price=2440,
                                                                        price_source="completed close",
                                                                        return_6m_pct=8.2, return_12m_pct=14.4)]))]))
+        payload["evidence_screen"] = dict(status="ok", price_asof="2026-09-22",
+            generated_at="2026-09-23T04:00:00+00:00", liquid_count=1, universe_count=500,
+            equities=[dict(symbol="EVIDENCE_TEST", sector="Industrials", status="REVIEW REQUIRED",
+                score=35, metrics=dict(price=200,setup="pullback"),
+                news=dict(event_count=1, events=[dict(title="Official event",classification="risk_review",
+                    url="https://nsearchives.nseindia.com/corporate/event.pdf",published_at="2026-09-22")]),
+                flags=["financial statements unavailable or stale"])], indices=[])
         js = ("const nodes={}; const document={getElementById:id=>nodes[id]||(nodes[id]={style:{}})};\n"
               "const INR=new Intl.NumberFormat('en-IN'),USD=INR,PLANLBL={elite:'Elite'};\n"
               "function esc(x){return String(x??'').replace(/</g,'&lt;')}\n"
@@ -136,6 +144,10 @@ class BuyButtonTest(unittest.TestCase):
         self.assertIn("completed close ₹2,440", out.stdout)
         self.assertIn("Research watch only", out.stdout)
         self.assertIn("regime OFF blocks new stock longs", out.stdout)
+        self.assertIn("EVIDENCE_TEST", out.stdout)
+        self.assertIn("financial statements unavailable or stale", out.stdout)
+        self.assertIn("Official event", out.stdout)
+        self.assertIn("not a profit probability", out.stdout)
         self.assertNotIn("Buy ", out.stdout)
 
 
