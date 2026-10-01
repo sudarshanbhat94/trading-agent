@@ -17,3 +17,7 @@ The user wants liquid, high-quality individual NSE equities, with index exposure
 ## Non-negotiables
 
 The repo is public: never commit credentials, host addresses, keys, or account tokens. Paper-book correctness outranks features. State **TRADING BEHAVIOUR CHANGED** prominently in both commit and report when applicable. Never promise profit, enter the user's API credentials, or place real trades on the user's behalf.
+
+## Idea observations — 2026-10-01
+
+`app/screening/tracking.py` archives each subscriber's first delivered conditional stock plan in a separate `var/idea_tracking.db`; changed levels/date/quantity create separate versions. `scripts/idea_tracker.py` and `deploy/opentrade-idea-tracker.timer` observe the existing quote feed every 30 seconds without touching paper books or strategy rules. Ideas → Tracking and the private `/v2/api/idea-tracking` endpoint expose frozen plans and forward observations. Entry-zone scenarios are hypothetical, not approved entries or actual paper P&L. See `docs/idea-tracking.md` for methodology and the read-only report command. Initial capture began October 1 at 09:27:07 IST; earlier history is not backfilled.

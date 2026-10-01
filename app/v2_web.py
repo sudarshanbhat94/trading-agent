@@ -2493,12 +2493,12 @@ def _evidence_screen(market):
 def api_screen(market: str = "IN", user: dict = Depends(require_session)):
     """Shared, non-actionable research evidence. Never writes a paper book."""
     screen = _evidence_screen(market)
-    screen["stock_plans"] = _stock_plans(screen, market, user)
+    screen["stock_plans"] = _stock_plans(screen, market, user, publish=True)
     return JSONResponse(screen, headers={"Cache-Control": "private, no-store"})
 
 
-def _stock_plans(screen, market, user):
-    """Personal, read-only conditional previews; no publishing or order calls."""
+def _stock_plans(screen, market, user, publish=False):
+    """Read books only; first delivery archives plans in a separate tracker."""
     if market != "IN" or screen.get("status") != "ok":
         return None
     from .screening import plans as preview
@@ -2518,9 +2518,34 @@ def _stock_plans(screen, market, user):
             result["watchlisted"] = []
         from .v2_live import market_open
         result["market_open"] = bool(market_open("IN"))
+        if publish:
+            from .screening import tracking
+            try:
+                ids = tracking.publish(tracking.default_path(MAIN_DB), int(user["id"]), result["ideas"], now=now)
+                result["tracking"] = _idea_tracking(user)
+                current = {r["id"]: r for r in result["tracking"].get("rows", [])}
+                for row in result["ideas"]:
+                    row["tracking_id"] = ids[tracking.fingerprint(row)]
+                    row["tracking"] = current.get(row["tracking_id"])
+            except (OSError, sqlite3.Error, ValueError):
+                _LOG.exception("Cannot persist research idea publication")
+                result["tracking"] = dict(status="unavailable", rows=[], summary={}, note="Publication tracking unavailable; results cannot be claimed")
         return result
     finally:
         con.close()
+
+
+def _idea_tracking(user, limit=100, offset=0):
+    from .screening import tracking
+    return tracking.report(tracking.default_path(MAIN_DB), int(user["id"]), limit=limit, offset=offset)
+
+
+@router.get("/api/idea-tracking")
+def api_idea_tracking(limit: int = 100, offset: int = 0, user: dict = Depends(require_session)):
+    """Personal, read-only forward observations; never another subscriber's data."""
+    if not 1 <= limit <= 200 or offset < 0:
+        raise HTTPException(400, "Invalid tracking page")
+    return JSONResponse(_idea_tracking(user, limit, offset), headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/api/ideas")
@@ -2583,7 +2608,7 @@ def api_ideas(market: str = "IN", days: int = 30,
     except Exception:
         decision = {}
     screen = _evidence_screen(market)
-    stock_plans = _stock_plans(screen, market, user)
+    stock_plans = _stock_plans(screen, market, user, publish=True)
     return JSONResponse(dict(
         ideas=rows, stats=_ideas.scoreboard(rows), plan=plan,
         allowance=_ideas.allowance(plan), max_per_day=_ideas.MAX_PER_DAY,
@@ -2593,6 +2618,7 @@ def api_ideas(market: str = "IN", days: int = 30,
         broker_ready=can_buy, broker_sleeve=sleeve, broker_margin=margin,
         decision=decision, source_sleeves=list(_ideas.SLEEVE_SOURCES),
         evidence_screen=screen, stock_plans=stock_plans,
+        idea_tracking=(stock_plans or {}).get("tracking") or _idea_tracking(user),
         cadence="monthly",
         horizon_days=_ideas.HORIZON_DAYS, ccy=("₹" if market == "IN" else "$")),
         headers={"Cache-Control": "private, no-store"})
@@ -4486,6 +4512,9 @@ body.has-real .fd-books:hover{opacity:1}
 .idea-text-button{border:0;background:transparent;color:var(--inf);font:inherit;font-size:13px;min-height:42px;cursor:pointer;padding:4px 0}
 .ideas-filters{display:grid;grid-template-columns:minmax(200px,1fr) 190px 190px;gap:12px;margin:20px 0 14px}
 .ideas-filters input,.ideas-filters select{width:100%;min-width:0;box-sizing:border-box;min-height:44px;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font:inherit;font-size:13px;color:var(--tx);background:var(--card)}
+
+.idea-observation{padding:12px 0;border-top:1px solid var(--line);font-size:13px}.idea-observation span,.idea-observation small{display:block}.idea-observation small{color:var(--mut);margin-top:5px;font-size:11px}
+#ideaCards[hidden],#ideaTrackingPanel[hidden],#ideaFilters[hidden]{display:none}.idea-tracking-intro h2{font-size:21px;margin:10px 0}.idea-tracking-intro p,.idea-tracking-disclaimer,.idea-tracking-footer p{color:var(--mut);font-size:13px;line-height:1.6}.idea-tracking-intro small{color:var(--mut)}.idea-tracking-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0}.idea-tracking-summary div{padding:16px;background:var(--card);border:1px solid var(--line);border-radius:12px}.idea-tracking-summary b{display:block;font-size:22px}.idea-tracking-summary span{display:block;color:var(--mut);font-size:12px;margin-top:6px}.idea-tracking-row{border-bottom:1px solid var(--line)}.idea-tracking-row summary{display:flex;justify-content:space-between;gap:18px;padding:18px 4px;cursor:pointer;list-style:none}.idea-tracking-row summary div:last-child{text-align:right}.idea-tracking-row summary span{display:block;color:var(--mut);font-size:12px;margin-top:6px}.idea-tracking-body{font-size:13px;line-height:1.7;overflow-wrap:anywhere;padding:0 4px 16px}.idea-tracking-footer>div{display:flex;justify-content:space-between;gap:12px}@media(max-width:600px){.idea-tracking-summary{grid-template-columns:1fr 1fr;gap:8px}.idea-tracking-row summary{gap:10px}.idea-tracking-row summary b{font-size:13px}.idea-tracking-row summary span{font-size:11px}.ideas-tabs{flex-wrap:wrap}}
 .ideas-context{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12px;margin-bottom:20px;line-height:1.5}
 .ig-plan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
 .ig-plan{margin:0;padding:24px;min-width:0;border-radius:18px}
@@ -5160,17 +5189,18 @@ function renderStockPlans(p){
  var sectors=Array.from(new Set((p.ideas||[]).map(function(r){return r.sector;}))).sort();
  return '<section class=ideas-desk><div class=ideas-toolbar><div class=ideas-tabs role=group aria-label="Idea view">'
   +'<button type=button data-idea-view=discover aria-pressed="'+(IDEA_UI.view=='discover')+'" onclick="ideaSetView(\'discover\')">Discover <span>'+p.count+'</span></button>'
-  +'<button type=button data-idea-view=saved aria-pressed="'+(IDEA_UI.view=='saved')+'" onclick="ideaSetView(\'saved\')">Watchlisted <span id=ideaSavedCount>'+watched+'</span></button></div>'
+  +'<button type=button data-idea-view=saved aria-pressed="'+(IDEA_UI.view=='saved')+'" onclick="ideaSetView(\'saved\')">Watchlisted <span id=ideaSavedCount>'+watched+'</span></button>'
+  +'<button type=button data-idea-view=tracking aria-pressed="'+(IDEA_UI.view=='tracking')+'" onclick="ideaSetView(\'tracking\')">Tracking <span id=ideaTrackedCount>'+(((p.tracking||{}).summary||{}).published||0)+'</span></button></div>'
   +'<button type=button class=idea-text-button onclick="go(\'watch\')">Open my watchlist ↗</button></div>'
-  +'<div class=ideas-filters><input type=search id=ideaSearch aria-label="Search stock ideas" placeholder="Search stocks or sectors" value="'+esc(IDEA_UI.search)+'" oninput="ideaFilter(this.value)">'
+  +'<div class=ideas-filters id=ideaFilters '+(IDEA_UI.view=='tracking'?'hidden':'')+'><input type=search id=ideaSearch aria-label="Search stock ideas" placeholder="Search stocks or sectors" value="'+esc(IDEA_UI.search)+'" oninput="ideaFilter(this.value)">'
   +'<select aria-label="Filter ideas by sector" onchange="ideaSector(this.value)"><option value=all>All sectors</option>'
   +sectors.map(function(s){return '<option '+(IDEA_UI.sector==s?'selected ':'')+'value="'+esc(s)+'">'+esc(s)+'</option>';}).join('')+'</select>'
   +'<select aria-label="Sort stock ideas" onchange="ideaSort(this.value)"><option value=rank '+(IDEA_UI.sort=='rank'?'selected':'')+'>Top ranked</option><option value=risk '+(IDEA_UI.sort=='risk'?'selected':'')+'>Lowest estimated risk</option></select></div>'
   +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' conditional plans · prices through '+esc(p.price_asof)+'</span><span>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
-  +'<div class=ig-plan-grid id=ideaCards>'+ideaCards(p)+'</div>'
+  +'<div class=ig-plan-grid id=ideaCards '+(IDEA_UI.view=='tracking'?'hidden':'')+'>'+ideaCards(p)+'</div><div id=ideaTrackingPanel '+(IDEA_UI.view=='tracking'?'':'hidden')+'>'+renderIdeaTracking(p.tracking)+'</div>'
   +'<dialog id=ideaPlanDialog class=idea-dialog aria-labelledby=ideaDialogTitle><div id=ideaDialogBody></div></dialog></section>';
 }
-var IDEA_UI={view:'discover',search:'',sector:'all',sort:'rank',pending:{}};
+var IDEA_UI={view:'discover',search:'',sector:'all',sort:'rank',pending:{},trackingOffset:0};
 function ideaMoney(v){return v==null?'—':'₹'+Number(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function ideaStatus(r){return ({'STALE PLAN':['Refresh needed','warn'],'INVALIDATED':['Plan invalidated','warn'],
  'IN ZONE · CONFIRMATION NEEDED':['Entry zone · confirm first','up'],'BELOW ENTRY ZONE':['Below entry zone','warn']})[r.state]||['Watch for entry',''];}
@@ -5195,6 +5225,7 @@ function ideaCards(p){
    +'<div class=idea-entry><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div>'
    +'<div class=idea-levels>'+level('Stop-loss',r.stop,'dn')+level('Target 1',r.t1,'up')+level('Target 2',r.t2,'up')+level('Target 3',r.t3,'up')+'</div>'
    +'<div class=idea-allocation><div><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b><span>'+ideaMoney(r.notional)+' allocation</span></div><div><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b><span>Estimated stop loss</span></div><div><b>4–8 weeks</b><span>Planning horizon</span></div></div>'
+   +'<div class=idea-observation>'+ideaTrackingBadge(r.tracking)+'</div>'
    +'<div class=idea-thesis><span>WHY THIS STOCK</span><p>'+esc(r.why)+'</p></div>'
    +'<div class=idea-card-actions><button class=idea-secondary type=button data-symbol="'+esc(r.symbol)+'" onclick="ideaOpenPlan(this.dataset.symbol,false)">View plan</button>'
    +'<button class=idea-primary type=button data-symbol="'+esc(r.symbol)+'" onclick="ideaOpenPlan(this.dataset.symbol,true)">Review buy →</button></div></article>';
@@ -5202,12 +5233,15 @@ function ideaCards(p){
 }
 function ideaRepaint(){
  if(!IDEAS||!IDEAS.stock_plans)return;
- var p=IDEAS.stock_plans,grid=document.getElementById('ideaCards');if(grid)grid.innerHTML=ideaCards(p);
+ var p=IDEAS.stock_plans,grid=document.getElementById('ideaCards');if(grid){grid.hidden=IDEA_UI.view=='tracking';grid.innerHTML=ideaCards(p);}
+ var panel=document.getElementById('ideaTrackingPanel');if(panel){var expanded=Array.from(document.querySelectorAll('.idea-tracking-row[open]')).map(function(x){return x.dataset.trackingId;});panel.hidden=IDEA_UI.view!='tracking';panel.innerHTML=renderIdeaTracking(p.tracking);document.querySelectorAll('.idea-tracking-row').forEach(function(x){if(expanded.includes(x.dataset.trackingId))x.open=true;});}
+ var tracked=document.getElementById('ideaTrackedCount');if(tracked)tracked.textContent=((p.tracking||{}).summary||{}).published||0;
+ var filters=document.getElementById('ideaFilters');if(filters)filters.hidden=IDEA_UI.view=='tracking';
  var count=document.getElementById('ideaSavedCount');if(count)count.textContent=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
- var result=document.getElementById('ideaResultCount');if(result)result.textContent=ideaFiltered(p).length+' of '+p.count+' conditional plans · prices through '+p.price_asof;
+ var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' conditional plans · prices through '+p.price_asof;
  document.querySelectorAll('[data-idea-view]').forEach(function(b){b.setAttribute('aria-pressed',b.dataset.ideaView==IDEA_UI.view);});
 }
-function ideaSetView(v){IDEA_UI.view=v;ideaRepaint();}
+function ideaSetView(v){IDEA_UI.view=v;ideaRepaint();if(v=='tracking')ideaRefreshTracking();}
 function ideaFilter(v){IDEA_UI.search=v;ideaRepaint();}
 function ideaSector(v){IDEA_UI.sector=v;ideaRepaint();}
 function ideaSort(v){IDEA_UI.sort=v;ideaRepaint();}
@@ -5245,6 +5279,39 @@ function ideaOpenPlan(sym,review){
   +'<div class=idea-dialog-footer>'+(review?'<button class=idea-primary type=button disabled>Buy unavailable · research plan</button><p>This review submits no order. The manual Buy flow has separate exit rules and cannot execute this plan.</p>':'<button class=idea-primary type=button data-symbol="'+esc(sym)+'" onclick="ideaOpenPlan(this.dataset.symbol,true)">Review buy eligibility →</button>')+'</div>';
  document.getElementById('ideaDialogBody').innerHTML=html;
  var dialog=document.getElementById('ideaPlanDialog');if(!dialog.open)dialog.showModal();
+}
+function ideaTime(at){if(!at)return '—';var d=new Date(at);return isNaN(d)?esc(at):esc(d.toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'}))+' IST';}
+function ideaTrackingStatus(s){return ({WAITING:'Waiting for entry',ZONE_TOUCHED:'Entry zone touched',INVALIDATED:'Invalidated before entry',EXPIRED_UNTOUCHED:'Expired without entry',STOPPED:'Stop observed',TARGET_3:'Target 3 observed',TIME_EXIT:'Time exit observed'})[s]||'Awaiting first observation';}
+function ideaTrackingBadge(r){return r?'<span>'+ideaTrackingStatus(r.status)+'</span><small>Tracking since '+ideaTime(r.issued_at)+' · '+r.samples+' quotes'+(r.gaps?' · '+r.gaps+' gaps':'')+'</small>':'<span>Tracking not available</span><small>Reload to check publication capture.</small>';}
+function renderIdeaTracking(t){
+ if(!t||t.status!='ok')return '<div class=ideas-empty><b>Tracking unavailable</b><p>'+esc((t||{}).note||'Waiting for publication capture')+'</p></div>';
+ var s=t.summary||{},h=t.health||{},rows=t.rows||[];
+ var html='<div class=idea-tracking-intro><h2>Your ideas, from first publication</h2><p>Each original entry, stop, target and quantity stays frozen. New versions are tracked separately, including losers and plans that never reach entry.</p>'
+ +'<small>'+(h.stale?'Tracker update overdue':'Last checked '+ideaTime(h.polled_at))+(h.market_open&&h.missing_symbols&&h.missing_symbols.length?' · missing fresh quotes: '+esc(h.missing_symbols.join(', ')):'')+'</small></div>'
+ +'<div class=idea-tracking-summary><div><b>'+s.published+'</b><span>Published versions</span></div><div><b>'+s.zone_touched+'</b><span>Entry zone touched</span></div><div><b>'+s.t1+' / '+s.t2+' / '+s.t3+'</b><span>T1 / T2 / T3 observed</span></div><div><b>'+s.stopped+'</b><span>Stops observed</span></div></div>'
+ +'<p class=idea-tracking-disclaimer>Hypothetical zone-touch scenarios: '+s.resolved+' resolved · win rate '+(s.scenario_win_pct==null?'—':s.scenario_win_pct+'%')+' · average '+(s.scenario_avg_r==null?'—':s.scenario_avg_r+'R')+'. These are not actual paper trades or a validated strategy track record. '+s.waiting+' waiting · '+s.invalidated+' invalidated before entry · '+s.expired+' expired untouched.</p>';
+ html+=rows.map(function(r){var p=r.plan;return '<details class=idea-tracking-row data-tracking-id="'+r.id+'"><summary><div><b>'+esc(r.symbol)+'</b><span>'+ideaTrackingStatus(r.status)+'</span></div><div><b class="'+((r.observed_move_pct||0)<0?'dn':'up')+'">'+(r.observed_move_pct==null?'No quote yet':(r.observed_move_pct>0?'+':'')+r.observed_move_pct+'% observed')+'</b><span>Issued '+ideaTime(r.issued_at)+'</span></div></summary>'
+ +'<div class=idea-tracking-body><p>Observed move is from the first quote captured after publication ('+ideaMoney(r.first_price)+'), not an assumed purchase. Last observed '+ideaMoney(r.last_price)+' at '+ideaTime(r.last_at)+(r.quote_fresh?'':' · historical / stale quote')+'. '+r.samples+' samples · '+r.gaps+' coverage gaps.</p>'
+ +'<p>Original plan #'+r.id+' · prices through '+esc(p.price_asof)+' · '+p.qty+' shares · entry '+ideaMoney(p.entry_low)+' – '+ideaMoney(p.entry_high)+' · stop '+ideaMoney(p.stop)+' · T1 / T2 / T3 '+[p.t1,p.t2,p.t3].map(ideaMoney).join(' / ')+'.</p>'
+ +(r.entry_at?'<p>Entry-zone scenario at '+ideaMoney(r.entry_price)+' ('+ideaTime(r.entry_at)+'). Estimated net '+ideaMoney(r.scenario_net)+' · '+r.scenario_r+'R'+(r.exit_at?' · closed scenario':' · marked to last observation')+', after frozen fees and slippage. This does not satisfy the plan’s confirmation or execution approval.</p>':'<p>No entry-zone observation. No hypothetical profit or loss assigned.</p>')
+ +'<ol>'+(r.events||[]).map(function(e){return '<li>'+esc(e.kind.replace(/_/g,' '))+' · '+ideaTime(e.at)+(e.price==null?'':' · '+ideaMoney(e.price))+'</li>';}).join('')+'</ol></div></details>';}).join('');
+ html+='<div class=idea-tracking-footer><p>'+esc(t.note)+'</p><div><button type=button class=idea-secondary '+(t.offset?'':'disabled ')+'onclick="ideaTrackingPage('+Math.max(0,t.offset-t.limit)+')">Newer versions</button><button type=button class=idea-secondary '+(t.offset+rows.length<s.published?'':'disabled ')+'onclick="ideaTrackingPage('+(t.offset+t.limit)+')">Older versions</button></div></div>';
+ return html;
+}
+var IDEA_TRACKING_BUSY=false;
+function ideaTrackingPage(offset){IDEA_UI.trackingOffset=offset;ideaRefreshTracking();}
+async function ideaRefreshTracking(){
+ if(!IDEAS||IDEA_TRACKING_BUSY)return;IDEA_TRACKING_BUSY=true;
+ try{
+  var r=await api('/v2/api/idea-tracking?offset='+IDEA_UI.trackingOffset);
+  if(r.s==401){ideaLoadError('Session expired. Sign in again.');return;}
+  var t=r.ok?r.j:{status:'unavailable',note:(r.j&&(r.j.error||r.j.detail))||'Could not refresh tracking'};
+  if(!IDEAS)return;IDEAS.idea_tracking=t;
+  if(IDEAS.stock_plans){var p=IDEAS.stock_plans;p.tracking=t;
+   (p.ideas||[]).forEach(function(plan){var row=(t.rows||[]).find(function(x){return x.id==plan.tracking_id;});if(row)plan.tracking=row;});ideaRepaint();
+  }else{var panel=document.getElementById('ideaTrackingPanel');if(panel)panel.innerHTML=renderIdeaTracking(t);}
+ }catch(_){var panel=document.getElementById('ideaTrackingPanel');if(panel)panel.innerHTML='<div class=ideas-empty>Tracking refresh failed. Last observations remain historical; retry on the Tracking tab.</div>';}
+ finally{IDEA_TRACKING_BUSY=false;}
 }
 function renderEvidenceScreen(e){
  if(!e||e.status=='unavailable')return '<div class=ig-watch><b>Equity and index evidence screen</b><div class=ig-watch-note>'
@@ -5388,7 +5455,7 @@ function renderIdeas(d){
       +'</b><span>'+esc(r.reason)+'</span></div>';}).join(''))
    +'</div>':'';
  document.getElementById('ideasList').innerHTML=
-  renderStockPlans(preview)+(todays.length?'<div class=ig-watch-head><b>Funded paper ideas</b></div>'+todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
+  renderStockPlans(preview)+(preview?'':'<section id=ideaTrackingPanel>'+renderIdeaTracking(d.idea_tracking)+'</section>')+(todays.length?'<div class=ig-watch-head><b>Funded paper ideas</b></div>'+todays.map(function(r){return ideaCard(r,ccy,fmtDay)}).join(''):
    (preview?'<details class=ig-watch><summary>Paper automation status</summary>'+stand+'</details>':stand+screening))+(preview?'<details class=ig-watch><summary>Market context &amp; full research evidence</summary>'+renderEvidenceScreen(d.evidence_screen)+'</details>':renderEvidenceScreen(d.evidence_screen))+head;
  // The strip at the top already carries win rate, average, published and
  // reached-T1. Repeating them here was pure duplication on a phone, where the
@@ -6442,6 +6509,7 @@ function loadCatalysts(){var el=document.getElementById('catalysts');if(!el)retu
  var bc={results:'bg-inf',order:'bg-up',corp_action:'bg-warn'};
  el.innerHTML=cs.map(c=>'<div class=lrow style="cursor:pointer;padding:8px 2px" onclick="stock(\''+c.symbol+'\',\'IN\')"><div style="min-width:0"><b>'+c.symbol+'</b> <span class="badge '+(bc[c.cat]||'bg-mut')+'" style="font-size:9px">'+c.kind+'</span><div class=mut style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px">'+(c.subject||'')+'</div></div></div>').join('');});}
 function toast(t){var e=document.createElement('div');e.className='toastmsg';e.textContent=t;document.body.appendChild(e);setTimeout(function(){e.remove()},6500)}
+setInterval(()=>{if(ME&&cur=='ideas'&&!document.getElementById('ideaPlanDialog')?.open)ideaRefreshTracking()},60000);
 boot();setInterval(()=>{if(ME){loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos()}},20000);
 setInterval(()=>{if(ME)loadTicker()},6000);
 </script></body></html>"""

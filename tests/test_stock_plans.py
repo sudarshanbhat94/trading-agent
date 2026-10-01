@@ -96,13 +96,13 @@ def test_stale_or_future_quote_cannot_supply_entry_confirmation():
     assert plans.shortlist(data,book(),now=NOW)['ideas'][0]['state']=='STALE PLAN'
 
 
-def test_screen_and_ideas_share_personal_preview_without_publishing():
+def test_screen_delivers_personal_preview_with_publication_capture():
     data=screen(1)
     with patch.object(v2_web,'_evidence_screen',return_value=data), patch.object(v2_web,'_stock_plans',return_value={'count':1}) as preview:
         response=v2_web.api_screen(user={'id':2})
     assert json.loads(response.body)['stock_plans']=={'count':1}
     assert response.headers['cache-control']=='private, no-store'
-    preview.assert_called_once_with(data,'IN',{'id':2})
+    preview.assert_called_once_with(data,'IN',{'id':2},publish=True)
 
 
 @pytest.mark.skipif(not shutil.which('node'),reason='node required')

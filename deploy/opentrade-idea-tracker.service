@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenStocks forward research idea observations (no orders)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python -u scripts/idea_tracker.py
+TimeoutStartSec=25s
+Nice=10

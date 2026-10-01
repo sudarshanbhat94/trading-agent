@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe issued OpenStocks ideas every 30 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
