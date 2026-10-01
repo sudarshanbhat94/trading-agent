@@ -4,7 +4,7 @@ Open Ideas → **Tracking**. Publication versions include every issued condition
 
 Each Ideas or Screen API delivery registers the original plan once for that subscriber. A changed price date, entry/stop/target or quantity creates a new version; refreshing unchanged plans never rewrites their publication time, frozen levels or fee assumptions. Current-price observations are not plan revisions. The plan-generation model has a version identifier to distinguish future rule changes.
 
-The independent `opentrade-idea-tracker.timer` reads the existing Upstox quote feed every 30 seconds. It writes only `var/idea_tracking.db` and imports no broker, trading loop or application startup. Paper portfolios and strategy parameters are untouched. The web view refreshes its observations every minute while Ideas is open, without republishing plans.
+The independent `opentrade-idea-tracker.timer` reads the existing Upstox quote feed every 30 seconds. Active issued ideas are also included in the feed’s fast quote lane, so unheld stocks do not wait for the slow whole-universe refresh. It writes only `var/idea_tracking.db` and imports no broker, trading loop or application startup. Paper portfolios and strategy parameters are untouched. The web view refreshes its observations every minute while Ideas is open, without republishing plans.
 
 ## Interpretation
 

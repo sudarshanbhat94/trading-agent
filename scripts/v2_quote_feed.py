@@ -64,6 +64,28 @@ def _held():
     return out
 
 
+def _tracked():
+    """Issued research plans need the hot feed even when they are not positions.
+
+    Read only the separate tracker; never invoke a strategy or create a book.
+    This adds quote coverage, not candidates to the trading engine.
+    """
+    from app.screening import tracking
+    path=tracking.default_path(MAIN_DB)
+    if not os.path.exists(path):
+        return set()
+    try:
+        return set(tracking.symbols(path))
+    except (sqlite3.Error,OSError,ValueError):
+        print('issued idea quote watch unavailable; tracker coverage must be checked',flush=True)
+        return set()
+
+
+def _hot_rows(symmap,held,tracked):
+    return {m:[symmap[m][s] for s in sorted(set(held.get(m,())) | set(WATCH_HOT.get(m,())) | (set(tracked) if m=='IN' else set()))
+               if s in symmap.get(m,{})] for m in MARKETS}
+
+
 _cooldown: dict = {}   # market -> unix time to resume after a rate-limit (429)
 
 # The hot lane always keeps this small liquid base fresh (every `interval`s) even
@@ -352,9 +374,8 @@ def main():
         while True:
             t0 = time.time()
             held = _held()
-            # held symbols + the always-fresh liquid base set (dedup)
-            hot = {m: [symmap[m][s] for s in (set(held.get(m, ())) | set(WATCH_HOT.get(m, [])))
-                       if s in symmap.get(m, {})] for m in MARKETS}
+            # Held symbols, base liquidity names and issued research plans.
+            hot = _hot_rows(symmap,held,_tracked())
             if any(hot.values()):
                 _poll(db, providers, hot, "")
             time.sleep(max(0.2, a.interval - (time.time() - t0)))

@@ -5196,14 +5196,14 @@ function renderStockPlans(p){
   +'<select aria-label="Filter ideas by sector" onchange="ideaSector(this.value)"><option value=all>All sectors</option>'
   +sectors.map(function(s){return '<option '+(IDEA_UI.sector==s?'selected ':'')+'value="'+esc(s)+'">'+esc(s)+'</option>';}).join('')+'</select>'
   +'<select aria-label="Sort stock ideas" onchange="ideaSort(this.value)"><option value=rank '+(IDEA_UI.sort=='rank'?'selected':'')+'>Top ranked</option><option value=risk '+(IDEA_UI.sort=='risk'?'selected':'')+'>Lowest estimated risk</option></select></div>'
-  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' conditional plans · prices through '+esc(p.price_asof)+'</span><span>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' conditional plans · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
   +'<div class=ig-plan-grid id=ideaCards '+(IDEA_UI.view=='tracking'?'hidden':'')+'>'+ideaCards(p)+'</div><div id=ideaTrackingPanel '+(IDEA_UI.view=='tracking'?'':'hidden')+'>'+renderIdeaTracking(p.tracking)+'</div>'
   +'<dialog id=ideaPlanDialog class=idea-dialog aria-labelledby=ideaDialogTitle><div id=ideaDialogBody></div></dialog></section>';
 }
 var IDEA_UI={view:'discover',search:'',sector:'all',sort:'rank',pending:{},trackingOffset:0};
 function ideaMoney(v){return v==null?'—':'₹'+Number(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function ideaStatus(r){return ({'STALE PLAN':['Refresh needed','warn'],'INVALIDATED':['Plan invalidated','warn'],
- 'IN ZONE · CONFIRMATION NEEDED':['Entry zone · confirm first','up'],'BELOW ENTRY ZONE':['Below entry zone','warn']})[r.state]||['Watch for entry',''];}
+ 'LIVE QUOTE UNAVAILABLE':['Waiting for fresh quote','warn'],'IN ZONE · CONFIRMATION NEEDED':['Entry zone · confirm first','up'],'BELOW ENTRY ZONE':['Below entry zone','warn']})[r.state]||['Watch for entry',''];}
 function ideaFiltered(p){
  var term=IDEA_UI.search.trim().toLowerCase();
  return (p.ideas||[]).filter(function(r){return (IDEA_UI.view!='saved'||(p.watchlisted||[]).includes(r.symbol))
@@ -5221,7 +5221,7 @@ function ideaCards(p){
   return '<article class="ig-card ig-plan" aria-label="'+esc(r.symbol)+' trade plan"><div class=idea-card-head>'
    +'<div class=idea-avatar aria-hidden=true>'+esc(r.symbol.slice(0,2))+'</div><div class=idea-stock-id><button class=idea-symbol type=button data-symbol="'+esc(r.symbol)+'" onclick="stock(this.dataset.symbol,\'IN\')">'+esc(r.symbol)+'</button><div>'+esc(r.sector)+'</div></div>'
    +'<button type=button class="idea-star '+(saved?'saved':'')+'" data-symbol="'+esc(r.symbol)+'" aria-label="'+(saved?'Remove ':'Add ')+esc(r.symbol)+(saved?' from':' to')+' watchlist" aria-pressed="'+saved+'" '+(IDEA_UI.pending[r.symbol]?'disabled ':'')+'onclick="ideaToggleWatch(this.dataset.symbol)">'+(saved?'★':'☆')+'</button></div>'
-   +'<div class=idea-price-row><div><b>'+ideaMoney(r.quote_price==null?m.price:r.quote_price)+'</b><span>'+(r.quote_price==null?'Last close':'Live quote')+'</span></div><span class="idea-state '+status[1]+'">'+status[0]+'</span></div>'
+   +'<div class=idea-price-row><div><b>'+ideaMoney(r.quote_price==null?m.price:r.quote_price)+'</b><span>'+(r.quote_price==null?'Last close':'Live quote · '+ideaTime(r.quote_at))+'</span></div><span class="idea-state '+status[1]+'">'+status[0]+'</span></div>'
    +'<div class=idea-entry><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div>'
    +'<div class=idea-levels>'+level('Stop-loss',r.stop,'dn')+level('Target 1',r.t1,'up')+level('Target 2',r.t2,'up')+level('Target 3',r.t3,'up')+'</div>'
    +'<div class=idea-allocation><div><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b><span>'+ideaMoney(r.notional)+' allocation</span></div><div><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b><span>Estimated stop loss</span></div><div><b>4–8 weeks</b><span>Planning horizon</span></div></div>'
@@ -5236,6 +5236,7 @@ function ideaRepaint(){
  var p=IDEAS.stock_plans,grid=document.getElementById('ideaCards');if(grid){grid.hidden=IDEA_UI.view=='tracking';grid.innerHTML=ideaCards(p);}
  var panel=document.getElementById('ideaTrackingPanel');if(panel){var expanded=Array.from(document.querySelectorAll('.idea-tracking-row[open]')).map(function(x){return x.dataset.trackingId;});panel.hidden=IDEA_UI.view!='tracking';panel.innerHTML=renderIdeaTracking(p.tracking);document.querySelectorAll('.idea-tracking-row').forEach(function(x){if(expanded.includes(x.dataset.trackingId))x.open=true;});}
  var tracked=document.getElementById('ideaTrackedCount');if(tracked)tracked.textContent=((p.tracking||{}).summary||{}).published||0;
+ var session=document.getElementById('ideaMarketSession');if(session)session.textContent=p.tracking&&p.tracking.status!='ok'?'Quote tracking unavailable':p.market_open?'Market open · fresh quotes required':'Market closed · last close shown';
  var filters=document.getElementById('ideaFilters');if(filters)filters.hidden=IDEA_UI.view=='tracking';
  var count=document.getElementById('ideaSavedCount');if(count)count.textContent=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
  var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' conditional plans · prices through '+p.price_asof;
@@ -5299,6 +5300,12 @@ function renderIdeaTracking(t){
  return html;
 }
 var IDEA_TRACKING_BUSY=false;
+function ideaSyncObservedQuote(plan,row){
+ var age=row&&row.last_at?(Date.now()-new Date(row.last_at).getTime())/1000:-1;
+ var fresh=row&&row.symbol==plan.symbol&&row.quote_fresh&&age>=0&&age<=120;
+ plan.quote_price=fresh?row.last_price:null;plan.quote_at=fresh?row.last_at:null;
+ if(plan.state!='STALE PLAN')plan.state=!fresh?'LIVE QUOTE UNAVAILABLE':row.last_price<=plan.stop?'INVALIDATED':row.last_price<plan.entry_low?'BELOW ENTRY ZONE':row.last_price<=plan.entry_high?'IN ZONE · CONFIRMATION NEEDED':'WAIT FOR PULLBACK';
+}
 function ideaTrackingPage(offset){IDEA_UI.trackingOffset=offset;ideaRefreshTracking();}
 async function ideaRefreshTracking(){
  if(!IDEAS||IDEA_TRACKING_BUSY)return;IDEA_TRACKING_BUSY=true;
@@ -5308,9 +5315,9 @@ async function ideaRefreshTracking(){
   var t=r.ok?r.j:{status:'unavailable',note:(r.j&&(r.j.error||r.j.detail))||'Could not refresh tracking'};
   if(!IDEAS)return;IDEAS.idea_tracking=t;
   if(IDEAS.stock_plans){var p=IDEAS.stock_plans;p.tracking=t;
-   (p.ideas||[]).forEach(function(plan){var row=(t.rows||[]).find(function(x){return x.id==plan.tracking_id;});if(row)plan.tracking=row;});ideaRepaint();
+   (p.ideas||[]).forEach(function(plan){var row=(t.rows||[]).find(function(x){return x.id==plan.tracking_id;});if(row)plan.tracking=row;ideaSyncObservedQuote(plan,t.status=='ok'?plan.tracking:null);});p.market_open=!!(t.health||{}).market_open;ideaRepaint();
   }else{var panel=document.getElementById('ideaTrackingPanel');if(panel)panel.innerHTML=renderIdeaTracking(t);}
- }catch(_){var panel=document.getElementById('ideaTrackingPanel');if(panel)panel.innerHTML='<div class=ideas-empty>Tracking refresh failed. Last observations remain historical; retry on the Tracking tab.</div>';}
+ }catch(_){if(IDEAS&&IDEAS.stock_plans){IDEAS.stock_plans.ideas.forEach(function(plan){ideaSyncObservedQuote(plan,null);});ideaRepaint();}var panel=document.getElementById('ideaTrackingPanel');if(panel)panel.innerHTML='<div class=ideas-empty>Tracking refresh failed. Last observations remain historical; retry on the Tracking tab.</div>';}
  finally{IDEA_TRACKING_BUSY=false;}
 }
 function renderEvidenceScreen(e){

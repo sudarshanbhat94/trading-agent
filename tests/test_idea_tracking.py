@@ -245,3 +245,16 @@ def test_health_does_not_disclose_other_subscribers_coverage(tmp_path):
     assert own['health']['active_symbols']==own['health']['fresh_symbols']==1
     assert own['health']['missing_symbols']==[]
     assert report(db,uid=3)['health']['missing_symbols']==['OTHER']
+
+
+def test_quote_refresh_updates_card_but_preserves_original_plan_and_marks_stale(tmp_path):
+    result=run_js(tmp_path,"""
+    const p=IDEAS.stock_plans.ideas[0],frozen=[p.entry_low,p.entry_high,p.stop,p.t1,p.t2,p.t3,p.qty];
+    const row={symbol:p.symbol,last_price:p.entry_high,last_at:new Date().toISOString(),quote_fresh:true};
+    ideaSyncObservedQuote(p,row);const fresh={price:p.quote_price,state:p.state};
+    row.last_at=new Date(Date.now()-121000).toISOString();ideaSyncObservedQuote(p,row);
+    const stale={price:p.quote_price,state:p.state};
+    console.log(JSON.stringify({fresh,stale,frozen,after:[p.entry_low,p.entry_high,p.stop,p.t1,p.t2,p.t3,p.qty]}));""")
+    assert result['fresh']['state']=='IN ZONE · CONFIRMATION NEEDED'
+    assert result['stale']=={'price':None,'state':'LIVE QUOTE UNAVAILABLE'}
+    assert result['frozen']==result['after']
