@@ -1583,11 +1583,16 @@ class UpstoxMarketDataProvider(MarketDataProvider):
     def _find_quote_item(self, data: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
         instrument = row.get("upstox_instrument_key", "")
         symbol = row["symbol"]
+        segment = instrument.split('|',1)[0] if instrument else ''
         for key, item in data.items():
-            if key == instrument or key.endswith(f":{symbol}") or item.get("symbol") == symbol:
+            # Index aliases differ from broker display names (BANKNIFTY versus
+            # Nifty Bank). Match the identity, including segment, first.
+            if instrument and (key == instrument or key == instrument.replace('|',':',1)
+                               or item.get('instrument_token') == instrument):
                 return item
-        if len(data) == 1:
-            return next(iter(data.values()))
+            if key.startswith(segment+':') and (key.endswith(f":{symbol}") or item.get("symbol") == symbol):
+                return item
+        # A partial batch containing one OTHER instrument is not this quote.
         return None
 
     def _parse_candle(self, symbol: str, candle: list[Any], source: str | None = None) -> Candle:
@@ -1604,12 +1609,15 @@ class UpstoxMarketDataProvider(MarketDataProvider):
 
 
 def _upstox_quote_asof(item: dict[str, Any]) -> str:
+    # Full quotes distinguish feed-update time from the last transaction.
+    # A currently updated quote need not contain a new trade. Never manufacture
+    # a live timestamp from the local clock when the broker supplies none.
     for key in (
+        "timestamp",
+        "exchange_timestamp",
         "last_trade_time",
         "last_traded_time",
         "ltt",
-        "exchange_timestamp",
-        "timestamp",
     ):
         value = item.get(key)
         if value is None:
@@ -1617,7 +1625,7 @@ def _upstox_quote_asof(item: dict[str, Any]) -> str:
         parsed = _parse_market_timestamp(value)
         if parsed:
             return parsed.isoformat()
-    return utc_now()
+    return "1970-01-01T00:00:00+00:00"
 
 
 def _nse_market_date() -> date:
@@ -1659,7 +1667,7 @@ def _is_stale_quote(asof: str) -> bool:
         return True
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - parsed).total_seconds() > 900
+    return not 0 <= (datetime.now(timezone.utc) - parsed).total_seconds() <= 900
 
 
 def _is_nse_regular_session_now() -> bool:

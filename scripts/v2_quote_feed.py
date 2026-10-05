@@ -98,8 +98,14 @@ WATCH_HOT = {
     "US": [],
 }
 
+# Quote-only instruments. Never pass these to db.upsert_quotes or universe.
+BENCHMARK_ROWS = [
+    {'symbol':'NIFTY','upstox_instrument_key':'NSE_INDEX|Nifty 50'},
+    {'symbol':'BANKNIFTY','upstox_instrument_key':'NSE_INDEX|Nifty Bank'},
+]
 
-def _poll(db, providers, rows_for, label):
+
+def _poll(db, providers, rows_for, label, benchmarks=False):
     for m, rws in rows_for.items():
         if m not in providers or not rws:
             continue
@@ -108,9 +114,21 @@ def _poll(db, providers, rows_for, label):
         try:
             if not market_regions.market_session_for_region(m).get("is_open"):
                 continue
-            quotes = asyncio.run(providers[m].get_quotes(rws))
+            requested=rws+BENCHMARK_ROWS if benchmarks and m=='IN' else rws
+            quotes = asyncio.run(providers[m].get_quotes(requested))
+            indices={s:q for s,q in quotes.items() if m=='IN' and s in ('NIFTY','BANKNIFTY')}
+            quotes={s:q for s,q in quotes.items() if s not in indices}
+            # Portfolio marks get written first. Research capture failures must
+            # never discard or delay delivery of already fetched equity quotes.
             if quotes:
                 db.upsert_quotes(quotes)
+            if indices:
+                from app.screening import tracking
+                try:
+                    tracking.observe_benchmarks(tracking.default_path(MAIN_DB),
+                        {s:dict(price=q.price,ts=q.asof,source=q.source) for s,q in indices.items()})
+                except (sqlite3.Error,OSError,ValueError):
+                    print('benchmark capture unavailable; equity quotes delivered',flush=True)
             if label:
                 print(f"  [{m}/{label}] {len(quotes)} quotes @ {datetime.now(timezone.utc).strftime('%H:%M:%S')}", flush=True)
         except Exception as exc:
@@ -377,7 +395,7 @@ def main():
             # Held symbols, base liquidity names and issued research plans.
             hot = _hot_rows(symmap,held,_tracked())
             if any(hot.values()):
-                _poll(db, providers, hot, "")
+                _poll(db, providers, hot, "", benchmarks=True)
             time.sleep(max(0.2, a.interval - (time.time() - t0)))
 
     def _full_worker():

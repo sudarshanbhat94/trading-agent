@@ -20,7 +20,7 @@ from ..market_regions import INDIA_TRADING_HOLIDAYS, market_session_for_region
 
 IST = ZoneInfo('Asia/Kolkata')
 VERSION = 'conditional-pullback-v1'
-TABLES = {'publications', 'states', 'events', 'samples', 'health'}
+TABLES = {'publications', 'states', 'events', 'samples', 'health', 'benchmarks', 'coverage', 'assessments', 'assessment_events'}
 TERMINAL = {'INVALIDATED', 'EXPIRED_UNTOUCHED', 'STOPPED', 'TARGET_3', 'TIME_EXIT'}
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS publications(
@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS samples(
  symbol TEXT NOT NULL,quote_at TEXT NOT NULL,source TEXT NOT NULL,
  price REAL NOT NULL,captured_at TEXT NOT NULL,PRIMARY KEY(symbol,quote_at,source));
 CREATE TABLE IF NOT EXISTS health(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS benchmarks(
+ symbol TEXT NOT NULL,quote_at TEXT NOT NULL,source TEXT NOT NULL,
+ price REAL NOT NULL,captured_at TEXT NOT NULL,PRIMARY KEY(symbol,quote_at,source));
+CREATE TABLE IF NOT EXISTS coverage(
+ publication_id INTEGER NOT NULL,start_at TEXT NOT NULL,end_at TEXT NOT NULL,
+ seconds REAL NOT NULL,captured_at TEXT NOT NULL,
+ PRIMARY KEY(publication_id,start_at,end_at));
+CREATE TABLE IF NOT EXISTS assessments(publication_id INTEGER PRIMARY KEY,payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS assessment_events(
+ publication_id INTEGER NOT NULL,kind TEXT NOT NULL,observed_at TEXT NOT NULL,
+ payload TEXT NOT NULL,PRIMARY KEY(publication_id,kind,observed_at));
 '''
 
 
@@ -163,6 +174,8 @@ def _advance(con, pid, issued_at, plan, state, q, captured):
         day += timedelta(days=1)
     if covered_seconds>120:
         state['gaps'] += 1
+        con.execute('INSERT OR IGNORE INTO coverage VALUES(?,?,?,?,?)',
+                    (pid,previous.isoformat(),current.isoformat(),covered_seconds,captured))
     if not state.get('last_at'):
         state.update(first_at=at,first_price=price)
     state.update(last_at=at,last_price=price,samples=state['samples']+1,
@@ -186,7 +199,7 @@ def _advance(con, pid, issued_at, plan, state, q, captured):
         if reason:
             state.update(status=reason,exit_at=at,exit_price=price,net=round(net(plan,state['entry_price'],price),2))
             state['r']=round(state['net']/state['risk'],4)
-            _event(con,pid,reason,at,net=state['net'],r=state['r'])
+            _event(con,pid,reason,at,price,net=state['net'],r=state['r'])
     return True
 
 
@@ -231,6 +244,59 @@ def symbols(path):
         con.close()
 
 
+def observe_benchmarks(path, quotes, captured_at=None):
+    """Direct index quotes stay in the research DB, never the trading universe."""
+    captured=timestamp(captured_at) if captured_at else datetime.now(timezone.utc)
+    accepted=[]
+    for symbol,q in quotes.items():
+        try:
+            at=timestamp(q['ts']);price=float(q['price'])
+            if (symbol not in ('NIFTY','BANKNIFTY') or q.get('source')!='upstox-live'
+                or not math.isfinite(price) or price<=0
+                or not 0<=(captured-at).total_seconds()<=120
+                or not market_session_for_region('IN',at)['is_open']):
+                continue
+            accepted.append((symbol,at.isoformat(),'upstox-nse-index',price,captured.isoformat()))
+        except (KeyError,TypeError,ValueError):
+            continue
+    if not accepted:return 0
+    con=connect(path)
+    try:
+        with con:con.executemany('INSERT OR IGNORE INTO benchmarks VALUES(?,?,?,?,?)',accepted)
+    finally:con.close()
+    return len(accepted)
+
+
+def matched_benchmarks(con, start, end):
+    """Never substitute parity bars or unmatched dates for index observations.
+
+    Endpoint skew is disclosed and capped at 30 seconds; this is sampled
+    relative strength, not an exact-time official-close comparison.
+    """
+    result={}
+    for symbol in ('NIFTY','BANKNIFTY'):
+        points=[]
+        for at in (start,end):
+            try:
+                center=timestamp(at)
+                row=con.execute('SELECT quote_at,price FROM benchmarks WHERE symbol=? '
+                    'AND quote_at>=? AND quote_at<=? '
+                    'ORDER BY ABS(julianday(quote_at)-julianday(?)) LIMIT 1',
+                    (symbol,(center-timedelta(seconds=30)).isoformat(),
+                     (center+timedelta(seconds=30)).isoformat(),at)).fetchone()
+            except sqlite3.OperationalError:row=None
+            points.append(row)
+        if not all(points) or timestamp(points[1][0])<=timestamp(points[0][0]):
+            result[symbol]=dict(available=False,reason='Matching timestamped index observations unavailable')
+        else:
+            result[symbol]=dict(available=True,start_at=points[0][0],end_at=points[1][0],
+                move_pct=round((points[1][1]/points[0][1]-1)*100,4),
+                start_skew_seconds=round(abs((timestamp(points[0][0])-timestamp(start)).total_seconds()),3),
+                end_skew_seconds=round(abs((timestamp(points[1][0])-timestamp(end)).total_seconds()),3),
+                source='upstox-nse-index',max_endpoint_skew_seconds=30)
+    return result
+
+
 def report(path,user_id,now=None,limit=100,offset=0):
     """Private cohort report; summary includes ALL versions, not just latest wins."""
     now=now or datetime.now(timezone.utc)
@@ -240,6 +306,20 @@ def report(path,user_id,now=None,limit=100,offset=0):
             rows=con.execute('SELECT p.id,p.fingerprint,p.symbol,p.issued_at,p.payload,s.payload FROM publications p JOIN states s ON s.publication_id=p.id WHERE p.user_id=? ORDER BY p.id DESC',(int(user_id),)).fetchall()
             health=con.execute('SELECT payload FROM health WHERE id=1').fetchone()
             events=con.execute('SELECT e.publication_id,e.kind,e.observed_at,e.price,e.payload FROM events e JOIN publications p ON p.id=e.publication_id WHERE p.user_id=? ORDER BY e.observed_at',(int(user_id),)).fetchall()
+            try:
+                gaps=con.execute('SELECT c.publication_id,c.start_at,c.end_at,c.seconds,c.captured_at '
+                    'FROM coverage c JOIN publications p ON p.id=c.publication_id '
+                    'WHERE p.user_id=? ORDER BY c.end_at',(int(user_id),)).fetchall()
+            except sqlite3.OperationalError:gaps=[] # pre-migration read remains valid
+            try:
+                assessments=dict(con.execute('SELECT a.publication_id,a.payload FROM assessments a '
+                    'JOIN publications p ON p.id=a.publication_id WHERE p.user_id=?',(int(user_id),)).fetchall())
+            except sqlite3.OperationalError:assessments={}
+            matches={}
+            for pid,key,symbol,issued,encoded,stored in rows:
+                state=json.loads(stored)
+                if state.get('first_at') and state.get('last_at'):
+                    matches[pid]=matched_benchmarks(con,state['first_at'],state['last_at'])
         finally:
             con.close()
     except (sqlite3.Error,OSError):
@@ -251,8 +331,24 @@ def report(path,user_id,now=None,limit=100,offset=0):
     for pid,key,symbol,issued,encoded,stored in rows:
         plan=json.loads(encoded); state=json.loads(stored)
         row=dict(id=pid,fingerprint=key,symbol=symbol,issued_at=issued,plan=plan,**state,events=timeline.get(pid,[]))
+        row['coverage_gaps']=[dict(start_at=a,end_at=b,seconds=seconds,captured_at=capture)
+            for gap_pid,a,b,seconds,capture in gaps if gap_pid==pid][-10:]
+        row['benchmarks']=matches.get(pid,{})
+        row['confirmation']=json.loads(assessments[pid]) if pid in assessments else None
+        if row['confirmation']:
+            assessment=row['confirmation']
+            assessment['fresh']=0<=(now-timestamp(assessment['checked_at'])).total_seconds()<=120
+            assessment['assessed_eligible']=assessment['eligible']
+            if not assessment['fresh']:assessment['eligible']=False
+        for event in row['events']:
+            if event['price'] is None and event['kind']==state['status'] and state.get('exit_price'):
+                event['price_recorded_in_state']=state['exit_price']
+                event['historical_event_price_missing']=True
         if state.get('first_price'):
             row['observed_move_pct']=round((state['last_price']/state['first_price']-1)*100,2)
+            for match in row['benchmarks'].values():
+                if match['available']:
+                    match['stock_minus_index_pp']=round(row['observed_move_pct']-match['move_pct'],4)
             age=(now-timestamp(state['last_at'])).total_seconds()
             row['quote_fresh']=0<=age<=120
         if state.get('entry_at'):

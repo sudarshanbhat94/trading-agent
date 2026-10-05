@@ -33,3 +33,26 @@ journalctl -u opentrade-idea-tracker.service --since today
 `--report-user` is read-only, does not poll the feed or publish new plans, and returns JSON suitable for daily reviews. The authenticated `/v2/api/idea-tracking?limit=100&offset=0` endpoint always scopes records to the signed-in user, enforces the Ideas subscription gate, and disables shared caching. Summaries count all versions even when rows are paginated.
 
 Set `IDEA_TRACKING_DB` to a dedicated tracker database if needed; the default is alongside `OPENSTOCKS_DB`. Known paper/market/evidence filenames and databases containing other tables are rejected before schema creation. Deploy the service and timer in `deploy/`, then enable the timer. A thread heartbeat reviews the report after market close and flags meaningful new outcomes or coverage failures; routine polling is performed by the server rather than an LLM.
+
+## Forward confirmation and validation — v2
+
+**TRADING BEHAVIOUR CHANGED:** market-data ingestion now rejects older/future quotes and requires instrument identity; future research plans reject any nonpositive after-cost target. Production sleeve parameters, the paper epoch and broker settings are unchanged. Individual-stock execution is still unpromoted.
+
+New publications freeze `conditional-pullback-v2` and `confirmed-pullback-review-v1`. After an observed zone touch, confirmation requires a completed positive daily rebound above the prior close, a close in the top 40% of its range, and volume at least 1.5× the prior 20-session average. A candidate can become shadow-eligible only during the next NSE session, at a fresh quote in its original range, strictly after the confirmation became available, with a current supportive regime, official-news checks and account risk checks. These numerical rules are a preregistered hypothesis, not a demonstrated improvement. Legacy first-touch scenarios remain unchanged.
+
+Tracking now displays each predicate and rejection reason. Eligibility is a **research event**, never an order or fill, and expires in the UI after 120 seconds without a new assessment. Original losing, untouched and removed publications remain accessible. New gaps have explicit start/end times; old gaps without detailed records are not reconstructed. Historical event prices missing from the event table may be displayed from their frozen state, without rewriting the event.
+
+The hot quote request includes direct Nifty 50 and Bank Nifty instruments. Those observations go only to the research ledger, never the equity universe. Relative moves require two matched sampled endpoints, each within 30 seconds of the stock observation; skew is disclosed. Missing historical benchmarks remain unavailable. After-hours quote staleness is expected.
+
+Register the independent experiment **before** its forward cohort, then generate a read-only comparison:
+
+```sh
+.venv/bin/python scripts/validate_ideas.py --user 2 --register
+.venv/bin/python scripts/validate_ideas.py --user 2 > var/idea_forward_review.json
+```
+
+Registration is exclusive and refuses to overwrite an existing protocol. The protocol freezes its timestamp, settings, cost schedule and exit policy. The separate shadow portfolio starts at ₹10,000 cash and zero positions; it is not the user's actual portfolio. Only subsequent v2 publications enter the comparison. The baseline uses zone-only eligibility; the alternative adds completed-rebound confirmation. Both require the same fresh market/news/risk checks and use the existing allocator. A fill requires a later quote within 120 seconds and the original entry range. T1/T2 are markers; full positions close at the first observed stop/T3 crossing or 40-session time exit. Gaps use the observed price and remain flagged.
+
+Example report fields: `confirmed` and `first_touch_baseline`, each with capital, cash, equity, open positions, realised P&L, fills, rejected decisions, win rate, average R, unique stocks and sampled drawdown. `profitability_established` is always false: this tool does not automatically declare or promote a profitable model. Overlapping versions share one stock position. Cash includes frozen charges on their actual entry/exit legs. A separate clean experiment does not account for later changes to the real user book; production promotion requires additional reconciliation and independent completed evidence.
+
+Deployment must restart the application, feed and tracker together before creating the extra research metadata tables, because older tracker code refuses unfamiliar tables. Preserve the existing production feed cadence. Back up the research database; do not reset or restate the paper portfolio. Regular-session monitoring is required to verify continuity improvements; overnight service health alone does not prove gap-free data.

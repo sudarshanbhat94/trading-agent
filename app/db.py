@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import re
 import sqlite3
@@ -3254,7 +3255,17 @@ class Database:
         return [dict(row) for row in rows]
 
     def upsert_quotes(self, quotes: dict[str, Quote]) -> None:
-        rows = [quote.to_dict() for quote in quotes.values()]
+        rows = []
+        ceiling=datetime.now(timezone.utc)+timedelta(seconds=5)
+        for quote in quotes.values():
+            try:
+                stamp=datetime.fromisoformat(quote.asof.replace('Z','+00:00'))
+                if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=timezone.utc)
+                if stamp>ceiling or not math.isfinite(float(quote.price)) or quote.price<=0:
+                    continue
+            except (ValueError,TypeError,AttributeError):
+                continue
+            rows.append(quote.to_dict())
         if not rows:
             return
         symbols = [str(row.get("symbol") or "").strip().upper() for row in rows if str(row.get("symbol") or "").strip()]
@@ -3290,6 +3301,9 @@ class Database:
                     close = excluded.close,
                     volume = excluded.volume,
                     source = excluded.source
+                where julianday(excluded.ts) is not null
+                  and (julianday(latest_quotes.ts) is null
+                       or julianday(excluded.ts) >= julianday(latest_quotes.ts))
                 """,
                 safe_rows,
             )

@@ -13,6 +13,7 @@ from ..sleeves.config import SLEEVES
 from ..sleeves.feeds import fresh_quotes
 from ..sleeves.risk import BookState, RiskManager, SLIPPAGE
 from ..costs import round_trip
+from .confirmation import POLICY
 
 
 def account_state(con, uid, quotes, now):
@@ -111,6 +112,10 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=10):
         if screen.get("stale") or screen.get("price_stale"):state="STALE PLAN"
         if book_error:state="ACCOUNT CHECK NEEDED"
         returns = [round(_net(upper,t,qty),2) for t in targets]
+        if any(value <= 0 for value in returns):
+            rejected.append(dict(symbol=row["symbol"],
+                reason="First target is not profitable after fees and slippage at this quantity"))
+            continue
         rows.append(dict(symbol=row["symbol"],sector=row["sector"],score=row["score"],
             entry_low=lower,entry_high=upper,stop=stop,t1=targets[0],t2=targets[1],t3=targets[2],
             qty=qty,notional=round(qty*upper,2),estimated_stop_loss=round(allocation.risk_amount,2),
@@ -119,7 +124,9 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=10):
             price_asof=screen.get("price_asof"),quote_price=current,
             quote_at=quote.get("ts") if quote else None,state=state,
             why=f"20-session strength versus Nifty +{m['rs_vs_nifty20_pct']:.1f}pp; sector +{m['sector_rs20_pct']:.1f}pp; profitable business with delivery evidence",
-            buy_condition=f"Only consider a buy between Rs {lower:.2f} and Rs {upper:.2f}, after a completed-session rebound with volume confirmation",
+            model_version="conditional-pullback-v2",
+            confirmation_policy=dict(POLICY),
+            buy_condition=f"After an observed zone touch, require a completed daily rebound (close above open and prior close, in the top 40% of the range, volume at least 1.5x the prior 20-session mean); consider only a fresh next-session quote between Rs {lower:.2f} and Rs {upper:.2f} with market, news and risk checks passed",
             invalidation=f"Cancel if price falls below Rs {stop:.2f}, adverse news appears, or the market/risk gate blocks entry",
             horizon="4–8 weeks; reassess after 40 sessions",
             target_method="T1/T2/T3 = 2/3/4 times price risk from the upper entry price; scenarios, not price forecasts",

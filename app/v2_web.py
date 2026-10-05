@@ -5265,8 +5265,8 @@ function ideaOpenPlan(sym,review){
  var checks=[['Strategy approval',false,'This stock plan is research-only. Stock execution has not been approved.'],
   ['Market session',p.market_open,p.market_open?'NSE session is open':'NSE is closed; no order can be placed now'],
   ['Live price',r.quote_price!=null,r.quote_price==null?'Waiting for a fresh quote':ideaMoney(r.quote_price)+' · '+r.quote_at],
-  ['Entry confirmation',false,r.buy_condition],
-  ['Market gate',!d.decision_stale&&d.regime=='ON',d.decision_stale?'Waiting for a fresh engine review':'Execution regime: '+(d.regime||'unavailable')]];
+  ['Entry confirmation',!!(r.tracking&&r.tracking.confirmation&&r.tracking.confirmation.fresh&&r.tracking.confirmation.eligible),r.tracking&&r.tracking.confirmation?r.tracking.confirmation.reason:r.buy_condition],
+  ['Market gate',!d.decision_stale&&['ON','NEUTRAL'].includes(d.regime),d.decision_stale?'Waiting for a fresh engine review':'Execution regime: '+(d.regime||'unavailable')]];
  var html='<div class=idea-dialog-head><div><span>'+(review?'ORDER REVIEW · PAPER':'CONDITIONAL TRADE PLAN')+'</span><h2 id=ideaDialogTitle>'+esc(sym)+'</h2></div><button class=idea-dialog-close type=button aria-label="Close trade plan" onclick="this.closest(\'dialog\').close()">×</button></div>'
   +'<div class=idea-dialog-note>Research plan · prices through '+esc(p.price_asof)+'. Targets are scenarios; no validated stock track record.</div>'
   +'<div class=idea-review-summary><div><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div><div><span>Quantity</span><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b></div><div><span>Allocation</span><b>'+ideaMoney(r.notional)+'</b></div><div><span>Estimated stop loss</span><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b></div></div>'
@@ -5284,6 +5284,12 @@ function ideaOpenPlan(sym,review){
 function ideaTime(at){if(!at)return '—';var d=new Date(at);return isNaN(d)?esc(at):esc(d.toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'}))+' IST';}
 function ideaTrackingStatus(s){return ({WAITING:'Waiting for entry',ZONE_TOUCHED:'Entry zone touched',INVALIDATED:'Invalidated before entry',EXPIRED_UNTOUCHED:'Expired without entry',STOPPED:'Stop observed',TARGET_3:'Target 3 observed',TIME_EXIT:'Time exit observed'})[s]||'Awaiting first observation';}
 function ideaTrackingBadge(r){return r?'<span>'+ideaTrackingStatus(r.status)+'</span><small>Tracking since '+ideaTime(r.issued_at)+' · '+r.samples+' quotes'+(r.gaps?' · '+r.gaps+' gaps':'')+'</small>':'<span>Tracking not available</span><small>Reload to check publication capture.</small>';}
+function ideaConfirmationHtml(r){
+ var a=r.confirmation;
+ if(!a)return '<p>Confirmed-entry model: '+(r.plan&&r.plan.model_version=='conditional-pullback-v2'?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
+ return '<div class=idea-confirmation><b>Confirmed-entry research · '+esc(a.model_version)+'</b><p>'+esc(a.reason)+' · checked '+ideaTime(a.checked_at)+(a.fresh?'':' · historical assessment')+'. Execution remains unpromoted.</p>'
+ +'<ul>'+(a.checks||[]).map(function(c){return '<li>'+ (c.passed?'✓ ':'○ ')+esc(c.reason)+'</li>';}).join('')+'</ul></div>';
+}
 function renderIdeaTracking(t){
  if(!t||t.status!='ok')return '<div class=ideas-empty><b>Tracking unavailable</b><p>'+esc((t||{}).note||'Waiting for publication capture')+'</p></div>';
  var s=t.summary||{},h=t.health||{},rows=t.rows||[];
@@ -5295,7 +5301,10 @@ function renderIdeaTracking(t){
  +'<div class=idea-tracking-body><p>Observed move is from the first quote captured after publication ('+ideaMoney(r.first_price)+'), not an assumed purchase. Last observed '+ideaMoney(r.last_price)+' at '+ideaTime(r.last_at)+(r.quote_fresh?'':' · historical / stale quote')+'. '+r.samples+' samples · '+r.gaps+' coverage gaps.</p>'
  +'<p>Original plan #'+r.id+' · prices through '+esc(p.price_asof)+' · '+p.qty+' shares · entry '+ideaMoney(p.entry_low)+' – '+ideaMoney(p.entry_high)+' · stop '+ideaMoney(p.stop)+' · T1 / T2 / T3 '+[p.t1,p.t2,p.t3].map(ideaMoney).join(' / ')+'.</p>'
  +(r.entry_at?'<p>Entry-zone scenario at '+ideaMoney(r.entry_price)+' ('+ideaTime(r.entry_at)+'). Estimated net '+ideaMoney(r.scenario_net)+' · '+r.scenario_r+'R'+(r.exit_at?' · closed scenario':' · marked to last observation')+', after frozen fees and slippage. This does not satisfy the plan’s confirmation or execution approval.</p>':'<p>No entry-zone observation. No hypothetical profit or loss assigned.</p>')
- +'<ol>'+(r.events||[]).map(function(e){return '<li>'+esc(e.kind.replace(/_/g,' '))+' · '+ideaTime(e.at)+(e.price==null?'':' · '+ideaMoney(e.price))+'</li>';}).join('')+'</ol></div></details>';}).join('');
+ +ideaConfirmationHtml(r)
+ +'<p>'+Object.entries(r.benchmarks||{}).map(function(pair){var b=pair[1];return esc(pair[0])+': '+(b.available?'stock minus index '+b.stock_minus_index_pp+'pp (matched sampled endpoints, within '+b.max_endpoint_skew_seconds+'s)':'matching index observations unavailable');}).join(' · ')+'</p>'
+ +(r.coverage_gaps&&r.coverage_gaps.length?'<ul>'+r.coverage_gaps.map(function(g){return '<li>Coverage gap: '+ideaTime(g.start_at)+' → '+ideaTime(g.end_at)+' · '+Math.round(g.seconds)+' regular-session seconds unobserved</li>';}).join('')+'</ul>':'')
+ +'<ol>'+(r.events||[]).map(function(e){return '<li>'+esc(e.kind.replace(/_/g,' '))+' · '+ideaTime(e.at)+(e.price==null?(e.price_recorded_in_state?' · exit '+ideaMoney(e.price_recorded_in_state)+' recorded in frozen state; original event price missing':''):' · '+ideaMoney(e.price))+'</li>';}).join('')+'</ol></div></details>';}).join('');
  html+='<div class=idea-tracking-footer><p>'+esc(t.note)+'</p><div><button type=button class=idea-secondary '+(t.offset?'':'disabled ')+'onclick="ideaTrackingPage('+Math.max(0,t.offset-t.limit)+')">Newer versions</button><button type=button class=idea-secondary '+(t.offset+rows.length<s.published?'':'disabled ')+'onclick="ideaTrackingPage('+(t.offset+t.limit)+')">Older versions</button></div></div>';
  return html;
 }
