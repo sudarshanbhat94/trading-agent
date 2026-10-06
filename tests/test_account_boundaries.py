@@ -23,7 +23,7 @@ class AccountBoundaryTest(unittest.TestCase):
              patch.object(v2_web,'_live_map',return_value=quote), \
              patch('app.broker.state',return_value={'live_ready':True}), \
              patch('app.live_trade.mirror_entry',side_effect=AssertionError('real order')):
-            r=v2_web.api_buy({'symbol':'TEST','mode':'paper'},self.user)
+            r=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110},self.user)
         self.assertEqual(r.status_code,200)
         self.assertTrue(json.loads(r.body)['paper_recorded'])
 

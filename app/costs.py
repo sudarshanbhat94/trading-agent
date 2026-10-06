@@ -41,6 +41,26 @@ INTRADAY = "I"
 DELIVERY = "D"
 
 
+def entry_charge(buy_value: float, product: str = DELIVERY) -> float:
+    """Buy-leg portion of the existing schedule, debited at the paper fill."""
+    value = max(0.0, float(buy_value or 0))
+    if not value:
+        return 0.0
+    intraday = str(product).upper() == INTRADAY
+    brokerage = min(BROKERAGE_FLAT, value * BROKERAGE_PCT_INTRADAY) if intraday else BROKERAGE_FLAT
+    exchange = value * EXCHANGE_TXN
+    ipft = value * IPFT_TURNOVER
+    return (brokerage + (0 if intraday else value * STT_DELIVERY)
+            + exchange + ipft + value * SEBI_TURNOVER
+            + value * (STAMP_INTRADAY if intraday else STAMP_DELIVERY)
+            + (brokerage + exchange + ipft) * GST)
+
+
+def exit_charge(sell_value: float, product: str = DELIVERY) -> float:
+    """Sell-leg portion; algebraically identical to the existing round trip."""
+    return round_trip(1.0, sell_value, product) - entry_charge(1.0, product)
+
+
 def round_trip(buy_value: float, sell_value: float = None, product: str = DELIVERY) -> float:
     """Total charges in rupees for one complete buy-and-sell.
 

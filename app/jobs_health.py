@@ -28,7 +28,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # How stale each pipeline may be before it is a problem, in hours, and what it
 # is supposed to do. Sized to the cadence, not to a convenient round number.
 PIPELINES = {
-    "quotes": {"label": "live quote feed", "max_age_hours": 0.25,
+    "quotes": {"label": "live quote feed", "max_age_hours": 120 / 3600,
                "note": "polls continuously while the market is open"},
     "daily_candles": {"label": "daily candle ingest", "max_age_hours": 30,
                       "note": "one bar per trading session"},
@@ -115,6 +115,7 @@ def summarise(checks):
                 "stale": [c["pipeline"] for c in stale],
                 "unknown": [c["pipeline"] for c in unknown]}
     if unknown:
-        return {"ok": True, "headline": f"{len(unknown)} pipeline(s) not reporting",
+        critical = [c for c in unknown if c["pipeline"] in ("quotes", "daily_candles", "engine")]
+        return {"ok": not critical, "headline": f"{len(unknown)} pipeline(s) not reporting",
                 "stale": [], "unknown": [c["pipeline"] for c in unknown]}
     return {"ok": True, "headline": "all pipelines current", "stale": [], "unknown": []}

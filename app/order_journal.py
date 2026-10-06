@@ -18,7 +18,7 @@ def ensure_schema(con):
     cols = {r[1] for r in con.execute("PRAGMA table_info(v2_live_orders)")}
     for name, kind in (("intent_key", "TEXT"), ("filled_qty", "INTEGER DEFAULT 0"),
                        ("average_price", "REAL DEFAULT 0"), ("reconciled_at", "TEXT"),
-                       ("cancel_requested_at", "TEXT")):
+                       ("cancel_requested_at", "TEXT"), ("origin_position_id", "INTEGER")):
         if name not in cols:
             con.execute(f"ALTER TABLE v2_live_orders ADD COLUMN {name} {kind}")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_live_intent "
@@ -26,6 +26,9 @@ def ensure_schema(con):
     con.execute("CREATE TABLE IF NOT EXISTS v2_live_protection("
                 "user_id INTEGER,symbol TEXT,stop REAL,target REAL,exit_reason TEXT,"
                 "PRIMARY KEY(user_id,symbol))")
+    con.execute("CREATE TABLE IF NOT EXISTS live_book_epoch("
+                "user_id INTEGER,market TEXT,capital REAL NOT NULL,started_at TEXT NOT NULL,"
+                "PRIMARY KEY(user_id,market))")
     con.commit()
 
 
@@ -121,14 +124,17 @@ def finish_entry_before_exit(con, uid, symbol):
 
 
 def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
-           stop=None, target=None):
+           stop=None, target=None, strategy="manual", quotes=None, origin_position_id=None,
+           available_cash=None):
     """Persist and reserve an intent before transmission; never blind-retry."""
     from . import broker
     if qty < 1 or reference <= 0 or not math.isfinite(reference):
         return "rejected: invalid order"
     st = broker.state(uid)
-    if not st.get("live_ready"):
-        return "skipped: not armed"
+    if not st.get("live_ready" if side == "BUY" else "exit_ready"):
+        return "skipped: not armed" if side == "BUY" else "skipped: exit credentials unavailable"
+    if side == "BUY" and (available_cash is None or not math.isfinite(available_cash)):
+        return "rejected: broker funds unavailable"
     # Serialize the check/reservation across API requests and the engine.
     con.commit()
     con.execute("BEGIN IMMEDIATE")
@@ -144,6 +150,26 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             return "rejected: position changed before submission"
         if side == "BUY":
             from .sleeves.config import SLEEVES
+            from .live_trade import account_risk_state
+            from .sleeves.base import Candidate
+            from .sleeves.risk import RiskManager
+            state, why = account_risk_state(con, uid, st, quotes=quotes)
+            if state is None:
+                con.rollback()
+                return "rejected: " + why
+            candidate = Candidate(symbol, strategy, 1, reference, float(stop or 0),
+                                  target=float(target or 0), product=product)
+            allocation = RiskManager().size(candidate, state)
+            from .costs import entry_charge
+            from .sleeves.risk import SLIPPAGE
+            cash_required = qty * reference * (1 + SLIPPAGE)
+            cash_required += entry_charge(cash_required, product)
+            if not allocation.ok or qty > allocation.shares or qty * reference < SLEEVES.min_ticket:
+                con.rollback()
+                return "rejected: " + (allocation.reason if not allocation.ok else "account allocation changed")
+            if cash_required > available_cash:
+                con.rollback()
+                return "rejected: broker cash including fees is insufficient"
             positions = con.execute("SELECT symbol,SUM(CASE WHEN side='BUY' THEN filled_qty ELSE -filled_qty END) q "
                                     "FROM v2_live_orders WHERE user_id=? GROUP BY symbol HAVING q>0", (uid,)).fetchall()
             deployed = 0
@@ -164,10 +190,10 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
         tag = uuid.uuid4().hex[:20]
         con.execute(
             "INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,"
-            "price,notional,product,status,reason,intent_key,filled_qty) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?,0)",
+            "price,notional,product,status,reason,intent_key,filled_qty,origin_position_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?,0,?)",
             (datetime.now(timezone.utc).isoformat(), uid, market, symbol, key, side, qty,
-             reference, qty * reference, product, reason, tag))
+             reference, qty * reference, product, reason, tag, origin_position_id))
         con.commit()
     except Exception:
         con.rollback()

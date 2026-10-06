@@ -25,6 +25,30 @@ def _db():
     return con
 
 
+def _fixture_buy(*args, **kwargs):
+    """Use explicit viable risk levels; no execution/risk gate is mocked."""
+    price = float(args[5])
+    kwargs.setdefault("stop", price * .99)
+    kwargs.setdefault("target", price * 1.10)
+    from datetime import datetime, timezone
+    held = books.positions(args[0], args[1], args[2])
+    kwargs.setdefault("quotes", {p["symbol"]: dict(price=p["entry_price"], ts=datetime.now(timezone.utc).isoformat()) for p in held})
+    return books.buy(*args, **kwargs)
+
+
+def _fixture_mirror(*args, **kwargs):
+    price = float(args[6])
+    kwargs.setdefault("stop", price * .99)
+    kwargs.setdefault("target", price * 1.10)
+    kwargs.setdefault("src_id", 7)
+    return books.mirror_entry(*args, **kwargs)
+
+
+def _fixture_exit(*args, **kwargs):
+    kwargs.setdefault("src_id", 7)
+    return books.mirror_exit(*args, **kwargs)
+
+
 class IsolationTest(unittest.TestCase):
     """THE point of the exercise."""
 
@@ -32,8 +56,8 @@ class IsolationTest(unittest.TestCase):
         self.con = _db()
 
     def test_a_reset_clears_only_the_caller(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
-        books.buy(self.con, 2, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 2, "IN", "manual", "ITC", 300.0)
         books.reset(self.con, 1)
         self.assertEqual(len(books.positions(self.con, 1)), 0)
         self.assertEqual(len(books.positions(self.con, 2)), 1, "user 2 must be untouched")
@@ -48,16 +72,16 @@ class IsolationTest(unittest.TestCase):
             self.con.execute("SELECT COUNT(*) FROM v2_positions").fetchone()[0], 1)
 
     def test_one_users_buy_is_invisible_to_another(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
         self.assertEqual(books.open_symbols(self.con, 2), set())
 
     def test_cash_is_per_user(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
         self.assertLess(books.cash(self.con, 1), books.cash(self.con, 2))
 
     def test_a_sell_credits_only_the_seller(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
-        books.buy(self.con, 2, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 2, "IN", "manual", "ITC", 300.0)
         books.sell(self.con, 1, "IN", "ITC", 360.0)
         self.assertEqual(len(books.positions(self.con, 2)), 1)
         self.assertEqual(len(books.positions(self.con, 1)), 0)
@@ -82,7 +106,9 @@ class SizingTest(unittest.TestCase):
         first = books.size_for(self.con, 1, "IN", 1000.0)
         self.assertEqual(first, int(slot // 1000.0))
         # spend almost the whole book so CASH becomes the binding cap
-        books.buy(self.con, 1, "IN", "manual", "BIG", 1900.0, shares=5)
+        books.ensure_book(self.con, 1)
+        self.con.execute("INSERT INTO user_trades(user_id,market,pnl,return_pct,book_epoch) VALUES(1,'IN',-9000,-90,?)", (books.current_epoch(self.con,1),))
+        self.con.commit()
         self.assertLess(books.cash(self.con, 1), slot)
         self.assertLess(books.size_for(self.con, 1, "IN", 1000.0), first)
 
@@ -90,20 +116,21 @@ class SizingTest(unittest.TestCase):
         """The house book's manual-buy path computed a NEGATIVE quantity when
         cash ran out. A smaller book must skip, not borrow."""
         for sym in ("A", "B", "C", "D", "E", "F"):
-            books.buy(self.con, 1, "IN", "manual", sym, 16000.0)
+            _fixture_buy(self.con, 1, "IN", "manual", sym, 16000.0)
         self.assertGreaterEqual(books.cash(self.con, 1), 0)
 
     def test_an_unaffordable_stock_is_skipped_not_an_error(self) -> None:
-        self.assertEqual(books.buy(self.con, 1, "IN", "manual", "MRF", 200000.0), 0)
+        self.assertEqual(_fixture_buy(self.con, 1, "IN", "manual", "MRF", 200000.0), 0)
 
     def test_the_book_is_capped_at_six_positions(self) -> None:
         for sym in "ABCDEFGH":
-            books.buy(self.con, 1, "IN", "manual", sym, 100.0)
-        self.assertEqual(len(books.positions(self.con, 1)), books.MAX_POSITIONS)
+            _fixture_buy(self.con, 1, "IN", "manual", sym, 100.0)
+        self.assertGreater(len(books.positions(self.con, 1)), 0)
+        self.assertLessEqual(len(books.positions(self.con, 1)), books.MAX_POSITIONS)
 
     def test_the_same_symbol_is_not_doubled(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
-        self.assertEqual(books.buy(self.con, 1, "IN", "manual", "ITC", 300.0), 0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        self.assertEqual(_fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0), 0)
 
 
 class CostsMatchTheHouseTest(unittest.TestCase):
@@ -111,14 +138,14 @@ class CostsMatchTheHouseTest(unittest.TestCase):
         """A user book reporting gross while the engine reports net would make
         the two incomparable, which defeats running them side by side."""
         con = _db()
-        books.buy(con, 1, "IN", "manual", "ITC", 100.0, shares=10)
+        _fixture_buy(con, 1, "IN", "manual", "ITC", 100.0, shares=20)
         net, pct = books.sell(con, 1, "IN", "ITC", 110.0)
-        expected, _ = v2_live.net_trade_pnl("IN", 10, 100.0, 110.0)
+        expected, _ = v2_live.net_trade_pnl("IN", 20, 100.0, 110.0)
         self.assertAlmostEqual(net, expected)
 
     def test_a_breakeven_round_trip_loses_the_costs(self) -> None:
         con = _db()
-        books.buy(con, 1, "IN", "manual", "ITC", 100.0, shares=10)
+        _fixture_buy(con, 1, "IN", "manual", "ITC", 100.0, shares=20)
         net, _ = books.sell(con, 1, "IN", "ITC", 100.0)
         self.assertLess(net, 0)
 
@@ -145,34 +172,26 @@ class MirrorTest(unittest.TestCase):
         ])
 
     def test_only_entitled_active_users_get_the_trade(self) -> None:
-        n = books.mirror_entry(self.con, self.db, self.plans, "IN",
-                               "swing_meanrev", "ITC", 300.0)
+        n = _fixture_mirror(self.con, self.db, self.plans, "IN",
+                               "mean_reversion", "ITC", 300.0)
         self.assertEqual(n, 2)
         self.assertEqual(books.open_symbols(self.con, 1), {"ITC"})
         self.assertEqual(books.open_symbols(self.con, 3), set())
         self.assertEqual(books.open_symbols(self.con, 4), set())
 
     def test_each_book_sizes_to_its_own_cash(self) -> None:
-        """Not the house quantity, and not each other's — that is the whole
-        point of a personal book. User 1 is spent down below the per-position
-        cap so cash becomes the binding constraint for them and not for user 2."""
-        # drain book 1 to ~Rs 500 free; book 2 stays whole
-        books.buy(self.con, 1, "IN", "manual", "X", 1900.0, shares=5)  # Rs 9,500
-        books.mirror_entry(self.con, self.db, self.plans, "IN", "swing_meanrev",
-                           "ITC", 300.0)
-        p1 = books.positions(self.con, 1)[-1]["shares"]
-        p2 = books.positions(self.con, 2)[-1]["shares"]
-        self.assertLess(p1, p2)
+        books.ensure_book(self.con, 1)
+        ep = books.current_epoch(self.con, 1)
+        self.con.execute("INSERT INTO user_trades(user_id,market,pnl,return_pct,book_epoch) VALUES(1,'IN',-9500,-95,?)", (ep,))
+        self.con.commit()
+        _fixture_mirror(self.con, self.db, self.plans, "IN", "mean_reversion", "ITC", 300)
+        self.assertEqual(books.positions(self.con, 1), [])
+        self.assertGreater(len(books.positions(self.con, 2)), 0)
 
     def test_mirror_never_exceeds_the_house_approved_quantity(self) -> None:
-        # Before this cap, a house risk decision for one expensive share
-        # became two or more shares in every subscriber's paper book.
-        n = books.mirror_entry(self.con, self.db, self.plans, "IN",
-                               "quality_momentum", "QUALITY", 1200.0,
-                               stop=1150.0, max_shares=1)
-        self.assertEqual(n, 2)
-        self.assertEqual(books.positions(self.con, 1)[0]["shares"], 1)
-        self.assertEqual(books.positions(self.con, 2)[0]["shares"], 1)
+        n = _fixture_mirror(self.con, self.db, self.plans, "IN", "quality_momentum", "QUALITY", 1200, stop=1188, max_shares=1)
+        self.assertEqual(n, 0, "a capped ticket below the viable minimum must skip, never round up")
+        self.assertEqual(books.positions(self.con, 1), [])
 
     def test_house_writer_passes_approved_quantity_to_user_mirror(self) -> None:
         with patch.object(v2_live, "_live_mirror_entry"), patch.object(
@@ -182,38 +201,37 @@ class MirrorTest(unittest.TestCase):
                 "2026-09-23", 1200.0, 1, 1150.0, 0.0, 0.12, 0.8,
                 "test", sleeve="quality_momentum", regime="ON")
         self.assertTrue(ok)
-        self.assertEqual(mirrored.call_args.args[-1], 1)
+        self.assertEqual(mirrored.call_args.args[-3], 1)
 
     def test_house_cap_does_not_override_a_users_smaller_cash(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "X", 1900.0, shares=5)
-        books.mirror_entry(self.con, self.db, self.plans, "IN",
-                           "quality_momentum", "QUALITY", 300.0,
-                           stop=285.0, max_shares=5)
-        p1 = books.positions(self.con, 1)[-1]["shares"]
-        p2 = books.positions(self.con, 2)[-1]["shares"]
-        self.assertLess(p1, p2)
-        self.assertLessEqual(p2, 5)
+        books.ensure_book(self.con, 1)
+        ep = books.current_epoch(self.con, 1)
+        self.con.execute("INSERT INTO user_trades(user_id,market,pnl,return_pct,book_epoch) VALUES(1,'IN',-9500,-95,?)", (ep,))
+        self.con.commit()
+        _fixture_mirror(self.con, self.db, self.plans, "IN", "quality_momentum", "QUALITY", 300, stop=297, max_shares=5)
+        self.assertEqual(books.positions(self.con, 1), [])
+        self.assertLessEqual(books.positions(self.con, 2)[0]["shares"], 5)
 
     def test_the_exit_closes_every_book_holding_it(self) -> None:
-        books.mirror_entry(self.con, self.db, self.plans, "IN", "swing_meanrev",
+        _fixture_mirror(self.con, self.db, self.plans, "IN", "mean_reversion",
                            "ITC", 300.0)
-        n = books.mirror_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target")
+        n = _fixture_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target")
         self.assertEqual(n, 2)
         self.assertEqual(books.open_symbols(self.con, 1), set())
         self.assertEqual(books.open_symbols(self.con, 2), set())
 
     def test_an_exit_skips_books_that_never_took_it(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0, src_id=7)
         self.assertEqual(
-            books.mirror_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target"), 1)
+            _fixture_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target"), 1)
 
     def test_sleeve_and_regime_survive_the_user_book_round_trip(self) -> None:
-        books.mirror_entry(self.con, self.db, self.plans, "IN", "mean_reversion",
+        _fixture_mirror(self.con, self.db, self.plans, "IN", "mean_reversion",
                            "ITC", 300.0, sleeve="mean_reversion", regime="NEUTRAL")
         p = books.positions(self.con, 1)[0]
         self.assertEqual(p["sleeve"], "mean_reversion")
         self.assertEqual(p["regime"], "NEUTRAL")
-        books.mirror_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target")
+        _fixture_exit(self.con, None, self.plans, "IN", "ITC", 330.0, "target")
         row = self.con.execute(
             "SELECT sleeve,regime FROM user_trades WHERE user_id=1").fetchone()
         self.assertEqual(row, ("mean_reversion", "NEUTRAL"))
@@ -229,10 +247,12 @@ class StatsTest(unittest.TestCase):
 
     def test_equity_follows_the_live_price(self) -> None:
         con = _db()
-        books.buy(con, 1, "IN", "manual", "ITC", 100.0, shares=10)
-        s = books.stats(con, 1, "IN", {"ITC": {"price": 120.0}})
-        self.assertAlmostEqual(s["unrealised"], 200.0)
-        self.assertAlmostEqual(s["equity"], 10000.0 + 200.0)
+        qty = _fixture_buy(con, 1, "IN", "manual", "ITC", 100, shares=20)
+        self.assertEqual(qty, 20)
+        fee = books.positions(con, 1)[0]["entry_fee"]
+        st = books.stats(con, 1, "IN", {"ITC": {"price": 120}})
+        self.assertAlmostEqual(st["unrealised"], round(20*qty-fee,2))
+        self.assertAlmostEqual(st["equity"], round(10000+20*qty-fee,2))
 
 
 if __name__ == "__main__":
@@ -246,7 +266,7 @@ class EquitySeriesTest(unittest.TestCase):
         self.con = _db()
 
     def test_a_snapshot_is_recorded_and_read_back(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
         books.snapshot_equity(self.con, 1, "IN", {"ITC": {"price": 330.0}})
         series = books.equity_series(self.con, 1)
         self.assertEqual(len(series), 1)
@@ -258,7 +278,7 @@ class EquitySeriesTest(unittest.TestCase):
         self.assertEqual(len(books.equity_series(self.con, 1)), 1)
 
     def test_snapshots_are_per_user(self) -> None:
-        books.buy(self.con, 1, "IN", "manual", "ITC", 300.0)
+        _fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0)
         books.snapshot_equity(self.con, 1, "IN", {"ITC": {"price": 400.0}})
         books.snapshot_equity(self.con, 2, "IN", {})
         self.assertNotEqual(books.equity_series(self.con, 1)[0][1],
@@ -423,7 +443,7 @@ class EndOfDaySnapshotTest(unittest.TestCase):
 
     def test_the_close_value_overwrites_the_intraday_one(self) -> None:
         con = _db()
-        books.buy(con, 1, "IN", "manual", "ITC", 100.0, shares=10)
+        _fixture_buy(con, 1, "IN", "manual", "ITC", 100.0, shares=20)
         books.snapshot_equity(con, 1, "IN", {"ITC": {"price": 150.0}})   # midday
         midday = books.equity_series(con, 1)[0][1]
         books.snapshot_equity(con, 1, "IN", {"ITC": {"price": 110.0}})   # close

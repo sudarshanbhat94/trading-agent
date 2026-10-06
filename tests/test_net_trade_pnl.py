@@ -163,6 +163,13 @@ class BookSeparationTest(unittest.TestCase):
     strategy that had not made it.
     """
 
+    def setUp(self):
+        from unittest.mock import patch
+        for name in ("_book_mirror_entry", "_live_mirror_entry"):
+            mirror = patch("app.v2_live." + name)
+            mirror.start()
+            self.addCleanup(mirror.stop)
+
     def _stats(self, rows_positions, rows_trades):
         import sqlite3
         from app import v2_live, v2_web
@@ -211,7 +218,8 @@ class BookSeparationTest(unittest.TestCase):
                         [("volume_surge", "Y", 250.0)])
         self.assertEqual(s["positions"], 1)
         self.assertEqual(s["trades"], 1)
-        self.assertAlmostEqual(s["overall_pnl"], 250.0, places=2)
+        from app.costs import entry_charge
+        self.assertAlmostEqual(s["overall_pnl"], 250.0 - entry_charge(287.0 * 92), places=2)
 
     def test_the_options_book_reports_its_own_equity(self) -> None:
         """Marked to market, not at cost — a book valued at cost hides exactly

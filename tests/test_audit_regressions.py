@@ -111,18 +111,18 @@ class JournalTest(unittest.TestCase):
         self.con = sqlite3.connect(":memory:")
         v2_live.ensure_schema(self.con)
         self.addCleanup(self.con.close)
-        self.ready = patch.object(broker,"state",return_value={"live_ready":True,"budget":10000})
+        self.ready = patch.object(broker,"state",return_value={"live_ready":True,"exit_ready":True,"budget":10000})
         self.ready.start()
         self.addCleanup(self.ready.stop)
 
     def submit(self, side="BUY", outcome=None):
         with patch.object(broker,"place_order",return_value=outcome or {"ok":True,"order_id":side}) as send:
-            got = order_journal.submit(self.con,1,"IN","X","NSE_EQ|TEST",side,10,100,"D","test")
+            got = order_journal.submit(self.con,1,"IN","X","NSE_EQ|TEST",side,10,200,"D","test",stop=198,target=220,available_cash=10000)
             return got,send.call_count
 
     def update(self, filled, side="BUY", status="complete", uid=1):
         return order_journal.reconcile(self.con, uid, [dict(order_id=side,filled_quantity=filled,
-            average_price=100,status=status,instrument_token="NSE_EQ|TEST",transaction_type=side,product="D")])
+            average_price=200,status=status,instrument_token="NSE_EQ|TEST",transaction_type=side,product="D")])
 
     def test_acceptance_partial_fill_and_sell_remain_distinct(self):
         self.assertEqual(self.submit()[0], "submitted")
@@ -145,11 +145,11 @@ class JournalTest(unittest.TestCase):
 
     def test_timeout_persists_unknown_and_does_not_retry(self):
         with patch.object(broker,"place_order",side_effect=TimeoutError):
-            self.assertEqual(order_journal.submit(self.con,1,"IN","X","NSE_EQ|TEST","BUY",10,100,"D","test"),"unknown")
+            self.assertEqual(order_journal.submit(self.con,1,"IN","X","NSE_EQ|TEST","BUY",10,200,"D","test",stop=198,target=220,available_cash=10000),"unknown")
         self.assertEqual(self.submit()[1],0)
         tag=self.con.execute("SELECT intent_key FROM v2_live_orders").fetchone()[0]
         order_journal.reconcile(self.con,1,[dict(order_id="recovered",tag=tag,filled_quantity=10,
-            average_price=100,status="complete",instrument_token="NSE_EQ|TEST",transaction_type="BUY",product="D")])
+            average_price=200,status="complete",instrument_token="NSE_EQ|TEST",transaction_type="BUY",product="D")])
         self.assertEqual(live_trade.live_qty(self.con,1,"X"),10)
 
     def test_rejected_exit_keeps_holdings_and_durable_exit_request(self):
@@ -166,7 +166,7 @@ class JournalTest(unittest.TestCase):
 
     def test_partial_entry_is_cancelled_and_terminal_before_exit(self):
         self.submit(); self.update(4, status="open")
-        snapshot = [dict(order_id="BUY", filled_quantity=4, average_price=100,
+        snapshot = [dict(order_id="BUY", filled_quantity=4, average_price=200,
                          status="cancelled", instrument_token="NSE_EQ|TEST",
                          transaction_type="BUY", product="D")]
         with patch.object(broker, "cancel_order", return_value={"status":"success"}) as cancel, \

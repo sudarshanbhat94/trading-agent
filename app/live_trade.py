@@ -108,7 +108,9 @@ def instrument_key(main_db, symbol):
     except Exception:
         return None
     key = (row or [None])[0]
-    return key if key and str(key).strip() else None
+    # This adapter implements NSE cash equity only. Other segments must not
+    # inherit its quantity, product or cost assumptions.
+    return key if key and str(key).startswith("NSE_EQ|") and str(key)[7:].strip() else None
 
 
 def live_qty(v2, user_id, symbol):
@@ -193,7 +195,8 @@ def _record(v2, user_id, market, symbol, key, side, qty, price, status, reason,
     v2.commit()
 
 
-def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=None, target=None):
+def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=None, target=None,
+                 origin_position_id=None):
     """Place the sleeve's real BUY for a position the engine just opened.
 
     Returns a short status string. Every refusal is written to v2_live_orders
@@ -228,26 +231,24 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=Non
     qty = size_for_sleeve(price, st, margin)
     # Respect the SAME stop-risk and sleeve exposure limits as paper. No
     # strategy can enlarge its risk by falling back to equal-notional sizing.
-    if strategy != "manual":
-        from .sleeves.config import SLEEVES
-        if stop is None or not 0 < stop < price:
-            return "skipped: initial risk unavailable"
-        cfg = getattr(SLEEVES, strategy)
-        used = deployed = count = 0
-        for held_symbol, held_qty in open_symbols(v2, user_id).items():
-            row = v2.execute("SELECT average_price,reason FROM v2_live_orders "
-                             "WHERE user_id=? AND symbol=? AND side='BUY' AND filled_qty>0 "
-                             "ORDER BY id DESC LIMIT 1", (user_id, held_symbol)).fetchone()
-            value = held_qty * row[0]
-            deployed += value
-            if row[1] == 'mirror '+strategy:
-                used += value
-                count += 1
-        if count >= cfg.max_positions:
-            return "skipped: sleeve position cap"
-        qty = min(qty, int(st['budget'] * SLEEVES.risk_per_trade / (price-stop)),
-                  max(0, int((st['budget'] * cfg.risk_share - used) / price)),
-                  max(0, int((st['budget'] * SLEEVES.max_deployed - deployed) / price)))
+    from .sleeves.base import Candidate
+    from .sleeves.risk import RiskManager
+    held_quotes = managed_quotes(v2, main_db, user_id)
+    state, why = account_risk_state(v2, user_id, st, held_quotes)
+    if state is None:
+        return "skipped: " + why
+    allocation = RiskManager().size(Candidate(symbol, strategy, 1, price,
+                                              float(stop or 0), target=float(target or 0),
+                                              product=product_for(strategy)), state)
+    if not allocation.ok:
+        v2.commit()
+        return "skipped: " + allocation.reason
+    qty = min(qty, allocation.shares)
+    from .costs import entry_charge
+    from .sleeves.risk import SLIPPAGE
+    while qty and qty * price * (1 + SLIPPAGE) + entry_charge(
+            qty * price * (1 + SLIPPAGE), product_for(strategy)) > margin:
+        qty -= 1
     if qty <= 0:
         _record(v2, user_id, market, symbol, key, "BUY", 0, price, "skipped",
                 f"unaffordable at Rs {float(price):,.2f}")
@@ -263,41 +264,47 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=Non
     return journal.submit(v2, user_id, market, symbol, key, "BUY", qty, price, prod,
                           "mirror " + strategy,
                           stop=stop if stop is not None else price*.94,
-                          target=target if target is not None else (price*1.06 if strategy == "manual" else 0))
+                          target=target if target is not None else (price*1.06 if strategy == "manual" else 0),
+                          strategy=strategy, quotes=held_quotes, origin_position_id=origin_position_id,
+                          available_cash=margin)
 
 
-def mirror_exit(v2, main_db, user_id, market, symbol, price, reason):
+def mirror_exit(v2, main_db, user_id, market, symbol, price, reason, origin_position_id=None):
     """Sell whatever the SLEEVE holds. Never the paper quantity."""
     from . import broker
     if market != "IN":
         return "skipped: non-IN market"
     from . import order_journal as journal
+    if origin_position_id is not None:
+        row = v2.execute("SELECT origin_position_id FROM v2_live_orders WHERE user_id=? "
+                         "AND symbol=? AND side='BUY' AND status NOT IN ('failed','rejected','skipped') "
+                         "ORDER BY id DESC LIMIT 1",
+                         (user_id, symbol)).fetchone()
+        if not row or row[0] != origin_position_id:
+            return "skipped: origin position mismatch"
     journal.request_exit(v2, user_id, symbol, reason)
     st = broker.state(user_id)
-    if st.get("live_ready") and not journal.refresh(v2, user_id):
+    if not st.get("exit_ready"):
+        return "skipped: exit credentials unavailable (position still open)"
+    if not journal.refresh(v2, user_id):
         return "pending: broker reconciliation unavailable"
     if journal.unresolved(v2, user_id, symbol) and not (
-            st.get("live_ready") and journal.finish_entry_before_exit(v2, user_id, symbol)):
+            journal.finish_entry_before_exit(v2, user_id, symbol)):
         return "pending: broker reconciliation required"
     qty = live_qty(v2, user_id, symbol)
     if qty <= 0:
         return "skipped: nothing held live"
-    if not st.get("live_ready"):
-        # An exit blocked by a disarmed sleeve leaves REAL shares held. That is
-        # a position the operator must know about, so it is recorded loudly
-        # rather than dropped.
+    entry = v2.execute("SELECT instrument_key,product FROM v2_live_orders WHERE user_id=? "
+                       "AND market=? AND symbol=? AND side='BUY' AND filled_qty>0 "
+                       "ORDER BY id DESC LIMIT 1", (user_id, market, symbol)).fetchone()
+    key, prod = entry if entry else (None, None)
+    if not key or prod not in ("D", "I"):
         _record(v2, user_id, market, symbol, None, "SELL", qty, price, "skipped",
-                f"NOT ARMED — {qty} shares still held live")
-        return "skipped: not armed (position still open)"
-    key = instrument_key(main_db, symbol)
-    if not key:
-        _record(v2, user_id, market, symbol, None, "SELL", qty, price, "skipped",
-                "no upstox instrument key")
-        return "skipped: no instrument key"
+                "owned entry instrument/product unavailable")
+        return "skipped: owned entry instrument/product unavailable"
     # SAME product as the entry. Upstox will not let a delivery sell close an
     # intraday buy, and guessing here would either reject the order or convert
     # the position to delivery and charge for it.
-    prod = entry_product(v2, user_id, symbol)
     return journal.submit(v2, user_id, market, symbol, key, "SELL", qty, price, prod,
                           f"mirror exit: {reason}")
 
@@ -330,6 +337,94 @@ def _alert_failed(user_id, side, symbol, qty, res):
 _SERVICED = {}
 
 
+def managed_quotes(con, main_db, uid):
+    symbols = list(open_symbols(con, uid))
+    if not symbols:
+        return {}
+    try:
+        rows = main_db.execute("SELECT symbol,price,ts FROM latest_quotes "
+                               "WHERE source='upstox-live' AND symbol IN (" +
+                               ",".join("?" for _ in symbols) + ")", symbols).fetchall()
+        return {s: dict(price=p, ts=t) for s, p, t in rows}
+    except Exception:
+        return {}  # An incomplete valuation is refused by account_risk_state.
+
+
+def account_risk_state(con, uid, st, quotes=None):
+    """After-cost managed-ledger state, shared with paper risk authorization.
+
+    This does not certify external inventory reconciliation or actual fees.
+    Those remain independent live-release requirements.
+    """
+    from . import account_safety
+    from .costs import entry_charge, exit_charge
+    from .sleeves.feeds import fresh_quotes
+    from .sleeves.risk import BookState, stop_loss_including_costs
+    row = con.execute("SELECT capital,started_at FROM live_book_epoch WHERE user_id=? AND market='IN'",
+                      (uid,)).fetchone()
+    capital = float(st.get("budget") or 0)
+    if row and float(row[0]) != capital:
+        return None, "live allocation change requires an explicit approved epoch"
+    if not row:
+        epoch = "managed-ledger-v1"
+        con.execute("INSERT INTO live_book_epoch(user_id,market,capital,started_at) VALUES(?,'IN',?,?)",
+                    (uid, capital, epoch))
+    else:
+        epoch = row[1]
+    day = datetime.now(IST).date().isoformat()
+    rows = con.execute("SELECT symbol,side,filled_qty,average_price,product,ts,reason "
+                       "FROM v2_live_orders WHERE user_id=? AND market='IN' AND filled_qty>0 "
+                       "ORDER BY ts,id", (uid,)).fetchall()
+    cash, prior_cash = capital, capital
+    positions, prior_qty, counts, notionals = {}, {}, {}, {}
+    for sym, side, qty, price, product, ts, reason in rows:
+        value = qty * price
+        if not price or price <= 0:
+            return None, "confirmed fill price unavailable"
+        delta = -value - entry_charge(value, product) if side == "BUY" else value - exit_charge(value, product)
+        cash += delta
+        old = positions.setdefault(sym, dict(qty=0, price=price, product=product,
+                                             sleeve=(reason or "").removeprefix("mirror ")))
+        old["qty"] += qty if side == "BUY" else -qty
+        if side == "BUY":
+            old.update(price=price, product=product, sleeve=(reason or "").removeprefix("mirror "))
+        try:
+            moment = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(IST)
+        except (TypeError, ValueError):
+            return None, "fill session time unavailable"
+        if moment.date().isoformat() < day:
+            prior_cash += delta
+            prior_qty[sym] = prior_qty.get(sym, 0) + (qty if side == "BUY" else -qty)
+    positions = {s: p for s, p in positions.items() if p["qty"] != 0}
+    live = fresh_quotes(quotes or {}, datetime.now(timezone.utc))
+    if any(p["qty"] < 0 or s not in live for s, p in positions.items()):
+        return None, "managed position valuation unavailable or inventory is negative"
+    saved = con.execute("SELECT session_day,session_open FROM account_risk_state WHERE "
+                        "kind='live' AND user_id=? AND market='IN' AND epoch=?", (uid, epoch)).fetchone()
+    opening = saved[1] if saved and saved[0] == day else (
+              None if any(q != 0 for q in prior_qty.values()) else prior_cash)
+    if opening is None:
+        return None, "daily live equity baseline unavailable"
+    deployed = equity_value = risk = 0.0
+    for sym, p in positions.items():
+        protection = con.execute("SELECT stop FROM v2_live_protection WHERE user_id=? AND symbol=?",
+                                 (uid, sym)).fetchone()
+        if not protection or not protection[0]:
+            return None, "managed stop risk unavailable"
+        mark = live[sym]["price"]
+        deployed += p["qty"] * p["price"]
+        equity_value += p["qty"] * mark
+        sleeve = p["sleeve"]
+        counts[sleeve] = counts.get(sleeve, 0) + 1
+        notionals[sleeve] = notionals.get(sleeve, 0) + p["qty"] * p["price"]
+        risk += stop_loss_including_costs(mark, min(mark, protection[0]), p["qty"], p["product"])
+    equity = cash + equity_value
+    peak = account_safety.peak(con, "live", uid, "IN", epoch, capital)
+    account_safety.observe(con, "live", uid, "IN", epoch, equity, capital, day, opening)
+    return BookState(capital, cash, deployed, len(positions), counts, equity,
+                     max(peak, equity), equity - opening, notionals, risk), ""
+
+
 def service(v2, main_db, quotes):
     """Reconcile fills and retain exit obligations independently of paper rows."""
     from . import broker, order_journal as journal
@@ -340,8 +435,12 @@ def service(v2, main_db, quotes):
         if now - _SERVICED.get(uid, 0) < 60:
             continue
         _SERVICED[uid] = now
-        if not broker.state(uid).get("live_ready") or not journal.refresh(v2, uid):
+        if not broker.state(uid).get("exit_ready") or not journal.refresh(v2, uid):
             continue
+        state, why = account_risk_state(v2, uid, broker.state(uid), quotes)
+        if state is None:
+            _LOG.warning("broker account risk valuation u%s unavailable: %s", uid, why)
+        v2.commit()
         rows = list(v2.execute("SELECT symbol,stop,target,exit_reason FROM v2_live_protection "
                                "WHERE user_id=?", (uid,)))
         for symbol, stop, target, reason in rows:

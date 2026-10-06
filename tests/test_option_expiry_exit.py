@@ -231,16 +231,31 @@ class FrozenQuoteTest(unittest.TestCase):
         self.assertLess(backfill, evaluate, "backfill must happen before the exit test")
 
     def test_the_position_loader_reads_the_expiry_column(self) -> None:
-        import inspect
-        src = inspect.getsource(v2_live.exit_monitor)
-        self.assertIn("expiry FROM v2_positions", src)
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE v2_positions(id,strategy,symbol,entry_price,shares,stop,"
+                    "target,trail,peak,entry_date,expiry,market)")
+        con.execute("INSERT INTO v2_positions VALUES(1,'index_options','OPTION',100,10,"
+                    "70,150,0,100,'2026-08-01','2026-08-04','IN')")
+        position = v2_live._exit_positions(con, "IN")["OPTION"]
+        self.assertEqual(position["expiry"], "2026-08-04")
+        self.assertIsNone(position["exit_policy"])
+        self.assertEqual(position["entry_fee"], 0)
 
     def test_the_loader_survives_a_book_without_the_column(self) -> None:
         """The live book predates it; the web process cannot migrate."""
-        import inspect
-        src = inspect.getsource(v2_live.exit_monitor)
-        self.assertIn("except Exception:", src)
-        self.assertIn("(*r, None)", src)
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE v2_positions(id,strategy,symbol,entry_price,shares,stop,"
+                    "target,trail,peak,entry_date,market)")
+        con.execute("INSERT INTO v2_positions VALUES(1,'manual','TEST',100,10,99,110,"
+                    "0,100,'2026-08-01','IN')")
+        position = v2_live._exit_positions(con, "IN")["TEST"]
+        self.assertIsNone(position["expiry"])
+        self.assertIsNone(position["exit_policy"])
+        self.assertEqual(position["entry_fee"], 0)
 
 
 class SchemaTest(unittest.TestCase):

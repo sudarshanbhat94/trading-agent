@@ -54,13 +54,23 @@ def _held():
     """Symbols we currently hold, per market — the 'hot' set polled every tick so
     open-position prices and P&L move in near real time."""
     out = {m: set() for m in MARKETS}
+    c = None
     try:
         c = sqlite3.connect(f"file:{V2_DB}?mode=ro", uri=True, timeout=5)
-        for m, sym in c.execute("SELECT market,symbol FROM v2_positions"):
+        for m, sym in c.execute("SELECT market,symbol FROM v2_positions UNION "
+                               "SELECT market,symbol FROM user_positions UNION "
+                               "SELECT market,symbol FROM v2_live_orders WHERE status IN "
+                               "('pending','submitted','partial','unknown','sent') UNION "
+                               "SELECT market,symbol FROM v2_live_orders GROUP BY user_id,market,symbol "
+                               "HAVING SUM(CASE WHEN side='BUY' THEN COALESCE(filled_qty,0) "
+                               "ELSE -COALESCE(filled_qty,0) END)>0 UNION "
+                               "SELECT 'IN',symbol FROM v2_live_protection"):
             out.setdefault(m, set()).add(str(sym).upper())
-        c.close()
-    except Exception:
-        pass
+    except (sqlite3.Error, OSError):
+        print("exposure quote inventory unavailable; hot-feed coverage is unknown", flush=True)
+    finally:
+        if c is not None:
+            c.close()
     return out
 
 

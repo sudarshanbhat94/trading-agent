@@ -678,6 +678,7 @@ except Exception as _v2_exc:  # pragma: no cover
         "v2 trading engine and web UI NOT mounted — the app is running without "
         "the trading system: %s", _v2_exc, exc_info=True,
     )
+    raise RuntimeError("Required trading engine/UI could not initialize") from _v2_exc
 
 
 @app.post("/api/users/{user_id}/paper-cash")
@@ -916,20 +917,8 @@ async def _maintenance_loop() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global maintenance_task, position_mark_task
-    # Legacy background loops (universe refresh, delivery, maintenance, the 1s
-    # position-quote refresh). Redundant with the standalone feeder + the v2
-    # engine's own exit_monitor, and they added event-loop load — gated OFF by
-    # default now (separate flag from the v2 engine).
-    import os as _os
-    if _os.environ.get("OPENSTOCKS_DISABLE_LEGACY", "1") == "1":
-        return
-    await universe_service.refresh_if_enabled()
-    delivery_service.start_background_task()
-    maintenance_task = asyncio.create_task(_maintenance_loop())
-    position_mark_task = asyncio.create_task(_position_quote_refresh_loop())
-    if settings.auto_start_agent:
-        agent.start()
+    """Only the separately registered canonical v2 engine may open entries."""
+    return
 
 
 @app.on_event("shutdown")
@@ -3584,8 +3573,7 @@ async def openclaw_analyze_symbol(payload: dict[str, Any], request: Request) -> 
 @app.post("/api/openclaw/run-cycle")
 async def openclaw_run_cycle(request: Request) -> dict[str, Any]:
     require_openclaw_bridge(request, settings)
-    db.insert_agent_log("INFO", "openclaw", "run_cycle", "OpenClaw requested one agent cycle")
-    return await agent.run_once()
+    raise HTTPException(status_code=410, detail="Legacy execution is retired; use the canonical paper engine.")
 
 
 @app.post("/api/openclaw/notify-test")
@@ -4748,8 +4736,7 @@ async def _apply_runtime_stack(
     if settings.us_universe_csv.exists():
         db.seed_universe(settings.us_universe_csv, disable_missing=False)
     delivery_service.start_background_task()
-    if was_running:
-        agent.start()
+    # Runtime configuration cannot restart the retired execution stack.
 
     snapshot = _status_payload()
     await hub.broadcast(snapshot)
@@ -5025,13 +5012,7 @@ async def assign_runtime_upstox(user_id: int, request: Request) -> dict[str, Any
 @app.post("/api/control/start")
 async def start_agent(request: Request) -> dict[str, Any]:
     user = require_user(request, settings, db)
-    if user.get("role") != "admin":
-        return await user_signal_sessions.start(user)
-    db.insert_agent_log("INFO", "admin", "control_start", "Admin requested agent start")
-    agent.start()
-    snapshot = agent.snapshot()
-    await hub.broadcast(snapshot)
-    return _status_payload(user)
+    raise HTTPException(status_code=410, detail="Legacy execution is retired; use the canonical paper engine.")
 
 
 @app.post("/api/control/stop")
@@ -5049,28 +5030,13 @@ async def stop_agent(request: Request) -> dict[str, Any]:
 @app.post("/api/control/run-once")
 async def run_once(request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)
-    db.insert_agent_log("INFO", "admin", "control_run_once", "Admin requested one manual cycle")
-    return await agent.run_once()
+    raise HTTPException(status_code=410, detail="Legacy execution is retired; use the canonical paper engine.")
 
 
 @app.post("/api/control/reset-demo")
 async def reset_demo(request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)
-    was_running = agent.running
-    await agent.stop()
-    db.reset_trading_ledger(settings.initial_cash_inr)
-    db.insert_agent_log(
-        "WARN",
-        "admin",
-        "demo_reset",
-        "Demo trading ledger reset",
-        {"initial_cash_inr": settings.initial_cash_inr, "was_running": was_running},
-    )
-    if was_running:
-        agent.start()
-    snapshot = _status_payload()
-    await hub.broadcast(snapshot)
-    return snapshot
+    raise HTTPException(status_code=410, detail="Legacy ledger reset is retired; use explicit account epochs.")
 
 
 @app.get("/api/tomorrow-plan")

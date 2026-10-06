@@ -66,16 +66,18 @@ def book_state(con, market: str = "IN", prices: dict | None = None) -> BookSnaps
 
     positions = []
     cost = mv = 0.0
-    for sym, sleeve, sh, ep, stop in con.execute(
-            "SELECT symbol,COALESCE(sleeve,strategy),shares,entry_price,stop"
+    columns = {r[1] for r in con.execute("PRAGMA table_info(v2_positions)")}
+    fee_projection = "COALESCE(entry_fee,0)" if "entry_fee" in columns else "0"
+    for sym, sleeve, sh, ep, stop, entry_fee in con.execute(
+            "SELECT symbol,COALESCE(sleeve,strategy),shares,entry_price,stop," + fee_projection +
             " FROM v2_positions WHERE market=?", (market,)):
         sh, ep = float(sh), float(ep)
         px = float((prices.get(sym) or {}).get("price") or ep)
-        cost += sh * ep
+        cost += sh * ep + entry_fee
         mv += sh * px
         positions.append(dict(symbol=sym, sleeve=sleeve, shares=sh, entry=ep,
                               price=px, value=sh * px, stop=stop,
-                              pnl=sh * (px - ep)))
+                              pnl=sh * (px - ep) - entry_fee))
 
     realised = con.execute(
         "SELECT COALESCE(SUM(pnl),0) FROM v2_trades WHERE market=?"

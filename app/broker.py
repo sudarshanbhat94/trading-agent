@@ -255,6 +255,7 @@ def state(user_id, now=None) -> dict:
                  f"Rs {float(s.get('budget') if s.get('budget') is not None else LIVE_BUDGET):,.0f}"),
         live_ready=bool(s.get("access_token")) and not stale
         and bool(s.get("armed")) and not bool(s.get("kill_switch", True)),
+        exit_ready=bool(s.get("access_token")) and not stale,
     )
 
 

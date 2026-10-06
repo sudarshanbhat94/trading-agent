@@ -305,7 +305,7 @@ def _market_stats(v2, market, budget, live):
     _ep = v2.execute("SELECT started_at FROM v2_book WHERE market=?",
                      (market,)).fetchone()
     epoch = (_ep[0] if _ep and _ep[0] else "") or ""
-    pos = v2.execute("SELECT symbol,entry_price,shares,entry_date FROM v2_positions"
+    pos = v2.execute("SELECT symbol,entry_price,shares,entry_date,COALESCE(entry_fee,0) FROM v2_positions"
                      f" WHERE market=? AND strategy NOT IN ({marks})",
                      (market, *EQUITY_EXCLUDED)).fetchall()
     realised = v2.execute("SELECT COALESCE(SUM(pnl),0) FROM v2_trades"
@@ -318,16 +318,16 @@ def _market_stats(v2, market, budget, live):
                                 (market, *EQUITY_EXCLUDED, today_s, epoch)).fetchone()[0] or 0.0
     mtm = unreal = unreal_today = 0.0
     prevs = _prev_close_map(market, [r[0] for r in pos])
-    for sym, entry, shares, edate in pos:
+    for sym, entry, shares, edate, entry_fee in pos:
         p = live.get(sym, {}).get("price", entry)
         mtm += shares * p
-        unreal += (p - entry) * shares
+        unreal += (p - entry) * shares - entry_fee
         # today's move only: vs yesterday's close (entry when opened today or
         # no reference) — NOT the position's lifetime P&L
         ref = prevs.get(sym) or entry
         base = entry if str(edate) == today_s else (ref if ref > 0 else entry)
         unreal_today += (p - base) * shares
-    cash = budget - sum(r[1] * r[2] for r in pos) + realised
+    cash = budget - sum(r[1] * r[2] + r[4] for r in pos) + realised
     rets = [r[0] for r in v2.execute("SELECT return_pct FROM v2_trades WHERE market=?"
                                      f" AND strategy NOT IN ({marks})"
                                      " AND julianday(closed_at)>=COALESCE(julianday(?),0)",
@@ -1859,7 +1859,8 @@ def _market_shut(market):
         if market_open(market):
             return None
     except Exception:
-        return None                 # cannot tell -> do not block the operator
+        return JSONResponse({"error": "market state unavailable; entry refused",
+                             "code": "MARKET_STATE_UNKNOWN"}, status_code=409)
     return JSONResponse(
         {"error": "market is closed — a fill here would use the last stored "
                   "price, not one you could have traded at"}, status_code=409)
@@ -1895,6 +1896,14 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     px = float((quotes.get(sym) or {}).get("price") or 0)
     if px <= 0:
         return JSONResponse({"error": "no live price for " + sym}, status_code=400)
+    try:
+        import math
+        stop = float(payload.get("stop", round(px * 0.94, 2)))
+        target = float(payload.get("target", round(px * 1.06, 2)))
+        if not all(math.isfinite(value) for value in (stop, target)) or not 0 < stop < px < target:
+            raise ValueError("invalid stop or target")
+    except (TypeError, ValueError, OverflowError):
+        return JSONResponse({"error": "Stop must be below the live price; target must be above it"}, status_code=400)
     from . import books
     uid = int(user.get("id") or 0)
     v2 = _rw()
@@ -1903,18 +1912,16 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
             from .manual_execution import live_action
             main = _ro(MAIN_DB)
             try:
-                return live_action(v2, main, user, market, sym, px, "BUY")
+                return live_action(v2, main, user, market, sym, px, "BUY", stop=stop, target=target)
             finally:
                 main.close()
         if sym in books.open_symbols(v2, uid, market):
             return JSONResponse({"error": "already holding " + sym}, status_code=400)
-        stop, target = round(px * 0.94, 2), round(px * 1.06, 2)
         qty = books.buy(v2, uid, market, "manual", sym, px, None, stop, target)
         if qty < 1:
-            free = books.cash(v2, uid, market)
             return JSONResponse(
-                {"error": "not enough cash for 1 share (₹%.0f free, ₹%.0f/share)"
-                          % (free, px)}, status_code=400)
+                {"error": books.refusal(v2, uid, market), "code": "ACCOUNT_RISK_REFUSAL"},
+                status_code=409)
         broker_note = None
         v2.commit()
     finally:
@@ -6104,7 +6111,7 @@ function loadAccount(){var el=document.getElementById('account');var u=ME||{};va
  ${(u.role=='admin')?'<div class=sec>admin · allocate paper money</div><div id=adminbox class=raise><div class=skel>loading users…</div></div>':''}
  <div class=sec>broker (for live)</div><div class=raise><div class=row style="padding:6px 0"><span>Upstox · India</span><button class=sm onclick="openBroker('upstox')">connect</button></div><div class=row style="padding:6px 0;border-top:1px solid var(--line)"><span>Alpaca · US</span><button class=sm onclick="openBroker('alpaca')">connect</button></div></div>
  <div class=sec style="color:var(--dn)">danger zone</div>
- <div class=raise><div class=mut style="font-size:13px;margin-bottom:10px">Reset the paper book to a clean ₹1,00,000 — clears all positions, trades and equity history. Paper money only; your Telegram link is kept.</div><button class=pri style="background:var(--dn);border-color:var(--dn)" onclick=doReset()>Reset paper book</button><div id=resetmsg class=mut style="font-size:12px;margin-top:9px"></div></div>`;
+ <div class=raise><div class=mut style="font-size:13px;margin-bottom:10px">Start a new ₹10,000 paper epoch with ₹10,000 cash and no positions. Previous trades remain in historical records and do not affect the new book.</div><button class=pri style="background:var(--dn);border-color:var(--dn)" onclick=doReset()>Reset your paper book</button><div id=resetmsg class=mut style="font-size:12px;margin-top:9px"></div></div>`;
  api('/v2/api/stats').then(r=>{document.getElementById('acctstats').innerHTML=r.j.map(s=>`<div class=raise><div class=row><b>${s.market=='IN'?'India':'US'}</b><span class="${col(s.overall_pnl)}">overall ${s.overall_pnl<0?'-':'+'}${s.ccy}${(s.ccy=='₹'?INR:USD).format(Math.abs(s.overall_pnl))}</span></div><div class=grid style="margin-top:8px"><div class=card><div class=mut style="font-size:11px">win</div><div style="font-size:17px;font-weight:600">${s.win}%</div></div><div class=card><div class=mut style="font-size:11px">PF</div><div style="font-size:17px;font-weight:600">${s.pf}</div></div><div class=card><div class=mut style="font-size:11px">avg win</div><div class="up" style="font-size:16px;font-weight:600">${sgn(s.avg_win)}%</div></div><div class=card><div class=mut style="font-size:11px">avg loss</div><div class="dn" style="font-size:16px;font-weight:600">${s.avg_loss}%</div></div></div><div class=mut style="font-size:11px;margin-top:7px">${s.trades} closed · ${s.deploy_pct}% deployed</div></div>`).join('')||'<div class=card style="padding:14px 16px"><span class=mut style="font-size:12px">no closed trades yet — stats appear after the first exits</span></div>';});
  if(u.role=='admin')api('/api/users').then(r=>{var us=(r.j.users||[]);document.getElementById('adminbox').innerHTML=us.map(x=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div class=row><b>${x.username}</b><span class=mut style="font-size:11px">${x.role||'user'}</span></div><div style="display:flex;gap:6px;margin-top:6px"><input id="ai_${x.id}" type=number placeholder="India ₹" style="padding:7px 9px"><button class=sm onclick="allocUser(${x.id})">set</button></div></div>`).join('')||'<div class=mut>no users</div>';});
  el.insertAdjacentHTML('beforeend','<div id=brokerBox></div>');
@@ -6520,10 +6527,18 @@ function loadIndices(){var el=document.getElementById('indexbar');if(!el)return;
  el.style.display='flex';
  el.innerHTML=xs.map(function(x){var up=x.chg>=0;var k=(x.key||'').toUpperCase();var goable=isIndexSym(k);
   return '<div class=idx'+(goable?' style="cursor:pointer" onclick="stock(\''+k+'\',\'IN\')"':'')+'><b>'+x.name+'</b> <span class=iv>'+INR.format(x.last)+'</span> <span class="ic '+(up?'up':'dn')+'">'+(up?'▲ +':'▼ ')+x.chg+'%</span></div>';}).join('');});}
-function loadCatalysts(){var el=document.getElementById('catalysts');if(!el)return;api('/v2/api/catalysts').then(r=>{var cs=(r.j||[]).slice(0,8);
- if(!cs.length){el.innerHTML='<span class=mut>no fresh filings yet</span>';return;}
- var bc={results:'bg-inf',order:'bg-up',corp_action:'bg-warn'};
- el.innerHTML=cs.map(c=>'<div class=lrow style="cursor:pointer;padding:8px 2px" onclick="stock(\''+c.symbol+'\',\'IN\')"><div style="min-width:0"><b>'+c.symbol+'</b> <span class="badge '+(bc[c.cat]||'bg-mut')+'" style="font-size:9px">'+c.kind+'</span><div class=mut style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px">'+(c.subject||'')+'</div></div></div>').join('');});}
+function loadCatalysts(){var el=document.getElementById('catalysts');if(!el)return;api('/v2/api/catalysts').then(function(r){
+ el.replaceChildren();
+ if(!r.ok){el.textContent='Filings are unavailable. Retry shortly.';return;}
+ var cs=(r.j||[]).slice(0,8),bc={results:'bg-inf',order:'bg-up',corp_action:'bg-warn'};
+ if(!cs.length){el.textContent='No fresh filings yet';return;}
+ cs.forEach(function(c){var row=document.createElement('button');row.type='button';row.className='lrow';row.style.cssText='text-align:left;width:100%;padding:8px 2px';
+  row.addEventListener('click',function(){stock(String(c.symbol||''),'IN');});
+  var content=document.createElement('div');content.style.minWidth='0';
+  var symbol=document.createElement('b');symbol.textContent=String(c.symbol||'');content.appendChild(symbol);
+  var kind=document.createElement('span');kind.className='badge '+(bc[c.cat]||'bg-mut');kind.style.fontSize='9px';kind.textContent=String(c.kind||'');content.appendChild(kind);
+  var subject=document.createElement('div');subject.className='mut';subject.style.cssText='font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px';subject.textContent=String(c.subject||'');content.appendChild(subject);
+  row.appendChild(content);el.appendChild(row);});});}
 function toast(t){var e=document.createElement('div');e.className='toastmsg';e.textContent=t;document.body.appendChild(e);setTimeout(function(){e.remove()},6500)}
 setInterval(()=>{if(ME&&cur=='ideas'&&!document.getElementById('ideaPlanDialog')?.open)ideaRefreshTracking()},60000);
 boot();setInterval(()=>{if(ME){loadHealth();loadIndices();if(cur=='home'){loadHome();loadWL();loadMovers();loadRadar();loadActivity();loadCatalysts()}if(cur=='positions')loadPos()}},20000);

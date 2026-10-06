@@ -1,5 +1,11 @@
 # OpenStocks handoff — 2026-09-23
 
+## Local safety implementation — 2026-10-06
+
+**TRADING BEHAVIOUR CHANGED; local only, not deployed.** Personal and managed broker entries now share account-specific, cost-aware risk checks; position exit policies/origin links are persisted; personal exits run independently; entry disarm retains managed exits. Legacy entry controls are retired. Capital defaults and strategy thresholds are unchanged. See `reports/release-safety-implementation-2026-10-06.md` for the exact changes and remaining release blockers.
+
+Final full suite: 2,226 run, 2,093 passed, 133 skipped, zero failures/errors. This is the first safety milestone, not the completed release programme or proof of profitability. Broker inventory reconciliation/native protection, transactional crash recovery, instrument master and stock-model validation remain open; commercial/live release is NO-GO.
+
 This is a dated orientation, not a live portfolio or broker-status report. Verify changing facts from the production book, API, and code before reporting them.
 
 ## Current trading path

@@ -26,8 +26,8 @@ import math
 from dataclasses import dataclass, field
 
 from .base import Candidate
-from .config import PRODUCTION_SLEEVES, SLEEVES
-from ..costs import round_trip
+from .config import PRODUCTION_SLEEVES, SLEEVES, SleeveConfig
+from ..costs import round_trip, entry_charge
 
 _LOG = logging.getLogger("openstocks.sleeves.risk")
 
@@ -41,13 +41,13 @@ assert _TOTAL_SHARE <= 1.0 + 1e-9, f"sleeve risk shares sum to {_TOTAL_SHARE} (>
 SLIPPAGE = 0.002
 
 
-def stop_loss_including_costs(entry: float, stop: float, shares: float) -> float:
+def stop_loss_including_costs(entry: float, stop: float, shares: float, product="D") -> float:
     """Estimated cash lost at an equity stop, including both execution legs."""
     if shares <= 0 or not 0 < stop <= entry:
         return 0.0
     buy = shares * entry * (1 + SLIPPAGE)
     sell = shares * stop * (1 - SLIPPAGE)
-    return buy - sell + round_trip(buy, sell, "D")
+    return buy - sell + round_trip(buy, sell, product)
 
 
 @dataclass
@@ -72,6 +72,7 @@ class Allocation:
     notional: float
     risk_amount: float
     reason: str = "ok"
+    cash_required: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -114,6 +115,8 @@ class RiskManager:
                 or cand.entry <= 0 or not 0 < cand.stop < cand.entry):
             return Allocation(cand, 0, 0.0, 0.0, "invalid candidate price")
         cfg = getattr(self.s, cand.sleeve, None)
+        if cand.sleeve == "manual":
+            cfg = SleeveConfig(True, self.s.max_deployed, self.s.max_positions_total)
         if cfg is None:
             return Allocation(cand, 0, 0.0, 0.0, "unknown sleeve")
         if not cfg.enabled:
@@ -166,8 +169,10 @@ class RiskManager:
         by_deployment = max(book.capital * self.s.max_deployed - book.deployed, 0) / cand.entry
         shares = int(min(by_risk, by_slot, by_cash, by_sleeve, by_deployment))
         if cand.instrument == "EQ":
-            while shares > 0 and stop_loss_including_costs(
-                    cand.entry, cand.stop, shares) > risk_budget + 1e-9:
+            while shares > 0 and (stop_loss_including_costs(
+                    cand.entry, cand.stop, shares, cand.product) > risk_budget + 1e-9
+                    or shares * cand.entry * (1 + SLIPPAGE) + entry_charge(
+                        shares * cand.entry * (1 + SLIPPAGE), cand.product) > book.cash + 1e-9):
                 shares -= 1
         if shares < 1:
             return Allocation(cand, 0, 0.0, 0.0,
@@ -182,20 +187,21 @@ class RiskManager:
                               f"would dominate")
 
         # the move on offer must beat the round trip by a sensible margin
-        if cand.target:
+        if cand.target and cand.sleeve != "manual":
             edge = (cand.target / cand.entry - 1) * 100
             if cand.instrument == "EQ":
                 buy = notional * (1 + SLIPPAGE)
                 sell = shares * cand.target * (1 - SLIPPAGE)
-                edge = (sell - buy - round_trip(buy, sell, "D")) / buy * 100
+                edge = (sell - buy - round_trip(buy, sell, cand.product)) / buy * 100
             if edge < self.s.min_edge_pct:
                 return Allocation(cand, 0, notional, 0.0,
                                   f"target offers {edge:.1f}% < {self.s.min_edge_pct:.1f}% "
                                   f"minimum edge")
 
-        loss = (stop_loss_including_costs(cand.entry, cand.stop, shares)
+        loss = (stop_loss_including_costs(cand.entry, cand.stop, shares, cand.product)
                 if cand.instrument == "EQ" else shares * rps)
-        return Allocation(cand, shares, notional, loss)
+        required = notional * (1 + SLIPPAGE) + entry_charge(notional * (1 + SLIPPAGE), cand.product)
+        return Allocation(cand, shares, notional, loss, cash_required=required)
 
     # -- the pass ---------------------------------------------------------
     def allocate(self, candidates: list[Candidate], book: BookState) -> list[Allocation]:
@@ -231,7 +237,7 @@ class RiskManager:
             if not alloc.ok:
                 _LOG.info("risk: %s/%s refused — %s", cand.sleeve, cand.symbol, alloc.reason)
                 continue
-            cash -= alloc.notional
+            cash -= alloc.cash_required or alloc.notional
             deployed += alloc.notional
             open_risk += alloc.risk_amount
             if cand.allocation_pct:

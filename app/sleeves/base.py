@@ -31,6 +31,7 @@ class Candidate:
     instrument: str = "EQ"       # EQ | FUT | OPT_SPREAD
     allocation_pct: float = 0.0  # long-duration allocation; 0 = risk-sized
     why: dict = field(default_factory=dict)
+    product: str = "D"
 
     @property
     def risk_per_share(self) -> float:

@@ -71,45 +71,39 @@ CREATE TABLE IF NOT EXISTS user_equity(
 
 def ensure_schema(con):
     con.executescript(SCHEMA)
+    columns = {r[1] for r in con.execute("PRAGMA table_info(user_positions)")}
+    for name, kind in (("exit_policy", "TEXT"), ("peak", "REAL"),
+                       ("entry_fee", "REAL DEFAULT 0"), ("product", "TEXT DEFAULT 'D'")):
+        if name not in columns:
+            con.execute(f"ALTER TABLE user_positions ADD COLUMN {name} {kind}")
+    from . import account_safety
+    account_safety.ensure_schema(con)
+    con.execute("CREATE TABLE IF NOT EXISTS user_book_decisions("
+                "id INTEGER PRIMARY KEY,user_id INTEGER,market TEXT,epoch TEXT,"
+                "symbol TEXT,accepted INTEGER,reason TEXT,created_at TEXT)")
+    from .exit_policy import ExitPolicy
+    for pid, strategy, stop, target in con.execute(
+            "SELECT id,strategy,stop,target FROM user_positions WHERE exit_policy IS NULL").fetchall():
+        con.execute("UPDATE user_positions SET exit_policy=?,peak=COALESCE(peak,entry_price) WHERE id=?",
+                    (ExitPolicy.create(strategy, stop, target,
+                                       max_hold_days=0 if strategy == "manual" else None).encode(), pid))
     con.commit()
 
 
 def ensure_book(con, user_id, market="IN"):
-    """Create this user's book on first touch, and RECONCILE it to the current
-    default. Returns the budget.
-
-    Reconciliation matters as much as creation. This only ever inserted, so
-    every existing book kept the capital it was created with: after the house
-    book moved Rs 1,00,000 -> Rs 10,000 the website still showed eight user
-    books at Rs 1,00,000 carrying the whole legacy ledger (-Rs 44,140 for
-    uid 2), while the box read a clean Rs 10,000. Same defect as v2_book's
-    seed-only ensure_schema, one table over.
-
-    A capital change re-anchors `started_at` for the same reason it does on the
-    house book: user_equity snapshots are denominated in the book they were
-    taken under, so realised P&L and peak equity must be scoped to the current
-    epoch or the numbers stay in the old size forever. Nothing is deleted —
-    reconcile_capital() closes what the smaller book cannot carry.
-    """
+    """Create a missing book; allocation/epoch changes require an explicit reset."""
     default = DEFAULT_BUDGET.get(market, 10000.0)
     row = con.execute("SELECT budget FROM user_book WHERE user_id=? AND market=?",
                       (int(user_id), market)).fetchone()
     if row:
-        if abs(float(row[0]) - default) > 1e-9:
-            _LOG.warning("user %s book resized Rs %.0f -> Rs %.0f; epoch re-anchored",
-                         user_id, float(row[0]), default)
-            con.execute("UPDATE user_book SET budget=?, started_at=?"
-                        " WHERE user_id=? AND market=?",
-                        (default, datetime.now(timezone.utc).isoformat(),
-                         int(user_id), market))
-            con.commit()
-            return default
         return float(row[0])
     budget = default
+    nested = con.in_transaction
     con.execute("INSERT OR IGNORE INTO user_book(user_id,market,budget,started_at)"
                 " VALUES(?,?,?,?)",
                 (int(user_id), market, budget, datetime.now(timezone.utc).isoformat()))
-    con.commit()
+    if not nested:
+        con.commit()
     return budget
 
 
@@ -188,7 +182,7 @@ def budget_of(con, user_id, market="IN"):
     """
     row = con.execute("SELECT budget FROM user_book WHERE user_id=? AND market=?",
                       (int(user_id), market)).fetchone()
-    return float(row[0]) if row else DEFAULT_BUDGET.get(market, 100000.0)
+    return float(row[0]) if row else DEFAULT_BUDGET.get(market, 10000.0)
 
 
 def cash(con, user_id, market="IN"):
@@ -200,7 +194,7 @@ def cash(con, user_id, market="IN"):
     """
     budget = budget_of(con, user_id, market)
     ep = current_epoch(con, user_id, market)
-    spent = con.execute("SELECT COALESCE(SUM(entry_price*shares),0) FROM user_positions"
+    spent = con.execute("SELECT COALESCE(SUM(entry_price*shares+COALESCE(entry_fee,0)),0) FROM user_positions"
                         " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",
                         (int(user_id), market, LEGACY_EPOCH, ep)).fetchone()[0] or 0.0
     # Scoped to the current epoch, and compared on the TIMESTAMP: the legacy
@@ -230,7 +224,8 @@ def size_for(con, user_id, market, price):
 
 def positions(con, user_id, market="IN"):
     cols = ("id", "market", "strategy", "symbol", "entry_date", "entry_price",
-            "shares", "stop", "target", "opened_at", "sleeve", "regime")
+            "shares", "stop", "target", "opened_at", "sleeve", "regime",
+            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch")
     ep = current_epoch(con, user_id, market)
     rows = con.execute(f"SELECT {','.join(cols)} FROM user_positions"
                        " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?"
@@ -246,60 +241,161 @@ def open_symbols(con, user_id, market="IN"):
 
 
 def buy(con, user_id, market, strategy, symbol, price, shares=None,
-        stop=None, target=None, src_id=None, sleeve=None, regime=None):
+        stop=None, target=None, src_id=None, sleeve=None, regime=None,
+        exit_policy=None, quotes=None):
     """Open a position in ONE user's book. Returns shares bought, or 0.
 
     Zero is a normal outcome, not a failure: a book too small for one share of
     a Rs 5,000 stock skips it. Refusing loudly there would turn a smaller
     account into an error message on every expensive name.
     """
-    price = float(price or 0)
-    if price <= 0:
+    from .account_safety import atomic
+    from .exit_policy import ExitPolicy
+    from .sleeves.base import Candidate
+    from .sleeves.risk import RiskManager
+    from .live_trade import product_for
+    from .costs import entry_charge
+    try:
+        price, stop = float(price), float(stop or 0)
+        if not math.isfinite(price) or not 0 < stop < price:
+            return 0
+        requested = int(shares) if shares is not None else None
+        if requested is not None and requested <= 0:
+            return 0
+        policy = (ExitPolicy.decode(exit_policy) if exit_policy else
+                  ExitPolicy.create(strategy, stop, target,
+                                    max_hold_days=0 if strategy == "manual" else None))
+        if policy.stop != stop or policy.target != float(target or 0):
+            return 0  # Allocated risk and executable protection must agree.
+    except (TypeError, ValueError, OverflowError):
         return 0
-    if symbol in open_symbols(con, user_id, market):
-        return 0
-    n = con.execute("SELECT COUNT(*) FROM user_positions WHERE user_id=? AND market=?",
-                    (int(user_id), market)).fetchone()[0]
-    if n >= MAX_POSITIONS:
-        return 0
-    qty = int(shares) if shares else size_for(con, user_id, market, price)
-    if qty < 1 or qty * price > cash(con, user_id, market):
-        return 0
-    now = datetime.now(IST)
-    # OR IGNORE + returning qty regardless was a lie waiting to happen: the
-    # unique index can block this (two mirrors racing on the same symbol) and
-    # the caller would be told shares were bought that do not exist, leaving the
-    # book's cash and its positions permanently disagreeing. rowcount is the
-    # only honest answer.
-    # The book must EXIST before the epoch is stamped. Without this the first
-    # write lands with `legacy`, a later ensure_book creates a real epoch, and
-    # the position silently vanishes from the book that just bought it. Reads
-    # deliberately never create a book, so it has to happen here.
-    ensure_book(con, user_id, market)
-    # book_epoch is stamped at WRITE time. Every money read filters on it, so a
-    # row written without one would be invisible to the book that created it.
-    cur = con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,"
-                      "symbol,entry_date,entry_price,shares,stop,target,opened_at,"
-                      "src_id,sleeve,regime,book_epoch)"
-                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                      (int(user_id), market, strategy, symbol, now.date().isoformat(),
-                       price, qty, stop, target, now.isoformat(), src_id, sleeve, regime,
-                       current_epoch(con, user_id, market)))
-    con.commit()
-    return qty if cur.rowcount else 0
+    with atomic(con):
+        ensure_book(con, user_id, market)
+        epoch = current_epoch(con, user_id, market)
+        state, reason = risk_state(con, user_id, market, quotes)
+        if symbol in open_symbols(con, user_id, market):
+            reason = "already held"
+        candidate = Candidate(symbol, sleeve or strategy, 1, price, stop,
+                              target=float(target or 0),
+                              allocation_pct=0.5 if strategy == "index_directional" else 0,
+                              product=product_for(strategy))
+        allocation = RiskManager().size(candidate, state) if state and not reason else None
+        if allocation is not None and not allocation.ok:
+            reason = allocation.reason
+        qty = min(allocation.shares, requested) if allocation and requested is not None else (
+              allocation.shares if allocation else 0)
+        if qty and qty * price < RiskManager().s.min_ticket:
+            reason = "approved quantity is below the minimum viable ticket"
+        accepted = bool(qty > 0 and not reason)
+        now = datetime.now(IST)
+        con.execute("INSERT INTO user_book_decisions(user_id,market,epoch,symbol,accepted,reason,created_at) "
+                    "VALUES(?,?,?,?,?,?,?)", (int(user_id), market, epoch, symbol,
+                                             int(accepted), reason or "approved", now.isoformat()))
+        if not accepted:
+            return 0
+        fee = entry_charge(qty * price, candidate.product) if market == "IN" else 0
+        cur = con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,"
+                          "symbol,entry_date,entry_price,shares,stop,target,opened_at,"
+                          "src_id,sleeve,regime,book_epoch,exit_policy,peak,entry_fee,product) "
+                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (int(user_id), market, strategy, symbol, now.date().isoformat(),
+                           price, qty, stop, target, now.isoformat(), src_id, sleeve, regime,
+                           epoch, policy.encode(), price, fee, candidate.product))
+        return qty if cur.rowcount else 0
 
 
-def sell(con, user_id, market, symbol, price, reason="manual"):
+def refusal(con, user_id, market):
+    row = con.execute("SELECT reason FROM user_book_decisions WHERE user_id=? AND market=? "
+                      "ORDER BY id DESC LIMIT 1", (int(user_id), market)).fetchone()
+    return row[0] if row else "invalid levels or size"
+
+
+def _paper_peak(con, user_id, market, epoch, capital):
+    """Retain known active-epoch observations before replacing display rows."""
+    from . import account_safety
+    chart = con.execute("SELECT MAX(equity) FROM user_equity WHERE user_id=? AND market=? "
+                        "AND date>=?", (int(user_id), market, epoch[:10])).fetchone()[0]
+    return account_safety.peak(con, "paper", user_id, market, epoch,
+                               max(float(capital), float(chart or capital)))
+
+
+def risk_state(con, user_id, market="IN", quotes=None):
+    """Account-specific, after-cost book state; incomplete valuation refuses risk."""
+    from . import account_safety
+    from .sleeves.risk import BookState, stop_loss_including_costs
+    from .sleeves.feeds import fresh_quotes
+    pos = positions(con, user_id, market)
+    if quotes is None and pos:
+        from .v2_live import _live
+        try:
+            quotes = _live(market, [p["symbol"] for p in pos])
+        except Exception:
+            return None, "account valuation unavailable: quote source could not be read"
+    quotes = fresh_quotes(quotes or {}, datetime.now(timezone.utc))
+    if any(p["symbol"] not in quotes for p in pos):
+        return None, "account valuation unavailable: held quote missing or stale"
+    if any(not p["stop"] or not math.isfinite(p["stop"]) or p["stop"] <= 0 for p in pos):
+        return None, "account stop risk unavailable"
+    st = stats(con, user_id, market, quotes)
+    epoch = current_epoch(con, user_id, market)
+    day = datetime.now(IST).date().isoformat()
+    baseline = con.execute("SELECT equity FROM user_equity WHERE user_id=? AND market=? "
+                           "AND date<? AND date>=? ORDER BY date DESC LIMIT 1",
+                           (int(user_id), market, day, epoch[:10])).fetchone()
+    if baseline:
+        opening = float(baseline[0])
+    else:
+        carried = any(p["entry_date"] < day for p in pos) or con.execute(
+            "SELECT 1 FROM user_trades WHERE user_id=? AND market=? AND book_epoch=? "
+            "AND entry_date<? AND exit_date>=? LIMIT 1",
+            (int(user_id), market, epoch, day, day)).fetchone()
+        if carried:
+            return None, "daily equity baseline unavailable"
+        prior = con.execute("SELECT COALESCE(SUM(pnl),0) FROM user_trades WHERE "
+                            "user_id=? AND market=? AND book_epoch=? AND exit_date<?",
+                            (int(user_id), market, epoch, day)).fetchone()[0]
+        opening = st["budget"] + float(prior or 0)
+    peak = _paper_peak(con, user_id, market, epoch, st["budget"])
+    if con.in_transaction:
+        account_safety.observe(con, "paper", user_id, market, epoch, st["equity"],
+                               st["budget"], day, opening, historical_peak=peak)
+    counts, notional, risks = {}, {}, []
+    for p in pos:
+        sleeve = p["sleeve"] or p["strategy"]
+        counts[sleeve] = counts.get(sleeve, 0) + 1
+        notional[sleeve] = notional.get(sleeve, 0) + p["entry_price"] * p["shares"]
+        mark = quotes[p["symbol"]]["price"]
+        risk = stop_loss_including_costs(mark, min(mark, p["stop"]), p["shares"], p["product"])
+        risks.append((sleeve, risk))
+    return BookState(st["budget"], st["cash"], sum(notional.values()), len(pos), counts,
+                     st["equity"], max(peak, st["equity"]), st["equity"] - opening,
+                     notional, sum(r for _, r in risks),
+                     sum(r for s, r in risks if s == "index_directional")), ""
+
+
+def sell(con, user_id, market, symbol, price, reason="manual", position_id=None):
     """Close a position in ONE user's book. Returns (pnl, return_pct) or None."""
-    row = con.execute("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
+    from .account_safety import atomic
+    with atomic(con):
+        return _sell_locked(con, user_id, market, symbol, price, reason, position_id)
+
+
+def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
+    epoch = current_epoch(con, user_id, market)
+    sql = ("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
                       "sleeve,regime"
-                      " FROM user_positions WHERE user_id=? AND market=? AND symbol=?",
-                      (int(user_id), market, symbol)).fetchone()
+           " FROM user_positions WHERE user_id=? AND market=? AND symbol=? "
+           "AND COALESCE(book_epoch,?)=?")
+    args = [int(user_id), market, symbol, LEGACY_EPOCH, epoch]
+    if position_id is not None:
+        sql += " AND id=?"
+        args.append(position_id)
+    row = con.execute(sql, args).fetchone()
     if not row:
         return None
     pid, strategy, edate, entry, shares, opened, sleeve, regime = row
     price = float(price or 0)
-    if price <= 0:
+    if not math.isfinite(price) or price <= 0:
         return None
     # SAME cost model as the house book. A user's book that reported gross P&L
     # while the engine reported net would make the two incomparable, which is
@@ -316,7 +412,6 @@ def sell(con, user_id, market, symbol, price, reason="manual"):
                  opened, now.isoformat(), sleeve, regime,
                  current_epoch(con, user_id, market)))
     con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
-    con.commit()
     return net, pct
 
 
@@ -352,11 +447,12 @@ def stats(con, user_id, market, live):
                                       " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",
                                       (int(user_id), market, LEGACY_EPOCH, ep))]
     wins = [r for r in rets if r > 0]
-    free = budget - sum(p["entry_price"] * p["shares"] for p in pos) + realised
+    fees = sum(float(p["entry_fee"] or 0) for p in pos)
+    free = budget - sum(p["entry_price"] * p["shares"] for p in pos) - fees + realised
     return dict(market=market, budget=budget, cash=round(free, 2),
                 deployed=round(mtm, 2), equity=round(free + mtm, 2),
-                overall_pnl=round(realised + unreal, 2), realised=round(realised, 2),
-                unrealised=round(unreal, 2), positions=len(pos), trades=len(rets),
+                overall_pnl=round(realised + unreal - fees, 2), realised=round(realised, 2),
+                unrealised=round(unreal - fees, 2), positions=len(pos), trades=len(rets),
                 win=(round(len(wins) / len(rets) * 100) if rets else 0),
                 deploy_pct=(round(mtm / budget * 100) if budget else 0))
 
@@ -380,6 +476,12 @@ def snapshot_equity(con, user_id, market, live, day=None):
     so repeated calls update rather than accumulate."""
     day = day or datetime.now(IST).date().isoformat()
     st = stats(con, user_id, market, live)
+    from . import account_safety
+    # Peak is durable even when today's display row is replaced or pruned.
+    epoch = current_epoch(con, user_id, market)
+    peak = _paper_peak(con, user_id, market, epoch, st["budget"])
+    account_safety.observe(con, "paper", user_id, market, current_epoch(con, user_id, market),
+                           st["equity"], st["budget"], day, historical_peak=peak)
     con.execute("INSERT OR REPLACE INTO user_equity(user_id,market,date,equity,cash,"
                 "positions_value,n_positions) VALUES(?,?,?,?,?,?,?)",
                 (int(user_id), market, day, st["equity"], st["cash"],
@@ -430,31 +532,79 @@ def subscribers(db, plans_mod):
 
 def mirror_entry(con, db, plans_mod, market, strategy, symbol, price,
                  stop=None, target=None, src_id=None, sleeve=None, regime=None,
-                 max_shares=None):
+                 max_shares=None, exit_policy=None):
     """Fan out the decision without exceeding its approved share count."""
     done = 0
+    if src_id is None:
+        _LOG.error("mirror entry %s refused: origin position is missing", symbol)
+        return 0
     for uid in subscribers(db, plans_mod):
         try:
-            own_qty = size_for(con, uid, market, price)
-            qty = min(own_qty, int(max_shares)) if max_shares is not None else own_qty
-            if qty > 0 and buy(con, uid, market, strategy, symbol, price, qty, stop, target,
-                   src_id, sleeve, regime):
+            if buy(con, uid, market, strategy, symbol, price, max_shares, stop, target,
+                   src_id, sleeve, regime, exit_policy=exit_policy):
                 done += 1
         except Exception:
             _LOG.exception("book mirror entry failed for user %s", uid)
     return done
 
 
-def mirror_exit(con, db, plans_mod, market, symbol, price, reason):
-    """And the exit. Only books that actually hold it are touched."""
+def mirror_exit(con, db, plans_mod, market, symbol, price, reason, src_id=None):
+    """Close the exact origin's mirrors, including lapsed subscribers."""
+    if src_id is None:
+        _LOG.error("mirror exit %s refused: origin position is missing", symbol)
+        return 0
     done = 0
-    for (uid,) in con.execute("SELECT DISTINCT user_id FROM user_positions"
-                              " WHERE market=? AND symbol=?", (market, symbol)):
+    for pid, uid in con.execute("SELECT id,user_id FROM user_positions"
+                               " WHERE market=? AND symbol=? AND src_id=?",
+                               (market, symbol, src_id)).fetchall():
         try:
-            if sell(con, uid, market, symbol, price, reason):
+            if sell(con, uid, market, symbol, price, reason, position_id=pid):
                 done += 1
         except Exception:
             _LOG.exception("book mirror exit failed for user %s", uid)
+    return done
+
+
+def monitor_positions(con, market, quotes, today=None, regime_view=None):
+    """Personal exits do not depend on subscription, house membership or entry gates."""
+    from .account_safety import atomic
+    from .exit_policy import ExitPolicy
+    from .sleeves.feeds import fresh_quotes
+    from .v2_live import evaluate_exit
+    now = datetime.now(IST)
+    today = today or now.date()
+    live = fresh_quotes(quotes, now)
+    done = 0
+    users = [r[0] for r in con.execute(
+        "SELECT DISTINCT user_id FROM user_positions WHERE market=?", (market,))]
+    for uid in users:
+        with atomic(con):
+            for row in positions(con, uid, market):
+                quote = live.get(row["symbol"])
+                if not quote:
+                    continue
+                policy = ExitPolicy.decode(row["exit_policy"])
+                p = dict(strategy=row["strategy"], entry=row["entry_price"],
+                         shares=row["shares"], stop=row["stop"], target=row["target"] or 0,
+                         peak=row["peak"] or row["entry_price"], trail=policy.trail,
+                         edate=row["entry_date"], exit_policy=row["exit_policy"])
+                q = dict(quote, high=quote["price"], low=quote["price"])
+                peak, _, price, reason = evaluate_exit(
+                    p, q, None, today, today.isoformat(), market, now.strftime("%H:%M"))
+                if (price is None and policy.regime_exit == "monthly_off" and regime_view
+                        and regime_view.get("regime") == "OFF"
+                        and regime_view.get("cycle_date") == today.isoformat()):
+                    from .sleeves.index_directional import monthly_rebalance
+                    from datetime import date
+                    if monthly_rebalance(date.fromisoformat(regime_view["asof"][:10]), today):
+                        price, reason = quote["price"], "regime_off"
+                if price is not None:
+                    if _sell_locked(con, uid, market, row["symbol"], price, reason, row["id"]):
+                        done += 1
+                else:
+                    con.execute("UPDATE user_positions SET peak=? WHERE id=? AND user_id=?",
+                                (peak, row["id"], uid))
+            risk_state(con, uid, market, live)
     return done
 
 

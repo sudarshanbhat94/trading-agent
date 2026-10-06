@@ -96,11 +96,18 @@ class EntryRefusesExpiredContractsTest(unittest.TestCase):
 class ChurnCircuitBreakerTest(unittest.TestCase):
     """The guard that is not about expiry at all."""
 
+    def setUp(self):
+        from unittest.mock import patch
+        for name in ("_book_mirror_entry", "_live_mirror_entry"):
+            mirror = patch.object(v2_live, name)
+            mirror.start()
+            self.addCleanup(mirror.stop)
+
     def _book(self):
         con = sqlite3.connect(":memory:")
         con.execute("CREATE TABLE v2_positions(market,strategy,symbol,entry_date,"
                     "entry_price,shares,stop,target,trail,peak,conviction,opened_at,"
-                    "why,expiry,sleeve,regime,risk_amt)")
+                    "why,expiry,sleeve,regime,risk_amt,exit_policy,entry_fee)")
         con.execute("CREATE TABLE v2_trades(market,symbol,entry_date)")
         return con
 

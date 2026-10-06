@@ -700,11 +700,19 @@ class WebsiteConsistencyTest(unittest.TestCase):
                 self.assertIn("book_epoch", inspect.getsource(fn))
 
     def test_writes_stamp_the_epoch(self) -> None:
-        import inspect
-        from app import books
-        for fn in (books.buy, books.sell):
-            with self.subTest(fn=fn.__name__):
-                self.assertIn("book_epoch", inspect.getsource(fn))
+        import sqlite3
+        from app import books, v2_live
+        con = sqlite3.connect(":memory:")
+        try:
+            v2_live.ensure_schema(con)
+            self.assertGreater(books.buy(con, 1, "IN", "manual", "TEST", 100,
+                                         stop=99, target=110), 0)
+            epoch = books.current_epoch(con, 1)
+            self.assertEqual(con.execute("SELECT book_epoch FROM user_positions").fetchone()[0], epoch)
+            books.sell(con, 1, "IN", "TEST", 110)
+            self.assertEqual(con.execute("SELECT book_epoch FROM user_trades").fetchone()[0], epoch)
+        finally:
+            con.close()
 
     def test_a_read_never_creates_a_book(self) -> None:
         """current_epoch must not bootstrap on a read path — that is how every

@@ -999,6 +999,13 @@ def ensure_schema(v2):
     from .personal_alerts import ensure_schema as ensure_personal_alerts
     ensure_personal_alerts(v2)
     v2.executescript(SCHEMA)
+    from . import account_safety
+    account_safety.ensure_schema(v2)
+    columns = {r[1] for r in v2.execute("PRAGMA table_info(v2_positions)")}
+    if "exit_policy" not in columns:
+        v2.execute("ALTER TABLE v2_positions ADD COLUMN exit_policy TEXT")
+    if "entry_fee" not in columns:
+        v2.execute("ALTER TABLE v2_positions ADD COLUMN entry_fee REAL DEFAULT 0")
     from . import order_journal
     order_journal.ensure_schema(v2)
     for m in ENABLED_MARKETS:
@@ -1048,11 +1055,27 @@ def ensure_schema(v2):
         v2.execute("ALTER TABLE v2_positions ADD COLUMN expiry TEXT")
     except Exception:
         pass
-    try:                                  # per-user paper books (see app/books.py)
-        from . import books as _books
-        _books.ensure_schema(v2)
-    except Exception:
-        _LOG.exception("user-book schema failed; house book unaffected")
+    from . import books as _books
+    _books.ensure_schema(v2)
+    from .exit_policy import ExitPolicy
+    for pid, strategy, stop, target, trail in v2.execute(
+            "SELECT id,strategy,stop,target,trail FROM v2_positions "
+            "WHERE exit_policy IS NULL").fetchall():
+        v2.execute("UPDATE v2_positions SET exit_policy=? WHERE id=?",
+                   (ExitPolicy.create(strategy, stop, target, trail).encode(), pid))
+    required = {
+        "v2_positions": {"exit_policy", "entry_fee", "why", "expiry", "sleeve", "regime", "risk_amt"},
+        "v2_trades": {"opened_at", "closed_at", "sleeve", "regime", "risk_amt"},
+        "v2_live_orders": {"intent_key", "filled_qty", "average_price", "origin_position_id", "product"},
+        "user_positions": {"book_epoch", "exit_policy", "entry_fee", "peak", "product", "src_id"},
+    }
+    for table, names in required.items():
+        missing = names - {r[1] for r in v2.execute(f"PRAGMA table_info({table})")}
+        if missing:
+            raise RuntimeError(f"required trading migration incomplete: {table} {sorted(missing)}")
+    v2.execute("CREATE TABLE IF NOT EXISTS trading_schema_versions(version TEXT PRIMARY KEY,applied_at TEXT)")
+    v2.execute("INSERT OR IGNORE INTO trading_schema_versions VALUES(?,?)",
+               ("account-safety-v1", datetime.now(timezone.utc).isoformat()))
     v2.commit()
 
 
@@ -1654,12 +1677,12 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
         row = v2.execute("SELECT symbol FROM v2_positions WHERE id=?",
                          (position_id,)).fetchone()
         if row:
-            _live_mirror_exit(v2, market, row[0], exit_price, reason)
+            _live_mirror_exit(v2, market, row[0], exit_price, reason, src_id=position_id)
     except Exception:
         _LOG.exception("live mirror (exit) failed for position %s", position_id)
     try:
         if row:
-            _book_mirror_exit(v2, market, row[0], exit_price, reason)
+            _book_mirror_exit(v2, market, row[0], exit_price, reason, src_id=position_id)
     except Exception:
         _LOG.exception("user-book mirror (exit) failed for position %s", position_id)
     return net, net_pct
@@ -1692,7 +1715,8 @@ def _epoch_pnl(v2, market, day=None):
 
 def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
                  stop, target, trail, conviction, why, peak=None, expiry=None,
-                 sleeve=None, regime=None, risk_amount=None):
+                 sleeve=None, regime=None, risk_amount=None, max_hold_days=None,
+                 exit_policy=None):
     """THE single writer for v2_positions. Returns True if the row was written.
 
     Every lane had its own copy of this INSERT — five of them, identical column
@@ -1753,24 +1777,30 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
                        "(cap %d) — churn guard", strategy, market, symbol,
                        spun, MAX_ROUND_TRIPS_PER_DAY)
             return False
-    v2.execute(
+    from .exit_policy import ExitPolicy
+    policy = (ExitPolicy.decode(exit_policy) if exit_policy else
+              ExitPolicy.create(strategy, stop, target, trail, max_hold_days))
+    from .costs import entry_charge
+    from .live_trade import product_for
+    fee = entry_charge(shares * entry_price, product_for(strategy)) if market == "IN" else 0
+    cursor = v2.execute(
         "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
         "stop,target,trail,peak,conviction,opened_at,why,expiry,sleeve,regime,"
-        "risk_amt)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "risk_amt,exit_policy,entry_fee)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
          entry_price if peak is None else peak, conviction,
          datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime,
          (float(risk_amount) if risk_amount is not None else
           float(shares) * max(float(entry_price) - float(stop or 0), 0.0)
-          if stop else None)))
+          if stop else None), policy.encode(), fee))
     # LIVE MIRROR — real money. Runs only when the sleeve is armed AND connected;
     # `live_ready` is false by default and this is a no-op on every other
     # install. Placed AFTER the paper row is written and wrapped, so a broker
     # outage can never prevent the paper book from recording what it decided:
     # the paper book is the evidence and must survive the broker.
     try:
-        _live_mirror_entry(v2, market, strategy, symbol, entry_price)
+        _live_mirror_entry(v2, market, strategy, symbol, entry_price, src_id=cursor.lastrowid)
     except Exception:
         _LOG.exception("live mirror (entry) failed for %s — paper book unaffected", symbol)
     # EVERY SUBSCRIBER'S OWN BOOK gets the same decision, sized to their cash.
@@ -1778,32 +1808,34 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     # the engine's record must survive anything that happens downstream of it.
     try:
         _book_mirror_entry(v2, market, strategy, symbol, entry_price, stop, target,
-                           sleeve, regime, shares)
+                           sleeve, regime, shares, cursor.lastrowid, policy.encode())
     except Exception:
         _LOG.exception("user-book mirror (entry) failed for %s", symbol)
     return True
 
 
 def _book_mirror_entry(v2, market, strategy, symbol, price, stop, target,
-                       sleeve=None, regime=None, max_shares=None):
+                       sleeve=None, regime=None, max_shares=None, src_id=None,
+                       exit_policy=None):
     from . import books as _books, plans as _plans
     # None -> books builds the auth DB itself; see books._auth_db for why this
     # must not be `from .main import db` on the engine thread.
     n = _books.mirror_entry(v2, None, _plans, market, strategy, symbol, price,
                             stop, target, sleeve=sleeve, regime=regime,
-                            max_shares=max_shares)
+                            max_shares=max_shares, src_id=src_id,
+                            exit_policy=exit_policy)
     if n:
         _LOG.info("user books: %s opened in %d book(s)", symbol, n)
 
 
-def _book_mirror_exit(v2, market, symbol, price, reason):
+def _book_mirror_exit(v2, market, symbol, price, reason, src_id=None):
     from . import books as _books, plans as _plans
-    n = _books.mirror_exit(v2, None, _plans, market, symbol, price, reason)
+    n = _books.mirror_exit(v2, None, _plans, market, symbol, price, reason, src_id=src_id)
     if n:
         _LOG.info("user books: %s closed in %d book(s)", symbol, n)
 
 
-def _live_mirror_entry(v2, market, strategy, symbol, price):
+def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None):
     """Fan the entry out to EVERY user who has linked and armed their own
     broker. Each order goes to that user's account, sized to their own margin —
     there is no shared sleeve any more."""
@@ -1830,14 +1862,15 @@ def _live_mirror_entry(v2, market, strategy, symbol, price):
                           live_trade.mirror_entry(v2, main, uid, market, symbol,
                                                   price, strategy,
                                                   stop=terms[0] if terms else None,
-                                                  target=terms[1] if terms else None))
+                                                  target=terms[1] if terms else None,
+                                                  origin_position_id=src_id))
             except Exception:
                 _LOG.exception("live mirror entry failed for user %s", uid)
     finally:
         main.close()
 
 
-def _live_mirror_exit(v2, market, symbol, price, reason):
+def _live_mirror_exit(v2, market, symbol, price, reason, src_id=None):
     """Exit is attempted for every CONNECTED user, armed or not: mirror_exit
     records that real shares are still held when disarmed, and a silent skip
     would leave a live position nobody is tracking."""
@@ -1851,7 +1884,7 @@ def _live_mirror_exit(v2, market, symbol, price, reason):
             try:
                 _LOG.info("live mirror exit u%s %s: %s", uid, symbol,
                           live_trade.mirror_exit(v2, main, uid, market, symbol,
-                                                 price, reason))
+                                                 price, reason, origin_position_id=src_id))
             except Exception:
                 _LOG.exception("live mirror exit failed for user %s", uid)
     finally:
@@ -3775,11 +3808,18 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
     # to be decided only for the exit test, so `peak` still swept in the day
     # high and the session high — arming a breakeven lock off a price the trade
     # never saw, then exiting against a low it never saw either.
+    from .exit_policy import ExitPolicy
+    policy = ExitPolicy.decode(p["exit_policy"]) if p.get("exit_policy") else None
+    if policy:
+        p = dict(p, stop=policy.stop, target=policy.target, trail=policy.trail)
+    max_hold = (policy.max_hold_sessions if policy else
+                (None if p["strategy"] == "index_directional" else
+                 HOLD_DAYS.get(p["strategy"], 10)))
     same_day = str(p.get("edate"))[:10] == today_s
     # Sampled live exits cannot use cumulative session extrema: the low may
     # precede the high which raised a trailing stop. Use ordered observations
     # for these strategies on EVERY held session, not just the entry day.
-    use_live = p["strategy"] in MIDSESSION_STRATS
+    use_live = policy.ordered_quotes if policy else p["strategy"] in MIDSESSION_STRATS
     # `p["peak"]` starts at the entry price and is persisted, so it already
     # carries every price observed SINCE entry — on a mid-session entry day that
     # is the only honest high available.
@@ -3845,9 +3885,35 @@ def evaluate_exit(p, lq, sess_row, today, today_s, market, now_hhmm=None):
         ex, reason = lq["price"], "btst"
     elif p["strategy"] in INTRADAY_STRATS and (now_hhmm or datetime.now(IST).strftime("%H:%M")) >= INTRA["squareoff"]:
         ex, reason = lq["price"], "eod"           # intraday lanes are NEVER held overnight
-    elif held >= HOLD_DAYS.get(p["strategy"], 10):
+    elif max_hold is not None and held >= max_hold:
         ex, reason = lq["price"], "time"
     return peak, eff, ex, reason
+
+
+def _observe_house_risk(con, market, equity):
+    from . import account_safety
+    row = con.execute("SELECT budget,started_at FROM v2_book WHERE market=?", (market,)).fetchone()
+    if not row:
+        raise ValueError("house risk epoch is missing")
+    capital, epoch = row
+    historical = con.execute(
+        "SELECT MAX(equity) FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' "
+        "AND julianday(substr(date,6))>=julianday(?)", (market, epoch)).fetchone()[0]
+    account_safety.observe(con, "house", 0, market, epoch, equity, capital,
+                           datetime.now(IST).date().isoformat(), historical_peak=historical)
+
+
+def _exit_positions(con, market):
+    """Read protection fields independently on historical, read-only schemas."""
+    columns = {row[1] for row in con.execute("PRAGMA table_info(v2_positions)")}
+    optional = [name if name in columns else "NULL" for name in ("expiry", "exit_policy")]
+    optional.append("COALESCE(entry_fee,0)" if "entry_fee" in columns else "0")
+    rows = con.execute("SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,"
+                       "entry_date," + ",".join(optional) +
+                       " FROM v2_positions WHERE market=?", (market,))
+    return {r[2]: dict(id=r[0], strategy=r[1], entry=r[3], shares=r[4], stop=r[5],
+                      target=r[6], trail=r[7], peak=r[8], edate=r[9], expiry=r[10],
+                      exit_policy=r[11], entry_fee=r[12]) for r in rows}
 
 
 def exit_monitor(market):
@@ -3863,17 +3929,7 @@ def exit_monitor(market):
     cside = COST_SIDE[market]
     today = datetime.now(IST).date()
     today_s = today.isoformat()
-    positions = {}
-    try:
-        rows = v2.execute("SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,"
-                          "entry_date,expiry FROM v2_positions WHERE market=?", (market,)).fetchall()
-    except Exception:                            # expiry column not migrated yet
-        rows = [(*r, None) for r in v2.execute(
-            "SELECT id,strategy,symbol,entry_price,shares,stop,target,trail,peak,entry_date "
-            "FROM v2_positions WHERE market=?", (market,))]
-    for r in rows:
-        positions[r[2]] = dict(id=r[0], strategy=r[1], entry=r[3], shares=r[4], stop=r[5],
-                               target=r[6], trail=r[7], peak=r[8], edate=r[9], expiry=r[10])
+    positions = _exit_positions(v2, market)
     if not positions:                            # nothing held -> nothing to monitor,
         # but still write a heartbeat snapshot (throttled) so the health check knows
         # the engine is ALIVE on an empty/fresh book (equity = cash = budget+realized).
@@ -3882,6 +3938,7 @@ def exit_monitor(market):
             realized = _epoch_pnl(v2, market)
             eqv = budget + realized
             try:
+                _observe_house_risk(v2, market, eqv)
                 v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
                            (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], eqv, eqv, 0.0, 0))
                 v2.commit()
@@ -3898,7 +3955,7 @@ def exit_monitor(market):
     sess = _session_opens(market, live)          # session high ratchets US trails between samples
     frozen = _stale_symbols(market)              # don't mark/exit off a stale (frozen) quote
     realised = _epoch_pnl(v2, market)
-    cash = budget - sum(p["shares"] * p["entry"] for p in positions.values()) + realised
+    cash = budget - sum(p["shares"] * p["entry"] + p["entry_fee"] for p in positions.values()) + realised
     exits = 0
     for sym, p in list(positions.items()):
         lq = live.get(sym)
@@ -3933,7 +3990,7 @@ def exit_monitor(market):
             # number logged cannot drift apart.
             net, net_pct = record_exit(v2, market, p["id"], today_s, ex,
                                        p["shares"], reason)
-            cash += p["shares"] * p["entry"] + net
+            cash += p["shares"] * p["entry"] + net + p["entry_fee"]
             # Log the FULL decision, not just the outcome. On 2026-07-29
             # HINDUNILVR exited at its entry price with reason "stop" while its
             # day high was only +0.05% above entry — neither breakeven trigger
@@ -3958,6 +4015,8 @@ def exit_monitor(market):
         else:
             v2.execute("UPDATE v2_positions SET peak=? WHERE id=?", (peak, p["id"]))
     pv = sum(p["shares"] * (live[s]["price"] if s in live else p["entry"]) for s, p in positions.items())
+    if all(sym in live and sym not in frozen for sym in positions):
+        _observe_house_risk(v2, market, cash + pv)
     # snapshot at most once/min (was every 8s -> 57k rows bloating every query)
     if time.time() - _EQ_SNAP.get(market, 0) >= 60:
         _EQ_SNAP[market] = time.time()
@@ -4314,7 +4373,9 @@ def sleeve_pass(market):
             " substr(exit_date,1,10)=? AND reason<>'book_resize'"
             " AND julianday(closed_at) >= COALESCE(julianday(?),0)",
             (market, today_s, epoch_ts)).fetchone()[0] or 0.0
-        cash = capital - deployed + realised
+        entry_fees = float(v2.execute("SELECT COALESCE(SUM(entry_fee),0) FROM v2_positions WHERE market=?",
+                                     (market,)).fetchone()[0])
+        cash = capital - deployed - entry_fees + realised
         pv = sum(float(sh) * float(live.get(sym, {}).get("price") or ep)
                  for sym, _st, sh, ep, _sl in positions)
         equity = cash + pv
@@ -4333,18 +4394,22 @@ def sleeve_pass(market):
             "SELECT COALESCE(MAX(equity),?) FROM v2_equity WHERE market=?"
             " AND julianday(substr(date,6)) >= julianday(?)",
             (capital, market, epoch_ts)).fetchone()[0] or capital
-        peak = max(float(peak), capital)
+        from . import account_safety
+        peak = account_safety.peak(v2, "house", 0, market, epoch_ts,
+                                   max(float(peak), capital))
 
         risk_rows = v2.execute(
             "SELECT symbol,shares,entry_price,stop,COALESCE(sleeve,strategy) "
             "FROM v2_positions WHERE market=?", (market,)).fetchall()
         from .sleeves.risk import stop_loss_including_costs
+        from .live_trade import product_for
         stop_risks = []
         for sym, sh, ep, stop, strat in risk_rows:
-            if not stop:
-                continue
+            if not stop or float(stop) <= 0:
+                _status[market] = "sleeves: held-position stop unavailable; exits continue"
+                return
             mark = float(live.get(sym, {}).get("price") or ep)
-            risk = (stop_loss_including_costs(mark, min(float(stop), mark), float(sh))
+            risk = (stop_loss_including_costs(mark, min(float(stop), mark), float(sh), product_for(strat))
                     if market == "IN" else float(sh) * max(0, mark - float(stop)))
             stop_risks.append((strat, risk))
         book = BookState(capital=capital, cash=cash, deployed=deployed,
@@ -4445,7 +4510,7 @@ def sleeve_pass(market):
                             float(alloc.shares), c.stop, c.target, c.trail_pct,
                             c.score, json.dumps(c.why), sleeve=c.sleeve,
                             regime=result.regime.state,
-                            risk_amount=alloc.risk_amount):
+                            risk_amount=alloc.risk_amount, max_hold_days=c.max_hold_days):
                 fills += 1
                 held.add(c.symbol)
                 filled_allocs.append(alloc)
@@ -4543,7 +4608,8 @@ def loop(interval):
     try:
         v2 = _rw(); ensure_schema(v2); v2.close()
     except Exception:
-        pass
+        _LOG.exception("required trading schema initialization failed; engine stopped")
+        raise
     prev_open = {m: None for m in ENABLED_MARKETS}   # None = unknown (fresh start);
                                            # arm the entry window ONLY on a real
                                            # closed->open flip, never on a restart
@@ -4614,6 +4680,18 @@ def loop(interval):
                         except Exception:
                             _LOG.exception("index spot sample failed")
                     exit_monitor(m)                              # fast exits every cycle (held symbols only — cheap)
+                    try:
+                        from . import books
+                        personal = _rw()
+                        try:
+                            symbols = [r[0] for r in personal.execute(
+                                "SELECT DISTINCT symbol FROM user_positions WHERE market=?", (m,))]
+                            books.monitor_positions(personal, m, _live(m, symbols),
+                                                    regime_view=sleeve_view(m))
+                        finally:
+                            personal.close()
+                    except Exception:
+                        _LOG.exception("personal paper protection failed")
                     if m == "IN":
                         try:
                             from . import live_trade
@@ -4716,6 +4794,12 @@ def start_background(interval=8):
     global _started
     if _started:
         return
+    # Required migrations must succeed before startup can claim an engine.
+    con = _rw()
+    try:
+        ensure_schema(con)
+    finally:
+        con.close()
     _started = True
     threading.Thread(target=loop, args=(interval,), daemon=True, name="v2-live-engine").start()
 

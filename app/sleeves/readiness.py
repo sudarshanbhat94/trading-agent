@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from .accounting import session_pnl
 from .feeds import fresh_quotes
 from .performance import book_state
-from .risk import BookState, RiskManager
+from .risk import BookState, RiskManager, stop_loss_including_costs
 
 
 def book_readiness(con, market, quotes, now=None):
@@ -17,23 +17,38 @@ def book_readiness(con, market, quotes, now=None):
     peak = con.execute("SELECT MAX(equity) FROM v2_equity WHERE market=? "
                        "AND date LIKE 'LIVE_%' AND julianday(substr(date,6))>=julianday(?)",
                        (market, snap.epoch)).fetchone()[0]
+    from .. import account_safety, live_trade
+    # Historical read-only databases may predate the additive safety table.
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_risk_state'").fetchone():
+        peak = account_safety.peak(con, "house", 0, market, snap.epoch, peak or snap.capital)
     counts, notionals = {}, {}
-    deployed = open_risk = 0.0
+    deployed = open_risk = strategic_risk = 0.0
+    unprotected = False
     for p in snap.positions:
         sleeve = p["sleeve"]
         value = p["shares"] * p["entry"]
         deployed += value
         counts[sleeve] = counts.get(sleeve, 0) + 1
         notionals[sleeve] = notionals.get(sleeve, 0) + value
-        open_risk += p["shares"] * max(0, p["price"] - (p["stop"] or 0))
+        if not p["stop"] or p["stop"] <= 0:
+            unprotected = True
+            continue
+        risk = (stop_loss_including_costs(p["price"], min(p["stop"], p["price"]), p["shares"],
+                                         live_trade.product_for(sleeve)) if market == "IN" else
+                p["shares"] * max(0, p["price"] - p["stop"]))
+        open_risk += risk
+        if sleeve == "index_directional":
+            strategic_risk += risk
     peak = max(float(peak or snap.capital), snap.capital)
     book = BookState(snap.capital, snap.cash, deployed, snap.n_positions, counts,
-                     snap.equity, peak, pnl or 0, notionals, open_risk)
+                     snap.equity, peak, pnl or 0, notionals, open_risk, strategic_risk)
     halted, reason = RiskManager().halted(book)
     if missing:
         halted, reason = True, "held-position quotes stale; valuation is provisional"
     elif pnl is None:
         halted, reason = True, "daily equity baseline unavailable"
+    elif unprotected:
+        halted, reason = True, "held-position stop unavailable"
     return dict(halted=halted, reason=reason, capital=snap.capital,
                 equity=round(snap.equity,2), cash=round(snap.cash,2),
                 peak=round(peak,2), positions=snap.n_positions,
