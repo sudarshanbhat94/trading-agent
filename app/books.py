@@ -87,6 +87,10 @@ def ensure_schema(con):
     trade_columns = {r[1] for r in con.execute("PRAGMA table_info(user_trades)")}
     if "risk_amt" not in trade_columns:
         con.execute("ALTER TABLE user_trades ADD COLUMN risk_amt REAL")
+    for table in ('user_positions','user_trades'):
+        existing={r[1] for r in con.execute('PRAGMA table_info('+table+')')}
+        for field in ('instrument_id','plan_id','model_version'):
+            if field not in existing:con.execute('ALTER TABLE '+table+' ADD COLUMN '+field+' TEXT')
     from . import account_safety
     account_safety.ensure_schema(con)
     from . import paper_ledger
@@ -238,7 +242,8 @@ def size_for(con, user_id, market, price):
 def positions(con, user_id, market="IN"):
     cols = ("id", "market", "strategy", "symbol", "entry_date", "entry_price",
             "shares", "stop", "target", "opened_at", "sleeve", "regime",
-            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch", "risk_amt")
+            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch", "risk_amt",
+            "instrument_id","plan_id","model_version")
     ep = current_epoch(con, user_id, market)
     rows = con.execute(f"SELECT {','.join(cols)} FROM user_positions"
                        " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?"
@@ -268,6 +273,8 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
     from .sleeves.risk import RiskManager
     from .live_trade import product_for
     from .costs import entry_charge
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
     try:
         price, stop = float(price), float(stop or 0)
         if not math.isfinite(price) or not 0 < stop < price:
@@ -423,6 +430,8 @@ def risk_state(con, user_id, market="IN", quotes=None):
 def sell(con, user_id, market, symbol, price, reason="manual", position_id=None):
     """Close a position in ONE user's book. Returns (pnl, return_pct) or None."""
     from .account_safety import atomic
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
     with atomic(con):
         from .worker_fencing import require_current
         require_current(con)
@@ -430,9 +439,11 @@ def sell(con, user_id, market, symbol, price, reason="manual", position_id=None)
 
 
 def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
     epoch = current_epoch(con, user_id, market)
     sql = ("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
-                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt"
+                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt,instrument_id,plan_id,model_version"
            " FROM user_positions WHERE user_id=? AND market=? AND symbol=? "
            "AND COALESCE(book_epoch,?)=?")
     args = [int(user_id), market, symbol, LEGACY_EPOCH, epoch]
@@ -442,7 +453,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     row = con.execute(sql, args).fetchone()
     if not row:
         return None
-    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk = row
+    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk, instrument_id, plan_id, model_version = row
     price = float(price or 0)
     if not math.isfinite(price) or price <= 0:
         return None
@@ -461,12 +472,12 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     now = datetime.now(IST)
     con.execute("INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"
                 "entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,"
-                "opened_at,closed_at,sleeve,regime,book_epoch,risk_amt)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "opened_at,closed_at,sleeve,regime,book_epoch,risk_amt,instrument_id,plan_id,model_version)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(user_id), market, strategy, symbol, edate, entry,
                  now.date().isoformat(), price, shares, net, pct, reason,
                  opened, now.isoformat(), sleeve, regime,
-                 current_epoch(con, user_id, market),initial_risk))
+                 current_epoch(con, user_id, market),initial_risk,instrument_id,plan_id,model_version))
     con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
     return net, pct
 

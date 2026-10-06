@@ -1,208 +1,359 @@
-# Current review coverage and exclusions
+# Current source coverage — 6 October 2026
 
-Baseline b588ffd plus the hashed working tree. Every included Python source was parsed for declarations; semantic review is explicitly narrower. This is an A–Z area review and full static inventory, **not a completed semantic certification of every module/function**. Unknown paths remain review work, not a claim of correctness.
+Inventory is static extraction. Targeted boundary review and invariant fixtures do not establish a full semantic audit of every inventoried module. Current hashes are in inventory.json; original finding evidence remains in findings.json. No private runtime file contents were copied.
 
-## Coverage tiers
-
-- Static inventory: 121 app modules, 69 scripts and 145 test modules, 150 decorated routes, 30 typed models, 149 SQL declaration sites, 287 config fields, 312 unique environment names, 36 job candidates, 7 UI surfaces, 705 assumption/reference candidates and 60 literal declarations. These include dormant/test references and dynamic extraction limits.
-- Targeted semantic review: actual startup/loop/manual/delivery/journal/owned exit paths, account risk/epoch and required schema checks, broker contracts/reconciliation/secret/session state, discovery rules and research predicates/reports/UI sinks referenced below. A cited function is not its entire large module.
-- New modules: personal posting/performance and recorded release evaluator fully read and tested for their stated narrow contracts; health/transport methods read. Live settlement, extra calendars and real certification remain absent.
-- Revalidation: original IDs retained; current cited source and baseline diffs inspected, known repaired invariants covered by isolated regressions. Unchanged dormant/unverified requirements retain their gap and acceptance; they are not counted as reproduced deployed incidents.
-- Production: read-only deployed build/service and clean personal-book snapshot only. No production new-build proof, open live lifecycle, protection/recovery, restore/load or browser order journey.
-- Test/browser evidence: exact executions/skips/environment limitations in verification.json. The synthetic desktop/390px Tracking component proves only its visible rendering/GET interaction.
-
-## App module coverage
-
-| Module | Review scope | Current finding evidence |
+| Module | Review status | Finding evidence |
 |---|---|---|
-| app/__init__.py | Inventoried declarations; semantic review pending |  |
-| app/account.py | Inventoried declarations; semantic review pending |  |
-| app/account_safety.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F12:36 |
-| app/agent.py | Inventoried declarations; semantic review pending |  |
-| app/analysis_tools.py | Inventoried declarations; semantic review pending |  |
-| app/analysts.py | Inventoried declarations; semantic review pending |  |
-| app/auth.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F37:186, F38:372, F38:475, F50:507 |
-| app/bars5m.py | Inventoried declarations; semantic review pending |  |
-| app/books.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F03:256, F04:628, F05:607, F11:256, F11:432, F12:106, F49:256 |
-| app/broker.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F06:246, F08:592, F25:592, F36:127 |
-| app/broker_access.py | Inventoried declarations; semantic review pending |  |
-| app/broker_reconciliation.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F09:132, F09:53 |
-| app/canonical_trade.py | Inventoried declarations; semantic review pending |  |
-| app/config.py | Inventoried declarations; semantic review pending |  |
-| app/corpactions.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F26:1 |
-| app/costs.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F23:1 |
-| app/credential_vault.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F36:37 |
-| app/data_readiness.py | Inventoried declarations; semantic review pending |  |
-| app/db.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F40:1135, F50:1135 |
-| app/decision_contract.py | Inventoried declarations; semantic review pending |  |
-| app/decision_diagnostics.py | Inventoried declarations; semantic review pending |  |
-| app/delivery_data.py | Inventoried declarations; semantic review pending |  |
-| app/desk_ui.py | Inventoried declarations; semantic review pending |  |
-| app/event_calendar.py | Inventoried declarations; semantic review pending |  |
-| app/execution_outbox.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F11:28, F19:37 |
-| app/execution_ports.py | New narrow contract fully read; isolated tests; external certification pending | F21:36, F21:48, F53:48 |
-| app/exit_policy.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F02:15 |
-| app/factor_investigation.py | Inventoried declarations; semantic review pending |  |
-| app/full_spectrum.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F31:1357, F31:1401, F31:1449, F32:408 |
-| app/ideas.py | Inventoried declarations; semantic review pending |  |
-| app/index_direction.py | Inventoried declarations; semantic review pending |  |
-| app/index_spot.py | Inventoried declarations; semantic review pending |  |
-| app/india_top_gainers.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F32:425, F32:465 |
-| app/indicators.py | Inventoried declarations; semantic review pending |  |
-| app/institutional_feeds.py | Inventoried declarations; semantic review pending |  |
-| app/instrument_catalog.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F10:124, F10:18 |
-| app/jobs_health.py | New narrow contract fully read; isolated tests; external certification pending | F42:110, F42:44, F52:44, F52:66 |
-| app/levels.py | Inventoried declarations; semantic review pending |  |
-| app/live_trade.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F01:43, F03:381, F06:299, F08:456, F20:340 |
-| app/llm_brain.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F34:176, F34:236, F35:980 |
-| app/llm_policy.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F33:9 |
-| app/llm_usage.py | Inventoried declarations; semantic review pending |  |
-| app/macro.py | Inventoried declarations; semantic review pending |  |
-| app/macro_calendar.py | Inventoried declarations; semantic review pending |  |
-| app/main.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F14:3574, F14:5012, F14:919, F33:101, F37:5012, F40:670 |
-| app/manual_execution.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F18:7 |
-| app/market_action_radar.py | Inventoried declarations; semantic review pending |  |
-| app/market_breadth.py | Inventoried declarations; semantic review pending |  |
-| app/market_data.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F26:776 |
-| app/market_day_regime.py | Inventoried declarations; semantic review pending |  |
-| app/market_internals.py | Inventoried declarations; semantic review pending |  |
-| app/market_regions.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F27:152, F27:74 |
-| app/meta_filter.py | Inventoried declarations; semantic review pending |  |
-| app/models.py | Inventoried declarations; semantic review pending |  |
-| app/narrative.py | Inventoried declarations; semantic review pending |  |
-| app/nfo_contracts.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F24:103 |
-| app/openclaw_bridge.py | Inventoried declarations; semantic review pending |  |
-| app/opportunity_scanner.py | Inventoried declarations; semantic review pending |  |
-| app/opportunity_state.py | Inventoried declarations; semantic review pending |  |
-| app/option_chain.py | Inventoried declarations; semantic review pending |  |
-| app/options_intelligence.py | Inventoried declarations; semantic review pending |  |
-| app/order_journal.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F03:135, F19:135, F20:231, F53:135 |
-| app/order_router.py | Inventoried declarations; semantic review pending |  |
-| app/paper_broker.py | Inventoried declarations; semantic review pending |  |
-| app/paper_ledger.py | New narrow contract fully read; isolated tests; external certification pending | F11:36 |
-| app/personal_alerts.py | Inventoried declarations; semantic review pending |  |
-| app/personal_performance.py | New narrow contract fully read; isolated tests; external certification pending | F49:19 |
-| app/plans.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F16:66, F48:110 |
-| app/portfolio.py | Inventoried declarations; semantic review pending |  |
-| app/pre_catalyst_engine.py | Inventoried declarations; semantic review pending |  |
-| app/preopen.py | Inventoried declarations; semantic review pending |  |
-| app/price_action.py | Inventoried declarations; semantic review pending |  |
-| app/rally_plan.py | Inventoried declarations; semantic review pending |  |
-| app/raw_entry_model.py | Inventoried declarations; semantic review pending |  |
-| app/recommendation.py | Inventoried declarations; semantic review pending |  |
-| app/release_gate.py | New narrow contract fully read; isolated tests; external certification pending | F44:20 |
-| app/request_context.py | Inventoried declarations; semantic review pending |  |
-| app/screening/__init__.py | Inventoried declarations; semantic review pending |  |
-| app/screening/confirmation.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F29:28, F51:104 |
-| app/screening/plans.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F17:18 |
-| app/screening/providers.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F28:141, F28:74, F29:35 |
-| app/screening/screen.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F28:56 |
-| app/screening/store.py | Inventoried declarations; semantic review pending |  |
-| app/screening/tracking.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F51:403 |
-| app/screening/validation.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F22:23 |
-| app/sector_rotation.py | Inventoried declarations; semantic review pending |  |
-| app/sentiment.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F35:715, F35:758 |
-| app/signal_quality.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/__init__.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/accounting.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/base.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/config.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F01:19, F22:19 |
-| app/sleeves/early_momentum.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/engine.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/feeds.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F25:1 |
-| app/sleeves/forward_watch.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/index_directional.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F01:28, F02:31, F30:28 |
-| app/sleeves/mean_reversion.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/options_overlay.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F24:1 |
-| app/sleeves/performance.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/quality_momentum.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/readiness.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F17:29 |
-| app/sleeves/reference.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/regime.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F30:1 |
-| app/sleeves/risk.py | Inventoried declarations; semantic review pending |  |
-| app/sleeves/universe.py | Inventoried declarations; semantic review pending |  |
-| app/strategy.py | Inventoried declarations; semantic review pending |  |
-| app/strategy_backtest.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F23:16 |
-| app/strategy_presets.py | Inventoried declarations; semantic review pending |  |
-| app/telegram_bot.py | Inventoried declarations; semantic review pending |  |
-| app/tomorrow_plan.py | Inventoried declarations; semantic review pending |  |
-| app/trade_economics.py | Inventoried declarations; semantic review pending |  |
-| app/trading_readiness.py | Inventoried declarations; semantic review pending |  |
-| app/trading_rules.py | Inventoried declarations; semantic review pending |  |
-| app/universe.py | Inventoried declarations; semantic review pending |  |
-| app/us_top_movers.py | Inventoried declarations; semantic review pending |  |
-| app/v2_engine.py | Inventoried declarations; semantic review pending |  |
-| app/v2_live.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F01:4524, F02:3802, F04:3941, F17:4415, F23:1592, F24:4524, F25:4531, F27:46, F40:1026 |
-| app/v2_web.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F10:2653, F13:1862, F15:6659, F16:1102, F18:1869, F37:134, F45:6243, F45:6575, F46:5433, F46:5438, F47:6325, F47:6423, F48:1102, F48:1189 |
-| app/whatsapp.py | Inventoried declarations; semantic review pending |  |
-| app/worker_fencing.py | Targeted cited paths / actual runtime boundary; remaining functions pending | F43:28 |
-
-## Non-app source review
-
-New/changed scripts: audit_inventory extracts names/hashes without app import; check_release refuses missing/dirty-build evidence; rehearse_execution exercises an isolated actual paper entry/delivery/close/ledger. The legacy regression runner executes current isolated invariants. Tests are assertions/evidence, not an independent full semantic review of all dormant sources.
-
-## Excluded, name-only or inaccessible sources
-
-Private runtime databases/configs/credentials, ignored broker tokens/vault keys and ignored market datasets are excluded from the source inventory. Production config values were not copied. Report artifacts are excluded from AST/source extraction and read separately as audit evidence. The exact inventory exclusions follow; reasons distinguish deliberate exclusion from failed reads.
-
-| File | Reason |
-|---|---|
-| .claude/launch.json | non-source/binary; name only |
-| .gitignore | non-source/binary; name only |
-| app/static/openstocks-mark.svg | non-source/binary; name only |
-| data/universe.csv | non-source/binary; name only |
-| data/us_universe.csv | non-source/binary; name only |
-| reports/execution-hardening-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-hardening-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-review-2026-10-01.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-review-2026-10-02.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-review-2026-10-03.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-review-2026-10-05.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-review-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/idea-validation-plan-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/oci_signal_generation_analysis_2026-06-11.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/paper_risk_audit_2026-09-23.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/REPORT.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/architecture.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/browser-component-check.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/coverage.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/critical-fixes.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/factor-ledger.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/factor-ledger.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/findings.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/historical-safety-reproductions-2b300b4.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/inventory.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/inventory.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/key-diffs.patch | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/release-evidence.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/release-gate-result.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/reproduce_known_defects.py | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/roadmap.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/runtime-paths.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/safety-reproductions.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/ui-review.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-2026-10-06/verification.json | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-audit-implementation-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/release-safety-implementation-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/stock_replay_2026-09-23.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/tradability-audit-2026-10-06.md | runtime/private values or report artifact excluded from source extraction; names only |
-| reports/trading_system_audit_2026-06-01.md | runtime/private values or report artifact excluded from source extraction; names only |
-
-## Public data header check
-
-- data/universe.csv: 2657 rows; header names symbol, name, exchange, yahoo_symbol, kite_symbol, upstox_instrument_key, sector, industry, base_price, enabled. No price/fundamental row values copied. These headers are not a complete effective-dated master or PIT-membership certification.
-- data/us_universe.csv: 10430 rows; header names symbol, name, exchange, yahoo_symbol, kite_symbol, upstox_instrument_key, sector, industry, base_price, enabled. No price/fundamental row values copied. These headers are not a complete effective-dated master or PIT-membership certification.
-
-## Remaining independent evidence
-
-Hosted CI status; broker/API/hosting/algorithm registration and protection permissions; market-data redistribution licences; exact settlement/fee statements; current vulnerability/SBOM findings; production proxy/IAM/CSRF boundary testing; key escrow and full database/config/protocol restore; cross-process chaos/load; full production browser/mobile/WCAG flows; and independent strategy profitability all remain unverified. No zero-vulnerability or all-files correctness claim is made.
-
-## Next semantic review order
-
-1. Every remaining reachable writer and fallback, including dormant Agent/PaperBroker/control/bridge code, canonical reservation/fill/fee/protection state machine and recovery.
-2. Instrument identity/effective rule calendars, corporate actions/restrictions/bans, multi-leg/settlement/margin and all feed contracts.
-3. Each retained factor/news/fundamental/sleeve model, PIT availability, immutable evidence and untouched allocator/exit/cost parity.
-4. Cross-route ownership/auth/session/CSRF/proxy/security, secret escrow/privacy/data rights and billing.
-5. Complete assembled SPA critical journeys, accessibility/race states, notifications/SLOs, migrations/restore/load and independent release evidence.
-
-Record exact functions reviewed and acceptance evidence at each step. No static inventory count or test count substitutes for completing these reviews.
+| app/__init__.py | Inventoried; full semantic review pending |  |
+| app/account.py | Inventoried; full semantic review pending |  |
+| app/account_safety.py | Targeted cited runtime boundary; other functions not certified | F12:36 |
+| app/account_ui.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending |  |
+| app/agent.py | Inventoried; full semantic review pending |  |
+| app/analysis_tools.py | Inventoried; full semantic review pending |  |
+| app/analysts.py | Inventoried; full semantic review pending |  |
+| app/approved_execution.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending | F01:1 |
+| app/auth.py | Targeted cited runtime boundary; other functions not certified | F37:185, F38:372, F38:475, F50:500 |
+| app/bars5m.py | Inventoried; full semantic review pending |  |
+| app/books.py | Targeted cited runtime boundary; other functions not certified | F03:261, F04:639, F05:618, F11:261, F11:441, F12:110, F49:261 |
+| app/broker.py | Targeted cited runtime boundary; other functions not certified | F06:246, F08:1, F25:590, F36:127 |
+| app/broker_access.py | Inventoried; full semantic review pending |  |
+| app/broker_reconciliation.py | Targeted cited runtime boundary; other functions not certified | F09:53, F09:132 |
+| app/canonical_trade.py | Inventoried; full semantic review pending |  |
+| app/config.py | Inventoried; full semantic review pending |  |
+| app/corpactions.py | Targeted cited runtime boundary; other functions not certified | F26:1 |
+| app/costs.py | Targeted cited runtime boundary; other functions not certified | F23:1 |
+| app/credential_vault.py | Targeted cited runtime boundary; other functions not certified | F36:37 |
+| app/data_readiness.py | Inventoried; full semantic review pending |  |
+| app/db.py | Targeted cited runtime boundary; other functions not certified | F40:1131, F50:1131 |
+| app/decision_contract.py | Inventoried; full semantic review pending |  |
+| app/decision_diagnostics.py | Inventoried; full semantic review pending |  |
+| app/delivery_data.py | Inventoried; full semantic review pending |  |
+| app/desk_ui.py | Inventoried; full semantic review pending |  |
+| app/event_calendar.py | Inventoried; full semantic review pending |  |
+| app/execution_contracts.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending | F01:1 |
+| app/execution_events.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending |  |
+| app/execution_outbox.py | Targeted cited runtime boundary; other functions not certified | F11:28, F19:37 |
+| app/execution_ports.py | Targeted cited runtime boundary; other functions not certified | F21:36, F21:54, F53:54 |
+| app/exit_policy.py | Targeted cited runtime boundary; other functions not certified | F02:15 |
+| app/factor_investigation.py | Inventoried; full semantic review pending |  |
+| app/full_spectrum.py | Targeted cited runtime boundary; other functions not certified | F31:1357, F31:1357, F31:1357, F32:408 |
+| app/ideas.py | Inventoried; full semantic review pending |  |
+| app/index_direction.py | Inventoried; full semantic review pending |  |
+| app/index_spot.py | Inventoried; full semantic review pending |  |
+| app/india_top_gainers.py | Targeted cited runtime boundary; other functions not certified | F32:425, F32:465 |
+| app/indicators.py | Inventoried; full semantic review pending |  |
+| app/institutional_feeds.py | Inventoried; full semantic review pending |  |
+| app/instrument_catalog.py | Targeted cited runtime boundary; other functions not certified | F10:18, F10:137 |
+| app/jobs_health.py | Targeted cited runtime boundary; other functions not certified | F42:44, F42:110, F52:44, F52:66 |
+| app/levels.py | Inventoried; full semantic review pending |  |
+| app/live_release.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending |  |
+| app/live_trade.py | Targeted cited runtime boundary; other functions not certified | F03:381, F06:299, F08:1, F20:340 |
+| app/llm_brain.py | Targeted cited runtime boundary; other functions not certified | F34:176, F34:225, F35:978 |
+| app/llm_policy.py | Targeted cited runtime boundary; other functions not certified | F33:9 |
+| app/llm_usage.py | Inventoried; full semantic review pending |  |
+| app/macro.py | Inventoried; full semantic review pending |  |
+| app/macro_calendar.py | Inventoried; full semantic review pending |  |
+| app/main.py | Targeted cited runtime boundary; other functions not certified | F14:919, F14:5012, F14:3574, F33:101, F37:5012, F40:670 |
+| app/manual_execution.py | Targeted cited runtime boundary; other functions not certified | F18:5 |
+| app/market_action_radar.py | Inventoried; full semantic review pending |  |
+| app/market_breadth.py | Inventoried; full semantic review pending |  |
+| app/market_data.py | Targeted cited runtime boundary; other functions not certified | F26:761 |
+| app/market_day_regime.py | Inventoried; full semantic review pending |  |
+| app/market_internals.py | Inventoried; full semantic review pending |  |
+| app/market_regions.py | Targeted cited runtime boundary; other functions not certified | F27:69, F27:152 |
+| app/meta_filter.py | Inventoried; full semantic review pending |  |
+| app/models.py | Inventoried; full semantic review pending |  |
+| app/narrative.py | Inventoried; full semantic review pending |  |
+| app/nfo_contracts.py | Targeted cited runtime boundary; other functions not certified | F24:82 |
+| app/openclaw_bridge.py | Inventoried; full semantic review pending |  |
+| app/opportunity_scanner.py | Inventoried; full semantic review pending |  |
+| app/opportunity_state.py | Inventoried; full semantic review pending |  |
+| app/option_chain.py | Inventoried; full semantic review pending |  |
+| app/options_intelligence.py | Inventoried; full semantic review pending |  |
+| app/order_journal.py | Targeted cited runtime boundary; other functions not certified | F03:155, F19:155, F20:155, F53:155 |
+| app/order_router.py | Inventoried; full semantic review pending |  |
+| app/paper_broker.py | Inventoried; full semantic review pending |  |
+| app/paper_ledger.py | Targeted cited runtime boundary; other functions not certified | F11:36 |
+| app/personal_alerts.py | Inventoried; full semantic review pending |  |
+| app/personal_performance.py | Targeted cited runtime boundary; other functions not certified | F49:19 |
+| app/plans.py | Targeted cited runtime boundary; other functions not certified | F16:66, F48:110 |
+| app/portfolio.py | Inventoried; full semantic review pending |  |
+| app/pre_catalyst_engine.py | Inventoried; full semantic review pending |  |
+| app/preopen.py | Inventoried; full semantic review pending |  |
+| app/price_action.py | Inventoried; full semantic review pending |  |
+| app/protection.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending | F08:1 |
+| app/rally_plan.py | Inventoried; full semantic review pending |  |
+| app/raw_entry_model.py | Inventoried; full semantic review pending |  |
+| app/recommendation.py | Inventoried; full semantic review pending |  |
+| app/recovery_bundle.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending | F41:1 |
+| app/recovery_guard.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending | F41:1 |
+| app/release_gate.py | Targeted cited runtime boundary; other functions not certified | F44:20 |
+| app/request_context.py | Inventoried; full semantic review pending |  |
+| app/screening/__init__.py | Inventoried; full semantic review pending |  |
+| app/screening/confirmation.py | Targeted cited runtime boundary; other functions not certified | F29:28, F51:104 |
+| app/screening/plans.py | Targeted cited runtime boundary; other functions not certified | F17:18 |
+| app/screening/providers.py | Targeted cited runtime boundary; other functions not certified | F28:74, F28:74, F29:35 |
+| app/screening/screen.py | Targeted cited runtime boundary; other functions not certified | F28:56 |
+| app/screening/store.py | Inventoried; full semantic review pending |  |
+| app/screening/tracking.py | Targeted cited runtime boundary; other functions not certified | F51:403 |
+| app/screening/validation.py | Targeted cited runtime boundary; other functions not certified | F22:23 |
+| app/sector_rotation.py | Inventoried; full semantic review pending |  |
+| app/sentiment.py | Targeted cited runtime boundary; other functions not certified | F35:703, F35:703 |
+| app/signal_quality.py | Inventoried; full semantic review pending |  |
+| app/sleeves/__init__.py | Inventoried; full semantic review pending |  |
+| app/sleeves/accounting.py | Inventoried; full semantic review pending |  |
+| app/sleeves/base.py | Inventoried; full semantic review pending |  |
+| app/sleeves/config.py | Targeted cited runtime boundary; other functions not certified | F22:19 |
+| app/sleeves/early_momentum.py | Inventoried; full semantic review pending |  |
+| app/sleeves/engine.py | Inventoried; full semantic review pending |  |
+| app/sleeves/feeds.py | Targeted cited runtime boundary; other functions not certified | F25:1 |
+| app/sleeves/forward_watch.py | Inventoried; full semantic review pending |  |
+| app/sleeves/index_directional.py | Targeted cited runtime boundary; other functions not certified | F02:31, F30:27 |
+| app/sleeves/mean_reversion.py | Inventoried; full semantic review pending |  |
+| app/sleeves/options_overlay.py | Targeted cited runtime boundary; other functions not certified | F24:1 |
+| app/sleeves/performance.py | Inventoried; full semantic review pending |  |
+| app/sleeves/quality_momentum.py | Inventoried; full semantic review pending |  |
+| app/sleeves/readiness.py | Targeted cited runtime boundary; other functions not certified | F17:10 |
+| app/sleeves/reference.py | Inventoried; full semantic review pending |  |
+| app/sleeves/regime.py | Targeted cited runtime boundary; other functions not certified | F30:1 |
+| app/sleeves/risk.py | Inventoried; full semantic review pending |  |
+| app/sleeves/universe.py | Inventoried; full semantic review pending |  |
+| app/strategy.py | Inventoried; full semantic review pending |  |
+| app/strategy_backtest.py | Targeted cited runtime boundary; other functions not certified | F23:14 |
+| app/strategy_presets.py | Inventoried; full semantic review pending |  |
+| app/telegram_bot.py | Inventoried; full semantic review pending |  |
+| app/tomorrow_plan.py | Inventoried; full semantic review pending |  |
+| app/trade_economics.py | Inventoried; full semantic review pending |  |
+| app/trading_readiness.py | Inventoried; full semantic review pending |  |
+| app/trading_rules.py | Inventoried; full semantic review pending |  |
+| app/universe.py | Inventoried; full semantic review pending |  |
+| app/us_top_movers.py | Inventoried; full semantic review pending |  |
+| app/v2_engine.py | Inventoried; full semantic review pending |  |
+| app/v2_live.py | Targeted cited runtime boundary; other functions not certified | F01:1, F02:3808, F04:3947, F17:4310, F23:1559, F24:4310, F25:4310, F27:46, F40:998 |
+| app/v2_web.py | Targeted cited runtime boundary; other functions not certified | F10:2695, F13:1846, F15:6659, F16:1096, F18:1869, F37:134, F45:6243, F45:6575, F46:5433, F46:5438, F47:6325, F47:6423, F48:1096, F48:1189 |
+| app/whatsapp.py | Inventoried; full semantic review pending |  |
+| app/worker_fencing.py | Targeted cited runtime boundary; other functions not certified | F43:28 |
+| scripts/audit_inventory.py | Inventoried; full semantic review pending |  |
+| scripts/audit_market_prices.py | Inventoried; full semantic review pending |  |
+| scripts/audit_trade_costs.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_entry_authority_v2.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_executable_trade_contract.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_exits.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_intraday.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_investigation.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_redesign.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_signal_quality.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_strategies.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_upstox_history_entry_authority.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_v2.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_walkforward.py | Inventoried; full semantic review pending |  |
+| scripts/backtest_yahoo_presets.py | Inventoried; full semantic review pending |  |
+| scripts/backup_db.py | Targeted cited runtime boundary; other functions not certified | F41:1 |
+| scripts/bigmove_detector.py | Inventoried; full semantic review pending |  |
+| scripts/breakout_target_bt.py | Inventoried; full semantic review pending |  |
+| scripts/btst_bt.py | Inventoried; full semantic review pending |  |
+| scripts/candle_ingest.py | Inventoried; full semantic review pending |  |
+| scripts/check_release.py | Inventoried; full semantic review pending |  |
+| scripts/continuation_bt.py | Inventoried; full semantic review pending |  |
+| scripts/daily_report.py | Inventoried; full semantic review pending |  |
+| scripts/evidence_screen.py | Inventoried; full semantic review pending |  |
+| scripts/exit_cost_analysis.py | Inventoried; full semantic review pending |  |
+| scripts/exit_stop_bt.py | Inventoried; full semantic review pending |  |
+| scripts/exit_structure_sweep.py | Inventoried; full semantic review pending |  |
+| scripts/experiment_report.py | Inventoried; full semantic review pending |  |
+| scripts/fetch_yahoo_intraday.py | Inventoried; full semantic review pending |  |
+| scripts/fo_ingest.py | Inventoried; full semantic review pending |  |
+| scripts/gap_momentum.py | Inventoried; full semantic review pending |  |
+| scripts/idea_tracker.py | Inventoried; full semantic review pending |  |
+| scripts/import_sleeve_reference.py | Inventoried; full semantic review pending |  |
+| scripts/index_call_backtest.py | Inventoried; full semantic review pending |  |
+| scripts/index_option_target_study.py | Inventoried; full semantic review pending |  |
+| scripts/intraday_backfill.py | Inventoried; full semantic review pending |  |
+| scripts/intraday_momentum_bt.py | Inventoried; full semantic review pending |  |
+| scripts/intraday_recorder.py | Inventoried; full semantic review pending |  |
+| scripts/intraday_research.py | Inventoried; full semantic review pending |  |
+| scripts/levels_chain_scan.py | Inventoried; full semantic review pending |  |
+| scripts/meta_label_research.py | Inventoried; full semantic review pending |  |
+| scripts/meta_label_train.py | Inventoried; full semantic review pending |  |
+| scripts/meta_portfolio_eval.py | Inventoried; full semantic review pending |  |
+| scripts/news_ingest.py | Inventoried; full semantic review pending |  |
+| scripts/nse_announcements.py | Inventoried; full semantic review pending |  |
+| scripts/nse_reference_ingest.py | Inventoried; full semantic review pending |  |
+| scripts/overnight_catalyst_bt.py | Inventoried; full semantic review pending |  |
+| scripts/preview_spa.py | Inventoried; full semantic review pending |  |
+| scripts/price_action_scan.py | Inventoried; full semantic review pending |  |
+| scripts/quality_forward_report.py | Inventoried; full semantic review pending |  |
+| scripts/recovery_bundle.py | Inventoried; full semantic review pending |  |
+| scripts/regime_isolation.py | Inventoried; full semantic review pending |  |
+| scripts/rehearse_approved_ui.py | Inventoried; full semantic review pending |  |
+| scripts/rehearse_execution.py | Inventoried; full semantic review pending |  |
+| scripts/research_factor_etf.py | Inventoried; full semantic review pending |  |
+| scripts/research_index_baselines.py | Inventoried; full semantic review pending |  |
+| scripts/research_index_fresh_start.py | Inventoried; full semantic review pending |  |
+| scripts/research_sleeves.py | Inventoried; full semantic review pending |  |
+| scripts/research_stock_replay.py | Targeted cited runtime boundary; other functions not certified | F22:1, F26:111 |
+| scripts/run_function_tests.py | Inventoried; full semantic review pending |  |
+| scripts/score_rebuild.py | Inventoried; full semantic review pending |  |
+| scripts/shareholding_ingest.py | Inventoried; full semantic review pending |  |
+| scripts/strategy_refine_analysis.py | Inventoried; full semantic review pending |  |
+| scripts/sync_instrument_catalog.py | Inventoried; full semantic review pending |  |
+| scripts/test_nubra_market_watch.py | Inventoried; full semantic review pending |  |
+| scripts/update_universe_from_upstox.py | Inventoried; full semantic review pending |  |
+| scripts/update_us_universe.py | Inventoried; full semantic review pending |  |
+| scripts/v2_live_runner.py | Inventoried; full semantic review pending |  |
+| scripts/v2_paper_runner.py | Inventoried; full semantic review pending |  |
+| scripts/v2_quote_feed.py | Targeted cited runtime boundary; other functions not certified | F07:53 |
+| scripts/validate_ideas.py | Inventoried; full semantic review pending |  |
+| tests/__init__.py | Inventoried; full semantic review pending |  |
+| tests/broker_evidence_fixtures.py | Inventoried; full semantic review pending |  |
+| tests/test_account_boundaries.py | Inventoried; full semantic review pending |  |
+| tests/test_account_evidence_api.py | Inventoried; full semantic review pending |  |
+| tests/test_account_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_admin_panel.py | Inventoried; full semantic review pending |  |
+| tests/test_agent_callbacks.py | Inventoried; full semantic review pending |  |
+| tests/test_alerts.py | Inventoried; full semantic review pending |  |
+| tests/test_alpaca_market_data.py | Inventoried; full semantic review pending |  |
+| tests/test_analysts.py | Inventoried; full semantic review pending |  |
+| tests/test_approved_execution.py | Inventoried; full semantic review pending |  |
+| tests/test_approved_order_api.py | Inventoried; full semantic review pending |  |
+| tests/test_assessment_audit.py | Inventoried; full semantic review pending |  |
+| tests/test_audit_regressions.py | Inventoried; full semantic review pending |  |
+| tests/test_auth_session_security.py | Inventoried; full semantic review pending |  |
+| tests/test_auth_signup.py | Inventoried; full semantic review pending |  |
+| tests/test_bars5m.py | Inventoried; full semantic review pending |  |
+| tests/test_breakeven_lock.py | Inventoried; full semantic review pending |  |
+| tests/test_broker.py | Inventoried; full semantic review pending |  |
+| tests/test_broker_privacy.py | Inventoried; full semantic review pending |  |
+| tests/test_broker_wire.py | Inventoried; full semantic review pending |  |
+| tests/test_candle_ingest_freshness.py | Inventoried; full semantic review pending |  |
+| tests/test_canonical_trade_contract.py | Inventoried; full semantic review pending |  |
+| tests/test_catalyst_alerts.py | Inventoried; full semantic review pending |  |
+| tests/test_corpactions.py | Inventoried; full semantic review pending |  |
+| tests/test_cross_alerts.py | Inventoried; full semantic review pending |  |
+| tests/test_dashboard_journal_contract.py | Inventoried; full semantic review pending |  |
+| tests/test_data_coverage.py | Inventoried; full semantic review pending |  |
+| tests/test_decision_contract.py | Inventoried; full semantic review pending |  |
+| tests/test_decision_diagnostics.py | Inventoried; full semantic review pending |  |
+| tests/test_dependency_contract.py | Inventoried; full semantic review pending |  |
+| tests/test_desk_status_copy.py | Inventoried; full semantic review pending |  |
+| tests/test_engine_decision_logic.py | Inventoried; full semantic review pending |  |
+| tests/test_equity_option_book_isolation.py | Inventoried; full semantic review pending |  |
+| tests/test_event_calendar.py | Inventoried; full semantic review pending |  |
+| tests/test_evidence_screen.py | Inventoried; full semantic review pending |  |
+| tests/test_executable_replay_calibration.py | Inventoried; full semantic review pending |  |
+| tests/test_execution_capabilities.py | Inventoried; full semantic review pending |  |
+| tests/test_execution_contracts.py | Inventoried; full semantic review pending |  |
+| tests/test_execution_events.py | Inventoried; full semantic review pending |  |
+| tests/test_execution_hardening.py | Inventoried; full semantic review pending |  |
+| tests/test_exit_rules.py | Inventoried; full semantic review pending |  |
+| tests/test_expiry_churn_guard.py | Inventoried; full semantic review pending |  |
+| tests/test_falling_knife_guard.py | Inventoried; full semantic review pending |  |
+| tests/test_fo_ingest.py | Inventoried; full semantic review pending |  |
+| tests/test_fundamental_analyst.py | Inventoried; full semantic review pending |  |
+| tests/test_idea_broker_buy.py | Inventoried; full semantic review pending |  |
+| tests/test_idea_hardening.py | Inventoried; full semantic review pending |  |
+| tests/test_idea_quote_priority.py | Inventoried; full semantic review pending |  |
+| tests/test_idea_tracking.py | Inventoried; full semantic review pending |  |
+| tests/test_idea_validation.py | Inventoried; full semantic review pending |  |
+| tests/test_ideas.py | Inventoried; full semantic review pending |  |
+| tests/test_ideas_product_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_index_chart_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_index_direction.py | Inventoried; full semantic review pending |  |
+| tests/test_index_options_pass.py | Inventoried; full semantic review pending |  |
+| tests/test_index_settings_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_index_spot.py | Inventoried; full semantic review pending |  |
+| tests/test_index_view_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_india_remediation.py | Inventoried; full semantic review pending |  |
+| tests/test_india_top_gainers.py | Inventoried; full semantic review pending |  |
+| tests/test_indicators_advanced.py | Inventoried; full semantic review pending |  |
+| tests/test_internals_in_index_call.py | Inventoried; full semantic review pending |  |
+| tests/test_intraday_backfill.py | Inventoried; full semantic review pending |  |
+| tests/test_intraday_bt_loader.py | Inventoried; full semantic review pending |  |
+| tests/test_intraday_momentum_lane.py | Inventoried; full semantic review pending |  |
+| tests/test_intraday_recorder.py | Inventoried; full semantic review pending |  |
+| tests/test_jobs_health.py | Inventoried; full semantic review pending |  |
+| tests/test_levels.py | Inventoried; full semantic review pending |  |
+| tests/test_live_release.py | Inventoried; full semantic review pending |  |
+| tests/test_live_trade.py | Inventoried; full semantic review pending |  |
+| tests/test_llm_analyst_packet.py | Inventoried; full semantic review pending |  |
+| tests/test_llm_hard_disable.py | Inventoried; full semantic review pending |  |
+| tests/test_macro_analyst.py | Inventoried; full semantic review pending |  |
+| tests/test_manual_buy_books.py | Inventoried; full semantic review pending |  |
+| tests/test_market_action_radar.py | Inventoried; full semantic review pending |  |
+| tests/test_market_regions.py | Inventoried; full semantic review pending |  |
+| tests/test_meta_floor_alarm.py | Inventoried; full semantic review pending |  |
+| tests/test_meta_population_features.py | Inventoried; full semantic review pending |  |
+| tests/test_midsession_entry_extremes.py | Inventoried; full semantic review pending |  |
+| tests/test_monitor_scope.py | Inventoried; full semantic review pending |  |
+| tests/test_narrative.py | Inventoried; full semantic review pending |  |
+| tests/test_net_trade_pnl.py | Inventoried; full semantic review pending |  |
+| tests/test_nfo_contracts.py | Inventoried; full semantic review pending |  |
+| tests/test_nse_announcements.py | Inventoried; full semantic review pending |  |
+| tests/test_nse_reference_ingest.py | Inventoried; full semantic review pending |  |
+| tests/test_opportunity_scanner.py | Inventoried; full semantic review pending |  |
+| tests/test_option_buying_retired.py | Inventoried; full semantic review pending |  |
+| tests/test_option_chain.py | Inventoried; full semantic review pending |  |
+| tests/test_option_expiry_churn.py | Inventoried; full semantic review pending |  |
+| tests/test_option_expiry_exit.py | Inventoried; full semantic review pending |  |
+| tests/test_option_liquidity_and_size.py | Inventoried; full semantic review pending |  |
+| tests/test_option_quote_staleness.py | Inventoried; full semantic review pending |  |
+| tests/test_option_risk_cap.py | Inventoried; full semantic review pending |  |
+| tests/test_order_timestamps.py | Inventoried; full semantic review pending |  |
+| tests/test_overnight_size_cap.py | Inventoried; full semantic review pending |  |
+| tests/test_panel_ui_render.py | Inventoried; full semantic review pending |  |
+| tests/test_paper_ledger.py | Inventoried; full semantic review pending |  |
+| tests/test_pattern_alerts.py | Inventoried; full semantic review pending |  |
+| tests/test_pattern_filter.py | Inventoried; full semantic review pending |  |
+| tests/test_personal_performance.py | Inventoried; full semantic review pending |  |
+| tests/test_phase1_quality.py | Inventoried; full semantic review pending |  |
+| tests/test_phase2_data_readiness.py | Inventoried; full semantic review pending |  |
+| tests/test_phase3_strategy_logic.py | Inventoried; full semantic review pending |  |
+| tests/test_phase4_performance_feedback.py | Inventoried; full semantic review pending |  |
+| tests/test_plan_enforcement.py | Inventoried; full semantic review pending |  |
+| tests/test_point_in_time_universe.py | Inventoried; full semantic review pending |  |
+| tests/test_portfolio.py | Inventoried; full semantic review pending |  |
+| tests/test_portfolio_ui_render.py | Inventoried; full semantic review pending |  |
+| tests/test_position_exit_terms_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_position_mark_refresh.py | Inventoried; full semantic review pending |  |
+| tests/test_pre_catalyst_engine.py | Inventoried; full semantic review pending |  |
+| tests/test_preopen.py | Inventoried; full semantic review pending |  |
+| tests/test_protection_lifecycle.py | Inventoried; full semantic review pending |  |
+| tests/test_quality_forward_watch.py | Inventoried; full semantic review pending |  |
+| tests/test_rally_plan.py | Inventoried; full semantic review pending |  |
+| tests/test_real_money_readiness.py | Inventoried; full semantic review pending |  |
+| tests/test_recommendation.py | Inventoried; full semantic review pending |  |
+| tests/test_record_entry.py | Inventoried; full semantic review pending |  |
+| tests/test_recovery_bundle.py | Inventoried; full semantic review pending |  |
+| tests/test_release_evidence_gate.py | Inventoried; full semantic review pending |  |
+| tests/test_release_integrity.py | Inventoried; full semantic review pending |  |
+| tests/test_release_safety.py | Inventoried; full semantic review pending |  |
+| tests/test_repo_secret_hygiene.py | Inventoried; full semantic review pending |  |
+| tests/test_research_baselines.py | Inventoried; full semantic review pending |  |
+| tests/test_research_stock_replay_risk.py | Inventoried; full semantic review pending |  |
+| tests/test_reset_is_shared.py | Inventoried; full semantic review pending |  |
+| tests/test_retired_entry_controls.py | Inventoried; full semantic review pending |  |
+| tests/test_shareholding_ingest.py | Inventoried; full semantic review pending |  |
+| tests/test_sleeve_data_integrity.py | Inventoried; full semantic review pending |  |
+| tests/test_sleeves.py | Inventoried; full semantic review pending |  |
+| tests/test_stock_plans.py | Inventoried; full semantic review pending |  |
+| tests/test_stock_technicals_block.py | Inventoried; full semantic review pending |  |
+| tests/test_stock_ui_render.py | Inventoried; full semantic review pending |  |
+| tests/test_strategy_plans.py | Inventoried; full semantic review pending |  |
+| tests/test_strategy_safety.py | Inventoried; full semantic review pending |  |
+| tests/test_strategy_stats.py | Inventoried; full semantic review pending |  |
+| tests/test_today_bar.py | Inventoried; full semantic review pending |  |
+| tests/test_tomorrow_plan.py | Inventoried; full semantic review pending |  |
+| tests/test_total_drawdown_halt.py | Inventoried; full semantic review pending |  |
+| tests/test_trial_and_upgrade.py | Inventoried; full semantic review pending |  |
+| tests/test_trial_banner_ui.py | Inventoried; full semantic review pending |  |
+| tests/test_upstox_candles.py | Inventoried; full semantic review pending |  |
+| tests/test_upstox_history_backtest.py | Inventoried; full semantic review pending |  |
+| tests/test_upstox_news.py | Inventoried; full semantic review pending |  |
+| tests/test_us_top_movers.py | Inventoried; full semantic review pending |  |
+| tests/test_user_books.py | Inventoried; full semantic review pending |  |
+| tests/test_user_preferences.py | Inventoried; full semantic review pending |  |
+| tests/test_v2_api_auth.py | Inventoried; full semantic review pending |  |
+| tests/test_volume_surge_sizing.py | Inventoried; full semantic review pending |  |
+| tests/test_watchlist_grouping.py | Inventoried; full semantic review pending |  |
+| tests/test_watchlist_ui_render.py | Inventoried; full semantic review pending |  |
+| tests/test_whatsapp_alerts.py | Inventoried; full semantic review pending |  |

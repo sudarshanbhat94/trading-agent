@@ -15,3 +15,13 @@
 | Ops | worker_fencing guards engine/book/journal/outbox writers; jobs_health → health summary; CI unit/function/rehearsal | SQLite coordination is not a distributed all-worker fence; no complete restore/load/SLO certification. |
 
 Route inventory records decorator and local guard candidates, not proof of effective middleware permissions. `/v2` router-level `require_session` and privileged guards are separately covered by the auth-dependency tests; synthetic dependency overrides only verify owner scoping. Jobs inventory is launcher candidates; dynamic production schedule/permissions require deployed verification. Private production configs are not copied into the audit.
+
+## Resumed implementation: actual new paths
+
+`v2_web.api_approved_order()` → `approved_execution.submit()` → frozen owned plan + current epoch → dated `execution_contracts.order_contract()` → cash paper capability → existing serialized `books.buy()` / unified RiskManager → balanced postings and persisted plan/instrument/model IDs → independent `books.monitor_positions()` → owned close + original-R performance. This is an additive approved delivery-paper route; legacy house/manual/broker writers have not all converged on it. GET/POST feature mappings are enforced by `require_session` in production.
+
+`order_journal.submit(BUY)` → account/route/model `live_release.authorized()` → actual broker readiness / unified risk / durable pending intent → immutable intent observation → adapter I/O → fenced transmission observation. `order_journal.reconcile()` → fenced atomic monotonic snapshot + immutable observation + exact-owned protection obligation. Snapshots are not actual fee/settlement postings.
+
+`live_trade.service()` → normal journal reconciliation → submit only explicitly activated `required` native obligations → native status/child attachment → journal fill reconciliation → actual inventory reconciliation → managed application exits. `prepare_exit()` cancels a known transmitted GTT and waits for status/fills; untransmitted queued protection can be withdrawn safely. Uncertainty is not a fill, zero inventory or cancellation confirmation.
+
+`recovery_bundle.restore()` → validated new private destination + `RESTORE_DISABLED`; `v2_live.start_background/loop`, house writes, personal buys/sells and broker journal refuse execution beneath it. No service startup/cutover is performed. Quiescence and complete real source declaration are external operational evidence, not supplied by individual SQLite snapshots.

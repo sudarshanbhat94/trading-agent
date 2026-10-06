@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 ACTIVE = ("pending", "submitted", "partial", "unknown", "sent")
 TERMINAL = ("filled", "cancelled", "rejected")
+from .live_release import authorized as live_scope_authorized
 
 
 def ensure_schema(con):
@@ -32,9 +33,11 @@ def ensure_schema(con):
     con.execute("CREATE TABLE IF NOT EXISTS live_book_epoch("
                 "user_id INTEGER,market TEXT,capital REAL NOT NULL,started_at TEXT NOT NULL,"
                 "PRIMARY KEY(user_id,market))")
-    from . import broker_reconciliation, execution_outbox
+    from . import broker_reconciliation, execution_outbox, protection, execution_events
     broker_reconciliation.ensure_schema(con)
     execution_outbox.ensure_schema(con)
+    protection.ensure_schema(con)
+    execution_events.ensure_schema(con)
     con.commit()
 
 
@@ -49,6 +52,14 @@ def unresolved(con, uid, symbol=None):
 
 def reconcile(con, uid, updates):
     """Apply broker snapshots monotonically; repeated snapshots are harmless."""
+    from .account_safety import atomic
+    from .worker_fencing import require_current
+    with atomic(con):
+        require_current(con)
+        return _reconcile_locked(con,uid,updates)
+
+
+def _reconcile_locked(con, uid, updates):
     changed = 0
     for update in updates:
         oid, tag = update.get("order_id"), update.get("tag")
@@ -87,8 +98,12 @@ def reconcile(con, uid, updates):
         con.execute("UPDATE v2_live_orders SET filled_qty=?,average_price=?,status=?,"
                     "broker_order_id=COALESCE(?,broker_order_id),reconciled_at=? WHERE id=?",
                     (filled, avg, status, oid, datetime.now(timezone.utc).isoformat(), rid))
+        from .execution_events import record
+        record(con,uid,rid,'broker-status-observation')
         changed += 1
-    con.commit()
+    if changed:
+        from .protection import observe_fills
+        observe_fills(con,uid)
     return changed
 
 
@@ -110,6 +125,10 @@ def finish_entry_before_exit(con, uid, symbol):
     remaining shares: the sell waits for terminal broker evidence.
     """
     from . import broker
+    from .worker_fencing import require_current
+    from .account_safety import atomic
+    if con.in_transaction:
+        raise RuntimeError('Entry cancellation requires a committed reservation')
     rows = list(con.execute(
         "SELECT id,broker_order_id,side,cancel_requested_at FROM v2_live_orders "
         "WHERE user_id=? AND symbol=? AND status IN (?,?,?,?,?)",
@@ -117,11 +136,12 @@ def finish_entry_before_exit(con, uid, symbol):
     for rid, oid, side, requested in rows:
         if side != 'BUY' or not oid or requested:
             continue
-        cursor = con.execute(
-            "UPDATE v2_live_orders SET cancel_requested_at=? WHERE id=? AND user_id=? "
-            "AND cancel_requested_at IS NULL AND status IN (?,?,?,?,?)",
-            (datetime.now(timezone.utc).isoformat(), rid, uid, *ACTIVE))
-        con.commit()
+        with atomic(con):
+            require_current(con)
+            cursor = con.execute(
+                "UPDATE v2_live_orders SET cancel_requested_at=? WHERE id=? AND user_id=? "
+                "AND cancel_requested_at IS NULL AND status IN (?,?,?,?,?)",
+                (datetime.now(timezone.utc).isoformat(), rid, uid, *ACTIVE))
         if cursor.rowcount:
             try:
                 broker.cancel_order(uid, oid)
@@ -137,17 +157,29 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
            available_cash=None, semantic_key=None, request_fingerprint=None):
     """Persist and reserve an intent before transmission; never blind-retry."""
     from . import broker
+    if type(uid) is not int or uid<1:return 'rejected: invalid execution account'
     if isinstance(qty,bool) or not isinstance(qty,int) or qty < 1 or \
             isinstance(reference,bool) or not isinstance(reference,(int,float)) or reference <= 0 or not math.isfinite(reference):
         return "rejected: invalid order"
     if market!='IN' or side not in {'BUY','SELL'} or product not in {'D','I'} or \
             not isinstance(key,str) or not key.startswith('NSE_EQ|') or not key.split('|',1)[1]:
         return "rejected: unsupported execution capability"
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
+    from . import protection
+    protection.ensure_schema(con)
+    if side=='SELL':
+        from .execution_ports import UpstoxPort
+        if not protection.prepare_exit(con,uid,symbol,UpstoxPort()):
+            return 'pending: native protection cancellation or fill reconciliation required'
     st = broker.state(uid)
     if not st.get("live_ready" if side == "BUY" else "exit_ready"):
         return "skipped: not armed" if side == "BUY" else "skipped: exit credentials unavailable"
     if side == "BUY" and (available_cash is None or not math.isfinite(available_cash)):
         return "rejected: broker funds unavailable"
+    if side=='BUY':
+        allowed,why=live_scope_authorized(uid,product=product,model=strategy)
+        if not allowed:return 'rejected: '+why
     # Serialize the check/reservation across API requests and the engine.
     con.commit()
     con.execute("BEGIN IMMEDIATE")
@@ -173,6 +205,9 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             con.rollback()
             return "rejected: position changed before submission"
         if side == "BUY":
+            if protection.blocks_entry(con,uid):
+                con.rollback()
+                return 'rejected: protection obligations require reconciliation'
             from .broker_reconciliation import ready
             if not ready(con,uid):
                 con.rollback()
@@ -224,6 +259,8 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             "VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?,0,?,?,?)",
             (datetime.now(timezone.utc).isoformat(), uid, market, symbol, key, side, qty,
              reference, qty * reference, product, reason, tag, origin_position_id, semantic_key,request_fingerprint))
+        from .execution_events import record
+        record(con,uid,con.execute('SELECT last_insert_rowid()').fetchone()[0],'intent-reserved')
         con.commit()
     except Exception:
         con.rollback()
@@ -235,11 +272,15 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             "rejected" if 400 <= int(result.get("status") or 0) < 500 else "unknown")
     except Exception:
         result, status = {}, "unknown"
-    con.execute("UPDATE v2_live_orders SET status=CASE WHEN status='pending' THEN ? ELSE status END,"
-                "broker_order_id=COALESCE(broker_order_id,?),response=? "
-                "WHERE user_id=? AND intent_key=?",
-                (status, result.get("order_id"), json.dumps(result.get("response") or {})[:2000], uid, tag))
-    con.commit()
+    from .account_safety import atomic
+    with atomic(con):
+        require_current(con)
+        con.execute("UPDATE v2_live_orders SET status=CASE WHEN status='pending' THEN ? ELSE status END,"
+                    "broker_order_id=COALESCE(broker_order_id,?),response=? "
+                    "WHERE user_id=? AND intent_key=?",
+                    (status, result.get("order_id"), json.dumps(result.get("response") or {})[:2000], uid, tag))
+        rid=con.execute('SELECT id FROM v2_live_orders WHERE user_id=? AND intent_key=?',(uid,tag)).fetchone()[0]
+        record(con,uid,rid,'transmission-outcome')
     return status
 
 

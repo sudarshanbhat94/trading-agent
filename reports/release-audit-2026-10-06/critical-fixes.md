@@ -334,3 +334,9 @@ require(profile.client_terms_accepted, "TERMS_REQUIRED")
 This code cannot decide whether RA/IA registration is legally required. The documented legal/broker review must determine the classification, hosting/tagging/data obligations and approved service scope. Do not treat transparent scoring as a blanket exemption.
 
 **Acceptance:** unsupported paid recommendation/automated-live services remain unavailable; approved scope and evidence are reviewable.
+
+## Resumed local implementation versus remaining Critical acceptance
+
+F01 now has a complete **synthetic/manual approved NSE-stock paper lifecycle**, with immutable plan/epoch identity and exact owned risk/fill/close/P&L; it does not establish automatic stock alpha or multi-asset coverage. F08 now has explicit-activation native transport, durable stop obligations, cancellation/trigger/unknown/partial/re-entry recovery and owned incidents. F09/F11 gain atomic immutable journal observations; actual broker fees/settlement remain unfinished. F10 has decision-time contract/session restrictions for the new approved path. F43 now fences late acknowledgements/cancellation/status writes after worker takeover. F44 checks exact live authorization at the journal boundary. F41 adds encrypted disabled restoration and stops source equity pruning. None was deployed.
+
+Operational commands and limitations are in `docs/recovery-and-approved-paper.md`; invariant tests are `test_approved_execution`, `test_approved_order_api`, `test_execution_contracts`, `test_execution_events`, `test_protection_lifecycle`, `test_live_release`, `test_recovery_bundle`, and `test_account_ui`. Existing remaining recipes above still apply where full canonical migration, adapter convergence, actual fee/settlement accounting and independent model/legal/data/broker certification are absent. Do not mark those acceptances passed from these fixtures.

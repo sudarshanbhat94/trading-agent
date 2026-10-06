@@ -125,8 +125,21 @@ class SizingTest(unittest.TestCase):
                 self.assertEqual(live_trade.size_for_sleeve(px, self.st, margin=9000.0), 0)
 
 
-class MirrorEntryTest(unittest.TestCase):
+class ApprovedFixtureCase(unittest.TestCase):
+    """Older decision fixtures exercise risk/transport under synthetic approval.
+
+    The real fail-closed authorization boundary has independent tests. No
+    fixture here is a broker or commercial certification.
+    """
+    def setUp(self):
+        from app import order_journal
+        approval=mock.patch.object(order_journal,'live_scope_authorized',return_value=(True,'isolated-fixture'))
+        approval.start();self.addCleanup(approval.stop)
+
+
+class MirrorEntryTest(ApprovedFixtureCase):
     def setUp(self) -> None:
+        super().setUp()
         self.v2, self.main, self.main_path = _dbs()
         self.b = _fresh_broker(budget=10000)
 
@@ -207,8 +220,9 @@ class MirrorEntryTest(unittest.TestCase):
                          "rejected")
 
 
-class MirrorExitTest(unittest.TestCase):
+class MirrorExitTest(ApprovedFixtureCase):
     def setUp(self) -> None:
+        super().setUp()
         self.v2, self.main, self.main_path = _dbs()
         self.b = _fresh_broker(budget=10000)
         self.b.save_token(UID, "t0k")
@@ -271,7 +285,7 @@ class MirrorExitTest(unittest.TestCase):
             self.assertEqual(po.call_args.args[2:4], (2, "SELL"))
 
 
-class RoundTripThroughTheEngineTest(unittest.TestCase):
+class RoundTripThroughTheEngineTest(ApprovedFixtureCase):
     """Buy AND exit, driven through the real record_entry / record_exit.
 
     Not through live_trade directly: the question worth answering is whether the
@@ -280,6 +294,7 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        super().setUp()
         self.v2, self.main, self.main_path = _dbs()
         self.b = _fresh_broker(budget=9000)
         self.b.save_token(UID, "t0k")
@@ -364,7 +379,7 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
         self.assertEqual([q for _s, _k, q in self.sent], [2, 2])
 
 
-class ManualBuyReachesTheBrokerTest(unittest.TestCase):
+class ManualBuyReachesTheBrokerTest(ApprovedFixtureCase):
     """A manual Buy must place a real order too.
 
     The endpoint carried its own INSERT INTO v2_positions and never called
@@ -458,7 +473,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ProductCodeTest(unittest.TestCase):
+class ProductCodeTest(ApprovedFixtureCase):
     """An intraday trade must be placed as intraday.
 
     Every order went out as "D". On a small account that is most of the cost,

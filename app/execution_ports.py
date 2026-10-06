@@ -43,6 +43,12 @@ class BrokerPort(Protocol):
     def funds(self, user_id: int) -> dict: ...
     def trades(self, user_id: int) -> list: ...
     def cancel(self, user_id: int, order_id: str) -> dict: ...
+    def modify(self, user_id: int, order_id: str, *, quantity: int) -> dict: ...
+    def margin(self, user_id: int, instruments: list[dict]) -> dict: ...
+    def place_stop(self, user_id: int, instrument_key: str, quantity: int,
+                   *, product: str, stop: float) -> dict: ...
+    def protection_status(self, user_id: int, protection_id: str) -> list: ...
+    def cancel_protection(self, user_id: int, protection_id: str) -> dict: ...
 
 
 class UpstoxPort:
@@ -86,6 +92,26 @@ class UpstoxPort:
     def cancel(self, user_id, order_id):
         from . import broker
         return broker.cancel_order(user_id, order_id)
+
+    def modify(self,user_id,order_id,*,quantity):
+        from . import broker
+        return broker.modify_order(user_id,order_id,quantity=quantity)
+
+    def margin(self,user_id,instruments):
+        from . import broker
+        return broker.margin_required(user_id,instruments)
+
+    def place_stop(self,user_id,instrument_key,quantity,*,product,stop):
+        from . import broker
+        return broker.place_stop(user_id,instrument_key,quantity,product=product,stop=stop)
+
+    def protection_status(self,user_id,protection_id):
+        from . import broker
+        return broker.protection_status(user_id,protection_id)
+
+    def cancel_protection(self,user_id,protection_id):
+        from . import broker
+        return broker.cancel_protection(user_id,protection_id)
 
 
 def capability_report():

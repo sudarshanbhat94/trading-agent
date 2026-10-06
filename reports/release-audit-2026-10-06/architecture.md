@@ -155,3 +155,24 @@ erDiagram
 ```
 
 Canonical quantities, money, currencies, settlement and effective rules remain explicit. A multi-leg parent does not make exchange execution atomic; compensation never assumes an unfilled hedge. Migration must quarantine unknown owner/contract/plan relationships, preserve old records and refuse new risk until the specific route is certified.
+
+## Implemented additive cash-paper path (not the full target)
+
+```mermaid
+flowchart LR
+  Review["Trusted frozen owned approval"] --> Rules["Dated canonical rules/session"]
+  Rules --> Risk["Shared serialized account risk"]
+  Risk --> Fill["Paper fill + balanced postings"]
+  Fill --> Position["Owned position / plan / model / policy"]
+  Position --> Close["Independent exit monitor"]
+  Close --> Report["Actual epoch/day sleeve/regime P&L + R"]
+  Live["New broker risk"] --> Auth["Exact build/account/route/model authorization"]
+  Auth --> Intent["Durable intent + append-only observations"]
+  Intent --> Owned["Confirmed owned inventory"]
+  Owned --> Stop["Explicit native activation / durable obligation"]
+  Stop --> Unknown["Claim / UNKNOWN / exact status / cancellation"]
+  Unknown --> Intent
+  Archive["Encrypted declared recovery"] --> Disabled["New private restore / execution disabled"]
+```
+
+Added actual entities: `approved_execution_plans/events`, `execution_contract_evidence`, `live_execution_events`, `protection_obligations/events`; existing personal positions/trades gain canonical instrument/plan/model provenance. These are tested narrow additions. Full Security/InstrumentVersion migration, all-adapter reservation/fill/fee/settlement convergence, automatic certified native coverage and extra brokers/assets remain target architecture, not implemented boxes in this diagram.

@@ -108,6 +108,10 @@ class AuditRegressionTest(unittest.TestCase):
 
 class JournalTest(unittest.TestCase):
     def setUp(self):
+        # This fixture exercises journal outcomes after an approved boundary;
+        # authorization refusal is covered separately in test_live_release.
+        approval=patch.object(order_journal,'live_scope_authorized',return_value=(True,'isolated fixture'))
+        approval.start();self.addCleanup(approval.stop)
         self.con = sqlite3.connect(":memory:")
         v2_live.ensure_schema(self.con)
         self.addCleanup(self.con.close)

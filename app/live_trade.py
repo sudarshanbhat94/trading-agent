@@ -465,6 +465,18 @@ def service(v2, main_db, quotes):
         _SERVICED[uid] = now
         if not broker.state(uid).get("exit_ready") or not journal.refresh(v2, uid):
             continue
+        from . import protection
+        from .execution_ports import UpstoxPort
+        # Only obligations explicitly activated under current account-scoped
+        # native authorization are transmitted. Recovery never blind-retries.
+        v2.commit()
+        for entry_id, in v2.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? AND state='required'",(uid,)).fetchall():
+            protection.submit_stop(v2,uid,entry_id,UpstoxPort())
+        protection.refresh(v2,uid,UpstoxPort())
+        # Triggered native stops create an owned exit intent before ordinary
+        # order reconciliation; application exits cannot race that SELL.
+        if v2.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND state='triggered' LIMIT 1",(uid,)).fetchone():
+            journal.refresh(v2,uid)
         from . import broker_reconciliation
         broker_reconciliation.refresh(v2,uid)
         state, why = account_risk_state(v2, uid, broker.state(uid), quotes)

@@ -38,4 +38,6 @@ def report(con, user_id, market="IN", quotes=None, day=None, now=None):
                 current_epoch=summary(rows),daily=summary(daily),
                 by_sleeve={key:summary([r for r in daily if r[0]==key]) for key in sorted({r[0] for r in daily})},
                 by_regime={key:summary([r for r in daily if r[1]==key]) for key in sorted({'ON','NEUTRAL','OFF'}|{r[1] for r in daily})},
+                by_sleeve_epoch={key:summary([r for r in rows if r[0]==key]) for key in sorted({r[0] for r in rows})},
+                by_regime_epoch={key:summary([r for r in rows if r[1]==key]) for key in sorted({'ON','NEUTRAL','OFF'}|{r[1] for r in rows})},
                 note='Actual paper trades only. Book valuation is the current snapshot; day filters closed trades. Missing historical initial risk is excluded from R. No strategy-profitability claim.')

@@ -93,3 +93,7 @@ The current ₹10,000 paper epoch and publications stay intact. Additional paper
 ## Evidence evaluator limitations
 
 `scripts/check_release.py` checks the completeness/build identity of externally reviewed recorded evidence. It is initially scoped to NSE paper-session dates. A reviewer name and path are not cryptographic proof or a legal permission; authenticated evidence/attestations and each other market calendar require further work. The current `release-evidence.json` deliberately fails. Never populate it with synthetic claims to manufacture GO.
+
+## Current delivery delta after resumed implementation
+
+Use `../release-plan-implementation-2026-10-06.md` for the exact current phase ledger. Tasks 1/3/5/6 have concrete local additions: explicit native recovery, immutable approved cash-paper lifecycle, actual account report/review components, and encrypted disabled restore. Task 7 also has a runtime account/build/model authorization guard. Those tasks are **partially completed**, not retired; remaining automatic native activation, complete canonical/adapter/live-fee convergence, deployed browser/commercial/ops/strategy certification still require work. Tasks 2/4 and additional asset/broker routing remain substantial. Preserve all original acceptance criteria. The entire commercial release programme is not complete.

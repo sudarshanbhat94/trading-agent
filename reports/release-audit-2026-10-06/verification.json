@@ -4,21 +4,26 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2279,
-    "passed": 2146,
+    "run": 2321,
+    "passed": 2188,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 123.313,
-    "note": "Final broad run with localhost mock binding allowed. Two legacy-control tests and explicit currency/current-snapshot labels were subsequently added; 16 focused ledger/performance/API/control checks passed. No strategy parameters changed."
+    "seconds": 129.423,
+    "note": "Final frozen-source run after authorization fixtures, paid-route mapping, native recovery and worker fencing fixes."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
     "function_fixtures": 102,
     "wire_mock": 13,
     "paper_rehearsal": "passed",
-    "final_ledger_performance_api_controls": 16
+    "final_ledger_performance_api_controls": 16,
+    "approved_paper_rehearsal": "4 passed; isolated",
+    "approved_order_api": "3 passed",
+    "account_ui": "4 passed",
+    "native_stop_fault_tests": "11 passed",
+    "journal_observations": "3 passed"
   },
   "initial_full_run": {
     "run": 2268,
@@ -35,11 +40,45 @@
       "height": 844,
       "horizontal_overflow": false
     },
-    "production_journeys_certified": false
+    "production_journeys_certified": false,
+    "approved_paper_scope": "actual account UI components + selected production handlers; synthetic session/book/calendar/quotes",
+    "approved_paper_mobile_width": 390,
+    "approved_paper_horizontal_overflow": false,
+    "actual_paper_fixture_close": true,
+    "full_production_journeys_certified": false
   },
   "real_orders": 0,
   "production_resets": 0,
   "deployed_changes": 0,
   "profitability_established": false,
-  "commercial_readiness": "NO-GO"
+  "commercial_readiness": "NO-GO",
+  "previous_milestone_full_unittest": {
+    "run": 2279,
+    "passed": 2146,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 123.313,
+    "note": "Final broad run with localhost mock binding allowed. Two legacy-control tests and explicit currency/current-snapshot labels were subsequently added; 16 focused ledger/performance/API/control checks passed. No strategy parameters changed."
+  },
+  "resumed_initial_full_run": {
+    "run": 2311,
+    "failures": 12,
+    "errors": 1,
+    "skipped": 133,
+    "exit_code": 1,
+    "note": "New live gate invalidated older unapproved fixtures; new route mapping missing; source introspection invalidated by edits during run. Final frozen-source run passed."
+  },
+  "paper_snapshot": {
+    "budget": 10000,
+    "cash": 10000,
+    "equity": 10000,
+    "positions": 0,
+    "realised": 0,
+    "epoch": "2026-09-22T13:34:11.273061+00:00",
+    "read_only": true,
+    "peak_drawdown_keys": "unavailable in queried deployed report"
+  },
+  "entire_release_plan_complete": false
 }

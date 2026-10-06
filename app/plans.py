@@ -202,6 +202,8 @@ ROUTE_FEATURES = {
     "/v2/api/idea-publications/{publication_id}/assessments": "ideas",
     "/v2/api/paper-ledger": "paper_book",
     "/v2/api/paper-performance": "paper_book",
+    "/v2/api/approved-plans": "paper_book",
+    "/v2/api/approved-orders": "manual_trade",
     "/v2/api/instrument": "market_internals",
     # Read-only account safety remains available after a subscription lapses.
     "/v2/api/execution-health": None,

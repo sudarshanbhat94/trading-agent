@@ -12,9 +12,11 @@
     "app/__init__.py",
     "app/account.py",
     "app/account_safety.py",
+    "app/account_ui.py",
     "app/agent.py",
     "app/analysis_tools.py",
     "app/analysts.py",
+    "app/approved_execution.py",
     "app/auth.py",
     "app/bars5m.py",
     "app/books.py",
@@ -33,6 +35,8 @@
     "app/delivery_data.py",
     "app/desk_ui.py",
     "app/event_calendar.py",
+    "app/execution_contracts.py",
+    "app/execution_events.py",
     "app/execution_outbox.py",
     "app/execution_ports.py",
     "app/exit_policy.py",
@@ -47,6 +51,7 @@
     "app/instrument_catalog.py",
     "app/jobs_health.py",
     "app/levels.py",
+    "app/live_release.py",
     "app/live_trade.py",
     "app/llm_brain.py",
     "app/llm_policy.py",
@@ -81,9 +86,12 @@
     "app/pre_catalyst_engine.py",
     "app/preopen.py",
     "app/price_action.py",
+    "app/protection.py",
     "app/rally_plan.py",
     "app/raw_entry_model.py",
     "app/recommendation.py",
+    "app/recovery_bundle.py",
+    "app/recovery_guard.py",
     "app/release_gate.py",
     "app/request_context.py",
     "app/screening/__init__.py",
@@ -183,6 +191,7 @@
     "reports/release-audit-2026-10-06/roadmap.md",
     "reports/release-audit-2026-10-06/runtime-paths.md",
     "reports/release-audit-2026-10-06/safety-reproductions.json",
+    "reports/release-audit-2026-10-06/ui-evidence/approved-paper-mobile.png",
     "reports/release-audit-2026-10-06/ui-review.md",
     "reports/release-audit-2026-10-06/verification.json",
     "reports/release-audit-implementation-2026-10-06.md",
@@ -242,7 +251,9 @@
     "scripts/preview_spa.py",
     "scripts/price_action_scan.py",
     "scripts/quality_forward_report.py",
+    "scripts/recovery_bundle.py",
     "scripts/regime_isolation.py",
+    "scripts/rehearse_approved_ui.py",
     "scripts/rehearse_execution.py",
     "scripts/research_factor_etf.py",
     "scripts/research_index_baselines.py",
@@ -265,11 +276,14 @@
     "tests/broker_evidence_fixtures.py",
     "tests/test_account_boundaries.py",
     "tests/test_account_evidence_api.py",
+    "tests/test_account_ui.py",
     "tests/test_admin_panel.py",
     "tests/test_agent_callbacks.py",
     "tests/test_alerts.py",
     "tests/test_alpaca_market_data.py",
     "tests/test_analysts.py",
+    "tests/test_approved_execution.py",
+    "tests/test_approved_order_api.py",
     "tests/test_assessment_audit.py",
     "tests/test_audit_regressions.py",
     "tests/test_auth_session_security.py",
@@ -296,6 +310,8 @@
     "tests/test_evidence_screen.py",
     "tests/test_executable_replay_calibration.py",
     "tests/test_execution_capabilities.py",
+    "tests/test_execution_contracts.py",
+    "tests/test_execution_events.py",
     "tests/test_execution_hardening.py",
     "tests/test_exit_rules.py",
     "tests/test_expiry_churn_guard.py",
@@ -325,6 +341,7 @@
     "tests/test_intraday_recorder.py",
     "tests/test_jobs_health.py",
     "tests/test_levels.py",
+    "tests/test_live_release.py",
     "tests/test_live_trade.py",
     "tests/test_llm_analyst_packet.py",
     "tests/test_llm_hard_disable.py",
@@ -368,11 +385,13 @@
     "tests/test_position_mark_refresh.py",
     "tests/test_pre_catalyst_engine.py",
     "tests/test_preopen.py",
+    "tests/test_protection_lifecycle.py",
     "tests/test_quality_forward_watch.py",
     "tests/test_rally_plan.py",
     "tests/test_real_money_readiness.py",
     "tests/test_recommendation.py",
     "tests/test_record_entry.py",
+    "tests/test_recovery_bundle.py",
     "tests/test_release_evidence_gate.py",
     "tests/test_release_integrity.py",
     "tests/test_release_safety.py",
@@ -569,6 +588,18 @@
         {
           "name": "peak",
           "line": 53,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "app/account_ui.py",
+      "lines": 52,
+      "imports": [],
+      "symbols": [
+        {
+          "name": "enhance",
+          "line": 49,
           "kind": "FunctionDef"
         }
       ]
@@ -1402,6 +1433,53 @@
       ]
     },
     {
+      "file": "app/approved_execution.py",
+      "lines": 145,
+      "imports": [
+        "datetime",
+        "hashlib",
+        "json",
+        "math",
+        "account_safety",
+        null,
+        "execution_ports",
+        "recovery_guard",
+        "sleeves.feeds"
+      ],
+      "symbols": [
+        {
+          "name": "ensure_schema",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_moment",
+          "line": 33,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "approve",
+          "line": 39,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_event",
+          "line": 78,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "submit",
+          "line": 83,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 135,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "app/auth.py",
       "lines": 560,
       "imports": [
@@ -1643,7 +1721,7 @@
     },
     {
       "file": "app/books.py",
-      "lines": 720,
+      "lines": 731,
       "imports": [
         "__future__",
         "logging",
@@ -1659,12 +1737,15 @@
         "sleeves.risk",
         "live_trade",
         "costs",
+        "recovery_guard",
         "hashlib",
         null,
         null,
         "sleeves.risk",
         "sleeves.feeds",
         "account_safety",
+        "recovery_guard",
+        "recovery_guard",
         "v2_live",
         null,
         "config",
@@ -1690,144 +1771,144 @@
         },
         {
           "name": "ensure_book",
-          "line": 106,
+          "line": 110,
           "kind": "FunctionDef"
         },
         {
           "name": "current_epoch",
-          "line": 127,
+          "line": 131,
           "kind": "FunctionDef"
         },
         {
           "name": "reset_book",
-          "line": 145,
+          "line": 149,
           "kind": "FunctionDef"
         },
         {
           "name": "epoch_of",
-          "line": 175,
+          "line": 179,
           "kind": "FunctionDef"
         },
         {
           "name": "budget_of",
-          "line": 188,
+          "line": 192,
           "kind": "FunctionDef"
         },
         {
           "name": "cash",
-          "line": 201,
+          "line": 205,
           "kind": "FunctionDef"
         },
         {
           "name": "size_for",
-          "line": 222,
+          "line": 226,
           "kind": "FunctionDef"
         },
         {
           "name": "positions",
-          "line": 238,
+          "line": 242,
           "kind": "FunctionDef"
         },
         {
           "name": "open_symbols",
-          "line": 250,
+          "line": 255,
           "kind": "FunctionDef"
         },
         {
           "name": "buy",
-          "line": 256,
+          "line": 261,
           "kind": "FunctionDef"
         },
         {
           "name": "entry_receipt",
-          "line": 347,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "refusal",
           "line": 354,
           "kind": "FunctionDef"
         },
         {
+          "name": "refusal",
+          "line": 361,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "_paper_peak",
-          "line": 360,
+          "line": 367,
           "kind": "FunctionDef"
         },
         {
           "name": "risk_state",
-          "line": 369,
+          "line": 376,
           "kind": "FunctionDef"
         },
         {
           "name": "sell",
-          "line": 423,
+          "line": 430,
           "kind": "FunctionDef"
         },
         {
           "name": "_sell_locked",
-          "line": 432,
+          "line": 441,
           "kind": "FunctionDef"
         },
         {
           "name": "reset",
-          "line": 474,
+          "line": 485,
           "kind": "FunctionDef"
         },
         {
           "name": "stats",
-          "line": 489,
+          "line": 500,
           "kind": "FunctionDef"
         },
         {
           "name": "_auth_db",
-          "line": 516,
+          "line": 527,
           "kind": "FunctionDef"
         },
         {
           "name": "snapshot_equity",
-          "line": 530,
+          "line": 541,
           "kind": "FunctionDef"
         },
         {
           "name": "equity_series",
-          "line": 549,
+          "line": 560,
           "kind": "FunctionDef"
         },
         {
           "name": "snapshot_all",
-          "line": 556,
+          "line": 567,
           "kind": "FunctionDef"
         },
         {
           "name": "subscribers",
-          "line": 568,
+          "line": 579,
           "kind": "FunctionDef"
         },
         {
           "name": "mirror_entry",
-          "line": 589,
+          "line": 600,
           "kind": "FunctionDef"
         },
         {
           "name": "mirror_exit",
-          "line": 607,
+          "line": 618,
           "kind": "FunctionDef"
         },
         {
           "name": "monitor_positions",
-          "line": 628,
+          "line": 639,
           "kind": "FunctionDef"
         },
         {
           "name": "reconcile_capital",
-          "line": 671,
+          "line": 682,
           "kind": "FunctionDef"
         }
       ]
     },
     {
       "file": "app/broker.py",
-      "lines": 617,
+      "lines": 696,
       "imports": [
         "__future__",
         "json",
@@ -1848,6 +1929,11 @@
         "httpx",
         "re",
         "httpx",
+        "instrument_catalog",
+        "httpx",
+        "httpx",
+        "math",
+        "math",
         "credential_vault",
         "httpx",
         "credential_vault"
@@ -1986,6 +2072,41 @@
         {
           "name": "place_order",
           "line": 590,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_cash_contract",
+          "line": 620,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_execution_request",
+          "line": 627,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "modify_order",
+          "line": 642,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "margin_required",
+          "line": 650,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "place_stop",
+          "line": 671,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "protection_status",
+          "line": 686,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "cancel_protection",
+          "line": 693,
           "kind": "FunctionDef"
         }
       ]
@@ -4009,6 +4130,76 @@
       ]
     },
     {
+      "file": "app/execution_contracts.py",
+      "lines": 105,
+      "imports": [
+        "dataclasses",
+        "datetime",
+        "hashlib",
+        "json",
+        "account_safety",
+        "instrument_catalog"
+      ],
+      "symbols": [
+        {
+          "name": "_moment",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ensure_schema",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "record",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_latest",
+          "line": 65,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "protection_contract",
+          "line": 77,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "order_contract",
+          "line": 99,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "app/execution_events.py",
+      "lines": 41,
+      "imports": [
+        "hashlib",
+        "json",
+        "datetime"
+      ],
+      "symbols": [
+        {
+          "name": "ensure_schema",
+          "line": 12,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "record",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 36,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "app/execution_outbox.py",
       "lines": 121,
       "imports": [
@@ -4052,12 +4243,17 @@
     },
     {
       "file": "app/execution_ports.py",
-      "lines": 98,
+      "lines": 124,
       "imports": [
         "__future__",
         "dataclasses",
         "typing",
         "instrument_catalog",
+        null,
+        null,
+        null,
+        null,
+        null,
         null,
         null,
         null,
@@ -4084,12 +4280,12 @@
         },
         {
           "name": "UpstoxPort",
-          "line": 48,
+          "line": 54,
           "kind": "ClassDef"
         },
         {
           "name": "capability_report",
-          "line": 91,
+          "line": 117,
           "kind": "FunctionDef"
         },
         {
@@ -4133,43 +4329,93 @@
           "kind": "FunctionDef"
         },
         {
-          "name": "submit",
+          "name": "modify",
+          "line": 46,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "margin",
+          "line": 47,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "place_stop",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "protection_status",
           "line": 50,
           "kind": "FunctionDef"
         },
         {
-          "name": "order_status",
-          "line": 60,
+          "name": "cancel_protection",
+          "line": 51,
           "kind": "FunctionDef"
         },
         {
-          "name": "orders",
+          "name": "submit",
+          "line": 56,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "order_status",
           "line": 66,
           "kind": "FunctionDef"
         },
         {
+          "name": "orders",
+          "line": 72,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "positions",
-          "line": 70,
+          "line": 76,
           "kind": "FunctionDef"
         },
         {
           "name": "holdings",
-          "line": 74,
+          "line": 80,
           "kind": "FunctionDef"
         },
         {
           "name": "funds",
-          "line": 78,
+          "line": 84,
           "kind": "FunctionDef"
         },
         {
           "name": "trades",
-          "line": 82,
+          "line": 88,
           "kind": "FunctionDef"
         },
         {
           "name": "cancel",
-          "line": 86,
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "modify",
+          "line": 96,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "margin",
+          "line": 100,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "place_stop",
+          "line": 104,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "protection_status",
+          "line": 108,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "cancel_protection",
+          "line": 112,
           "kind": "FunctionDef"
         }
       ]
@@ -5395,7 +5641,7 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "lines": 175,
+      "lines": 192,
       "imports": [
         "__future__",
         "hashlib",
@@ -5413,43 +5659,48 @@
           "kind": "ClassDef"
         },
         {
+          "name": "_positive_decimal",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "Instrument",
-          "line": 23,
+          "line": 33,
           "kind": "ClassDef"
         },
         {
           "name": "ensure_schema",
-          "line": 91,
+          "line": 104,
           "kind": "FunctionDef"
         },
         {
           "name": "import_snapshot",
-          "line": 102,
+          "line": 115,
           "kind": "FunctionDef"
         },
         {
           "name": "resolve",
-          "line": 124,
+          "line": 137,
           "kind": "FunctionDef"
         },
         {
           "name": "upstox_contract",
-          "line": 143,
+          "line": 156,
           "kind": "FunctionDef"
         },
         {
           "name": "__post_init__",
-          "line": 41,
+          "line": 51,
           "kind": "FunctionDef"
         },
         {
           "name": "id",
-          "line": 64,
+          "line": 75,
           "kind": "FunctionDef"
         },
         {
           "name": "validate_order",
-          "line": 71,
+          "line": 82,
           "kind": "FunctionDef"
         }
       ]
@@ -5530,8 +5781,26 @@
       ]
     },
     {
+      "file": "app/live_release.py",
+      "lines": 43,
+      "imports": [
+        "json",
+        "os",
+        "datetime",
+        "pathlib",
+        "release_gate"
+      ],
+      "symbols": [
+        {
+          "name": "authorized",
+          "line": 15,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "app/live_trade.py",
-      "lines": 488,
+      "lines": 500,
       "imports": [
         "__future__",
         "json",
@@ -5558,6 +5827,8 @@
         "sleeves.feeds",
         null,
         null,
+        null,
+        "execution_ports",
         null,
         "instrument_catalog",
         "execution_ports"
@@ -10278,18 +10549,30 @@
     },
     {
       "file": "app/order_journal.py",
-      "lines": 257,
+      "lines": 298,
       "imports": [
         "json",
         "math",
         "sqlite3",
         "uuid",
         "datetime",
+        "live_release",
         null,
-        null,
+        "account_safety",
+        "worker_fencing",
         null,
         null,
         "worker_fencing",
+        "account_safety",
+        null,
+        "recovery_guard",
+        null,
+        "account_safety",
+        "execution_events",
+        "protection",
+        "execution_ports",
+        "worker_fencing",
+        "execution_events",
         "execution_ports",
         "broker_reconciliation",
         "sleeves.config",
@@ -10302,42 +10585,47 @@
       "symbols": [
         {
           "name": "ensure_schema",
-          "line": 17,
+          "line": 18,
           "kind": "FunctionDef"
         },
         {
           "name": "unresolved",
-          "line": 41,
+          "line": 44,
           "kind": "FunctionDef"
         },
         {
           "name": "reconcile",
-          "line": 50,
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_reconcile_locked",
+          "line": 62,
           "kind": "FunctionDef"
         },
         {
           "name": "refresh",
-          "line": 95,
+          "line": 110,
           "kind": "FunctionDef"
         },
         {
           "name": "finish_entry_before_exit",
-          "line": 105,
+          "line": 120,
           "kind": "FunctionDef"
         },
         {
           "name": "submit",
-          "line": 135,
+          "line": 155,
           "kind": "FunctionDef"
         },
         {
           "name": "protect",
-          "line": 246,
+          "line": 287,
           "kind": "FunctionDef"
         },
         {
           "name": "request_exit",
-          "line": 253,
+          "line": 294,
           "kind": "FunctionDef"
         }
       ]
@@ -10726,7 +11014,7 @@
     },
     {
       "file": "app/personal_performance.py",
-      "lines": 41,
+      "lines": 43,
       "imports": [
         "datetime",
         "math",
@@ -10748,7 +11036,7 @@
     },
     {
       "file": "app/plans.py",
-      "lines": 302,
+      "lines": 304,
       "imports": [
         "__future__",
         "datetime",
@@ -10772,27 +11060,27 @@
         },
         {
           "name": "feature_for_path",
-          "line": 260,
+          "line": 262,
           "kind": "FunctionDef"
         },
         {
           "name": "normalize",
-          "line": 272,
+          "line": 274,
           "kind": "FunctionDef"
         },
         {
           "name": "rank",
-          "line": 283,
+          "line": 285,
           "kind": "FunctionDef"
         },
         {
           "name": "allows",
-          "line": 287,
+          "line": 289,
           "kind": "FunctionDef"
         },
         {
           "name": "features_for",
-          "line": 300,
+          "line": 302,
           "kind": "FunctionDef"
         }
       ]
@@ -11283,6 +11571,93 @@
       ]
     },
     {
+      "file": "app/protection.py",
+      "lines": 289,
+      "imports": [
+        "json",
+        "math",
+        "time",
+        "datetime",
+        "account_safety",
+        "live_release",
+        "worker_fencing",
+        "execution_outbox",
+        "instrument_catalog",
+        "execution_contracts",
+        "recovery_guard",
+        "recovery_guard",
+        "worker_fencing",
+        "worker_fencing"
+      ],
+      "symbols": [
+        {
+          "name": "ensure_schema",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_row",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_event",
+          "line": 46,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_incident",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_owned_remaining",
+          "line": 68,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_activation_contract",
+          "line": 89,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "observe_fills",
+          "line": 104,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "request_native",
+          "line": 137,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "submit_stop",
+          "line": 156,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "refresh",
+          "line": 195,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "prepare_exit",
+          "line": 248,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "blocks_entry",
+          "line": 276,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 282,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "app/rally_plan.py",
       "lines": 881,
       "imports": [
@@ -11680,6 +12055,86 @@
         {
           "name": "_add",
           "line": 190,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "app/recovery_bundle.py",
+      "lines": 242,
+      "imports": [
+        "__future__",
+        "hashlib",
+        "io",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "shutil",
+        "sqlite3",
+        "tarfile",
+        "tempfile",
+        "datetime",
+        "cryptography.fernet"
+      ],
+      "symbols": [
+        {
+          "name": "RecoveryError",
+          "line": 31,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "private_key",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_name",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_safe_payload",
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_digest",
+          "line": 71,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_sqlite_snapshot",
+          "line": 75,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create",
+          "line": 88,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "restore",
+          "line": 160,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "app/recovery_guard.py",
+      "lines": 16,
+      "imports": [
+        "pathlib"
+      ],
+      "symbols": [
+        {
+          "name": "assert_execution_allowed",
+          "line": 5,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "assert_database_execution_allowed",
+          "line": 15,
           "kind": "FunctionDef"
         }
       ]
@@ -15163,7 +15618,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "lines": 4847,
+      "lines": 4857,
       "imports": [
         "__future__",
         "json",
@@ -15186,15 +15641,18 @@
         null,
         null,
         null,
+        null,
         "exit_policy",
         "json",
         null,
         null,
         "account_safety",
+        "recovery_guard",
         null,
         "exit_policy",
         "costs",
         "live_trade",
+        "recovery_guard",
         "account_safety",
         null,
         null,
@@ -15215,7 +15673,9 @@
         "sleeves.risk",
         "sleeves.feeds",
         "uuid",
+        "recovery_guard",
         null,
+        "recovery_guard",
         null,
         null,
         null,
@@ -15324,399 +15784,400 @@
         },
         {
           "name": "market_open",
-          "line": 1095,
+          "line": 1097,
           "kind": "FunctionDef"
         },
         {
           "name": "_ro",
-          "line": 1102,
+          "line": 1104,
           "kind": "FunctionDef"
         },
         {
           "name": "_rw",
-          "line": 1106,
+          "line": 1108,
           "kind": "FunctionDef"
         },
         {
           "name": "_hist",
-          "line": 1113,
+          "line": 1115,
           "kind": "FunctionDef"
         },
         {
           "name": "append_today_bar",
-          "line": 1148,
+          "line": 1150,
           "kind": "FunctionDef"
         },
         {
           "name": "day_range_position",
-          "line": 1212,
+          "line": 1214,
           "kind": "FunctionDef"
         },
         {
           "name": "clear_of_the_day_low",
-          "line": 1232,
+          "line": 1234,
           "kind": "FunctionDef"
         },
         {
           "name": "_f",
-          "line": 1239,
+          "line": 1241,
           "kind": "FunctionDef"
         },
         {
           "name": "_sector_map",
-          "line": 1250,
+          "line": 1252,
           "kind": "FunctionDef"
         },
         {
           "name": "_news_state",
-          "line": 1281,
+          "line": 1283,
           "kind": "FunctionDef"
         },
         {
           "name": "_live",
-          "line": 1308,
+          "line": 1310,
           "kind": "FunctionDef"
         },
         {
           "name": "_sess_load",
-          "line": 1335,
+          "line": 1337,
           "kind": "FunctionDef"
         },
         {
           "name": "_sess_save",
-          "line": 1350,
+          "line": 1352,
           "kind": "FunctionDef"
         },
         {
           "name": "_earnings_soon",
-          "line": 1362,
+          "line": 1364,
           "kind": "FunctionDef"
         },
         {
           "name": "_session_opens",
-          "line": 1375,
+          "line": 1377,
           "kind": "FunctionDef"
         },
         {
           "name": "_signals",
-          "line": 1403,
+          "line": 1405,
           "kind": "FunctionDef"
         },
         {
           "name": "_signals_completed",
-          "line": 1451,
+          "line": 1453,
           "kind": "FunctionDef"
         },
         {
           "name": "_tg_radar_digest",
-          "line": 1490,
+          "line": 1492,
           "kind": "FunctionDef"
         },
         {
           "name": "_tg_daily_summary",
-          "line": 1512,
+          "line": 1514,
           "kind": "FunctionDef"
         },
         {
           "name": "breakeven_price",
-          "line": 1557,
+          "line": 1559,
           "kind": "FunctionDef"
         },
         {
           "name": "net_trade_pnl",
-          "line": 1605,
+          "line": 1607,
           "kind": "FunctionDef"
         },
         {
           "name": "record_exit",
-          "line": 1653,
+          "line": 1655,
           "kind": "FunctionDef"
         },
         {
           "name": "_entry_of",
-          "line": 1685,
+          "line": 1689,
           "kind": "FunctionDef"
         },
         {
           "name": "_epoch_pnl",
-          "line": 1691,
+          "line": 1695,
           "kind": "FunctionDef"
         },
         {
           "name": "record_entry",
-          "line": 1710,
+          "line": 1714,
           "kind": "FunctionDef"
         },
         {
           "name": "_book_mirror_entry",
-          "line": 1812,
+          "line": 1818,
           "kind": "FunctionDef"
         },
         {
           "name": "_book_mirror_exit",
-          "line": 1826,
+          "line": 1832,
           "kind": "FunctionDef"
         },
         {
           "name": "_live_mirror_entry",
-          "line": 1833,
+          "line": 1839,
           "kind": "FunctionDef"
         },
         {
           "name": "_live_mirror_exit",
-          "line": 1873,
+          "line": 1879,
           "kind": "FunctionDef"
         },
         {
           "name": "poll_market",
-          "line": 1905,
+          "line": 1911,
           "kind": "FunctionDef"
         },
         {
           "name": "_is_cash_etf",
-          "line": 2305,
+          "line": 2311,
           "kind": "FunctionDef"
         },
         {
           "name": "_publish_ideas",
-          "line": 2321,
+          "line": 2327,
           "kind": "FunctionDef"
         },
         {
           "name": "trading_days_held",
-          "line": 2402,
+          "line": 2408,
           "kind": "FunctionDef"
         },
         {
           "name": "_vol_frac",
-          "line": 2419,
+          "line": 2425,
           "kind": "FunctionDef"
         },
         {
           "name": "fresh_news_cutoff",
-          "line": 2437,
+          "line": 2443,
           "kind": "FunctionDef"
         },
         {
           "name": "_intra_avgvol",
-          "line": 2452,
+          "line": 2458,
           "kind": "FunctionDef"
         },
         {
           "name": "intraday_news_pass",
-          "line": 2469,
+          "line": 2475,
           "kind": "FunctionDef"
         },
         {
           "name": "_prev_close",
-          "line": 2631,
+          "line": 2637,
           "kind": "FunctionDef"
         },
         {
           "name": "_equity_cash",
-          "line": 2661,
+          "line": 2667,
           "kind": "FunctionDef"
         },
         {
           "name": "_equity_positions",
-          "line": 2698,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "_stale_symbols",
           "line": 2704,
           "kind": "FunctionDef"
         },
         {
+          "name": "_stale_symbols",
+          "line": 2710,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "_catalyst_cutoff_epoch",
-          "line": 2733,
+          "line": 2739,
           "kind": "FunctionDef"
         },
         {
           "name": "_nse_catalyst_symbols",
-          "line": 2753,
+          "line": 2759,
           "kind": "FunctionDef"
         },
         {
           "name": "_risk_halt",
-          "line": 2776,
+          "line": 2782,
           "kind": "FunctionDef"
         },
         {
           "name": "volume_surge_pass",
-          "line": 2838,
+          "line": 2844,
           "kind": "FunctionDef"
         },
         {
           "name": "rank_movers",
-          "line": 2981,
+          "line": 2987,
           "kind": "FunctionDef"
         },
         {
           "name": "intraday_momentum_pass",
-          "line": 3012,
+          "line": 3018,
           "kind": "FunctionDef"
         },
         {
           "name": "btst_pass",
-          "line": 3085,
+          "line": 3091,
           "kind": "FunctionDef"
         },
         {
           "name": "index_options_pass",
-          "line": 3192,
+          "line": 3198,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_bars",
-          "line": 3461,
+          "line": 3467,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_chain",
-          "line": 3478,
+          "line": 3484,
           "kind": "FunctionDef"
         },
         {
           "name": "_chain_expiry",
-          "line": 3496,
+          "line": 3502,
           "kind": "FunctionDef"
         },
         {
           "name": "_straddle_limit",
-          "line": 3514,
+          "line": 3520,
           "kind": "FunctionDef"
         },
         {
           "name": "_pick_contract",
-          "line": 3547,
+          "line": 3553,
           "kind": "FunctionDef"
         },
         {
           "name": "sector_watch_pass",
-          "line": 3623,
+          "line": 3629,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_of",
-          "line": 3732,
+          "line": 3738,
           "kind": "FunctionDef"
         },
         {
           "name": "_target_pct",
-          "line": 3742,
+          "line": 3748,
           "kind": "FunctionDef"
         },
         {
           "name": "_expired_or_expiring",
-          "line": 3772,
+          "line": 3778,
           "kind": "FunctionDef"
         },
         {
           "name": "evaluate_exit",
-          "line": 3802,
+          "line": 3808,
           "kind": "FunctionDef"
         },
         {
           "name": "_observe_house_risk",
-          "line": 3904,
+          "line": 3910,
           "kind": "FunctionDef"
         },
         {
           "name": "_fenced_write",
-          "line": 3920,
+          "line": 3926,
           "kind": "FunctionDef"
         },
         {
           "name": "_exit_positions",
-          "line": 3928,
+          "line": 3934,
           "kind": "FunctionDef"
         },
         {
           "name": "exit_monitor",
-          "line": 3941,
+          "line": 3947,
           "kind": "FunctionDef"
         },
         {
           "name": "_equity_janitor",
-          "line": 4052,
+          "line": 4058,
           "kind": "FunctionDef"
         },
         {
           "name": "_today_key",
-          "line": 4099,
+          "line": 4105,
           "kind": "FunctionDef"
         },
         {
           "name": "_market_open_watchdog",
-          "line": 4106,
+          "line": 4112,
           "kind": "FunctionDef"
         },
         {
           "name": "_publish_sleeve_ideas",
-          "line": 4156,
+          "line": 4162,
           "kind": "FunctionDef"
         },
         {
           "name": "reset_book_epoch",
-          "line": 4194,
+          "line": 4200,
           "kind": "FunctionDef"
         },
         {
           "name": "reconcile_book_capital",
-          "line": 4230,
+          "line": 4236,
           "kind": "FunctionDef"
         },
         {
           "name": "sleeve_pass",
-          "line": 4304,
+          "line": 4310,
           "kind": "FunctionDef"
         },
         {
           "name": "_sleeve_index_bars",
-          "line": 4555,
+          "line": 4561,
           "kind": "FunctionDef"
         },
         {
           "name": "_sleeve_options_view",
-          "line": 4573,
+          "line": 4579,
           "kind": "FunctionDef"
         },
         {
           "name": "_sleeve_option_chain",
-          "line": 4598,
+          "line": 4604,
           "kind": "FunctionDef"
         },
         {
           "name": "_sleeve_vix",
-          "line": 4614,
+          "line": 4620,
           "kind": "FunctionDef"
         },
         {
           "name": "loop",
-          "line": 4629,
+          "line": 4635,
           "kind": "FunctionDef"
         },
         {
           "name": "start_background",
-          "line": 4832,
+          "line": 4840,
           "kind": "FunctionDef"
         },
         {
           "name": "status",
-          "line": 4846,
+          "line": 4856,
           "kind": "FunctionDef"
         }
       ]
     },
     {
       "file": "app/v2_web.py",
-      "lines": 6684,
+      "lines": 6730,
       "imports": [
         "__future__",
         "logging",
         "os",
         "sqlite3",
+        "json",
         "time",
         "datetime",
         "asyncio",
@@ -15734,6 +16195,7 @@
         null,
         null,
         "desk_ui",
+        "account_ui",
         null,
         null,
         "statistics",
@@ -15763,6 +16225,7 @@
         "v2_live",
         null,
         null,
+        "live_release",
         "broker_access",
         null,
         null,
@@ -15775,7 +16238,10 @@
         "screening",
         "screening",
         "execution_ports",
+        null,
         "screening",
+        null,
+        null,
         null,
         null,
         "instrument_catalog",
@@ -15817,7 +16283,9 @@
         null,
         "order_journal",
         null,
+        null,
         "v2_live",
+        null,
         null,
         "threading",
         "threading",
@@ -15845,672 +16313,682 @@
       "symbols": [
         {
           "name": "_auth_bits",
-          "line": 38,
+          "line": 39,
           "kind": "FunctionDef"
         },
         {
           "name": "require_session",
-          "line": 49,
+          "line": 50,
           "kind": "FunctionDef"
         },
         {
           "name": "_check_plan",
-          "line": 89,
+          "line": 90,
           "kind": "FunctionDef"
         },
         {
           "name": "require_admin_session",
-          "line": 120,
+          "line": 121,
           "kind": "FunctionDef"
         },
         {
           "name": "_ro",
-          "line": 138,
+          "line": 139,
           "kind": "FunctionDef"
         },
         {
           "name": "_live_map",
-          "line": 142,
+          "line": 143,
           "kind": "FunctionDef"
         },
         {
           "name": "_n",
-          "line": 174,
+          "line": 175,
           "kind": "FunctionDef"
         },
         {
           "name": "_panel",
-          "line": 182,
+          "line": 183,
           "kind": "FunctionDef"
         },
         {
           "name": "_decision_is_stale",
-          "line": 197,
+          "line": 198,
           "kind": "FunctionDef"
         },
         {
           "name": "_regime_bg",
-          "line": 210,
+          "line": 211,
           "kind": "FunctionDef"
         },
         {
           "name": "_regime_state",
-          "line": 231,
+          "line": 232,
           "kind": "FunctionDef"
         },
         {
           "name": "_regime",
-          "line": 256,
+          "line": 257,
           "kind": "FunctionDef"
         },
         {
           "name": "_markets",
-          "line": 262,
+          "line": 263,
           "kind": "FunctionDef"
         },
         {
           "name": "_prev_close_map",
-          "line": 269,
+          "line": 270,
           "kind": "FunctionDef"
         },
         {
           "name": "_market_stats",
-          "line": 297,
+          "line": 298,
           "kind": "FunctionDef"
         },
         {
           "name": "_hold_days",
-          "line": 358,
+          "line": 359,
           "kind": "FunctionDef"
         },
         {
           "name": "strategy_stats",
-          "line": 368,
+          "line": 369,
           "kind": "FunctionDef"
         },
         {
           "name": "api_overview",
-          "line": 427,
+          "line": 428,
           "kind": "FunctionDef"
         },
         {
           "name": "_risk_metrics",
-          "line": 583,
+          "line": 584,
           "kind": "FunctionDef"
         },
         {
           "name": "_rw",
-          "line": 606,
+          "line": 607,
           "kind": "FunctionDef"
         },
         {
           "name": "_col",
-          "line": 616,
+          "line": 617,
           "kind": "FunctionDef"
         },
         {
           "name": "_ist",
-          "line": 628,
+          "line": 629,
           "kind": "FunctionDef"
         },
         {
           "name": "_wants_ai",
-          "line": 651,
+          "line": 652,
           "kind": "FunctionDef"
         },
         {
           "name": "api_positions",
-          "line": 668,
+          "line": 669,
           "kind": "FunctionDef"
         },
         {
           "name": "_settings_file",
-          "line": 734,
+          "line": 735,
           "kind": "FunctionDef"
         },
         {
           "name": "INDEX_EDITABLE",
-          "line": 739,
+          "line": 740,
           "kind": "FunctionDef"
         },
         {
           "name": "INDEX_ALLOWED_INSTRUMENTS",
-          "line": 747,
+          "line": 748,
           "kind": "FunctionDef"
         },
         {
           "name": "_effective_min_conf",
-          "line": 755,
+          "line": 756,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_settings_load",
-          "line": 776,
+          "line": 777,
           "kind": "FunctionDef"
         },
         {
           "name": "api_index_settings",
-          "line": 784,
+          "line": 785,
           "kind": "FunctionDef"
         },
         {
           "name": "api_index_settings_save",
-          "line": 807,
+          "line": 808,
           "kind": "FunctionDef"
         },
         {
           "name": "_fnum",
-          "line": 848,
+          "line": 849,
           "kind": "FunctionDef"
         },
         {
           "name": "_options_book",
-          "line": 857,
+          "line": 858,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_live_quotes_ready",
-          "line": 965,
+          "line": 966,
           "kind": "FunctionDef"
         },
         {
           "name": "_payment_config",
-          "line": 994,
+          "line": 995,
           "kind": "FunctionDef"
         },
         {
           "name": "_pay_note",
-          "line": 1020,
+          "line": 1021,
           "kind": "FunctionDef"
         },
         {
           "name": "_upi_query",
-          "line": 1026,
+          "line": 1027,
           "kind": "FunctionDef"
         },
         {
           "name": "_upi_link",
-          "line": 1040,
+          "line": 1041,
           "kind": "FunctionDef"
         },
         {
           "name": "_upi_apps",
-          "line": 1047,
+          "line": 1048,
           "kind": "FunctionDef"
         },
         {
           "name": "api_pay_qr",
-          "line": 1056,
+          "line": 1057,
           "kind": "FunctionDef"
         },
         {
           "name": "api_payment_settings",
-          "line": 1090,
+          "line": 1091,
           "kind": "FunctionDef"
         },
         {
           "name": "api_payment_settings_save",
-          "line": 1095,
+          "line": 1096,
           "kind": "FunctionDef"
         },
         {
           "name": "api_upgrade",
-          "line": 1112,
+          "line": 1113,
           "kind": "FunctionDef"
         },
         {
           "name": "_alert_admins_of_request",
-          "line": 1159,
+          "line": 1160,
           "kind": "FunctionDef"
         },
         {
           "name": "api_admin_requests",
-          "line": 1190,
+          "line": 1191,
           "kind": "FunctionDef"
         },
         {
           "name": "api_admin_request_decide",
-          "line": 1205,
+          "line": 1206,
           "kind": "FunctionDef"
         },
         {
           "name": "api_me",
-          "line": 1222,
+          "line": 1223,
           "kind": "FunctionDef"
         },
         {
           "name": "api_admin_users",
-          "line": 1266,
+          "line": 1267,
           "kind": "FunctionDef"
         },
         {
           "name": "api_admin_user_update",
-          "line": 1291,
+          "line": 1292,
           "kind": "FunctionDef"
         },
         {
           "name": "api_index_detail",
-          "line": 1333,
+          "line": 1334,
           "kind": "FunctionDef"
         },
         {
           "name": "api_index_candles",
-          "line": 1366,
+          "line": 1367,
           "kind": "FunctionDef"
         },
         {
           "name": "api_index_call",
-          "line": 1405,
+          "line": 1406,
           "kind": "FunctionDef"
         },
         {
           "name": "_fo_db",
-          "line": 1473,
+          "line": 1474,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_candles",
-          "line": 1478,
+          "line": 1479,
           "kind": "FunctionDef"
         },
         {
           "name": "_index_oi",
-          "line": 1499,
+          "line": 1500,
           "kind": "FunctionDef"
         },
         {
           "name": "api_preopen",
-          "line": 1518,
+          "line": 1519,
           "kind": "FunctionDef"
         },
         {
           "name": "api_health",
-          "line": 1533,
+          "line": 1534,
           "kind": "FunctionDef"
         },
         {
           "name": "_uwl",
-          "line": 1603,
+          "line": 1604,
           "kind": "FunctionDef"
         },
         {
           "name": "_panel_warm",
-          "line": 1627,
+          "line": 1628,
           "kind": "FunctionDef"
         },
         {
           "name": "_daychg",
-          "line": 1642,
+          "line": 1643,
           "kind": "FunctionDef"
         },
         {
           "name": "shareholding_trend",
-          "line": 1669,
+          "line": 1670,
           "kind": "FunctionDef"
         },
         {
           "name": "parse_tags",
-          "line": 1705,
+          "line": 1706,
           "kind": "FunctionDef"
         },
         {
           "name": "parse_folder",
-          "line": 1731,
+          "line": 1732,
           "kind": "FunctionDef"
         },
         {
           "name": "api_watchlist",
-          "line": 1742,
+          "line": 1743,
           "kind": "FunctionDef"
         },
         {
           "name": "api_watchlist_add",
-          "line": 1773,
+          "line": 1774,
           "kind": "FunctionDef"
         },
         {
           "name": "api_watchlist_del",
-          "line": 1802,
+          "line": 1803,
           "kind": "FunctionDef"
         },
         {
           "name": "api_alerts_add",
-          "line": 1811,
+          "line": 1812,
           "kind": "FunctionDef"
         },
         {
           "name": "_market_shut",
-          "line": 1845,
+          "line": 1846,
           "kind": "FunctionDef"
         },
         {
           "name": "api_buy",
-          "line": 1870,
+          "line": 1871,
           "kind": "FunctionDef"
         },
         {
           "name": "api_reset",
-          "line": 1950,
+          "line": 1951,
           "kind": "FunctionDef"
         },
         {
           "name": "_reset_house_book",
-          "line": 1973,
+          "line": 1974,
           "kind": "FunctionDef"
         },
         {
           "name": "api_sell",
-          "line": 1997,
+          "line": 1998,
           "kind": "FunctionDef"
         },
         {
           "name": "api_alerts_del",
-          "line": 2042,
+          "line": 2043,
           "kind": "FunctionDef"
         },
         {
           "name": "catalyst_since",
-          "line": 2059,
+          "line": 2060,
           "kind": "FunctionDef"
         },
         {
           "name": "parse_pattern_filter",
-          "line": 2086,
+          "line": 2087,
           "kind": "FunctionDef"
         },
         {
           "name": "_alert_bars",
-          "line": 2114,
+          "line": 2115,
           "kind": "FunctionDef"
         },
         {
           "name": "_alert_candles",
-          "line": 2143,
+          "line": 2144,
           "kind": "FunctionDef"
         },
         {
           "name": "pattern_hit",
-          "line": 2148,
+          "line": 2149,
           "kind": "FunctionDef"
         },
         {
           "name": "sma_cross_hit",
-          "line": 2181,
+          "line": 2182,
           "kind": "FunctionDef"
         },
         {
           "name": "alert_hit",
-          "line": 2210,
+          "line": 2211,
           "kind": "FunctionDef"
         },
         {
           "name": "_check_alerts",
-          "line": 2233,
+          "line": 2234,
           "kind": "FunctionDef"
         },
         {
           "name": "api_search",
-          "line": 2309,
+          "line": 2310,
           "kind": "FunctionDef"
         },
         {
           "name": "_movers_bg",
-          "line": 2345,
+          "line": 2346,
           "kind": "FunctionDef"
         },
         {
           "name": "_uid",
-          "line": 2366,
+          "line": 2367,
           "kind": "FunctionDef"
         },
         {
           "name": "api_broker",
-          "line": 2374,
+          "line": 2375,
           "kind": "FunctionDef"
         },
         {
           "name": "api_broker_config",
-          "line": 2408,
+          "line": 2416,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "api_broker_auth_url",
-          "line": 2418,
+          "line": 2426,
           "kind": "FunctionDef"
         },
         {
           "name": "api_broker_connect",
-          "line": 2427,
+          "line": 2435,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "api_broker_arm",
-          "line": 2451,
+          "line": 2459,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "api_broker_disconnect",
-          "line": 2474,
+          "line": 2482,
           "kind": "FunctionDef"
         },
         {
           "name": "_decision_with_live_readiness",
-          "line": 2479,
+          "line": 2487,
           "kind": "FunctionDef"
         },
         {
           "name": "_evidence_screen",
-          "line": 2507,
+          "line": 2515,
           "kind": "FunctionDef"
         },
         {
           "name": "api_screen",
-          "line": 2516,
+          "line": 2524,
           "kind": "FunctionDef"
         },
         {
           "name": "_stock_plans",
-          "line": 2523,
+          "line": 2531,
           "kind": "FunctionDef"
         },
         {
           "name": "_idea_tracking",
-          "line": 2561,
+          "line": 2569,
           "kind": "FunctionDef"
         },
         {
           "name": "api_idea_tracking",
-          "line": 2567,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "api_idea_publication",
           "line": 2575,
           "kind": "FunctionDef"
         },
         {
+          "name": "api_idea_publication",
+          "line": 2583,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "api_execution_health",
-          "line": 2587,
+          "line": 2595,
           "kind": "FunctionDef"
         },
         {
           "name": "api_idea_assessments",
-          "line": 2605,
+          "line": 2616,
           "kind": "FunctionDef"
         },
         {
           "name": "api_paper_ledger",
-          "line": 2620,
+          "line": 2631,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "api_approved_plans",
+          "line": 2646,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "api_approved_order",
+          "line": 2655,
           "kind": "FunctionDef"
         },
         {
           "name": "api_paper_performance",
-          "line": 2635,
+          "line": 2677,
           "kind": "FunctionDef"
         },
         {
           "name": "api_instrument",
-          "line": 2653,
+          "line": 2695,
           "kind": "FunctionDef"
         },
         {
           "name": "api_ideas",
-          "line": 2671,
+          "line": 2713,
           "kind": "FunctionDef"
         },
         {
           "name": "api_movers",
-          "line": 2747,
+          "line": 2789,
           "kind": "FunctionDef"
         },
         {
           "name": "_sectors_bg",
-          "line": 2762,
+          "line": 2804,
           "kind": "FunctionDef"
         },
         {
           "name": "api_sectors",
-          "line": 2799,
+          "line": 2841,
           "kind": "FunctionDef"
         },
         {
           "name": "_indices_bg",
-          "line": 2818,
+          "line": 2860,
           "kind": "FunctionDef"
         },
         {
           "name": "api_indices",
-          "line": 2843,
+          "line": 2885,
           "kind": "FunctionDef"
         },
         {
           "name": "api_catalysts",
-          "line": 2858,
+          "line": 2900,
           "kind": "FunctionDef"
         },
         {
           "name": "api_attribution",
-          "line": 2879,
+          "line": 2921,
           "kind": "FunctionDef"
         },
         {
           "name": "api_ticker",
-          "line": 2942,
+          "line": 2984,
           "kind": "FunctionDef"
         },
         {
           "name": "api_engine_status",
-          "line": 2989,
+          "line": 3031,
           "kind": "FunctionDef"
         },
         {
           "name": "_my_attribution",
-          "line": 3007,
+          "line": 3049,
           "kind": "FunctionDef"
         },
         {
           "name": "_stream_payload",
-          "line": 3054,
+          "line": 3096,
           "kind": "FunctionDef"
         },
         {
           "name": "api_stream",
-          "line": 3097,
+          "line": 3139,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_my_positions",
-          "line": 3122,
+          "line": 3164,
           "kind": "FunctionDef"
         },
         {
           "name": "_my_trades",
-          "line": 3152,
+          "line": 3195,
           "kind": "FunctionDef"
         },
         {
           "name": "api_trades",
-          "line": 3176,
+          "line": 3219,
           "kind": "FunctionDef"
         },
         {
           "name": "_my_orders",
-          "line": 3197,
+          "line": 3240,
           "kind": "FunctionDef"
         },
         {
           "name": "api_orders",
-          "line": 3228,
+          "line": 3271,
           "kind": "FunctionDef"
         },
         {
           "name": "api_exit",
-          "line": 3273,
+          "line": 3316,
           "kind": "FunctionDef"
         },
         {
           "name": "api_watch",
-          "line": 3303,
+          "line": 3346,
           "kind": "FunctionDef"
         },
         {
           "name": "api_portfolio",
-          "line": 3340,
+          "line": 3383,
           "kind": "FunctionDef"
         },
         {
           "name": "api_admin_jobs",
-          "line": 3370,
+          "line": 3413,
           "kind": "FunctionDef"
         },
         {
           "name": "api_stats",
-          "line": 3421,
+          "line": 3464,
           "kind": "FunctionDef"
         },
         {
           "name": "api_stock",
-          "line": 3468,
+          "line": 3511,
           "kind": "FunctionDef"
         },
         {
           "name": "_macro_flags",
-          "line": 3656,
+          "line": 3699,
           "kind": "FunctionDef"
         },
         {
           "name": "_technical_block",
-          "line": 3684,
+          "line": 3727,
           "kind": "FunctionDef"
         },
         {
           "name": "_news",
-          "line": 3763,
+          "line": 3806,
           "kind": "FunctionDef"
         },
         {
           "name": "spa",
-          "line": 3791,
+          "line": 3834,
           "kind": "FunctionDef"
         },
         {
           "name": "gen",
-          "line": 3103,
+          "line": 3145,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_observe",
-          "line": 3379,
+          "line": 3422,
           "kind": "FunctionDef"
         },
         {
           "name": "_r",
-          "line": 3698,
+          "line": 3741,
           "kind": "FunctionDef"
         },
         {
           "name": "sc",
-          "line": 3495,
+          "line": 3538,
           "kind": "FunctionDef"
         }
       ]
@@ -17569,12 +18047,13 @@
     },
     {
       "file": "scripts/backup_db.py",
-      "lines": 44,
+      "lines": 39,
       "imports": [
         "__future__",
         "os",
         "sqlite3",
-        "datetime"
+        "datetime",
+        "pathlib"
       ],
       "symbols": [
         {
@@ -18955,6 +19434,22 @@
       "symbols": []
     },
     {
+      "file": "scripts/recovery_bundle.py",
+      "lines": 31,
+      "imports": [
+        "argparse,json,sys",
+        "pathlib",
+        "app.recovery_bundle"
+      ],
+      "symbols": [
+        {
+          "name": "main",
+          "line": 9,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "scripts/regime_isolation.py",
       "lines": 108,
       "imports": [
@@ -18974,6 +19469,47 @@
         {
           "name": "main",
           "line": 46,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "scripts/rehearse_approved_ui.py",
+      "lines": 73,
+      "imports": [
+        "argparse",
+        "datetime",
+        "json",
+        "pathlib",
+        "sqlite3",
+        "sys",
+        "fastapi",
+        "fastapi.responses",
+        "app",
+        "tests.test_approved_execution",
+        "uvicorn",
+        "tests.test_approved_execution",
+        "unittest"
+      ],
+      "symbols": [
+        {
+          "name": "fixture_app",
+          "line": 17,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "main",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "page",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "close",
+          "line": 51,
           "kind": "FunctionDef"
         }
       ]
@@ -19880,6 +20416,54 @@
       ]
     },
     {
+      "file": "tests/test_account_ui.py",
+      "lines": 50,
+      "imports": [
+        "json",
+        "shutil",
+        "subprocess",
+        "unittest",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "AccountUIContractTest",
+          "line": 10,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "render",
+          "line": 11,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_valuation_and_r_do_not_become_zero_or_claim_profit",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_us_report_is_dollars_and_escaped_unknown_sleeve",
+          "line": 31,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_approved_levels_and_uncertain_stop_are_visible_and_escaped",
+          "line": 37,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_components_are_in_actual_spa_and_retry_preserves_unknown_identity",
+          "line": 45,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_admin_panel.py",
       "lines": 231,
       "imports": [
@@ -20513,6 +21097,104 @@
       ]
     },
     {
+      "file": "tests/test_approved_execution.py",
+      "lines": 78,
+      "imports": [
+        "json",
+        "pathlib",
+        "sqlite3",
+        "tempfile",
+        "unittest",
+        "datetime",
+        "unittest.mock",
+        "app",
+        "app.instrument_catalog"
+      ],
+      "symbols": [
+        {
+          "name": "ApprovedPaperPipelineTest",
+          "line": 13,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 14,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "submit",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_entry_restart_protection_exit_pnl_and_immutable_identity",
+          "line": 37,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_off_unknown_outside_zone_stale_and_account_epoch_refuse",
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_unapproved_research_and_key_rebinding_refuse",
+          "line": 61,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_atomic_ledger_failure_and_insufficient_cash_cannot_create_a_fill",
+          "line": 72,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_approved_order_api.py",
+      "lines": 64,
+      "imports": [
+        "unittest",
+        "json",
+        "sqlite3",
+        "fastapi.testclient",
+        "scripts.rehearse_approved_ui",
+        "app",
+        "app",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "ApprovedOrderAPITest",
+          "line": 8,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 9,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "restore",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_real_handlers_report_owned_fills_and_reconcile_accounting",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_override_cross_owner_no_session_and_regime_off_refuse",
+          "line": 37,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_malformed_order_and_health_evidence_fail_explicitly",
+          "line": 52,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_assessment_audit.py",
       "lines": 67,
       "imports": [
@@ -20566,7 +21248,7 @@
     },
     {
       "file": "tests/test_audit_regressions.py",
-      "lines": 180,
+      "lines": 184,
       "imports": [
         "sqlite3",
         "os",
@@ -20650,42 +21332,42 @@
         },
         {
           "name": "submit",
-          "line": 121,
+          "line": 125,
           "kind": "FunctionDef"
         },
         {
           "name": "update",
-          "line": 126,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "test_acceptance_partial_fill_and_sell_remain_distinct",
           "line": 130,
           "kind": "FunctionDef"
         },
         {
+          "name": "test_acceptance_partial_fill_and_sell_remain_distinct",
+          "line": 134,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "test_duplicate_request_and_cross_user_snapshot_do_not_change_exposure",
-          "line": 143,
+          "line": 147,
           "kind": "FunctionDef"
         },
         {
           "name": "test_timeout_persists_unknown_and_does_not_retry",
-          "line": 149,
+          "line": 153,
           "kind": "FunctionDef"
         },
         {
           "name": "test_rejected_exit_keeps_holdings_and_durable_exit_request",
-          "line": 158,
+          "line": 162,
           "kind": "FunctionDef"
         },
         {
           "name": "test_terminal_order_cannot_reopen_on_delayed_ack",
-          "line": 165,
+          "line": 169,
           "kind": "FunctionDef"
         },
         {
           "name": "test_partial_entry_is_cancelled_and_terminal_before_exit",
-          "line": 170,
+          "line": 174,
           "kind": "FunctionDef"
         }
       ]
@@ -23703,6 +24385,107 @@
         {
           "name": "test_cash_transport_preserves_identity_and_absent_status_is_unknown",
           "line": 21,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_execution_contracts.py",
+      "lines": 59,
+      "imports": [
+        "sqlite3",
+        "unittest",
+        "dataclasses",
+        "datetime",
+        "app",
+        "app.instrument_catalog"
+      ],
+      "symbols": [
+        {
+          "name": "ExecutionContractTest",
+          "line": 9,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 10,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "record",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "order",
+          "line": 24,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_sourced_contract_and_exact_session_enable_only_the_fixture",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_bans_corporate_actions_holiday_and_circuits_refuse",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_future_conflicting_or_unreviewed_evidence_never_leaks_into_decisions",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_malformed_units_are_refused_without_truncation",
+          "line": 53,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_execution_events.py",
+      "lines": 52,
+      "imports": [
+        "sqlite3",
+        "unittest",
+        "unittest.mock",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "ExecutionObservationTest",
+          "line": 8,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 9,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "submit",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_ack_partial_duplicate_and_immutability_are_owned",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_fill_and_observation_are_atomic",
+          "line": 30,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_worker_takeover_after_transmission_preserves_unresolved_intent",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "send",
+          "line": 41,
           "kind": "FunctionDef"
         }
       ]
@@ -28106,8 +28889,65 @@
       ]
     },
     {
+      "file": "tests/test_live_release.py",
+      "lines": 65,
+      "imports": [
+        "json",
+        "os",
+        "pathlib",
+        "sqlite3",
+        "tempfile",
+        "unittest",
+        "datetime",
+        "unittest.mock",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "LiveReleaseAuthorizationTest",
+          "line": 13,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 14,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "write",
+          "line": 31,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_exact_reviewed_account_route_model_only",
+          "line": 33,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_malformed_scope_or_nontext_approval_never_grants_access",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_expired_naive_wrong_build_missing_and_public_evidence_refuse",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_gate_or_idle_sessions_cannot_authorize",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_armed_account_cannot_send_new_order_without_authorization",
+          "line": 59,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_live_trade.py",
-      "lines": 531,
+      "lines": 546,
       "imports": [
         "__future__",
         "importlib",
@@ -28120,6 +28960,7 @@
         "app",
         "app",
         "tests.broker_evidence_fixtures",
+        "app",
         "inspect",
         "pathlib",
         "inspect",
@@ -28163,33 +29004,38 @@
           "kind": "ClassDef"
         },
         {
-          "name": "MirrorEntryTest",
+          "name": "ApprovedFixtureCase",
           "line": 128,
           "kind": "ClassDef"
         },
         {
+          "name": "MirrorEntryTest",
+          "line": 140,
+          "kind": "ClassDef"
+        },
+        {
           "name": "MirrorExitTest",
-          "line": 210,
+          "line": 223,
           "kind": "ClassDef"
         },
         {
           "name": "RoundTripThroughTheEngineTest",
-          "line": 274,
+          "line": 288,
           "kind": "ClassDef"
         },
         {
           "name": "ManualBuyReachesTheBrokerTest",
-          "line": 367,
+          "line": 382,
           "kind": "ClassDef"
         },
         {
           "name": "EngineIsolationTest",
-          "line": 434,
+          "line": 449,
           "kind": "ClassDef"
         },
         {
           "name": "ProductCodeTest",
-          "line": 461,
+          "line": 476,
           "kind": "ClassDef"
         },
         {
@@ -28244,197 +29090,202 @@
         },
         {
           "name": "setUp",
-          "line": 129,
+          "line": 134,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "setUp",
+          "line": 141,
           "kind": "FunctionDef"
         },
         {
           "name": "_arm",
-          "line": 133,
+          "line": 146,
           "kind": "FunctionDef"
         },
         {
           "name": "_entry",
-          "line": 137,
+          "line": 150,
           "kind": "FunctionDef"
         },
         {
           "name": "test_disarmed_places_nothing",
-          "line": 140,
+          "line": 153,
           "kind": "FunctionDef"
         },
         {
           "name": "test_armed_places_a_real_buy",
-          "line": 145,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "test_a_symbol_without_a_key_is_skipped_and_logged",
           "line": 158,
           "kind": "FunctionDef"
         },
         {
+          "name": "test_a_symbol_without_a_key_is_skipped_and_logged",
+          "line": 171,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "test_an_unreadable_margin_blocks_the_buy",
-          "line": 168,
+          "line": 181,
           "kind": "FunctionDef"
         },
         {
           "name": "test_an_unmirrored_lane_is_skipped",
-          "line": 177,
+          "line": 190,
           "kind": "FunctionDef"
         },
         {
           "name": "test_it_does_not_double_up_on_a_symbol_already_held",
-          "line": 185,
+          "line": 198,
           "kind": "FunctionDef"
         },
         {
           "name": "test_a_us_symbol_is_never_mirrored",
-          "line": 193,
+          "line": 206,
           "kind": "FunctionDef"
         },
         {
           "name": "test_a_broker_rejection_is_recorded_as_failed",
-          "line": 200,
+          "line": 213,
           "kind": "FunctionDef"
         },
         {
           "name": "setUp",
-          "line": 211,
+          "line": 224,
           "kind": "FunctionDef"
         },
         {
           "name": "test_it_sells_the_live_quantity_not_the_paper_one",
-          "line": 223,
+          "line": 237,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_position_is_flat_afterwards",
-          "line": 233,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "test_selling_nothing_held_places_no_order",
-          "line": 241,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "test_exit_uses_owned_instrument_when_the_universe_changes",
           "line": 247,
           "kind": "FunctionDef"
         },
         {
-          "name": "test_linked_exit_is_queued_while_entry_fill_is_unknown",
+          "name": "test_selling_nothing_held_places_no_order",
           "line": 255,
           "kind": "FunctionDef"
         },
         {
+          "name": "test_exit_uses_owned_instrument_when_the_universe_changes",
+          "line": 261,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_linked_exit_is_queued_while_entry_fill_is_unknown",
+          "line": 269,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "test_a_disarmed_exit_records_that_shares_are_still_held",
-          "line": 266,
+          "line": 280,
           "kind": "FunctionDef"
         },
         {
           "name": "setUp",
-          "line": 282,
+          "line": 296,
           "kind": "FunctionDef"
         },
         {
           "name": "_ro",
-          "line": 294,
+          "line": 309,
           "kind": "FunctionDef"
         },
         {
           "name": "test_a_full_buy_then_exit_places_both_real_orders",
-          "line": 298,
+          "line": 313,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_exit_reads_the_symbol_before_the_row_is_deleted",
-          "line": 324,
+          "line": 339,
           "kind": "FunctionDef"
         },
         {
           "name": "test_an_exit_still_sells_when_the_live_buy_was_smaller",
-          "line": 349,
+          "line": 364,
           "kind": "FunctionDef"
         },
         {
           "name": "test_manual_buy_writes_the_callers_book_not_the_house",
-          "line": 377,
+          "line": 392,
           "kind": "FunctionDef"
         },
         {
           "name": "test_manual_is_a_mirrored_lane",
-          "line": 395,
+          "line": 410,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_engine_never_fans_a_manual_entry_out",
-          "line": 400,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "test_a_manual_entry_places_a_real_buy",
           "line": 415,
           "kind": "FunctionDef"
         },
         {
+          "name": "test_a_manual_entry_places_a_real_buy",
+          "line": 430,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "test_a_broker_outage_does_not_stop_the_paper_book",
-          "line": 437,
+          "line": 452,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_mirror_is_a_noop_when_not_ready",
-          "line": 448,
+          "line": 463,
           "kind": "FunctionDef"
         },
         {
           "name": "test_same_day_lanes_are_intraday",
-          "line": 472,
+          "line": 487,
           "kind": "FunctionDef"
         },
         {
           "name": "test_multi_day_lanes_stay_delivery",
-          "line": 477,
+          "line": 492,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_classification_is_read_from_the_engine",
-          "line": 483,
+          "line": 498,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_buy_sends_the_lanes_product",
-          "line": 490,
+          "line": 505,
           "kind": "FunctionDef"
         },
         {
           "name": "test_the_sell_matches_the_buy",
-          "line": 506,
+          "line": 521,
           "kind": "FunctionDef"
         },
         {
           "name": "test_an_unknown_history_falls_back_to_delivery",
-          "line": 527,
+          "line": 542,
           "kind": "FunctionDef"
         },
         {
           "name": "fake_place",
-          "line": 289,
+          "line": 304,
           "kind": "FunctionDef"
         },
         {
           "name": "fake_place",
-          "line": 422,
+          "line": 437,
           "kind": "FunctionDef"
         },
         {
           "name": "fake",
-          "line": 497,
+          "line": 512,
           "kind": "FunctionDef"
         },
         {
           "name": "fake",
-          "line": 515,
+          "line": 530,
           "kind": "FunctionDef"
         }
       ]
@@ -33469,6 +34320,108 @@
       ]
     },
     {
+      "file": "tests/test_protection_lifecycle.py",
+      "lines": 156,
+      "imports": [
+        "sqlite3",
+        "time",
+        "unittest",
+        "datetime",
+        "unittest.mock",
+        "app",
+        "app.instrument_catalog",
+        "app",
+        "datetime"
+      ],
+      "symbols": [
+        {
+          "name": "ProtectionLifecycleTest",
+          "line": 11,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "UpstoxProtectionTransportTest",
+          "line": 144,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 12,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "fill",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "native",
+          "line": 39,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "state",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_acknowledgement_creates_no_protected_inventory",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_timeout_and_restart_never_repeat_native_submission",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_accepted_stop_needs_exact_status_and_cancellation_needs_confirmation",
+          "line": 62,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_trigger_cancel_race_attaches_owned_exit_and_never_sells_twice",
+          "line": 70,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_expired_changed_and_duplicate_native_evidence_block",
+          "line": 83,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_no_activation_without_ownership_rules_or_authorization",
+          "line": 94,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_submitting_crash_and_append_only_event_log",
+          "line": 103,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_authorization_revocation_and_pending_entry_refuse_native_io",
+          "line": 108,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_untransmitted_stop_is_withdrawn_before_app_exit",
+          "line": 122,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_later_same_ticker_entry_does_not_revive_old_stop",
+          "line": 129,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_single_sell_stop_payload_and_no_retry_on_timeout",
+          "line": 145,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_quality_forward_watch.py",
       "lines": 135,
       "imports": [
@@ -34026,6 +34979,72 @@
         {
           "name": "test_a_refused_daily_entry_returns_the_cash",
           "line": 136,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_recovery_bundle.py",
+      "lines": 112,
+      "imports": [
+        "io",
+        "json",
+        "os",
+        "pathlib",
+        "sqlite3",
+        "tarfile",
+        "tempfile",
+        "unittest",
+        "cryptography.fernet",
+        "app",
+        "app",
+        "unittest.mock",
+        "app.recovery_guard"
+      ],
+      "symbols": [
+        {
+          "name": "RecoveryBundleTests",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 15,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_restore_exact_book_protocol_permissions_without_starting_execution",
+          "line": 31,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_incomplete_full_declaration_refuses_before_publication",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_key_wrong_key_corruption_never_creates_restore",
+          "line": 59,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_encrypted_credentials_need_independent_escrow_and_matching_owner",
+          "line": 66,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_private_key_and_plaintext_credential_refusal",
+          "line": 83,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_traversal_links_duplicate_members_and_bad_hash_refuse",
+          "line": 93,
           "kind": "FunctionDef"
         }
       ]
@@ -39593,7 +40612,7 @@
       "method": "GET",
       "path": "/v2/api/overview",
       "file": "app/v2_web.py",
-      "line": 427,
+      "line": 428,
       "handler": "api_overview",
       "guards": [
         "Depends"
@@ -39603,7 +40622,7 @@
       "method": "GET",
       "path": "/v2/api/positions",
       "file": "app/v2_web.py",
-      "line": 668,
+      "line": 669,
       "handler": "api_positions",
       "guards": [
         "Depends"
@@ -39613,7 +40632,7 @@
       "method": "GET",
       "path": "/v2/api/index-settings",
       "file": "app/v2_web.py",
-      "line": 784,
+      "line": 785,
       "handler": "api_index_settings",
       "guards": []
     },
@@ -39621,7 +40640,7 @@
       "method": "POST",
       "path": "/v2/api/index-settings",
       "file": "app/v2_web.py",
-      "line": 807,
+      "line": 808,
       "handler": "api_index_settings_save",
       "guards": [
         "Depends"
@@ -39631,7 +40650,7 @@
       "method": "GET",
       "path": "/v2/api/pay-qr",
       "file": "app/v2_web.py",
-      "line": 1056,
+      "line": 1057,
       "handler": "api_pay_qr",
       "guards": [
         "Depends"
@@ -39641,7 +40660,7 @@
       "method": "GET",
       "path": "/v2/api/payment-settings",
       "file": "app/v2_web.py",
-      "line": 1090,
+      "line": 1091,
       "handler": "api_payment_settings",
       "guards": [
         "Depends"
@@ -39651,7 +40670,7 @@
       "method": "POST",
       "path": "/v2/api/payment-settings",
       "file": "app/v2_web.py",
-      "line": 1095,
+      "line": 1096,
       "handler": "api_payment_settings_save",
       "guards": [
         "Depends"
@@ -39661,7 +40680,7 @@
       "method": "POST",
       "path": "/v2/api/upgrade",
       "file": "app/v2_web.py",
-      "line": 1112,
+      "line": 1113,
       "handler": "api_upgrade",
       "guards": [
         "Depends"
@@ -39671,7 +40690,7 @@
       "method": "GET",
       "path": "/v2/api/admin/requests",
       "file": "app/v2_web.py",
-      "line": 1190,
+      "line": 1191,
       "handler": "api_admin_requests",
       "guards": [
         "Depends"
@@ -39681,7 +40700,7 @@
       "method": "POST",
       "path": "/v2/api/admin/requests/{rid}",
       "file": "app/v2_web.py",
-      "line": 1205,
+      "line": 1206,
       "handler": "api_admin_request_decide",
       "guards": [
         "Depends"
@@ -39691,7 +40710,7 @@
       "method": "GET",
       "path": "/v2/api/me",
       "file": "app/v2_web.py",
-      "line": 1222,
+      "line": 1223,
       "handler": "api_me",
       "guards": [
         "Depends"
@@ -39701,7 +40720,7 @@
       "method": "GET",
       "path": "/v2/api/admin/users",
       "file": "app/v2_web.py",
-      "line": 1266,
+      "line": 1267,
       "handler": "api_admin_users",
       "guards": [
         "Depends"
@@ -39711,7 +40730,7 @@
       "method": "POST",
       "path": "/v2/api/admin/users/{uid}",
       "file": "app/v2_web.py",
-      "line": 1291,
+      "line": 1292,
       "handler": "api_admin_user_update",
       "guards": [
         "Depends"
@@ -39721,7 +40740,7 @@
       "method": "GET",
       "path": "/v2/api/index-detail",
       "file": "app/v2_web.py",
-      "line": 1333,
+      "line": 1334,
       "handler": "api_index_detail",
       "guards": [
         "Depends"
@@ -39731,7 +40750,7 @@
       "method": "GET",
       "path": "/v2/api/index-candles",
       "file": "app/v2_web.py",
-      "line": 1366,
+      "line": 1367,
       "handler": "api_index_candles",
       "guards": []
     },
@@ -39739,7 +40758,7 @@
       "method": "GET",
       "path": "/v2/api/index-call",
       "file": "app/v2_web.py",
-      "line": 1405,
+      "line": 1406,
       "handler": "api_index_call",
       "guards": []
     },
@@ -39747,7 +40766,7 @@
       "method": "GET",
       "path": "/v2/api/preopen",
       "file": "app/v2_web.py",
-      "line": 1518,
+      "line": 1519,
       "handler": "api_preopen",
       "guards": []
     },
@@ -39755,7 +40774,7 @@
       "method": "GET",
       "path": "/v2/api/health",
       "file": "app/v2_web.py",
-      "line": 1533,
+      "line": 1534,
       "handler": "api_health",
       "guards": []
     },
@@ -39763,7 +40782,7 @@
       "method": "GET",
       "path": "/v2/api/watchlist",
       "file": "app/v2_web.py",
-      "line": 1742,
+      "line": 1743,
       "handler": "api_watchlist",
       "guards": [
         "Depends"
@@ -39773,7 +40792,7 @@
       "method": "POST",
       "path": "/v2/api/watchlist",
       "file": "app/v2_web.py",
-      "line": 1773,
+      "line": 1774,
       "handler": "api_watchlist_add",
       "guards": [
         "Depends"
@@ -39783,7 +40802,7 @@
       "method": "DELETE",
       "path": "/v2/api/watchlist/{symbol}",
       "file": "app/v2_web.py",
-      "line": 1802,
+      "line": 1803,
       "handler": "api_watchlist_del",
       "guards": [
         "Depends"
@@ -39793,7 +40812,7 @@
       "method": "POST",
       "path": "/v2/api/alerts",
       "file": "app/v2_web.py",
-      "line": 1811,
+      "line": 1812,
       "handler": "api_alerts_add",
       "guards": [
         "Depends"
@@ -39803,7 +40822,7 @@
       "method": "POST",
       "path": "/v2/api/buy",
       "file": "app/v2_web.py",
-      "line": 1870,
+      "line": 1871,
       "handler": "api_buy",
       "guards": [
         "Depends"
@@ -39813,7 +40832,7 @@
       "method": "POST",
       "path": "/v2/api/reset",
       "file": "app/v2_web.py",
-      "line": 1950,
+      "line": 1951,
       "handler": "api_reset",
       "guards": [
         "Depends"
@@ -39823,7 +40842,7 @@
       "method": "POST",
       "path": "/v2/api/sell",
       "file": "app/v2_web.py",
-      "line": 1997,
+      "line": 1998,
       "handler": "api_sell",
       "guards": [
         "Depends"
@@ -39833,7 +40852,7 @@
       "method": "DELETE",
       "path": "/v2/api/alerts/{aid}",
       "file": "app/v2_web.py",
-      "line": 2042,
+      "line": 2043,
       "handler": "api_alerts_del",
       "guards": [
         "Depends"
@@ -39843,7 +40862,7 @@
       "method": "GET",
       "path": "/v2/api/search",
       "file": "app/v2_web.py",
-      "line": 2309,
+      "line": 2310,
       "handler": "api_search",
       "guards": []
     },
@@ -39851,7 +40870,7 @@
       "method": "GET",
       "path": "/v2/api/broker",
       "file": "app/v2_web.py",
-      "line": 2374,
+      "line": 2375,
       "handler": "api_broker",
       "guards": [
         "Depends"
@@ -39861,7 +40880,7 @@
       "method": "POST",
       "path": "/v2/api/broker/config",
       "file": "app/v2_web.py",
-      "line": 2408,
+      "line": 2416,
       "handler": "api_broker_config",
       "guards": [
         "Depends"
@@ -39871,7 +40890,7 @@
       "method": "POST",
       "path": "/v2/api/broker/auth-url",
       "file": "app/v2_web.py",
-      "line": 2418,
+      "line": 2426,
       "handler": "api_broker_auth_url",
       "guards": [
         "Depends"
@@ -39881,7 +40900,7 @@
       "method": "POST",
       "path": "/v2/api/broker/connect",
       "file": "app/v2_web.py",
-      "line": 2427,
+      "line": 2435,
       "handler": "api_broker_connect",
       "guards": [
         "Depends"
@@ -39891,7 +40910,7 @@
       "method": "POST",
       "path": "/v2/api/broker/arm",
       "file": "app/v2_web.py",
-      "line": 2451,
+      "line": 2459,
       "handler": "api_broker_arm",
       "guards": [
         "Depends"
@@ -39901,7 +40920,7 @@
       "method": "POST",
       "path": "/v2/api/broker/disconnect",
       "file": "app/v2_web.py",
-      "line": 2474,
+      "line": 2482,
       "handler": "api_broker_disconnect",
       "guards": [
         "Depends"
@@ -39911,7 +40930,7 @@
       "method": "GET",
       "path": "/v2/api/screen",
       "file": "app/v2_web.py",
-      "line": 2516,
+      "line": 2524,
       "handler": "api_screen",
       "guards": [
         "Depends"
@@ -39921,7 +40940,7 @@
       "method": "GET",
       "path": "/v2/api/idea-tracking",
       "file": "app/v2_web.py",
-      "line": 2567,
+      "line": 2575,
       "handler": "api_idea_tracking",
       "guards": [
         "Depends"
@@ -39931,7 +40950,7 @@
       "method": "GET",
       "path": "/v2/api/idea-publications/{publication_id}",
       "file": "app/v2_web.py",
-      "line": 2575,
+      "line": 2583,
       "handler": "api_idea_publication",
       "guards": [
         "Depends"
@@ -39941,7 +40960,7 @@
       "method": "GET",
       "path": "/v2/api/execution-health",
       "file": "app/v2_web.py",
-      "line": 2587,
+      "line": 2595,
       "handler": "api_execution_health",
       "guards": [
         "Depends"
@@ -39951,7 +40970,7 @@
       "method": "GET",
       "path": "/v2/api/idea-publications/{publication_id}/assessments",
       "file": "app/v2_web.py",
-      "line": 2605,
+      "line": 2616,
       "handler": "api_idea_assessments",
       "guards": [
         "Depends"
@@ -39961,8 +40980,28 @@
       "method": "GET",
       "path": "/v2/api/paper-ledger",
       "file": "app/v2_web.py",
-      "line": 2620,
+      "line": 2631,
       "handler": "api_paper_ledger",
+      "guards": [
+        "Depends"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/api/approved-plans",
+      "file": "app/v2_web.py",
+      "line": 2646,
+      "handler": "api_approved_plans",
+      "guards": [
+        "Depends"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/api/approved-orders",
+      "file": "app/v2_web.py",
+      "line": 2655,
+      "handler": "api_approved_order",
       "guards": [
         "Depends"
       ]
@@ -39971,7 +41010,7 @@
       "method": "GET",
       "path": "/v2/api/paper-performance",
       "file": "app/v2_web.py",
-      "line": 2635,
+      "line": 2677,
       "handler": "api_paper_performance",
       "guards": [
         "Depends"
@@ -39981,7 +41020,7 @@
       "method": "GET",
       "path": "/v2/api/instrument",
       "file": "app/v2_web.py",
-      "line": 2653,
+      "line": 2695,
       "handler": "api_instrument",
       "guards": [
         "Depends"
@@ -39991,7 +41030,7 @@
       "method": "GET",
       "path": "/v2/api/ideas",
       "file": "app/v2_web.py",
-      "line": 2671,
+      "line": 2713,
       "handler": "api_ideas",
       "guards": [
         "Depends"
@@ -40001,7 +41040,7 @@
       "method": "GET",
       "path": "/v2/api/movers",
       "file": "app/v2_web.py",
-      "line": 2747,
+      "line": 2789,
       "handler": "api_movers",
       "guards": []
     },
@@ -40009,7 +41048,7 @@
       "method": "GET",
       "path": "/v2/api/sectors",
       "file": "app/v2_web.py",
-      "line": 2799,
+      "line": 2841,
       "handler": "api_sectors",
       "guards": []
     },
@@ -40017,7 +41056,7 @@
       "method": "GET",
       "path": "/v2/api/indices",
       "file": "app/v2_web.py",
-      "line": 2843,
+      "line": 2885,
       "handler": "api_indices",
       "guards": []
     },
@@ -40025,7 +41064,7 @@
       "method": "GET",
       "path": "/v2/api/catalysts",
       "file": "app/v2_web.py",
-      "line": 2858,
+      "line": 2900,
       "handler": "api_catalysts",
       "guards": []
     },
@@ -40033,7 +41072,7 @@
       "method": "GET",
       "path": "/v2/api/attribution",
       "file": "app/v2_web.py",
-      "line": 2879,
+      "line": 2921,
       "handler": "api_attribution",
       "guards": [
         "Depends"
@@ -40043,7 +41082,7 @@
       "method": "GET",
       "path": "/v2/api/ticker",
       "file": "app/v2_web.py",
-      "line": 2942,
+      "line": 2984,
       "handler": "api_ticker",
       "guards": []
     },
@@ -40051,7 +41090,7 @@
       "method": "GET",
       "path": "/v2/api/engine-status",
       "file": "app/v2_web.py",
-      "line": 2989,
+      "line": 3031,
       "handler": "api_engine_status",
       "guards": []
     },
@@ -40059,7 +41098,7 @@
       "method": "GET",
       "path": "/v2/api/stream",
       "file": "app/v2_web.py",
-      "line": 3097,
+      "line": 3139,
       "handler": "api_stream",
       "guards": [
         "Depends"
@@ -40069,7 +41108,7 @@
       "method": "GET",
       "path": "/v2/api/trades",
       "file": "app/v2_web.py",
-      "line": 3176,
+      "line": 3219,
       "handler": "api_trades",
       "guards": [
         "Depends"
@@ -40079,7 +41118,7 @@
       "method": "GET",
       "path": "/v2/api/orders",
       "file": "app/v2_web.py",
-      "line": 3228,
+      "line": 3271,
       "handler": "api_orders",
       "guards": [
         "Depends"
@@ -40089,7 +41128,7 @@
       "method": "POST",
       "path": "/v2/api/positions/{pid}/exit",
       "file": "app/v2_web.py",
-      "line": 3273,
+      "line": 3316,
       "handler": "api_exit",
       "guards": [
         "Depends"
@@ -40099,7 +41138,7 @@
       "method": "GET",
       "path": "/v2/api/watch",
       "file": "app/v2_web.py",
-      "line": 3303,
+      "line": 3346,
       "handler": "api_watch",
       "guards": []
     },
@@ -40107,7 +41146,7 @@
       "method": "GET",
       "path": "/v2/api/portfolio",
       "file": "app/v2_web.py",
-      "line": 3340,
+      "line": 3383,
       "handler": "api_portfolio",
       "guards": []
     },
@@ -40115,7 +41154,7 @@
       "method": "GET",
       "path": "/v2/api/admin/jobs",
       "file": "app/v2_web.py",
-      "line": 3370,
+      "line": 3413,
       "handler": "api_admin_jobs",
       "guards": []
     },
@@ -40123,7 +41162,7 @@
       "method": "GET",
       "path": "/v2/api/stats",
       "file": "app/v2_web.py",
-      "line": 3421,
+      "line": 3464,
       "handler": "api_stats",
       "guards": [
         "Depends"
@@ -40133,7 +41172,7 @@
       "method": "GET",
       "path": "/v2/api/stock/{symbol}",
       "file": "app/v2_web.py",
-      "line": 3468,
+      "line": 3511,
       "handler": "api_stock",
       "guards": []
     },
@@ -40141,7 +41180,7 @@
       "method": "GET",
       "path": "/v2/",
       "file": "app/v2_web.py",
-      "line": 3791,
+      "line": 3834,
       "handler": "spa",
       "guards": []
     },
@@ -40149,8 +41188,24 @@
       "method": "GET",
       "path": "/v2",
       "file": "app/v2_web.py",
-      "line": 3791,
+      "line": 3834,
       "handler": "spa",
+      "guards": []
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "file": "scripts/rehearse_approved_ui.py",
+      "line": 48,
+      "handler": "page",
+      "guards": []
+    },
+    {
+      "method": "POST",
+      "path": "/fixture/close",
+      "file": "scripts/rehearse_approved_ui.py",
+      "line": 51,
+      "handler": "close",
       "guards": []
     }
   ],
@@ -41655,88 +42710,88 @@
     {
       "name": "Instrument",
       "file": "app/instrument_catalog.py",
-      "line": 23,
+      "line": 33,
       "bases": [],
       "fields": [
         {
           "name": "venue",
           "annotation": "str",
-          "line": 24
+          "line": 34
         },
         {
           "name": "segment",
           "annotation": "str",
-          "line": 25
+          "line": 35
         },
         {
           "name": "kind",
           "annotation": "str",
-          "line": 26
+          "line": 36
         },
         {
           "name": "symbol",
           "annotation": "str",
-          "line": 27
+          "line": 37
         },
         {
           "name": "currency",
           "annotation": "str",
-          "line": 28
+          "line": 38
         },
         {
           "name": "security_id",
           "annotation": "str",
-          "line": 29
+          "line": 39
         },
         {
           "name": "series",
           "annotation": "str",
-          "line": 30
+          "line": 40
         },
         {
           "name": "expiry",
           "annotation": "str | None",
-          "line": 31
+          "line": 41
         },
         {
           "name": "strike",
           "annotation": "str | None",
-          "line": 32
+          "line": 42
         },
         {
           "name": "right",
           "annotation": "str | None",
-          "line": 33
+          "line": 43
         },
         {
           "name": "underlying",
           "annotation": "str | None",
-          "line": 34
+          "line": 44
         },
         {
           "name": "lot_size",
           "annotation": "int",
-          "line": 35
+          "line": 45
         },
         {
           "name": "tick_size",
           "annotation": "str | None",
-          "line": 36
+          "line": 46
         },
         {
           "name": "freeze_quantity",
           "annotation": "int | None",
-          "line": 37
+          "line": 47
         },
         {
           "name": "settlement",
           "annotation": "str",
-          "line": 38
+          "line": 48
         },
         {
           "name": "tradable",
           "annotation": "bool",
-          "line": 39
+          "line": 49
         }
       ]
     },
@@ -43166,6 +44221,80 @@
       ]
     },
     {
+      "name": "approved_execution_plans",
+      "file": "app/approved_execution.py",
+      "line": 19,
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "market",
+          "type": "TEXT"
+        },
+        {
+          "name": "epoch",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        },
+        {
+          "name": "approved_by",
+          "type": "TEXT"
+        },
+        {
+          "name": "approval_reference",
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "approved_execution_events",
+      "file": "app/approved_execution.py",
+      "line": 23,
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "plan_id",
+          "type": "TEXT"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "request_key",
+          "type": "TEXT"
+        },
+        {
+          "name": "kind",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
       "name": "auth_sessions",
       "file": "app/auth.py",
       "line": 471,
@@ -43469,7 +44598,7 @@
     {
       "name": "user_book_decisions",
       "file": "app/books.py",
-      "line": 94,
+      "line": 98,
       "columns": [
         {
           "name": "id",
@@ -44849,6 +45978,76 @@
       ]
     },
     {
+      "name": "execution_contract_evidence",
+      "file": "app/execution_contracts.py",
+      "line": 26,
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT"
+        },
+        {
+          "name": "kind",
+          "type": "TEXT"
+        },
+        {
+          "name": "identity",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "TEXT"
+        },
+        {
+          "name": "effective_from",
+          "type": "TEXT"
+        },
+        {
+          "name": "effective_until",
+          "type": "TEXT"
+        },
+        {
+          "name": "source",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "live_execution_events",
+      "file": "app/execution_events.py",
+      "line": 13,
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "order_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "kind",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
       "name": "execution_outbox",
       "file": "app/execution_outbox.py",
       "line": 11,
@@ -44968,7 +46167,7 @@
     {
       "name": "instrument_snapshots",
       "file": "app/instrument_catalog.py",
-      "line": 92,
+      "line": 105,
       "columns": [
         {
           "name": "id",
@@ -44999,7 +46198,7 @@
     {
       "name": "instrument_contracts",
       "file": "app/instrument_catalog.py",
-      "line": 95,
+      "line": 108,
       "columns": [
         {
           "name": "snapshot_id",
@@ -45034,7 +46233,7 @@
     {
       "name": "v2_live_protection",
       "file": "app/order_journal.py",
-      "line": 29,
+      "line": 30,
       "columns": [
         {
           "name": "user_id",
@@ -45061,7 +46260,7 @@
     {
       "name": "live_book_epoch",
       "file": "app/order_journal.py",
-      "line": 32,
+      "line": 33,
       "columns": [
         {
           "name": "user_id",
@@ -45226,6 +46425,96 @@
         {
           "name": "params",
           "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "protection_obligations",
+      "file": "app/protection.py",
+      "line": 21,
+      "columns": [
+        {
+          "name": "entry_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "type": "TEXT"
+        },
+        {
+          "name": "instrument_key",
+          "type": "TEXT"
+        },
+        {
+          "name": "product",
+          "type": "TEXT"
+        },
+        {
+          "name": "quantity",
+          "type": "INTEGER"
+        },
+        {
+          "name": "stop",
+          "type": "REAL"
+        },
+        {
+          "name": "state",
+          "type": "TEXT"
+        },
+        {
+          "name": "native_id",
+          "type": "TEXT"
+        },
+        {
+          "name": "exit_order_id",
+          "type": "TEXT"
+        },
+        {
+          "name": "authorization_reference",
+          "type": "TEXT"
+        },
+        {
+          "name": "cancel_requested_at",
+          "type": "REAL"
+        },
+        {
+          "name": "updated_at",
+          "type": "REAL"
+        }
+      ]
+    },
+    {
+      "name": "protection_events",
+      "file": "app/protection.py",
+      "line": 30,
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "entry_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "state",
+          "type": "TEXT"
+        },
+        {
+          "name": "detail",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "REAL"
         }
       ]
     },
@@ -46053,7 +47342,7 @@
     {
       "name": "trading_schema_versions",
       "file": "app/v2_live.py",
-      "line": 1087,
+      "line": 1089,
       "columns": [
         {
           "name": "version",
@@ -46068,7 +47357,7 @@
     {
       "name": "v2_watch_user",
       "file": "app/v2_web.py",
-      "line": 1607,
+      "line": 1608,
       "columns": [
         {
           "name": "symbol",
@@ -46095,7 +47384,7 @@
     {
       "name": "v2_alerts",
       "file": "app/v2_web.py",
-      "line": 1607,
+      "line": 1608,
       "columns": [
         {
           "name": "id",
@@ -48211,6 +49500,17 @@
         {
           "name": "status",
           "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "book",
+      "file": "tests/test_recovery_bundle.py",
+      "line": 20,
+      "columns": [
+        {
+          "name": "cash",
+          "type": "INTEGER"
         }
       ]
     },
@@ -52570,6 +53870,16 @@
       "line": 50
     },
     {
+      "name": "OPENSTOCKS_BUILD_COMMIT",
+      "file": "app/live_release.py",
+      "line": 20
+    },
+    {
+      "name": "OPENSTOCKS_LIVE_RELEASE_EVIDENCE",
+      "file": "app/live_release.py",
+      "line": 19
+    },
+    {
       "name": "OPENSTOCKS_DISABLE_ENGINE",
       "file": "app/main.py",
       "line": 643
@@ -52722,57 +54032,57 @@
     {
       "name": "CATALYST_DB",
       "file": "app/v2_live.py",
-      "line": 2730
+      "line": 2736
     },
     {
       "name": "FO_DB",
       "file": "app/v2_live.py",
-      "line": 3464
+      "line": 3470
     },
     {
       "name": "FO_DB",
       "file": "app/v2_live.py",
-      "line": 3481
+      "line": 3487
     },
     {
       "name": "FO_DB",
       "file": "app/v2_live.py",
-      "line": 3503
+      "line": 3509
     },
     {
       "name": "OPENSTOCKS_DB",
       "file": "app/v2_web.py",
-      "line": 33
-    },
-    {
-      "name": "V2_PAPER_DB",
-      "file": "app/v2_web.py",
       "line": 34
     },
     {
-      "name": "CATALYST_DB",
+      "name": "V2_PAPER_DB",
       "file": "app/v2_web.py",
       "line": 35
     },
     {
       "name": "CATALYST_DB",
       "file": "app/v2_web.py",
-      "line": 2853
+      "line": 36
+    },
+    {
+      "name": "CATALYST_DB",
+      "file": "app/v2_web.py",
+      "line": 2895
     },
     {
       "name": "FO_DB",
       "file": "app/v2_web.py",
-      "line": 1475
+      "line": 1476
     },
     {
       "name": "SCREENING_DB",
       "file": "app/v2_web.py",
-      "line": 2511
+      "line": 2519
     },
     {
       "name": "FO_DB",
       "file": "app/v2_web.py",
-      "line": 1382
+      "line": 1383
     },
     {
       "name": "V2_PAPER_DB",
@@ -53188,37 +54498,37 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4843,
+      "line": 4853,
       "launcher": "threading.Thread",
       "target": "loop"
     },
     {
       "file": "app/v2_web.py",
-      "line": 241,
+      "line": 242,
       "launcher": "threading.Thread",
       "target": "_regime_bg"
     },
     {
       "file": "app/v2_web.py",
-      "line": 1638,
+      "line": 1639,
       "launcher": "threading.Thread",
       "target": "_regime_bg"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2754,
+      "line": 2796,
       "launcher": "threading.Thread",
       "target": "_movers_bg"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2805,
+      "line": 2847,
       "launcher": "threading.Thread",
       "target": "_sectors_bg"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2849,
+      "line": 2891,
       "launcher": "threading.Thread",
       "target": "_indices_bg"
     },
@@ -53445,6 +54755,12 @@
       "line": 67,
       "launcher": "threading.Thread",
       "target": "cls.srv.serve_forever"
+    },
+    {
+      "file": "tests/test_recovery_bundle.py",
+      "line": 47,
+      "launcher": "v2_live.start_background",
+      "target": "dynamic/no positional target"
     },
     {
       "file": "tests/test_release_safety.py",
@@ -53911,7 +55227,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 3795,
+      "line": 3838,
       "page_ids": [
         "ositions",
         "oslist",
@@ -53941,7 +55257,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 3924,
+      "line": 3967,
       "page_ids": [
         "m",
         "ositions",
@@ -53988,7 +55304,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 4136,
+      "line": 4179,
       "page_ids": [
         "ayName",
         "ayNote",
@@ -54335,6 +55651,14 @@
       "fields": []
     },
     {
+      "file": "app/approved_execution.py",
+      "line": 45,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
       "file": "app/auth.py",
       "line": 139,
       "names": [
@@ -54412,6 +55736,63 @@
     {
       "file": "app/broker.py",
       "line": 603,
+      "names": [],
+      "fields": [
+        "instrument_token",
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker.py",
+      "line": 622,
+      "names": [
+        "NSE_EQ"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/broker.py",
+      "line": 655,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker.py",
+      "line": 656,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker.py",
+      "line": 658,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker.py",
+      "line": 671,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker.py",
+      "line": 678,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker.py",
+      "line": 682,
       "names": [],
       "fields": [
         "instrument_token",
@@ -54783,6 +56164,65 @@
       ]
     },
     {
+      "file": "app/execution_contracts.py",
+      "line": 43,
+      "names": [],
+      "fields": [
+        "lot_size",
+        "freeze_quantity"
+      ]
+    },
+    {
+      "file": "app/execution_contracts.py",
+      "line": 45,
+      "names": [],
+      "fields": [
+        "tick_size"
+      ]
+    },
+    {
+      "file": "app/execution_contracts.py",
+      "line": 47,
+      "names": [],
+      "fields": [
+        "lot_size",
+        "freeze_quantity"
+      ]
+    },
+    {
+      "file": "app/execution_contracts.py",
+      "line": 89,
+      "names": [],
+      "fields": [
+        "lot_size",
+        "tick_size"
+      ]
+    },
+    {
+      "file": "app/execution_contracts.py",
+      "line": 90,
+      "names": [],
+      "fields": [
+        "freeze_quantity"
+      ]
+    },
+    {
+      "file": "app/execution_contracts.py",
+      "line": 94,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/execution_events.py",
+      "line": 23,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
       "file": "app/execution_ports.py",
       "line": 23,
       "names": [
@@ -54801,7 +56241,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 50,
+      "line": 48,
       "names": [],
       "fields": [
         "instrument_key"
@@ -54809,7 +56249,15 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 53,
+      "line": 56,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/execution_ports.py",
+      "line": 59,
       "names": [
         "NSE_EQ"
       ],
@@ -54819,7 +56267,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 58,
+      "line": 64,
       "names": [],
       "fields": [
         "instrument_key"
@@ -54827,7 +56275,23 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 96,
+      "line": 104,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/execution_ports.py",
+      "line": 106,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/execution_ports.py",
+      "line": 122,
       "names": [
         "BSE"
       ],
@@ -55038,7 +56502,7 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 31,
+      "line": 41,
       "names": [],
       "fields": [
         "expiry"
@@ -55046,7 +56510,7 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 35,
+      "line": 45,
       "names": [],
       "fields": [
         "lot_size"
@@ -55054,18 +56518,10 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 36,
+      "line": 46,
       "names": [],
       "fields": [
         "tick_size"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 37,
-      "names": [],
-      "fields": [
-        "freeze_quantity"
       ]
     },
     {
@@ -55073,12 +56529,20 @@
       "line": 47,
       "names": [],
       "fields": [
+        "freeze_quantity"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 57,
+      "names": [],
+      "fields": [
         "lot_size"
       ]
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 49,
+      "line": 59,
       "names": [],
       "fields": [
         "tick_size"
@@ -55086,7 +56550,7 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 51,
+      "line": 60,
       "names": [],
       "fields": [
         "lot_size",
@@ -55095,23 +56559,7 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 56,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 57,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 58,
+      "line": 66,
       "names": [],
       "fields": [
         "expiry"
@@ -55127,40 +56575,23 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 75,
+      "line": 68,
       "names": [],
       "fields": [
-        "lot_size"
+        "expiry"
       ]
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 77,
+      "line": 69,
       "names": [],
       "fields": [
-        "tick_size",
-        "freeze_quantity"
+        "expiry"
       ]
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 79,
-      "names": [],
-      "fields": [
-        "freeze_quantity"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 82,
-      "names": [],
-      "fields": [
-        "tick_size"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 84,
+      "line": 78,
       "names": [],
       "fields": [
         "expiry"
@@ -55171,52 +56602,29 @@
       "line": 86,
       "names": [],
       "fields": [
-        "expiry"
+        "lot_size"
       ]
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 87,
+      "line": 88,
       "names": [],
       "fields": [
-        "expiry"
+        "tick_size",
+        "freeze_quantity"
       ]
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 156,
+      "line": 90,
       "names": [],
       "fields": [
-        "expiry"
+        "freeze_quantity"
       ]
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 157,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 158,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 159,
-      "names": [],
-      "fields": [
-        "instrument_key"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 160,
+      "line": 93,
       "names": [],
       "fields": [
         "tick_size"
@@ -55224,15 +56632,7 @@
     },
     {
       "file": "app/instrument_catalog.py",
-      "line": 163,
-      "names": [],
-      "fields": [
-        "lot_size"
-      ]
-    },
-    {
-      "file": "app/instrument_catalog.py",
-      "line": 168,
+      "line": 95,
       "names": [],
       "fields": [
         "expiry"
@@ -55240,10 +56640,82 @@
     },
     {
       "file": "app/instrument_catalog.py",
+      "line": 97,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 100,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 169,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 170,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 171,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 172,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
       "line": 173,
       "names": [],
       "fields": [
+        "tick_size"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 176,
+      "names": [],
+      "fields": [
+        "lot_size"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 179,
+      "names": [],
+      "fields": [
         "freeze_quantity"
+      ]
+    },
+    {
+      "file": "app/instrument_catalog.py",
+      "line": 185,
+      "names": [],
+      "fields": [
+        "expiry"
       ]
     },
     {
@@ -55299,6 +56771,15 @@
       "line": 156,
       "names": [
         "NIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/live_release.py",
+      "line": 15,
+      "names": [
+        "NSE",
+        "NSE_EQ"
       ],
       "fields": []
     },
@@ -56128,7 +57609,7 @@
     },
     {
       "file": "app/order_journal.py",
-      "line": 56,
+      "line": 67,
       "names": [],
       "fields": [
         "instrument_key"
@@ -56136,7 +57617,7 @@
     },
     {
       "file": "app/order_journal.py",
-      "line": 63,
+      "line": 74,
       "names": [],
       "fields": [
         "instrument_token",
@@ -56145,7 +57626,7 @@
     },
     {
       "file": "app/order_journal.py",
-      "line": 144,
+      "line": 165,
       "names": [
         "NSE_EQ"
       ],
@@ -56153,7 +57634,7 @@
     },
     {
       "file": "app/order_journal.py",
-      "line": 159,
+      "line": 191,
       "names": [],
       "fields": [
         "instrument_key"
@@ -56161,7 +57642,7 @@
     },
     {
       "file": "app/order_journal.py",
-      "line": 222,
+      "line": 257,
       "names": [],
       "fields": [
         "instrument_key"
@@ -56287,6 +57768,128 @@
         "NSE"
       ],
       "fields": []
+    },
+    {
+      "file": "app/protection.py",
+      "line": 23,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 39,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 42,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 76,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 99,
+      "names": [
+        "NSE",
+        "NSE_EQ"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/protection.py",
+      "line": 100,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 108,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 116,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 178,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 211,
+      "names": [],
+      "fields": [
+        "instrument_token",
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 222,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 229,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 231,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 234,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 237,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
     },
     {
       "file": "app/release_gate.py",
@@ -57624,14 +59227,6 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 1059,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
       "line": 1061,
       "names": [],
       "fields": [
@@ -57640,7 +59235,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 1064,
+      "line": 1063,
       "names": [],
       "fields": [
         "expiry"
@@ -57648,7 +59243,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 1076,
+      "line": 1066,
       "names": [],
       "fields": [
         "expiry"
@@ -57656,7 +59251,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 1711,
+      "line": 1078,
       "names": [],
       "fields": [
         "expiry"
@@ -57664,7 +59259,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 1792,
+      "line": 1715,
       "names": [],
       "fields": [
         "expiry"
@@ -57672,7 +59267,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 1797,
+      "line": 1798,
       "names": [],
       "fields": [
         "expiry"
@@ -57680,7 +59275,15 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 2245,
+      "line": 1803,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 2251,
       "names": [
         "NSE"
       ],
@@ -57688,7 +59291,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 2289,
+      "line": 2295,
       "names": [
         "NSE"
       ],
@@ -57696,7 +59299,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 2754,
+      "line": 2760,
       "names": [
         "NSE"
       ],
@@ -57704,7 +59307,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 2840,
+      "line": 2846,
       "names": [
         "NSE"
       ],
@@ -57712,7 +59315,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 2960,
+      "line": 2966,
       "names": [
         "NSE"
       ],
@@ -57720,7 +59323,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3171,
+      "line": 3177,
       "names": [
         "NSE"
       ],
@@ -57728,7 +59331,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3219,
+      "line": 3225,
       "names": [
         "NIFTY"
       ],
@@ -57736,7 +59339,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3249,
+      "line": 3255,
       "names": [],
       "fields": [
         "expiry"
@@ -57744,7 +59347,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3264,
+      "line": 3270,
       "names": [],
       "fields": [
         "expiry"
@@ -57752,7 +59355,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3265,
+      "line": 3271,
       "names": [],
       "fields": [
         "expiry"
@@ -57760,7 +59363,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3369,
+      "line": 3375,
       "names": [
         "NIFTY"
       ],
@@ -57768,7 +59371,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3399,
+      "line": 3405,
       "names": [],
       "fields": [
         "lot_size"
@@ -57776,7 +59379,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3401,
+      "line": 3407,
       "names": [
         "NIFTY"
       ],
@@ -57784,7 +59387,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3431,
+      "line": 3437,
       "names": [],
       "fields": [
         "expiry"
@@ -57792,7 +59395,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3434,
+      "line": 3440,
       "names": [],
       "fields": [
         "expiry"
@@ -57800,7 +59403,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3436,
+      "line": 3442,
       "names": [],
       "fields": [
         "expiry"
@@ -57808,7 +59411,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3441,
+      "line": 3447,
       "names": [],
       "fields": [
         "expiry"
@@ -57816,7 +59419,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3469,
+      "line": 3475,
       "names": [],
       "fields": [
         "expiry"
@@ -57824,7 +59427,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3479,
+      "line": 3485,
       "names": [],
       "fields": [
         "expiry"
@@ -57832,7 +59435,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3486,
+      "line": 3492,
       "names": [],
       "fields": [
         "expiry"
@@ -57840,7 +59443,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3487,
+      "line": 3493,
       "names": [],
       "fields": [
         "expiry"
@@ -57848,7 +59451,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3497,
+      "line": 3503,
       "names": [],
       "fields": [
         "expiry"
@@ -57856,7 +59459,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3506,
+      "line": 3512,
       "names": [],
       "fields": [
         "expiry"
@@ -57864,7 +59467,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3507,
+      "line": 3513,
       "names": [],
       "fields": [
         "expiry"
@@ -57872,23 +59475,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3514,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3519,
-      "names": [
-        "NIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3523,
+      "line": 3520,
       "names": [],
       "fields": [
         "expiry"
@@ -57904,31 +59491,15 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3526,
-      "names": [
-        "BANKNIFTY"
-      ],
-      "fields": []
+      "line": 3529,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
     },
     {
       "file": "app/v2_live.py",
-      "line": 3527,
-      "names": [
-        "FINNIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3528,
-      "names": [
-        "MIDCPNIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3532,
+      "line": 3531,
       "names": [
         "NIFTY"
       ],
@@ -57936,7 +59507,39 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3536,
+      "line": 3532,
+      "names": [
+        "BANKNIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3533,
+      "names": [
+        "FINNIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3534,
+      "names": [
+        "MIDCPNIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3538,
+      "names": [
+        "NIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3542,
       "names": [],
       "fields": [
         "expiry"
@@ -57944,7 +59547,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3539,
+      "line": 3545,
       "names": [],
       "fields": [
         "expiry"
@@ -57952,7 +59555,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3562,
+      "line": 3568,
       "names": [],
       "fields": [
         "expiry"
@@ -57960,7 +59563,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3579,
+      "line": 3585,
       "names": [],
       "fields": [
         "expiry"
@@ -57968,7 +59571,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3588,
+      "line": 3594,
       "names": [],
       "fields": [
         "expiry"
@@ -57976,7 +59579,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3590,
+      "line": 3596,
       "names": [],
       "fields": [
         "expiry"
@@ -57984,7 +59587,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3602,
+      "line": 3608,
       "names": [
         "BANKNIFTY",
         "MIDCPNIFTY",
@@ -57994,7 +59597,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3603,
+      "line": 3609,
       "names": [
         "FINNIFTY"
       ],
@@ -58002,7 +59605,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3604,
+      "line": 3610,
       "names": [
         "FINNIFTY"
       ],
@@ -58010,7 +59613,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3611,
+      "line": 3617,
       "names": [],
       "fields": [
         "lot_size"
@@ -58018,7 +59621,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3628,
+      "line": 3634,
       "names": [
         "NSE"
       ],
@@ -58026,7 +59629,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3665,
+      "line": 3671,
       "names": [
         "NSE"
       ],
@@ -58034,7 +59637,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3681,
+      "line": 3687,
       "names": [
         "NSE"
       ],
@@ -58042,7 +59645,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3694,
+      "line": 3700,
       "names": [
         "NSE"
       ],
@@ -58050,47 +59653,23 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3716,
+      "line": 3722,
       "names": [
         "NIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3717,
-      "names": [
-        "NIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3718,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3719,
-      "names": [
-        "NIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3720,
-      "names": [
-        "BANKNIFTY"
       ],
       "fields": []
     },
     {
       "file": "app/v2_live.py",
       "line": 3723,
+      "names": [
+        "NIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3724,
       "names": [],
       "fields": [
         "expiry"
@@ -58108,13 +59687,37 @@
       "file": "app/v2_live.py",
       "line": 3726,
       "names": [
+        "BANKNIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3729,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3731,
+      "names": [
         "NIFTY"
       ],
       "fields": []
     },
     {
       "file": "app/v2_live.py",
-      "line": 3728,
+      "line": 3732,
+      "names": [
+        "NIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3734,
       "names": [
         "BANKNIFTY",
         "FINNIFTY",
@@ -58124,7 +59727,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3729,
+      "line": 3735,
       "names": [
         "MIDCPNIFTY"
       ],
@@ -58132,7 +59735,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3733,
+      "line": 3739,
       "names": [
         "BANKNIFTY",
         "MIDCPNIFTY",
@@ -58142,7 +59745,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3742,
+      "line": 3748,
       "names": [],
       "fields": [
         "expiry"
@@ -58150,7 +59753,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3746,
+      "line": 3752,
       "names": [],
       "fields": [
         "expiry"
@@ -58158,7 +59761,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3749,
+      "line": 3755,
       "names": [
         "NIFTY"
       ],
@@ -58166,7 +59769,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3750,
+      "line": 3756,
       "names": [
         "BANKNIFTY"
       ],
@@ -58174,7 +59777,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3751,
+      "line": 3757,
       "names": [],
       "fields": [
         "expiry"
@@ -58182,7 +59785,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3756,
+      "line": 3762,
       "names": [],
       "fields": [
         "expiry"
@@ -58190,23 +59793,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3758,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3772,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3776,
+      "line": 3764,
       "names": [],
       "fields": [
         "expiry"
@@ -58222,7 +59809,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3786,
+      "line": 3782,
       "names": [],
       "fields": [
         "expiry"
@@ -58230,7 +59817,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3791,
+      "line": 3784,
       "names": [],
       "fields": [
         "expiry"
@@ -58238,7 +59825,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3798,
+      "line": 3792,
       "names": [],
       "fields": [
         "expiry"
@@ -58246,7 +59833,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3878,
+      "line": 3797,
       "names": [],
       "fields": [
         "expiry"
@@ -58254,15 +59841,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3879,
-      "names": [
-        "NIFTY"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3880,
+      "line": 3804,
       "names": [],
       "fields": [
         "expiry"
@@ -58278,6 +59857,14 @@
     },
     {
       "file": "app/v2_live.py",
+      "line": 3885,
+      "names": [
+        "NIFTY"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_live.py",
       "line": 3886,
       "names": [],
       "fields": [
@@ -58286,7 +59873,15 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3931,
+      "line": 3890,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 3892,
       "names": [],
       "fields": [
         "expiry"
@@ -58302,23 +59897,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3996,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 3998,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_live.py",
-      "line": 4001,
+      "line": 3943,
       "names": [],
       "fields": [
         "expiry"
@@ -58334,7 +59913,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4003,
+      "line": 4004,
       "names": [],
       "fields": [
         "expiry"
@@ -58342,7 +59921,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4005,
+      "line": 4007,
       "names": [],
       "fields": [
         "expiry"
@@ -58350,7 +59929,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4084,
+      "line": 4008,
       "names": [],
       "fields": [
         "expiry"
@@ -58358,7 +59937,31 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4136,
+      "line": 4009,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 4011,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 4090,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_live.py",
+      "line": 4142,
       "names": [
         "NSE"
       ],
@@ -58366,7 +59969,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4602,
+      "line": 4608,
       "names": [],
       "fields": [
         "lot_size",
@@ -58375,7 +59978,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4607,
+      "line": 4613,
       "names": [],
       "fields": [
         "lot_size",
@@ -58384,7 +59987,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4701,
+      "line": 4709,
       "names": [
         "NSE"
       ],
@@ -58392,7 +59995,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4760,
+      "line": 4768,
       "names": [
         "NSE"
       ],
@@ -58400,7 +60003,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 291,
+      "line": 292,
       "names": [
         "BANKNIFTY"
       ],
@@ -58408,7 +60011,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 749,
+      "line": 750,
       "names": [
         "NIFTY"
       ],
@@ -58416,15 +60019,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 790,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 816,
+      "line": 791,
       "names": [],
       "fields": [
         "expiry"
@@ -58440,7 +60035,15 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1333,
+      "line": 818,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 1334,
       "names": [
         "NIFTY"
       ],
@@ -58448,7 +60051,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1366,
+      "line": 1367,
       "names": [
         "NIFTY"
       ],
@@ -58456,7 +60059,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1466,
+      "line": 1467,
       "names": [],
       "fields": [
         "expiry"
@@ -58464,7 +60067,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1481,
+      "line": 1482,
       "names": [],
       "fields": [
         "expiry"
@@ -58472,7 +60075,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1490,
+      "line": 1491,
       "names": [],
       "fields": [
         "expiry"
@@ -58480,15 +60083,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1500,
-      "names": [],
-      "fields": [
-        "expiry"
-      ]
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 1505,
+      "line": 1501,
       "names": [],
       "fields": [
         "expiry"
@@ -58504,7 +60099,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1510,
+      "line": 1507,
       "names": [],
       "fields": [
         "expiry"
@@ -58512,7 +60107,15 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1519,
+      "line": 1511,
+      "names": [],
+      "fields": [
+        "expiry"
+      ]
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 1520,
       "names": [
         "NSE"
       ],
@@ -58520,7 +60123,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 1521,
+      "line": 1522,
       "names": [
         "NSE"
       ],
@@ -58528,7 +60131,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2060,
+      "line": 2061,
       "names": [
         "NSE"
       ],
@@ -58536,7 +60139,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2315,
+      "line": 2316,
       "names": [
         "NIFTY",
         "NIFTYBEES"
@@ -58545,7 +60148,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2334,
+      "line": 2335,
       "names": [
         "BSE",
         "NSE"
@@ -58554,7 +60157,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2339,
+      "line": 2340,
       "names": [
         "BANKNIFTY",
         "NIFTY"
@@ -58563,7 +60166,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2340,
+      "line": 2341,
       "names": [
         "FINNIFTY",
         "MIDCPNIFTY"
@@ -58572,7 +60175,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2509,
+      "line": 2517,
       "names": [
         "NSE"
       ],
@@ -58580,7 +60183,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2779,
+      "line": 2821,
       "names": [
         "NSE"
       ],
@@ -58588,7 +60191,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2812,
+      "line": 2854,
       "names": [
         "BSE"
       ],
@@ -58596,7 +60199,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2814,
+      "line": 2856,
       "names": [
         "BANKNIFTY",
         "NIFTY"
@@ -58605,7 +60208,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2819,
+      "line": 2861,
       "names": [
         "BSE"
       ],
@@ -58613,7 +60216,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 2859,
+      "line": 2901,
       "names": [
         "NSE"
       ],
@@ -58621,7 +60224,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 3662,
+      "line": 3705,
       "names": [],
       "fields": [
         "expiry"
@@ -58629,7 +60232,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 4848,
+      "line": 4891,
       "names": [
         "NSE"
       ],
@@ -58637,7 +60240,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5014,
+      "line": 5057,
       "names": [
         "NSE"
       ],
@@ -58645,7 +60248,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5156,
+      "line": 5199,
       "names": [
         "BANKNIFTY",
         "NIFTY"
@@ -58654,7 +60257,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5160,
+      "line": 5203,
       "names": [
         "NIFTY"
       ],
@@ -58662,7 +60265,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5161,
+      "line": 5204,
       "names": [
         "BANKNIFTY"
       ],
@@ -58670,7 +60273,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5385,
+      "line": 5428,
       "names": [
         "NSE"
       ],
@@ -58678,7 +60281,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5471,
+      "line": 5514,
       "names": [
         "NSE"
       ],
@@ -58686,7 +60289,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5509,
+      "line": 5552,
       "names": [],
       "fields": [
         "expiry"
@@ -58694,7 +60297,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5526,
+      "line": 5569,
       "names": [
         "NSE"
       ],
@@ -58702,7 +60305,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5533,
+      "line": 5576,
       "names": [
         "NSE"
       ],
@@ -58710,49 +60313,9 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 5538,
+      "line": 5581,
       "names": [
         "NIFTYBEES"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 5557,
-      "names": [
-        "NIFTYBEES"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 5559,
-      "names": [
-        "NSE"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 5577,
-      "names": [
-        "NIFTYBEES"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 5582,
-      "names": [
-        "NSE"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/v2_web.py",
-      "line": 5585,
-      "names": [
-        "NSE"
       ],
       "fields": []
     },
@@ -58760,13 +60323,53 @@
       "file": "app/v2_web.py",
       "line": 5600,
       "names": [
+        "NIFTYBEES"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 5602,
+      "names": [
         "NSE"
       ],
       "fields": []
     },
     {
       "file": "app/v2_web.py",
-      "line": 5771,
+      "line": 5620,
+      "names": [
+        "NIFTYBEES"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 5625,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 5628,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 5643,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/v2_web.py",
+      "line": 5814,
       "names": [
         "NIFTY"
       ],
@@ -58774,7 +60377,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6013,
+      "line": 6056,
       "names": [
         "NIFTY"
       ],
@@ -58782,7 +60385,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6045,
+      "line": 6088,
       "names": [
         "NIFTY"
       ],
@@ -58790,7 +60393,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6048,
+      "line": 6091,
       "names": [],
       "fields": [
         "expiry"
@@ -58798,7 +60401,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6049,
+      "line": 6092,
       "names": [],
       "fields": [
         "expiry"
@@ -58806,7 +60409,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6050,
+      "line": 6093,
       "names": [],
       "fields": [
         "expiry"
@@ -58814,7 +60417,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6064,
+      "line": 6107,
       "names": [],
       "fields": [
         "expiry"
@@ -58822,7 +60425,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6071,
+      "line": 6114,
       "names": [],
       "fields": [
         "expiry"
@@ -58830,7 +60433,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6297,
+      "line": 6341,
       "names": [
         "BANKNIFTY",
         "FINNIFTY",
@@ -58841,7 +60444,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6298,
+      "line": 6342,
       "names": [
         "BANKNIFTY"
       ],
@@ -58849,7 +60452,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6302,
+      "line": 6346,
       "names": [
         "BANKNIFTY",
         "MIDCPNIFTY",
@@ -58859,7 +60462,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6305,
+      "line": 6349,
       "names": [
         "BANKNIFTY",
         "FINNIFTY",
@@ -58870,7 +60473,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6316,
+      "line": 6360,
       "names": [
         "NIFTY"
       ],
@@ -58878,7 +60481,7 @@
     },
     {
       "file": "app/v2_web.py",
-      "line": 6594,
+      "line": 6638,
       "names": [
         "NSE"
       ],
@@ -60267,79 +61870,79 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 3711,
+      "line": 3717,
       "name": "INDEX_OPT_SQUAREOFF",
       "type": "str"
     },
     {
       "file": "app/v2_live.py",
-      "line": 3728,
+      "line": 3734,
       "name": "TARGET_INDEX_SCALE",
       "type": "dict"
     },
     {
       "file": "app/v2_live.py",
-      "line": 4081,
+      "line": 4087,
       "name": "INDEX_OPT_INTERVAL",
       "type": "int"
     },
     {
       "file": "app/v2_live.py",
-      "line": 4083,
+      "line": 4089,
       "name": "INDEX_SPOT_INTERVAL",
       "type": "int"
     },
     {
       "file": "app/v2_live.py",
-      "line": 4084,
+      "line": 4090,
       "name": "EXPIRY_LAST_ENTRY",
       "type": "str"
     },
     {
       "file": "app/v2_web.py",
-      "line": 1329,
+      "line": 1330,
       "name": "INDEX_DETAIL_TTL",
       "type": "int"
     },
     {
       "file": "app/v2_web.py",
-      "line": 1401,
+      "line": 1402,
       "name": "INDEX_CALL_TTL",
       "type": "int"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2339,
+      "line": 2340,
       "name": "_INDEX_NAMES",
       "type": "dict"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2809,
+      "line": 2851,
       "name": "_index_cache",
       "type": "dict"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2814,
+      "line": 2856,
       "name": "_INDEX_SYMS",
       "type": "list"
     },
     {
       "file": "app/v2_web.py",
-      "line": 439,
+      "line": 440,
       "name": "markets",
       "type": "list"
     },
     {
       "file": "app/v2_web.py",
-      "line": 3061,
+      "line": 3103,
       "name": "markets",
       "type": "list"
     },
     {
       "file": "app/v2_web.py",
-      "line": 2996,
+      "line": 3038,
       "name": "markets",
       "type": "list"
     },
@@ -60520,6 +62123,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/release-audit-2026-10-06/ui-evidence/approved-paper-mobile.png",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/release-audit-2026-10-06/ui-review.md",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -60549,8 +62156,8 @@
     }
   ],
   "baseline": {
-    "source_commit": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
-    "generated_at": "2026-10-06T12:13:00.120091+00:00",
+    "source_commit": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
+    "generated_at": "2026-10-06T14:35:10.976870+00:00",
     "dirty_source": true,
     "coverage": "static declarations; semantic review recorded separately"
   },
@@ -60559,18 +62166,20 @@
     "AGENTS.md": "71f8aea0b72b5992a0f94824d91cb56b13e919b1a699f975e81d0d53add744e7",
     "BACKLOG.md": "2e12e8643a56ed5b21c9bd6562caf3991feb5deb74f9cfdf1a64f4b90900dd0c",
     "Dockerfile": "1f9d001f92129a44be59a2f1f40ec7f5cf88560ecf1a33d040e89fbd42d5295c",
-    "HANDOFF.md": "8f1e40076879ed3c584a31c2bdc2650233edfa50bff07dbce5f13f842ddc760b",
+    "HANDOFF.md": "c2ae145f0d771e84ba6fce6f1b7f5bdff28e358bd0a36bad7a5099fcf17278c7",
     "README.md": "0b54fb4b0dcf1b9d74de46d55482266989e39baed507bea5d64102ef9e1fffb6",
     "app/__init__.py": "f2612cd63ebdd791933240e7cdd80f931c4316a73bc02e8956e68137f6ba1ce8",
     "app/account.py": "f78c9df6e75511b73c5793047e1a20a362291b2bb547dd681e4ed96a712d6f93",
     "app/account_safety.py": "b85f3a33d42d6d152a444c846f9c3fe088b15badf8eefa9fe302468d7057abcf",
+    "app/account_ui.py": "22b7434f58c4ceb5f9ae04fafe0a1a6f39f9420c5ce3bfafefd0bc3f2a6bd737",
     "app/agent.py": "956cb4e271bc78866ba4d53418b6bc6cd518ff419c6a421af661e97672a9d170",
     "app/analysis_tools.py": "8aa0ca1eb6d1b3138277dd7889ed8390191b0f3469ec982d562a637d15fc1f20",
     "app/analysts.py": "02f72cda86a5f7dcc41dba5c62aa88ea16c5735164de3f2cf15707e8564f564c",
+    "app/approved_execution.py": "58bc688d129ed9a318b48b78bb0af066f9154bf237dbcd7440eedd9084ebf24e",
     "app/auth.py": "60db8d54bdc6ca6b9b892507a4a16afd5a0b62d9d216f684fd83ad7c344e0267",
     "app/bars5m.py": "988a2a1f5fe24f6deb816b88523a31aa23ed6ce2f4ae063adec8ef4c6e9af7a1",
-    "app/books.py": "7a9083f46891a76d277481a0d5996f5b6c52fc8551dbba144c043f67ca05ecd3",
-    "app/broker.py": "b57d4d46550e1d30bf07deb798a0790f896b70a300445b64924e089cb1a38cb0",
+    "app/books.py": "c5955b0a147f5fee35c6a56c79dd19983a6229f7f5805299f7aee4fdd09ecae9",
+    "app/broker.py": "05d36e1f4283dff322e99542107fd57b4b02f12a7f614c33e41dc7cb92ff2054",
     "app/broker_access.py": "c0fafef2e8f1134689713c13d1720083c666dbef0313d750d81218895cd10c56",
     "app/broker_reconciliation.py": "d37130c4264e61c03e1fe3e63580e26e42ad3be5e479f6aa26a0e54f136c741d",
     "app/canonical_trade.py": "f83e9392074c19add0483d6a403e4f4964dcd0d839e2b0816c2509773dcf83d7",
@@ -60585,8 +62194,10 @@
     "app/delivery_data.py": "2df7872e7a90cfdf650118a28df9339de5eba75aa6da605f190ee7fae54a809f",
     "app/desk_ui.py": "8100dee31e051b4e98814c9c26be03bc497545398fb3aa34c698078dfc4a3afa",
     "app/event_calendar.py": "dcd68af1759b6f7cd42872c6a705cb93e8a8bf87677951d227241fa712cf237f",
+    "app/execution_contracts.py": "82f4a5cf60556a9b5697c6eac11f1e8ee8fb8681885619af441897cc6c2973d1",
+    "app/execution_events.py": "b06436ec19f1599b154987984ffc22c241c20c69358ba8537fc47d4a0b1a6afe",
     "app/execution_outbox.py": "55d8d84b04599494f14216b976795940b3ad302c0b7543a63ab5d55253161cfd",
-    "app/execution_ports.py": "3750dbf533645493e4b93ba892a9a7ba5f36a8819a4e2059e21c6e6f7e45e572",
+    "app/execution_ports.py": "f7fee9bf0cf9aaf047ee88ee052ce907f88f237637ac932e46138db33deac920",
     "app/exit_policy.py": "61adf5136ae16b339b89eff386d255a5279478cf327cb9c8d488d3c9e08a268f",
     "app/factor_investigation.py": "c0f9c3bd15eb915a0744016adf55ce70776f111e340d4c931a347f886f172222",
     "app/full_spectrum.py": "79eeb2f31d619e6267a50ea7f7fa3aedd8b6aaa164afc6cdcc2cfdcf0d3dc8b3",
@@ -60596,10 +62207,11 @@
     "app/india_top_gainers.py": "3c111c1a961151742ba4d59f850c8493e58efe1c3568507d8616360394e4603d",
     "app/indicators.py": "f467d5b0cc678e08733f5d7a13c1a0ab4b7c8f90da40a1b0f74ecfc548935449",
     "app/institutional_feeds.py": "a2b09d549e775d1fec312c81482029c21914b4130de2e64f9969e732f80ea56d",
-    "app/instrument_catalog.py": "e75b56c4b2a4d5b136d70d65eaf047b08f873d69320fb45a9984217ce3bc70f1",
+    "app/instrument_catalog.py": "a9a72540522415e51d536fbfe483ebdd283aa320ee00634cf7f4b60861df9be0",
     "app/jobs_health.py": "f2acc9c725790c221089351417e7bb07592c646809dbaea1cfe36cba8e06a520",
     "app/levels.py": "071c44109caea4a5bc12c8b84f8d29fbe33c07976c5d7fcfe5f6ececc21ea8d2",
-    "app/live_trade.py": "5bee320498b60dac4cd5756b8729ff9a7ab6fe95457b20f9317d692daccb1599",
+    "app/live_release.py": "a00ec4a6b761362f0bf232ec76386ec3ad07a878492dec2b869e8d4d025f609f",
+    "app/live_trade.py": "b0ca86a0f1e9eac56b860cde7ec9d4da28968686eb74b13a8f1d61a70a52bfce",
     "app/llm_brain.py": "89075c530608d3fcd26be04691ba275e2a2e158328d7cf465f4f285ed6ff7a81",
     "app/llm_policy.py": "32864c51df12d5c685af0e485a172e2d314181aaad4cb467b767571fef32b83c",
     "app/llm_usage.py": "42624da2f683d2bafcc00db62e2ed7a14c6226fb91eab1f10dc69afd5830bc7d",
@@ -60622,20 +62234,23 @@
     "app/opportunity_state.py": "7b32494cc31e0dba47ceb6ebe8f99ad3c42915580bebb8e5b43dd23eda5a8a02",
     "app/option_chain.py": "009a5b1a3ec7b386469cb95aaafd1154cf24af17f0998411acc19e72b28a0321",
     "app/options_intelligence.py": "ebceee47b73f0d4ade3dee7f9cb2e820cd7c1558e6c50f3f946dfb952da2538c",
-    "app/order_journal.py": "9e5bc2949400816ff21b254249f0033fdba95de0aa8d309f939e844a0d898c7b",
+    "app/order_journal.py": "19f54bb030950234e7c9e248cfadbbb964a7b3468d374ca06a1f804ea6789540",
     "app/order_router.py": "6f3c1d575ddfed821fb4ad60f53a1a73d22c7f2ac2ed8a12c01b4a509946ca39",
     "app/paper_broker.py": "a7230d0f00fe35f2b42de26e6c8725121ecec4067ffac303aadafe27c19f99be",
     "app/paper_ledger.py": "6771b26c06813572470b47dccff1d1464739e3b8a7885335515ae4e4abdaf8e8",
     "app/personal_alerts.py": "dc9c6e0afd83e738dd1535c6a048502f437987d0e3cdddd26be0ffb869dd76fe",
-    "app/personal_performance.py": "136e5de71829a3aa06cfbfe162e409076ec739022e12617150f545624e43e6e0",
-    "app/plans.py": "3e03d1209b6e047f03954eb5ae12639a84fcbea1d75a5a57d586d58864ed27cf",
+    "app/personal_performance.py": "36cc664423e4f5df0d088b5b4d588e12e67cd3529ea40110a4852463843b4f3b",
+    "app/plans.py": "33a02a7cd04f715a82e6198ca34ec4f618be0938eff80dee6851072eedf635e5",
     "app/portfolio.py": "a681cd297bd23b5033297e71113f5f0f1eb7744cbff6c1fcc0060b7c807eaef4",
     "app/pre_catalyst_engine.py": "6eabeb37c7679ba8dec0c685ff85ffbb41da4832c891f9b5a2ab2a311ade4138",
     "app/preopen.py": "6de1e90f40bb4515b3b9d61ee7656d601526957bb06b6a6da005916c00aa0fd5",
     "app/price_action.py": "ff00867a315ec646cbcf4a488b9e0e015c68f5a2889994d098f772ba601846b2",
+    "app/protection.py": "b3c5630819b2a37b921e39680dd4c8c72f212819acde8e8e2a821fa909243c37",
     "app/rally_plan.py": "590cd04cd109bb860ddb45e6549bea80ec5cb2a6edcb47b022b845ecc4425add",
     "app/raw_entry_model.py": "defacb61d6e733fb45a5e462a85b1a5a02a198dbbe1f27f7965e635f3e1e6f0f",
     "app/recommendation.py": "bde40f427a817a048f2816b866a1305b26a03179138ec7a738ad6b948b6d1c1f",
+    "app/recovery_bundle.py": "8e141668c6bc6189ac82e0ae6639f42148cb23f854f48a8093e3ba6e531a3380",
+    "app/recovery_guard.py": "0cc6dd4f93cdec9e782844eb89fedb20247c99333ede8a319466dfbf69701273",
     "app/release_gate.py": "eb0964c24413aa3687a4ecbf1155231435a3a1bec1ab3f9c549cc6f8060c9144",
     "app/request_context.py": "ee3bc252a3c3b0d972cb732e52d6e44bb8fcff9b964fdfa9b94601bd1a437069",
     "app/screening/__init__.py": "19385a317dd043fc1325cf805633775273bf33b0119fbd01cc4898e2e6a2f1d7",
@@ -60681,8 +62296,8 @@
     "app/universe.py": "12df1656dd64e9317f7b36f8912c4718f72902f082b4692751b3d6909419ef9e",
     "app/us_top_movers.py": "eccbbdd1002646f52d1a122bfac85cd30c2810b658b2ec1099348fab3fe95ec2",
     "app/v2_engine.py": "1d01c8450e19b27fc87c82426b09b3b2b3e7a29548b9e398b852318454a7ed6b",
-    "app/v2_live.py": "a474bfd31b7eddff7df4826617beb4d2ed9e0a0e74dbc92a168a37d4cd0e4709",
-    "app/v2_web.py": "36567a9019055962705e0c7303acab5c18eca6d83d2baa20356314011f75d196",
+    "app/v2_live.py": "772a260b333b65cd9a76c4e5e522269a676f22840ef182d49b3aaea955c608e1",
+    "app/v2_web.py": "13f4b7d0e06bd64d2aecdf3d347511b3611b1b6305590d10bc03f8be28cff749",
     "app/whatsapp.py": "d90427b62fe12201677c267609e73b6a7f5d013e3db0b56a115c006f460ae663",
     "app/worker_fencing.py": "df45afe21edad792792018f5e726d8d3f2dbfdc323872d58271fbfec15f50290",
     "deploy/opentrade-backup.service": "05e7019a58ad00ea054fd5a92758388cbe398e85a099580e84e0bc431a2fc0b8",
@@ -60721,7 +62336,7 @@
     "scripts/backtest_v2.py": "d5785748ef09c9cbaf846a0b779b1bcac54fd30fc7385abffd0171b461ab55d2",
     "scripts/backtest_walkforward.py": "463c483bdfc2f7d880ec3facb099747f786adf7938f4dab3b0869780e6663365",
     "scripts/backtest_yahoo_presets.py": "c1b472c794844a2a3f289a5283e663f9610fb89b46955800eba8e5f43a99c79a",
-    "scripts/backup_db.py": "4a181e2dbb46fc5bb14b020ec3e482e03e7ea499302d789a55ef459873b63ae0",
+    "scripts/backup_db.py": "c40f71faafb67f4a9f7b84bf402ff8ecf254da13012523bc8373d7f495d34f0c",
     "scripts/bigmove_detector.py": "3ae6b3623bc3f130ecb41dfcff0628159eca159056282f7d434e4866f20685e4",
     "scripts/breakout_target_bt.py": "2e01797a32586d77bf5c168d39eec1d17846064b204d2aa0b41c7dbc58f1fe7c",
     "scripts/btst_bt.py": "b7cacf9204e7bb06a9164a1a971527be49fb62862acbe8e7304968c61d188c0a",
@@ -60756,7 +62371,9 @@
     "scripts/preview_spa.py": "e5a7574d4ea9df3ff72b7306ad2d31423c5b4584623aba7f6db301906976e9d8",
     "scripts/price_action_scan.py": "df5ee3b72c6d945a69d0ab54425feec254f568a3643240ce6d50ff294a5c35d4",
     "scripts/quality_forward_report.py": "4bfe0e20dee171ed754a53d45b9aa72fe2fadf6dace0f2b6b72429e8ef91c0b0",
+    "scripts/recovery_bundle.py": "295eedb5015176cfd552d3b7d0b4ce8cd774ec8c6568477f3771ad154b21a4a3",
     "scripts/regime_isolation.py": "e6f02cc39d33c6e29b2744c8cf484bafd3d8cf76adccee3d6323ba750b83aa64",
+    "scripts/rehearse_approved_ui.py": "bace6b3ebab03359ae05d674f36c5c50a073eff492635254ece82e631e4e54d1",
     "scripts/rehearse_execution.py": "c4f251d847c8f94724cf1e807326c573c6d0f7af7584177f62ee8671d241ef09",
     "scripts/research_factor_etf.py": "1960ed7854a7524279e711b2de15a4f786d785a1a267d5630f60ab3b1b628e4d",
     "scripts/research_index_baselines.py": "375f08f5dc07f3ba032fe5d0cd6969aa1c702eb900362b42c3305b6f117db7f2",
@@ -60779,13 +62396,16 @@
     "tests/broker_evidence_fixtures.py": "b4c179878327b5f580d4b25ef39e21812f12e2aa454521eecd973a74ce32217b",
     "tests/test_account_boundaries.py": "acd0b359f780e4e5c2e5a07abee3501299dd05ccb10232de1bc6d0271880d489",
     "tests/test_account_evidence_api.py": "6951319830117a0776c4bb10d565f5eb59b6ba9425d77718b9be6c26480e1cd9",
+    "tests/test_account_ui.py": "95b8e93b533395ce74498efd84909fc7f41c0127f5d0015668a9e680eeb4f043",
     "tests/test_admin_panel.py": "90e03edad50885b248f17da30fd4d375e3bcc994aecb751f71a9dd024527c45a",
     "tests/test_agent_callbacks.py": "62e90292c684390b5851d5e8b43ec078b03319b33805873eddf5418a48f07b75",
     "tests/test_alerts.py": "c6249036bf647764ae20752c882ba407fa8a2c7ce4dff35b0436a7ff5d667a67",
     "tests/test_alpaca_market_data.py": "1515971b025604df7520ca4bdecbc550e1fcba714363fd8debd73b143e975012",
     "tests/test_analysts.py": "f452c2a3b6295dc322eb590462c982271232e5fd4180d0a3164942815885e769",
+    "tests/test_approved_execution.py": "0240d3bd20ab486ad916291253517a042daea3a532d25f3bc25b51591141c02d",
+    "tests/test_approved_order_api.py": "45e8307b9572c549fe7c0f2c991f57e350c006ac704c65b9b80c2d068e9f3085",
     "tests/test_assessment_audit.py": "30dc65a41a8935655a16c678ef9f5c7259eb879a359d397d65aae58b6c80cc5e",
-    "tests/test_audit_regressions.py": "7bd19b0a47a34c5c1e00a1ff41496f140714f8e4ea8713b8a13f0d9a506cf692",
+    "tests/test_audit_regressions.py": "cdc60687a0850a7481b0c76fe98992d493b53c7d894397fe37aaad21a05adb92",
     "tests/test_auth_session_security.py": "793880730669a09ab7bc0b4652868b8cc57d650f89e10f1e4bfd3c455d8d248d",
     "tests/test_auth_signup.py": "6d127fcf47691ddbad8841e3be998ac76599535af12a59ab64db2ba279aecfd9",
     "tests/test_bars5m.py": "e915b467606a37d92e0efb2fd4a0ec7e6b6b19c62d16b5fa55d7cc570ee30bde",
@@ -60810,6 +62430,8 @@
     "tests/test_evidence_screen.py": "b94969e56367d1bee36bb003c17eb995f5747161f8898c207cb7ca0501dfd45f",
     "tests/test_executable_replay_calibration.py": "817a0a27089f6032e4b766d64d3aa22655b32f98e554be0646a84b33756c7cb2",
     "tests/test_execution_capabilities.py": "dcc12c016ec95994f965ff7a243878e0d11a2b17a4524b6ded6173639d12d606",
+    "tests/test_execution_contracts.py": "1f0482041c71892587d8aaf2e68662fb951c8b06b3be9c9cef212322936174b3",
+    "tests/test_execution_events.py": "d3e8efd0fc20e593e567a4370676f0b72964dfbe1ed55cb39de659a0cf0bcafd",
     "tests/test_execution_hardening.py": "3183582593c54debd13a712eafccc1dc017d8e4f4730b9d89109f0f08983a4d4",
     "tests/test_exit_rules.py": "83cf645ec20d97f43ad8aba4f6b8a3ab7e2abdf3dd43262b64466d07e0505855",
     "tests/test_expiry_churn_guard.py": "9e2aede9817c1b64250cc18309065414c79ce2f445e3bafd0f91888546d9c10a",
@@ -60839,7 +62461,8 @@
     "tests/test_intraday_recorder.py": "bd0ff0a47484da2f21bc7730b20bf57821cfcdb77f7f1046e54ac67d6fc1f58e",
     "tests/test_jobs_health.py": "5dc94aed77557b7b0ebf4afb0c8bd1718ac47cd6743bbcf58894e91335691b5a",
     "tests/test_levels.py": "e69e769e50e74624fd8964995864ed1484b61aaffb4f3250e3eb07f6e9c97abf",
-    "tests/test_live_trade.py": "61fd71a17b4d7c3a1e6505a67155fcfcf219b99800fd9923e5a737a8e494dee4",
+    "tests/test_live_release.py": "3835512ebabfaf0034f9cc2314c43866901e2ab7552a91b1c2aadeb784167d36",
+    "tests/test_live_trade.py": "1270b1ab6313e26a13ebaed528d3402aaedbb3721262dc83126f153210149d07",
     "tests/test_llm_analyst_packet.py": "78b530e973e6cc93e80a02d51bbe6c350c195e38c46789414674eb748e2997f5",
     "tests/test_llm_hard_disable.py": "6b5e0d63acce45c88c895dbac13535a6031dc33b1f5bc1896d2a551d180c057f",
     "tests/test_macro_analyst.py": "fc8be76cd2f6ef35f7a20ffe74c5756d2d1ea7ce9c1f75f1f95a00fdb829c857",
@@ -60882,11 +62505,13 @@
     "tests/test_position_mark_refresh.py": "b1e8a917d1c044d1cd3c24ed4e91456d46dfaf9a4996b401615a02c6e38a1ddb",
     "tests/test_pre_catalyst_engine.py": "8577344a4ade4acee5dfea6b835fc92e156e4961f3a7bad481de7132d8bd1a53",
     "tests/test_preopen.py": "b64b47b0bcf6016cdf7e2e3386fa70959925550968e1a092eee700dede57bd92",
+    "tests/test_protection_lifecycle.py": "ecbff7d62ba49b3feaedd34d5b5b624dc2643fd51c864c37cd777cea374694ae",
     "tests/test_quality_forward_watch.py": "c1ef4131655dc0debc9f9d553d55b87a35ad72269cc960c6304878361847a66b",
     "tests/test_rally_plan.py": "4cfd82ecef45eaff96de505054cce23072f5155830436d199089262bc696d689",
     "tests/test_real_money_readiness.py": "81d9cfec486999f6c8435a2f900cf7156eb03bc50f51e510a4af36ad3b2598d2",
     "tests/test_recommendation.py": "6367f8ea7b1b9f1ae640a066ab162683c49883fb55a88d6a33008e58b653212b",
     "tests/test_record_entry.py": "6bba4513da719851740f714bd0b1550996ae572cce36ee073df44923114fcb49",
+    "tests/test_recovery_bundle.py": "14caad1ba2903c980e90c48000982a6dcfe5398f7d28fd863683c0c19061208c",
     "tests/test_release_evidence_gate.py": "228ee5d186f17e6da5ae9b3c3646da683cb243dd9afa2daff2114b24710e3df1",
     "tests/test_release_integrity.py": "b4fcfb4ecde69b2d10ff39f4e662bc0f5900ffdce7370543772d2fb8f3dca4b9",
     "tests/test_release_safety.py": "6e1ed5eed176073bbb8e1499ae4881f04d5a9d2da5b9c27f33654f890ae5736e",

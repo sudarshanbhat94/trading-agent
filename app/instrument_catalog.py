@@ -10,13 +10,23 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal,InvalidOperation
 
 from .account_safety import atomic
 
 
 class InstrumentError(ValueError):
     pass
+
+
+def _positive_decimal(value,label):
+    try:
+        if isinstance(value,bool):raise InstrumentError('invalid '+label)
+        number=Decimal(str(value))
+        if not number.is_finite() or number<=0:raise InstrumentError('invalid '+label)
+        return number
+    except (InvalidOperation,TypeError,ValueError) as exc:
+        raise InstrumentError('invalid '+label) from exc
 
 
 @dataclass(frozen=True)
@@ -46,18 +56,19 @@ class Instrument:
             raise InstrumentError("incomplete instrument identity")
         if isinstance(self.lot_size, bool) or not isinstance(self.lot_size, int) or self.lot_size < 1:
             raise InstrumentError("invalid lot size")
-        if self.tick_size is not None and (not Decimal(self.tick_size).is_finite() or Decimal(self.tick_size) <= 0):
-            raise InstrumentError("invalid tick size")
-        if self.freeze_quantity is not None and (not isinstance(self.freeze_quantity, int) or self.freeze_quantity < self.lot_size):
+        if self.tick_size is not None:_positive_decimal(self.tick_size,'tick size')
+        if self.freeze_quantity is not None and (type(self.freeze_quantity) is not int or self.freeze_quantity < self.lot_size):
             raise InstrumentError("invalid freeze quantity")
         if self.kind == "INDEX" and self.tradable:
             raise InstrumentError("an index level is not an orderable instrument")
+        if type(self.tradable) is not bool:raise InstrumentError('invalid tradability flag')
         if self.kind in {"FUTURE", "OPTION", "CURRENCY", "COMMODITY"}:
             if not self.expiry or not self.underlying:
                 raise InstrumentError("derivative identity needs expiry and underlying")
-            date.fromisoformat(self.expiry)
+            try:date.fromisoformat(self.expiry)
+            except (ValueError,TypeError) as exc:raise InstrumentError('invalid expiry') from exc
         if (self.kind == "OPTION" or self.right is not None) and (self.right not in {"CE", "PE"} or self.strike is None or
-                                      not Decimal(self.strike).is_finite() or Decimal(self.strike) <= 0):
+                                      not _positive_decimal(self.strike,'strike')):
             raise InstrumentError("option identity needs a positive strike and CE/PE")
 
     @property
@@ -78,12 +89,14 @@ class Instrument:
             raise InstrumentError("order rules are incomplete; catalogue discovery is not permission")
         if quantity > self.freeze_quantity:
             raise InstrumentError("quantity exceeds freeze limit; use approved sliced intents")
-        price = Decimal(str(price))
+        price = _positive_decimal(price,'price')
         if not price.is_finite() or price <= 0 or price % Decimal(self.tick_size):
             raise InstrumentError("price must be positive and aligned to the contract tick")
         if self.expiry:
             if self.settlement == "UNKNOWN" or expiry_cutoff is None:
                 raise InstrumentError("settlement/expiry cut-off unavailable")
+            if now.tzinfo is None or expiry_cutoff.tzinfo is None:
+                raise InstrumentError('timezone-aware settlement cut-off required')
             if now >= expiry_cutoff or now.date() > date.fromisoformat(self.expiry):
                 raise InstrumentError("contract is past its permitted exit cut-off")
 
@@ -163,6 +176,10 @@ def upstox_contract(row):
     lot = row.get("lot_size")
     if isinstance(lot,bool) or not isinstance(lot,(int,float)) or not math.isfinite(lot) or int(lot)!=lot:
         raise InstrumentError("provider lot size is invalid")
+    freeze=row.get('freeze_quantity')
+    if freeze is not None and (isinstance(freeze,bool) or not isinstance(freeze,(int,float)) or \
+                               not math.isfinite(freeze) or int(freeze)!=freeze or freeze<1):
+        raise InstrumentError('provider freeze quantity is invalid')
     spec = Instrument(str(row["exchange"]), segment, kind, str(row["trading_symbol"]),
                       "INR", str(row.get("isin") or row.get("underlying_key") or key),
                       str(row.get("series") or "UNKNOWN"), str(expiry) if expiry else None,
@@ -170,6 +187,6 @@ def upstox_contract(row):
                       raw_type if raw_type in {"CE", "PE"} else row.get("option_type"),
                       row.get("underlying_key"), int(lot),
                       str(tick) if tick else None,
-                      int(row["freeze_quantity"]) if row.get("freeze_quantity") else None,
+                      int(freeze) if freeze is not None else None,
                       str(row.get("settlement") or "UNKNOWN"), kind != "INDEX")
     return spec, key

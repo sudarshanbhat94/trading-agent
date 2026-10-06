@@ -615,3 +615,82 @@ def place_order(user_id, instrument_key, qty, side="BUY", price=0.0, product="D"
         body = {"raw": r.text[:400]}
     return dict(ok=ok and body.get("status") == "success" and bool((body.get("data") or {}).get("order_id")), status=r.status_code, order_id=(body.get("data") or {}).get("order_id"),
                 response=body)
+
+
+def _cash_contract(key,quantity,product):
+    from .instrument_catalog import InstrumentError
+    if not isinstance(key,str) or not key.startswith('NSE_EQ|') or not key.split('|',1)[1] or \
+            type(quantity) is not int or quantity<1 or product not in {'D','I'}:
+        raise InstrumentError('unsupported cash contract/quantity/product')
+
+
+def _execution_request(user_id,method,path,*,version=3,payload=None,params=None):
+    """Transport only; caller must durably reserve and authorize before I/O.
+
+    Timeout/invalid response is an unknown outcome. No retries are performed.
+    """
+    import httpx
+    base='https://api.upstox.com/v3' if version==3 else ORDER_BASE
+    response=httpx.request(method,base+path,headers={**_headers(user_id),'Content-Type':'application/json'},
+                           json=payload,params=params,timeout=25)
+    try:body=response.json()
+    except ValueError:body={}
+    return dict(ok=200<=response.status_code<300 and isinstance(body,dict) and body.get('status')=='success',
+                status=response.status_code,data=body.get('data') if isinstance(body,dict) else None)
+
+
+def modify_order(user_id,order_id,*,quantity):
+    if type(quantity) is not int or quantity<1 or not isinstance(order_id,str) or not order_id:
+        raise ValueError('invalid modification')
+    return _execution_request(user_id,'PUT','/order/modify',version=2,
+        payload=dict(order_id=order_id,quantity=quantity,validity='DAY',price=0,order_type='MARKET',
+                     disclosed_quantity=0,trigger_price=0,market_protection=MARKET_PROTECTION_PCT))
+
+
+def margin_required(user_id,instruments):
+    if not isinstance(instruments,list) or not 0<len(instruments)<=20:
+        raise ValueError('margin requires 1–20 instruments')
+    seen=set()
+    for row in instruments:
+        _cash_contract(row.get('instrument_key'),row.get('quantity'),row.get('product'))
+        if row.get('transaction_type') not in {'BUY','SELL'} or row['instrument_key'] in seen:
+            raise ValueError('invalid or duplicate margin leg')
+        seen.add(row['instrument_key'])
+    import httpx
+    response=httpx.post(f'{API_BASE}/charges/margin',headers={**_headers(user_id),'Content-Type':'application/json'},
+                        json={'instruments':instruments},timeout=25)
+    response.raise_for_status();body=response.json()
+    import math
+    value=body['data']['required_margin']
+    if body.get('status')!='success' or isinstance(value,bool) or not isinstance(value,(int,float)) or \
+            not math.isfinite(value) or value<0:
+        raise ValueError('margin evidence unavailable')
+    return body['data']
+
+
+def place_stop(user_id,instrument_key,quantity,*,product,stop):
+    """One SELL trigger protects existing cash inventory, without a second SELL.
+
+    ENTRY is the required rule name for a SINGLE GTT; it is an exit from our
+    already-filled holding. GTT acceptance never guarantees an exchange fill.
+    """
+    import math
+    _cash_contract(instrument_key,quantity,product)
+    if isinstance(stop,bool) or not isinstance(stop,(int,float)) or not math.isfinite(stop) or stop<=0:
+        raise ValueError('invalid stop trigger')
+    return _execution_request(user_id,'POST','/order/gtt/place',payload=dict(type='SINGLE',
+        instrument_token=instrument_key,quantity=quantity,product=product,transaction_type='SELL',
+        rules=[dict(strategy='ENTRY',trigger_type='BELOW',trigger_price=stop,market_protection=5)]))
+
+
+def protection_status(user_id,protection_id):
+    result=_execution_request(user_id,'GET','/order/gtt',params={'gtt_order_id':protection_id})
+    if not result['ok'] or not isinstance(result['data'],list):
+        raise ValueError('protection evidence unavailable')
+    return result['data']  # Missing/completed GTT is UNKNOWN, never proof of cancellation.
+
+
+def cancel_protection(user_id,protection_id):
+    if not isinstance(protection_id,str) or not protection_id.startswith('GTT-'):
+        raise ValueError('invalid protection identity')
+    return _execution_request(user_id,'DELETE','/order/gtt/cancel',payload={'gtt_order_id':protection_id})

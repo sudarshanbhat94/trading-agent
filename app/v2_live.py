@@ -1017,6 +1017,8 @@ def ensure_schema(v2):
         v2.execute("ALTER TABLE v2_positions ADD COLUMN entry_fee REAL DEFAULT 0")
     from . import order_journal
     order_journal.ensure_schema(v2)
+    from . import approved_execution
+    approved_execution.ensure_schema(v2)
     for m in ENABLED_MARKETS:
         if not v2.execute("SELECT 1 FROM v2_book WHERE market=?", (m,)).fetchone():
             v2.execute("INSERT INTO v2_book(market,budget,max_pos,started_at) VALUES(?,?,?,?)",
@@ -1654,6 +1656,8 @@ def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
                 closed_at=None):
     """Atomically close the exact house position and enqueue account delivery."""
     from .account_safety import atomic
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(v2)
     from . import execution_outbox, worker_fencing
     with atomic(v2):
         worker_fencing.require_current(v2)
@@ -1777,6 +1781,8 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     from .costs import entry_charge
     from .live_trade import product_for
     fee = entry_charge(shares * entry_price, product_for(strategy)) if market == "IN" else 0
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(v2)
     from .account_safety import atomic
     from . import execution_outbox, worker_fencing
     with atomic(v2):
@@ -4628,6 +4634,8 @@ def _sleeve_vix():
 
 def loop(interval):
     import uuid
+    from .recovery_guard import assert_execution_allowed
+    assert_execution_allowed(V2_DB)
     from . import worker_fencing, execution_outbox
     owner = uuid.uuid4().hex
     try:
@@ -4831,6 +4839,8 @@ def loop(interval):
 
 def start_background(interval=8):
     global _started
+    from .recovery_guard import assert_execution_allowed
+    assert_execution_allowed(V2_DB)
     if _started:
         return
     # Required migrations must succeed before startup can claim an engine.

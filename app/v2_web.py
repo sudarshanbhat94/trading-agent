@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -2380,6 +2381,8 @@ def api_broker(user: dict = Depends(require_session)):
     # static-IP setting was changed.
     broker.verify(_uid(user))
     st = broker.state(_uid(user))
+    from .live_release import authorized
+    certified,certification_reason=authorized(_uid(user),product='D',model='manual')
     v2 = _ro(V2_DB)
     try:
         today = datetime.now(IST).date().isoformat()
@@ -2395,12 +2398,17 @@ def api_broker(user: dict = Depends(require_session)):
         from .order_journal import ACTIVE
         unresolved = v2.execute("SELECT COUNT(*) FROM v2_live_orders WHERE user_id=? "
                                 "AND status IN (?,?,?,?,?)", (_uid(user),*ACTIVE)).fetchone()[0]
+        from . import broker_reconciliation,protection
+        reconciled=broker_reconciliation.ready(v2,_uid(user))
+        protection_blocked=protection.blocks_entry(v2,_uid(user))
     finally:
         v2.close()
     from .broker_access import may_open
     st.update(can_connect=may_open(user), orders_today=row[0], notional_today=round(row[1] or 0, 2),
               is_owner=True, recent=recent, unresolved_orders=unresolved,
-              order_gate_open=bool(st.get("live_ready")) and may_open(user) and not unresolved)
+              live_certified=certified,certification_reason=certification_reason,
+              protection_blocked=protection_blocked,reconciliation_ready=reconciled,
+              order_gate_open=bool(st.get("live_ready")) and may_open(user) and not unresolved and reconciled and not protection_blocked and certified)
     return JSONResponse(st)
 
 
@@ -2586,16 +2594,19 @@ def api_idea_publication(publication_id: int, user: dict = Depends(require_sessi
 @router.get("/api/execution-health")
 def api_execution_health(user: dict = Depends(require_session)):
     from .execution_ports import capability_report
+    from . import execution_events
     con = _ro(V2_DB)
     try:
         row = con.execute("SELECT checked_at,status,payload FROM broker_reconciliation WHERE user_id=?",(int(user["id"]),)).fetchone()
         incidents = con.execute("SELECT code,detail,opened_at FROM execution_incidents WHERE user_id=? "
                                 "AND resolved_at IS NULL ORDER BY opened_at DESC LIMIT 20",(int(user["id"]),)).fetchall()
-        return JSONResponse(dict(capabilities=capability_report(),
+        from . import protection
+        return JSONResponse(dict(owner_user_id=int(user['id']),capabilities=capability_report(),protection=protection.report(con,int(user['id'])),
+                                 journal_observations=execution_events.report(con,int(user['id'])),
                                  reconciliation=dict(checked_at=row[0],status=row[1],evidence=json.loads(row[2])) if row else dict(status="unavailable"),
                                  incidents=[dict(code=r[0],detail=r[1],opened_at=r[2]) for r in incidents]),
                             headers={"Cache-Control":"private, no-store"})
-    except sqlite3.Error:
+    except (sqlite3.Error,ValueError,TypeError):
         raise HTTPException(503,"Execution safety schema unavailable")
     finally:
         con.close()
@@ -2629,6 +2640,37 @@ def api_paper_ledger(market: str = "IN", user: dict = Depends(require_session)):
     except sqlite3.Error:
         raise HTTPException(503,"Paper ledger schema unavailable")
     finally:con.close()
+
+
+@router.get('/api/approved-plans')
+def api_approved_plans(user:dict=Depends(require_session)):
+    from . import approved_execution
+    con=_ro(V2_DB)
+    try:return JSONResponse(approved_execution.report(con,int(user['id'])),headers={'Cache-Control':'private, no-store'})
+    except sqlite3.Error:raise HTTPException(503,'Approved plan schema unavailable')
+    finally:con.close()
+
+
+@router.post('/api/approved-orders')
+def api_approved_order(payload:dict,user:dict=Depends(require_session)):
+    from . import approved_execution
+    if set(payload)-{'plan_id','request_key'}:
+        raise HTTPException(400,'Use the immutable plan identity; levels and quantity cannot be overridden')
+    if not isinstance(payload.get('plan_id'),str) or not payload['plan_id'].startswith('plan_') or \
+            not isinstance(payload.get('request_key'),str) or not 8<=len(payload['request_key'])<=128:
+        raise HTTPException(400,'Valid approved plan and stable request identities required')
+    con=_rw();catalogue=_ro(MAIN_DB)
+    try:
+        plan=con.execute('SELECT payload FROM approved_execution_plans WHERE id=? AND user_id=?',
+                         (payload.get('plan_id'),int(user['id']))).fetchone()
+        if not plan:raise HTTPException(404,'Approved plan not found')
+        symbol=json.loads(plan[0])['symbol']
+        result=approved_execution.submit(con,catalogue,int(user['id']),payload.get('plan_id'),payload.get('request_key'),
+                                          _live_map('IN',[symbol]),regime=_regime_state('IN'))
+        return JSONResponse(result,status_code=200 if result['ok'] else 409)
+    except ValueError as exc:raise HTTPException(409,str(exc))
+    except sqlite3.Error:raise HTTPException(503,'Approved execution evidence unavailable')
+    finally:catalogue.close();con.close()
 
 
 @router.get("/api/paper-performance")
@@ -3136,6 +3178,7 @@ def _my_positions(uid, market="IN"):
                             # before the columns existed, so a retired-lane
                             # holding is never mislabelled as a sleeve.
                             sleeve=(p.get("sleeve") or p["strategy"]),
+                            instrument_id=p.get('instrument_id'),plan_id=p.get('plan_id'),model_version=p.get('model_version'),
                             regime=(p.get("regime") or "-"),
                             entry=round(p["entry_price"], 2),
                             live=round(px, 2), qty=p["shares"], value=round(val, 2),
@@ -3162,7 +3205,7 @@ def _my_trades(uid, limit=60, market="IN", con=None):
     try:
         cols = ("market", "strategy", "symbol", "entry_date", "entry_price", "exit_date",
                 "exit_price", "shares", "pnl", "return_pct", "reason", "opened_at",
-                "closed_at")
+                "closed_at","instrument_id","plan_id","model_version")
         rows = rw.execute(f"SELECT {','.join(cols)} FROM user_trades"
                           " WHERE user_id=? AND market=? ORDER BY id DESC LIMIT ?",
                           (int(uid), market, int(limit))).fetchall()
@@ -6081,6 +6124,7 @@ var IDXCFG={};
 // The UI is a convenience; it is not the security boundary.
 var BRK=null;
 function loadBroker(){
+ window.BRKHEALTH=null;
  api('/v2/api/execution-health').then(function(r){if(r.ok){window.BRKHEALTH=r.j;renderBroker();}});
  api('/v2/api/broker').then(function(r){
   // 402 is the plan gate, not a failure: connecting a real broker is Elite.
@@ -6183,9 +6227,9 @@ function renderBroker(){
   +'<details class=brk-alt><summary>Or connect via the login redirect</summary>'
   +'<div class=brk-grid style="margin-top:10px">'
    +'<label>API key<input id=brkKey placeholder="'
-    +(s.api_key_hint||'paste your Upstox API key')+'" autocomplete=off></label>'
+    +esc(s.api_key_hint||'paste your Upstox API key')+'" autocomplete=off></label>'
    +'<label>Redirect URI <span class=mut>(must match Upstox exactly)</span>'
-    +'<input id=brkRedir value="'+(s.redirect_uri||'')
+    +'<input id=brkRedir value="'+esc(s.redirect_uri||'')
     +'" placeholder="https://openstocks.in/" autocomplete=off></label>'
   +'</div>'
   +'<div class=brk-btns><button class=btn onclick=brkSave()>Save</button>'
@@ -6682,3 +6726,5 @@ from . import plans as _plans_for_copy          # noqa: E402
 SPA_HTML = SPA_HTML.replace("{TRIAL_DAYS}", str(_plans_for_copy.TRIAL_DAYS))
 from .desk_ui import enhance as _enhance_desk
 SPA_HTML = _enhance_desk(SPA_HTML)
+from .account_ui import enhance as _enhance_accounts
+SPA_HTML = _enhance_accounts(SPA_HTML)
