@@ -207,6 +207,7 @@ ROUTE_FEATURES = {
     "/v2/api/instrument": "market_internals",
     # Read-only account safety remains available after a subscription lapses.
     "/v2/api/execution-health": None,
+    "/v2/api/trading-readiness": None,  # owned safety status remains available without a paid subscription
     "/v2/api/execution-incidents/{incident_id}/acknowledge": None,
     # Connecting a real broker is an ELITE feature, and the routes carry an
     # OWNER check on top. Both, not either: the tier decides who may connect a

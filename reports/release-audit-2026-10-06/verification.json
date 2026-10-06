@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2375,
-    "passed": 2242,
+    "run": 2392,
+    "passed": 2259,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 17.931,
-    "note": "Final source after malformed false/empty request-key refusal; real sourced catalogue/risk integration; temporary databases; external test HTTP blocked; localhost mock broker transport only."
+    "seconds": 18.307,
+    "note": "Frozen source after safety-route entitlement mapping and isolated fixture global restoration; temporary databases and localhost mock transports only."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -136,5 +136,57 @@
     "exit_code": 0,
     "seconds": 17.347,
     "note": "Frozen-source final run; localhost-only mock broker wire fixtures allowed; temporary databases and blocked external test HTTP."
+  },
+  "previous_full_unittest_ef60987": {
+    "run": 2375,
+    "passed": 2242,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 17.931,
+    "note": "Final source after malformed false/empty request-key refusal; real sourced catalogue/risk integration; temporary databases; external test HTTP blocked; localhost mock broker transport only."
+  },
+  "next_session_initial_full_run": {
+    "run": 2392,
+    "failures": 1,
+    "errors": 2,
+    "skipped": 133,
+    "exit_code": 1,
+    "note": "Missing entitlement mapping and new fixture view override not restored; both fixed before final run."
+  },
+  "next_session": {
+    "source_records": 74802,
+    "cash_discovery_contracts": 2685,
+    "execution_evidence_supplied": false,
+    "official_source_day": "2026-10-06",
+    "browser_cold_import_failure_repaired": true,
+    "mobile_horizontal_overflow": false,
+    "production_copy_upgrade": {
+      "capital": 10000.0,
+      "cash": 10000.0,
+      "epoch_preserved": true,
+      "equity": 10000.0,
+      "legacy_columns_and_rows_preserved": true,
+      "missing_contract_evidence_refused": true,
+      "open_positions": 0,
+      "preflight_status": "blocked",
+      "production_modified": false,
+      "real_orders": 0,
+      "realised": 0.0,
+      "status": "passed"
+    },
+    "deployed_changes": 0
+  },
+  "forward_experiment": {
+    "publications": 10,
+    "unique_stocks": 9,
+    "confirmed_shadow_fills": 0,
+    "baseline_shadow_fills": 0,
+    "completed_outcomes": 0,
+    "shadow_cash": 10000,
+    "shadow_equity": 10000,
+    "profitability_established": false,
+    "observed_date": "2026-10-07"
   }
 }

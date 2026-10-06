@@ -2608,6 +2608,36 @@ def api_idea_publication(publication_id: int, user: dict = Depends(require_sessi
     return JSONResponse(result,headers={"Cache-Control":"private, no-store"})
 
 
+@router.get('/api/trading-readiness')
+def api_trading_readiness(symbols: str = 'NIFTYBEES', user: dict = Depends(require_session)):
+    from . import books, entry_contracts, entry_readiness, v2_live
+    selected = list(dict.fromkeys(s.strip().upper() for s in symbols.split(',') if s.strip()))
+    if not selected or len(selected) > 20 or any(len(s) > 40 for s in selected):
+        raise HTTPException(400, 'Select between one and twenty NSE cash symbols')
+    book = _ro(V2_DB)
+    try:
+        held = books.open_symbols(book, int(user['id']), 'IN')
+        quotes = _live_map('IN', list(dict.fromkeys([*selected, *held])))
+        saved = v2_live.sleeve_view('IN') or {}
+        current = not _decision_is_stale('IN', saved.get('asof'))
+        heartbeat = book.execute("SELECT MAX(substr(date,6)) FROM v2_equity WHERE market='IN' AND date LIKE 'LIVE_%'").fetchone()[0]
+        if heartbeat and not heartbeat.endswith('Z') and '+' not in heartbeat[10:]:
+            heartbeat += '+00:00'
+        def response(catalogue, now):
+            return JSONResponse(entry_readiness.report(book, catalogue, int(user['id']), quotes, symbols=selected,
+                regime=saved.get('regime'), regime_current=current, engine_observed_at=heartbeat, now=now),
+                headers={'Cache-Control': 'private, no-store'})
+        try:
+            with entry_contracts.open_catalogue() as (catalogue, now):
+                return response(catalogue, now)
+        except entry_contracts.InstrumentError:
+            return response(None, datetime.now(timezone.utc))
+    except sqlite3.Error:
+        raise HTTPException(503, 'Trading readiness accounting schema unavailable')
+    finally:
+        book.close()
+
+
 @router.get("/api/execution-health")
 def api_execution_health(user: dict = Depends(require_session)):
     from .execution_ports import capability_report

@@ -1,3 +1,9 @@
+## Next-session readiness recheck — 2026-10-07
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** Bounded official BOD discovery uses a separate provider and real publication dates; no guessed exchange rules. Owned API/CLI/UI preflight checks selected NSE cash instruments, current regime, quotes, worker, book risk and cash/inventory ledger. Lazy sleeve exports fix a reproduced concurrent cold-import failure. Strategy thresholds, allowlist, ₹10,000 epoch and forward protocol remain intact.
+
+Final suite 2,392 run / 2,259 pass / 133 skip / no failures or errors; separate functions 102 pass. Private production-copy migration preserves all historical values/rows and active balances. Production remains older `2b300b4`, clean ₹10,000, services active, OFF decision. The independent stock cohort has 10 publications/9 stocks, zero shadow fills or completed outcomes. Full commercial/live programme remains incomplete/NO-GO. See `docs/next-session-readiness.md`; do not call BOD discovery execution coverage or promote research to manufacture trades.
+
 # OpenStocks handoff — 2026-09-23
 
 ## Release-plan continuation — 7 October 2026

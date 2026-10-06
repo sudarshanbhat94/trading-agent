@@ -115,9 +115,13 @@ def ensure_schema(con):
 def import_snapshot(con, instruments, *, provider, source, source_day, observed_at, now=None):
     now = now or datetime.now(timezone.utc)
     observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-    if observed.tzinfo is None or observed > now or date.fromisoformat(source_day) > observed.date():
-        raise InstrumentError("source observation is naive or in the future")
     rows = [(spec, str(key)) for spec, key in instruments]
+    # Indian beginning-of-day masters are dated in IST. At 00:30 IST their
+    # calendar day is already tomorrow in UTC; it is not future evidence.
+    source_zone = timezone(timedelta(hours=5, minutes=30)) if rows and all(
+        spec.venue in {'NSE', 'BSE', 'MCX'} for spec, _ in rows) else timezone.utc
+    if observed.tzinfo is None or observed > now or date.fromisoformat(source_day) > observed.astimezone(source_zone).date():
+        raise InstrumentError("source observation is naive or in the future")
     if not rows or not provider or not source or any(not key for _, key in rows):
         raise InstrumentError("empty or unattributed catalogue")
     if len({s.id for s, _ in rows}) != len(rows) or len({key for _, key in rows}) != len(rows):

@@ -8,6 +8,15 @@ from app import account_ui,v2_web
 
 @unittest.skipUnless(shutil.which('node'),'node required for JavaScript renderer checks')
 class AccountUIContractTest(unittest.TestCase):
+    def test_readiness_shows_actual_blockers_and_escapes_hostile_evidence(self):
+        html=self.render('tradingReadinessHtml',dict(symbols=['<img src=x>'],checked_at='fixture',
+            paper=dict(status='blocked',production_sleeves=['index_directional'],observation_sleeves=['quality_momentum']),
+            live=dict(status='not_certified'),checks=[dict(code='contracts',status='blocked',reason='Reviewed daily evidence missing')],
+            instruments=[dict(symbol='<img src=x>',reason='Unreviewed instrument')]))
+        self.assertIn('Reviewed daily evidence missing',html);self.assertIn('not_certified',html)
+        self.assertIn('does not establish profitability',html);self.assertIn('&lt;img',html);self.assertNotIn('<img',html)
+        self.assertIn('Check entry readiness',html)
+
     def render(self,function,payload):
         helpers=r'''var loadStats=function(){},loadIdeas=function(){},renderBroker=function(){},window={};
 function esc(x){return x==null?'':String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}

@@ -24,9 +24,18 @@ environment flags cannot promote a failed research sleeve by accident.
 """
 from __future__ import annotations
 
-from .base import Candidate, Sleeve, SleeveDecision
-from .config import SLEEVES, SleeveConfig
-from .regime import RegimeGate, RegimeView
-
 __all__ = ["Candidate", "Sleeve", "SleeveDecision", "SLEEVES", "SleeveConfig",
            "RegimeGate", "RegimeView"]
+
+
+def __getattr__(name):
+    # HTTP workers can cold-import config and feeds concurrently. Eager
+    # imports here acquired the package/config locks in opposite order,
+    # producing a real first-page _DeadlockError. Preserve the public exports
+    # without importing submodules while the package lock is held.
+    from importlib import import_module
+    modules = dict(Candidate='base', Sleeve='base', SleeveDecision='base',
+                   SLEEVES='config', SleeveConfig='config', RegimeGate='regime', RegimeView='regime')
+    if name not in modules:
+        raise AttributeError(name)
+    return getattr(import_module('.' + modules[name], __name__), name)

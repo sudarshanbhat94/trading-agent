@@ -28,6 +28,7 @@
     "app/broker_reconciliation.py",
     "app/canonical_trade.py",
     "app/catalogue_ingestion.py",
+    "app/catalogue_refresh.py",
     "app/config.py",
     "app/corpactions.py",
     "app/costs.py",
@@ -39,6 +40,7 @@
     "app/delivery_data.py",
     "app/desk_ui.py",
     "app/entry_contracts.py",
+    "app/entry_readiness.py",
     "app/event_calendar.py",
     "app/execution_contracts.py",
     "app/execution_events.py",
@@ -174,6 +176,7 @@
     "docs/equity_factor_research.md",
     "docs/evidence_screen.md",
     "docs/idea-tracking.md",
+    "docs/next-session-readiness.md",
     "docs/recovery-and-approved-paper.md",
     "docs/trading-integrity.md",
     "reports/dependencies/advisories.json",
@@ -246,6 +249,7 @@
     "scripts/breakout_target_bt.py",
     "scripts/btst_bt.py",
     "scripts/candle_ingest.py",
+    "scripts/check_paper_readiness.py",
     "scripts/check_release.py",
     "scripts/continuation_bt.py",
     "scripts/daily_report.py",
@@ -279,6 +283,7 @@
     "scripts/price_action_scan.py",
     "scripts/quality_forward_report.py",
     "scripts/recovery_bundle.py",
+    "scripts/refresh_contract_catalogue.py",
     "scripts/regime_isolation.py",
     "scripts/rehearse_approved_ui.py",
     "scripts/rehearse_execution.py",
@@ -330,6 +335,7 @@
     "tests/test_candle_ingest_freshness.py",
     "tests/test_canonical_trade_contract.py",
     "tests/test_catalogue_ingestion.py",
+    "tests/test_catalogue_refresh.py",
     "tests/test_catalyst_alerts.py",
     "tests/test_corpactions.py",
     "tests/test_cross_alerts.py",
@@ -443,6 +449,7 @@
     "tests/test_retired_entry_controls.py",
     "tests/test_schema_migrations.py",
     "tests/test_shareholding_ingest.py",
+    "tests/test_sleeve_cold_imports.py",
     "tests/test_sleeve_data_integrity.py",
     "tests/test_sleeves.py",
     "tests/test_stock_plans.py",
@@ -454,6 +461,7 @@
     "tests/test_today_bar.py",
     "tests/test_tomorrow_plan.py",
     "tests/test_total_drawdown_halt.py",
+    "tests/test_trading_readiness.py",
     "tests/test_trial_and_upgrade.py",
     "tests/test_trial_banner_ui.py",
     "tests/test_upstox_candles.py",
@@ -64871,5 +64879,33 @@
     "tests/test_watchlist_grouping.py": "a901914a9e74e50f7f74b2f854aba5565b6cad8ac5d55f4a32043bfc309a1c51",
     "tests/test_watchlist_ui_render.py": "22d2612c6881736590a97c3f6bb229907e9c7721c38886f5e9c82f5767c4b7fd",
     "tests/test_whatsapp_alerts.py": "313a237695de3c8e272cb0c9e8cb8bad16a8923a4fa3ac72bf0d7799d29d8782"
+  },
+  "followup_2026_10_07": {
+    "files": [
+      "app/catalogue_refresh.py",
+      "app/entry_readiness.py",
+      "scripts/refresh_contract_catalogue.py",
+      "scripts/check_paper_readiness.py",
+      "tests/test_catalogue_refresh.py",
+      "tests/test_trading_readiness.py",
+      "tests/test_sleeve_cold_imports.py",
+      "docs/next-session-readiness.md"
+    ],
+    "module_counts": {
+      "app": 141,
+      "scripts": 77,
+      "tests": 170
+    },
+    "route": "/v2/api/trading-readiness",
+    "semantic_review_scope": [
+      "app/catalogue_refresh.py",
+      "app/entry_readiness.py",
+      "scripts/refresh_contract_catalogue.py",
+      "scripts/check_paper_readiness.py",
+      "app/sleeves/__init__.py",
+      "app/account_ui.py",
+      "app/v2_web.py:api_trading_readiness"
+    ],
+    "complete_system_semantic_review": false
   }
 }

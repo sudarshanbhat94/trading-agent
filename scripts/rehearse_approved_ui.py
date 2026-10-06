@@ -18,7 +18,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 def fixture_app():
     from fastapi import FastAPI,APIRouter
     from fastapi.responses import HTMLResponse
-    from app import account_ui,desk_ui,v2_web,books,broker
+    from app import account_ui,desk_ui,v2_web,books,broker,v2_live
     from tests.test_approved_execution import ApprovedPaperPipelineTest
     fixture=ApprovedPaperPipelineTest();fixture.setUp()
     # No fixture handle is shared across HTTP worker threads. The catalogue is
@@ -35,11 +35,16 @@ def fixture_app():
     broker.STATE_DIR=str(Path(fixture.tmp.name)/'brokers');broker.LEGACY_PATH=str(Path(fixture.tmp.name)/'absent.json')
     broker.verify=lambda *a,**kw:False
     v2_web._regime_state=lambda market:'ON'
+    original_view=v2_live.sleeve_view
+    fixture.addCleanup(setattr,v2_live,'sleeve_view',original_view)
+    v2_live.sleeve_view=lambda market='IN':dict(regime='ON',asof=datetime.now(timezone.utc).date().isoformat())
+    fixture.con.execute("INSERT INTO v2_equity VALUES('IN',?,10000,10000,0,0)", ('LIVE_'+datetime.now(timezone.utc).isoformat(),))
+    fixture.con.commit()
     v2_web._live_map=lambda market,symbols=None:{'TEST':dict(price=100,ts=datetime.now(timezone.utc).isoformat())}
     app=FastAPI();app.state.fixture=fixture
     app.dependency_overrides[v2_web.require_session]=lambda:dict(id=2,username='fixture',account_plan='auto')
     # Mount only reviewed read/order endpoints, not reset/admin/broker linking.
-    selected={'/v2/api/approved-plans','/v2/api/approved-orders','/v2/api/paper-performance','/v2/api/paper-ledger','/v2/api/positions','/v2/api/trades','/v2/api/execution-health'}
+    selected={'/v2/api/approved-plans','/v2/api/approved-orders','/v2/api/paper-performance','/v2/api/paper-ledger','/v2/api/positions','/v2/api/trades','/v2/api/execution-health','/v2/api/trading-readiness'}
     routes=APIRouter()
     for route in v2_web.router.routes:
         if route.path in selected:routes.routes.append(route)
@@ -53,7 +58,7 @@ function loadStats(){}function renderBroker(){}function loadIdeas(){}function lo
 """
     @app.get('/',response_class=HTMLResponse)
     def page():
-        return '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenStocks isolated UI rehearsal</title><style>'+desk_ui.CSS+account_ui.CSS+'</style></head><body style="padding:20px;max-width:1000px;margin:auto"><header><h1>OpenStocks · isolated paper rehearsal</h1><p role=note>Disposable synthetic fixture. No broker orders. No strategy-profitability evidence.</p></header><nav class=account-report-toolbar><button class=desk-action onclick="loadStats()">Refresh performance</button><button class=desk-action onclick="loadApprovedPlans()">Refresh approvals</button></nav><button class=desk-action id=fixtureClose onclick="fixtureExit()">Simulate fixture target exit</button><div id=statlist></div><div id=approvedPaperPlans></div><div id=brokerBox></div><script>'+helpers+account_ui.JS+"loadStats();loadApprovedPlans();document.getElementById('brokerBox').innerHTML=protectionHealthHtml({protection:{rows:[{symbol:'TEST',quantity:20,stop:99,state:'unknown'}]},incidents:[{code:'SYNTHETIC_STOP_TIMEOUT',detail:'Fixture only: uncertain broker outcome blocks duplicate sell.'}]});</script></body></html>"
+        return '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenStocks isolated UI rehearsal</title><style>'+desk_ui.CSS+account_ui.CSS+'</style></head><body style="padding:20px;max-width:1000px;margin:auto"><header><h1>OpenStocks · isolated paper rehearsal</h1><p role=note>Disposable synthetic fixture. No broker orders. No strategy-profitability evidence.</p></header><nav class=account-report-toolbar><button class=desk-action onclick="loadStats()">Refresh performance</button><button class=desk-action onclick="loadApprovedPlans()">Refresh approvals</button></nav><button class=desk-action id=fixtureClose onclick="fixtureExit()">Simulate fixture target exit</button><div id=statlist></div><div id=tradingReadiness></div><div id=approvedPaperPlans></div><div id=brokerBox></div><script>'+helpers+account_ui.JS+"TRADING_READINESS_SYMBOLS='TEST';loadTradingReadiness();loadStats();loadApprovedPlans();document.getElementById('brokerBox').innerHTML=protectionHealthHtml({protection:{rows:[{symbol:'TEST',quantity:20,stop:99,state:'unknown'}]},incidents:[{code:'SYNTHETIC_STOP_TIMEOUT',detail:'Fixture only: uncertain broker outcome blocks duplicate sell.'}]});</script></body></html>"
     @app.post('/fixture/close')
     def close():
         with sqlite3.connect(fixture.path) as con:

@@ -100,7 +100,7 @@
     ],
     "rootCause": "Historical cause: Personal and live sizing are separate from the house cost-aware allocator. Local repair: Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
     "fix": "Use one account-specific risk snapshot and serialized reservation for every entry; apply per-user cash, open risk, loss and drawdown limits.",
-    "acceptance": "After a \u20b9200 loss on \u20b910,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
+    "acceptance": "After a ₹200 loss on ₹10,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
     "hours": [
       1,
       4
@@ -595,7 +595,7 @@
     "status": "Locally repaired",
     "title": "Untrusted filing text is inserted into innerHTML",
     "evidence": [
-      "app/v2_web.py:6688"
+      "app/v2_web.py:6718"
     ],
     "rootCause": "Historical cause: External subject strings reach HTML without escaping; inline handlers also interpolate data. Local repair: External filing text is escaped or written with textContent; injected-text regression passes. Independent full-browser security review remains pending.",
     "fix": "Render untrusted fields with textContent/escaped text, attach event handlers without HTML interpolation and review analogous sinks; deploy a compatible CSP.",
@@ -669,7 +669,8 @@
     ],
     "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
     "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
-    "release_certification": false
+    "release_certification": false,
+    "current_followup": "7 October: bounded official BOD discovery and owned selected-symbol readiness UI verified; complete raw NSE rule/action/calendar normalization and full production journeys still unverified."
   },
   {
     "id": "F17",
@@ -724,7 +725,7 @@
       "app/v2_web.py:1884",
       "app/approved_execution.py:82"
     ],
-    "rootCause": "Historical boundary: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
+    "rootCause": "Historical boundary: Symbol-only manual route substitutes ±6% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
     "fix": "Require immutable plan ID/version and server-approved size/mode for an idea action; expose a separate explicit discretionary action if needed.",
     "acceptance": "Displayed and ordered levels/size reconcile; expired or research-only plans cannot execute.",
     "hours": [
@@ -736,7 +737,7 @@
       "app/manual_execution.py:6"
     ],
     "original_status": "Confirmed route mismatch",
-    "original_rootCause": "Symbol-only manual route substitutes \u00b16% levels and separate sizing.",
+    "original_rootCause": "Symbol-only manual route substitutes ±6% levels and separate sizing.",
     "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Not deployed; baseline finding remains",
@@ -803,7 +804,7 @@
     "title": "Failure-alert helper is not called by the active journal",
     "evidence": [
       "app/incident_inbox.py:26",
-      "app/v2_web.py:2633"
+      "app/v2_web.py:2663"
     ],
     "rootCause": "Historical boundary: Persistence/logging and owner notification are separate, unconnected paths. Current implementation: Owned incident inbox now records immutable acknowledgements to the current incident fingerprint. Acknowledgement never resolves exposure or removes a risk block; changed incidents require acknowledgement again. UI and API preserve account ownership.",
     "fix": "Add durable alert outbox for reject/unknown/mismatch/unprotected/failed-exit events, acknowledgements and escalation.",
@@ -1852,12 +1853,12 @@
     "status": "Locally repaired",
     "title": "Account page contradicts reset capital/history behaviour",
     "evidence": [
-      "app/v2_web.py:6272",
-      "app/v2_web.py:6604"
+      "app/v2_web.py:6302",
+      "app/v2_web.py:6634"
     ],
     "rootCause": "Historical cause: Multiple stale inline renderers/copy survive accumulated SPA replacements. Local repair: Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
     "fix": "Consolidate account UI and capital/mode source; display active epoch only, retired history separately and exact reset semantics.",
-    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says \u20b910,000 and history retention consistently.",
+    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says ₹10,000 and history retention consistently.",
     "hours": [
       1,
       4
@@ -1934,8 +1935,8 @@
     "status": "Unverified requirement",
     "title": "No completed WCAG/mobile/performance acceptance evidence",
     "evidence": [
-      "app/v2_web.py:6354",
-      "app/v2_web.py:6452"
+      "app/v2_web.py:6384",
+      "app/v2_web.py:6482"
     ],
     "rootCause": "Code-based renderer tests do not measure keyboard focus, responsive overflow, contrast or chart semantics.",
     "fix": "Adopt a design system; semantic controls, accessible dialogs/tables/charts, responsive tests and measured frontend budgets.",
@@ -1967,7 +1968,8 @@
     ],
     "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
     "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
-    "release_certification": false
+    "release_certification": false,
+    "current_followup": "7 October: bounded official BOD discovery and owned selected-symbol readiness UI verified; complete raw NSE rule/action/calendar normalization and full production journeys still unverified."
   },
   {
     "id": "F48",
@@ -2235,6 +2237,40 @@
     "test_evidence": "billing-safety-reproduction.json; tests.test_billing_atomicity",
     "revalidation_method": "Exact historical method + fault injection and current concurrency/rollback tests",
     "hours_basis": "Local repair implemented; remaining estimate is deployed acceptance only",
+    "release_certification": false
+  },
+  {
+    "id": "F55",
+    "area": "Startup / account UI",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Concurrent cold account requests can deadlock sleeve imports",
+    "evidence": [
+      "app/sleeves/__init__.py:31",
+      "tests/test_sleeve_cold_imports.py:7"
+    ],
+    "rootCause": "Eager package exports acquire package/config locks during concurrent submodule imports. Browser account-performance and readiness requests reproduced _DeadlockError and an HTTP 500.",
+    "fix": "Resolve public sleeve exports lazily after package initialization, preserving the same settings/classes.",
+    "acceptance": "Concurrent cold imports complete in fresh processes; real-handler browser account page shows balances and entry checks together.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_status": "Reproduced candidate browser failure",
+    "original_evidence": [
+      "app/sleeves/__init__.py:27 at ef60987"
+    ],
+    "original_rootCause": "Package __init__ eagerly imports config and regime while holding package initialization lock.",
+    "revalidated_working_parent": "ef609871b0c7fc4e36282ece3304d2f53daad7bd",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; deployed cold-start reproduction not performed",
+    "deployed_repair": false,
+    "current_state": "Cold subprocess regression and isolated browser pass; production remains old build.",
+    "remaining": "Exact-candidate deployment and cold-start acceptance",
+    "test_evidence": "tests.test_sleeve_cold_imports; ui-evidence/readiness-mobile-2026-10-07.png",
+    "revalidation_method": "Observed real-handler browser exception, concurrent process regression, selected-handler desktop/mobile rehearsal",
+    "hours_basis": "Local repair implemented; estimate includes deployed acceptance",
     "release_certification": false
   }
 ]
