@@ -50,7 +50,7 @@ def inventory(positions, holdings):
     return {key:q for key,q in actual.items() if q}
 
 
-def reconcile(con, uid, *, positions, holdings, funds, trades, checked_at=None):
+def reconcile(con, uid, *, positions, holdings, funds, trades, orders=None, checked_at=None):
     checked_at = time.time() if checked_at is None else checked_at
     reasons, differences = [], []
     available = None
@@ -71,6 +71,17 @@ def reconcile(con, uid, *, positions, holdings, funds, trades, checked_at=None):
                                         reported=actual.get(key,0)))
         if differences:
             reasons.append("broker inventory differs; external ownership is not adopted")
+        if orders is not None:
+            if not isinstance(orders,list):raise ValueError('active order evidence unavailable')
+            terminal={'complete','completed','filled','cancelled','rejected'}
+            for order in orders:
+                status=str(order.get('status') or '').lower()
+                if status in terminal:continue
+                oid=str(order.get('order_id') or '')
+                owned=con.execute('SELECT 1 FROM v2_live_orders WHERE user_id=? AND '
+                                  '(broker_order_id=? OR (intent_key=? AND broker_order_id IS NULL))',
+                                  (uid,oid,order.get('tag'))).fetchone()
+                if not oid or not owned:reasons.append('external or unknown active order reserves account exposure')
         # Match actual tradebook rows to our known IDs, deduplicate trade IDs.
         totals, seen = defaultdict(int), set()
         for trade in trades:
@@ -123,8 +134,11 @@ def refresh(con, uid, port=None):
         if not isinstance(updates,list):
             raise ValueError("order book unavailable")
         order_journal.reconcile(con,uid,updates)
+        trades=port.trades(uid)
+        from . import broker_ledger
+        broker_ledger.ingest_trades(con,uid,trades)
         return reconcile(con,uid,positions=port.positions(uid),holdings=port.holdings(uid),
-                         funds=port.funds(uid),trades=port.trades(uid))
+                         funds=port.funds(uid),trades=trades,orders=updates)
     except Exception:
         return reconcile(con,uid,positions=None,holdings=None,funds=None,trades=None)
 

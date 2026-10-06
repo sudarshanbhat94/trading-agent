@@ -357,3 +357,15 @@ Inventory is static extraction. Targeted boundary review and invariant fixtures 
 | tests/test_watchlist_grouping.py | Inventoried; full semantic review pending |  |
 | tests/test_watchlist_ui_render.py | Inventoried; full semantic review pending |  |
 | tests/test_whatsapp_alerts.py | Inventoried; full semantic review pending |  |
+| app/angelone_port.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F21 |
+| app/billing_ledger.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F48, F54 |
+| app/broker_ledger.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F09, F11 |
+| app/catalogue_ingestion.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F10 |
+| app/entry_contracts.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F01, F10 |
+| app/incident_inbox.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F20 |
+| app/recovery_stream.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F41 |
+| app/request_security.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F37 |
+| app/research_data.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F28 |
+| app/schema_migrations.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F40 |
+
+Current release safety boundaries reviewed: sourced entry/approval/catalogue, actual broker ledger/reconciliation, native partial recovery, atomic billing/migration, incident ownership, request origin/proxy, recovery frames and PIT immutability. This does not turn all inventoried legacy files into semantically reviewed files.

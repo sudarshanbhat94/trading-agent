@@ -1,13 +1,14 @@
 """Currency/ownership/crash invariants, isolated from real broker APIs."""
 import sqlite3
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from unittest.mock import patch
 
 from app import books, paper_ledger as ledger, v2_live
 from tests.test_release_safety import quotes
 
 
-class PaperLedgerTest(unittest.TestCase):
+class PaperLedgerTest(ContractStorageCase):
     def setUp(self):
         self.con=sqlite3.connect(":memory:")
         v2_live.ensure_schema(self.con)

@@ -12,6 +12,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -76,7 +77,7 @@ def _fill_all(con):
             average_price=price,status='complete')])
 
 
-class InstrumentKeyTest(unittest.TestCase):
+class InstrumentKeyTest(ContractStorageCase):
     def setUp(self) -> None:
         self.v2, self.main, self.main_path = _dbs()
 
@@ -99,7 +100,7 @@ class InstrumentKeyTest(unittest.TestCase):
                 self.assertIsNone(live_trade.instrument_key(self.main, "RELIANCE"))
 
 
-class SizingTest(unittest.TestCase):
+class SizingTest(ContractStorageCase):
     def setUp(self) -> None:
         self.b = _fresh_broker(budget=10000)
         self.st = self.b.state(UID)
@@ -125,7 +126,7 @@ class SizingTest(unittest.TestCase):
                 self.assertEqual(live_trade.size_for_sleeve(px, self.st, margin=9000.0), 0)
 
 
-class ApprovedFixtureCase(unittest.TestCase):
+class ApprovedFixtureCase(ContractStorageCase):
     """Older decision fixtures exercise risk/transport under synthetic approval.
 
     The real fail-closed authorization boundary has independent tests. No
@@ -393,19 +394,19 @@ class ManualBuyReachesTheBrokerTest(ApprovedFixtureCase):
         """Superseded: manual buy used to call record_entry, which writes the
         HOUSE book and fires the broker mirror — so any subscriber's click
         placed a real order in the OPERATOR's account. It now writes
-        books.buy() and mirrors only when the caller IS the owner."""
+        the caller's frozen manual plan and explicitly routes live mode."""
         import inspect
         import pathlib
         from app import v2_web
         src = pathlib.Path(inspect.getfile(v2_web)).read_text(encoding="utf-8")
         start = src.index('@router.post("/api/buy")')
         body = src[start:src.index("@router.post", start + 10)]
-        self.assertIn("books.buy(", body)
+        self.assertIn("approved_execution.submit_manual_paper(", body)
         self.assertNotIn("record_entry(", body)
         self.assertNotIn("INSERT INTO v2_positions", body)
         self.assertIn('mode == "live"', body)
         self.assertIn("live_action", body)
-        self.assertIn('"mode": "paper"', body)
+        self.assertIn('mode == "paper"', body)
 
     def test_manual_is_a_mirrored_lane(self) -> None:
         """Otherwise api_buy's direct mirror_entry call is skipped and the Buy
@@ -446,7 +447,7 @@ class ManualBuyReachesTheBrokerTest(ApprovedFixtureCase):
         self.assertEqual(sent, [("BUY", "NSE_EQ|INE002A01018", 2)])
 
 
-class EngineIsolationTest(unittest.TestCase):
+class EngineIsolationTest(ContractStorageCase):
     """The paper book must survive the broker."""
 
     def test_a_broker_outage_does_not_stop_the_paper_book(self) -> None:

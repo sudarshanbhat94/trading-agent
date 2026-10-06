@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from unittest.mock import patch
@@ -20,7 +21,7 @@ def quotes(**prices):
     return {symbol: {"price": price, "ts": ts} for symbol, price in prices.items()}
 
 
-class ReleaseSafetyTest(unittest.TestCase):
+class ReleaseSafetyTest(ContractStorageCase):
     def setUp(self):
         self.con = sqlite3.connect(":memory:")
         v2_live.ensure_schema(self.con)
@@ -210,7 +211,7 @@ class ReleaseSafetyTest(unittest.TestCase):
         now = datetime.now(timezone.utc)
         self.con.execute("UPDATE v2_book SET budget=10000,max_pos=3,started_at=? WHERE market='IN'", (now.isoformat(),))
         self.con.execute("INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,stop) "
-                         "VALUES('IN','manual','TEST',?,100,10,NULL)", (now.date().isoformat(),))
+                         "VALUES('IN','manual','TEST',?,100,10,NULL)", (now.astimezone(books.IST).date().isoformat(),))
         self.con.commit()
         result = book_readiness(self.con, "IN", quotes(TEST=100))
         self.assertTrue(result["halted"])

@@ -48,3 +48,12 @@ function deskMoney(v){return v==null?'—':'₹'+v;}
         self.assertIn("r.j.status==='rejected'",account_ui.JS)
         self.assertIn('Outcome unavailable. Retry uses the same request identity.',account_ui.JS)
         self.assertIn("aria-labelledby','approvedPaperHeading'",account_ui.JS)
+
+    def test_payment_receipts_escape_reference_and_show_empty_manual_state(self):
+        empty=self.render('billingReceiptsHtml',dict(receipts=[]))
+        self.assertIn('No confirmed payments yet',empty)
+        html=self.render('billingReceiptsHtml',dict(receipts=[dict(plan='Elite',amount_minor=10000,payment_reference='<img src=x>',confirmed_at='fixture date',ends_at='fixture expiry')]))
+        self.assertIn('₹100.00',html);self.assertIn('&lt;img',html);self.assertNotIn('<img',html)
+        self.assertIn('not tax invoices',html)
+        self.assertIn('ME.id!==owner',account_ui.JS)
+        self.assertIn('Retry receipts',account_ui.JS)

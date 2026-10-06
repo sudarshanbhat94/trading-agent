@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 
 from app import manual_execution, v2_web
 
@@ -35,12 +36,12 @@ def _body(fn):
     return src
 
 
-class ManualBuyIsOffTheHouseBookTest(unittest.TestCase):
+class ManualBuyIsOffTheHouseBookTest(ContractStorageCase):
     def setUp(self) -> None:
         self.src = _body(v2_web.api_buy)
 
     def test_it_writes_the_callers_own_book(self) -> None:
-        self.assertIn("books.buy(", self.src)
+        self.assertIn("approved_execution.submit_manual_paper(", self.src)
 
     def test_it_never_reads_or_writes_the_engines_tables(self) -> None:
         for table in ("v2_positions", "v2_trades", "v2_book"):
@@ -62,7 +63,7 @@ class ManualBuyIsOffTheHouseBookTest(unittest.TestCase):
         self.assertIn("user", inspect.signature(v2_web.api_buy).parameters)
 
 
-class ManualSellIsOffTheHouseBookTest(unittest.TestCase):
+class ManualSellIsOffTheHouseBookTest(ContractStorageCase):
     def setUp(self) -> None:
         self.src = _body(v2_web.api_sell)
 
@@ -80,7 +81,7 @@ class ManualSellIsOffTheHouseBookTest(unittest.TestCase):
         self.assertIn("mode == \"live\"", self.src)
 
 
-class HouseExitIsOperatorOnlyTest(unittest.TestCase):
+class HouseExitIsOperatorOnlyTest(ContractStorageCase):
     def test_closing_an_engine_position_needs_admin(self) -> None:
         """/positions/{pid}/exit acts on v2_positions and fires the broker
         mirror. It was reachable by every Pro subscriber."""

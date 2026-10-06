@@ -1,5 +1,5 @@
 {
-  "source_commit": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+  "source_commit": "8abd708ecc37c3b581997cc3268940ee602e6046",
   "known_blockers": 2,
   "known_critical": 4,
   "unexplained_reconciliation_mismatches": null,
@@ -11,5 +11,7 @@
     "protection_observations": 0
   },
   "certified_scopes": [],
-  "note": "Incomplete evidence record; expected NO-GO. Synthetic rehearsal is not a market session or profitability evidence."
+  "note": "Deliberately incomplete reviewed parent/source snapshot; not permission for the next commit. No independent market sessions or passing model/broker/legal certifications manufactured.",
+  "paper_session_evidence": [],
+  "reviewed_session_count": 0
 }

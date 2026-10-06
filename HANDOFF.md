@@ -1,5 +1,14 @@
 # OpenStocks handoff — 2026-09-23
 
+## Release-plan continuation — 7 October 2026
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** All entry writers enforce sourced dated canonical NSE cash contracts and regime/risk gates. Manual paper requests freeze immutable owned plans and use the approved pipeline; retry/concurrency/rollback are tested. Actual Upstox trade-ID ledger posts gross cash/assessment/settlement/reversal history; final actual net/margin remain unavailable. Reviewed native policy can cancel partial remainders once and activate new canonical terminal fills only. No passing policy/release record was created.
+
+Also delivered: normalized evidence importer/quarantine, Angel One transport (orchestration/native/live uncertified), immutable PIT facts, atomic manual subscription receipt/access/status (new reproduced Critical F54), owned incident acknowledgement, origin/proxy boundary, versioned atomic critical migrations, authenticated streaming disabled restore, exact dependency locks/SBOM/zero-active-known-advisory scan. Production raw connectors/full net margin ledger/all-adapter convergence/full product/ops/security/additional routes remain engineering work. See `reports/release-plan-implementation-2026-10-06.md` and current A–G `reports/release-audit-2026-10-06/REPORT.md`. Full programme incomplete/NO-GO, no independent profitable stock model.
+
+Final verification is in `verification.json`: 2,375 run / 2,242 pass / 133 skips, 102 research/UI functions, isolated paper rehearsals and selected-handler mobile component proof. Tests use temporary runtime paths and block external HTTP; retained storage fixtures explicitly inject external contract/native evidence, new integration tests use actual synthetic catalogue/risk/ledger code. Read-only deployed snapshot dated 6 October remains build `2b300b4`, user2 ₹10,000 cash/equity, zero positions, unchanged epoch/protocol. No production writes/deployment/real orders/reset/model promotion.
+
+
 ## Current-state audit refresh — 2026-10-06
 
 **TRADING BEHAVIOUR CHANGED locally; not deployed.** Unsupported/malformed broker submissions now refuse at the journal/transport boundary. Personal paper postings are balanced, immutable and atomic with book writes; original risk and actual per-sleeve/regime performance are recorded. Rejected dated research checks are archived and visible in Tracking without changing the registered experiment. Exact quote-age health and a recorded-evidence NO-GO evaluator are added. No production book/protocol/settings/strategy threshold was changed.

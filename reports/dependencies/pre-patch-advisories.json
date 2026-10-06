@@ -1,0 +1,65 @@
+{
+  "schema": "openstocks-advisory-review-v1",
+  "observed_at": "2026-10-06T17:57:46.521610+00:00",
+  "source": "https://api.osv.dev/v1/querybatch",
+  "checked_packages": 39,
+  "findings": [
+    {
+      "package": "anyio",
+      "version": "4.13.0",
+      "id": "GHSA-5p39-cfhj-2xmp",
+      "summary": "AnyIO process-pool workers can block indefinitely on undrained stderr",
+      "source": "https://osv.dev/vulnerability/GHSA-5p39-cfhj-2xmp"
+    },
+    {
+      "package": "anyio",
+      "version": "4.13.0",
+      "id": "GHSA-82r6-8w77-94w6",
+      "summary": "AnyIO: TLSStream IDNA 2003 host name encoding enables potential TLS certificate spoofing",
+      "source": "https://osv.dev/vulnerability/GHSA-82r6-8w77-94w6"
+    },
+    {
+      "package": "anyio",
+      "version": "4.13.0",
+      "id": "PYSEC-2026-4024",
+      "summary": "AnyIO process-pool workers can block indefinitely on undrained stderr",
+      "source": "https://osv.dev/vulnerability/PYSEC-2026-4024"
+    },
+    {
+      "package": "anyio",
+      "version": "4.13.0",
+      "id": "PYSEC-2026-4025",
+      "summary": "AnyIO: TLSStream IDNA 2003 host name encoding enables potential TLS certificate spoofing",
+      "source": "https://osv.dev/vulnerability/PYSEC-2026-4025"
+    },
+    {
+      "package": "starlette",
+      "version": "1.2.1",
+      "id": "GHSA-82w8-qh3p-5jfq",
+      "summary": "Starlette: request.form() limits silently ignored for application/x-www-form-urlencoded enable DoS",
+      "source": "https://osv.dev/vulnerability/GHSA-82w8-qh3p-5jfq"
+    },
+    {
+      "package": "starlette",
+      "version": "1.2.1",
+      "id": "GHSA-jp82-jpqv-5vv3",
+      "summary": "Starlette: Unvalidated request path concatenated into authority poisons request.url.hostname",
+      "source": "https://osv.dev/vulnerability/GHSA-jp82-jpqv-5vv3"
+    },
+    {
+      "package": "starlette",
+      "version": "1.2.1",
+      "id": "PYSEC-2026-248",
+      "summary": null,
+      "source": "https://osv.dev/vulnerability/PYSEC-2026-248"
+    },
+    {
+      "package": "starlette",
+      "version": "1.2.1",
+      "id": "PYSEC-2026-249",
+      "summary": null,
+      "source": "https://osv.dev/vulnerability/PYSEC-2026-249"
+    }
+  ],
+  "scope": "Known OSV advisories only; not independent security certification"
+}

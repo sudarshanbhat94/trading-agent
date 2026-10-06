@@ -6,6 +6,7 @@ independently of whatever the market is doing on any given day.
 from __future__ import annotations
 
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +46,7 @@ def _book(**kw):
     return BookState(**base)
 
 
-class CapitalIsTenThousandTest(unittest.TestCase):
+class CapitalIsTenThousandTest(ContractStorageCase):
     """Operator instruction: exactly Rs 10,000, everything inside it."""
 
     def test_capital(self) -> None:
@@ -69,7 +70,7 @@ class CapitalIsTenThousandTest(unittest.TestCase):
         self.assertGreaterEqual(slot, SLEEVES.min_ticket)
 
 
-class RegimeIsTheMasterGateTest(unittest.TestCase):
+class RegimeIsTheMasterGateTest(ContractStorageCase):
     def _mdf(self, rising: bool):
         idx = pd.bdate_range("2025-01-01", periods=120)
         step = 0.001 if rising else -0.001
@@ -114,7 +115,7 @@ class RegimeIsTheMasterGateTest(unittest.TestCase):
         self.assertEqual(view.state, "ON")
 
 
-class EvidenceBackedIndexSleeveTest(unittest.TestCase):
+class EvidenceBackedIndexSleeveTest(ContractStorageCase):
     def test_nifty_etf_is_the_only_routable_index_candidate(self) -> None:
         bars = _panel(n_days=260, drift=.001, vol=0, seed=7)
         regime = SimpleNamespace(state="ON")
@@ -161,7 +162,7 @@ class EvidenceBackedIndexSleeveTest(unittest.TestCase):
         self.assertIn("distance_pct", decision.diagnostics)
 
 
-class RiskManagerTest(unittest.TestCase):
+class RiskManagerTest(ContractStorageCase):
     def setUp(self) -> None:
         self.rm = RiskManager()
 
@@ -267,7 +268,7 @@ class RiskManagerTest(unittest.TestCase):
         self.assertEqual(self.rm.allocate([self._cand()], b), [])
 
 
-class CandidateSanityTest(unittest.TestCase):
+class CandidateSanityTest(ContractStorageCase):
     def test_stop_above_entry_is_refused(self) -> None:
         ok, why = Candidate("X", "mean_reversion", 0.9, 100.0, 105.0).is_sane()
         self.assertFalse(ok)
@@ -283,7 +284,7 @@ class CandidateSanityTest(unittest.TestCase):
         self.assertIn("25%", why)
 
 
-class UniverseTest(unittest.TestCase):
+class UniverseTest(ContractStorageCase):
     def test_it_keeps_liquid_mid_priced_names(self) -> None:
         g = _panel(start=300.0)
         g["volume"] = 1e6                      # ~Rs 30 cr turnover
@@ -306,7 +307,7 @@ class UniverseTest(unittest.TestCase):
                         "one share must not exceed a whole slot")
 
 
-class OptionsOverlayIsDefinedRiskTest(unittest.TestCase):
+class OptionsOverlayIsDefinedRiskTest(ContractStorageCase):
     def test_a_naked_short_is_structurally_refused(self) -> None:
         s = Spread(kind="bull_put", underlying="NIFTY", short_strike=24000,
                    long_strike=None, credit=50, width=0, lot_size=75, expiry="")
@@ -339,7 +340,7 @@ class OptionsOverlayIsDefinedRiskTest(unittest.TestCase):
         self.assertGreaterEqual(lots, 1)
 
 
-class EngineWiringTest(unittest.TestCase):
+class EngineWiringTest(ContractStorageCase):
     def test_all_five_sleeves_exist_and_are_prioritised(self) -> None:
         eng = SleeveEngine()
         self.assertEqual(sorted(eng.sleeves), sorted(PRIORITY))
@@ -464,7 +465,7 @@ class EngineWiringTest(unittest.TestCase):
         self.assertIn("drawdown", res.halt_reason)
 
 
-class LegacyLanesAreDeadTest(unittest.TestCase):
+class LegacyLanesAreDeadTest(ContractStorageCase):
     def test_no_legacy_lane_can_trade(self) -> None:
         from app import v2_live
         live = set(v2_live.PLAN) - v2_live.DISABLED_LANES
@@ -479,7 +480,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class WiringTest(unittest.TestCase):
+class WiringTest(ContractStorageCase):
     """The loop must have exactly one entry path."""
 
     def _loop_src(self):
@@ -527,7 +528,7 @@ class WiringTest(unittest.TestCase):
         self.assertNotIn("close_position", inspect.getsource(v2_live.sleeve_pass))
 
 
-class PerformanceSplitTest(unittest.TestCase):
+class PerformanceSplitTest(ContractStorageCase):
     def _con(self):
         import sqlite3
         con = sqlite3.connect(":memory:")
@@ -584,7 +585,7 @@ class PerformanceSplitTest(unittest.TestCase):
         self.assertIn("BY REGIME", text)
 
 
-class DailyReportTest(unittest.TestCase):
+class DailyReportTest(ContractStorageCase):
     def _con(self):
         return PerformanceSplitTest._con(PerformanceSplitTest())
 
@@ -650,7 +651,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("risk_amt", inspect.getsource(v2_live.record_exit))
 
 
-class WebsiteConsistencyTest(unittest.TestCase):
+class WebsiteConsistencyTest(ContractStorageCase):
     """The website must show the same book the server holds."""
 
     def test_overview_scopes_realised_to_the_epoch(self) -> None:
@@ -739,7 +740,7 @@ class WebsiteConsistencyTest(unittest.TestCase):
         self.assertEqual(books.MAX_POSITIONS, v2_live.MAXPOS["IN"])
 
 
-class RetiredOptionsBookTest(unittest.TestCase):
+class RetiredOptionsBookTest(ContractStorageCase):
     """A closed book must not render as a live one."""
 
     def test_the_api_reports_no_live_capital_when_retired(self) -> None:
@@ -785,7 +786,7 @@ def inspect_src():
     return inspect.getsource(v2_web)
 
 
-class IdeasComeFromSleevesTest(unittest.TestCase):
+class IdeasComeFromSleevesTest(ContractStorageCase):
     def test_zero_candidate_pass_is_visible_to_the_ideas_page(self) -> None:
         from app import v2_live
         from app.sleeves.engine import PassResult

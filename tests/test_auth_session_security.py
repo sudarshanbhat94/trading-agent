@@ -123,8 +123,13 @@ class _FakeRequest:
 
 class CookieSecureFlagTest(unittest.TestCase):
     def test_secure_when_behind_https_proxy(self) -> None:
-        request = _FakeRequest(headers={"x-forwarded-proto": "https"})
+        request = _FakeRequest(headers={"x-forwarded-proto": "https"},scheme='https')
         self.assertTrue(auth._cookie_is_secure(request, _settings()))
+
+    def test_untrusted_proxy_headers_cannot_override_transport_or_client(self):
+        request=_FakeRequest(headers={'x-forwarded-proto':'https','x-forwarded-for':'spoofed-client'})
+        self.assertFalse(auth._cookie_is_secure(request,_settings()))
+        self.assertEqual(auth._client_key(request,'owner'),request.client.host+'|owner')
 
     def test_not_secure_on_plain_http(self) -> None:
         self.assertFalse(auth._cookie_is_secure(_FakeRequest(), _settings()))

@@ -1,0 +1,19 @@
+{
+  "finding": "F54",
+  "observed_at": "2026-10-06T18:22:09.432547+00:00",
+  "baseline": "8abd708ecc37c3b581997cc3268940ee602e6046",
+  "baseline_reproduced": true,
+  "current_repair_verified": true,
+  "outcomes": {
+    "historical": {
+      "status": "approved",
+      "access_expiry_set": false
+    },
+    "current": {
+      "status": "pending",
+      "access_expiry_set": false
+    }
+  },
+  "production_mutations": 0,
+  "scope": "Exact historical decision method; synthetic fault and temporary account schema, not payment-provider certification"
+}

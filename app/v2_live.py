@@ -996,6 +996,11 @@ def sleeve_view(market="IN"):
 
 
 def ensure_schema(v2):
+    from .schema_migrations import apply,TRADING_CONTRACT,validate_trading
+    apply(v2,'trading-schema-v3',TRADING_CONTRACT,_ensure_schema,validate_trading)
+
+
+def _ensure_schema(v2):
     from .personal_alerts import ensure_schema as ensure_personal_alerts
     ensure_personal_alerts(v2)
     v2.executescript(SCHEMA)
@@ -1787,6 +1792,14 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     from . import execution_outbox, worker_fencing
     with atomic(v2):
         worker_fencing.require_current(v2)
+        from . import entry_contracts
+        from .live_trade import product_for
+        try:
+            if isinstance(shares,bool) or int(shares)!=shares:raise ValueError('Whole entry quantity required')
+            contract=entry_contracts.check(market,symbol,int(shares),entry_price,stop,target,product=product_for(strategy),regime=regime)
+        except ValueError as exc:
+            _LOG.error('REFUSED canonical entry %s/%s: %s',market,symbol,str(exc))
+            return False
         epoch = (v2.execute("SELECT started_at FROM v2_book WHERE market=?", (market,)).fetchone() or [None])[0]
         stable = f"{market}:{epoch}:{strategy}:{symbol}:{entry_date}"
         from .sleeves.config import PRODUCTION_SLEEVES
@@ -1806,6 +1819,7 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
               if stop else None), policy.encode(), fee))
         if strategy in PRODUCTION_SLEEVES:
             v2.execute("INSERT INTO house_entry_intents VALUES(?,?)", (stable,cursor.lastrowid))
+        entry_contracts.record(v2,'house',0,cursor.lastrowid,contract)
         execution_outbox.enqueue(v2, f"house:{cursor.lastrowid}:ENTRY", "house_entry",
                                  dict(src_id=cursor.lastrowid,house_epoch=epoch,market=market,
                                       created_at=datetime.now(timezone.utc).isoformat(),
@@ -4534,6 +4548,17 @@ def sleeve_pass(market):
                 _LOG.info("sleeves: %s/%s is %s — not routed by the equity book",
                           c.sleeve, c.symbol, c.instrument)
                 continue
+            from .entry_contracts import normalise_long_levels
+            from dataclasses import replace
+            try:
+                tick_stop,tick_target=normalise_long_levels(c.symbol,c.entry,c.stop,c.target)
+            except ValueError as exc:
+                _LOG.info('sleeves: canonical execution levels refuse %s: %s',c.symbol,exc)
+                continue
+            if (tick_stop,tick_target)!=(c.stop,c.target):
+                c=replace(c,stop=tick_stop,target=tick_target,why=dict(c.why,execution_rounding=dict(original_stop=c.stop,
+                    original_target=c.target,stop=tick_stop,target=tick_target,rule='long triggers rounded up to sourced tick')))
+                alloc=replace(alloc,candidate=c)
             if record_entry(v2, market, c.sleeve, c.symbol, today_s, c.entry,
                             float(alloc.shares), c.stop, c.target, c.trail_pct,
                             c.score, json.dumps(c.why), sleeve=c.sleeve,

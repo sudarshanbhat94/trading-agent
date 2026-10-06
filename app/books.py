@@ -322,6 +322,11 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
               allocation.shares if allocation else 0)
         if qty and qty * price < RiskManager().s.min_ticket:
             reason = "approved quantity is below the minimum viable ticket"
+        contract=None
+        if qty and not reason:
+            from . import entry_contracts
+            try:contract=entry_contracts.check(market,symbol,qty,price,stop,target,product=candidate.product,regime=regime)
+            except ValueError as exc:reason=str(exc)
         accepted = bool(qty > 0 and not reason)
         now = datetime.now(IST)
         con.execute("INSERT INTO user_book_decisions(user_id,market,epoch,symbol,accepted,reason,created_at) "
@@ -344,6 +349,9 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
                            epoch, policy.encode(), price, fee, candidate.product,initial_risk))
         if cur.rowcount:
             paper_ledger.entry(con,user_id,market,epoch,cur.lastrowid,qty*price,fee)
+            entry_contracts.record(con,'personal',int(user_id),cur.lastrowid,contract)
+            con.execute('UPDATE user_positions SET instrument_id=? WHERE id=? AND user_id=?',
+                        (contract['instrument_id'],cur.lastrowid,int(user_id)))
         if cur.rowcount and request_key:
             con.execute("INSERT INTO paper_entry_intents(user_id,market,epoch,request_key,qty,price,position_id,fingerprint) "
                         "VALUES(?,?,?,?,?,?,?,?)",

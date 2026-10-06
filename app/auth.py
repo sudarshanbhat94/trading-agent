@@ -42,8 +42,10 @@ def _client_key(request: Request | None, username: str) -> str:
     every account, and one account cannot be sprayed from a single host."""
     host = ""
     if request is not None:
-        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        host = forwarded or (request.client.host if request.client else "")
+        # Uvicorn's configured trusted proxy middleware resolves client IP.
+        # Reading an arbitrary forwarded header here lets a caller evade the
+        # throttle by choosing a new value on every request.
+        host = request.client.host if request.client else ""
     return f"{host}|{username}"
 
 
@@ -90,8 +92,7 @@ def _cookie_is_secure(request: Request | None, settings: Settings) -> bool:
         return False
     if request is None:
         return False
-    forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
-    return (forwarded or request.url.scheme or "").lower() == "https"
+    return (request.url.scheme or "").lower() == "https"
 
 
 def normalize_username(value: str) -> str:

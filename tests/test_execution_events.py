@@ -1,11 +1,12 @@
 """Crash/fencing and append-only intent/status evidence without broker orders."""
 import sqlite3
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from unittest.mock import patch
 from app import execution_events,order_journal,worker_fencing,broker,broker_reconciliation,v2_live
 
 
-class ExecutionObservationTest(unittest.TestCase):
+class ExecutionObservationTest(ContractStorageCase):
     def setUp(self):
         self.con=sqlite3.connect(':memory:');self.addCleanup(self.con.close);v2_live.ensure_schema(self.con)
         broker_reconciliation.reconcile(self.con,2,positions=[],holdings=[],trades=[],funds={'data':{'equity':{'available_margin':10000}}})

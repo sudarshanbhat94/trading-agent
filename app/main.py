@@ -597,6 +597,8 @@ def _configure_logging():
 _configure_logging()
 
 app = FastAPI(title="OpenStocks")
+from .request_security import boundary as _request_boundary
+app.middleware('http')(_request_boundary)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")

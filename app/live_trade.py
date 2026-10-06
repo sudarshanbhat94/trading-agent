@@ -466,6 +466,8 @@ def service(v2, main_db, quotes):
         if not broker.state(uid).get("exit_ready") or not journal.refresh(v2, uid):
             continue
         from . import protection
+        protection.settle_partial_entries(v2,uid)
+        protection.activate_reviewed_fills(v2,uid)
         from .execution_ports import UpstoxPort
         # Only obligations explicitly activated under current account-scoped
         # native authorization are transmitted. Recovery never blind-retries.

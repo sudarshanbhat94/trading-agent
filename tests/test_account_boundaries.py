@@ -16,6 +16,11 @@ class AccountBoundaryTest(unittest.TestCase):
         con=sqlite3.connect(self.path);v2_live.ensure_schema(con);v2_web._uwl(con);con.close()
         self.patch=patch.object(v2_web,'V2_DB',self.path);self.patch.start();self.addCleanup(self.patch.stop)
         self.user={'id':7,'account_plan':'auto'}
+        from tests.contract_source_fixtures import catalogue
+        from app import entry_contracts
+        source=catalogue();self.addCleanup(source.close)
+        context=entry_contracts.using(source);context.__enter__();self.addCleanup(context.__exit__,None,None,None)
+        regime=patch.object(v2_web,'_regime_state',return_value='ON');regime.start();self.addCleanup(regime.stop)
 
     def test_paper_buy_never_calls_broker_even_if_armed(self):
         quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
@@ -26,6 +31,10 @@ class AccountBoundaryTest(unittest.TestCase):
             r=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110},self.user)
         self.assertEqual(r.status_code,200)
         self.assertTrue(json.loads(r.body)['paper_recorded'])
+        with sqlite3.connect(self.path) as con:
+            owned=con.execute('SELECT user_id,plan_id,instrument_id FROM user_positions').fetchone()
+            self.assertEqual(owned[0],7);self.assertTrue(owned[1].startswith('plan_'));self.assertTrue(owned[2].startswith('ins_'))
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM manual_plan_bindings').fetchone()[0],1)
 
     def test_failed_live_buy_never_creates_paper_holding(self):
         quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
@@ -54,11 +63,36 @@ class AccountBoundaryTest(unittest.TestCase):
             self.assertEqual(rebound.status_code,409)
         with sqlite3.connect(self.path) as con:self.assertEqual(books.positions(con,7),[])
 
+    def test_retried_manual_plan_does_not_require_a_new_quote_or_rebind_default_levels(self):
+        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        request={'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':20,'request_key':'manual-stable-after-close'}
+        with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
+            first=v2_web.api_buy(request,self.user)
+            self.assertEqual(first.status_code,200)
+            with sqlite3.connect(self.path) as con:books.sell(con,7,'IN','TEST',110)
+            quote.clear()
+            repeated=v2_web.api_buy(request,self.user)
+            self.assertEqual(repeated.status_code,200)
+            self.assertEqual(json.loads(first.body),json.loads(repeated.body))
+
+    def test_immutable_manual_binding_cannot_be_deleted_or_reassigned(self):
+        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
+            result=v2_web.api_buy({'symbol':'TEST','stop':99,'target':110,'qty':20,'request_key':'immutable-manual-request'},self.user)
+        self.assertEqual(result.status_code,200)
+        with sqlite3.connect(self.path) as con:
+            for statement in ('DELETE FROM manual_plan_bindings','UPDATE manual_plan_bindings SET user_id=8'):
+                with self.assertRaises(sqlite3.IntegrityError):con.execute(statement)
+                con.rollback()
+
     def test_api_rejects_fractional_quantity_and_does_not_resize_large_request(self):
         quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
         with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
             for qty in (1.5,True,-1):
                 result=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':qty},self.user)
+                self.assertEqual(result.status_code,400)
+            for key in (False,0,''):
+                result=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110,'request_key':key},self.user)
                 self.assertEqual(result.status_code,400)
             result=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':10000},self.user)
             self.assertEqual(result.status_code,409)

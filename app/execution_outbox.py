@@ -8,6 +8,8 @@ from .worker_fencing import require_current
 
 
 def ensure_schema(con):
+    from .incident_inbox import ensure_schema as ensure_inbox
+    ensure_inbox(con)
     con.execute("CREATE TABLE IF NOT EXISTS execution_outbox("
                 "id INTEGER PRIMARY KEY,semantic_key TEXT NOT NULL UNIQUE,topic TEXT NOT NULL,"
                 "payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER DEFAULT 0,"

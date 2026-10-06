@@ -1129,530 +1129,538 @@ class Database:
                 conn.close()
 
     def init(self) -> None:
+        from .schema_migrations import apply,validate_accounts
         with self.connect() as conn:
-            conn.executescript(
-                """
-                create table if not exists universe (
-                    symbol text primary key,
-                    name text not null,
-                    exchange text not null default 'NSE',
-                    yahoo_symbol text,
-                    kite_symbol text,
-                    indstocks_scrip_code text,
-                    indstocks_security_id text,
-                    upstox_instrument_key text,
-                    nubra_symbol text,
-                    nubra_ref_id integer,
-                    sector text,
-                    industry text,
-                    base_price real not null default 100,
-                    enabled integer not null default 1
-                );
+            apply(conn,'account-schema-v2',{'version':2,'scope':'owned-sessions-atomic-subscription-receipts'},self._init_schema,validate_accounts)
 
-                create table if not exists latest_quotes (
-                    symbol text primary key,
-                    ts text not null,
-                    price real not null,
-                    open real,
-                    high real,
-                    low real,
-                    close real,
-                    volume real,
-                    source text not null
-                );
+    def _init_schema(self, conn) -> None:
+        from .billing_ledger import ensure_schema as _billing_schema
+        _billing_schema(conn)
+        from .auth import _session_schema
+        _session_schema(conn)
+        conn.executescript(
+            """
+            create table if not exists universe (
+                symbol text primary key,
+                name text not null,
+                exchange text not null default 'NSE',
+                yahoo_symbol text,
+                kite_symbol text,
+                indstocks_scrip_code text,
+                indstocks_security_id text,
+                upstox_instrument_key text,
+                nubra_symbol text,
+                nubra_ref_id integer,
+                sector text,
+                industry text,
+                base_price real not null default 100,
+                enabled integer not null default 1
+            );
 
-                create table if not exists market_ticks (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    symbol text not null,
-                    price real not null,
-                    source text not null
-                );
+            create table if not exists latest_quotes (
+                symbol text primary key,
+                ts text not null,
+                price real not null,
+                open real,
+                high real,
+                low real,
+                close real,
+                volume real,
+                source text not null
+            );
 
-                create table if not exists candles (
-                    symbol text not null,
-                    ts text not null,
-                    open real not null,
-                    high real not null,
-                    low real not null,
-                    close real not null,
-                    volume real not null,
-                    source text not null,
-                    primary key (symbol, ts, source)
-                );
+            create table if not exists market_ticks (
+                id integer primary key autoincrement,
+                ts text not null,
+                symbol text not null,
+                price real not null,
+                source text not null
+            );
 
-                create table if not exists decisions (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    symbol text not null,
-                    action text not null,
-                    strategy text not null default 'unknown',
-                    confidence real not null,
-                    price real not null,
-                    technical_score real not null,
-                    sentiment_score real not null,
-                    reason text not null,
-                    details_json text not null default '{}'
-                );
+            create table if not exists candles (
+                symbol text not null,
+                ts text not null,
+                open real not null,
+                high real not null,
+                low real not null,
+                close real not null,
+                volume real not null,
+                source text not null,
+                primary key (symbol, ts, source)
+            );
 
-                create table if not exists orders (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    symbol text not null,
-                    side text not null,
-                    strategy text not null default 'unknown',
-                    qty integer not null,
-                    price real not null,
-                    notional real not null,
-                    status text not null,
-                    reason text not null,
-                    details_json text not null default '{}'
-                );
+            create table if not exists decisions (
+                id integer primary key autoincrement,
+                ts text not null,
+                symbol text not null,
+                action text not null,
+                strategy text not null default 'unknown',
+                confidence real not null,
+                price real not null,
+                technical_score real not null,
+                sentiment_score real not null,
+                reason text not null,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists positions (
-                    symbol text primary key,
-                    strategy text not null default 'unknown',
-                    qty integer not null,
-                    avg_price real not null,
-                    market_price real not null,
-                    realized_pnl real not null default 0,
-                    updated_at text not null,
-                    details_json text not null default '{}'
-                );
+            create table if not exists orders (
+                id integer primary key autoincrement,
+                ts text not null,
+                symbol text not null,
+                side text not null,
+                strategy text not null default 'unknown',
+                qty integer not null,
+                price real not null,
+                notional real not null,
+                status text not null,
+                reason text not null,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists portfolio_snapshots (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    cash real not null,
-                    invested real not null,
-                    market_value real not null,
-                    equity real not null,
-                    realized_pnl real not null,
-                    unrealized_pnl real not null
-                );
+            create table if not exists positions (
+                symbol text primary key,
+                strategy text not null default 'unknown',
+                qty integer not null,
+                avg_price real not null,
+                market_price real not null,
+                realized_pnl real not null default 0,
+                updated_at text not null,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists signal_ideas (
-                    id integer primary key autoincrement,
-                    first_seen_at text not null,
-                    last_seen_at text not null,
-                    symbol text not null,
-                    strategy text not null,
-                    plan_code text not null default '',
-                    signal_type text not null,
-                    status text not null default 'ACTIVE',
-                    entry_price real not null,
-                    latest_price real not null,
-                    current_return_pct real not null default 0,
-                    peak_return_pct real not null default 0,
-                    worst_return_pct real not null default 0,
-                    confidence real not null default 0,
-                    combined_score real not null default 0,
-                    confluence real not null default 0,
-                    overall_score_pct real not null default 0,
-                    overall_grade text not null default '',
-                    decision_id integer,
-                    latest_decision_id integer,
-                    reason text not null default '',
-                    details_json text not null default '{}'
-                );
+            create table if not exists portfolio_snapshots (
+                id integer primary key autoincrement,
+                ts text not null,
+                cash real not null,
+                invested real not null,
+                market_value real not null,
+                equity real not null,
+                realized_pnl real not null,
+                unrealized_pnl real not null
+            );
 
-                create table if not exists user_idea_follows (
-                    id integer primary key autoincrement,
-                    user_id integer not null,
-                    idea_id integer not null,
-                    mode text not null default 'TRACK',
-                    status text not null default 'ACTIVE',
-                    qty integer not null default 0,
-                    entry_price real not null default 0,
-                    latest_price real not null default 0,
-                    invested_amount real not null default 0,
-                    unrealized_pnl real not null default 0,
-                    return_pct real not null default 0,
-                    created_at text not null,
-                    updated_at text not null,
-                    details_json text not null default '{}'
-                );
+            create table if not exists signal_ideas (
+                id integer primary key autoincrement,
+                first_seen_at text not null,
+                last_seen_at text not null,
+                symbol text not null,
+                strategy text not null,
+                plan_code text not null default '',
+                signal_type text not null,
+                status text not null default 'ACTIVE',
+                entry_price real not null,
+                latest_price real not null,
+                current_return_pct real not null default 0,
+                peak_return_pct real not null default 0,
+                worst_return_pct real not null default 0,
+                confidence real not null default 0,
+                combined_score real not null default 0,
+                confluence real not null default 0,
+                overall_score_pct real not null default 0,
+                overall_grade text not null default '',
+                decision_id integer,
+                latest_decision_id integer,
+                reason text not null default '',
+                details_json text not null default '{}'
+            );
 
-                create table if not exists strategy_plans (
-                    id integer primary key autoincrement,
-                    code text not null unique,
-                    name text not null,
-                    description text not null,
-                    risk_level text not null,
-                    holding_period text not null,
-                    capital_rule text not null,
-                    enabled integer not null default 1,
-                    created_at text not null,
-                    updated_at text not null
-                );
+            create table if not exists user_idea_follows (
+                id integer primary key autoincrement,
+                user_id integer not null,
+                idea_id integer not null,
+                mode text not null default 'TRACK',
+                status text not null default 'ACTIVE',
+                qty integer not null default 0,
+                entry_price real not null default 0,
+                latest_price real not null default 0,
+                invested_amount real not null default 0,
+                unrealized_pnl real not null default 0,
+                return_pct real not null default 0,
+                created_at text not null,
+                updated_at text not null,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists tomorrow_plan_items (
-                    id integer primary key autoincrement,
-                    plan_date text not null,
-                    market_region text not null,
-                    prepared_at text not null,
-                    section text not null,
-                    section_rank integer not null default 0,
-                    sort_order integer not null default 0,
-                    symbol text not null,
-                    action text not null,
-                    trigger_price real,
-                    max_entry real,
-                    stop_loss real,
-                    target1 real,
-                    score real not null default 0,
-                    confidence real not null default 0,
-                    strategy text not null default '',
-                    rationale text not null default '',
-                    validation text not null default '',
-                    details_json text not null default '{}',
-                    unique(plan_date, market_region, section, symbol)
-                );
+            create table if not exists strategy_plans (
+                id integer primary key autoincrement,
+                code text not null unique,
+                name text not null,
+                description text not null,
+                risk_level text not null,
+                holding_period text not null,
+                capital_rule text not null,
+                enabled integer not null default 1,
+                created_at text not null,
+                updated_at text not null
+            );
 
-                create table if not exists agent_state (
-                    key text primary key,
-                    value text not null
-                );
+            create table if not exists tomorrow_plan_items (
+                id integer primary key autoincrement,
+                plan_date text not null,
+                market_region text not null,
+                prepared_at text not null,
+                section text not null,
+                section_rank integer not null default 0,
+                sort_order integer not null default 0,
+                symbol text not null,
+                action text not null,
+                trigger_price real,
+                max_entry real,
+                stop_loss real,
+                target1 real,
+                score real not null default 0,
+                confidence real not null default 0,
+                strategy text not null default '',
+                rationale text not null default '',
+                validation text not null default '',
+                details_json text not null default '{}',
+                unique(plan_date, market_region, section, symbol)
+            );
 
-                create table if not exists runtime_settings (
-                    key text primary key,
-                    value text not null,
-                    updated_at text not null
-                );
+            create table if not exists agent_state (
+                key text primary key,
+                value text not null
+            );
 
-                create table if not exists users (
-                    id integer primary key autoincrement,
-                    username text not null unique,
-                    password_hash text not null,
-                    role text not null default 'user',
-                    account_plan text not null default 'standard',
-                    assigned_llm_provider text not null default '',
-                    assigned_llm_model text not null default '',
-                    active integer not null default 1,
-                    credit_balance real not null default 0,
-                    daily_credit_limit real not null default 0,
-                    paper_cash_in real,
-                    paper_cash_us real,
-                    upstox_api_key text not null default '',
-                    upstox_api_secret text not null default '',
-                    upstox_redirect_uri text not null default '',
-                    upstox_access_token text not null default '',
-                    upstox_api_base_url text not null default '',
-                    upstox_token_scope text not null default '',
-                    indstocks_access_token text not null default '',
-                    indstocks_api_base_url text not null default '',
-                    kite_api_key text not null default '',
-                    kite_access_token text not null default '',
-                    kite_token_scope text not null default '',
-                    monitor_symbols_json text not null default '[]',
-                    broker_updated_at text,
-                    created_at text not null,
-                    updated_at text not null,
-                    last_login_at text
-                );
+            create table if not exists runtime_settings (
+                key text primary key,
+                value text not null,
+                updated_at text not null
+            );
 
-                create table if not exists user_credit_ledger (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    user_id integer not null,
-                    entry_type text not null,
-                    amount real not null,
-                    balance_after real not null,
-                    base_cost real not null default 0,
-                    platform_margin real not null default 0,
-                    description text not null,
-                    details_json text not null default '{}',
-                    foreign key(user_id) references users(id)
-                );
+            create table if not exists users (
+                id integer primary key autoincrement,
+                username text not null unique,
+                password_hash text not null,
+                role text not null default 'user',
+                account_plan text not null default 'standard',
+                assigned_llm_provider text not null default '',
+                assigned_llm_model text not null default '',
+                active integer not null default 1,
+                credit_balance real not null default 0,
+                daily_credit_limit real not null default 0,
+                paper_cash_in real,
+                paper_cash_us real,
+                upstox_api_key text not null default '',
+                upstox_api_secret text not null default '',
+                upstox_redirect_uri text not null default '',
+                upstox_access_token text not null default '',
+                upstox_api_base_url text not null default '',
+                upstox_token_scope text not null default '',
+                indstocks_access_token text not null default '',
+                indstocks_api_base_url text not null default '',
+                kite_api_key text not null default '',
+                kite_access_token text not null default '',
+                kite_token_scope text not null default '',
+                monitor_symbols_json text not null default '[]',
+                broker_updated_at text,
+                created_at text not null,
+                updated_at text not null,
+                last_login_at text
+            );
 
-                create table if not exists sentiment_events (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    symbol text not null,
-                    score real not null,
-                    headline_count integer not null,
-                    headlines_json text not null,
-                    confidence real not null default 0,
-                    events_json text not null default '[]'
-                );
+            create table if not exists user_credit_ledger (
+                id integer primary key autoincrement,
+                ts text not null,
+                user_id integer not null,
+                entry_type text not null,
+                amount real not null,
+                balance_after real not null,
+                base_cost real not null default 0,
+                platform_margin real not null default 0,
+                description text not null,
+                details_json text not null default '{}',
+                foreign key(user_id) references users(id)
+            );
 
-                create table if not exists agent_logs (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    level text not null,
-                    component text not null,
-                    event text not null,
-                    message text not null,
-                    details_json text not null default '{}'
-                );
+            create table if not exists sentiment_events (
+                id integer primary key autoincrement,
+                ts text not null,
+                symbol text not null,
+                score real not null,
+                headline_count integer not null,
+                headlines_json text not null,
+                confidence real not null default 0,
+                events_json text not null default '[]'
+            );
 
-                create table if not exists llm_usage_events (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    component text not null,
-                    purpose text not null,
-                    provider text not null,
-                    model text not null,
-                    prompt_tokens integer not null default 0,
-                    completion_tokens integer not null default 0,
-                    total_tokens integer not null default 0,
-                    cache_hit_tokens integer not null default 0,
-                    cache_miss_tokens integer not null default 0,
-                    estimated_tokens integer not null default 0,
-                    input_chars integer not null default 0,
-                    output_chars integer not null default 0,
-                    cost_usd real not null default 0,
-                    latency_ms integer not null default 0,
-                    user_id integer,
-                    scope_id text not null default '',
-                    details_json text not null default '{}'
-                );
+            create table if not exists agent_logs (
+                id integer primary key autoincrement,
+                ts text not null,
+                level text not null,
+                component text not null,
+                event text not null,
+                message text not null,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists delivery_data (
-                    symbol text not null,
-                    date text not null,
-                    close real,
-                    total_volume real,
-                    delivery_volume real,
-                    delivery_pct real,
-                    primary key (symbol, date)
-                );
+            create table if not exists llm_usage_events (
+                id integer primary key autoincrement,
+                ts text not null,
+                component text not null,
+                purpose text not null,
+                provider text not null,
+                model text not null,
+                prompt_tokens integer not null default 0,
+                completion_tokens integer not null default 0,
+                total_tokens integer not null default 0,
+                cache_hit_tokens integer not null default 0,
+                cache_miss_tokens integer not null default 0,
+                estimated_tokens integer not null default 0,
+                input_chars integer not null default 0,
+                output_chars integer not null default 0,
+                cost_usd real not null default 0,
+                latency_ms integer not null default 0,
+                user_id integer,
+                scope_id text not null default '',
+                details_json text not null default '{}'
+            );
 
-                create table if not exists pattern_states (
-                    symbol text not null,
-                    pattern text not null,
-                    state_json text not null default '{}',
-                    updated_at text not null,
-                    primary key (symbol, pattern)
-                );
+            create table if not exists delivery_data (
+                symbol text not null,
+                date text not null,
+                close real,
+                total_volume real,
+                delivery_volume real,
+                delivery_pct real,
+                primary key (symbol, date)
+            );
 
-                create table if not exists trade_audit_events (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    symbol text not null,
-                    event_type text not null,
-                    side text not null default '',
-                    qty integer not null default 0,
-                    price real not null default 0,
-                    status text not null default '',
-                    reason text not null default '',
-                    details_json text not null default '{}'
-                );
+            create table if not exists pattern_states (
+                symbol text not null,
+                pattern text not null,
+                state_json text not null default '{}',
+                updated_at text not null,
+                primary key (symbol, pattern)
+            );
 
-                create table if not exists order_fill_events (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    order_id integer,
-                    broker_order_id text not null default '',
-                    symbol text not null,
-                    side text not null,
-                    qty integer not null default 0,
-                    price real not null default 0,
-                    status text not null,
-                    details_json text not null default '{}'
-                );
+            create table if not exists trade_audit_events (
+                id integer primary key autoincrement,
+                ts text not null,
+                symbol text not null,
+                event_type text not null,
+                side text not null default '',
+                qty integer not null default 0,
+                price real not null default 0,
+                status text not null default '',
+                reason text not null default '',
+                details_json text not null default '{}'
+            );
 
-                create table if not exists readiness_snapshots (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    status text not null,
-                    live_ready integer not null default 0,
-                    details_json text not null default '{}'
-                );
+            create table if not exists order_fill_events (
+                id integer primary key autoincrement,
+                ts text not null,
+                order_id integer,
+                broker_order_id text not null default '',
+                symbol text not null,
+                side text not null,
+                qty integer not null default 0,
+                price real not null default 0,
+                status text not null,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists broker_sync_results (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    provider text not null default '',
-                    status text not null default '',
-                    details_json text not null default '{}'
-                );
+            create table if not exists readiness_snapshots (
+                id integer primary key autoincrement,
+                ts text not null,
+                status text not null,
+                live_ready integer not null default 0,
+                details_json text not null default '{}'
+            );
 
-                create table if not exists missed_move_reviews (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    market_region text not null default 'BOTH',
-                    review_date text not null default '',
-                    details_json text not null default '{}'
-                );
+            create table if not exists broker_sync_results (
+                id integer primary key autoincrement,
+                ts text not null,
+                provider text not null default '',
+                status text not null default '',
+                details_json text not null default '{}'
+            );
 
-                create table if not exists whatsapp_alert_events (
-                    id integer primary key autoincrement,
-                    ts text not null,
-                    user_id integer not null,
-                    phone text not null default '',
-                    alert_type text not null,
-                    symbol text not null default '',
-                    status text not null,
-                    provider_message_id text not null default '',
-                    reason text not null default '',
-                    details_json text not null default '{}'
-                );
+            create table if not exists missed_move_reviews (
+                id integer primary key autoincrement,
+                ts text not null,
+                market_region text not null default 'BOTH',
+                review_date text not null default '',
+                details_json text not null default '{}'
+            );
 
-                create index if not exists idx_market_ticks_symbol_ts
-                    on market_ticks(symbol, ts);
-                create index if not exists idx_candles_symbol_ts
-                    on candles(symbol, ts);
-                create index if not exists idx_decisions_ts
-                    on decisions(ts);
-                create index if not exists idx_orders_ts
-                    on orders(ts);
-                create index if not exists idx_agent_logs_ts
-                    on agent_logs(ts);
-                create index if not exists idx_users_username
-                    on users(username);
-                create index if not exists idx_llm_usage_ts
-                    on llm_usage_events(ts);
-                create index if not exists idx_llm_usage_purpose_ts
-                    on llm_usage_events(purpose, ts);
-                create index if not exists idx_user_credit_ledger_user_ts
-                    on user_credit_ledger(user_id, ts);
-                create index if not exists idx_delivery_symbol_date
-                    on delivery_data(symbol, date);
-                create index if not exists idx_pattern_states_pattern
-                    on pattern_states(pattern, updated_at);
-                create index if not exists idx_signal_ideas_symbol_status
-                    on signal_ideas(symbol, status);
-                create index if not exists idx_signal_ideas_status_seen
-                    on signal_ideas(status, last_seen_at desc, id desc);
-                create index if not exists idx_signal_ideas_plan_status
-                    on signal_ideas(plan_code, status, current_return_pct desc, last_seen_at desc);
-                create index if not exists idx_user_idea_follows_user
-                    on user_idea_follows(user_id, status);
-                create index if not exists idx_user_idea_follows_user_mode
-                    on user_idea_follows(user_id, mode, updated_at desc);
-                create index if not exists idx_user_idea_follows_idea_user
-                    on user_idea_follows(idea_id, user_id, id desc);
-                create index if not exists idx_tomorrow_plan_market_date
-                    on tomorrow_plan_items(market_region, plan_date, sort_order);
-                create index if not exists idx_trade_audit_symbol_ts
-                    on trade_audit_events(symbol, ts);
-                create index if not exists idx_order_fill_order_ts
-                    on order_fill_events(order_id, ts);
-                create index if not exists idx_readiness_snapshots_ts
-                    on readiness_snapshots(ts);
-                create index if not exists idx_broker_sync_results_ts
-                    on broker_sync_results(ts);
-                create index if not exists idx_missed_move_reviews_ts
-                    on missed_move_reviews(ts);
-                create index if not exists idx_whatsapp_alert_user_type_symbol_ts
-                    on whatsapp_alert_events(user_id, alert_type, symbol, ts);
-                """
+            create table if not exists whatsapp_alert_events (
+                id integer primary key autoincrement,
+                ts text not null,
+                user_id integer not null,
+                phone text not null default '',
+                alert_type text not null,
+                symbol text not null default '',
+                status text not null,
+                provider_message_id text not null default '',
+                reason text not null default '',
+                details_json text not null default '{}'
+            );
+
+            create index if not exists idx_market_ticks_symbol_ts
+                on market_ticks(symbol, ts);
+            create index if not exists idx_candles_symbol_ts
+                on candles(symbol, ts);
+            create index if not exists idx_decisions_ts
+                on decisions(ts);
+            create index if not exists idx_orders_ts
+                on orders(ts);
+            create index if not exists idx_agent_logs_ts
+                on agent_logs(ts);
+            create index if not exists idx_users_username
+                on users(username);
+            create index if not exists idx_llm_usage_ts
+                on llm_usage_events(ts);
+            create index if not exists idx_llm_usage_purpose_ts
+                on llm_usage_events(purpose, ts);
+            create index if not exists idx_user_credit_ledger_user_ts
+                on user_credit_ledger(user_id, ts);
+            create index if not exists idx_delivery_symbol_date
+                on delivery_data(symbol, date);
+            create index if not exists idx_pattern_states_pattern
+                on pattern_states(pattern, updated_at);
+            create index if not exists idx_signal_ideas_symbol_status
+                on signal_ideas(symbol, status);
+            create index if not exists idx_signal_ideas_status_seen
+                on signal_ideas(status, last_seen_at desc, id desc);
+            create index if not exists idx_signal_ideas_plan_status
+                on signal_ideas(plan_code, status, current_return_pct desc, last_seen_at desc);
+            create index if not exists idx_user_idea_follows_user
+                on user_idea_follows(user_id, status);
+            create index if not exists idx_user_idea_follows_user_mode
+                on user_idea_follows(user_id, mode, updated_at desc);
+            create index if not exists idx_user_idea_follows_idea_user
+                on user_idea_follows(idea_id, user_id, id desc);
+            create index if not exists idx_tomorrow_plan_market_date
+                on tomorrow_plan_items(market_region, plan_date, sort_order);
+            create index if not exists idx_trade_audit_symbol_ts
+                on trade_audit_events(symbol, ts);
+            create index if not exists idx_order_fill_order_ts
+                on order_fill_events(order_id, ts);
+            create index if not exists idx_readiness_snapshots_ts
+                on readiness_snapshots(ts);
+            create index if not exists idx_broker_sync_results_ts
+                on broker_sync_results(ts);
+            create index if not exists idx_missed_move_reviews_ts
+                on missed_move_reviews(ts);
+            create index if not exists idx_whatsapp_alert_user_type_symbol_ts
+                on whatsapp_alert_events(user_id, alert_type, symbol, ts);
+            """
+        )
+        self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
+        self._ensure_column(conn, "universe", "indstocks_scrip_code", "text")
+        self._ensure_column(conn, "universe", "indstocks_security_id", "text")
+        self._ensure_column(conn, "universe", "nubra_symbol", "text")
+        self._ensure_column(conn, "universe", "nubra_ref_id", "integer")
+        self._ensure_column(conn, "universe", "industry", "text")
+        self._ensure_column(conn, "decisions", "strategy", "text not null default 'unknown'")
+        self._ensure_column(conn, "decisions", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "orders", "strategy", "text not null default 'unknown'")
+        self._ensure_column(conn, "orders", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "positions", "strategy", "text not null default 'unknown'")
+        self._ensure_column(conn, "positions", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "signal_ideas", "latest_decision_id", "integer")
+        self._ensure_column(conn, "signal_ideas", "plan_code", "text not null default ''")
+        self._ensure_column(conn, "signal_ideas", "current_return_pct", "real not null default 0")
+        self._ensure_column(conn, "signal_ideas", "peak_return_pct", "real not null default 0")
+        self._ensure_column(conn, "signal_ideas", "worst_return_pct", "real not null default 0")
+        self._ensure_column(conn, "signal_ideas", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "user_idea_follows", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "tomorrow_plan_items", "validation", "text not null default ''")
+        self._ensure_column(conn, "tomorrow_plan_items", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "trade_audit_events", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "order_fill_events", "details_json", "text not null default '{}'")
+        self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
+        self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
+        self._ensure_column(conn, "delivery_data", "close", "real")
+        self._ensure_column(conn, "delivery_data", "total_volume", "real")
+        self._ensure_column(conn, "delivery_data", "delivery_volume", "real")
+        self._ensure_column(conn, "delivery_data", "delivery_pct", "real")
+        self._ensure_column(conn, "llm_usage_events", "cache_hit_tokens", "integer not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "cache_miss_tokens", "integer not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "estimated_tokens", "integer not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "input_chars", "integer not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "output_chars", "integer not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "cost_usd", "real not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "latency_ms", "integer not null default 0")
+        self._ensure_column(conn, "llm_usage_events", "user_id", "integer")
+        self._ensure_column(conn, "llm_usage_events", "scope_id", "text not null default ''")
+        self._ensure_column(conn, "users", "paper_cash_in", "real")
+        self._ensure_column(conn, "users", "paper_cash_us", "real")
+        self._ensure_column(conn, "users", "signal_execution_mode", "text not null default 'SIGNAL_ONLY'")
+        self._ensure_column(conn, "users", "monitor_symbols_json", "text not null default '[]'")
+        conn.execute(
+            """
+            create index if not exists idx_llm_usage_user_ts
+                on llm_usage_events(user_id, ts)
+            """
+        )
+        conn.execute(
+            """
+            create index if not exists idx_llm_usage_scope
+                on llm_usage_events(scope_id)
+            """
+        )
+        self._ensure_column(conn, "users", "role", "text not null default 'user'")
+        self._ensure_column(conn, "users", "account_plan", "text not null default 'standard'")
+        # Trial window. NULL means NO TRIAL, not an expired one — the
+        # accounts that predate this feature must keep the plan they have
+        # rather than being read as lapsed triallists and demoted.
+        self._ensure_column(conn, "users", "trial_ends_at", "text")
+        # When the PAID plan runs out. NULL on a paid row means it predates
+        # this column and is treated as running, not lapsed — demoting real
+        # subscribers to fix a schema gap is the worse mistake.
+        self._ensure_column(conn, "users", "plan_expires_at", "text")
+        conn.execute(
+            """
+            create table if not exists plan_requests (
+                id integer primary key autoincrement,
+                user_id integer not null,
+                requested_plan text not null,
+                status text not null default 'pending',
+                amount real not null default 0,
+                note text not null default '',
+                created_at text not null,
+                decided_at text,
+                decided_by text
             )
-            self._ensure_column(conn, "universe", "upstox_instrument_key", "text")
-            self._ensure_column(conn, "universe", "indstocks_scrip_code", "text")
-            self._ensure_column(conn, "universe", "indstocks_security_id", "text")
-            self._ensure_column(conn, "universe", "nubra_symbol", "text")
-            self._ensure_column(conn, "universe", "nubra_ref_id", "integer")
-            self._ensure_column(conn, "universe", "industry", "text")
-            self._ensure_column(conn, "decisions", "strategy", "text not null default 'unknown'")
-            self._ensure_column(conn, "decisions", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "orders", "strategy", "text not null default 'unknown'")
-            self._ensure_column(conn, "orders", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "positions", "strategy", "text not null default 'unknown'")
-            self._ensure_column(conn, "positions", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "signal_ideas", "latest_decision_id", "integer")
-            self._ensure_column(conn, "signal_ideas", "plan_code", "text not null default ''")
-            self._ensure_column(conn, "signal_ideas", "current_return_pct", "real not null default 0")
-            self._ensure_column(conn, "signal_ideas", "peak_return_pct", "real not null default 0")
-            self._ensure_column(conn, "signal_ideas", "worst_return_pct", "real not null default 0")
-            self._ensure_column(conn, "signal_ideas", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "user_idea_follows", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "tomorrow_plan_items", "validation", "text not null default ''")
-            self._ensure_column(conn, "tomorrow_plan_items", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "trade_audit_events", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "order_fill_events", "details_json", "text not null default '{}'")
-            self._ensure_column(conn, "sentiment_events", "confidence", "real not null default 0")
-            self._ensure_column(conn, "sentiment_events", "events_json", "text not null default '[]'")
-            self._ensure_column(conn, "delivery_data", "close", "real")
-            self._ensure_column(conn, "delivery_data", "total_volume", "real")
-            self._ensure_column(conn, "delivery_data", "delivery_volume", "real")
-            self._ensure_column(conn, "delivery_data", "delivery_pct", "real")
-            self._ensure_column(conn, "llm_usage_events", "cache_hit_tokens", "integer not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "cache_miss_tokens", "integer not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "estimated_tokens", "integer not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "input_chars", "integer not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "output_chars", "integer not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "cost_usd", "real not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "latency_ms", "integer not null default 0")
-            self._ensure_column(conn, "llm_usage_events", "user_id", "integer")
-            self._ensure_column(conn, "llm_usage_events", "scope_id", "text not null default ''")
-            self._ensure_column(conn, "users", "paper_cash_in", "real")
-            self._ensure_column(conn, "users", "paper_cash_us", "real")
-            self._ensure_column(conn, "users", "signal_execution_mode", "text not null default 'SIGNAL_ONLY'")
-            self._ensure_column(conn, "users", "monitor_symbols_json", "text not null default '[]'")
-            conn.execute(
-                """
-                create index if not exists idx_llm_usage_user_ts
-                    on llm_usage_events(user_id, ts)
-                """
-            )
-            conn.execute(
-                """
-                create index if not exists idx_llm_usage_scope
-                    on llm_usage_events(scope_id)
-                """
-            )
-            self._ensure_column(conn, "users", "role", "text not null default 'user'")
-            self._ensure_column(conn, "users", "account_plan", "text not null default 'standard'")
-            # Trial window. NULL means NO TRIAL, not an expired one — the
-            # accounts that predate this feature must keep the plan they have
-            # rather than being read as lapsed triallists and demoted.
-            self._ensure_column(conn, "users", "trial_ends_at", "text")
-            # When the PAID plan runs out. NULL on a paid row means it predates
-            # this column and is treated as running, not lapsed — demoting real
-            # subscribers to fix a schema gap is the worse mistake.
-            self._ensure_column(conn, "users", "plan_expires_at", "text")
-            conn.execute(
-                """
-                create table if not exists plan_requests (
-                    id integer primary key autoincrement,
-                    user_id integer not null,
-                    requested_plan text not null,
-                    status text not null default 'pending',
-                    amount real not null default 0,
-                    note text not null default '',
-                    created_at text not null,
-                    decided_at text,
-                    decided_by text
-                )
-                """
-            )
-            conn.execute("create index if not exists idx_plan_requests_status"
-                         " on plan_requests(status, created_at)")
-            # Investment profile. Free text is deliberately not allowed — these
-            # are graded scales a consumer can reason about, not labels.
-            self._ensure_column(conn, "users", "risk_tolerance", "text not null default 'balanced'")
-            self._ensure_column(conn, "users", "investment_style", "text not null default 'balanced'")
-            self._ensure_column(conn, "users", "assigned_llm_provider", "text not null default ''")
-            self._ensure_column(conn, "users", "assigned_llm_model", "text not null default ''")
-            self._ensure_column(conn, "users", "active", "integer not null default 1")
-            self._ensure_column(conn, "users", "credit_balance", "real not null default 0")
-            self._ensure_column(conn, "users", "daily_credit_limit", "real not null default 0")
-            self._ensure_column(conn, "users", "upstox_api_key", "text not null default ''")
-            self._ensure_column(conn, "users", "upstox_api_secret", "text not null default ''")
-            self._ensure_column(conn, "users", "upstox_redirect_uri", "text not null default ''")
-            self._ensure_column(conn, "users", "upstox_access_token", "text not null default ''")
-            self._ensure_column(conn, "users", "upstox_api_base_url", "text not null default ''")
-            self._ensure_column(conn, "users", "upstox_token_scope", "text not null default ''")
-            self._ensure_column(conn, "users", "indstocks_access_token", "text not null default ''")
-            self._ensure_column(conn, "users", "indstocks_api_base_url", "text not null default ''")
-            self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
-            self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
-            self._ensure_column(conn, "users", "kite_token_scope", "text not null default ''")
-            self._ensure_column(conn, "users", "whatsapp_phone", "text not null default ''")
-            self._ensure_column(conn, "users", "whatsapp_alerts_enabled", "integer not null default 0")
-            self._ensure_column(conn, "users", "whatsapp_alert_types_json", "text not null default '[\"fresh_buy\",\"paper_follow\",\"risk_exit\"]'")
-            self._ensure_column(conn, "users", "whatsapp_verified_at", "text")
-            self._ensure_column(conn, "users", "whatsapp_updated_at", "text")
-            self._ensure_column(conn, "users", "broker_updated_at", "text")
-            self._seed_strategy_plans(conn)
-            self._backfill_signal_plan_codes(conn)
-            self._demote_non_actionable_buy_signal_ideas(conn)
-            self._backfill_universe_metadata(conn)
-            self._ensure_column(conn, "users", "created_at", "text not null default ''")
-            self._ensure_column(conn, "users", "updated_at", "text not null default ''")
-            self._ensure_column(conn, "users", "last_login_at", "text")
+            """
+        )
+        conn.execute("create index if not exists idx_plan_requests_status"
+                     " on plan_requests(status, created_at)")
+        # Investment profile. Free text is deliberately not allowed — these
+        # are graded scales a consumer can reason about, not labels.
+        self._ensure_column(conn, "users", "risk_tolerance", "text not null default 'balanced'")
+        self._ensure_column(conn, "users", "investment_style", "text not null default 'balanced'")
+        self._ensure_column(conn, "users", "assigned_llm_provider", "text not null default ''")
+        self._ensure_column(conn, "users", "assigned_llm_model", "text not null default ''")
+        self._ensure_column(conn, "users", "active", "integer not null default 1")
+        self._ensure_column(conn, "users", "credit_balance", "real not null default 0")
+        self._ensure_column(conn, "users", "daily_credit_limit", "real not null default 0")
+        self._ensure_column(conn, "users", "upstox_api_key", "text not null default ''")
+        self._ensure_column(conn, "users", "upstox_api_secret", "text not null default ''")
+        self._ensure_column(conn, "users", "upstox_redirect_uri", "text not null default ''")
+        self._ensure_column(conn, "users", "upstox_access_token", "text not null default ''")
+        self._ensure_column(conn, "users", "upstox_api_base_url", "text not null default ''")
+        self._ensure_column(conn, "users", "upstox_token_scope", "text not null default ''")
+        self._ensure_column(conn, "users", "indstocks_access_token", "text not null default ''")
+        self._ensure_column(conn, "users", "indstocks_api_base_url", "text not null default ''")
+        self._ensure_column(conn, "users", "kite_api_key", "text not null default ''")
+        self._ensure_column(conn, "users", "kite_access_token", "text not null default ''")
+        self._ensure_column(conn, "users", "kite_token_scope", "text not null default ''")
+        self._ensure_column(conn, "users", "whatsapp_phone", "text not null default ''")
+        self._ensure_column(conn, "users", "whatsapp_alerts_enabled", "integer not null default 0")
+        self._ensure_column(conn, "users", "whatsapp_alert_types_json", "text not null default '[\"fresh_buy\",\"paper_follow\",\"risk_exit\"]'")
+        self._ensure_column(conn, "users", "whatsapp_verified_at", "text")
+        self._ensure_column(conn, "users", "whatsapp_updated_at", "text")
+        self._ensure_column(conn, "users", "broker_updated_at", "text")
+        self._seed_strategy_plans(conn)
+        self._backfill_signal_plan_codes(conn)
+        self._demote_non_actionable_buy_signal_ideas(conn)
+        self._backfill_universe_metadata(conn)
+        self._ensure_column(conn, "users", "created_at", "text not null default ''")
+        self._ensure_column(conn, "users", "updated_at", "text not null default ''")
+        self._ensure_column(conn, "users", "last_login_at", "text")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         rows = conn.execute(f"pragma table_info({table})").fetchall()
@@ -2103,44 +2111,43 @@ class Database:
 
     def decide_plan_request(self, request_id: int, approve: bool, by: str,
                             payment_ref: str = "") -> dict[str, Any] | None:
-        """Approve or reject. Approving is what actually grants the plan, so the
-        two happen together — an admin cannot mark a request done and forget to
-        upgrade the account."""
+        """Confirm receipt, request status and entitlement in one transaction."""
+        from datetime import datetime, timedelta, timezone
+        from . import plans as _plans, billing_ledger
+        if type(approve) is not bool:
+            raise ValueError("Approval must be a boolean")
         with self.connect() as conn:
+            billing_ledger.ensure_schema(conn)
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("select * from plan_requests where id = ?", (request_id,)).fetchone()
             if not row:
                 return None
             row = dict(row)
             if row["status"] != "pending":
                 return row
-            # The UTR / payment reference is stored WITH the decision. Without
-            # it an approval is an unauditable claim that money arrived, and
-            # there is nothing to check a disputed subscription against.
             note = (row.get("note") or "").strip()
-            if payment_ref:
-                note = (note + " | " if note else "") + "paid: " + payment_ref[:80]
-            conn.execute("update plan_requests set status = ?, decided_at = ?, decided_by = ?,"
-                         " note = ? where id = ?",
-                         ("approved" if approve else "rejected", utc_now(), by,
-                          note, request_id))
-        if approve:
-            # EXTEND, do not reset. Renewing three days early must add to what
-            # is left rather than throw it away, or paying on time is punished.
-            from datetime import datetime, timedelta, timezone
-            from . import plans as _plans
-            current = (self.user_by_id(int(row["user_id"])) or {}).get("plan_expires_at")
-            base = datetime.now(timezone.utc)
-            try:
-                if current:
-                    have = datetime.fromisoformat(str(current).replace("Z", "+00:00"))
-                    if have.tzinfo is None:
-                        have = have.replace(tzinfo=timezone.utc)
-                    base = max(base, have)
-            except (TypeError, ValueError):
-                pass
-            self.update_user(int(row["user_id"]), account_plan=row["requested_plan"],
-                             plan_expires_at=(base + timedelta(days=_plans.SUBSCRIPTION_DAYS)).isoformat())
-        return self.plan_request(request_id)
+            if approve:
+                current = conn.execute("SELECT plan_expires_at FROM users WHERE id=?",(row["user_id"],)).fetchone()
+                if not current:
+                    raise ValueError("Subscription account no longer exists")
+                base = datetime.now(timezone.utc)
+                if current[0]:
+                    try:
+                        have = datetime.fromisoformat(str(current[0]).replace("Z", "+00:00"))
+                        if have.tzinfo is None:
+                            raise ValueError("Unknown subscription expiry timezone")
+                        base = max(base, have)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("Current subscription expiry needs review") from exc
+                ends = (base + timedelta(days=_plans.SUBSCRIPTION_DAYS)).isoformat()
+                billing_ledger.confirm(conn,row,payment_reference=payment_ref,by=by,
+                                       starts_at=base.isoformat(),ends_at=ends)
+                conn.execute("UPDATE users SET account_plan=?,plan_expires_at=?,updated_at=? WHERE id=?",
+                             (row["requested_plan"],ends,utc_now(),row["user_id"]))
+                note = (note + " | " if note else "") + "paid: " + payment_ref.strip()
+            conn.execute("update plan_requests set status=?,decided_at=?,decided_by=?,note=? where id=? AND status='pending'",
+                         ("approved" if approve else "rejected",utc_now(),by,note,request_id))
+            return dict(conn.execute("SELECT * FROM plan_requests WHERE id=?",(request_id,)).fetchone())
 
     def plan_request(self, request_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:

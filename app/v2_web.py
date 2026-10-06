@@ -1208,15 +1208,28 @@ def api_admin_request_decide(rid: int, payload: dict, user=Depends(require_admin
     one call so an admin cannot mark a request handled and forget to upgrade
     the account."""
     settings, db = _auth_bits()
-    approve = bool(payload.get("approve"))
-    row = db.decide_plan_request(rid, approve, str(user.get("username") or ""),
-                                 str(payload.get("payment_ref") or "")[:80])
+    approve = payload.get("approve")
+    if type(approve) is not bool:raise HTTPException(400,'Approval must be true or false')
+    try:
+        row = db.decide_plan_request(rid, approve, str(user.get("username") or ""),
+                                     payload.get("payment_ref") or "")
+    except ValueError as exc:raise HTTPException(409,str(exc))
     if not row:
         return JSONResponse(dict(error="no such request"), status_code=404)
     _LOG.info("ADMIN %s %s request %s (user %s -> %s)", user.get("username"),
               "approved" if approve else "rejected", rid, row["user_id"],
               row["requested_plan"])
     return JSONResponse(dict(ok=True, status=row["status"]))
+
+
+@router.get('/api/billing-receipts')
+def api_billing_receipts(user=Depends(require_session)):
+    from . import billing_ledger
+    settings,db=_auth_bits()
+    try:
+        with db.connect() as con:result=billing_ledger.report(con,int(user['id']))
+        return JSONResponse(result,headers={'Cache-Control':'private, no-store'})
+    except sqlite3.Error:raise HTTPException(503,'Owned billing receipts unavailable')
 
 
 @router.get("/api/me")
@@ -1869,18 +1882,10 @@ def _market_shut(market):
 
 @router.post("/api/buy")
 def api_buy(payload: dict, user: dict = Depends(require_session)):
-    """Manual buy into the CALLER'S OWN book.
+    """Freeze a human paper request, then use the approved execution pipeline.
 
-    THIS WROTE TO THE HOUSE BOOK, and that was a real-money defect rather than
-    an accounting one. record_entry fires the live-broker mirror, and the mirror
-    asserts the OWNER's user id when it checks permission — so any Pro or Elite
-    subscriber pressing Buy placed a REAL order in the operator's Upstox
-    account, with the operator's money. It also consumed the engine's six
-    position slots and wrote into v2_positions, the record every measured claim
-    in this codebase is computed from.
-
-    Now: the caller's own paper book, and the broker only when the caller IS the
-    sleeve's owner.
+    Research publications cannot fall back to manual approval. Live execution
+    remains a separately reviewed route and never substitutes a paper fill.
     """
     mode = payload.get("mode", "paper")
     if payload.get("plan_id") is not None or payload.get("publication_id") is not None:
@@ -1895,6 +1900,35 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     shut = _market_shut(market)
     if shut is not None:
         return shut
+    if mode == "paper":
+        from . import approved_execution,entry_contracts
+        from uuid import uuid4
+        if market != "IN":
+            return JSONResponse({"error":"UNSUPPORTED_CAPABILITY: reviewed NSE cash paper route only"},status_code=409)
+        request_key=payload.get("request_key")
+        if request_key is None:request_key="manual-"+uuid4().hex
+        requested=payload.get("qty")
+        if requested is not None and (type(requested) is not int or requested<1):
+            return JSONResponse({"error":"Quantity must be a positive whole number"},status_code=400)
+        if not isinstance(request_key,str) or not 8<=len(request_key)<=128:
+            return JSONResponse({"error":"Invalid request identity"},status_code=400)
+        for value in (payload.get("stop"),payload.get("target")):
+            if value is not None and (isinstance(value,bool) or not isinstance(value,(int,float))):
+                return JSONResponse({"error":"Finite numeric stop/target required"},status_code=400)
+        con=_rw()
+        try:
+            with entry_contracts.open_catalogue() as (catalogue,now):
+                result=approved_execution.submit_manual_paper(con,catalogue,int(user['id']),sym,request_key,
+                    _live_map('IN',[sym]),quantity=requested,stop=payload.get('stop'),target=payload.get('target'),
+                    regime=_regime_state('IN'),now=now)
+            result.update(symbol=sym,broker_status=None,request_key=request_key)
+            if not result['ok']:result['error']=result['reason']
+            return JSONResponse(result,status_code=200 if result['ok'] else 409)
+        except ValueError as exc:
+            return JSONResponse({"error":str(exc),"code":"ACCOUNT_RISK_REFUSAL"},status_code=409)
+        except sqlite3.Error:
+            return JSONResponse({"error":"Approved execution evidence unavailable"},status_code=503)
+        finally:con.close()
     from .sleeves.feeds import fresh_quotes
     quotes = fresh_quotes(_live_map(market, [sym]), datetime.now(timezone.utc))
     px = float((quotes.get(sym) or {}).get("price") or 0)
@@ -1926,25 +1960,8 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
                                    requested_qty=requested, request_key=request_key)
             finally:
                 main.close()
-        if not request_key and sym in books.open_symbols(v2, uid, market):
-            return JSONResponse({"error": "already holding " + sym}, status_code=400)
-        try:
-            qty = books.buy(v2, uid, market, "manual", sym, px, requested, stop, target,
-                            request_key=request_key,exact_quantity=True)
-        except ValueError:
-            return JSONResponse({"error":"Request identity already belongs to a different order"},status_code=409)
-        if qty < 1:
-            return JSONResponse(
-                {"error": books.refusal(v2, uid, market), "code": "ACCOUNT_RISK_REFUSAL"},
-                status_code=409)
-        broker_note = None
-        receipt = books.entry_receipt(v2,uid,market,request_key) if request_key else None
-        px = receipt["entry"] if receipt else px
-        v2.commit()
     finally:
         v2.close()
-    return JSONResponse({"ok": True, "symbol": sym, "qty": qty, "entry": round(px, 2),
-                         "broker_status": broker_note, "paper_recorded": True, "mode": "paper"})
 
 
 @router.post("/api/reset")
@@ -2594,22 +2611,35 @@ def api_idea_publication(publication_id: int, user: dict = Depends(require_sessi
 @router.get("/api/execution-health")
 def api_execution_health(user: dict = Depends(require_session)):
     from .execution_ports import capability_report
-    from . import execution_events
+    from . import execution_events,broker_ledger
     con = _ro(V2_DB)
     try:
         row = con.execute("SELECT checked_at,status,payload FROM broker_reconciliation WHERE user_id=?",(int(user["id"]),)).fetchone()
-        incidents = con.execute("SELECT code,detail,opened_at FROM execution_incidents WHERE user_id=? "
-                                "AND resolved_at IS NULL ORDER BY opened_at DESC LIMIT 20",(int(user["id"]),)).fetchall()
+        from .incident_inbox import report as incident_report
+        incidents=incident_report(con,int(user['id']))
         from . import protection
         return JSONResponse(dict(owner_user_id=int(user['id']),capabilities=capability_report(),protection=protection.report(con,int(user['id'])),
                                  journal_observations=execution_events.report(con,int(user['id'])),
+                                 actual_accounting=broker_ledger.report(con,int(user['id'])),
                                  reconciliation=dict(checked_at=row[0],status=row[1],evidence=json.loads(row[2])) if row else dict(status="unavailable"),
-                                 incidents=[dict(code=r[0],detail=r[1],opened_at=r[2]) for r in incidents]),
+                                 incidents=incidents),
                             headers={"Cache-Control":"private, no-store"})
     except (sqlite3.Error,ValueError,TypeError):
         raise HTTPException(503,"Execution safety schema unavailable")
     finally:
         con.close()
+
+
+@router.post('/api/execution-incidents/{incident_id}/acknowledge')
+async def api_acknowledge_incident(incident_id: int,request: Request,user: dict=Depends(require_session)):
+    from .incident_inbox import acknowledge
+    try:body=await request.json()
+    except ValueError:raise HTTPException(400,'JSON incident acknowledgement required')
+    if not isinstance(body,dict) or set(body)!={'fingerprint'}:raise HTTPException(400,'Current incident fingerprint required')
+    con=_rw()
+    try:return JSONResponse(acknowledge(con,int(user['id']),incident_id,body['fingerprint']),headers={'Cache-Control':'private, no-store'})
+    except ValueError as exc:raise HTTPException(409,str(exc))
+    finally:con.close()
 
 
 @router.get("/api/idea-publications/{publication_id}/assessments")
@@ -2653,24 +2683,25 @@ def api_approved_plans(user:dict=Depends(require_session)):
 
 @router.post('/api/approved-orders')
 def api_approved_order(payload:dict,user:dict=Depends(require_session)):
-    from . import approved_execution
+    from . import approved_execution,entry_contracts
     if set(payload)-{'plan_id','request_key'}:
         raise HTTPException(400,'Use the immutable plan identity; levels and quantity cannot be overridden')
     if not isinstance(payload.get('plan_id'),str) or not payload['plan_id'].startswith('plan_') or \
             not isinstance(payload.get('request_key'),str) or not 8<=len(payload['request_key'])<=128:
         raise HTTPException(400,'Valid approved plan and stable request identities required')
-    con=_rw();catalogue=_ro(MAIN_DB)
+    con=_rw()
     try:
         plan=con.execute('SELECT payload FROM approved_execution_plans WHERE id=? AND user_id=?',
                          (payload.get('plan_id'),int(user['id']))).fetchone()
         if not plan:raise HTTPException(404,'Approved plan not found')
         symbol=json.loads(plan[0])['symbol']
-        result=approved_execution.submit(con,catalogue,int(user['id']),payload.get('plan_id'),payload.get('request_key'),
-                                          _live_map('IN',[symbol]),regime=_regime_state('IN'))
+        with entry_contracts.open_catalogue() as (catalogue,now):
+            result=approved_execution.submit(con,catalogue,int(user['id']),payload.get('plan_id'),payload.get('request_key'),
+                                              _live_map('IN',[symbol]),regime=_regime_state('IN'),now=now)
         return JSONResponse(result,status_code=200 if result['ok'] else 409)
     except ValueError as exc:raise HTTPException(409,str(exc))
     except sqlite3.Error:raise HTTPException(503,'Approved execution evidence unavailable')
-    finally:catalogue.close();con.close()
+    finally:con.close()
 
 
 @router.get("/api/paper-performance")
@@ -2695,18 +2726,17 @@ def api_paper_performance(market: str = "IN", day: str = "", user: dict = Depend
 def api_instrument(symbol: str = "", venue: str = "", segment: str = "", instrument_id: str = "",
                    user: dict = Depends(require_session)):
     from .instrument_catalog import resolve, InstrumentError
+    from .entry_contracts import open_catalogue
     from dataclasses import asdict
-    con = _ro(MAIN_DB)
     try:
         if not instrument_id and not (symbol and venue and segment):
             raise HTTPException(400,"Provide instrument_id or symbol, venue and segment")
-        spec,key = resolve(con,instrument_id=instrument_id or None,symbol=symbol.upper() or None,
-                           venue=venue.upper() or None,segment=segment.upper() or None)
+        with open_catalogue() as (con,now):
+            spec,key = resolve(con,instrument_id=instrument_id or None,symbol=symbol.upper() or None,
+                               venue=venue.upper() or None,segment=segment.upper() or None,now=now)
         return JSONResponse(dict(instrument_id=spec.id,contract=asdict(spec),broker_key=key,execution_certified=False))
     except (InstrumentError,sqlite3.Error):
         raise HTTPException(409,"Instrument catalogue missing, stale or ambiguous")
-    finally:
-        con.close()
 
 
 @router.get("/api/ideas")

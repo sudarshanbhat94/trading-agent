@@ -207,6 +207,7 @@ ROUTE_FEATURES = {
     "/v2/api/instrument": "market_internals",
     # Read-only account safety remains available after a subscription lapses.
     "/v2/api/execution-health": None,
+    "/v2/api/execution-incidents/{incident_id}/acknowledge": None,
     # Connecting a real broker is an ELITE feature, and the routes carry an
     # OWNER check on top. Both, not either: the tier decides who may connect a
     # broker at all, the owner id decides whose money a given sleeve is.
@@ -249,6 +250,7 @@ ROUTE_FEATURES = {
     # admin routes carry their own ROLE check; a plan must not gate
     # administration, or an admin on a low tier could not manage anyone
     "/v2/api/upgrade": None,
+    "/v2/api/billing-receipts": None,
     "/v2/api/pay-qr": None,
     "/v2/api/payment-settings": None,
     "/v2/api/admin/requests": None,

@@ -7,6 +7,7 @@ Synthetic approvals/calendar/prices do not demonstrate a strategy edge.
 import argparse
 from datetime import datetime,timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -25,6 +26,12 @@ def fixture_app():
     main_path=Path(fixture.tmp.name)/'main.db'
     destination=sqlite3.connect(main_path);fixture.catalogue.backup(destination);destination.close()
     v2_web.V2_DB=str(fixture.path);v2_web.MAIN_DB=str(main_path)
+    old_catalogue=os.environ.get('OPENSTOCKS_CATALOGUE_DB')
+    os.environ['OPENSTOCKS_CATALOGUE_DB']=str(main_path)
+    def restore_catalogue():
+        if old_catalogue is None:os.environ.pop('OPENSTOCKS_CATALOGUE_DB',None)
+        else:os.environ['OPENSTOCKS_CATALOGUE_DB']=old_catalogue
+    fixture.addCleanup(restore_catalogue)
     broker.STATE_DIR=str(Path(fixture.tmp.name)/'brokers');broker.LEGACY_PATH=str(Path(fixture.tmp.name)/'absent.json')
     broker.verify=lambda *a,**kw:False
     v2_web._regime_state=lambda market:'ON'
@@ -37,7 +44,7 @@ def fixture_app():
     for route in v2_web.router.routes:
         if route.path in selected:routes.routes.append(route)
     app.include_router(routes)
-    helpers="""var BOOK='mine',MKT='IN',BRK={owner_user_id:2};
+    helpers="""var BOOK='mine',MKT='IN',ME={id:2},BRK={owner_user_id:2};
 function esc(x){return x==null?'':String(x).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
 function deskMoney(v){return v==null?'—':'₹'+new Intl.NumberFormat('en-IN',{maximumFractionDigits:2}).format(v);}
 function api(u,o){return fetch(u,Object.assign({headers:{'Content-Type':'application/json'}},o||{})).then(r=>r.json().then(j=>({ok:r.ok,j:j})));}

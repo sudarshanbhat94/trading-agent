@@ -104,6 +104,11 @@ class BoundaryTest(unittest.TestCase):
                     Candidate("NIFTYBEES", "index_directional", .9, 100, 75,
                               allocation_pct=.35)]
                 now = datetime.now(timezone.utc)
+                from tests.contract_source_fixtures import catalogue
+                from app import entry_contracts
+                from contextlib import closing
+                source=stack.enter_context(closing(catalogue('NIFTYBEES','ETF',now)))
+                stack.enter_context(entry_contracts.using(source,now))
                 stack.enter_context(patch.object(v2_live,"_SLEEVE_ENGINE",engine))
                 stack.enter_context(patch.object(v2_live,"market_open",return_value=True))
                 stack.enter_context(patch.object(v2_live,"_rw",side_effect=lambda:sqlite3.connect(path)))

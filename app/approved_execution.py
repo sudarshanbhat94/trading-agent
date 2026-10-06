@@ -5,7 +5,7 @@ operator/review service; this module exposes no automatic research promotion.
 The production engine's model allowlist is unchanged. Manual plans must be
 explicitly labelled manual and cannot cite a research publication as approval.
 """
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 import hashlib
 import json
 import math
@@ -24,7 +24,11 @@ def ensure_schema(con):
       id INTEGER PRIMARY KEY,plan_id TEXT NOT NULL,user_id INTEGER NOT NULL,request_key TEXT NOT NULL,
       kind TEXT NOT NULL,payload TEXT NOT NULL,observed_at TEXT NOT NULL,
       UNIQUE(user_id,request_key,kind))''')
-    for table in ('approved_execution_plans','approved_execution_events'):
+    con.execute('''CREATE TABLE IF NOT EXISTS manual_plan_bindings(
+      user_id INTEGER NOT NULL,epoch TEXT NOT NULL,request_key TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,plan_id TEXT NOT NULL,
+      PRIMARY KEY(user_id,epoch,request_key))''')
+    for table in ('approved_execution_plans','approved_execution_events','manual_plan_bindings'):
         for action in ('UPDATE','DELETE'):
             con.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} BEFORE {action} ON {table} "
                         "BEGIN SELECT RAISE(ABORT,'immutable execution approval/event'); END")
@@ -75,6 +79,55 @@ def approve(con,plan,*,approved_by,approval_reference,now=None):
     return plan_id
 
 
+def submit_manual_paper(con,catalogue,user_id,symbol,request_key,quotes,*,quantity=None,
+                        stop=None,target=None,regime,now=None):
+    """Compatibility entry point: a human request freezes a manual approval.
+
+    Explicit levels/quantity are never rebound on a retry. This is not model
+    approval and cannot cite or promote research publications. Both approval
+    and fill use the same serialized account transaction and contract source.
+    """
+    from .sleeves.feeds import fresh_quotes
+    from .sleeves.base import Candidate
+    from .sleeves.risk import RiskManager
+    from .instrument_catalog import resolve
+    now=now or datetime.now(timezone.utc)
+    if type(user_id) is not int or user_id<1 or not isinstance(request_key,str) or not 8<=len(request_key)<=128:
+        raise ValueError('Owned stable request identity required')
+    if quantity is not None and (type(quantity) is not int or quantity<1):raise ValueError('Whole quantity required')
+    for value in (stop,target):
+        if value is not None and (isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value)):
+            raise ValueError('Finite numeric stop/target required')
+    fingerprint=hashlib.sha256(json.dumps([symbol,quantity,stop,target],separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    with atomic(con):
+        books.ensure_book(con,user_id,'IN');epoch=books.current_epoch(con,user_id,'IN')
+        prior=con.execute('SELECT fingerprint,plan_id FROM manual_plan_bindings WHERE user_id=? AND epoch=? AND request_key=?',
+                          (user_id,epoch,request_key)).fetchone()
+        if prior:
+            if prior[0]!=fingerprint:raise ValueError('Request identity belongs to a different manual plan')
+            return submit(con,catalogue,user_id,prior[1],request_key,quotes,regime=regime,now=now)
+        price=(fresh_quotes(quotes,now).get(symbol) or {}).get('price')
+        if price is None:raise ValueError('Fresh executable quote unavailable')
+        frozen_stop=stop if stop is not None else round(price*.94,2)
+        frozen_target=target if target is not None else round(price*1.06,2)
+        if not 0<frozen_stop<price<frozen_target:raise ValueError('Stop must be below entry and target above it')
+        state,reason=books.risk_state(con,user_id,'IN',quotes)
+        allocation=RiskManager().size(Candidate(symbol,'manual',1,price,frozen_stop,target=frozen_target),state) if state and not reason else None
+        if not allocation or not allocation.ok:
+            raise ValueError(reason or (allocation.reason if allocation else 'Account risk unavailable'))
+        frozen_qty=quantity if quantity is not None else allocation.shares
+        spec,_=resolve(catalogue,symbol=symbol,venue='NSE',segment='NSE_EQ',now=now)
+        plan=dict(user_id=user_id,market='IN',epoch=epoch,mode='paper',side='BUY',product='D',
+                  instrument_id=spec.id,symbol=symbol,quantity=frozen_qty,stop=frozen_stop,
+                  entry_low=price,entry_high=price,target=frozen_target,sleeve='manual',
+                  model_version='human-manual-v1',approval_kind='manual',publication_id=None,
+                  evidence_reference='manual-request:'+request_key,evidence_at=now.isoformat(),
+                  expires_at=(now+timedelta(minutes=5)).isoformat())
+        plan_id=approve(con,plan,approved_by='account:'+str(user_id),approval_reference='manual-request:'+request_key,now=now)
+        con.execute('INSERT INTO manual_plan_bindings VALUES(?,?,?,?,?)',(user_id,epoch,request_key,fingerprint,plan_id))
+        return submit(con,catalogue,user_id,plan_id,request_key,quotes,regime=regime,now=now)
+
+
 def _event(con,plan_id,uid,request_key,kind,payload,now):
     con.execute('INSERT INTO approved_execution_events(plan_id,user_id,request_key,kind,payload,observed_at) VALUES(?,?,?,?,?,?)',
                 (plan_id,uid,request_key,kind,json.dumps(payload,sort_keys=True),now.isoformat()))
@@ -117,8 +170,10 @@ def submit(con,catalogue,user_id,plan_id,request_key,quotes,*,regime,now=None):
             result=dict(ok=False,mode='paper',plan_id=plan_id,status='rejected',reason=reason,paper_recorded=False)
             _event(con,plan_id,user_id,request_key,'REJECTED',result,now);return result
         _event(con,plan_id,user_id,request_key,'RISK_REQUESTED',dict(contract_evidence=evidence,instrument_id=spec.id),now)
-        quantity=books.buy(con,user_id,'IN',plan['sleeve'],spec.symbol,price,plan['quantity'],plan['stop'],plan['target'],
-                           sleeve=plan['sleeve'],regime=regime,quotes=quotes,request_key='approved:'+request_key,exact_quantity=True)
+        from . import entry_contracts
+        with entry_contracts.using(catalogue,now):
+            quantity=books.buy(con,user_id,'IN',plan['sleeve'],spec.symbol,price,plan['quantity'],plan['stop'],plan['target'],
+                               sleeve=plan['sleeve'],regime=regime,quotes=quotes,request_key='approved:'+request_key,exact_quantity=True)
         if not quantity:
             result=dict(ok=False,mode='paper',plan_id=plan_id,status='rejected',reason=books.refusal(con,user_id,'IN'),paper_recorded=False)
             _event(con,plan_id,user_id,request_key,'REJECTED',result,now);return result

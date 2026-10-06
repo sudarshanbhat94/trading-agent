@@ -115,7 +115,7 @@ class SpaCacheHeaderTest(unittest.TestCase):
         os.environ["DATABASE_PATH"] = os.path.join(tempfile.mkdtemp(), "a.db")
         from fastapi.testclient import TestClient
         from app import main as m
-        self.client = TestClient(m.app)
+        self.client = TestClient(m.app,headers={"Origin":"http://testserver"})
 
     def test_the_spa_is_not_cacheable(self) -> None:
         r = self.client.get("/")
@@ -170,7 +170,7 @@ class IndexSearchTest(unittest.TestCase):
         from fastapi.testclient import TestClient
         from app import main as m, v2_web
         v2_web.MAIN_DB = main_db
-        self.client = TestClient(m.app)
+        self.client = TestClient(m.app,headers={"Origin":"http://testserver"})
         from app.auth import hash_password
         name = "s_" + uuid.uuid4().hex[:8]
         u = m.db.create_user(name, hash_password("Str0ngPassw0rd!x"), role="user", active=True)

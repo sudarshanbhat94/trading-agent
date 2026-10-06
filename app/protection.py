@@ -13,7 +13,7 @@ from datetime import datetime,timezone
 from .account_safety import atomic
 from .live_release import authorized as live_scope_authorized
 
-BLOCKING = {'required','submitting','unknown','failed','triggered','cancelling'}
+BLOCKING = {'app_only','required','submitting','unknown','failed','triggered','cancelling'}
 SAFE_TO_SELL = {'app_only','cancelled','closed'}
 
 
@@ -63,6 +63,8 @@ def _incident(con,row,state,detail,now):
     elif state in {'armed','closed','cancelled'}:
         con.execute("UPDATE execution_incidents SET resolved_at=? WHERE user_id=? AND code='NATIVE_PROTECTION' AND reference=?",
                     (now,row['user_id'],str(row['entry_id'])))
+        con.execute("UPDATE execution_incidents SET resolved_at=? WHERE user_id=? AND code='PARTIAL_ENTRY_PROTECTION' AND reference=?",
+                    (now,row['user_id'],str(row['entry_id'])))
 
 
 def _owned_remaining(con,uid):
@@ -87,8 +89,6 @@ def _owned_remaining(con,uid):
 
 
 def _activation_contract(con,uid,row):
-    from .instrument_catalog import resolve
-    from .execution_contracts import protection_contract
     allowed,why=live_scope_authorized(uid,product=row['product'],model='native-protection')
     if not allowed:raise ValueError(why)
     entry=con.execute('SELECT status,filled_qty FROM v2_live_orders WHERE id=? AND user_id=?',
@@ -96,9 +96,8 @@ def _activation_contract(con,uid,row):
     if not entry or entry[0] not in {'filled','cancelled','rejected'} or entry[1]!=row['quantity'] or \
             _owned_remaining(con,uid).get(row['entry_id'],0)!=row['quantity']:
         raise ValueError('Entry fills or remaining owned inventory are unresolved')
-    spec,key=resolve(con,symbol=row['symbol'],venue='NSE',segment='NSE_EQ')
-    if key!=row['instrument_key']:raise ValueError('Owned contract alias changed')
-    protection_contract(con,instrument_id=spec.id,quantity=row['quantity'],price=row['stop'])
+    from .entry_contracts import protective_contract
+    protective_contract(row['symbol'],row['quantity'],row['stop'],row['product'],row['instrument_key'])
 
 
 def observe_fills(con,uid):
@@ -151,6 +150,55 @@ def request_native(con,uid,entry_id,*,authorization_reference):
         con.execute('UPDATE protection_obligations SET authorization_reference=? WHERE entry_id=? AND user_id=?',
                     (authorization_reference,entry_id,uid))
         _event(con,row,'required','Native activation explicitly recorded')
+
+
+def activate_reviewed_fills(con,uid):
+    """Activate only new canonical terminal fills under separate reviewed policy.
+
+    No legacy inventory is adopted and no permission record is generated.
+    Partial entries wait for cancellation/terminal status. Missing evidence
+    leaves an explicit obligation and blocks further account entries.
+    """
+    from .live_release import native_policy
+    activated=0
+    rows=con.execute("SELECT p.entry_id,p.product FROM protection_obligations p JOIN v2_live_orders o ON o.id=p.entry_id "
+        "WHERE p.user_id=? AND p.state='app_only' AND o.status IN ('filled','cancelled','rejected') "
+        "AND EXISTS (SELECT 1 FROM entry_contract_records c WHERE c.scope='broker' AND c.user_id=p.user_id AND c.position_id=p.entry_id)",(uid,)).fetchall()
+    for entry_id,product in rows:
+        policy=native_policy(uid,product)
+        if not policy:continue
+        try:
+            request_native(con,uid,entry_id,authorization_reference=policy['reference']+' / '+policy['source_commit'])
+            activated+=1
+        except ValueError:
+            with atomic(con):
+                row=_row(con,uid,entry_id)
+                if row:_event(con,row,'failed','Reviewed native coverage cannot establish owned dated contract; new entries blocked')
+    return activated
+
+
+def settle_partial_entries(con,uid):
+    """Cancel a reviewed partial entry's remainder before native stop sizing.
+
+    A cancellation acknowledgement is not final. Pending commitments remain
+    until terminal order evidence; no blind cancellation retry is allowed.
+    """
+    from .live_release import native_policy
+    from .order_journal import finish_entry_before_exit
+    from .execution_outbox import incident
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
+    rows=con.execute("SELECT o.id,o.symbol,o.product FROM v2_live_orders o JOIN protection_obligations p ON p.entry_id=o.id "
+                     "WHERE o.user_id=? AND o.side='BUY' AND o.filled_qty>0 AND o.status IN ('partial','submitted','unknown') "
+                     "AND p.state='app_only' AND EXISTS (SELECT 1 FROM entry_contract_records c "
+                     "WHERE c.scope='broker' AND c.user_id=o.user_id AND c.position_id=o.id)",(uid,)).fetchall()
+    handled=0
+    for entry_id,symbol,product in rows:
+        if not native_policy(uid,product):continue
+        with atomic(con):incident(con,uid,'PARTIAL_ENTRY_PROTECTION',entry_id,'Partial entry: cancel remainder and verify terminal fills before native coverage')
+        finish_entry_before_exit(con,uid,symbol)
+        handled+=1
+    return handled
 
 
 def submit_stop(con,uid,entry_id,port):
@@ -249,6 +297,8 @@ def prepare_exit(con,uid,symbol,port):
     """Cancel known native stops first. Acceptance does not free the sell right."""
     if con.in_transaction:raise RuntimeError('Cancellation requires a committed reservation')
     from .worker_fencing import require_current
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
     rows=[_row(con,uid,r[0]) for r in con.execute('SELECT entry_id FROM protection_obligations WHERE user_id=? AND symbol=?',
                                                 (uid,symbol))]
     for index,row in enumerate(rows):
@@ -274,7 +324,8 @@ def prepare_exit(con,uid,symbol,port):
 
 
 def blocks_entry(con,uid):
-    return bool(con.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND (state IN (?,?,?,?,?,?) "
+    marks=','.join('?' for _ in BLOCKING)
+    return bool(con.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND (state IN ("+marks+") "
                             "OR (state='armed' AND updated_at<?)) LIMIT 1",
                             (uid,*sorted(BLOCKING),time.time()-120)).fetchone())
 
@@ -285,5 +336,7 @@ def report(con,uid):
     remaining=_owned_remaining(con,uid)
     result=[dict(zip(('entry_id','symbol','quantity','stop','state','native_id','exit_order_id','updated_at'),r)) for r in rows]
     for row in result:row['remaining_quantity']=remaining.get(row['entry_id'],0)
-    return dict(rows=result,
-                native_guarantees_fill=False,activation_automatic=False,live_certified=False)
+    from .live_release import native_policy
+    return dict(rows=result,native_guarantees_fill=False,
+                activation_automatic=bool(native_policy(uid,'D') or native_policy(uid,'I')),
+                activation_requires_separate_review=True,live_certified=False)
