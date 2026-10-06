@@ -32,6 +32,7 @@ so that nothing about the engine changes.
 from __future__ import annotations
 
 import logging
+import json
 import math
 from datetime import datetime, timedelta, timezone
 
@@ -71,6 +72,12 @@ CREATE TABLE IF NOT EXISTS user_equity(
 
 def ensure_schema(con):
     con.executescript(SCHEMA)
+    con.execute("CREATE TABLE IF NOT EXISTS paper_entry_intents(user_id INTEGER,market TEXT,epoch TEXT,"
+                "request_key TEXT,qty INTEGER NOT NULL,price REAL NOT NULL,position_id INTEGER,"
+                "PRIMARY KEY(user_id,market,epoch,request_key))")
+    intent_columns = {r[1] for r in con.execute("PRAGMA table_info(paper_entry_intents)")}
+    if "fingerprint" not in intent_columns:
+        con.execute("ALTER TABLE paper_entry_intents ADD COLUMN fingerprint TEXT")
     columns = {r[1] for r in con.execute("PRAGMA table_info(user_positions)")}
     for name, kind in (("exit_policy", "TEXT"), ("peak", "REAL"),
                        ("entry_fee", "REAL DEFAULT 0"), ("product", "TEXT DEFAULT 'D'")):
@@ -242,7 +249,7 @@ def open_symbols(con, user_id, market="IN"):
 
 def buy(con, user_id, market, strategy, symbol, price, shares=None,
         stop=None, target=None, src_id=None, sleeve=None, regime=None,
-        exit_policy=None, quotes=None):
+        exit_policy=None, quotes=None, request_key=None, exact_quantity=False):
     """Open a position in ONE user's book. Returns shares bought, or 0.
 
     Zero is a normal outcome, not a failure: a book too small for one share of
@@ -259,6 +266,8 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
         price, stop = float(price), float(stop or 0)
         if not math.isfinite(price) or not 0 < stop < price:
             return 0
+        if shares is not None and (isinstance(shares,bool) or int(shares) != shares):
+            return 0
         requested = int(shares) if shares is not None else None
         if requested is not None and requested <= 0:
             return 0
@@ -269,9 +278,21 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
             return 0  # Allocated risk and executable protection must agree.
     except (TypeError, ValueError, OverflowError):
         return 0
+    import hashlib
+    signature = hashlib.sha256(json.dumps([market,strategy,symbol,requested,stop,float(target or 0),src_id,
+                                          sleeve,regime,policy.encode(),exact_quantity],sort_keys=True).encode()).hexdigest()
     with atomic(con):
+        from .worker_fencing import require_current
+        require_current(con)
         ensure_book(con, user_id, market)
         epoch = current_epoch(con, user_id, market)
+        if request_key:
+            prior = con.execute("SELECT qty,fingerprint FROM paper_entry_intents WHERE user_id=? AND market=? "
+                                "AND epoch=? AND request_key=?", (user_id,market,epoch,str(request_key))).fetchone()
+            if prior:
+                if prior[1] != signature:
+                    raise ValueError("idempotency key refers to a different paper intent")
+                return int(prior[0])  # The original fill, even if now closed.
         state, reason = risk_state(con, user_id, market, quotes)
         if symbol in open_symbols(con, user_id, market):
             reason = "already held"
@@ -282,6 +303,8 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
         allocation = RiskManager().size(candidate, state) if state and not reason else None
         if allocation is not None and not allocation.ok:
             reason = allocation.reason
+        if exact_quantity and requested is not None and allocation and requested > allocation.shares:
+            reason = "requested quantity exceeds the account risk allocation"
         qty = min(allocation.shares, requested) if allocation and requested is not None else (
               allocation.shares if allocation else 0)
         if qty and qty * price < RiskManager().s.min_ticket:
@@ -301,7 +324,18 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
                           (int(user_id), market, strategy, symbol, now.date().isoformat(),
                            price, qty, stop, target, now.isoformat(), src_id, sleeve, regime,
                            epoch, policy.encode(), price, fee, candidate.product))
+        if cur.rowcount and request_key:
+            con.execute("INSERT INTO paper_entry_intents(user_id,market,epoch,request_key,qty,price,position_id,fingerprint) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (user_id,market,epoch,str(request_key),qty,price,cur.lastrowid,signature))
         return qty if cur.rowcount else 0
+
+
+def entry_receipt(con, user_id, market, request_key):
+    epoch = current_epoch(con,user_id,market)
+    row = con.execute("SELECT qty,price,position_id FROM paper_entry_intents WHERE user_id=? AND market=? "
+                      "AND epoch=? AND request_key=?",(user_id,market,epoch,request_key)).fetchone()
+    return dict(qty=row[0],entry=row[1],position_id=row[2]) if row else None
 
 
 def refusal(con, user_id, market):
@@ -377,6 +411,8 @@ def sell(con, user_id, market, symbol, price, reason="manual", position_id=None)
     """Close a position in ONE user's book. Returns (pnl, return_pct) or None."""
     from .account_safety import atomic
     with atomic(con):
+        from .worker_fencing import require_current
+        require_current(con)
         return _sell_locked(con, user_id, market, symbol, price, reason, position_id)
 
 
@@ -548,12 +584,13 @@ def mirror_entry(con, db, plans_mod, market, strategy, symbol, price,
     return done
 
 
-def mirror_exit(con, db, plans_mod, market, symbol, price, reason, src_id=None):
+def mirror_exit(con, db, plans_mod, market, symbol, price, reason, src_id=None, strict=False):
     """Close the exact origin's mirrors, including lapsed subscribers."""
     if src_id is None:
         _LOG.error("mirror exit %s refused: origin position is missing", symbol)
         return 0
     done = 0
+    failed = False
     for pid, uid in con.execute("SELECT id,user_id FROM user_positions"
                                " WHERE market=? AND symbol=? AND src_id=?",
                                (market, symbol, src_id)).fetchall():
@@ -562,6 +599,9 @@ def mirror_exit(con, db, plans_mod, market, symbol, price, reason, src_id=None):
                 done += 1
         except Exception:
             _LOG.exception("book mirror exit failed for user %s", uid)
+            failed = True
+    if strict and failed:
+        raise RuntimeError("personal exit delivery incomplete")
     return done
 
 

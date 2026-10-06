@@ -47,6 +47,17 @@ def test_first_publication_is_immutable_and_account_scoped(tmp_path):
     assert report(db,limit=1)['summary']['published']==2
 
 
+def test_publication_lookup_reads_frozen_plan_and_checks_owner(tmp_path):
+    db=tmp_path/'tracking.db';ids=publish(db);pid=next(iter(ids.values()))
+    owned=t.publication(db,2,pid)
+    assert owned['plan']['stop']==95
+    assert owned['plan']['qty']==10
+    assert owned['execution_approved'] is False
+    assert t.publication(db,3,pid) is None
+    revised=plan();revised['stop']=94;publish(db,p=revised)
+    assert t.publication(db,2,pid)==owned
+
+
 @pytest.mark.parametrize('price,seconds,source,capture',[
     (99,-1,'upstox-live',NOW.isoformat()),
     (99,1,'upstox-live',NOW.isoformat()),

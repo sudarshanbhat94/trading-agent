@@ -105,10 +105,7 @@ class ChurnCircuitBreakerTest(unittest.TestCase):
 
     def _book(self):
         con = sqlite3.connect(":memory:")
-        con.execute("CREATE TABLE v2_positions(market,strategy,symbol,entry_date,"
-                    "entry_price,shares,stop,target,trail,peak,conviction,opened_at,"
-                    "why,expiry,sleeve,regime,risk_amt,exit_policy,entry_fee)")
-        con.execute("CREATE TABLE v2_trades(market,symbol,entry_date)")
+        v2_live.ensure_schema(con)
         return con
 
     def _enter(self, con, symbol="ACME"):
@@ -119,7 +116,7 @@ class ChurnCircuitBreakerTest(unittest.TestCase):
         con = self._book()
         for i in range(v2_live.MAX_ROUND_TRIPS_PER_DAY):
             self.assertTrue(self._enter(con), f"round trip {i+1} is legitimate")
-            con.execute("INSERT INTO v2_trades VALUES('IN','ACME','2026-08-07')")
+            con.execute("INSERT INTO v2_trades(market,symbol,entry_date) VALUES('IN','ACME','2026-08-07')")
         self.assertFalse(self._enter(con), "the 4th round trip is churn")
 
     def test_83_becomes_3(self) -> None:
@@ -129,27 +126,27 @@ class ChurnCircuitBreakerTest(unittest.TestCase):
         for _ in range(83):
             if self._enter(con, "NIFTY2680424650CE"):
                 taken += 1
-                con.execute("INSERT INTO v2_trades VALUES"
+                con.execute("INSERT INTO v2_trades(market,symbol,entry_date) VALUES"
                             "('IN','NIFTY2680424650CE','2026-08-07')")
         self.assertEqual(taken, 3)
 
     def test_a_different_symbol_is_unaffected(self) -> None:
         con = self._book()
         for _ in range(v2_live.MAX_ROUND_TRIPS_PER_DAY):
-            con.execute("INSERT INTO v2_trades VALUES('IN','ACME','2026-08-07')")
+            con.execute("INSERT INTO v2_trades(market,symbol,entry_date) VALUES('IN','ACME','2026-08-07')")
         self.assertTrue(self._enter(con, "OTHER"))
 
     def test_a_new_day_resets_it(self) -> None:
         con = self._book()
         for _ in range(10):
-            con.execute("INSERT INTO v2_trades VALUES('IN','ACME','2026-08-06')")
+            con.execute("INSERT INTO v2_trades(market,symbol,entry_date) VALUES('IN','ACME','2026-08-06')")
         self.assertTrue(self._enter(con), "yesterday's trades must not block today")
 
     def test_the_manual_buy_button_is_never_blocked(self) -> None:
         """The operator's own Buy is a decision, not a loop."""
         con = self._book()
         for _ in range(20):
-            con.execute("INSERT INTO v2_trades VALUES('IN','ACME','2026-08-07')")
+            con.execute("INSERT INTO v2_trades(market,symbol,entry_date) VALUES('IN','ACME','2026-08-07')")
         self.assertTrue(v2_live.record_entry(
             con, "IN", "manual", "ACME", "2026-08-07", 100.0, 10,
             97.5, 103.5, 0.0, 0.5, "{}"))

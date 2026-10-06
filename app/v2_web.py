@@ -1882,6 +1882,9 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     sleeve's owner.
     """
     mode = payload.get("mode", "paper")
+    if payload.get("plan_id") is not None or payload.get("publication_id") is not None:
+        return JSONResponse({"error":"Research publications are not approved for execution; a manual buy cannot substitute their rules",
+                             "code":"PLAN_NOT_APPROVED"},status_code=409)
     if mode not in ("paper", "live"):
         return JSONResponse({"error":"Choose paper or live execution"}, status_code=400)
     sym = str(payload.get("symbol", "")).upper().strip()
@@ -1905,6 +1908,12 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     except (TypeError, ValueError, OverflowError):
         return JSONResponse({"error": "Stop must be below the live price; target must be above it"}, status_code=400)
     from . import books
+    requested = payload.get("qty")
+    request_key = payload.get("request_key")
+    if requested is not None and (isinstance(requested,bool) or not isinstance(requested,int) or requested<1):
+        return JSONResponse({"error":"Quantity must be a positive whole number"},status_code=400)
+    if request_key is not None and (not isinstance(request_key,str) or not 8<=len(request_key)<=128):
+        return JSONResponse({"error":"Invalid request identity"},status_code=400)
     uid = int(user.get("id") or 0)
     v2 = _rw()
     try:
@@ -1912,17 +1921,24 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
             from .manual_execution import live_action
             main = _ro(MAIN_DB)
             try:
-                return live_action(v2, main, user, market, sym, px, "BUY", stop=stop, target=target)
+                return live_action(v2, main, user, market, sym, px, "BUY", stop=stop, target=target,
+                                   requested_qty=requested, request_key=request_key)
             finally:
                 main.close()
-        if sym in books.open_symbols(v2, uid, market):
+        if not request_key and sym in books.open_symbols(v2, uid, market):
             return JSONResponse({"error": "already holding " + sym}, status_code=400)
-        qty = books.buy(v2, uid, market, "manual", sym, px, None, stop, target)
+        try:
+            qty = books.buy(v2, uid, market, "manual", sym, px, requested, stop, target,
+                            request_key=request_key,exact_quantity=True)
+        except ValueError:
+            return JSONResponse({"error":"Request identity already belongs to a different order"},status_code=409)
         if qty < 1:
             return JSONResponse(
                 {"error": books.refusal(v2, uid, market), "code": "ACCOUNT_RISK_REFUSAL"},
                 status_code=409)
         broker_note = None
+        receipt = books.entry_receipt(v2,uid,market,request_key) if request_key else None
+        px = receipt["entry"] if receipt else px
         v2.commit()
     finally:
         v2.close()
@@ -2553,6 +2569,50 @@ def api_idea_tracking(limit: int = 100, offset: int = 0, user: dict = Depends(re
     if not 1 <= limit <= 200 or offset < 0:
         raise HTTPException(400, "Invalid tracking page")
     return JSONResponse(_idea_tracking(user, limit, offset), headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/api/idea-publications/{publication_id}")
+def api_idea_publication(publication_id: int, user: dict = Depends(require_session)):
+    from .screening import tracking
+    try:
+        result = tracking.publication(tracking.default_path(MAIN_DB),int(user["id"]),publication_id)
+    except (OSError,sqlite3.Error):
+        raise HTTPException(503,"Publication evidence unavailable")
+    if result is None:
+        raise HTTPException(404,"Publication not found")
+    return JSONResponse(result,headers={"Cache-Control":"private, no-store"})
+
+
+@router.get("/api/execution-health")
+def api_execution_health(user: dict = Depends(require_session)):
+    from .execution_ports import capability_report
+    con = _ro(V2_DB)
+    try:
+        row = con.execute("SELECT checked_at,status,payload FROM broker_reconciliation WHERE user_id=?",(int(user["id"]),)).fetchone()
+        incidents = con.execute("SELECT code,detail,opened_at FROM execution_incidents WHERE user_id=? "
+                                "AND resolved_at IS NULL ORDER BY opened_at DESC LIMIT 20",(int(user["id"]),)).fetchall()
+        return JSONResponse(dict(capabilities=capability_report(),
+                                 reconciliation=dict(checked_at=row[0],status=row[1],evidence=json.loads(row[2])) if row else dict(status="unavailable"),
+                                 incidents=[dict(code=r[0],detail=r[1],opened_at=r[2]) for r in incidents]),
+                            headers={"Cache-Control":"private, no-store"})
+    except sqlite3.Error:
+        raise HTTPException(503,"Execution safety schema unavailable")
+    finally:
+        con.close()
+
+
+@router.get("/api/instrument")
+def api_instrument(symbol: str, venue: str, segment: str, user: dict = Depends(require_session)):
+    from .instrument_catalog import resolve, InstrumentError
+    from dataclasses import asdict
+    con = _ro(MAIN_DB)
+    try:
+        spec,key = resolve(con,symbol=symbol.upper(),venue=venue.upper(),segment=segment.upper())
+        return JSONResponse(dict(instrument_id=spec.id,contract=asdict(spec),broker_key=key,execution_certified=False))
+    except (InstrumentError,sqlite3.Error):
+        raise HTTPException(409,"Instrument catalogue missing, stale or ambiguous")
+    finally:
+        con.close()
 
 
 @router.get("/api/ideas")
@@ -5185,7 +5245,7 @@ function ideaCard(r,ccy,d){
 function ideaBuy(sym,qty){
  if(!confirm('REAL ORDER\n\nBuy '+qty+' '+sym+' in your Upstox account?\n\n'
    +'This spends real money. Size comes from your live sleeve, not the paper book.'))return;
- api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:'IN',mode:'live'})})
+ api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:'IN',mode:'live',qty:qty,request_key:crypto.randomUUID()})})
   .then(function(r){
    if(!r.ok){alert((r.j&&(r.j.error||r.j.detail))||'buy failed');return;}
    alert(r.j.broker_status?('Broker: '+r.j.broker_status+'. Check Account → live broker for confirmed fills.'):'Paper purchase recorded; no broker order submitted.');
@@ -5956,6 +6016,7 @@ var IDXCFG={};
 // The UI is a convenience; it is not the security boundary.
 var BRK=null;
 function loadBroker(){
+ api('/v2/api/execution-health').then(function(r){if(r.ok){window.BRKHEALTH=r.j;renderBroker();}});
  api('/v2/api/broker').then(function(r){
   // 402 is the plan gate, not a failure: connecting a real broker is Elite.
   // Rendering nothing would look like the feature is broken.
@@ -6032,6 +6093,9 @@ function renderBroker(){
   '<div class=sec style="margin-top:22px"><span>live broker</span>'
    +'<span class=mut style="font-size:12px;font-weight:400">real money · Upstox</span></div>'
   +'<div class=raise>'
+  +(s.credential_error?'<div class=brk-warn>'+esc(s.credential_error)+'</div>':'')
+  +(window.BRKHEALTH?'<div class=brk-warn>Account reconciliation: '+esc(window.BRKHEALTH.reconciliation.status)
+    +'. Live release is not certified. Broker-resident stops and multi-asset routes remain incomplete.</div>':'')
   +(s.unresolved_orders?'<div class=brk-warn>'+s.unresolved_orders+' broker order(s) need confirmed-fill reconciliation. New live orders are blocked; accepted does not mean filled.</div>':'')
   +'<div class=brk-row>'+dot(s.connected&&!s.stale,s.connected?(s.stale?'token expired':'connected'):'not connected')
    +dot(s.armed,s.armed?'ARMED':'disarmed')
@@ -6447,7 +6511,7 @@ function doReset(){if(!confirm('Start a new ₹10,000 epoch for your personal pa
  var m=document.getElementById('resetmsg');if(m)m.textContent='resetting…';
  api('/v2/api/reset',{method:'POST'}).then(function(r){if(r.ok){if(m)m.textContent='✅ book reset to ₹'+INR.format(r.j.budget||10000);toast('✅ paper book reset — clean slate');refresh();}else{if(m)m.textContent='⚠ '+(r.j.error||'failed');}});}
 function doBuy(sym,mkt){if(!confirm('Paper buy '+sym+' at the live price?'))return;
- api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,mode:'paper'})}).then(function(r){
+ api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,mode:'paper',request_key:crypto.randomUUID()})}).then(function(r){
   if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper bought '+r.j.symbol+' ×'+r.j.qty));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'buy failed'));});}
 function doSell(sym,mkt){if(!confirm('Sell your '+sym+' position at the live price?'))return;

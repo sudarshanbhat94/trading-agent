@@ -38,6 +38,46 @@ class AccountBoundaryTest(unittest.TestCase):
         with sqlite3.connect(self.path) as c:
             self.assertEqual(books.open_symbols(c,7,'IN'),set())
 
+    def test_api_preserves_requested_quantity_and_original_receipt(self):
+        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        request={'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':20,'request_key':'stable-click-identity'}
+        with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
+            first=v2_web.api_buy(request,self.user)
+            self.assertEqual(first.status_code,200)
+            self.assertEqual(json.loads(first.body)['qty'],20)
+            with sqlite3.connect(self.path) as con:books.sell(con,7,'IN','TEST',110)
+            quote['TEST']['price']=101
+            retry=v2_web.api_buy(request,self.user)
+            self.assertEqual(retry.status_code,200)
+            self.assertEqual(json.loads(retry.body)['entry'],100)
+            rebound=v2_web.api_buy(dict(request,qty=21),self.user)
+            self.assertEqual(rebound.status_code,409)
+        with sqlite3.connect(self.path) as con:self.assertEqual(books.positions(con,7),[])
+
+    def test_api_rejects_fractional_quantity_and_does_not_resize_large_request(self):
+        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
+            for qty in (1.5,True,-1):
+                result=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':qty},self.user)
+                self.assertEqual(result.status_code,400)
+            result=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':10000},self.user)
+            self.assertEqual(result.status_code,409)
+        with sqlite3.connect(self.path) as con:self.assertEqual(books.positions(con,7),[])
+
+    def test_unapproved_plan_cannot_fall_back_to_manual_buy(self):
+        result=v2_web.api_buy({'symbol':'TEST','plan_id':123,'mode':'paper'},self.user)
+        self.assertEqual(result.status_code,409)
+        self.assertEqual(json.loads(result.body)['code'],'PLAN_NOT_APPROVED')
+
+    def test_execution_health_never_exposes_other_accounts_incidents(self):
+        from app.execution_outbox import incident
+        with sqlite3.connect(self.path) as con:
+            incident(con,7,'OWN','same','own account evidence')
+            incident(con,8,'OTHER','same','another account evidence')
+        result=json.loads(v2_web.api_execution_health(self.user).body)
+        self.assertEqual([i['code'] for i in result['incidents']],['OWN'])
+        self.assertFalse(result['capabilities']['routes'][0]['live_certified'])
+
     def test_same_symbol_watchlist_and_alerts_are_private(self):
         other={'id':8}
         v2_web.api_watchlist_add({'symbol':'TEST','folder':'mine'},self.user)

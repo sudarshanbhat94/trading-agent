@@ -51,6 +51,8 @@ def _client(tmp):
     from fastapi.testclient import TestClient
     from app import main as m, v2_web
     v2_web.V2_DB = v2
+    from app import telegram_bot
+    telegram_bot.V2_DB = v2
     v2_web.MAIN_DB = main_db
     return TestClient(m.app), m
 

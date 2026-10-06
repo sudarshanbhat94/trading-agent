@@ -114,6 +114,9 @@ class JournalTest(unittest.TestCase):
         self.ready = patch.object(broker,"state",return_value={"live_ready":True,"exit_ready":True,"budget":10000})
         self.ready.start()
         self.addCleanup(self.ready.stop)
+        from app import broker_reconciliation
+        broker_reconciliation.reconcile(self.con,1,positions=[],holdings=[],trades=[],
+                                         funds={"data":{"equity":{"available_margin":10000}}})
 
     def submit(self, side="BUY", outcome=None):
         with patch.object(broker,"place_order",return_value=outcome or {"ok":True,"order_id":side}) as send:

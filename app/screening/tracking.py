@@ -134,6 +134,20 @@ def publish(path, user_id, plans, issued_at=None, now=None):
     return ids
 
 
+def publication(path, user_id, publication_id):
+    """Owned immutable plan, read without changing its observations/history."""
+    con = sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True)
+    try:
+        row = con.execute('SELECT id,fingerprint,issued_at,payload FROM publications WHERE id=? AND user_id=?',
+                          (int(publication_id),int(user_id))).fetchone()
+        if not row:
+            return None
+        return dict(id=row[0],fingerprint=row[1],issued_at=row[2],plan=json.loads(row[3]),
+                    execution_approved=False,reason='Research plan requires independent model promotion before execution')
+    finally:
+        con.close()
+
+
 def sessions_between(start, end):
     a, b = timestamp(start).astimezone(IST).date(), timestamp(end).astimezone(IST).date()
     count = 0

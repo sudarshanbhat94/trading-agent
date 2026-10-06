@@ -18,6 +18,11 @@ permissions:
 jobs:
   unittest:
     runs-on: ubuntu-latest
+    env:
+      OPENSTOCKS_DISABLE_V2: "1"
+      BROKER_STATE_DIR: /tmp/openstocks-ci/brokers
+      BROKER_STATE_PATH: /tmp/openstocks-ci/legacy.json
+      BROKER_VAULT_KEY_PATH: /tmp/openstocks-ci/private/broker.key
     strategy:
       # Do not stop the other version the moment one fails — knowing whether a
       # failure is version-specific is most of the diagnosis.
@@ -35,15 +40,24 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
-        # Deliberately requirements.txt ONLY. If a module the app imports is
+        # Runtime dependencies remain declared in requirements.txt. The dev
+        # file adds the runner for research/UI fixtures. If an app import is
         # not declared here, the suite must fail — that exact gap once shipped
         # a box that booted with no trading engine at all.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Run test suite
         run: python -m unittest discover -s tests -t . -v
+
+      - name: Research and UI function fixtures
+        run: python scripts/run_function_tests.py
+
+      - name: Simulated paper session and fault rehearsal
+        run: python scripts/rehearse_execution.py

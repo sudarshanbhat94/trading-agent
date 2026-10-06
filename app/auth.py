@@ -189,6 +189,8 @@ def current_user(request: Request, settings: Settings, db: Any) -> dict[str, Any
     payload = _verify_token(token, settings, db)
     if not payload:
         return None
+    if not payload.get("sid") or not _active_session(db, payload):
+        return None
     user = db.user_by_id(int(payload.get("uid") or 0))
     if not user or not user.get("active"):
         return None
@@ -367,7 +369,13 @@ def signup_enabled(settings: Settings) -> bool:
     }
 
 
-def logout_user(response: Response) -> dict[str, bool]:
+def logout_user(response: Response, request: Request | None = None, settings: Settings | None = None, db: Any = None) -> dict[str, bool]:
+    if request is not None and db is not None and settings is not None:
+        payload = _verify_token(request.cookies.get(SESSION_COOKIE) or "", settings, db)
+        if payload and payload.get("sid"):
+            with db.connect() as con:
+                con.execute("UPDATE auth_sessions SET revoked_at=? WHERE session_hash=? AND user_id=?",
+                            (time.time(),hashlib.sha256(payload["sid"].encode()).hexdigest(),payload["uid"]))
     response.delete_cookie(SESSION_COOKIE)
     return {"authenticated": False, "admin": False}
 
@@ -447,9 +455,31 @@ def _make_token(user: dict[str, Any], settings: Settings, db: Any = None) -> str
         "iat": int(time.time()),
         "nonce": secrets.token_urlsafe(12),
     }
+    if db is not None and callable(getattr(db, "connect", None)):
+        payload["sid"] = secrets.token_urlsafe(32)
+        with db.connect() as con:
+            _session_schema(con)
+            con.execute("INSERT INTO auth_sessions VALUES(?,?,?,?,NULL)",
+                        (hashlib.sha256(payload["sid"].encode()).hexdigest(),payload["uid"],
+                         payload["iat"],payload["iat"] + settings.admin_session_hours * 3600))
     body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
     signature = hmac.new(_secret(settings, db), body.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{body}.{signature}"
+
+
+def _session_schema(con):
+    con.execute("CREATE TABLE IF NOT EXISTS auth_sessions(session_hash TEXT PRIMARY KEY,"
+                "user_id INTEGER NOT NULL,issued_at REAL NOT NULL,expires_at REAL NOT NULL,revoked_at REAL)")
+
+
+def _active_session(db, payload):
+    try:
+        with db.connect() as con:
+            row = con.execute("SELECT expires_at,revoked_at,user_id FROM auth_sessions WHERE session_hash=?",
+                              (hashlib.sha256(payload["sid"].encode()).hexdigest(),)).fetchone()
+        return bool(row and row[0] > time.time() and row[1] is None and row[2] == payload["uid"])
+    except (sqlite3.Error, AttributeError, KeyError):
+        return False
 
 
 def _verify_token(token: str, settings: Settings, db: Any = None) -> dict[str, Any] | None:

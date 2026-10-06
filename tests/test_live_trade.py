@@ -12,11 +12,13 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 from app import broker as _broker_mod, live_trade, v2_live
 
 UID = 2
+_EVIDENCE_DB = None
 
 
 def _no_network_verify(b):
@@ -25,6 +27,9 @@ def _no_network_verify(b):
     tests below would be asserting the verifier, not the mirror."""
     b.verify = lambda user_id, force=False: True
     b.orders = lambda user_id: []
+    if _EVIDENCE_DB is not None:
+        from tests.broker_evidence_fixtures import install
+        install(b,_EVIDENCE_DB)
     return b
 
 
@@ -46,7 +51,9 @@ def _dbs():
     after the first one and every later lookup fails. That is a test artifact
     that would otherwise look exactly like a broken exit.
     """
+    global _EVIDENCE_DB
     v2 = sqlite3.connect(":memory:")
+    _EVIDENCE_DB = v2
     v2_live.ensure_schema(v2)
     path = os.path.join(tempfile.mkdtemp(), "main.db")
     main = sqlite3.connect(path)
@@ -296,9 +303,13 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
             v2_live.record_entry(self.v2, "IN", "mean_reversion", "RELIANCE",
                                  "2026-08-04", 1305.0, 12, 1292.0, 1500.0, 0.0, 0.5, None)
             pid = self.v2.execute("SELECT id FROM v2_positions").fetchone()[0]
+            from app import execution_outbox
+            with mock.patch.object(v2_live,"_live",return_value={"RELIANCE":dict(price=1305,ts=datetime.now(timezone.utc).isoformat())}):
+                execution_outbox.drain(self.v2)
             _fill_all(self.v2)
             # paper closes the same 12 shares
             v2_live.record_exit(self.v2, "IN", pid, "2026-08-05", 1400.0, 12, "target")
+            execution_outbox.drain(self.v2)
 
         self.assertEqual(len(self.sent), 2, self.sent)
         (b_side, b_key, b_qty), (s_side, s_key, s_qty) = self.sent
@@ -344,8 +355,12 @@ class RoundTripThroughTheEngineTest(unittest.TestCase):
             v2_live.record_entry(self.v2, "IN", "mean_reversion", "RELIANCE",
                                  "2026-08-04", 1305.0, 12, 1292.0, 1500.0, 0.0, 0.5, None)
             pid = self.v2.execute("SELECT id FROM v2_positions").fetchone()[0]
+            from app import execution_outbox
+            with mock.patch.object(v2_live,"_live",return_value={"RELIANCE":dict(price=1305,ts=datetime.now(timezone.utc).isoformat())}):
+                execution_outbox.drain(self.v2)
             _fill_all(self.v2)
             v2_live.record_exit(self.v2, "IN", pid, "2026-08-05", 1400.0, 12, "stop")
+            execution_outbox.drain(self.v2)
         self.assertEqual([q for _s, _k, q in self.sent], [2, 2])
 
 
@@ -411,8 +426,8 @@ class ManualBuyReachesTheBrokerTest(unittest.TestCase):
         with mock.patch.object(_broker_mod, "place_order", side_effect=fake_place), \
              mock.patch.object(live_trade, "available_margin", return_value=9115.0), \
              mock.patch.object(v2_live, "_ro", lambda _p: sqlite3.connect(path)):
-            v2_live.record_entry(v2, "IN", "manual", "RELIANCE", "2026-08-04",
-                                 1305.0, 7, 1292.0, 1480.0, 0.0, 1.0, None)
+            live_trade.mirror_entry(v2, main, UID, "IN", "RELIANCE", 1305, "manual",
+                                    stop=1292, target=1480, request_key="manual-test")
         self.assertEqual(sent, [("BUY", "NSE_EQ|INE002A01018", 2)])
 
 

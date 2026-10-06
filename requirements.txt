@@ -26,3 +26,4 @@ joblib>=1.2,<2
 # of typing it, which is where manual-payment flows go wrong and turn into
 # reconciliation work for the admin.
 segno>=1.5,<2
+cryptography==50.0.2

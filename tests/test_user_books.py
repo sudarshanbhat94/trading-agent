@@ -201,7 +201,10 @@ class MirrorTest(unittest.TestCase):
                 "2026-09-23", 1200.0, 1, 1150.0, 0.0, 0.12, 0.8,
                 "test", sleeve="quality_momentum", regime="ON")
         self.assertTrue(ok)
-        self.assertEqual(mirrored.call_args.args[-3], 1)
+        mirrored.assert_not_called()
+        import json
+        payload = json.loads(self.con.execute("SELECT payload FROM execution_outbox WHERE topic='house_entry'").fetchone()[0])
+        self.assertEqual(payload["max_shares"], 1)
 
     def test_house_cap_does_not_override_a_users_smaller_cash(self) -> None:
         books.ensure_book(self.con, 1)

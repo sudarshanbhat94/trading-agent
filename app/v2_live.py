@@ -1001,6 +1001,15 @@ def ensure_schema(v2):
     v2.executescript(SCHEMA)
     from . import account_safety
     account_safety.ensure_schema(v2)
+    from . import execution_outbox, worker_fencing
+    execution_outbox.ensure_schema(v2)
+    worker_fencing.ensure_schema(v2)
+    v2.execute("CREATE TABLE IF NOT EXISTS house_entry_intents(semantic_key TEXT PRIMARY KEY,position_id INTEGER)")
+    trade_columns = {r[1] for r in v2.execute("PRAGMA table_info(v2_trades)")}
+    if "source_position_id" not in trade_columns:
+        v2.execute("ALTER TABLE v2_trades ADD COLUMN source_position_id INTEGER")
+    v2.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_house_close ON v2_trades(source_position_id) "
+               "WHERE source_position_id IS NOT NULL")
     columns = {r[1] for r in v2.execute("PRAGMA table_info(v2_positions)")}
     if "exit_policy" not in columns:
         v2.execute("ALTER TABLE v2_positions ADD COLUMN exit_policy TEXT")
@@ -1065,9 +1074,11 @@ def ensure_schema(v2):
                    (ExitPolicy.create(strategy, stop, target, trail).encode(), pid))
     required = {
         "v2_positions": {"exit_policy", "entry_fee", "why", "expiry", "sleeve", "regime", "risk_amt"},
-        "v2_trades": {"opened_at", "closed_at", "sleeve", "regime", "risk_amt"},
-        "v2_live_orders": {"intent_key", "filled_qty", "average_price", "origin_position_id", "product"},
+        "v2_trades": {"opened_at", "closed_at", "sleeve", "regime", "risk_amt", "source_position_id"},
+        "v2_live_orders": {"intent_key", "filled_qty", "average_price", "origin_position_id", "product", "semantic_key", "request_fingerprint"},
         "user_positions": {"book_epoch", "exit_policy", "entry_fee", "peak", "product", "src_id"},
+        "execution_outbox": {"semantic_key", "lease_token", "lease_until", "status"},
+        "paper_entry_intents": {"fingerprint"},
     }
     for table, names in required.items():
         missing = names - {r[1] for r in v2.execute(f"PRAGMA table_info({table})")}
@@ -1076,6 +1087,8 @@ def ensure_schema(v2):
     v2.execute("CREATE TABLE IF NOT EXISTS trading_schema_versions(version TEXT PRIMARY KEY,applied_at TEXT)")
     v2.execute("INSERT OR IGNORE INTO trading_schema_versions VALUES(?,?)",
                ("account-safety-v1", datetime.now(timezone.utc).isoformat()))
+    v2.execute("INSERT OR IGNORE INTO trading_schema_versions VALUES(?,?)",
+               ("execution-safety-v2", datetime.now(timezone.utc).isoformat()))
     v2.commit()
 
 
@@ -1639,53 +1652,34 @@ def net_trade_pnl(market, shares, entry, exit_price, strategy=None):
 
 def record_exit(v2, market, position_id, exit_date, exit_price, shares, reason,
                 closed_at=None):
-    """THE single writer for v2_trades. Returns (net_pnl, net_return_pct).
-
-    The counterpart to record_entry, and here for the same reason: the exit
-    INSERT existed in THREE places — the engine's exit_monitor and both manual
-    sell endpoints — each with its own copy of the P&L arithmetic. When exits
-    were recording the gross move, fixing it meant finding all three, and the
-    rows written before that landed still carry gross numbers today. On the
-    live book that is a -605.61 loss stored as -500.18, and a -91.18 loss
-    stored as a +14.20 WIN.
-
-    Costs are computed HERE from net_trade_pnl rather than accepted as an
-    argument, so a caller cannot pass a gross figure even by mistake. That is
-    the whole point: the previous shape made the wrong thing easy to write and
-    invisible afterwards.
-
-    The row is built by SELECT from the position, so strategy, entry price,
-    conviction and opened_at carry across rather than being retyped.
-    """
-    row_s = v2.execute("SELECT strategy FROM v2_positions WHERE id=?",
-                       (position_id,)).fetchone()
-    net, net_pct = net_trade_pnl(market, shares,
-                                 *_entry_of(v2, position_id, exit_price),
-                                 strategy=(row_s[0] if row_s else None))
-    v2.execute(
-        "INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,"
-        "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at,"
-        "sleeve,regime,risk_amt)"
-        " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,"
-        "opened_at,?,sleeve,regime,risk_amt FROM v2_positions WHERE id=?",
-        (exit_date, exit_price, shares, net, net_pct, reason,
-         closed_at or datetime.now(timezone.utc).isoformat(), position_id))
-    # LIVE MIRROR — sell whatever the sleeve actually holds. Read the symbol
-    # BEFORE the caller deletes the position row, and never pass `shares`: that
-    # is the paper size, roughly ten times the live one.
-    try:
-        row = v2.execute("SELECT symbol FROM v2_positions WHERE id=?",
-                         (position_id,)).fetchone()
-        if row:
-            _live_mirror_exit(v2, market, row[0], exit_price, reason, src_id=position_id)
-    except Exception:
-        _LOG.exception("live mirror (exit) failed for position %s", position_id)
-    try:
-        if row:
-            _book_mirror_exit(v2, market, row[0], exit_price, reason, src_id=position_id)
-    except Exception:
-        _LOG.exception("user-book mirror (exit) failed for position %s", position_id)
-    return net, net_pct
+    """Atomically close the exact house position and enqueue account delivery."""
+    from .account_safety import atomic
+    from . import execution_outbox, worker_fencing
+    with atomic(v2):
+        worker_fencing.require_current(v2)
+        row = v2.execute("SELECT symbol,entry_price,shares,strategy FROM v2_positions "
+                         "WHERE id=? AND market=?", (position_id, market)).fetchone()
+        if not row:
+            prior = v2.execute("SELECT pnl,return_pct FROM v2_trades WHERE source_position_id=?",
+                               (position_id,)).fetchone()
+            return tuple(prior) if prior else (0.0, 0.0)
+        symbol, entry, actual_shares, strategy = row
+        if float(shares) != float(actual_shares):
+            raise ValueError("house close quantity does not match owned position")
+        net, net_pct = net_trade_pnl(market, actual_shares, entry, exit_price, strategy=strategy)
+        v2.execute(
+            "INSERT INTO v2_trades(market,strategy,symbol,entry_date,entry_price,exit_date,"
+            "exit_price,shares,pnl,return_pct,reason,conviction,opened_at,closed_at,"
+            "sleeve,regime,risk_amt,source_position_id)"
+            " SELECT market,strategy,symbol,entry_date,entry_price,?,?,?,?,?,?,conviction,"
+            "opened_at,?,sleeve,regime,risk_amt,? FROM v2_positions WHERE id=?",
+            (exit_date, exit_price, actual_shares, net, net_pct, reason,
+             closed_at or datetime.now(timezone.utc).isoformat(), position_id, position_id))
+        v2.execute("DELETE FROM v2_positions WHERE id=? AND market=?", (position_id,market))
+        execution_outbox.enqueue(v2, f"house:{position_id}:EXIT", "house_exit",
+                                 dict(src_id=position_id,market=market,symbol=symbol,
+                                      price=exit_price,reason=reason))
+        return net, net_pct
 
 
 def _entry_of(v2, position_id, exit_price):
@@ -1783,34 +1777,35 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     from .costs import entry_charge
     from .live_trade import product_for
     fee = entry_charge(shares * entry_price, product_for(strategy)) if market == "IN" else 0
-    cursor = v2.execute(
-        "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
-        "stop,target,trail,peak,conviction,opened_at,why,expiry,sleeve,regime,"
-        "risk_amt,exit_policy,entry_fee)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
-         entry_price if peak is None else peak, conviction,
-         datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime,
-         (float(risk_amount) if risk_amount is not None else
-          float(shares) * max(float(entry_price) - float(stop or 0), 0.0)
-          if stop else None), policy.encode(), fee))
-    # LIVE MIRROR — real money. Runs only when the sleeve is armed AND connected;
-    # `live_ready` is false by default and this is a no-op on every other
-    # install. Placed AFTER the paper row is written and wrapped, so a broker
-    # outage can never prevent the paper book from recording what it decided:
-    # the paper book is the evidence and must survive the broker.
-    try:
-        _live_mirror_entry(v2, market, strategy, symbol, entry_price, src_id=cursor.lastrowid)
-    except Exception:
-        _LOG.exception("live mirror (entry) failed for %s — paper book unaffected", symbol)
-    # EVERY SUBSCRIBER'S OWN BOOK gets the same decision, sized to their cash.
-    # Wrapped and after the house row for the same reason as the broker mirror:
-    # the engine's record must survive anything that happens downstream of it.
-    try:
-        _book_mirror_entry(v2, market, strategy, symbol, entry_price, stop, target,
-                           sleeve, regime, shares, cursor.lastrowid, policy.encode())
-    except Exception:
-        _LOG.exception("user-book mirror (entry) failed for %s", symbol)
+    from .account_safety import atomic
+    from . import execution_outbox, worker_fencing
+    with atomic(v2):
+        worker_fencing.require_current(v2)
+        epoch = (v2.execute("SELECT started_at FROM v2_book WHERE market=?", (market,)).fetchone() or [None])[0]
+        stable = f"{market}:{epoch}:{strategy}:{symbol}:{entry_date}"
+        from .sleeves.config import PRODUCTION_SLEEVES
+        if strategy in PRODUCTION_SLEEVES and v2.execute(
+                "SELECT 1 FROM house_entry_intents WHERE semantic_key=?", (stable,)).fetchone():
+            return False
+        cursor = v2.execute(
+            "INSERT INTO v2_positions(market,strategy,symbol,entry_date,entry_price,shares,"
+            "stop,target,trail,peak,conviction,opened_at,why,expiry,sleeve,regime,"
+            "risk_amt,exit_policy,entry_fee)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (market, strategy, symbol, entry_date, entry_price, shares, stop, target, trail,
+             entry_price if peak is None else peak, conviction,
+             datetime.now(timezone.utc).isoformat(), why, expiry, sleeve, regime,
+             (float(risk_amount) if risk_amount is not None else
+              float(shares) * max(float(entry_price) - float(stop or 0), 0.0)
+              if stop else None), policy.encode(), fee))
+        if strategy in PRODUCTION_SLEEVES:
+            v2.execute("INSERT INTO house_entry_intents VALUES(?,?)", (stable,cursor.lastrowid))
+        execution_outbox.enqueue(v2, f"house:{cursor.lastrowid}:ENTRY", "house_entry",
+                                 dict(src_id=cursor.lastrowid,house_epoch=epoch,market=market,
+                                      created_at=datetime.now(timezone.utc).isoformat(),
+                                      strategy=strategy,symbol=symbol,price=entry_price,stop=stop,
+                                      target=target,sleeve=sleeve,regime=regime,max_shares=shares,
+                                      exit_policy=policy.encode()))
     return True
 
 
@@ -1835,7 +1830,7 @@ def _book_mirror_exit(v2, market, symbol, price, reason, src_id=None):
         _LOG.info("user books: %s closed in %d book(s)", symbol, n)
 
 
-def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None):
+def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None, stop=None, target=None, strict=False):
     """Fan the entry out to EVERY user who has linked and armed their own
     broker. Each order goes to that user's account, sized to their own margin —
     there is no shared sleeve any more."""
@@ -1849,6 +1844,7 @@ def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None):
             users.append(u)
     if not users:
         return
+    failed = False
     main = _ro(MAIN_DB)
     try:
         for uid in users:
@@ -1856,39 +1852,54 @@ def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None):
                 from .broker_access import may_open, read_user
                 if not may_open(read_user(main, uid)):
                     continue
-                terms = v2.execute("SELECT stop,target FROM v2_positions WHERE market=? AND symbol=?",
-                                   (market, symbol)).fetchone()
-                _LOG.info("live mirror entry u%s %s: %s", uid, symbol,
-                          live_trade.mirror_entry(v2, main, uid, market, symbol,
-                                                  price, strategy,
-                                                  stop=terms[0] if terms else None,
-                                                  target=terms[1] if terms else None,
-                                                  origin_position_id=src_id))
+                terms = v2.execute("SELECT stop,target FROM v2_positions WHERE id=? AND market=? AND symbol=?",
+                                   (src_id, market, symbol)).fetchone()
+                status = live_trade.mirror_entry(v2, main, uid, market, symbol, price, strategy,
+                                                stop=stop if stop is not None else terms[0] if terms else None,
+                                                target=target if target is not None else terms[1] if terms else None,
+                                                origin_position_id=src_id)
+                _LOG.info("live mirror entry u%s %s: %s", uid, symbol, status)
+                if status.startswith("pending:") or "reconciliation unavailable" in status or "margin unknown" in status:
+                    failed = True
             except Exception:
                 _LOG.exception("live mirror entry failed for user %s", uid)
+                failed = True
     finally:
         main.close()
+    if strict and failed:
+        raise RuntimeError("live entry delivery incomplete")
 
 
-def _live_mirror_exit(v2, market, symbol, price, reason, src_id=None):
+def _live_mirror_exit(v2, market, symbol, price, reason, src_id=None, strict=False):
     """Exit is attempted for every CONNECTED user, armed or not: mirror_exit
     records that real shares are still held when disarmed, and a silent skip
     would leave a live position nobody is tracking."""
     from . import broker, live_trade
-    users = [u for u in broker.linked_users() if broker.state(u).get("connected")]
+    # Only recipients of this origin need delivery; disconnected owners still
+    # remain pending. Unrelated disconnected accounts cannot block this exit.
+    users = {r[0] for r in v2.execute("SELECT DISTINCT user_id FROM v2_live_orders WHERE "
+                                     "market=? AND symbol=? AND origin_position_id=? AND side='BUY' "
+                                     "AND (filled_qty>0 OR status IN ('pending','submitted','partial','unknown','sent'))",
+                                     (market,symbol,src_id))}
     if not users:
         return
+    failed = False
     main = _ro(MAIN_DB)
     try:
-        for uid in users:
+        for uid in sorted(users):
             try:
-                _LOG.info("live mirror exit u%s %s: %s", uid, symbol,
-                          live_trade.mirror_exit(v2, main, uid, market, symbol,
-                                                 price, reason, origin_position_id=src_id))
+                status = live_trade.mirror_exit(v2, main, uid, market, symbol,
+                                               price, reason, origin_position_id=src_id)
+                _LOG.info("live mirror exit u%s %s: %s", uid, symbol, status)
+                if status not in ("submitted", "partial", "filled", "skipped: nothing held live", "skipped: origin position mismatch"):
+                    failed = True
             except Exception:
                 _LOG.exception("live mirror exit failed for user %s", uid)
+                failed = True
     finally:
         main.close()
+    if strict and failed:
+        raise RuntimeError("live exit delivery incomplete")
 
 
 def poll_market(market):
@@ -3899,8 +3910,19 @@ def _observe_house_risk(con, market, equity):
     historical = con.execute(
         "SELECT MAX(equity) FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' "
         "AND julianday(substr(date,6))>=julianday(?)", (market, epoch)).fetchone()[0]
-    account_safety.observe(con, "house", 0, market, epoch, equity, capital,
-                           datetime.now(IST).date().isoformat(), historical_peak=historical)
+    from .worker_fencing import require_current
+    with account_safety.atomic(con):
+        require_current(con)
+        account_safety.observe(con, "house", 0, market, epoch, equity, capital,
+                               datetime.now(IST).date().isoformat(), historical_peak=historical)
+
+
+def _fenced_write(con, sql, parameters=()):
+    from .account_safety import atomic
+    from .worker_fencing import require_current
+    with atomic(con):
+        require_current(con)
+        return con.execute(sql,parameters)
 
 
 def _exit_positions(con, market):
@@ -3922,7 +3944,7 @@ def exit_monitor(market):
     run every few seconds for near-instant exits."""
     from datetime import date
     v2 = _rw()
-    row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
+    row = _fenced_write(v2, "SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
     if not row:
         v2.close(); return
     budget = row[0]
@@ -3939,7 +3961,7 @@ def exit_monitor(market):
             eqv = budget + realized
             try:
                 _observe_house_risk(v2, market, eqv)
-                v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
+                _fenced_write(v2, "INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
                            (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], eqv, eqv, 0.0, 0))
                 v2.commit()
             except Exception:
@@ -3980,7 +4002,7 @@ def exit_monitor(market):
         if lq.get("expiry") and not p.get("expiry"):
             p["expiry"] = lq["expiry"]
             try:
-                v2.execute("UPDATE v2_positions SET expiry=? WHERE id=?", (lq["expiry"], p["id"]))
+                _fenced_write(v2, "UPDATE v2_positions SET expiry=? WHERE id=?", (lq["expiry"], p["id"]))
             except Exception:
                 pass
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
@@ -4004,7 +4026,7 @@ def exit_monitor(market):
                       market, p["strategy"], sym, p["entry"], ex, reason,
                       p["stop"], eff, peak, lq["price"], lq.get("high") or 0.0,
                       lq.get("low") or 0.0, net_pct)
-            v2.execute("DELETE FROM v2_positions WHERE id=?", (p["id"],))
+            _fenced_write(v2, "DELETE FROM v2_positions WHERE id=?", (p["id"],))
             try:
                 from . import telegram_bot
                 telegram_bot.notify_trade("SELL", sym, (int(p["shares"]) if float(p["shares"]).is_integer() else round(p["shares"], 2)),
@@ -4013,14 +4035,14 @@ def exit_monitor(market):
                 pass
             del positions[sym]; exits += 1
         else:
-            v2.execute("UPDATE v2_positions SET peak=? WHERE id=?", (peak, p["id"]))
+            _fenced_write(v2, "UPDATE v2_positions SET peak=? WHERE id=?", (peak, p["id"]))
     pv = sum(p["shares"] * (live[s]["price"] if s in live else p["entry"]) for s, p in positions.items())
     if all(sym in live and sym not in frozen for sym in positions):
         _observe_house_risk(v2, market, cash + pv)
     # snapshot at most once/min (was every 8s -> 57k rows bloating every query)
     if time.time() - _EQ_SNAP.get(market, 0) >= 60:
         _EQ_SNAP[market] = time.time()
-        v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
+        _fenced_write(v2, "INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions) VALUES(?,?,?,?,?,?)",
                    (market, "LIVE_" + datetime.now(timezone.utc).isoformat()[:19], cash + pv, cash, pv, len(positions)))
     v2.commit(); v2.close()
     if exits:
@@ -4034,15 +4056,15 @@ def _equity_janitor(market):
     history and a full week of intraday detail."""
     try:
         v2 = _rw()
-        row = v2.execute("SELECT equity,cash,positions_value,n_positions FROM v2_equity "
+        row = _fenced_write(v2, "SELECT equity,cash,positions_value,n_positions FROM v2_equity "
                          "WHERE market=? AND date LIKE 'LIVE_%' ORDER BY date DESC LIMIT 1",
                          (market,)).fetchone()
         if row:
             ds = datetime.now(IST).date().isoformat()
-            v2.execute("INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions)"
+            _fenced_write(v2, "INSERT OR REPLACE INTO v2_equity(market,date,equity,cash,positions_value,n_positions)"
                        " VALUES(?,?,?,?,?,?)", (market, ds, row[0], row[1], row[2], row[3]))
         cutoff = "LIVE_" + (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()[:19]
-        v2.execute("DELETE FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' AND date < ?",
+        _fenced_write(v2, "DELETE FROM v2_equity WHERE market=? AND date LIKE 'LIVE_%' AND date < ?",
                    (market, cutoff))
         v2.commit(); v2.close()
     except Exception:
@@ -4605,6 +4627,9 @@ def _sleeve_vix():
 
 
 def loop(interval):
+    import uuid
+    from . import worker_fencing, execution_outbox
+    owner = uuid.uuid4().hex
     try:
         v2 = _rw(); ensure_schema(v2); v2.close()
     except Exception:
@@ -4614,6 +4639,15 @@ def loop(interval):
                                            # arm the entry window ONLY on a real
                                            # closed->open flip, never on a restart
     while True:
+        coordinator = _rw()
+        try:
+            fence = worker_fencing.acquire(coordinator, owner)
+        finally:
+            coordinator.close()
+        if fence is None:
+            time.sleep(interval)
+            continue
+        worker_fencing.ACTIVE.set(fence)
         for m in ENABLED_MARKETS:
             try:
                 is_open = market_open(m)
@@ -4645,6 +4679,11 @@ def loop(interval):
                             _LOG.exception("index bar prune failed")
                 prev_open[m] = is_open
                 if is_open:
+                    delivery = _rw()
+                    try:
+                        execution_outbox.drain(delivery)
+                    finally:
+                        delivery.close()
                     # Record 5-min bars for the Nifty 500 off the quote feed we
                     # are already reading. Cheap: dict updates each cycle, one
                     # 500-row write every 5 minutes. Isolated so a recorder

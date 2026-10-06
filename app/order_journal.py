@@ -18,17 +18,23 @@ def ensure_schema(con):
     cols = {r[1] for r in con.execute("PRAGMA table_info(v2_live_orders)")}
     for name, kind in (("intent_key", "TEXT"), ("filled_qty", "INTEGER DEFAULT 0"),
                        ("average_price", "REAL DEFAULT 0"), ("reconciled_at", "TEXT"),
-                       ("cancel_requested_at", "TEXT"), ("origin_position_id", "INTEGER")):
+                       ("cancel_requested_at", "TEXT"), ("origin_position_id", "INTEGER"),
+                       ("semantic_key", "TEXT"), ("request_fingerprint", "TEXT")):
         if name not in cols:
             con.execute(f"ALTER TABLE v2_live_orders ADD COLUMN {name} {kind}")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_live_intent "
                 "ON v2_live_orders(user_id,intent_key) WHERE intent_key IS NOT NULL")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_live_semantic ON v2_live_orders(user_id,semantic_key) "
+                "WHERE semantic_key IS NOT NULL")
     con.execute("CREATE TABLE IF NOT EXISTS v2_live_protection("
                 "user_id INTEGER,symbol TEXT,stop REAL,target REAL,exit_reason TEXT,"
                 "PRIMARY KEY(user_id,symbol))")
     con.execute("CREATE TABLE IF NOT EXISTS live_book_epoch("
                 "user_id INTEGER,market TEXT,capital REAL NOT NULL,started_at TEXT NOT NULL,"
                 "PRIMARY KEY(user_id,market))")
+    from . import broker_reconciliation, execution_outbox
+    broker_reconciliation.ensure_schema(con)
+    execution_outbox.ensure_schema(con)
     con.commit()
 
 
@@ -58,6 +64,9 @@ def reconcile(con, uid, updates):
                 update.get("transaction_type") != side or update.get("product") != product:
             continue
         try:
+            raw_quantity = update["filled_quantity"]
+            if isinstance(raw_quantity,bool) or not isinstance(raw_quantity,(int,float)) or int(raw_quantity)!=raw_quantity:
+                continue
             filled = int(update["filled_quantity"])
             avg = float(update.get("average_price") or 0)
         except (KeyError, TypeError, ValueError):
@@ -125,7 +134,7 @@ def finish_entry_before_exit(con, uid, symbol):
 
 def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
            stop=None, target=None, strategy="manual", quotes=None, origin_position_id=None,
-           available_cash=None):
+           available_cash=None, semantic_key=None, request_fingerprint=None):
     """Persist and reserve an intent before transmission; never blind-retry."""
     from . import broker
     if qty < 1 or reference <= 0 or not math.isfinite(reference):
@@ -139,6 +148,17 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
     con.commit()
     con.execute("BEGIN IMMEDIATE")
     try:
+        from .worker_fencing import require_current
+        require_current(con)
+        semantic_key = semantic_key or (f"house:{origin_position_id}:{side}" if origin_position_id is not None else None)
+        if semantic_key:
+            previous = con.execute("SELECT status,instrument_key,side,product,qty,request_fingerprint FROM v2_live_orders "
+                                   "WHERE user_id=? AND semantic_key=?", (uid,semantic_key)).fetchone()
+            if previous:
+                con.rollback()
+                if tuple(previous[1:5]) != (key,side,product,qty) or previous[5] != request_fingerprint:
+                    return "rejected: idempotency key refers to a different intent"
+                return previous[0]
         if unresolved(con, uid, symbol if side == "SELL" else None):
             con.rollback()
             return "pending: broker reconciliation required"
@@ -149,6 +169,12 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             con.rollback()
             return "rejected: position changed before submission"
         if side == "BUY":
+            from .broker_reconciliation import ready
+            if not ready(con,uid):
+                con.rollback()
+                return "rejected: actual broker reconciliation is missing, stale or mismatched"
+            reconciled_cash = con.execute("SELECT available_cash FROM broker_reconciliation WHERE user_id=?",(uid,)).fetchone()[0]
+            available_cash = min(available_cash,float(reconciled_cash))
             from .sleeves.config import SLEEVES
             from .live_trade import account_risk_state
             from .sleeves.base import Candidate
@@ -190,10 +216,10 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
         tag = uuid.uuid4().hex[:20]
         con.execute(
             "INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,"
-            "price,notional,product,status,reason,intent_key,filled_qty,origin_position_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?,0,?)",
+            "price,notional,product,status,reason,intent_key,filled_qty,origin_position_id,semantic_key,request_fingerprint) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?,0,?,?,?)",
             (datetime.now(timezone.utc).isoformat(), uid, market, symbol, key, side, qty,
-             reference, qty * reference, product, reason, tag, origin_position_id))
+             reference, qty * reference, product, reason, tag, origin_position_id, semantic_key,request_fingerprint))
         con.commit()
     except Exception:
         con.rollback()

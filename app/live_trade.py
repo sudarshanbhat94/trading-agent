@@ -102,12 +102,21 @@ def instrument_key(main_db, symbol):
     security, so a wrong guess is a real order for the wrong company.
     """
     try:
-        row = main_db.execute(
+        rows = main_db.execute(
             "SELECT upstox_instrument_key FROM universe WHERE symbol=? AND enabled=1",
-            (str(symbol),)).fetchone()
+            (str(symbol),)).fetchall()
+        if len(rows)!=1:
+            return None
+        catalogued = main_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='instrument_snapshots'").fetchone()
+        if catalogued:
+            from .instrument_catalog import resolve
+            spec, key = resolve(main_db,symbol=str(symbol),venue="NSE",segment="NSE_EQ")
+            from .execution_ports import route_for
+            route_for("upstox",spec)
+            return key if key == rows[0][0] else None
     except Exception:
         return None
-    key = (row or [None])[0]
+    key = rows[0][0]
     # This adapter implements NSE cash equity only. Other segments must not
     # inherit its quantity, product or cost assumptions.
     return key if key and str(key).startswith("NSE_EQ|") and str(key)[7:].strip() else None
@@ -196,7 +205,7 @@ def _record(v2, user_id, market, symbol, key, side, qty, price, status, reason,
 
 
 def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=None, target=None,
-                 origin_position_id=None):
+                 origin_position_id=None, request_key=None, requested_qty=None):
     """Place the sleeve's real BUY for a position the engine just opened.
 
     Returns a short status string. Every refusal is written to v2_live_orders
@@ -212,6 +221,17 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=Non
     if not st.get("live_ready"):
         return "skipped: not armed"
     from . import order_journal as journal
+    stable = request_key or (f"house:{origin_position_id}:BUY" if origin_position_id is not None else None)
+    import hashlib
+    signature = hashlib.sha256(json.dumps([market,symbol,strategy,stop,target,origin_position_id,requested_qty],
+                                          sort_keys=True).encode()).hexdigest()
+    if stable:
+        previous = v2.execute("SELECT status,request_fingerprint FROM v2_live_orders WHERE user_id=? AND semantic_key=?",
+                              (user_id,stable)).fetchone()
+        if previous:
+            if previous[1] != signature:
+                return "rejected: idempotency key refers to a different intent"
+            return previous[0]
     if not journal.refresh(v2, user_id):
         return "skipped: broker reconciliation unavailable"
     if journal.unresolved(v2, user_id):
@@ -223,6 +243,9 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=Non
         return "skipped: no instrument key"
     if live_qty(v2, user_id, symbol) > 0:
         return "skipped: already held live"
+    from . import broker_reconciliation
+    if broker_reconciliation.refresh(v2,user_id)["status"] != "ok":
+        return "skipped: actual broker reconciliation unavailable or mismatched"
     margin = available_margin(user_id)
     if margin is None:
         _record(v2, user_id, market, symbol, key, "BUY", 0, price, "skipped",
@@ -244,6 +267,10 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=Non
         v2.commit()
         return "skipped: " + allocation.reason
     qty = min(qty, allocation.shares)
+    if requested_qty is not None:
+        if isinstance(requested_qty,bool) or not isinstance(requested_qty,int) or not 0<requested_qty<=qty:
+            return "rejected: requested quantity exceeds the account risk allocation"
+        qty = requested_qty
     from .costs import entry_charge
     from .sleeves.risk import SLIPPAGE
     while qty and qty * price * (1 + SLIPPAGE) + entry_charge(
@@ -266,7 +293,7 @@ def mirror_entry(v2, main_db, user_id, market, symbol, price, strategy, stop=Non
                           stop=stop if stop is not None else price*.94,
                           target=target if target is not None else (price*1.06 if strategy == "manual" else 0),
                           strategy=strategy, quotes=held_quotes, origin_position_id=origin_position_id,
-                          available_cash=margin)
+                          available_cash=margin, semantic_key=stable,request_fingerprint=signature)
 
 
 def mirror_exit(v2, main_db, user_id, market, symbol, price, reason, origin_position_id=None):
@@ -306,7 +333,8 @@ def mirror_exit(v2, main_db, user_id, market, symbol, price, reason, origin_posi
     # intraday buy, and guessing here would either reject the order or convert
     # the position to delivery and charge for it.
     return journal.submit(v2, user_id, market, symbol, key, "SELL", qty, price, prod,
-                          f"mirror exit: {reason}")
+                          f"mirror exit: {reason}", origin_position_id=origin_position_id,
+                          semantic_key=f"house:{origin_position_id}:SELL" if origin_position_id is not None else None)
 
 
 def _alert_failed(user_id, side, symbol, qty, res):
@@ -437,6 +465,8 @@ def service(v2, main_db, quotes):
         _SERVICED[uid] = now
         if not broker.state(uid).get("exit_ready") or not journal.refresh(v2, uid):
             continue
+        from . import broker_reconciliation
+        broker_reconciliation.refresh(v2,uid)
         state, why = account_risk_state(v2, uid, broker.state(uid), quotes)
         if state is None:
             _LOG.warning("broker account risk valuation u%s unavailable: %s", uid, why)

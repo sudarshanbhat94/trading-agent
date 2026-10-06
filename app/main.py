@@ -4773,8 +4773,8 @@ async def auth_signup(payload: dict[str, Any], response: Response, request: Requ
 
 
 @app.post("/api/auth/logout")
-async def auth_logout(response: Response) -> dict[str, bool]:
-    return logout_user(response)
+async def auth_logout(response: Response, request: Request) -> dict[str, bool]:
+    return logout_user(response, request, settings, db)
 
 
 @app.get("/api/users")

@@ -2,7 +2,8 @@
 from fastapi.responses import JSONResponse
 
 
-def live_action(con, main, user, market, symbol, price, side, stop=None, target=None):
+def live_action(con, main, user, market, symbol, price, side, stop=None, target=None,
+                requested_qty=None, request_key=None):
     from . import broker, live_trade, order_journal
     from .broker_access import may_open
     uid = int(user['id'])
@@ -17,7 +18,8 @@ def live_action(con, main, user, market, symbol, price, side, stop=None, target=
     if side == 'BUY':
         status = live_trade.mirror_entry(con,main,uid,market,symbol,price,'manual',
                                          stop=stop if stop is not None else price*.94,
-                                         target=target if target is not None else price*1.06)
+                                         target=target if target is not None else price*1.06,
+                                         requested_qty=requested_qty, request_key=request_key)
     else:
         if live_trade.live_qty(con,uid,symbol)<=0 and not order_journal.unresolved(con,uid,symbol):
             return JSONResponse({'error':'No managed broker position for this symbol'},status_code=409)

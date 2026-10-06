@@ -127,7 +127,10 @@ class BoundaryTest(unittest.TestCase):
                     self.assertEqual(rows[0][:3],("NIFTYBEES","index_directional","ON"))
                     self.assertLessEqual(float(rows[0][5]),875)
                     self.assertLessEqual(rows[0][3]*rows[0][4],9000)
-                    self.assertEqual(live_mirror.call_count, 1)
+                    live_mirror.assert_not_called()
+                    event = con.execute("SELECT topic,payload FROM execution_outbox").fetchone()
+                    self.assertEqual(event[0], "house_entry")
+                    self.assertEqual(json.loads(event[1])["symbol"], "NIFTYBEES")
                 else:
                     self.assertEqual(rows,[])
                     live_mirror.assert_not_called()

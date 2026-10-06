@@ -114,10 +114,11 @@ def _migrate_legacy():
             return
         dest = _path(uid)
         if not os.path.exists(dest):
-            os.makedirs(STATE_DIR, exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=1)
-            os.chmod(dest, 0o600)
+            _write(uid,data)
+        from .credential_vault import seal
+        with open(LEGACY_PATH,"w",encoding="utf-8") as fh:
+            json.dump(seal(STATE_DIR,uid,data),fh)
+        os.chmod(LEGACY_PATH,0o600)
         os.replace(LEGACY_PATH, LEGACY_PATH + ".migrated")
     except (OSError, ValueError):
         pass
@@ -128,19 +129,41 @@ def _read(user_id) -> dict:
     try:
         with open(_path(user_id), encoding="utf-8") as fh:
             data = json.load(fh)
+        if isinstance(data,dict) and data.get("format"):
+            from .credential_vault import unseal
+            data = unseal(STATE_DIR,user_id,data)
+        elif isinstance(data,dict):
+            # Idempotent migration of the owner's existing private file.
+            if data.get("owner_user_id") not in (None,int(user_id)):
+                raise ValueError("broker file belongs to a different account")
+            _write(user_id,data)
+        else:
+            raise ValueError("invalid broker state document")
         return {**DEFAULT, **(data if isinstance(data, dict) else {})}
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return dict(DEFAULT)
+    except Exception:
+        return dict(DEFAULT, credential_error="Broker credentials could not be decrypted; restore the vault key before reconnecting")
 
 
 def _write(user_id, state: dict) -> dict:
+    from .credential_vault import seal
+    import uuid
+    if state.get("credential_error"):
+        raise ValueError("unreadable broker state must not be overwritten")
     os.makedirs(STATE_DIR, exist_ok=True)
     dest = _path(user_id)
-    tmp = dest + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, indent=1)
-    os.chmod(tmp, 0o600)         # before the rename, so it is never briefly world-readable
-    os.replace(tmp, dest)
+    tmp = dest + "." + uuid.uuid4().hex + ".tmp"
+    envelope = seal(STATE_DIR,user_id,state)
+    try:
+        fd = os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,"w",encoding="utf-8") as fh:
+            json.dump(envelope,fh)
+            fh.flush(); os.fsync(fh.fileno())
+        os.replace(tmp,dest)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     return state
 
 
@@ -238,6 +261,7 @@ def state(user_id, now=None) -> dict:
         stale = False
     return dict(
         connected=bool(s.get("access_token")), stale=stale,
+        credential_error=s.get("credential_error"),
         expires_at=expires, token_saved_at=s.get("token_saved_at") or "",
         # a fingerprint, so the UI can show WHICH key is configured without
         # ever putting the key on a screen or in a log
@@ -416,7 +440,7 @@ def positions(user_id) -> list:
     r = httpx.get(f"{API_BASE}/portfolio/short-term-positions",
                   headers=_headers(user_id), timeout=20)
     r.raise_for_status()
-    return (r.json() or {}).get("data") or []
+    return _inventory_rows(r.json())
 
 
 def holdings(user_id) -> list:
@@ -427,7 +451,24 @@ def holdings(user_id) -> list:
     r = httpx.get(f"{API_BASE}/portfolio/long-term-holdings",
                   headers=_headers(user_id), timeout=20)
     r.raise_for_status()
-    return (r.json() or {}).get("data") or []
+    return _inventory_rows(r.json())
+
+
+def _inventory_rows(body):
+    rows = body.get("data") if isinstance(body,dict) else None
+    if not isinstance(rows,list):
+        raise ValueError("complete broker inventory unavailable")
+    return rows
+
+
+def trades(user_id) -> list:
+    import httpx
+    response = httpx.get(f"{API_BASE}/order/trades/get-trades-for-day",headers=_headers(user_id),timeout=20)
+    response.raise_for_status()
+    data = response.json().get("data")
+    if not isinstance(data,list):
+        raise ValueError("broker tradebook unavailable")
+    return data
 
 
 def account_snapshot(user_id):

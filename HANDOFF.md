@@ -1,5 +1,13 @@
 # OpenStocks handoff — 2026-09-23
 
+## Execution/security implementation — 2026-10-06
+
+**TRADING BEHAVIOUR CHANGED; not deployed.** House book writes now enqueue durable account delivery after commit; retries retain intent identity; an expired worker generation cannot write. New broker entries require fresh actual inventory/trades/funds reconciliation. Broker files are account-bound encrypted; logout revokes server sessions. New read-only catalogue/publication/health APIs expose scope honestly. Instrument discovery does not enable derivatives or another broker. Manual requested quantity is honoured or refused; research plans cannot fall back to manual execution.
+
+See `reports/execution-hardening-2026-10-06.md` for commands, evidence, migration/escrow requirements and the open programme. CI runs the research/UI pytest functions in addition to unittest; they were omitted by the previous runner. No production book, broker setting or strategy threshold was changed. Profitability, native stops, automatic production live mirroring, stock-model promotion and all-asset execution remain unproven/incomplete; commercial/live release remains NO-GO.
+
+Final local verification: 2,254 unittest checks run, 2,121 passed, 133 skipped, zero failures/errors; separate research/UI functions 101 passed; isolated paper rehearsal and staged secret scan passed. Remote CI and deployed behaviour require separate verification.
+
 ## Local safety implementation — 2026-10-06
 
 **TRADING BEHAVIOUR CHANGED; local only, not deployed.** Personal and managed broker entries now share account-specific, cost-aware risk checks; position exit policies/origin links are persisted; personal exits run independently; entry disarm retains managed exits. Legacy entry controls are retired. Capital defaults and strategy thresholds are unchanged. See `reports/release-safety-implementation-2026-10-06.md` for the exact changes and remaining release blockers.
