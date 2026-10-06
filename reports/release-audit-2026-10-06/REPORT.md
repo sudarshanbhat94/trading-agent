@@ -2,7 +2,7 @@
 
 **TRADING BEHAVIOUR CHANGED locally.** All three entry writers now require sourced canonical cash contracts and an available ON/NEUTRAL regime. Automatic trigger rounding uses sourced ticks without increasing initial risk. Manual paper requests freeze immutable owned approvals before the shared serialized risk/fill pipeline. New broker exposure needs exact build/account/route/model release and native-protection policy evidence. Strategy thresholds, production allowlist, ₹10,000 epoch and registered forward protocol are preserved. Nothing was deployed; no real order, production reset or credential change occurred.
 
-**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 55 findings: 21 locally repaired, 18 partially repaired, 12 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
+**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 56 findings: 22 locally repaired, 18 partially repaired, 12 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
 
 ## Baseline and scope
 
@@ -27,7 +27,7 @@ Disclosed rubric: D implemented design, T relevant invariant tests, P deployed o
 | Product UI | 2/3/0/1/0 | 30 | Current account components/receipts and isolated mobile lifecycle; full deployed journeys unfinished. |
 | Commercial | 1/0/0/0/0 | 5 | Applicable requirements identified; qualified legal/broker/data permissions absent. |
 | Reliability | 2/3/0/1/0 | 30 | Atomic migrations/streaming disabled restore; actual supervised/off-host/SLO drills incomplete. |
-| Testing | 3/3/0/1/0 | 35 | 2,242 passes + 102 functions; 133 skips and separate certification/market evidence remain. |
+| Testing | 3/3/0/1/0 | 35 | 2,276 passes + 102 functions; 133 skips and separate certification/market evidence remain. |
 
 Top risks: F01/F22 independent stock-model approval; F08 real broker-native protection including completed GTT/amendment/outage recovery; F09/F11 complete actual net/fee/margin/FX/settlement accounting; F10 real daily official rules/actions/calendars and historical binding; F21 Angel orchestration/additional assets; F16/F50 legal and data rights; F41 actual off-host complete backup/restore; F44 relevant paper sessions and exact release certification. The deployed build does not include the current local repairs.
 
@@ -132,3 +132,7 @@ Public accessibility does not establish commercial redistribution permission. [N
 ## 7 October next-session recheck
 
 **TRADING BEHAVIOUR CHANGED; full release remains incomplete/NO-GO.** [Exact scope and run commands](../../docs/next-session-readiness.md). Bounded official discovery imported 2,685 cash instruments without inventing execution rules. The selected-symbol website preflight distinguishes contract/session/quote/worker/regime/risk/ledger failures. An actual browser first-load deadlock was repaired; 390px proof is an isolated fixture. Private production-copy migration preserved historical rows, epoch and ₹10,000 balances. Production remains `2b300b4` and was not modified. Full frozen suite: 2,392 run, 2,259 passed, 133 skipped; 102 separate function fixtures passed. None establishes alpha, native live certification or the remaining programme acceptance.
+
+## Paper runtime preparation follow-up
+
+F07/F10 received further scoped fixes and F56 records false daily-job completion. Final frozen-source suite: 2,409 run, 2,276 passed, 133 skipped, zero failures/errors; 102 additional functions passed. Hash-pinned isolated OCI runtime installed, actual production-copy startup migrations and full app boot passed; production remains unchanged. See [exact scope and cutover prerequisites](../../docs/paper-candidate-rollout.md). This does not close all programme, source, stock-model, broker or commercial gates.

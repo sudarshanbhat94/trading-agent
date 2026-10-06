@@ -4,6 +4,8 @@
 
 ## What was verified
 
+Follow-up preparation repairs disabled-held quote coverage, partial inventory-schema loss, false daily-history completion and expired same-identity review borrowing. The pinned candidate runtime and actual app boot passed in an isolated OCI directory against migrated production database copies. Production services/dependencies remain unchanged. See [paper preparation and cutover scope](paper-candidate-rollout.md); the source/authorization/validation blockers below remain.
+
 Read-only deployed build remains `2b300b4`, with active app/feed/screening/tracking. The observed personal book has capital, cash and equity ₹10,000, zero positions and zero current-epoch realised P&L. Its epoch and registered-protocol digest are unchanged. Last quotes were at the prior NSE session close; this after-hours age is expected. The persisted decision remains OFF, based on the October 5 completed session.
 
 A consistent private production-paper database copy was migrated with the candidate schema. Every pre-existing column value and historical row was preserved, as were the active epoch and ₹10,000 balances. This is a migration rehearsal, not a production deployment or a broker reconciliation drill.

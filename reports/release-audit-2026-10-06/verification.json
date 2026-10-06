@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2392,
-    "passed": 2259,
+    "run": 2409,
+    "passed": 2276,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 18.307,
-    "note": "Frozen source after safety-route entitlement mapping and isolated fixture global restoration; temporary databases and localhost mock transports only."
+    "seconds": 18.761,
+    "note": "Frozen source; final run with localhost fixture permission. First run had only a sandbox socket refusal; no source edits between runs."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -84,7 +84,7 @@
     "observed_date": "2026-10-06"
   },
   "entire_release_plan_complete": false,
-  "working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+  "working_parent": "9f526de4a3a88182cd36dfc8eaf1afaf7f3f990e",
   "refreshed_at": "2026-10-06T18:39:38.611750+00:00",
   "this_turn_initial_full_run": {
     "run": 2353,
@@ -104,7 +104,7 @@
   "functions": {
     "passed": 102,
     "exit_code": 0,
-    "seconds": 0.91
+    "seconds": 0.85
   },
   "dependencies": {
     "locked_packages": 39,
@@ -188,5 +188,78 @@
     "shadow_equity": 10000,
     "profitability_established": false,
     "observed_date": "2026-10-07"
+  },
+  "previous_full_unittest_9f526de": {
+    "run": 2392,
+    "passed": 2259,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 18.307,
+    "note": "Frozen source after safety-route entitlement mapping and isolated fixture global restoration; temporary databases and localhost mock transports only."
+  },
+  "paper_candidate_initial_run": {
+    "run": 2398,
+    "skipped": 133,
+    "errors": 1,
+    "failures": 0,
+    "exit_code": 1,
+    "reason": "Sandbox denied localhost HTTP fixture; not an application regression"
+  },
+  "paper_candidate": {
+    "migration": {
+      "account_scope": [
+        "auth_sessions",
+        "runtime_settings",
+        "settings",
+        "subscription_receipts",
+        "subscription_requests",
+        "subscriptions",
+        "user_preferences",
+        "user_settings",
+        "users"
+      ],
+      "checked_at": "2026-10-06T19:54:53.084427+00:00",
+      "coordinated_backup": false,
+      "deployment_authorized": false,
+      "execution_disabled": true,
+      "paper": {
+        "capital": 10000.0,
+        "cash": 10000.0,
+        "epoch": "2026-09-22T13:34:11.273061+00:00",
+        "equity": 10000.0,
+        "open_positions": 0
+      },
+      "paper_scope": "all pre-existing tables/columns/rows",
+      "preserved_tables": {
+        "accounts.db": 2,
+        "paper.db": 18
+      },
+      "production_modified": false,
+      "protocol_sha256": "1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2",
+      "real_orders": 0,
+      "release_certified": false,
+      "status": "passed"
+    },
+    "boot": {
+      "app_startup": "passed",
+      "unauthenticated_positions_http": 401,
+      "paper": {
+        "capital": 10000.0,
+        "cash": 10000.0,
+        "equity": 10000.0,
+        "positions": 0
+      },
+      "outbound_http_blocked": true,
+      "workers_started": false,
+      "real_orders": 0,
+      "production_modified": false
+    },
+    "production_dependencies_modified": false,
+    "stage_runtime_dependencies_hash_pinned": true,
+    "source_hashes_matched": true,
+    "execution_disabled": true,
+    "production_cutover": false
   }
 }

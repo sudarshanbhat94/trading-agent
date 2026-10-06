@@ -64907,5 +64907,20 @@
       "app/v2_web.py:api_trading_readiness"
     ],
     "complete_system_semantic_review": false
+  },
+  "paper_candidate_2026_10_07": {
+    "parent": "9f526de4a3a88182cd36dfc8eaf1afaf7f3f990e",
+    "app_modules": 142,
+    "script_modules": 78,
+    "test_modules": 169,
+    "semantically_reviewed_new": [
+      "app/upgrade_rehearsal.py",
+      "scripts/rehearse_paper_upgrade.py",
+      "scripts/v2_quote_feed.py",
+      "scripts/candle_ingest.py",
+      "scripts/refresh_contract_catalogue.py"
+    ],
+    "semantic_scope": "Targeted current paths; other inventory is not equivalent to review",
+    "production_modified": false
   }
 }

@@ -5,7 +5,7 @@ Exit 2 means discovery alone is insufficient: it is never order permission.
 No paper book, strategy, broker credential or release authorization is edited.
 """
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -31,11 +31,22 @@ def apply_reviewed(con, bundle, root, discovery_day, *, now=None):
         for row in bundle['instruments']:
             if row.get('rules') is None:
                 continue
+            # A new daily snapshot cannot borrow an older valid rule for the
+            # same identity while its own review is expired or future-dated.
+            if not execution_contracts._moment(row['effective_from']) <= now < execution_contracts._moment(row['effective_until']):
+                raise ValueError('Daily contract row is not currently effective')
+            if now-execution_contracts._moment(row['observed_at']) > timedelta(hours=25):
+                raise ValueError('Daily contract row review is stale')
             identity = Instrument(**row['contract']).id
             _, rules = execution_contracts._latest(con, 'rules', identity, now)
+            if rules != row['rules']:
+                raise ValueError('Daily contract row conflicts with the current reviewed rule')
             if (now-execution_contracts._moment(rules['actions_reviewed_at'])).total_seconds() > 25*3600:
                 raise ValueError('Current corporate-action review required')
             execution_contracts._latest(con, 'session', rules['calendar'], now)
+        for row in bundle['sessions']:
+            if not execution_contracts._moment(row['effective_from']) <= now < execution_contracts._moment(row['effective_until']):
+                raise ValueError('Daily exchange session is not currently effective')
         return result
 
 

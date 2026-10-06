@@ -100,7 +100,7 @@
     ],
     "rootCause": "Historical cause: Personal and live sizing are separate from the house cost-aware allocator. Local repair: Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
     "fix": "Use one account-specific risk snapshot and serialized reservation for every entry; apply per-user cash, open risk, loss and drawdown limits.",
-    "acceptance": "After a ₹200 loss on ₹10,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
+    "acceptance": "After a \u20b9200 loss on \u20b910,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
     "hours": [
       1,
       4
@@ -261,9 +261,11 @@
     "status": "Locally repaired",
     "title": "Personal/live residual holdings can miss the hot feed",
     "evidence": [
-      "scripts/v2_quote_feed.py:53"
+      "scripts/v2_quote_feed.py:58",
+      "scripts/v2_quote_feed.py:86",
+      "scripts/candle_ingest.py:42"
     ],
-    "rootCause": "Historical cause: The fast held set queries house positions only. Local repair: Held-symbol hot feed includes personal, pending and residual exposure.",
+    "rootCause": "Historical cause: fast watch omitted personal exposure. Follow-up reproduced: enabled-only lookup dropped disabled holdings; one unavailable table discarded the combined watch; daily history prioritized only house holdings.",
     "fix": "Union all personal/managed broker positions, pending orders and protection obligations with hot research/watch symbols; prioritise risk exposures within API budgets.",
     "acceptance": "A position absent from house/research remains within the configured execution freshness SLA.",
     "hours": [
@@ -280,9 +282,9 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Locally repaired",
-    "current_state": "Held-symbol hot feed includes personal, pending and residual exposure.",
-    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_hot_feed_includes_personal_pending_and_residual_exposure",
-    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "current_state": "Quote-only disabled rows are retained, mappings refresh, conflicting aliases refuse, inventory scopes fail independently and residuals group by contract alias. Daily candles prioritize the same exposure inventory. Unknown removed identities stay coverage gaps.",
+    "test_evidence": "tests.test_exposure_quote_coverage; tests.test_candle_job_completion",
+    "remaining": "Production cutover and exposure freshness certification; unknown removed identities/canonical historical ownership still require sourced resolution.",
     "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
     "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
     "original_hours": [
@@ -406,9 +408,9 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "House, personal and durable broker entry writers share dated canonical rules, sessions, identity, alias, lot/tick/freeze/circuit/action checks. Reviewed normalized official bundles import atomically with hashes/rights references; ambiguous legacy identities are quarantined. Automatic trigger prices round to sourced ticks without increasing risk.",
+    "current_state": "House, personal and durable broker entry writers share dated canonical rules, sessions, identity, alias, lot/tick/freeze/circuit/action checks. Reviewed normalized official bundles import atomically with hashes/rights references; ambiguous legacy identities are quarantined. Automatic trigger prices round to sourced ticks without increasing risk. Daily import now checks each new row's own effective interval/current payload; an expired review cannot borrow older valid evidence for the same identity.",
     "remaining": "Actual exchange raw master/action/calendar connectors and production evidence bundles; complete effective historical binding/migration; extra venue certification.",
-    "test_evidence": "tests.test_catalogue_ingestion; tests.test_entry_contract_gate; tests.test_manual_approved_execution",
+    "test_evidence": "tests.test_catalogue_ingestion; tests.test_entry_contract_gate; tests.test_manual_approved_execution; tests.test_catalogue_refresh.DailyReviewedRuleJobTest.test_expired_same_identity_cannot_borrow_previous_valid_rule_or_session",
     "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
@@ -725,7 +727,7 @@
       "app/v2_web.py:1884",
       "app/approved_execution.py:82"
     ],
-    "rootCause": "Historical boundary: Symbol-only manual route substitutes ±6% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
+    "rootCause": "Historical boundary: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
     "fix": "Require immutable plan ID/version and server-approved size/mode for an idea action; expose a separate explicit discretionary action if needed.",
     "acceptance": "Displayed and ordered levels/size reconcile; expired or research-only plans cannot execute.",
     "hours": [
@@ -737,7 +739,7 @@
       "app/manual_execution.py:6"
     ],
     "original_status": "Confirmed route mismatch",
-    "original_rootCause": "Symbol-only manual route substitutes ±6% levels and separate sizing.",
+    "original_rootCause": "Symbol-only manual route substitutes \u00b16% levels and separate sizing.",
     "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Not deployed; baseline finding remains",
@@ -1858,7 +1860,7 @@
     ],
     "rootCause": "Historical cause: Multiple stale inline renderers/copy survive accumulated SPA replacements. Local repair: Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
     "fix": "Consolidate account UI and capital/mode source; display active epoch only, retired history separately and exact reset semantics.",
-    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says ₹10,000 and history retention consistently.",
+    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says \u20b910,000 and history retention consistently.",
     "hours": [
       1,
       4
@@ -2271,6 +2273,33 @@
     "test_evidence": "tests.test_sleeve_cold_imports; ui-evidence/readiness-mobile-2026-10-07.png",
     "revalidation_method": "Observed real-handler browser exception, concurrent process regression, selected-handler desktop/mobile rehearsal",
     "hours_basis": "Local repair implemented; estimate includes deployed acceptance",
+    "release_certification": false
+  },
+  {
+    "id": "F56",
+    "area": "Data / operations",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Daily data job reports success for old history and failed markets",
+    "evidence": [
+      "scripts/candle_ingest.py:105",
+      "scripts/candle_ingest.py:175",
+      "scripts/candle_ingest.py:251"
+    ],
+    "rootCause": "Returned daily history was counted as current coverage; stale-tail retries stopped after older bars arrived. Future dates satisfied freshness and main swallowed failures with process exit zero.",
+    "fix": "Check exact expected closed-session coverage, exclude later sessions, retry actual stale symbols and return nonzero for partial/failed/unsupported jobs; prioritize personal/managed disabled holdings and use the shared notified holiday list.",
+    "acceptance": "Older/future history never replaces the target session; incomplete jobs fail visibly without deleting useful data; held disabled names retain priority.",
+    "hours": [
+      2,
+      4
+    ],
+    "test_evidence": "tests.test_candle_job_completion; tests.test_candle_ingest_freshness",
+    "current_state": "Reproduced paths repaired locally with retry, completion, holiday and disabled-exposure fixtures.",
+    "production_build": "2b300b4",
+    "production_status": "Not deployed",
+    "deployed_repair": false,
+    "remaining": "Authorized deployed revalidation, exceptional-session and historical-provenance coverage.",
     "release_certification": false
   }
 ]

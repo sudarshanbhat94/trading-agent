@@ -80,6 +80,25 @@ class OfficialDiscoveryRefreshTest(unittest.TestCase):
 
 
 class DailyReviewedRuleJobTest(unittest.TestCase):
+    def test_expired_same_identity_cannot_borrow_previous_valid_rule_or_session(self):
+        from copy import deepcopy
+        from tests.test_catalogue_ingestion import EvidenceBundleTest
+        from scripts.refresh_contract_catalogue import apply_reviewed
+        fixture = EvidenceBundleTest(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        bundle = deepcopy(fixture.bundle)
+        today = fixture.now.astimezone(refresh.IST).date().isoformat(); bundle['source_day'] = today
+        apply_reviewed(fixture.con, bundle, fixture.root, today, now=fixture.now)
+        before = fixture.con.execute('SELECT COUNT(*) FROM catalogue_imports').fetchone()[0]
+        for part in ('instruments','sessions'):
+            changed = deepcopy(bundle)
+            changed[part][0]['effective_from'] = (fixture.now-timedelta(days=2)).isoformat()
+            changed[part][0]['effective_until'] = (fixture.now-timedelta(days=1)).isoformat()
+            if part == 'sessions':
+                changed[part][0]['payload']['opens_at'] = changed[part][0]['effective_from']
+                changed[part][0]['payload']['closes_at'] = changed[part][0]['effective_until']
+            with self.assertRaises(ValueError): apply_reviewed(fixture.con, changed, fixture.root, today, now=fixture.now)
+            self.assertEqual(fixture.con.execute('SELECT COUNT(*) FROM catalogue_imports').fetchone()[0], before)
+
     def test_expired_bundle_is_not_successful_and_rolls_back_even_after_import(self):
         from copy import deepcopy
         from tests.test_catalogue_ingestion import EvidenceBundleTest

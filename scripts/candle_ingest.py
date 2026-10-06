@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import closing
+import json
 import os
 import sys
 import time
@@ -40,24 +42,23 @@ TOPN = 100000   # ingest the whole enabled universe (held names are forced to th
 def _held(market):
     """Symbols we currently hold — must always be ingested fresh, regardless of
     where they fall in the (alphabetical) universe order."""
-    out = set()
-    try:
-        import sqlite3
-        c = sqlite3.connect(f"file:{V2_DB}?mode=ro", uri=True, timeout=5)
-        for (sym,) in c.execute("SELECT symbol FROM v2_positions WHERE market=?", (market,)):
-            out.add(str(sym).upper())
-        c.close()
-    except Exception:
-        pass
-    return out
+    from scripts.v2_quote_feed import _held as exposure
+    return exposure(path=V2_DB).get(market, set())
 
 
-def _daily_only(candles_by_symbol):
+def _daily_only(candles_by_symbol, target=None):
     """Keep only DAILY bars (source endswith ':day') — discard any intraday the
     provider also returns, so we don't bloat the DB with minute candles."""
     out = {}
     for sym, candles in candles_by_symbol.items():
-        daily = [c for c in candles if str(getattr(c, "source", "")).endswith(":day")]
+        def completed(c):
+            try:
+                at = datetime.fromisoformat(str(c.ts).replace('Z', '+00:00'))
+                day = at.astimezone(IST).date() if at.tzinfo else at.date()
+                return not target or day.isoformat() <= target
+            except (ValueError, TypeError, AttributeError):
+                return False
+        daily = [c for c in candles if str(getattr(c, "source", "")).endswith(":day") and completed(c)]
         if daily:
             out[sym] = daily
     return out
@@ -89,21 +90,19 @@ def expected_session(now=None):
     This is the freshness target. It must come from the calendar, not from the
     database — see _fresh_symbols for why.
 
-    Weekend/weekday aware only; NSE holidays are not modelled. On a holiday the
-    target names a session that will never exist, so every symbol looks stale
-    and the run does one wasted full pass that ingests nothing. That is
-    self-correcting and cheap (~200s, twice a day) and is strictly better than
-    the deadlock the previous target caused.
+    Uses the shared notified NSE holiday list for regular sessions. Exceptional
+    sessions and execution permission still require the sourced catalogue.
     """
     now = (now or datetime.now(timezone.utc)).astimezone(IST)
     closed_today = (now.hour, now.minute) >= (SESSION_CLOSE_HOUR, SESSION_CLOSE_MINUTE)
     candidate = now.date() if closed_today else (now.date() - timedelta(days=1))
-    while candidate.weekday() >= 5:          # 5=Sat, 6=Sun -> walk back to Friday
+    from app.market_regions import INDIA_TRADING_HOLIDAYS
+    while candidate.weekday() >= 5 or candidate.isoformat() in INDIA_TRADING_HOLIDAYS:
         candidate -= timedelta(days=1)
     return candidate.isoformat()
 
 
-def _fresh_symbols(db, market, target=None):
+def _fresh_symbols(db, market, target=None, symbols=None):
     """Symbols already current to `target` (default: the last closed session).
 
     History of this function, because it has now been wrong twice in different
@@ -128,12 +127,16 @@ def _fresh_symbols(db, market, target=None):
     target = target or expected_session()
     try:
         import sqlite3 as _sq
-        con = _sq.connect(f"file:{db.path}?mode=ro", uri=True, timeout=30)
-        for sym, mx in con.execute("SELECT symbol, MAX(ts) FROM candles WHERE source=? GROUP BY symbol",
-                                   (DAILY_SRC[market],)):
-            if mx and str(mx)[:10] >= target:
-                out.add(str(sym).upper())
-        con.close()
+        with closing(_sq.connect(f"file:{db.path}?mode=ro", uri=True, timeout=30)) as con:
+            # A future/partial session cannot stand in for the target session.
+            next_day = (datetime.fromisoformat(target).date()+timedelta(days=1)).isoformat()
+            selected = list(symbols) if symbols is not None else None
+            chunks = [None] if selected is None else [selected[i:i+500] for i in range(0,len(selected),500)]
+            for chunk in chunks:
+                suffix = '' if chunk is None else ' AND symbol IN ('+','.join('?' for _ in chunk)+')'
+                for (sym,) in con.execute("SELECT DISTINCT symbol FROM candles WHERE source=? AND ts>=? AND ts<?"+suffix,
+                    [DAILY_SRC[market], target, next_day]+(chunk or [])):
+                    out.add(str(sym).upper())
     except Exception as exc:
         # Returning an empty set means "nothing is fresh", so the run re-fetches
         # everything. That is the safe direction to fail, but say so — silently
@@ -154,11 +157,11 @@ def _source_max_ts(db, market):
         return None
 
 
-def _fetch_upsert(provider, db, batch):
+def _fetch_upsert(provider, db, batch, target=None):
     """One batch: fetch, keep :day, chunked upsert. Returns set of covered symbols
     and the candle count."""
     fetched = asyncio.run(provider.get_candles(batch))
-    daily = _daily_only(fetched)
+    daily = _daily_only(fetched, target)
     items = list(daily.items())
     n = 0
     for i in range(0, len(items), 40):     # chunked upsert -> short DB locks
@@ -174,25 +177,31 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
     small batches + skip already-fresh symbols + RETRY PASSES over the stale tail
     until coverage converges. Held positions are always done first."""
     provider = build_market_data_provider(_market_settings(settings, market, prov))
+    target = expected_session()
     rows = db.get_universe(enabled_only=True, market_region=market)[: (limit or TOPN)]
     held = _held(market)
+    from scripts.v2_quote_feed import _quote_map
+    all_rows = _quote_map(db.get_universe(enabled_only=False, market_region=market))
+    missing_held = held - set(all_rows)
+    present = {str(r.get('symbol','')).upper() for r in rows}
+    rows += [all_rows[s] for s in sorted(held - present - missing_held)]
     if not rows:
         print(f"[{market}] no universe rows", flush=True)
-        return 0
+        return dict(market=market,status='unavailable',target=target,requested=0,fresh=0,missing_held=len(missing_held))
     t0 = time.time()
     candles_done = 0
 
     held_rows = [r for r in rows if str(r.get("symbol", "")).upper() in held]
     if held_rows:
         for attempt in range(2):
-            got, n = _fetch_upsert(provider, db, held_rows)
+            got, n = _fetch_upsert(provider, db, held_rows, target)
             candles_done += n
+            got = _fresh_symbols(db,market,target,{str(r['symbol']).upper() for r in held_rows})
             if len(got) == len(held_rows):
                 break
             time.sleep(3)
         print(f"[{market}] held pass: {len(got)}/{len(held_rows)} held symbols fresh", flush=True)
 
-    target = expected_session()
     before = _source_max_ts(db, market)
     fresh = _fresh_symbols(db, market, target)
     todo = [r for r in rows if str(r.get("symbol", "")).upper() not in fresh]
@@ -206,10 +215,13 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
         for b in range(0, len(todo), fetch_batch):
             batch = todo[b:b + fetch_batch]
             try:
-                got, n = _fetch_upsert(provider, db, batch)
+                got, n = _fetch_upsert(provider, db, batch, target)
             except Exception as exc:
-                print(f"[{market}] pass{pass_no} batch {b} error: {exc}", flush=True)
+                print(f"[{market}] pass{pass_no} batch {b} error: {type(exc).__name__}", flush=True)
                 got, n = set(), 0
+            # History returned != current-session coverage. Retry the actual
+            # stale tail even if the provider returned years of older bars.
+            got = _fresh_symbols(db,market,target,{str(r['symbol']).upper() for r in batch})
             candles_done += n
             covered |= got
             missed.extend(r for r in batch if str(r.get("symbol", "")).upper() not in got)
@@ -229,7 +241,11 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
               f"expected {target}. The provider has probably not published "
               f"{target} yet (its daily history has been observed to lag by a "
               f"session); the next run should pick it up.", flush=True)
-    return len(covered)
+    requested = {str(r['symbol']).upper() for r in rows}
+    actual_fresh = requested & _fresh_symbols(db,market,target)
+    return dict(market=market,status='complete' if actual_fresh==requested and not missing_held else 'partial',
+                target=target,requested=len(requested),fresh=len(actual_fresh),missing=len(requested-actual_fresh),
+                missing_held=len(missing_held),candles_written=candles_done)
 
 
 def main():
@@ -243,13 +259,20 @@ def main():
     settings = settings_from_overrides(base, db.runtime_settings())
     targets = [a.market] if a.market else list(MARKETS)
     print(f"candle ingest start {datetime.now(timezone.utc).isoformat()[:19]}Z markets={targets} limit={a.limit or TOPN}", flush=True)
+    results = []
     for m in targets:
         try:
-            ingest(m, MARKETS[m], db, settings, limit=a.limit)
+            if m not in MARKETS:
+                results.append(dict(market=m,status='unsupported')); continue
+            results.append(ingest(m, MARKETS[m], db, settings, limit=a.limit))
         except Exception as exc:
-            print(f"[{m}] ingest failed: {exc}", flush=True)
+            print(f"[{m}] ingest failed: {type(exc).__name__}", flush=True)
+            results.append(dict(market=m,status='failed',error_type=type(exc).__name__))
     print("candle ingest done", flush=True)
+    print(json.dumps(dict(markets=results),sort_keys=True))
+    # Partial history is retained, but a green job must mean current coverage.
+    return 0 if results and all(r['status']=='complete' for r in results) else 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

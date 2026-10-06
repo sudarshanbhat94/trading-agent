@@ -1,3 +1,7 @@
+## Paper runtime preparation — 2026-10-07
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** Quote and daily feeds retain disabled held names; partial exposure schemas no longer discard the available watch; daily jobs require actual closed-session coverage and report partial/failure nonzero. Expired same-identity daily imports cannot borrow earlier valid rules. `scripts/rehearse_paper_upgrade.py` migrates only private guarded copies and verifies original paper/account values, capital/epoch/protocol. A hash-pinned isolated OCI runtime migrated actual database copies and booted the actual app with network/workers disabled; unauthenticated positions refused 401. Original production is unchanged. See `docs/paper-candidate-rollout.md`. Full sourced execution coverage, independent stock validation and broker/commercial release gates remain open; never describe this as a profitable or live-certified platform.
+
 ## Next-session readiness recheck — 2026-10-07
 
 **TRADING BEHAVIOUR CHANGED locally; not deployed.** Bounded official BOD discovery uses a separate provider and real publication dates; no guessed exchange rules. Owned API/CLI/UI preflight checks selected NSE cash instruments, current regime, quotes, worker, book risk and cash/inventory ledger. Lazy sleeve exports fix a reproduced concurrent cold-import failure. Strategy thresholds, allowlist, ₹10,000 epoch and forward protocol remain intact.
