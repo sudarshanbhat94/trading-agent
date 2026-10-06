@@ -137,8 +137,12 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
            available_cash=None, semantic_key=None, request_fingerprint=None):
     """Persist and reserve an intent before transmission; never blind-retry."""
     from . import broker
-    if qty < 1 or reference <= 0 or not math.isfinite(reference):
+    if isinstance(qty,bool) or not isinstance(qty,int) or qty < 1 or \
+            isinstance(reference,bool) or not isinstance(reference,(int,float)) or reference <= 0 or not math.isfinite(reference):
         return "rejected: invalid order"
+    if market!='IN' or side not in {'BUY','SELL'} or product not in {'D','I'} or \
+            not isinstance(key,str) or not key.startswith('NSE_EQ|') or not key.split('|',1)[1]:
+        return "rejected: unsupported execution capability"
     st = broker.state(uid)
     if not st.get("live_ready" if side == "BUY" else "exit_ready"):
         return "skipped: not armed" if side == "BUY" else "skipped: exit credentials unavailable"
@@ -225,7 +229,8 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
         con.rollback()
         raise
     try:
-        result = broker.place_order(uid, key, qty, side, price=0.0, product=product, tag=tag)
+        from .execution_ports import UpstoxPort
+        result = UpstoxPort().submit(uid,key,qty,side,product=product,tag=tag)
         status = "submitted" if result.get("ok") and result.get("order_id") else (
             "rejected" if 400 <= int(result.get("status") or 0) < 500 else "unknown")
     except Exception:

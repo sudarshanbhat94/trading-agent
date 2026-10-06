@@ -1,0 +1,31 @@
+{
+  "go": false,
+  "decision": "NO-GO",
+  "failures": [
+    "known_blockers must be recorded as zero",
+    "known_critical must be recorded as zero",
+    "unexplained_reconciliation_mismatches must be recorded as zero",
+    "risk_and_ownership: reviewed evidence unavailable",
+    "order_lifecycle: reviewed evidence unavailable",
+    "inventory_reconciliation: reviewed evidence unavailable",
+    "accounting: reviewed evidence unavailable",
+    "data_and_instruments: reviewed evidence unavailable",
+    "security: reviewed evidence unavailable",
+    "backup_restore: reviewed evidence unavailable",
+    "browser_mobile: reviewed evidence unavailable",
+    "independent_strategy_validation: reviewed evidence unavailable",
+    "native_protection: reviewed evidence unavailable",
+    "broker_permission: reviewed evidence unavailable",
+    "legal_commercial_scope: reviewed evidence unavailable",
+    "data_rights: reviewed evidence unavailable",
+    "at least 30 distinct verified paper trading sessions required",
+    "confirmed_entries: idle sessions are not lifecycle proof",
+    "confirmed_exits: idle sessions are not lifecycle proof",
+    "protection_observations: idle sessions are not lifecycle proof",
+    "explicit broker/asset/model/account/product scopes required",
+    "release source contains uncommitted changes"
+  ],
+  "source_commit": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+  "certified_scopes": [],
+  "note": "Recorded evidence gate; not an order permission or a profitability guarantee"
+}

@@ -1,0 +1,224 @@
+[
+  {
+    "line": 1379,
+    "bucket": "macro",
+    "condition": "trend_context['daily'] in {'STRONG_UPTREND', 'WEAK_UPTREND'}",
+    "change": "+2"
+  },
+  {
+    "line": 1381,
+    "bucket": "macro",
+    "condition": "global_context.get('risk_score', 0) > 0.15",
+    "change": "+1"
+  },
+  {
+    "line": 1383,
+    "bucket": "macro",
+    "condition": "filters.get('trend_not_down')",
+    "change": "+1"
+  },
+  {
+    "line": 1385,
+    "bucket": "macro",
+    "condition": "global_context.get('regime') == 'risk-on'",
+    "change": "+1"
+  },
+  {
+    "line": 1387,
+    "bucket": "macro",
+    "condition": "filters.get('within_25pct_period_high')",
+    "change": "+1"
+  },
+  {
+    "line": 1390,
+    "bucket": "macro",
+    "condition": "flow_bias is not None and flow_bias > 0.1",
+    "change": "+1"
+  },
+  {
+    "line": 1394,
+    "bucket": "technical",
+    "condition": "institutional.get('wyckoff_phase') in {'phase_c_spring_candidate', 'markup'}",
+    "change": "+2"
+  },
+  {
+    "line": 1396,
+    "bucket": "technical",
+    "condition": "institutional.get('fair_value_gap', {}).get('present')",
+    "change": "+1"
+  },
+  {
+    "line": 1398,
+    "bucket": "technical",
+    "condition": "institutional.get('liquidity_sweep', {}).get('low_sweep')",
+    "change": "+2"
+  },
+  {
+    "line": 1399,
+    "bucket": "technical",
+    "condition": "unconditional",
+    "change": "+min(2, round(abs(chart_patterns.get('score', 0)) * 6))"
+  },
+  {
+    "line": 1401,
+    "bucket": "technical",
+    "condition": "institutional.get('premium_discount') == 'discount'",
+    "change": "+1"
+  },
+  {
+    "line": 1403,
+    "bucket": "technical",
+    "condition": "filters.get('above_200dma') or (filters.get('above_200dma') is None and indicators['moving_averages'].get('sma_50'))",
+    "change": "+1"
+  },
+  {
+    "line": 1405,
+    "bucket": "technical",
+    "condition": "indicators.get('ichimoku', {}).get('bias') == 'bullish_cloud'",
+    "change": "+1"
+  },
+  {
+    "line": 1407,
+    "bucket": "technical",
+    "condition": "indicators.get('divergence_proxy', {}).get('signal') == 'bullish_divergence'",
+    "change": "+1"
+  },
+  {
+    "line": 1411,
+    "bucket": "candle",
+    "condition": "abs(candlestick_v2.get('score', 0)) >= 0.35",
+    "change": "+2"
+  },
+  {
+    "line": 1413,
+    "bucket": "candle",
+    "condition": "indicators.get('macd', {}).get('bias') == 'bullish' and (indicators.get('obv_slope') or 0) >= 0",
+    "change": "+1"
+  },
+  {
+    "line": 1415,
+    "bucket": "candle",
+    "condition": "filters.get('volume_ratio_min_1_5')",
+    "change": "+1"
+  },
+  {
+    "line": 1417,
+    "bucket": "candle",
+    "condition": "filters.get('rsi_40_70')",
+    "change": "+1"
+  },
+  {
+    "line": 1419,
+    "bucket": "candle",
+    "condition": "liquidity.get('tradeable') and (not liquidity.get('circuit_risk_proxy'))",
+    "change": "+1"
+  },
+  {
+    "line": 1423,
+    "bucket": "news",
+    "condition": "sentiment_score > 0.15",
+    "change": "+1"
+  },
+  {
+    "line": 1425,
+    "bucket": "news",
+    "condition": "sentiment_score > -0.25",
+    "change": "+1"
+  },
+  {
+    "line": 1427,
+    "bucket": "news",
+    "condition": "any((signal.get('direction') == 'BUY' for signal in strategy_signals))",
+    "change": "+1"
+  },
+  {
+    "line": 1429,
+    "bucket": "news",
+    "condition": "filters.get('volume_ratio_min_1_5')",
+    "change": "+1"
+  },
+  {
+    "line": 1431,
+    "bucket": "news",
+    "condition": "delivery.get('bias') == 'accumulation'",
+    "change": "+1"
+  },
+  {
+    "line": 1433,
+    "bucket": "news",
+    "condition": "relative_strength.get('bias') == 'outperforming'",
+    "change": "+1"
+  },
+  {
+    "line": 1435,
+    "bucket": "news",
+    "condition": "backtest.get('expectancy') and backtest.get('expectancy') > 0",
+    "change": "+1"
+  },
+  {
+    "line": 1440,
+    "bucket": "news",
+    "condition": "institutional_flow.get('symbol_flags', {}).get('official_announcements_count', 0) > 0 and sentiment_score > 0.15",
+    "change": "+1"
+  },
+  {
+    "line": 1443,
+    "bucket": "news",
+    "condition": "delivery_score > 0.6",
+    "change": "+2"
+  },
+  {
+    "line": 1445,
+    "bucket": "news",
+    "condition": "NOT (delivery_score > 0.6) AND delivery_score < -0.6",
+    "change": "-2"
+  },
+  {
+    "line": 1447,
+    "bucket": "technical",
+    "condition": "stage_analysis.get('stage') == 'Stage2_Markup'",
+    "change": "+2 if stage_analysis.get('stage_confidence') == 'high' else 1"
+  },
+  {
+    "line": 1449,
+    "bucket": "technical",
+    "condition": "NOT (stage_analysis.get('stage') == 'Stage2_Markup') AND stage_analysis.get('stage') in {'Stage3_Distribution', 'Stage4_Decline'}",
+    "change": "-3"
+  },
+  {
+    "line": 1452,
+    "bucket": "technical",
+    "condition": "alignment_grade == 'A'",
+    "change": "+2"
+  },
+  {
+    "line": 1454,
+    "bucket": "technical",
+    "condition": "NOT (alignment_grade == 'A') AND alignment_grade == 'B'",
+    "change": "+1"
+  },
+  {
+    "line": 1456,
+    "bucket": "technical",
+    "condition": "NOT (alignment_grade == 'A') AND NOT (alignment_grade == 'B') AND alignment_grade == 'D'",
+    "change": "-2"
+  },
+  {
+    "line": 1457,
+    "bucket": "technical",
+    "condition": "unconditional",
+    "change": "+float(price_volume_divergence.get('divergence_score') or 0.0)"
+  },
+  {
+    "line": 1459,
+    "bucket": "candle",
+    "condition": "entry_quality.get('volume_confirmation')",
+    "change": "+1"
+  },
+  {
+    "line": 1461,
+    "bucket": "candle",
+    "condition": "float(entry_quality.get('last_close_position_in_range') or 0.0) > 0.75",
+    "change": "+1"
+  }
+]

@@ -54,13 +54,13 @@ def _age_hours(timestamp, now=None):
             continue
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=IST)   # bare timestamps here are IST
-        return round((now - moment).total_seconds() / 3600.0, 2)
+        return (now - moment).total_seconds() / 3600.0
     # A bare date (the shareholding quarter) still tells us the age.
     try:
         day = datetime.strptime(text[:10], "%Y-%m-%d").replace(tzinfo=IST)
     except ValueError:
         return None
-    return round((now - day).total_seconds() / 3600.0, 2)
+    return (now - day).total_seconds() / 3600.0
 
 
 def assess(observations, now=None, market_open=True):
@@ -87,7 +87,9 @@ def assess(observations, now=None, market_open=True):
 
         # The quote feed and the engine only produce while the market is open;
         # judging them at 2am would report a false outage every night.
-        if key in ("quotes", "engine") and not market_open:
+        if age is not None and age < -5 / 3600:
+            status, detail = "unknown", "timestamp is in the future"
+        elif key in ("quotes", "engine") and not market_open:
             status, detail = "idle", "market closed"
         elif age is None:
             status, detail = "unknown", "no timestamp"

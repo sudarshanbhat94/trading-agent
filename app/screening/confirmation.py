@@ -101,6 +101,25 @@ def assess(plan, state, bars, quote, context, now, previous=None):
                 reason=next((c['reason'] for c in checks if not c['passed']),'All research checks passed; execution remains unpromoted'))
 
 
+def record_assessment(con, pid, result, previous):
+    """Append predicate evidence; preserve the registered decision event types."""
+    payload=t._json(result)
+    old=con.execute('SELECT payload FROM assessment_events WHERE publication_id=? AND kind=? AND observed_at=?',
+                    (pid,'ASSESSMENT_OBSERVED',result['checked_at'])).fetchone()
+    if old and old[0]!=payload:
+        raise ValueError('assessment identity cannot be rebound')
+    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
+                (pid,'ASSESSMENT_OBSERVED',result['checked_at'],payload))
+    if result['confirmation_at'] and result['confirmation_at']!=previous.get('confirmation_at'):
+        con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
+                    (pid,'CONFIRMATION_RECORDED',result['confirmation_at'],payload))
+    for key,kind in (('eligible','ENTRY_ELIGIBLE_SHADOW'),('baseline_eligible','ZONE_ELIGIBLE_BASELINE')):
+        if result[key] and not previous.get(key):
+            con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
+                        (pid,kind,result['checked_at'],payload))
+    con.execute('INSERT OR REPLACE INTO assessments VALUES(?,?)',(pid,payload))
+
+
 def refresh(main, path, paper, screen, regime, now=None):
     """Read live evidence and account risk; write ONLY research assessments."""
     from .plans import account_state
@@ -157,16 +176,10 @@ def refresh(main, path, paper, screen, regime, now=None):
                 # Immutable decision evidence for subsequent forward replay.
                 # Assessment events never represent an order or a fill.
                 result['context']=context
-                if result['confirmation_at'] and result['confirmation_at']!=previous.get('confirmation_at'):
-                    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
-                        (pid,'CONFIRMATION_RECORDED',result['confirmation_at'],t._json(result)))
-                if result['eligible'] and not previous.get('eligible'):
-                    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
-                        (pid,'ENTRY_ELIGIBLE_SHADOW',now.isoformat(),t._json(result)))
-                if result['baseline_eligible'] and not previous.get('baseline_eligible'):
-                    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
-                        (pid,'ZONE_ELIGIBLE_BASELINE',now.isoformat(),t._json(result)))
-                con.execute('INSERT OR REPLACE INTO assessments VALUES(?,?)',(pid,t._json(result)));changed+=1
+                # Positive decisions alone cannot explain a no-trade day.
+                # Capture negative and after-hours checks without feeding them
+                # into the registered ENTRY_ELIGIBLE replay or changing rules.
+                record_assessment(con,pid,result,previous);changed+=1
             con.commit()
             return changed
         finally:market.close();account.close()

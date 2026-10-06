@@ -1,5 +1,13 @@
 # OpenStocks handoff — 2026-09-23
 
+## Current-state audit refresh — 2026-10-06
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** Unsupported/malformed broker submissions now refuse at the journal/transport boundary. Personal paper postings are balanced, immutable and atomic with book writes; original risk and actual per-sleeve/regime performance are recorded. Rejected dated research checks are archived and visible in Tracking without changing the registered experiment. Exact quote-age health and a recorded-evidence NO-GO evaluator are added. No production book/protocol/settings/strategy threshold was changed.
+
+The refreshed A–G audit preserves F01–F50 and adds F51–F53: 19 local repairs, 12 partial repairs, 16 capability gaps and six unverified requirements. Source baseline b588ffd plus the recorded working-tree changes; read-only OCI remains 2b300b4, clean user paper ₹10,000. This is a dated observation, not a live assurance. See `reports/release-audit-2026-10-06/REPORT.md` and `reports/release-audit-implementation-2026-10-06.md` for exact acceptance, migration and remaining work.
+
+Final full suite: 2,279 run, 2,146 passed, 133 skipped, zero failures/errors. The final 16 ledger/performance/API/legacy-control checks passed after currency/current-snapshot labels were added; research/UI runner 102 passed. The initial sandbox-blocked localhost test is recorded separately; final permitted run passed. Isolated lifecycle/ledger rehearsal passed. Browser evidence is one synthetic current Tracking component at desktop/390px, not full production authentication/buy/billing certification. Native protection, canonical migration/full live ledger, independent stock-model approval, restore and commercial/broker/data rights remain open; commercial/live release NO-GO.
+
 ## Execution/security implementation — 2026-10-06
 
 **TRADING BEHAVIOUR CHANGED; not deployed.** House book writes now enqueue durable account delivery after commit; retries retain intent identity; an expired worker generation cannot write. New broker entries require fresh actual inventory/trades/funds reconciliation. Broker files are account-bound encrypted; logout revokes server sessions. New read-only catalogue/publication/health APIs expose scope honestly. Instrument discovery does not enable derivatives or another broker. Manual requested quantity is honoured or refused; research plans cannot fall back to manual execution.

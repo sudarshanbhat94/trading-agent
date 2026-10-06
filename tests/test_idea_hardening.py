@@ -180,6 +180,6 @@ def test_research_cycle_records_replayable_checks_without_writing_paper_book(tmp
     row=t.report(tracker,2,now=later)['rows'][0]
     assert row['confirmation']['eligible'] and row['confirmation']['context']['regime']=='ON'
     con=sqlite3.connect(tracker)
-    assert {r[0] for r in con.execute('SELECT kind FROM assessment_events')}=={'CONFIRMATION_RECORDED','ENTRY_ELIGIBLE_SHADOW','ZONE_ELIGIBLE_BASELINE'}
+    assert {r[0] for r in con.execute('SELECT kind FROM assessment_events')}=={'ASSESSMENT_OBSERVED','CONFIRMATION_RECORDED','ENTRY_ELIGIBLE_SHADOW','ZONE_ELIGIBLE_BASELINE'}
     con.close()
     assert hashlib.sha256(paper.read_bytes()).digest()==before

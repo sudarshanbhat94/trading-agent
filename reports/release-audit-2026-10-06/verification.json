@@ -1,0 +1,45 @@
+{
+  "baseline": "b588ffd",
+  "working_tree_changes": true,
+  "production_build": "2b300b4",
+  "production_repaired": false,
+  "full_unittest": {
+    "run": 2279,
+    "passed": 2146,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 123.313,
+    "note": "Final broad run with localhost mock binding allowed. Two legacy-control tests and explicit currency/current-snapshot labels were subsequently added; 16 focused ledger/performance/API/control checks passed. No strategy parameters changed."
+  },
+  "additional_checks": {
+    "retired_entry_controls": 2,
+    "function_fixtures": 102,
+    "wire_mock": 13,
+    "paper_rehearsal": "passed",
+    "final_ledger_performance_api_controls": 16
+  },
+  "initial_full_run": {
+    "run": 2268,
+    "failures": 0,
+    "errors": 1,
+    "skipped": 133,
+    "note": "Sandbox denied localhost mock server bind; not a green run"
+  },
+  "browser": {
+    "scope": "isolated actual Tracking component functions",
+    "data": "synthetic",
+    "viewport_mobile": {
+      "width": 390,
+      "height": 844,
+      "horizontal_overflow": false
+    },
+    "production_journeys_certified": false
+  },
+  "real_orders": 0,
+  "production_resets": 0,
+  "deployed_changes": 0,
+  "profitability_established": false,
+  "commercial_readiness": "NO-GO"
+}

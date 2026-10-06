@@ -80,11 +80,17 @@ def ensure_schema(con):
         con.execute("ALTER TABLE paper_entry_intents ADD COLUMN fingerprint TEXT")
     columns = {r[1] for r in con.execute("PRAGMA table_info(user_positions)")}
     for name, kind in (("exit_policy", "TEXT"), ("peak", "REAL"),
-                       ("entry_fee", "REAL DEFAULT 0"), ("product", "TEXT DEFAULT 'D'")):
+                       ("entry_fee", "REAL DEFAULT 0"), ("product", "TEXT DEFAULT 'D'"),
+                       ("risk_amt", "REAL")):
         if name not in columns:
             con.execute(f"ALTER TABLE user_positions ADD COLUMN {name} {kind}")
+    trade_columns = {r[1] for r in con.execute("PRAGMA table_info(user_trades)")}
+    if "risk_amt" not in trade_columns:
+        con.execute("ALTER TABLE user_trades ADD COLUMN risk_amt REAL")
     from . import account_safety
     account_safety.ensure_schema(con)
+    from . import paper_ledger
+    paper_ledger.ensure_schema(con)
     con.execute("CREATE TABLE IF NOT EXISTS user_book_decisions("
                 "id INTEGER PRIMARY KEY,user_id INTEGER,market TEXT,epoch TEXT,"
                 "symbol TEXT,accepted INTEGER,reason TEXT,created_at TEXT)")
@@ -232,7 +238,7 @@ def size_for(con, user_id, market, price):
 def positions(con, user_id, market="IN"):
     cols = ("id", "market", "strategy", "symbol", "entry_date", "entry_price",
             "shares", "stop", "target", "opened_at", "sleeve", "regime",
-            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch")
+            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch", "risk_amt")
     ep = current_epoch(con, user_id, market)
     rows = con.execute(f"SELECT {','.join(cols)} FROM user_positions"
                        " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?"
@@ -317,13 +323,20 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
         if not accepted:
             return 0
         fee = entry_charge(qty * price, candidate.product) if market == "IN" else 0
+        from .sleeves.risk import stop_loss_including_costs
+        initial_risk = stop_loss_including_costs(price,stop,qty,candidate.product) if market == "IN" else None
+        from . import paper_ledger
+        paper_ledger.anchor(con, user_id, market, epoch, cash(con,user_id,market),
+                            sum(p["entry_price"]*p["shares"] for p in positions(con,user_id,market)))
         cur = con.execute("INSERT OR IGNORE INTO user_positions(user_id,market,strategy,"
                           "symbol,entry_date,entry_price,shares,stop,target,opened_at,"
-                          "src_id,sleeve,regime,book_epoch,exit_policy,peak,entry_fee,product) "
-                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          "src_id,sleeve,regime,book_epoch,exit_policy,peak,entry_fee,product,risk_amt) "
+                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           (int(user_id), market, strategy, symbol, now.date().isoformat(),
                            price, qty, stop, target, now.isoformat(), src_id, sleeve, regime,
-                           epoch, policy.encode(), price, fee, candidate.product))
+                           epoch, policy.encode(), price, fee, candidate.product,initial_risk))
+        if cur.rowcount:
+            paper_ledger.entry(con,user_id,market,epoch,cur.lastrowid,qty*price,fee)
         if cur.rowcount and request_key:
             con.execute("INSERT INTO paper_entry_intents(user_id,market,epoch,request_key,qty,price,position_id,fingerprint) "
                         "VALUES(?,?,?,?,?,?,?,?)",
@@ -419,7 +432,7 @@ def sell(con, user_id, market, symbol, price, reason="manual", position_id=None)
 def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     epoch = current_epoch(con, user_id, market)
     sql = ("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
-                      "sleeve,regime"
+                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt"
            " FROM user_positions WHERE user_id=? AND market=? AND symbol=? "
            "AND COALESCE(book_epoch,?)=?")
     args = [int(user_id), market, symbol, LEGACY_EPOCH, epoch]
@@ -429,7 +442,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     row = con.execute(sql, args).fetchone()
     if not row:
         return None
-    pid, strategy, edate, entry, shares, opened, sleeve, regime = row
+    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk = row
     price = float(price or 0)
     if not math.isfinite(price) or price <= 0:
         return None
@@ -438,15 +451,22 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     # the whole reason for running them side by side.
     from .v2_live import net_trade_pnl
     net, pct = net_trade_pnl(market, shares, float(entry), price, strategy=strategy)
+    from . import paper_ledger
+    paper_ledger.anchor(con,user_id,market,epoch,cash(con,user_id,market),
+                        sum(p["entry_price"]*p["shares"] for p in positions(con,user_id,market)))
+    # Existing after-cost P&L already includes the entry fee. Only the
+    # remaining exit charge belongs to this cash leg.
+    exit_charge = shares*(price-entry)-net-paid_fee
+    paper_ledger.exit(con,user_id,market,epoch,pid,shares*entry,shares*price,exit_charge)
     now = datetime.now(IST)
     con.execute("INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"
                 "entry_price,exit_date,exit_price,shares,pnl,return_pct,reason,"
-                "opened_at,closed_at,sleeve,regime,book_epoch)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "opened_at,closed_at,sleeve,regime,book_epoch,risk_amt)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(user_id), market, strategy, symbol, edate, entry,
                  now.date().isoformat(), price, shares, net, pct, reason,
                  opened, now.isoformat(), sleeve, regime,
-                 current_epoch(con, user_id, market)))
+                 current_epoch(con, user_id, market),initial_risk))
     con.execute("DELETE FROM user_positions WHERE id=?", (pid,))
     return net, pct
 

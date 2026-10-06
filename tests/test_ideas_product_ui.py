@@ -29,6 +29,15 @@ def run_js(tmp_path, body, preview=None):
 pytestmark=pytest.mark.skipif(not shutil.which('node'),reason='node required')
 
 
+def test_decision_history_retains_failure_reason_and_renders_untrusted_text_safely(tmp_path):
+    result=run_js(tmp_path,"""
+    IDEA_ASSESSMENT_CACHE[1]={total:1,events:[{kind:'ASSESSMENT_OBSERVED',observed_at:'2026-10-06T04:00:00Z',assessment:{checks:[{code:'risk',passed:false,reason:'<img src=x onerror=alert(1)> refused'}]}}]};
+    console.log(JSON.stringify({html:ideaAssessmentHtml(1),empty:ideaAssessmentHtml(2)}));""")
+    assert '&lt;img' in result['html'] and '<img' not in result['html']
+    assert 'risk:' in result['html'] and 'not orders or fills' in result['html']
+    assert 'why this idea was waiting' in result['empty']
+
+
 def test_search_sector_saved_views_and_empty_state(tmp_path):
     data=shortlist(screen(3),book(),now=NOW);data['watchlisted']=['STOCK1'];data['ideas'][2]['sector']='Healthcare'
     result=run_js(tmp_path,"""

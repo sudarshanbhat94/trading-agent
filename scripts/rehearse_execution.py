@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from app import books, broker, execution_outbox as outbox, v2_live
+from app import books, broker, execution_outbox as outbox, v2_live, paper_ledger, personal_performance
 
 
 def run():
@@ -51,9 +51,16 @@ def run():
         assert con.execute("SELECT COUNT(*) FROM v2_trades").fetchone()[0]==1
         assert con.execute("SELECT COUNT(*) FROM user_trades WHERE user_id=1").fetchone()[0]==1
         assert con.execute("SELECT COUNT(*) FROM user_trades WHERE user_id=2").fetchone()[0]==0
+        ledger=paper_ledger.report(con,1,"IN",books.current_epoch(con,1),books.cash(con,1))
+        assert ledger['status']=='ok' and ledger['balanced']
+        performance=personal_performance.report(con,1,quotes=quote)
+        assert performance['current_epoch']['trades']==1
+        assert performance['current_epoch']['r_observations']==1
         result=dict(status="passed",capital=10000,house_fixture_net=round(house_net,2),
                     delivery_duplicates=0,ownership_errors=0,negative_cash=False,
-                    actual_broker_orders=0,fixture_signal=True,profitability_evidence=False)
+                    actual_broker_orders=0,fixture_signal=True,profitability_evidence=False,
+                    ledger_balanced=True,ledger_cash_difference_minor=ledger['cash_difference_minor'],
+                    personal_closed_trades=performance['current_epoch']['trades'])
         con.close()
     return result
 

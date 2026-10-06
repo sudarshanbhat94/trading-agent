@@ -34,6 +34,9 @@ def route_for(broker, spec: Instrument, product="D", order_type="MARKET", validi
 
 
 class BrokerPort(Protocol):
+    def submit(self, user_id: int, instrument_key: str, quantity: int, side: str,
+               *, product: str, tag: str) -> dict: ...
+    def order_status(self, user_id: int, order_id: str) -> dict | None: ...
     def orders(self, user_id: int) -> list: ...
     def positions(self, user_id: int) -> list: ...
     def holdings(self, user_id: int) -> list: ...
@@ -44,6 +47,22 @@ class BrokerPort(Protocol):
 
 class UpstoxPort:
     """Account-owned read/cancel port; writes still use the durable journal."""
+    def submit(self, user_id, instrument_key, quantity, side, *, product, tag):
+        # Only the implemented cash-equity/ETF MARKET/DAY route can cross
+        # this transport boundary. Catalogue discovery never enables F&O.
+        if not isinstance(instrument_key,str) or not instrument_key.startswith('NSE_EQ|') or not instrument_key.split('|',1)[1] or \
+                isinstance(quantity,bool) or not isinstance(quantity,int) or quantity<1 or \
+                side not in {'BUY','SELL'} or product not in {'D','I'}:
+            raise InstrumentError('UNSUPPORTED_CAPABILITY: invalid or unsupported order route')
+        from . import broker
+        return broker.place_order(user_id,instrument_key,quantity,side,price=0.0,product=product,tag=tag)
+
+    def order_status(self,user_id,order_id):
+        rows=[r for r in self.orders(user_id) if str(r.get('order_id'))==str(order_id)]
+        if len(rows)>1:
+            raise InstrumentError('ambiguous broker order evidence')
+        return rows[0] if rows else None  # Absence is unknown, never rejection.
+
     def orders(self, user_id):
         from . import broker
         return broker.orders(user_id)

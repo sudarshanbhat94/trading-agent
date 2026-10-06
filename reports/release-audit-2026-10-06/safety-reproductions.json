@@ -1,0 +1,17 @@
+{
+  "baseline": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+  "working_tree_changes": true,
+  "production": "2b300b4",
+  "production_repaired": false,
+  "old_reproductions": "historical-safety-reproductions-2b300b4.json",
+  "regressions": "reproduce_known_defects.py",
+  "paper_rehearsal": {
+    "status": "passed",
+    "capital": 10000,
+    "ledger_cash_difference_minor": 0,
+    "duplicates": 0,
+    "ownership_errors": 0,
+    "broker_orders": 0,
+    "profitability_evidence": false
+  }
+}

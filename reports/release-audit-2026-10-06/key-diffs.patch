@@ -1,0 +1,126 @@
+diff --git a/app/books.py b/app/books.py
+index 25e0192..c6fcfa1 100644
+--- a/app/books.py
++++ b/app/books.py
+@@ -83 +83,2 @@ def ensure_schema(con):
+-                       ("entry_fee", "REAL DEFAULT 0"), ("product", "TEXT DEFAULT 'D'")):
++                       ("entry_fee", "REAL DEFAULT 0"), ("product", "TEXT DEFAULT 'D'"),
++                       ("risk_amt", "REAL")):
+@@ -85,0 +87,3 @@ def ensure_schema(con):
++    trade_columns = {r[1] for r in con.execute("PRAGMA table_info(user_trades)")}
++    if "risk_amt" not in trade_columns:
++        con.execute("ALTER TABLE user_trades ADD COLUMN risk_amt REAL")
+@@ -87,0 +92,2 @@ def ensure_schema(con):
++    from . import paper_ledger
++    paper_ledger.ensure_schema(con)
+@@ -235 +241 @@ def positions(con, user_id, market="IN"):
+-            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch")
++            "exit_policy", "peak", "entry_fee", "product", "src_id", "book_epoch", "risk_amt")
+@@ -319,0 +326,5 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
++        from .sleeves.risk import stop_loss_including_costs
++        initial_risk = stop_loss_including_costs(price,stop,qty,candidate.product) if market == "IN" else None
++        from . import paper_ledger
++        paper_ledger.anchor(con, user_id, market, epoch, cash(con,user_id,market),
++                            sum(p["entry_price"]*p["shares"] for p in positions(con,user_id,market)))
+@@ -322,2 +333,2 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
+-                          "src_id,sleeve,regime,book_epoch,exit_policy,peak,entry_fee,product) "
+-                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++                          "src_id,sleeve,regime,book_epoch,exit_policy,peak,entry_fee,product,risk_amt) "
++                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+@@ -326 +337,3 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
+-                           epoch, policy.encode(), price, fee, candidate.product))
++                           epoch, policy.encode(), price, fee, candidate.product,initial_risk))
++        if cur.rowcount:
++            paper_ledger.entry(con,user_id,market,epoch,cur.lastrowid,qty*price,fee)
+@@ -422 +435 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
+-                      "sleeve,regime"
++                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt"
+@@ -432 +445 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
+-    pid, strategy, edate, entry, shares, opened, sleeve, regime = row
++    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk = row
+@@ -440,0 +454,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
++    from . import paper_ledger
++    paper_ledger.anchor(con,user_id,market,epoch,cash(con,user_id,market),
++                        sum(p["entry_price"]*p["shares"] for p in positions(con,user_id,market)))
++    # Existing after-cost P&L already includes the entry fee. Only the
++    # remaining exit charge belongs to this cash leg.
++    exit_charge = shares*(price-entry)-net-paid_fee
++    paper_ledger.exit(con,user_id,market,epoch,pid,shares*entry,shares*price,exit_charge)
+@@ -444,2 +464,2 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
+-                "opened_at,closed_at,sleeve,regime,book_epoch)"
+-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++                "opened_at,closed_at,sleeve,regime,book_epoch,risk_amt)"
++                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+@@ -449 +469 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
+-                 current_epoch(con, user_id, market)))
++                 current_epoch(con, user_id, market),initial_risk))
+diff --git a/app/jobs_health.py b/app/jobs_health.py
+index 0db5592..0adbd5c 100644
+--- a/app/jobs_health.py
++++ b/app/jobs_health.py
+@@ -57 +57 @@ def _age_hours(timestamp, now=None):
+-        return round((now - moment).total_seconds() / 3600.0, 2)
++        return (now - moment).total_seconds() / 3600.0
+@@ -63 +63 @@ def _age_hours(timestamp, now=None):
+-    return round((now - day).total_seconds() / 3600.0, 2)
++    return (now - day).total_seconds() / 3600.0
+@@ -90 +90,3 @@ def assess(observations, now=None, market_open=True):
+-        if key in ("quotes", "engine") and not market_open:
++        if age is not None and age < -5 / 3600:
++            status, detail = "unknown", "timestamp is in the future"
++        elif key in ("quotes", "engine") and not market_open:
+diff --git a/app/order_journal.py b/app/order_journal.py
+index 676e488..1d33011 100644
+--- a/app/order_journal.py
++++ b/app/order_journal.py
+@@ -140 +140,2 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
+-    if qty < 1 or reference <= 0 or not math.isfinite(reference):
++    if isinstance(qty,bool) or not isinstance(qty,int) or qty < 1 or \
++            isinstance(reference,bool) or not isinstance(reference,(int,float)) or reference <= 0 or not math.isfinite(reference):
+@@ -141,0 +143,3 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
++    if market!='IN' or side not in {'BUY','SELL'} or product not in {'D','I'} or \
++            not isinstance(key,str) or not key.startswith('NSE_EQ|') or not key.split('|',1)[1]:
++        return "rejected: unsupported execution capability"
+@@ -228 +232,2 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
+-        result = broker.place_order(uid, key, qty, side, price=0.0, product=product, tag=tag)
++        from .execution_ports import UpstoxPort
++        result = UpstoxPort().submit(uid,key,qty,side,product=product,tag=tag)
+diff --git a/app/screening/confirmation.py b/app/screening/confirmation.py
+index b3afe06..2562eb7 100644
+--- a/app/screening/confirmation.py
++++ b/app/screening/confirmation.py
+@@ -103,0 +104,19 @@ def assess(plan, state, bars, quote, context, now, previous=None):
++def record_assessment(con, pid, result, previous):
++    """Append predicate evidence; preserve the registered decision event types."""
++    payload=t._json(result)
++    old=con.execute('SELECT payload FROM assessment_events WHERE publication_id=? AND kind=? AND observed_at=?',
++                    (pid,'ASSESSMENT_OBSERVED',result['checked_at'])).fetchone()
++    if old and old[0]!=payload:
++        raise ValueError('assessment identity cannot be rebound')
++    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
++                (pid,'ASSESSMENT_OBSERVED',result['checked_at'],payload))
++    if result['confirmation_at'] and result['confirmation_at']!=previous.get('confirmation_at'):
++        con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
++                    (pid,'CONFIRMATION_RECORDED',result['confirmation_at'],payload))
++    for key,kind in (('eligible','ENTRY_ELIGIBLE_SHADOW'),('baseline_eligible','ZONE_ELIGIBLE_BASELINE')):
++        if result[key] and not previous.get(key):
++            con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
++                        (pid,kind,result['checked_at'],payload))
++    con.execute('INSERT OR REPLACE INTO assessments VALUES(?,?)',(pid,payload))
++
++
+@@ -160,10 +179,4 @@ def refresh(main, path, paper, screen, regime, now=None):
+-                if result['confirmation_at'] and result['confirmation_at']!=previous.get('confirmation_at'):
+-                    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
+-                        (pid,'CONFIRMATION_RECORDED',result['confirmation_at'],t._json(result)))
+-                if result['eligible'] and not previous.get('eligible'):
+-                    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
+-                        (pid,'ENTRY_ELIGIBLE_SHADOW',now.isoformat(),t._json(result)))
+-                if result['baseline_eligible'] and not previous.get('baseline_eligible'):
+-                    con.execute('INSERT OR IGNORE INTO assessment_events VALUES(?,?,?,?)',
+-                        (pid,'ZONE_ELIGIBLE_BASELINE',now.isoformat(),t._json(result)))
+-                con.execute('INSERT OR REPLACE INTO assessments VALUES(?,?)',(pid,t._json(result)));changed+=1
++                # Positive decisions alone cannot explain a no-trade day.
++                # Capture negative and after-hours checks without feeding them
++                # into the registered ENTRY_ELIGIBLE replay or changing rules.
++                record_assessment(con,pid,result,previous);changed+=1

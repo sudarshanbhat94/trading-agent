@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS assessments(publication_id INTEGER PRIMARY KEY,payloa
 CREATE TABLE IF NOT EXISTS assessment_events(
  publication_id INTEGER NOT NULL,kind TEXT NOT NULL,observed_at TEXT NOT NULL,
  payload TEXT NOT NULL,PRIMARY KEY(publication_id,kind,observed_at));
+CREATE TRIGGER IF NOT EXISTS immutable_assessment_update BEFORE UPDATE ON assessment_events
+ BEGIN SELECT RAISE(ABORT,'immutable research assessments'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_assessment_delete BEFORE DELETE ON assessment_events
+ BEGIN SELECT RAISE(ABORT,'immutable research assessments'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_publication_update BEFORE UPDATE ON publications
+ BEGIN SELECT RAISE(ABORT,'immutable idea publication'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_publication_delete BEFORE DELETE ON publications
+ BEGIN SELECT RAISE(ABORT,'immutable idea publication'); END;
 '''
 
 
@@ -390,6 +398,26 @@ def report(path,user_id,now=None,limit=100,offset=0):
     h['stale']=not h.get('polled_at') or not 0<=(now-timestamp(h['polled_at'])).total_seconds()<=120
     return dict(status='ok',summary=summary,health=h,rows=result[offset:offset+limit],offset=offset,limit=limit,
                 note='Forward quote observations. Zone-touch scenarios are hypothetical, after frozen delivery fees and 0.2% slippage each way. No entry confirmation, portfolio allocation or actual trade is implied. Quotes can miss crossings between samples; revisions remain separate. No earlier price history is backfilled.')
+
+
+def assessment_history(path, user_id, publication_id, limit=50, offset=0):
+    """Owned immutable predicates; read-only and separate from fill evidence."""
+    if not 1 <= limit <= 200 or offset < 0:
+        raise ValueError('Invalid assessment page')
+    con=sqlite3.connect(f'file:{Path(path).resolve()}?mode=ro',uri=True,timeout=5)
+    try:
+        owner=con.execute('SELECT symbol FROM publications WHERE id=? AND user_id=?',
+                          (publication_id,int(user_id))).fetchone()
+        if not owner:return None
+        count=con.execute('SELECT COUNT(*) FROM assessment_events WHERE publication_id=?',
+                          (publication_id,)).fetchone()[0]
+        rows=con.execute('SELECT kind,observed_at,payload FROM assessment_events '
+                         'WHERE publication_id=? ORDER BY observed_at DESC,kind LIMIT ? OFFSET ?',
+                         (publication_id,limit,offset)).fetchall()
+        return dict(publication_id=publication_id,symbol=owner[0],total=count,limit=limit,offset=offset,
+                    events=[dict(kind=k,observed_at=at,assessment=json.loads(payload)) for k,at,payload in rows],
+                    execution_approved=False,note='Dated research checks; neither approval nor an actual fill')
+    finally:con.close()
 
 
 def import_bootstrap(path,seed_path,quotes_path):

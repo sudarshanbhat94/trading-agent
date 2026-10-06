@@ -1,0 +1,2052 @@
+[
+  {
+    "id": "F01",
+    "area": "Universe / execution",
+    "severity": "Blocker",
+    "status": "Missing capability",
+    "title": "Advertised scope has no executable individual-stock or multi-asset route",
+    "evidence": [
+      "app/sleeves/config.py:19",
+      "app/sleeves/index_directional.py:28",
+      "app/v2_live.py:4524",
+      "app/live_trade.py:43"
+    ],
+    "rootCause": "Research, production and broker allowlists represent different models; EQ-only production is ETF-only.",
+    "fix": "Create a versioned strategy/instrument/broker capability registry; connect only independently approved stock and index contracts to the shared paper/live path.",
+    "acceptance": "Every supported instrument has a tested route; unsupported combinations return explicit refusal. Actual stock paper fills cite approved model/plan IDs.",
+    "hours": [
+      80,
+      140
+    ],
+    "original_evidence": [
+      "app/sleeves/config.py:19",
+      "app/sleeves/index_directional.py:28",
+      "app/v2_live.py:4437",
+      "app/live_trade.py:43"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Research, production and broker allowlists represent different models; EQ-only production is ETF-only.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Create a versioned strategy/instrument/broker capability registry; connect only independently approved stock and index contracts to the shared paper/live path.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      80,
+      140
+    ]
+  },
+  {
+    "id": "F02",
+    "area": "Execution / quant",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Monthly ETF exits after five held sessions",
+    "evidence": [
+      "app/exit_policy.py:15",
+      "app/v2_live.py:3802",
+      "app/sleeves/index_directional.py:31"
+    ],
+    "rootCause": "Historical cause: Candidate exit policy is discarded; legacy HOLD_DAYS overrides the monthly model. Local repair: Monthly exit policy is persisted and the five-session regression is repaired.",
+    "fix": "Persist immutable ExitPolicy and evaluate it in replay and runtime; migrate open-position policies explicitly without resetting history.",
+    "acceptance": "A monthly no-time-stop position is retained past five sessions absent its actual invalidation; replay and paper exits match.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/sleeves/index_directional.py:62",
+      "app/v2_live.py:3655",
+      "app/v2_live.py:3758",
+      "app/v2_live.py:4444"
+    ],
+    "original_status": "Reproduced",
+    "original_rootCause": "Candidate exit policy is discarded; legacy HOLD_DAYS overrides the monthly model.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Monthly exit policy is persisted and the five-session regression is repaired.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_monthly_policy_does_not_exit_after_five_sessions",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      12,
+      20
+    ]
+  },
+  {
+    "id": "F03",
+    "area": "Risk",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Personal manual entries bypass the daily-loss brake",
+    "evidence": [
+      "app/books.py:256",
+      "app/order_journal.py:135",
+      "app/live_trade.py:381"
+    ],
+    "rootCause": "Historical cause: Personal and live sizing are separate from the house cost-aware allocator. Local repair: Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
+    "fix": "Use one account-specific risk snapshot and serialized reservation for every entry; apply per-user cash, open risk, loss and drawdown limits.",
+    "acceptance": "After a \u20b9200 loss on \u20b910,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/books.py:248",
+      "app/books.py:431",
+      "app/live_trade.py:232"
+    ],
+    "original_status": "Reproduced",
+    "original_rootCause": "Personal and live sizing are separate from the house cost-aware allocator.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_daily_loss_halt_applies_to_manual_entry",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F04",
+    "area": "Execution",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Personal paper holdings have no independent exit monitor",
+    "evidence": [
+      "app/books.py:628",
+      "app/v2_live.py:3941"
+    ],
+    "rootCause": "Historical cause: Only house positions are selected by the fast monitor; personal exits depend on house symbol events or user action. Local repair: Personal exits are evaluated independently of house membership and subscription.",
+    "fix": "Persist exit obligations for personal positions and run ordered-price exit evaluation independent of house membership or subscription.",
+    "acceptance": "A personal-only stop/target/time exit closes its owning position and records the correct policy/version.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/v2_live.py:3853",
+      "app/books.py:51"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Only house positions are selected by the fast monitor; personal exits depend on house symbol events or user action.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Personal exits are evaluated independently of house membership and subscription.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_personal_only_stop_is_managed_without_a_subscription",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      16,
+      28
+    ]
+  },
+  {
+    "id": "F05",
+    "area": "Multi-tenant / execution",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "A house exit closes an unrelated manual position",
+    "evidence": [
+      "app/books.py:607"
+    ],
+    "rootCause": "Historical cause: Mirror exit keys by market/symbol rather than source position identity. Local repair: House mirrors close only the exact source-position origin. Unknown ownership is refused.",
+    "fix": "Reference origin_position_id, account, instrument_id and epoch; close only confirmed mirrored ownership.",
+    "acceptance": "An unrelated manual holding of the same stock survives a house exit, including after a user reset.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/books.py:448",
+      "app/v2_live.py:1799"
+    ],
+    "original_status": "Reproduced",
+    "original_rootCause": "Mirror exit keys by market/symbol rather than source position identity.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "House mirrors close only the exact source-position origin. Unknown ownership is refused.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_only_exact_origin_mirrors_close",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F06",
+    "area": "Execution",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Disarming also blocks managed exits",
+    "evidence": [
+      "app/broker.py:246",
+      "app/live_trade.py:299"
+    ],
+    "rootCause": "Historical cause: Entry consent/readiness and exit/protection authority share one live_ready check. Local repair: Entry disarm retains managed exit authority while credentials are valid. Token expiry still requires an explicit operational incident and native protection.",
+    "fix": "Split entry disable from protection management; distinguish normal disarm, emergency action and unusable credentials; require explicit recovery alerts.",
+    "acceptance": "Disarm blocks entries while authorised existing-position protection continues; invalid tokens trigger a visible manual handoff.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/live_trade.py:269",
+      "app/live_trade.py:333",
+      "app/order_journal.py:123",
+      "app/manual_execution.py:6"
+    ],
+    "original_status": "Confirmed defect",
+    "original_rootCause": "Entry consent/readiness and exit/protection authority share one live_ready check.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Entry disarm retains managed exit authority while credentials are valid. Token expiry still requires an explicit operational incident and native protection.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_closed_broker_credential_does_not_authorize_a_disarmed_exit",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      12,
+      24
+    ]
+  },
+  {
+    "id": "F07",
+    "area": "Market data / execution",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Personal/live residual holdings can miss the hot feed",
+    "evidence": [
+      "scripts/v2_quote_feed.py:53"
+    ],
+    "rootCause": "Historical cause: The fast held set queries house positions only. Local repair: Held-symbol hot feed includes personal, pending and residual exposure.",
+    "fix": "Union all personal/managed broker positions, pending orders and protection obligations with hot research/watch symbols; prioritise risk exposures within API budgets.",
+    "acceptance": "A position absent from house/research remains within the configured execution freshness SLA.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "scripts/v2_quote_feed.py:53"
+    ],
+    "original_status": "Confirmed coverage gap",
+    "original_rootCause": "The fast held set queries house positions only.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Held-symbol hot feed includes personal, pending and residual exposure.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_hot_feed_includes_personal_pending_and_residual_exposure",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F08",
+    "area": "Execution",
+    "severity": "Critical",
+    "status": "Missing capability",
+    "title": "Stops depend on the app and local polling",
+    "evidence": [
+      "app/live_trade.py:456",
+      "app/broker.py:592"
+    ],
+    "rootCause": "Protection is local state; order wrapper supplies zero trigger_price and no active native-protection route.",
+    "fix": "Implement broker-supported SL/GTT protection tied to confirmed filled size, with amendment/cancellation reconciliation and unprotected-position escalation.",
+    "acceptance": "Simulated app outage leaves confirmed supported protection active; partial fills and racing exits cannot oversell.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      "app/live_trade.py:333",
+      "app/broker.py:550"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Protection is local state; order wrapper supplies zero trigger_price and no active native-protection route.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Implement broker-supported SL/GTT protection tied to confirmed filled size, with amendment/cancellation reconciliation and unprotected-position escalation.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F09",
+    "area": "Execution",
+    "severity": "Critical",
+    "status": "Partially repaired locally",
+    "title": "App order fills are not actual inventory reconciliation",
+    "evidence": [
+      "app/broker_reconciliation.py:53",
+      "app/broker_reconciliation.py:132"
+    ],
+    "rootCause": "Original boundary: Only owned orders/tags update managed holdings; external account changes are ignored. Remaining gap: Real-account, overnight settlement, actual fees and protection reconciliation are not certified.",
+    "fix": "Reconcile tradebook, holdings, positions, funds and owned orders at startup and continuously; quarantine discrepancies and consume portfolio events with fallback.",
+    "acceptance": "External sells/corporate changes never create an oversell or automatic adoption of unrelated assets; mismatches block entries.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/order_journal.py:41",
+      "app/order_journal.py:83",
+      "app/broker.py:436"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Only owned orders/tags update managed holdings; external account changes are ignored.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Actual positions, holdings, trades and funds are reconciled before managed entry, with account-specific incidents.",
+    "remaining": "Real-account, overnight settlement, actual fees and protection reconciliation are not certified.",
+    "test_evidence": "tests.test_execution_hardening.ReconciliationTest",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F10",
+    "area": "Instrument master",
+    "severity": "Critical",
+    "status": "Partially repaired locally",
+    "title": "Ticker-only identity can collide across exchanges",
+    "evidence": [
+      "app/instrument_catalog.py:18",
+      "app/instrument_catalog.py:124",
+      "app/v2_web.py:2653"
+    ],
+    "rootCause": "Original boundary: Universe primary key and downstream position uniqueness omit venue/series/contract identity. Remaining gap: House, personal and journal ownership still contain ticker keys and a legacy NSE fallback; effective restrictions/actions/calendars and migration quarantine are incomplete.",
+    "fix": "Add immutable instrument_id plus venue/segment/series/expiry/strike/right and versioned broker bindings; migrate existing references with an ambiguity report.",
+    "acceptance": "The same NSE/BSE ticker and a same-underlying derivative coexist without overwritten prices, orders or books.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/db.py:1135",
+      "scripts/update_universe_from_upstox.py:55",
+      "app/books.py:51"
+    ],
+    "original_status": "Confirmed schema defect",
+    "original_rootCause": "Universe primary key and downstream position uniqueness omit venue/series/contract identity.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Dated canonical instrument discovery and ambiguity/lot/tick/freeze checks exist; canonical ID lookup is now public-read API capable.",
+    "remaining": "House, personal and journal ownership still contain ticker keys and a legacy NSE fallback; effective restrictions/actions/calendars and migration quarantine are incomplete.",
+    "test_evidence": "tests.test_execution_hardening.CatalogueTest",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F11",
+    "area": "Accounting / concurrency",
+    "severity": "Critical",
+    "status": "Partially repaired locally",
+    "title": "Personal cash checks and fills are not a complete atomic ledger",
+    "evidence": [
+      "app/paper_ledger.py:36",
+      "app/books.py:256",
+      "app/books.py:432",
+      "app/execution_outbox.py:28"
+    ],
+    "rootCause": "Original boundary: Personal read-check-write is separate; entry charges/pending cash are not fully reserved; open and realised costs differ in presentation. Remaining gap: This is not the complete live settlement/fees/margin ledger or canonical all-adapter reservation pipeline. Historical ambiguity is not silently backfilled.",
+    "fix": "Introduce account cash/reservation/fill/fee postings under a serialized transaction; keep the already fixed fee schedule unchanged.",
+    "acceptance": "Concurrent actions cannot create negative free cash; equity, positions and net ledger reconcile through partial fills/cancels.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/books.py:194",
+      "app/books.py:248",
+      "app/books.py:292",
+      "app/order_journal.py:134"
+    ],
+    "original_status": "Confirmed defect",
+    "original_rootCause": "Personal read-check-write is separate; entry charges/pending cash are not fully reserved; open and realised costs differ in presentation.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "House close/outbox commits are atomic; personal paper cash movements now have immutable balanced postings in the same transaction.",
+    "remaining": "This is not the complete live settlement/fees/margin ledger or canonical all-adapter reservation pipeline. Historical ambiguity is not silently backfilled.",
+    "test_evidence": "tests.test_paper_ledger",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F12",
+    "area": "Accounting / risk",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Implicit epoch changes and disposable peaks can hide risk history",
+    "evidence": [
+      "app/account_safety.py:36",
+      "app/books.py:106"
+    ],
+    "rootCause": "Historical cause: ensure_book resizes/reanchors; daily snapshots overwrite; peak is calculated from prunable LIVE rows. Local repair: Explicit epochs and persistent high-water observations prevent implicit resizing and chart pruning from resetting risk.",
+    "fix": "Make allocation/epoch change explicit and append-only; persist epoch high-water and session baseline independently of chart retention.",
+    "acceptance": "Pruning or config change cannot erase current P&L or reduce the risk peak; legacy history stays queryable and excluded after an explicit reset.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/books.py:77",
+      "app/books.py:378",
+      "app/v2_live.py:4332",
+      "scripts/backup_db.py:23"
+    ],
+    "original_status": "Confirmed design defect",
+    "original_rootCause": "ensure_book resizes/reanchors; daily snapshots overwrite; peak is calculated from prunable LIVE rows.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Explicit epochs and persistent high-water observations prevent implicit resizing and chart pruning from resetting risk.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_chart_peak_from_before_current_epoch_does_not_contaminate_risk",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      16,
+      28
+    ]
+  },
+  {
+    "id": "F13",
+    "area": "Risk / sessions",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Manual market guard fails open on an exception",
+    "evidence": [
+      "app/v2_web.py:1862"
+    ],
+    "rootCause": "Historical cause: Unknown calendar state is treated as permission to continue. Local repair: Manual entry calendars and required-component checks fail closed.",
+    "fix": "Return an explicit MARKET_STATE_UNKNOWN refusal for entries; use venue/segment calendar versions and a separate protective-exit recovery path.",
+    "acceptance": "Calendar/provider exceptions cannot produce a new paper or live entry.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/v2_web.py:1862"
+    ],
+    "original_status": "Confirmed defect",
+    "original_rootCause": "Unknown calendar state is treated as permission to continue.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Manual entry calendars and required-component checks fail closed.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_calendar_failure_refuses_a_manual_order",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      4,
+      8
+    ]
+  },
+  {
+    "id": "F14",
+    "area": "Architecture / execution",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Legacy HTTP and bridge controls can run a second agent",
+    "evidence": [
+      "app/main.py:919",
+      "app/main.py:5012",
+      "app/main.py:3574"
+    ],
+    "rootCause": "Historical cause: Startup-only disable does not gate route handlers; two ledgers/strategy stacks remain accessible. Local repair: Legacy HTTP entry controls and bridge entry paths are retired at their boundaries.",
+    "fix": "Retire legacy mutation controls or redirect to the canonical approved workflow; retain labelled historical reads.",
+    "acceptance": "API, bridge, environment flags and restarts cannot revive a second entry path.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/main.py:918",
+      "app/main.py:5025",
+      "app/main.py:3585"
+    ],
+    "original_status": "Confirmed reachable paths",
+    "original_rootCause": "Startup-only disable does not gate route handlers; two ledgers/strategy stacks remain accessible.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Legacy HTTP entry controls and bridge entry paths are retired at their boundaries.",
+    "test_evidence": "tests.test_retired_entry_controls",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F15",
+    "area": "Security / frontend",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "title": "Untrusted filing text is inserted into innerHTML",
+    "evidence": [
+      "app/v2_web.py:6659"
+    ],
+    "rootCause": "Historical cause: External subject strings reach HTML without escaping; inline handlers also interpolate data. Local repair: External filing text is escaped or written with textContent; injected-text regression passes. Independent full-browser security review remains pending.",
+    "fix": "Render untrusted fields with textContent/escaped text, attach event handlers without HTML interpolation and review analogous sinks; deploy a compatible CSP.",
+    "acceptance": "Synthetic markup is visible text, cannot create DOM handlers or execute script, and regression tests cover all external-text sinks.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "scripts/nse_announcements.py:167",
+      "app/v2_web.py:2739",
+      "app/v2_web.py:6526"
+    ],
+    "original_status": "Confirmed unsafe data flow; exploit not run",
+    "original_rootCause": "External subject strings reach HTML without escaping; inline handlers also interpolate data.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "External filing text is escaped or written with textContent; injected-text regression passes. Independent full-browser security review remains pending.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_filing_text_and_symbols_cannot_become_html_or_inline_handlers",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F16",
+    "area": "Commercial / regulatory",
+    "severity": "Blocker",
+    "status": "Unverified requirement",
+    "title": "White-box disclosure is not a blanket RA exemption",
+    "evidence": [
+      "app/v2_web.py:1102",
+      "app/plans.py:66",
+      "README.md:296"
+    ],
+    "rootCause": "The proposed commercial research/execution classification and broker hosting arrangement have not been established.",
+    "fix": "Obtain written qualified classification and broker/provider arrangement; gate paid recommendations/automated live features by the approved scope and terms.",
+    "acceptance": "Recorded applicable registration/empanelment, hosting/tagging, disclosures and data rights; no unsupported exemption or profitability claims.",
+    "hours": [
+      16,
+      40
+    ],
+    "original_evidence": [
+      "app/v2_web.py:1102",
+      "app/plans.py:66",
+      "README.md:296"
+    ],
+    "original_status": "Unverified launch prerequisite; premise contradicted by primary guidance",
+    "original_rootCause": "The proposed commercial research/execution classification and broker hosting arrangement have not been established.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Unverified requirement",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Obtain written qualified classification and broker/provider arrangement; gate paid recommendations/automated live features by the approved scope and terms.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      16,
+      40
+    ]
+  },
+  {
+    "id": "F17",
+    "area": "Risk / API",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Readiness reports a different open-risk calculation",
+    "evidence": [
+      "app/sleeves/readiness.py:29",
+      "app/v2_live.py:4415",
+      "app/screening/plans.py:18"
+    ],
+    "rootCause": "Historical cause: UI readiness uses gross stop distance, while production includes costs and strategic risk. Local repair: Readiness now uses account risk and refuses unknown held stops.",
+    "fix": "Share one account-state/risk computation for screen, paper, live and readiness; mark valuation unknown when required inputs are missing.",
+    "acceptance": "The same state returns identical available risk, halt reason and quantity across interfaces.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/sleeves/readiness.py:24",
+      "app/v2_live.py:4332",
+      "app/screening/plans.py:18"
+    ],
+    "original_status": "Confirmed mismatch",
+    "original_rootCause": "UI readiness uses gross stop distance, while production includes costs and strategic risk.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Readiness now uses account risk and refuses unknown held stops.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_readiness_refuses_unknown_held_stop",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F18",
+    "area": "Ideas / execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Buy ignores idea stop/targets and requested size",
+    "evidence": [
+      "app/v2_web.py:1869",
+      "app/manual_execution.py:7"
+    ],
+    "rootCause": "Historical cause: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Local repair: Manual quantity is exact-or-refused; research publication requests cannot fall back to manual execution. An approved stock model is still missing (F01/F22).",
+    "fix": "Require immutable plan ID/version and server-approved size/mode for an idea action; expose a separate explicit discretionary action if needed.",
+    "acceptance": "Displayed and ordered levels/size reconcile; expired or research-only plans cannot execute.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/v2_web.py:1868",
+      "app/manual_execution.py:6"
+    ],
+    "original_status": "Confirmed route mismatch",
+    "original_rootCause": "Symbol-only manual route substitutes \u00b16% levels and separate sizing.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Manual quantity is exact-or-refused; research publication requests cannot fall back to manual execution. An approved stock model is still missing (F01/F22).",
+    "test_evidence": "tests.test_execution_hardening",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      16,
+      24
+    ]
+  },
+  {
+    "id": "F19",
+    "area": "Execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "UUID per submission is not durable signal idempotency",
+    "evidence": [
+      "app/execution_outbox.py:37",
+      "app/order_journal.py:135"
+    ],
+    "rootCause": "Historical cause: Distinct deliveries receive different UUID tags; unresolved recovery is based on owned daily order evidence. Local repair: Outbox, personal receipts and broker intents retain semantic identity through retries/restart; unknown outcomes retain commitments. Historical rows are not relabelled.",
+    "fix": "Use account/epoch/plan/action identity, full tradebook recovery, bounded escalation and reconciliation-backed resolution of unknown states.",
+    "acceptance": "Duplicate events and restarts create at most one intended position; unknown status is never automatically retried or discarded.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/order_journal.py:123"
+    ],
+    "original_status": "Confirmed design gap",
+    "original_rootCause": "Distinct deliveries receive different UUID tags; unresolved recovery is based on owned daily order evidence.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Outbox, personal receipts and broker intents retain semantic identity through retries/restart; unknown outcomes retain commitments. Historical rows are not relabelled.",
+    "test_evidence": "tests.test_execution_hardening.DeliveryTest.test_paper_retry_returns_original_fill_after_close_and_rejects_key_rebinding",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      16,
+      28
+    ]
+  },
+  {
+    "id": "F20",
+    "area": "Observability",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "Failure-alert helper is not called by the active journal",
+    "evidence": [
+      "app/live_trade.py:340",
+      "app/order_journal.py:231"
+    ],
+    "rootCause": "Original boundary: Persistence/logging and owner notification are separate, unconnected paths. Remaining gap: External incident delivery, acknowledgement, escalation and recovery/on-call drills remain missing.",
+    "fix": "Add durable alert outbox for reject/unknown/mismatch/unprotected/failed-exit events, acknowledgements and escalation.",
+    "acceptance": "Each injected incident produces one owner-visible actionable alert without leaking another account's details.",
+    "hours": [
+      12,
+      20
+    ],
+    "original_evidence": [
+      "app/live_trade.py:305",
+      "app/order_journal.py:175"
+    ],
+    "original_status": "Confirmed integration gap",
+    "original_rootCause": "Persistence/logging and owner notification are separate, unconnected paths.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Failed durable delivery and reconciliation incidents are persisted and visible.",
+    "remaining": "External incident delivery, acknowledgement, escalation and recovery/on-call drills remain missing.",
+    "test_evidence": "tests.test_execution_hardening.DeliveryTest",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      12,
+      20
+    ]
+  },
+  {
+    "id": "F21",
+    "area": "Instrument / broker abstraction",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "No single capability-aware adapter contract; Angel One absent",
+    "evidence": [
+      "app/execution_ports.py:36",
+      "app/execution_ports.py:48"
+    ],
+    "rootCause": "Original boundary: Legacy routers, active Upstox journal and EQ-only paper writer implement different semantics. Remaining gap: Modify, native protection, full margin/settlement contract, identical paper orchestration and Angel One remain missing.",
+    "fix": "Define broker ports for instruments, quotes, margins, intent submission, order/trade status and protection; add Paper and Upstox first, then broker-certified SmartAPI/Kite/Dhan adapters.",
+    "acceptance": "Capabilities reject unsupported product/order/validity/segment combinations before submission; adapters pass shared contract fixtures.",
+    "hours": [
+      80,
+      140
+    ],
+    "original_evidence": [
+      "app/order_router.py:18",
+      "app/order_router.py:150",
+      "app/broker.py:550",
+      "app/v2_live.py:4437"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Legacy routers, active Upstox journal and EQ-only paper writer implement different semantics.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Upstox has typed submit/status/orders/fills/inventory/funds/cancel operations; only NSE cash MARKET/DAY can cross the journal transport boundary.",
+    "remaining": "Modify, native protection, full margin/settlement contract, identical paper orchestration and Angel One remain missing.",
+    "test_evidence": "tests.test_execution_capabilities",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      80,
+      140
+    ]
+  },
+  {
+    "id": "F22",
+    "area": "Quant / validation",
+    "severity": "High",
+    "status": "Unverified requirement",
+    "title": "No independent approved individual-stock performance proof",
+    "evidence": [
+      "scripts/research_stock_replay.py:1",
+      "app/screening/validation.py:23",
+      "app/sleeves/config.py:19"
+    ],
+    "rootCause": "Retrospective survivors and short overlapping idea versions are not an executable funded portfolio.",
+    "fix": "Freeze hypotheses; use point-in-time membership/data, purged walk-forward with untouched holdout, after-cost capital-constrained forward cohorts and uncertainty estimates.",
+    "acceptance": "Report net expectancy/drawdown/Sharpe where estimable; do not claim a track record from zero fills or two resolved losers.",
+    "hours": [
+      40,
+      80
+    ],
+    "original_evidence": [
+      "scripts/research_stock_replay.py:1",
+      "app/screening/validation.py:23",
+      "app/sleeves/config.py:19"
+    ],
+    "original_status": "Confirmed evidence gap",
+    "original_rootCause": "Retrospective survivors and short overlapping idea versions are not an executable funded portfolio.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Unverified requirement",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Freeze hypotheses; use point-in-time membership/data, purged walk-forward with untouched holdout, after-cost capital-constrained forward cohorts and uncertainty estimates.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      40,
+      80
+    ]
+  },
+  {
+    "id": "F23",
+    "area": "Quant / accounting",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "Equity cost formula cannot price every requested asset",
+    "evidence": [
+      "app/costs.py:1",
+      "app/v2_live.py:1592",
+      "app/strategy_backtest.py:16"
+    ],
+    "rootCause": "Different paths use delivery/intraday or generic bps; futures/options/commodity/US costs and settlement cash are not a unified versioned contract.",
+    "fix": "Preserve current fee fix; add independently verified broker/venue/asset fee schedules, FX and settlement/variation-margin accounting for newly supported products.",
+    "acceptance": "Replay, paper and live postings use the same effective-dated product schedule and realistic slippage.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/costs.py:1",
+      "app/v2_live.py:1556",
+      "app/strategy_backtest.py:16"
+    ],
+    "original_status": "Confirmed scope mismatch",
+    "original_rootCause": "Different paths use delivery/intraday or generic bps; futures/options/commodity/US costs and settlement cash are not a unified versioned contract.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Preserve current fee fix; add independently verified broker/venue/asset fee schedules, FX and settlement/variation-margin accounting for newly supported products.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F24",
+    "area": "Derivatives",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "Spread/margin/settlement obligations are not implemented end-to-end",
+    "evidence": [
+      "app/sleeves/options_overlay.py:1",
+      "app/nfo_contracts.py:103",
+      "app/v2_live.py:4524"
+    ],
+    "rootCause": "Synthetic spread candidates are not actual confirmed legs; nearest-index chain is not a complete derivatives lifecycle.",
+    "fix": "Add broker margin/SPAN exposure preflight, lot/tick/freeze slicing, bid/ask/greeks age checks, expiry/roll/ITM/physical delivery guards and compensating leg execution.",
+    "acceptance": "No naked short after partial failure; actual margin and max loss are affordable; expiry policy prevents unintended delivery.",
+    "hours": [
+      120,
+      200
+    ],
+    "original_evidence": [
+      "app/sleeves/options_overlay.py:1",
+      "app/nfo_contracts.py:103",
+      "app/v2_live.py:4437"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Synthetic spread candidates are not actual confirmed legs; nearest-index chain is not a complete derivatives lifecycle.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Add broker margin/SPAN exposure preflight, lot/tick/freeze slicing, bid/ask/greeks age checks, expiry/roll/ITM/physical delivery guards and compensating leg execution.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      120,
+      200
+    ]
+  },
+  {
+    "id": "F25",
+    "area": "Execution / market data",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "A sampled LTP does not prove an executable price or liquidity",
+    "evidence": [
+      "app/v2_live.py:4531",
+      "app/broker.py:592",
+      "app/sleeves/feeds.py:1"
+    ],
+    "rootCause": "Current paper entries and broker references use sampled prices, without a unified spread/depth/price-band preflight.",
+    "fix": "Use valid bid/ask/depth, circuit bands, permissible price type and later-event fill simulation; distinguish requested, acknowledged and filled states.",
+    "acceptance": "Stale/wide/locked/circuit-limited markets reject or remain pending; fills never occur at an unavailable historical price.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/v2_live.py:4444",
+      "app/broker.py:550",
+      "app/sleeves/feeds.py:1"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Current paper entries and broker references use sampled prices, without a unified spread/depth/price-band preflight.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Use valid bid/ask/depth, circuit bands, permissible price type and later-event fill simulation; distinguish requested, acknowledged and filled states.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F26",
+    "area": "Data / corporate actions",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "Heuristic split detection is not a dated official action ledger",
+    "evidence": [
+      "app/corpactions.py:1",
+      "app/market_data.py:776",
+      "scripts/research_stock_replay.py:116"
+    ],
+    "rootCause": "Raw and adjusted series coexist; inferred ratios do not cover dividends, symbol changes or broker inventory actions.",
+    "fix": "Store official dated actions and raw/adjusted versions; rebase research consistently and reconcile actual quantity/cost basis without rewriting recorded trades.",
+    "acceptance": "Known split/bonus/dividend/symbol-change fixtures preserve economic equity and prevent false momentum or stops.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      "app/corpactions.py:1",
+      "app/market_data.py:776",
+      "scripts/research_stock_replay.py:116"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Raw and adjusted series coexist; inferred ratios do not cover dividends, symbol changes or broker inventory actions.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Store official dated actions and raw/adjusted versions; rebase research consistently and reconcile actual quantity/cost basis without rewriting recorded trades.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F27",
+    "area": "Sessions / universe",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "US holiday guard is absent and IN hours are not segment-specific",
+    "evidence": [
+      "app/market_regions.py:74",
+      "app/market_regions.py:152",
+      "app/v2_live.py:46"
+    ],
+    "rootCause": "India-only holiday lookup and one region-level session do not model US holidays, half days, commodities or currency sessions.",
+    "fix": "Version venue/segment calendars, timezone/DST, exceptional sessions, pre-open and settlement windows; keep unsupported execution explicit.",
+    "acceptance": "No entry on a holiday/half-day closed interval; correct segment/DST session and expiry cutoffs.",
+    "hours": [
+      16,
+      32
+    ],
+    "original_evidence": [
+      "app/market_regions.py:74",
+      "app/market_regions.py:152",
+      "app/v2_live.py:46"
+    ],
+    "original_status": "Confirmed scope defect",
+    "original_rootCause": "India-only holiday lookup and one region-level session do not model US holidays, half days, commodities or currency sessions.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Version venue/segment calendars, timezone/DST, exceptional sessions, pre-open and settlement windows; keep unsupported execution explicit.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      16,
+      32
+    ]
+  },
+  {
+    "id": "F28",
+    "area": "Data / fundamentals",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "Secondary quality ratios are not verified point-in-time fundamentals",
+    "evidence": [
+      "app/screening/providers.py:74",
+      "app/screening/providers.py:141",
+      "app/screening/screen.py:56"
+    ],
+    "rootCause": "Ratios use secondary statements and limited annual variability; bank/financial asset-quality inputs are missing.",
+    "fix": "Reconcile dated filings/availability/restatements, quarterly stability and sector-specific metrics; retain a provenance/gap ledger.",
+    "acceptance": "Each selection uses available-before-entry evidence; unsupported financial-sector metrics are not invented.",
+    "hours": [
+      32,
+      64
+    ],
+    "original_evidence": [
+      "app/screening/providers.py:74",
+      "app/screening/providers.py:141",
+      "app/screening/screen.py:56"
+    ],
+    "original_status": "Confirmed evidence limitation",
+    "original_rootCause": "Ratios use secondary statements and limited annual variability; bank/financial asset-quality inputs are missing.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Reconcile dated filings/availability/restatements, quarterly stability and sector-specific metrics; retain a provenance/gap ledger.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      32,
+      64
+    ]
+  },
+  {
+    "id": "F29",
+    "area": "Data / news",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "News flags are not a validated catalyst model",
+    "evidence": [
+      "app/screening/providers.py:35",
+      "app/screening/confirmation.py:28"
+    ],
+    "rootCause": "Heuristic material-event flags and positive sentiment have unproven incremental value.",
+    "fix": "Structure official events/surprises/dissemination time and revalidation triggers; run ablations on untouched data.",
+    "acceptance": "Future news cannot affect an earlier trade; unknown coverage differs from no material event; benefits are independently measured.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      "app/screening/providers.py:35",
+      "app/screening/confirmation.py:28"
+    ],
+    "original_status": "Validation required",
+    "original_rootCause": "Heuristic material-event flags and positive sentiment have unproven incremental value.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Structure official events/surprises/dissemination time and revalidation triggers; run ablations on untouched data.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F30",
+    "area": "Quant / regime",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "ETF trend gate is not validated for the entire requested stock/asset scope",
+    "evidence": [
+      "app/sleeves/regime.py:1",
+      "app/sleeves/index_directional.py:28"
+    ],
+    "rootCause": "A master ETF trend gate/monthly horizon is shared with unrelated opportunities; breadth may be diagnostic only.",
+    "fix": "Test asset/setup-specific admissibility and opportunity-loss/downside effects; version any change and preserve hard account brakes.",
+    "acceptance": "Measured funnels and after-cost ON/NEUTRAL/OFF outcomes; no forced ON or unvalidated threshold reduction.",
+    "hours": [
+      32,
+      64
+    ],
+    "original_evidence": [
+      "app/sleeves/regime.py:1",
+      "app/sleeves/index_directional.py:28"
+    ],
+    "original_status": "Validation required",
+    "original_rootCause": "A master ETF trend gate/monthly horizon is shared with unrelated opportunities; breadth may be diagnostic only.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Test asset/setup-specific admissibility and opportunity-loss/downside effects; version any change and preserve hard account brakes.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      32,
+      64
+    ]
+  },
+  {
+    "id": "F31",
+    "area": "Legacy signal scoring",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "Legacy 26-point score rewards direction-blind patterns and missing trend proof",
+    "evidence": [
+      "app/full_spectrum.py:1357",
+      "app/full_spectrum.py:1401",
+      "app/full_spectrum.py:1449"
+    ],
+    "rootCause": "Absolute bearish/bullish pattern scores add positive long conviction; missing SMA200 gets a weak fallback; overlapping signals saturate capped buckets.",
+    "fix": "Preserve directional signs, missing-data abstention and a factor ledger; calibrate/ablate before reusing weights or claiming 26 independent factors.",
+    "acceptance": "Positive/negative/missing fixtures for all 37 scoring clauses; probability claims require independent calibration.",
+    "hours": [
+      16,
+      32
+    ],
+    "original_evidence": [
+      "app/full_spectrum.py:1357",
+      "app/full_spectrum.py:1401",
+      "app/full_spectrum.py:1449"
+    ],
+    "original_status": "Confirmed rule defects; inactive production path",
+    "original_rootCause": "Absolute bearish/bullish pattern scores add positive long conviction; missing SMA200 gets a weak fallback; overlapping signals saturate capped buckets.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Preserve directional signs, missing-data abstention and a factor ledger; calibrate/ablate before reusing weights or claiming 26 independent factors.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      16,
+      32
+    ]
+  },
+  {
+    "id": "F32",
+    "area": "Legacy pattern detectors",
+    "severity": "Medium",
+    "status": "Missing capability",
+    "title": "VCP/Darvas/Weinstein claims exceed detector semantics",
+    "evidence": [
+      "app/india_top_gainers.py:425",
+      "app/india_top_gainers.py:465",
+      "app/full_spectrum.py:408"
+    ],
+    "rootCause": "Window partitions/extrema and sampled daily prices are heuristics, not persisted confirmed boxes or true calendar-week MA state.",
+    "fix": "Define confirmed pivots/state transitions and completed week aggregation, publication/availability time, invalidation and append-only versions.",
+    "acceptance": "Adding future bars cannot change the historical published state; detectors are tested across timeframes and missing sessions.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      "app/india_top_gainers.py:425",
+      "app/india_top_gainers.py:465",
+      "app/full_spectrum.py:408"
+    ],
+    "original_status": "Confirmed proxy semantics; inactive production path",
+    "original_rootCause": "Window partitions/extrema and sampled daily prices are heuristics, not persisted confirmed boxes or true calendar-week MA state.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Define confirmed pivots/state transitions and completed week aggregation, publication/availability time, invalidation and append-only versions.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F33",
+    "area": "LLM / architecture",
+    "severity": "Medium",
+    "status": "Missing capability",
+    "title": "Current LLM is hard-disabled; described 90/10 LangGraph stack is absent",
+    "evidence": [
+      "app/llm_policy.py:9",
+      "app/main.py:101",
+      "requirements.txt:1"
+    ],
+    "rootCause": "Product/context describes a different architecture; dormant legacy LLM paths remain.",
+    "fix": "Document the actual deterministic runtime; keep optional review-only LLM separate and incapable of granting trade permission.",
+    "acceptance": "Outage/budget exhaustion produces a deterministic abstaining review, with zero order authority; no invented current LangGraph/React claim.",
+    "hours": [
+      4,
+      8
+    ],
+    "original_evidence": [
+      "app/llm_policy.py:9",
+      "app/main.py:101",
+      "requirements.txt:1"
+    ],
+    "original_status": "Confirmed context mismatch",
+    "original_rootCause": "Product/context describes a different architecture; dormant legacy LLM paths remain.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Document the actual deterministic runtime; keep optional review-only LLM separate and incapable of granting trade permission.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      4,
+      8
+    ]
+  },
+  {
+    "id": "F34",
+    "area": "LLM / concurrency",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "Budget read-check-write is not an atomic multi-user reservation",
+    "evidence": [
+      "app/llm_brain.py:176",
+      "app/llm_brain.py:236"
+    ],
+    "rootCause": "RateLimiter loads and saves usage state separately; in-flight estimated tokens are not globally reserved.",
+    "fix": "Before optional activation, reserve requests/tokens atomically by provider/model/account/day with realisation/release and cache budgets.",
+    "acceptance": "Concurrent callers cannot exceed committed daily/provider limits; timeout does not erase spend.",
+    "hours": [
+      12,
+      24
+    ],
+    "original_evidence": [
+      "app/llm_brain.py:176",
+      "app/llm_brain.py:236"
+    ],
+    "original_status": "Confirmed latent design gap; hard-disabled",
+    "original_rootCause": "RateLimiter loads and saves usage state separately; in-flight estimated tokens are not globally reserved.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Before optional activation, reserve requests/tokens atomically by provider/model/account/day with realisation/release and cache budgets.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      12,
+      24
+    ]
+  },
+  {
+    "id": "F35",
+    "area": "LLM / security",
+    "severity": "High",
+    "status": "Missing capability",
+    "title": "JSON parsing alone does not prove schema/injection safety",
+    "evidence": [
+      "app/sentiment.py:715",
+      "app/sentiment.py:758",
+      "app/llm_brain.py:980"
+    ],
+    "rootCause": "Legacy text extraction, JSON repair and loosely typed updates are not a reviewed untrusted-news contract.",
+    "fix": "Use strict schemas, allowed enums/ranges/evidence IDs, input-size limits, untrusted-data delimiting and cached review-only output; never allow tool/order instructions from news.",
+    "acceptance": "Adversarial article text cannot alter deterministic entry/risk/order fields; invalid/unknown output abstains.",
+    "hours": [
+      16,
+      32
+    ],
+    "original_evidence": [
+      "app/sentiment.py:715",
+      "app/sentiment.py:758",
+      "app/llm_brain.py:980"
+    ],
+    "original_status": "Validation required; hard-disabled",
+    "original_rootCause": "Legacy text extraction, JSON repair and loosely typed updates are not a reviewed untrusted-news contract.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Use strict schemas, allowed enums/ranges/evidence IDs, input-size limits, untrusted-data delimiting and cached review-only output; never allow tool/order instructions from news.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      16,
+      32
+    ]
+  },
+  {
+    "id": "F36",
+    "area": "Security",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "Broker tokens are stored as plaintext JSON",
+    "evidence": [
+      "app/credential_vault.py:37",
+      "app/broker.py:127"
+    ],
+    "rootCause": "Original boundary: 0600 permissions protect access but do not encrypt credentials or serialize concurrent state-file writes. Remaining gap: Separate escrow, key rotation and encrypted-secret restore are not certified. Production still runs the earlier plaintext implementation.",
+    "fix": "Use account-scoped envelope encryption with external key control, atomic state/version updates, rotation/revocation and redacted logging.",
+    "acceptance": "No credential value in browser/log/report/repo; encrypted blobs cannot be decrypted without the authorised key path.",
+    "hours": [
+      16,
+      32
+    ],
+    "original_evidence": [
+      "app/broker.py:126",
+      "app/broker.py:136"
+    ],
+    "original_status": "Confirmed storage gap",
+    "original_rootCause": "0600 permissions protect access but do not encrypt credentials or serialize concurrent state-file writes.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Broker files are encrypted with authenticated account-bound envelopes; private local key publication and legacy migration are tested.",
+    "remaining": "Separate escrow, key rotation and encrypted-secret restore are not certified. Production still runs the earlier plaintext implementation.",
+    "test_evidence": "tests.test_execution_hardening.VaultSessionTest",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      16,
+      32
+    ]
+  },
+  {
+    "id": "F37",
+    "area": "Security / isolation",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "Cross-route ownership/CSRF/proxy boundaries need independent proof",
+    "evidence": [
+      "app/auth.py:186",
+      "app/v2_web.py:134",
+      "app/main.py:5012"
+    ],
+    "rootCause": "Original boundary: Authentication exists, but a source inventory cannot establish every legacy/admin/bridge/export permission or deployment boundary. Remaining gap: Independent CSRF/proxy/privileged-route/session boundary review and penetration testing are incomplete. Dependency override fixtures do not certify real authentication.",
+    "fix": "Build negative ownership/role/session/origin tests, explicit CSRF protection where cookie-authenticated mutations apply, safe trusted-proxy and egress policies.",
+    "acceptance": "Changing IDs/mode/routes cannot operate another account; cross-origin unsafe mutations and forbidden callbacks are refused.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/auth.py:186",
+      "app/v2_web.py:134",
+      "app/main.py:5025"
+    ],
+    "original_status": "Validation required",
+    "original_rootCause": "Authentication exists, but a source inventory cannot establish every legacy/admin/bridge/export permission or deployment boundary.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "New ledger/performance/publication assessment APIs are read-only and tenant-owned; router dependency checks pass.",
+    "remaining": "Independent CSRF/proxy/privileged-route/session boundary review and penetration testing are incomplete. Dependency override fixtures do not certify real authentication.",
+    "test_evidence": "tests.test_account_evidence_api; tests.test_v2_api_auth",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F38",
+    "area": "Security / sessions",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "Cookie deletion does not provide per-session revocation",
+    "evidence": [
+      "app/auth.py:372",
+      "app/auth.py:475"
+    ],
+    "rootCause": "Original boundary: Signed stateless tokens carry a nonce that is not checked against a revocable session registry. Remaining gap: All-session revocation, shared rate-limit persistence and production migration/reauthentication remain pending.",
+    "fix": "Persist revocable session IDs/user auth versions; rotate on credential/security changes and enforce expiry/revocation server-side.",
+    "acceptance": "A captured token is refused after logout/revocation/password reset; active user/role checks remain authoritative.",
+    "hours": [
+      12,
+      24
+    ],
+    "original_evidence": [
+      "app/auth.py:371",
+      "app/auth.py:443"
+    ],
+    "original_status": "Confirmed design gap",
+    "original_rootCause": "Signed stateless tokens carry a nonce that is not checked against a revocable session registry.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Persisted hashed sessions permit logout revocation without revoking another session.",
+    "remaining": "All-session revocation, shared rate-limit persistence and production migration/reauthentication remain pending.",
+    "test_evidence": "tests.test_execution_hardening.VaultSessionTest.test_logout_revokes_copied_cookie_but_not_other_session",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      12,
+      24
+    ]
+  },
+  {
+    "id": "F39",
+    "area": "Dependencies",
+    "severity": "High",
+    "status": "Unverified requirement",
+    "title": "No locked dependency/SBOM/advisory evidence",
+    "evidence": [
+      "requirements.txt:1",
+      ".github/workflows/tests.yml:1"
+    ],
+    "rootCause": "Broad version ranges allow drift; the audit environment has no pip-audit module.",
+    "fix": "Lock tested runtime versions; generate SBOM and run supported advisory/SAST/secret checks in CI with explicit exceptions.",
+    "acceptance": "No unresolved applicable Critical/High advisories; reproducible build and installed-versus-lock verification. No CVE finding is asserted here.",
+    "hours": [
+      8,
+      16
+    ],
+    "original_evidence": [
+      "requirements.txt:1",
+      ".github/workflows/tests.yml:1"
+    ],
+    "original_status": "Unverified release prerequisite",
+    "original_rootCause": "Broad version ranges allow drift; the audit environment has no pip-audit module.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Unverified requirement",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Lock tested runtime versions; generate SBOM and run supported advisory/SAST/secret checks in CI with explicit exceptions.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F40",
+    "area": "Data / migrations",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "Ad-hoc additive migrations and swallowed failures lack a release contract",
+    "evidence": [
+      "app/v2_live.py:1026",
+      "app/db.py:1135",
+      "app/main.py:670"
+    ],
+    "rootCause": "Original boundary: Runtime ensure-schema blocks and broad catches can leave partially migrated or missing v2 components without failing startup. Remaining gap: A comprehensive versioned migration/rollback and complete restoration programme is not implemented.",
+    "fix": "Version transactional migrations with backfill/invariant checks; fatal startup on missing required engine/schema and health readiness false until valid.",
+    "acceptance": "Failed migration/engine import cannot serve a ready trading app; restore/rollback verifies ledger identity and constraints.",
+    "hours": [
+      24,
+      40
+    ],
+    "original_evidence": [
+      "app/v2_live.py:1010",
+      "app/db.py:1135",
+      "app/main.py:670"
+    ],
+    "original_status": "Confirmed reliability gap",
+    "original_rootCause": "Runtime ensure-schema blocks and broad catches can leave partially migrated or missing v2 components without failing startup.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Required startup schema/import failures now block startup and execution. New migrations are additive and isolated fixtures preserve old epochs.",
+    "remaining": "A comprehensive versioned migration/rollback and complete restoration programme is not implemented.",
+    "test_evidence": "tests.test_execution_hardening; tests.test_paper_ledger",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      40
+    ]
+  },
+  {
+    "id": "F41",
+    "area": "Recovery",
+    "severity": "High",
+    "status": "Unverified requirement",
+    "title": "Backup covers paper DB only and keeps copies locally",
+    "evidence": [
+      "scripts/backup_db.py:1"
+    ],
+    "rootCause": "Auth, research/protocol/config/execution dependencies are not a complete recoverable snapshot set.",
+    "fix": "Add consistent encrypted off-host backups, independent persistent peaks, retention and restore drills for all sources of truth.",
+    "acceptance": "A separate restore reconciles balances, owned inventory, pending intents and immutable publications without placing orders.",
+    "hours": [
+      16,
+      32
+    ],
+    "original_evidence": [
+      "scripts/backup_db.py:1"
+    ],
+    "original_status": "Confirmed capability gap",
+    "original_rootCause": "Auth, research/protocol/config/execution dependencies are not a complete recoverable snapshot set.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Unverified requirement",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Add consistent encrypted off-host backups, independent persistent peaks, retention and restore drills for all sources of truth.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      16,
+      32
+    ]
+  },
+  {
+    "id": "F42",
+    "area": "Health / observability",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Unknown critical pipelines are reported as healthy",
+    "evidence": [
+      "app/jobs_health.py:44",
+      "app/jobs_health.py:110"
+    ],
+    "rootCause": "Historical cause: Timer activity and loose maximum ages are treated as readiness; unknown aggregation returns ok=True. Local repair: Unknown critical pipelines fail health; precise quote SLA and future timestamps are now checked. This does not certify feed uptime.",
+    "fix": "Define calendar-aware per-instrument/job coverage SLOs and fail-closed critical unknown states; separate expected after-hours ageing.",
+    "acceptance": "Injected missed/stale critical jobs generate truthful entry refusal and actionable alerts; no false feed alarm solely after close.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/jobs_health.py:66",
+      "app/jobs_health.py:108"
+    ],
+    "original_status": "Confirmed defect",
+    "original_rootCause": "Timer activity and loose maximum ages are treated as readiness; unknown aggregation returns ok=True.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Unknown critical pipelines fail health; precise quote SLA and future timestamps are now checked. This does not certify feed uptime.",
+    "test_evidence": "tests.test_release_evidence_gate.ReleaseEvidenceTest.test_quote_sla_is_not_rounded_to_hide_121_second_staleness",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      12,
+      24
+    ]
+  },
+  {
+    "id": "F43",
+    "area": "Scalability / concurrency",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Web-process background engine has no cross-process fencing",
+    "evidence": [
+      "app/worker_fencing.py:28"
+    ],
+    "rootCause": "Historical cause: In-process thread ownership and heavy synchronous work are not a multi-worker scheduling contract. Local repair: A SQLite lease/generation fences old engine writers and outbox completions. Distributed feed writers remain outside this scope.",
+    "fix": "Move execution to a fenced worker or acquire durable owner lease; bound jobs/locks, prioritise exits and keep API reads nonblocking.",
+    "acceptance": "Multi-worker/restart/load tests yield one execution owner, no duplicate intents and measured response/protection latency.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/main.py:631",
+      "app/v2_live.py:4542"
+    ],
+    "original_status": "Confirmed design risk; no live race claimed",
+    "original_rootCause": "In-process thread ownership and heavy synchronous work are not a multi-worker scheduling contract.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "A SQLite lease/generation fences old engine writers and outbox completions. Distributed feed writers remain outside this scope.",
+    "test_evidence": "tests.test_execution_hardening.DeliveryTest.test_worker_takeover_fences_old_writer_and_outbox",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F44",
+    "area": "DevOps / release",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "Existing CI is not a production/live release gate",
+    "evidence": [
+      "app/release_gate.py:20",
+      ".github/workflows/tests.yml:1"
+    ],
+    "rootCause": "Original boundary: Unit matrices exist; staging parity, schema/capability certification, controlled rollout and rollback evidence do not. Remaining gap: Hosted CI, 30-session lifecycle burn-in, real broker certification and independently reviewed legal/data/strategy evidence remain missing. The evaluator does not authenticate evidence or grant execution authority.",
+    "fix": "Add immutable build/config version, staging/mock/sandbox contracts, migration/restore gates and explicit live promotion with canary monitoring.",
+    "acceptance": "Only an approved build/account/model/capability profile can execute live; rollback retains exit/reconciliation obligations.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      ".github/workflows/tests.yml:1",
+      "Dockerfile:1",
+      "deploy/trading-agent.service:1"
+    ],
+    "original_status": "Confirmed release-evidence gap",
+    "original_rootCause": "Unit matrices exist; staging parity, schema/capability certification, controlled rollout and rollback evidence do not.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "CI includes unittest, research/UI function fixtures and the isolated paper rehearsal. A recorded-evidence release evaluator now rejects missing/stale-build records and idle-only burn-in.",
+    "remaining": "Hosted CI, 30-session lifecycle burn-in, real broker certification and independently reviewed legal/data/strategy evidence remain missing. The evaluator does not authenticate evidence or grant execution authority.",
+    "test_evidence": "tests.test_release_evidence_gate",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F45",
+    "area": "UI / accounting",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Account page contradicts reset capital/history behaviour",
+    "evidence": [
+      "app/v2_web.py:6243",
+      "app/v2_web.py:6575"
+    ],
+    "rootCause": "Historical cause: Multiple stale inline renderers/copy survive accumulated SPA replacements. Local repair: Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
+    "fix": "Consolidate account UI and capital/mode source; display active epoch only, retired history separately and exact reset semantics.",
+    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says \u20b910,000 and history retention consistently.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_evidence": [
+      "app/v2_web.py:6107",
+      "app/v2_web.py:6439"
+    ],
+    "original_status": "Confirmed defect",
+    "original_rootCause": "Multiple stale inline renderers/copy survive accumulated SPA replacements.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
+    "test_evidence": "tests.test_release_safety; assembled SPA reset-copy inspection",
+    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "revalidation_method": "Current assembled SPA reset function/copy inspected; epoch isolation tested. Full deployed reset/browser journey remains unverified.",
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "original_hours": [
+      8,
+      16
+    ]
+  },
+  {
+    "id": "F46",
+    "area": "UI / state / realtime",
+    "severity": "Medium",
+    "status": "Partially repaired locally",
+    "title": "Polling/error/empty state and account-mode correctness need end-to-end proof",
+    "evidence": [
+      "app/v2_web.py:5433",
+      "app/v2_web.py:5438"
+    ],
+    "rootCause": "Original boundary: Large inline SPA uses independent polling/HTML updates; some error paths hide content; active browser coverage is incomplete. Remaining gap: Full production critical journeys, payments, concurrent polling/mode changes and browser authentication are not certified.",
+    "fix": "Use typed versioned responses, account/plan-bound query keys, request-generation cancellation and explicit loading/stale/unavailable/research states.",
+    "acceptance": "Out-of-order responses and lost feeds cannot show another mode/account's numbers or label unavailable inventory as zero.",
+    "hours": [
+      40,
+      72
+    ],
+    "original_evidence": [
+      "app/v2_web.py:6241",
+      "app/v2_web.py:6528",
+      "app/v2_web.py:6529"
+    ],
+    "original_status": "Validation required",
+    "original_rootCause": "Large inline SPA uses independent polling/HTML updates; some error paths hide content; active browser coverage is incomplete.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Current Tracking component displays immutable dated checks; API and executed JS fixtures cover owner/error/escaped-text behavior. One isolated browser component was checked at desktop and 390px.",
+    "remaining": "Full production critical journeys, payments, concurrent polling/mode changes and browser authentication are not certified.",
+    "test_evidence": "tests.test_ideas_product_ui; tests.test_account_evidence_api",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      40,
+      72
+    ]
+  },
+  {
+    "id": "F47",
+    "area": "UX / accessibility",
+    "severity": "Medium",
+    "status": "Unverified requirement",
+    "title": "No completed WCAG/mobile/performance acceptance evidence",
+    "evidence": [
+      "app/v2_web.py:6325",
+      "app/v2_web.py:6423",
+      "app/static/styles.css:1"
+    ],
+    "rootCause": "Code-based renderer tests do not measure keyboard focus, responsive overflow, contrast or chart semantics.",
+    "fix": "Adopt a design system; semantic controls, accessible dialogs/tables/charts, responsive tests and measured frontend budgets.",
+    "acceptance": "Critical flows pass keyboard/mobile/screen-reader checks and recorded WCAG AA targets; no invisible stop/target/mode labels.",
+    "hours": [
+      40,
+      72
+    ],
+    "original_evidence": [
+      "app/v2_web.py:6189",
+      "app/v2_web.py:6287",
+      "app/static/styles.css:1"
+    ],
+    "original_status": "Validation required",
+    "original_rootCause": "Code-based renderer tests do not measure keyboard focus, responsive overflow, contrast or chart semantics.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Unverified requirement",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Adopt a design system; semantic controls, accessible dialogs/tables/charts, responsive tests and measured frontend budgets.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      40,
+      72
+    ]
+  },
+  {
+    "id": "F48",
+    "area": "Product / billing / onboarding",
+    "severity": "Medium",
+    "status": "Missing capability",
+    "title": "Manual UPI/admin approval is not automated billing/onboarding",
+    "evidence": [
+      "app/v2_web.py:1102",
+      "app/v2_web.py:1189",
+      "app/plans.py:110"
+    ],
+    "rootCause": "Plans exist but payment receipt/reconciliation and account-risk/broker readiness remain separate manual steps.",
+    "fix": "Design idempotent payment/renewal/refund/expiry with a manual fallback, guided broker/permission/risk setup, owner notifications, help and a public landing page.",
+    "acceptance": "Paid access matches verified receipt and accepted scope; expiry cannot strand exits; marketing makes no unsupported profit claim.",
+    "hours": [
+      48,
+      80
+    ],
+    "original_evidence": [
+      "app/v2_web.py:1102",
+      "app/v2_web.py:1189",
+      "app/plans.py:110"
+    ],
+    "original_status": "Confirmed incomplete commercial flow",
+    "original_rootCause": "Plans exist but payment receipt/reconciliation and account-risk/broker readiness remain separate manual steps.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Missing capability",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Design idempotent payment/renewal/refund/expiry with a manual fallback, guided broker/permission/risk setup, owner notifications, help and a public landing page.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      48,
+      80
+    ]
+  },
+  {
+    "id": "F49",
+    "area": "Performance / audit trail",
+    "severity": "High",
+    "status": "Partially repaired locally",
+    "title": "House/scenario reporting is not per-account actual-trade performance",
+    "evidence": [
+      "app/personal_performance.py:19",
+      "app/books.py:256"
+    ],
+    "rootCause": "Original boundary: House, personal, actual broker and alternative scenario ledgers are not one attributed model/account report. Remaining gap: House/broker/all-currency settlement performance, matched portfolio benchmarks and UI report presentation remain incomplete.",
+    "fix": "Build append-only decision/fill/fee/protection audit events and daily per-account/model/sleeve/regime results with original risk and matched benchmarks.",
+    "acceptance": "Actual net P&L reconciles to the paise; hypothetical results are separate; expectancy and Sharpe are unavailable rather than invented for no trades.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      "app/sleeves/performance.py:164",
+      "app/screening/tracking.py:300",
+      "app/books.py:292"
+    ],
+    "original_status": "Confirmed complete-product gap",
+    "original_rootCause": "House, personal, actual broker and alternative scenario ledgers are not one attributed model/account report.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; baseline finding remains",
+    "deployed_repair": false,
+    "local_status": "Partially repaired locally",
+    "current_state": "Actual personal-paper daily/epoch P&L, sleeve/regime grouping and original-R coverage are now read-only. Unknown marks/R remain unknown.",
+    "remaining": "House/broker/all-currency settlement performance, matched portfolio benchmarks and UI report presentation remain incomplete.",
+    "test_evidence": "tests.test_personal_performance",
+    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F50",
+    "area": "Privacy / commercial data rights",
+    "severity": "High",
+    "status": "Unverified requirement",
+    "title": "Privacy, grievance and data-redistribution obligations are not established",
+    "evidence": [
+      "app/auth.py:507",
+      "app/db.py:1135",
+      "README.md:1"
+    ],
+    "rootCause": "No verified data map, retention/consent policy, applicable commencement assessment or source redistribution agreement was produced.",
+    "fix": "Map personal/broker/market data flows, minimise access and retention, implement deletion/export subject to legal recordkeeping, grievance/incident handling and counsel-reviewed notices/data licenses.",
+    "acceptance": "Documented applicable DPDP/SEBI/data-provider duties and ownership; do not assert all DPDP provisions already operative.",
+    "hours": [
+      24,
+      48
+    ],
+    "original_evidence": [
+      "app/auth.py:477",
+      "app/db.py:1135",
+      "README.md:1"
+    ],
+    "original_status": "Unverified release prerequisite",
+    "original_rootCause": "No verified data map, retention/consent policy, applicable commencement assessment or source redistribution agreement was produced.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Current deployed capability gap / requirement remains",
+    "deployed_repair": false,
+    "local_status": "Unverified requirement",
+    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
+    "remaining": "Map personal/broker/market data flows, minimise access and retention, implement deletion/export subject to legal recordkeeping, grievance/incident handling and counsel-reviewed notices/data licenses.",
+    "test_evidence": "Acceptance test specified; not completed/certified",
+    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
+    "original_hours": [
+      24,
+      48
+    ]
+  },
+  {
+    "id": "F51",
+    "area": "Research audit",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "production_status": "Not deployed; prior deployed behavior not exercised",
+    "deployed_repair": false,
+    "title": "Rejected dated checks were overwritten by latest assessment",
+    "evidence": [
+      "app/screening/confirmation.py:104",
+      "app/screening/tracking.py:403"
+    ],
+    "rootCause": "Rejected dated checks were overwritten by latest assessment",
+    "fix": "Every dated rejection is now immutable and account-owned, alongside original positive confirmation events.",
+    "current_state": "Every dated rejection is now immutable and account-owned, alongside original positive confirmation events.",
+    "acceptance": "Duplicate identical evidence is idempotent; rebinding and cross-user reads refuse; protocol replay remains identical.",
+    "test_evidence": "tests.test_assessment_audit",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "remaining": "Relevant deployment and operational certification Archive growth/retention and load must be measured before commercial scale; immutable evidence must not be silently pruned.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "revalidation_method": "Current source plus isolated regression",
+    "original_hours": [
+      2,
+      4
+    ]
+  },
+  {
+    "id": "F52",
+    "area": "Operational health",
+    "severity": "Medium",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "production_status": "Not deployed; prior deployed behavior not exercised",
+    "deployed_repair": false,
+    "title": "Rounded quote age could conceal an SLA violation",
+    "evidence": [
+      "app/jobs_health.py:44",
+      "app/jobs_health.py:66"
+    ],
+    "rootCause": "Rounded quote age could conceal an SLA violation",
+    "fix": "Health compares unrounded age, and future timestamps are unknown even after hours.",
+    "current_state": "Health compares unrounded age, and future timestamps are unknown even after hours.",
+    "acceptance": "A 120-second quote is current, 121 seconds stale; future data cannot appear healthy.",
+    "test_evidence": "tests.test_release_evidence_gate",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "remaining": "Relevant deployment and operational certification",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "revalidation_method": "Current source plus isolated regression",
+    "original_hours": [
+      2,
+      4
+    ]
+  },
+  {
+    "id": "F53",
+    "area": "Execution capabilities",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "production_status": "Not deployed; prior deployed behavior not exercised",
+    "deployed_repair": false,
+    "title": "Journal transport lacked an explicit supported-route guard",
+    "evidence": [
+      "app/order_journal.py:135",
+      "app/execution_ports.py:48"
+    ],
+    "rootCause": "Journal transport lacked an explicit supported-route guard",
+    "fix": "Unsupported asset/product/side/quantity is refused before account reads, risk reservation or network submission. Existing reachable mirror already filtered NSE keys; this is a boundary hardening gap, not a reproduced customer F&O order.",
+    "current_state": "Unsupported asset/product/side/quantity is refused before account reads, risk reservation or network submission. Existing reachable mirror already filtered NSE keys; this is a boundary hardening gap, not a reproduced customer F&O order.",
+    "acceptance": "F&O/BSE/US/index/commodity and fractional/bool quantity fixtures invoke no broker operations.",
+    "test_evidence": "tests.test_execution_capabilities",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
+    "remaining": "Relevant deployment and operational certification",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "revalidation_method": "Current source plus isolated regression",
+    "original_hours": [
+      2,
+      4
+    ]
+  }
+]

@@ -2601,13 +2601,65 @@ def api_execution_health(user: dict = Depends(require_session)):
         con.close()
 
 
+@router.get("/api/idea-publications/{publication_id}/assessments")
+def api_idea_assessments(publication_id: int, limit: int = 50, offset: int = 0,
+                         user: dict = Depends(require_session)):
+    from .screening import tracking
+    try:
+        result = tracking.assessment_history(tracking.default_path(MAIN_DB),int(user["id"]),publication_id,limit,offset)
+    except ValueError:
+        raise HTTPException(400,"Invalid assessment page")
+    except (OSError,sqlite3.Error):
+        raise HTTPException(503,"Assessment evidence unavailable")
+    if result is None:
+        raise HTTPException(404,"Publication not found")
+    return JSONResponse(result,headers={"Cache-Control":"private, no-store"})
+
+
+@router.get("/api/paper-ledger")
+def api_paper_ledger(market: str = "IN", user: dict = Depends(require_session)):
+    from . import books, paper_ledger
+    if market not in ("IN","US"):
+        raise HTTPException(400,"Invalid market")
+    con = _ro(V2_DB)
+    try:
+        uid = int(user["id"])
+        result = paper_ledger.report(con,uid,market,books.current_epoch(con,uid,market),books.cash(con,uid,market))
+        return JSONResponse(result,headers={"Cache-Control":"private, no-store"})
+    except sqlite3.Error:
+        raise HTTPException(503,"Paper ledger schema unavailable")
+    finally:con.close()
+
+
+@router.get("/api/paper-performance")
+def api_paper_performance(market: str = "IN", day: str = "", user: dict = Depends(require_session)):
+    from . import personal_performance,books
+    if market not in ("IN","US"):
+        raise HTTPException(400,"Invalid market")
+    con = _ro(V2_DB)
+    try:
+        pos=books.positions(con,int(user["id"]),market)
+        marks=_live_map(market,[p['symbol'] for p in pos]) if pos else {}
+        result=personal_performance.report(con,int(user["id"]),market,marks,day or None)
+        return JSONResponse(result,headers={"Cache-Control":"private, no-store"})
+    except ValueError:
+        raise HTTPException(400,"Invalid performance date")
+    except sqlite3.Error:
+        raise HTTPException(503,"Paper performance unavailable")
+    finally:con.close()
+
+
 @router.get("/api/instrument")
-def api_instrument(symbol: str, venue: str, segment: str, user: dict = Depends(require_session)):
+def api_instrument(symbol: str = "", venue: str = "", segment: str = "", instrument_id: str = "",
+                   user: dict = Depends(require_session)):
     from .instrument_catalog import resolve, InstrumentError
     from dataclasses import asdict
     con = _ro(MAIN_DB)
     try:
-        spec,key = resolve(con,symbol=symbol.upper(),venue=venue.upper(),segment=segment.upper())
+        if not instrument_id and not (symbol and venue and segment):
+            raise HTTPException(400,"Provide instrument_id or symbol, venue and segment")
+        spec,key = resolve(con,instrument_id=instrument_id or None,symbol=symbol.upper() or None,
+                           venue=venue.upper() or None,segment=segment.upper() or None)
         return JSONResponse(dict(instrument_id=spec.id,contract=asdict(spec),broker_key=key,execution_certified=False))
     except (InstrumentError,sqlite3.Error):
         raise HTTPException(409,"Instrument catalogue missing, stale or ambiguous")
@@ -5369,6 +5421,7 @@ function renderIdeaTracking(t){
  +'<p>Original plan #'+r.id+' · prices through '+esc(p.price_asof)+' · '+p.qty+' shares · entry '+ideaMoney(p.entry_low)+' – '+ideaMoney(p.entry_high)+' · stop '+ideaMoney(p.stop)+' · T1 / T2 / T3 '+[p.t1,p.t2,p.t3].map(ideaMoney).join(' / ')+'.</p>'
  +(r.entry_at?'<p>Entry-zone scenario at '+ideaMoney(r.entry_price)+' ('+ideaTime(r.entry_at)+'). Estimated net '+ideaMoney(r.scenario_net)+' · '+r.scenario_r+'R'+(r.exit_at?' · closed scenario':' · marked to last observation')+', after frozen fees and slippage. This does not satisfy the plan’s confirmation or execution approval.</p>':'<p>No entry-zone observation. No hypothetical profit or loss assigned.</p>')
  +ideaConfirmationHtml(r)
+ +'<section aria-label="Decision history"><p><b>Decision history</b></p><button type=button class=idea-secondary onclick="ideaShowAssessmentHistory('+r.id+')">Load dated checks</button><div id="ideaAssessment'+r.id+'" role=status aria-live=polite>'+ideaAssessmentHtml(r.id)+'</div></section>'
  +'<p>'+Object.entries(r.benchmarks||{}).map(function(pair){var b=pair[1];return esc(pair[0])+': '+(b.available?'stock minus index '+b.stock_minus_index_pp+'pp (matched sampled endpoints, within '+b.max_endpoint_skew_seconds+'s)':'matching index observations unavailable');}).join(' · ')+'</p>'
  +(r.coverage_gaps&&r.coverage_gaps.length?'<ul>'+r.coverage_gaps.map(function(g){return '<li>Coverage gap: '+ideaTime(g.start_at)+' → '+ideaTime(g.end_at)+' · '+Math.round(g.seconds)+' regular-session seconds unobserved</li>';}).join('')+'</ul>':'')
  +'<ol>'+(r.events||[]).map(function(e){return '<li>'+esc(e.kind.replace(/_/g,' '))+' · '+ideaTime(e.at)+(e.price==null?(e.price_recorded_in_state?' · exit '+ideaMoney(e.price_recorded_in_state)+' recorded in frozen state; original event price missing':''):' · '+ideaMoney(e.price))+'</li>';}).join('')+'</ol></div></details>';}).join('');
@@ -5376,6 +5429,18 @@ function renderIdeaTracking(t){
  return html;
 }
 var IDEA_TRACKING_BUSY=false;
+var IDEA_ASSESSMENT_CACHE={};
+function ideaAssessmentHtml(id){
+ var data=IDEA_ASSESSMENT_CACHE[id];if(!data)return 'Load the recorded checks to see why this idea was waiting.';
+ if(!data.events.length)return 'No dated checks recorded for this version. Earlier checks cannot be reconstructed.';
+ return '<p>Research observations; these are not orders or fills.</p>'+data.events.map(function(e){var a=e.assessment||{};var checks=(a.checks||[]).filter(function(c){return !c.passed;});return '<p>'+esc(ideaTime(e.observed_at))+' · '+esc(e.kind)+'</p><ul>'+checks.map(function(c){return '<li>'+esc(c.code)+': '+esc(c.reason)+'</li>';}).join('')+'</ul>'+(checks.length?'':'<p>Research checks passed; execution approval remains separate.</p>');}).join('')+(data.total>data.events.length?'<p>Showing the latest '+data.events.length+' of '+data.total+' recorded events.</p>':'');
+}
+async function ideaShowAssessmentHistory(id){
+ if(!Number.isSafeInteger(id)||id<1)return;
+ var box=document.getElementById('ideaAssessment'+id);if(!box)return;
+ box.textContent='Loading dated checks…';
+ try{var r=await api('/v2/api/idea-publications/'+id+'/assessments?limit=20');if(!r.ok)throw new Error('unavailable');IDEA_ASSESSMENT_CACHE[id]=r.j;box.innerHTML=ideaAssessmentHtml(id);}catch(e){box.textContent='Decision history is unavailable. Try again.';}
+}
 function ideaSyncObservedQuote(plan,row){
  var age=row&&row.last_at?(Date.now()-new Date(row.last_at).getTime())/1000:-1;
  var fresh=row&&row.symbol==plan.symbol&&row.quote_fresh&&age>=0&&age<=120;

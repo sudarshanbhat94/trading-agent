@@ -1,0 +1,32 @@
+{
+  "build": "2b300b4",
+  "historical_only": true,
+  "observations": {
+    "scope": "in-memory; no network or live/paper file writes",
+    "F03": {
+      "risk_halted": true,
+      "reason": "daily loss limit: -2.0% (limit 1.5%)",
+      "manual_shares_bought": 33
+    },
+    "F05": {
+      "manual_ownership": [
+        "manual",
+        null
+      ],
+      "closed_by_house_symbol_exit": 1
+    },
+    "F02": {
+      "requested_max_hold_days": 0,
+      "runtime_held_sessions": 5,
+      "exit_price": 100,
+      "reason": "time"
+    },
+    "allocation_parity": {
+      "requested_pct": 0.5,
+      "actual_pct": 0.3,
+      "shares": 30,
+      "notional": 3000,
+      "risk": 837.19317218577
+    }
+  }
+}
