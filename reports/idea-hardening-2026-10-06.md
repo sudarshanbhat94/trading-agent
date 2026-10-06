@@ -27,3 +27,13 @@ See `docs/idea-tracking.md` for policy, report fields and commands. Original pub
 ## Verification
 
 The broad suite passed 2,155 checks and 536 subtests, with 133 intentional skips. Eleven errors came solely from sandbox-denied loopback binding; the complete 13-test broker-wire module subsequently passed against its local mock server. Focused checks cover corrected instrument mapping, stale/future/older quotes, negative T1 economics, confirmation availability, immutable legacy history, user isolation, cash reconciliation and shared portfolio limits. An integration check verifies research assessments leave the paper database byte-for-byte unchanged. No real order endpoint was used.
+
+## Deployed verification
+
+Code commit `be18e14` is deployed. Application, quote feed and tracker timer were active after restart; production feed cadence was preserved. The separate research cycle assessed nine new v2 plans without a confirmation error. Both direct index identities now resolve; their after-hours prices correctly remain last-traded rather than fresh regular-session observations.
+
+Sudarshan's paper capital, cash and equity remain ₹10,000, with zero positions and ₹0 realised P&L. All 29 original publication fingerprints and payloads were verified unchanged. Nine new future-cohort publications bring the ledger to 38 versions; the original AUROPHARMA versions remain historical, but its nonpositive-T1 setup is excluded from the current nine-plan shortlist. Both shadow comparison arms still have zero fills and ₹10,000 equity; there is no new trading-session outcome yet.
+
+The signed-in browser visibly rendered the nine current plans, their stops/targets/quantities and ₹10,000 paper cash. Expanded Tracking and Portfolio browser verification was blocked by automatic approval review following a connection failure and a rejected retry. That check remains unverified pending explicit browser approval; renderer regression tests and the production book-integrity checks passed.
+
+The existing after-close monitor now also reads the registered forward comparison and immutable eligibility evidence. Its schedule, notification intent and prohibition on unattended deployment, resets, execution promotion and real orders remain intact.
