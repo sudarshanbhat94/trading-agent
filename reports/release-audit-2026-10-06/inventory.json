@@ -221,6 +221,7 @@
     "reports/release-audit-2026-10-06/inventory.json",
     "reports/release-audit-2026-10-06/inventory.md",
     "reports/release-audit-2026-10-06/key-diffs.patch",
+    "reports/release-audit-2026-10-06/native-key-diffs.patch",
     "reports/release-audit-2026-10-06/next-session-key-diffs.patch",
     "reports/release-audit-2026-10-06/release-evidence.json",
     "reports/release-audit-2026-10-06/release-gate-result.json",
@@ -466,6 +467,7 @@
     "tests/test_rally_plan.py",
     "tests/test_real_money_readiness.py",
     "tests/test_recommendation.py",
+    "tests/test_reconciliation_snapshot.py",
     "tests/test_record_entry.py",
     "tests/test_recovery_bundle.py",
     "tests/test_recovery_stream.py",
@@ -2495,9 +2497,10 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "lines": 151,
+      "lines": 186,
       "imports": [
         "json",
+        "hashlib",
         "math",
         "time",
         "datetime",
@@ -2512,32 +2515,42 @@
       "symbols": [
         {
           "name": "ensure_schema",
-          "line": 16,
+          "line": 17,
           "kind": "FunctionDef"
         },
         {
           "name": "_quantity",
-          "line": 21,
+          "line": 22,
           "kind": "FunctionDef"
         },
         {
           "name": "inventory",
-          "line": 27,
+          "line": 28,
           "kind": "FunctionDef"
         },
         {
           "name": "reconcile",
-          "line": 53,
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_owned_state_fingerprint",
+          "line": 68,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_reconcile_locked",
+          "line": 79,
           "kind": "FunctionDef"
         },
         {
           "name": "refresh",
-          "line": 130,
+          "line": 154,
           "kind": "FunctionDef"
         },
         {
           "name": "ready",
-          "line": 148,
+          "line": 172,
           "kind": "FunctionDef"
         }
       ]
@@ -37889,6 +37902,74 @@
       ]
     },
     {
+      "file": "tests/test_reconciliation_snapshot.py",
+      "lines": 91,
+      "imports": [
+        "contextlib",
+        "json",
+        "pathlib",
+        "sqlite3",
+        "tempfile",
+        "unittest.mock",
+        "app",
+        "tests",
+        "tests",
+        "tests.contract_storage_fixtures"
+      ],
+      "symbols": [
+        {
+          "name": "ReconciliationSnapshotTest",
+          "line": 16,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ReconciliationEntryGateTest",
+          "line": 76,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ready",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_confirmed_fill_change_invalidates_recent_permission",
+          "line": 23,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_new_pending_commitment_invalidates_recent_permission",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_other_owner_and_observation_time_do_not_invalidate_permission",
+          "line": 37,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_unbound_or_corrupt_old_evidence_never_grants_permission",
+          "line": 46,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_owned_reads_and_evidence_write_are_one_serialized_snapshot",
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_closed_round_trip_cannot_reuse_pre_trade_funds_permission",
+          "line": 80,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "mutate_before_lock",
+          "line": 63,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_record_entry.py",
       "lines": 148,
       "imports": [
@@ -48281,7 +48362,7 @@
     {
       "name": "broker_reconciliation",
       "file": "app/broker_reconciliation.py",
-      "line": 17,
+      "line": 18,
       "columns": [
         {
           "name": "user_id",
@@ -60460,7 +60541,7 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "line": 33,
+      "line": 34,
       "names": [],
       "fields": [
         "instrument_token"
@@ -60468,7 +60549,7 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "line": 40,
+      "line": 41,
       "names": [],
       "fields": [
         "instrument_token"
@@ -60476,7 +60557,7 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "line": 63,
+      "line": 71,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60484,7 +60565,7 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "line": 65,
+      "line": 90,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60492,7 +60573,7 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "line": 93,
+      "line": 92,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60500,7 +60581,15 @@
     },
     {
       "file": "app/broker_reconciliation.py",
-      "line": 95,
+      "line": 120,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker_reconciliation.py",
+      "line": 122,
       "names": [],
       "fields": [
         "instrument_token"
@@ -67308,6 +67397,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/release-audit-2026-10-06/native-key-diffs.patch",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/release-audit-2026-10-06/next-session-key-diffs.patch",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -67397,8 +67490,8 @@
     }
   ],
   "baseline": {
-    "source_commit": "027bf2b6dc913bf194450704c21f364a3735715f",
-    "generated_at": "2026-10-07T07:14:16.625725+00:00",
+    "source_commit": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "generated_at": "2026-10-07T09:23:21.266939+00:00",
     "dirty_source": true,
     "coverage": "static declarations; semantic review recorded separately"
   },
@@ -67407,7 +67500,7 @@
     "AGENTS.md": "71f8aea0b72b5992a0f94824d91cb56b13e919b1a699f975e81d0d53add744e7",
     "BACKLOG.md": "2e12e8643a56ed5b21c9bd6562caf3991feb5deb74f9cfdf1a64f4b90900dd0c",
     "Dockerfile": "1f9d001f92129a44be59a2f1f40ec7f5cf88560ecf1a33d040e89fbd42d5295c",
-    "HANDOFF.md": "d2aa6f060733ab4cec60fbed8215f32ed0330a383d2b5284eafb8c21cd3de892",
+    "HANDOFF.md": "663df59f4bb7150f351e264800ec4c13945595f771580d3266c2349a6059487e",
     "README.md": "0b54fb4b0dcf1b9d74de46d55482266989e39baed507bea5d64102ef9e1fffb6",
     "app/__init__.py": "f2612cd63ebdd791933240e7cdd80f931c4316a73bc02e8956e68137f6ba1ce8",
     "app/account.py": "f78c9df6e75511b73c5793047e1a20a362291b2bb547dd681e4ed96a712d6f93",
@@ -67425,7 +67518,7 @@
     "app/broker.py": "b866998cf2055ebe8e5a9e1f11a6fb05990ee4b58c375d1064c5d0f6cd53a313",
     "app/broker_access.py": "c0fafef2e8f1134689713c13d1720083c666dbef0313d750d81218895cd10c56",
     "app/broker_ledger.py": "7e656effdae083697dfcdee52a09aee10992f567f9e60826540987d87221a474",
-    "app/broker_reconciliation.py": "52f2fdc483faaa3f4e703005da04587c2afc32c314086af67e68b58fae265bbd",
+    "app/broker_reconciliation.py": "4ade4cf9f6cf6f56616da7e5d5361074e44d38b6b74a30f0ab9d5862b125cfd0",
     "app/canonical_trade.py": "f83e9392074c19add0483d6a403e4f4964dcd0d839e2b0816c2509773dcf83d7",
     "app/catalogue_ingestion.py": "56415d848320094844b9f177f2095e86918302a50e0c231affdb5de5ae9f444e",
     "app/catalogue_refresh.py": "a064b62feb2a9f2cf75be888dba83b35661d0889f06ba9d3442b637b2486a817",
@@ -67577,7 +67670,7 @@
     "deploy/opentrade-shareholding.service": "d32b06eacb8aaab5d72fc3c415cfd6396b8ef511605c55a15cbc61a00a1271ce",
     "deploy/opentrade-shareholding.timer": "ab8521dd00e768447a994ba64ffa1dd2bdb03425862c7c0f6a47231a47528353",
     "deploy/trading-agent.service": "2690c2ec20d551656c2aa296e6cbc87ae4be7aad27966e2f9c120189b43bc072",
-    "docs/broker-protection-recovery.md": "754899391971179bf3f767f045e6c18561559ed7e1b1c7a4d424a48a2a314929",
+    "docs/broker-protection-recovery.md": "87aa86c6b2253016e114499cdf68deb58a61c48186d3e128b8d8e10f89474877",
     "docs/equity_factor_research.md": "ac457cd2c8ce6f0e7fd4db670690fc6805d312b6250d8ae04f5641e7202f4a86",
     "docs/evidence_screen.md": "6e4c96a7287bd73952880b2d61777a5c4dbeca0dc7b6044e86089def30a7681f",
     "docs/idea-tracking.md": "afe21d4d03f2e62fe06d19594299d1c1912fd575ddf8abf7430af74065d02a07",
@@ -67809,6 +67902,7 @@
     "tests/test_rally_plan.py": "4cfd82ecef45eaff96de505054cce23072f5155830436d199089262bc696d689",
     "tests/test_real_money_readiness.py": "81d9cfec486999f6c8435a2f900cf7156eb03bc50f51e510a4af36ad3b2598d2",
     "tests/test_recommendation.py": "6367f8ea7b1b9f1ae640a066ab162683c49883fb55a88d6a33008e58b653212b",
+    "tests/test_reconciliation_snapshot.py": "3f27ea54a5efdce401703df52657d787a42a16581de3fb9f87440497ad2e9e4e",
     "tests/test_record_entry.py": "6b856cfe5fe996d81d092c18c0c8ec88deba57d7dcfeec80ef6f949bb4d52bce",
     "tests/test_recovery_bundle.py": "14caad1ba2903c980e90c48000982a6dcfe5398f7d28fd863683c0c19061208c",
     "tests/test_recovery_stream.py": "a813038ef1f821365aba86898771582097f4336d6e3ace7e3b1c08569ab0bf8f",

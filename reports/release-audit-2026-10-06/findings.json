@@ -2732,5 +2732,42 @@
     "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
     "revalidation_source": "inventory.json hashes; private candidate rehearsals",
     "release_certification": false
+  },
+  {
+    "id": "F69",
+    "area": "Execution / reconciliation / risk",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Recent broker permission survives changes to its owned order snapshot",
+    "evidence": [
+      "app/broker_reconciliation.py:54",
+      "app/broker_reconciliation.py:172"
+    ],
+    "original_evidence": [
+      "app/broker_reconciliation.py:58",
+      "app/broker_reconciliation.py:151"
+    ],
+    "rootCause": "Inventory/trade comparisons preceded the serialized write, and readiness used only status/age without binding the checked owned order state.",
+    "original_rootCause": "Inventory/trade comparisons preceded the serialized write, and readiness used only status/age without binding the checked owned order state.",
+    "original_status": "Reproduced defect against exact 984d36a parent",
+    "fix": "Run owned-order comparisons and evidence publication in one fenced transaction; bind permission to a financial/order-state fingerprint and validate that fingerprint in the entry transaction.",
+    "current_state": "Reproduced and repaired locally; no deployment, broker order or strategy change.",
+    "remaining": "Scoped production rollout and broker operational certification; external inventory changes and broker endpoint snapshot timing still require fresh complete evidence.",
+    "acceptance": "A competing owned-fill commit before lock yields mismatch, changed fills or pending commitments invalidate recent permission, zero-inventory closed trades cannot transmit with old funds evidence, other users/identical observation timestamps do not invalidate the account.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped rollout and operational verification; broader programme acceptance is separate.",
+    "test_evidence": "tests.test_reconciliation_snapshot (six tests; exact parent fails)",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "revalidated_working_parent": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "revalidation_method": "Exact parent disposable regression plus current risk/journal path, locked snapshot tests and complete suite",
+    "revalidation_source": "inventory.json hashes; private exact candidate startup",
+    "release_certification": false
   }
 ]

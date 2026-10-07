@@ -35,3 +35,13 @@ F09 now calculates closed-unit net P&L only with exact terminal actual fills and
 ## Remaining programme
 
 The A–G register remains authoritative. Additional-asset adapters/settlement/margin/expiry compensation, complete official point-in-time execution/research sources, independently validated individual-stock models, complete product/security/backup/restore acceptance, 30 relevant observed paper sessions and legal/broker/data permissions remain incomplete. No fixture, idle session, review string, passing suite or readiness evaluator substitutes for those requirements. Full commercial/live release remains NO-GO.
+
+## Reconciliation snapshot follow-up
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** F69 was reproduced against exact parent `984d36a`: all owned comparisons occurred before the final lock, and an age-only permission survived subsequent fills, commitments and even a completed round trip returning inventory to zero. Six regression tests produce seven failing parent assertions, including corrupt/unbound evidence subcases.
+
+Current comparisons and evidence publication share one fenced transaction. The permission records a versioned fingerprint of its owned financial/order state; entry and native-maintenance checks compare that fingerprint under the same writer lock. A changed fill, commitment or order identity requires fresh broker evidence. Other owners and identical receipt observations do not erase valid account evidence. Old unbound records fail closed until refreshed. No schema, strategy parameter, capital, epoch or protocol change.
+
+Final updated source: 2,502 unittest checks, 2,369 passed, 133 skipped, zero failures/errors (21.233s); 102 additional function fixtures and the whole isolated paper rehearsal pass. Forty focused checks pass. Initial guessed pytest paths ran no tests and are excluded; the documented function runner passed. The prior exact-parent CI passed both Python versions and advisory checks; current-commit CI must be checked separately. These are operational invariants, not stock-model profitability or complete release acceptance.
+
+Exact final OCI follow-up archive `eabe4bfca5a55ea5e1017b9be26f822cd9a68f0bbaa7f3245adb106501b96f5a`: 442 source/config/test/input hashes verified; six reconciliation regressions and actual app boot passed in the pinned runtime. Guarded migrated copies preserved every checked original value, epoch/protocol, ₹10,000 capital/cash/equity and zero positions. Workers/outbound I/O blocked; production modified false; real orders zero.

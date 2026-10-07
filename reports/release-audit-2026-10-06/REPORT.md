@@ -2,7 +2,7 @@
 
 **TRADING BEHAVIOUR CHANGED locally.** All three entry writers now require sourced canonical cash contracts and an available ON/NEUTRAL regime. Automatic trigger rounding uses sourced ticks without increasing initial risk. Manual paper requests freeze immutable owned approvals before the shared serialized risk/fill pipeline. New broker exposure needs exact build/account/route/model release and native-protection policy evidence. Strategy thresholds, production allowlist, ₹10,000 epoch and registered forward protocol are preserved. Nothing was deployed; no real order, production reset or credential change occurred.
 
-**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 68 findings: 34 locally repaired, 19 partially repaired, 11 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
+**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 69 findings: 35 locally repaired, 19 partially repaired, 11 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
 
 ## Baseline and scope
 
@@ -10,7 +10,7 @@ Original audit `b588ffdca0e0309500a6bc0e74699d5c1c586c2e`; this implementation p
 
 Read-only production evidence from 7 October at 04:13 UTC: build `2b300b4e7de90157362f104bf3654de7cde6215e`, service active; user 2 capital/cash/equity ₹10,000, zero positions; epoch `2026-09-22T13:34:11.273061+00:00`. Forward protocol SHA-256 `1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2`. Peak/drawdown were not queried. This is a dated observation, not a deployed repair or browser-visible production assurance.
 
-The current static inventory contains 145 app modules (88,506 lines), 78 scripts, 180 test modules, 163 decorated routes, 30 model declarations, 187 SQL declaration sites, 287 config fields, 320 unique environment **names**, 39 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
+The current static inventory contains 147 app modules (89,028 lines), 79 scripts, 182 test modules, 163 decorated routes, 30 model declarations, 192 SQL declaration sites, 287 config fields, 320 unique environment **names**, 41 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
 
 ## A. Readiness scores and top risks
 
@@ -27,7 +27,7 @@ Disclosed rubric: D implemented design, T relevant invariant tests, P deployed o
 | Product UI | 2/3/0/1/0 | 30 | Current account components/receipts and isolated mobile lifecycle; full deployed journeys unfinished. |
 | Commercial | 1/0/0/0/0 | 5 | Applicable requirements identified; qualified legal/broker/data permissions absent. |
 | Reliability | 2/3/0/1/0 | 30 | Atomic migrations/streaming disabled restore; actual supervised/off-host/SLO drills incomplete. |
-| Testing | 3/3/0/1/0 | 35 | 2,330 passes + 102 functions; 133 skips and separate certification/market evidence remain. |
+| Testing | 3/3/0/1/0 | 35 | 2,369 passes + 102 functions; 133 skips and separate certification/market evidence remain. |
 
 Top risks: F01/F22 independent stock-model approval; F08 real broker-native protection including completed GTT/amendment/outage recovery; F09/F11 complete actual net/fee/margin/FX/settlement accounting; F10 real daily official rules/actions/calendars and historical binding; F21 Angel orchestration/additional assets; F16/F50 legal and data rights; F41 actual off-host complete backup/restore; F44 relevant paper sessions and exact release certification. The deployed build does not include the current local repairs.
 
@@ -92,6 +92,10 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 | F53 | High | Locally repaired | Not deployed / uncertified | Journal transport lacked an explicit supported-route guard — [app/order_journal.py:159](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/order_journal.py:159), [app/execution_ports.py:54](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/execution_ports.py:54) | 1–4 |
 | F54 | Critical | Locally repaired | Not deployed / uncertified | Interrupted subscription approval commits status before access — [app/db.py:2112](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/db.py:2112), [app/billing_ledger.py:25](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/billing_ledger.py:25) | 1–4 |
 | F55 | High | Locally repaired | Not deployed / uncertified | Concurrent cold account requests can deadlock sleeve imports — [app/sleeves/__init__.py:31](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/sleeves/__init__.py:31), [tests/test_sleeve_cold_imports.py:7](/Users/pavithramayya/Documents/Sudarshan/trading-agent/tests/test_sleeve_cold_imports.py:7) | 1–4 |
+| F56 | High | Locally repaired | Not deployed / uncertified | Daily data job reports success for old history and failed markets — [scripts/candle_ingest.py:105](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:105), [scripts/candle_ingest.py:175](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:175), [scripts/candle_ingest.py:251](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:251) | 2–4 |
+| F57 | Medium | Locally repaired | Not deployed / uncertified | No-op startup rewrites every runtime-setting timestamp — [app/main.py:108](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/main.py:108), [app/db.py:6360](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/db.py:6360) | 1–2 |
+| F58 | High | Locally repaired | Not deployed / uncertified | Fresh paper bid can fill outside the sourced exchange session — [app/paper_exchange.py:496](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:496), [app/paper_exchange.py:63](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:63), [app/v2_live.py:4693](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/v2_live.py:4693) | 1–4 |
+| F59 | High | Locally repaired | Not deployed / uncertified | Rounded source-time ordering can select superseded or future contract evidence — [app/execution_contracts.py:65](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/execution_contracts.py:65), [app/paper_exchange.py:38](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:38) | 1–4 |
 | F60 | Critical | Locally repaired | Not deployed / uncertified | Late worker writes native children and broker state before fencing — app/protection.py:291 | 1–4 |
 | F61 | Critical | Locally repaired | Not deployed / uncertified | Oversized native coverage remains armed after confirmed partial exit — app/protection.py:111 | 1–4 |
 | F62 | Critical | Locally repaired | Not deployed / uncertified | Pending owned sell does not block native activation — app/protection.py:98 | 1–4 |
@@ -101,11 +105,7 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 | F66 | High | Locally repaired | Not deployed / uncertified | Nested reversal makes postings disagree with active fills — app/broker_ledger.py:166 | 1–4 |
 | F67 | High | Locally repaired | Not deployed / uncertified | Missing or changed native child can re-arm or duplicate an exit — app/protection.py:291 | 1–4 |
 | F68 | Medium | Locally repaired | Not deployed / uncertified | Capability response advertises unsupported paper intraday lifecycle — app/execution_ports.py:123 | 1–4 |
-
-| F56 | High | Locally repaired | Not deployed / uncertified | Daily data job reports success for old history and failed markets — [scripts/candle_ingest.py:105](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:105), [scripts/candle_ingest.py:175](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:175), [scripts/candle_ingest.py:251](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:251) | 2–4 |
-| F57 | Medium | Locally repaired | Not deployed / uncertified | No-op startup rewrites every runtime-setting timestamp — [app/main.py:108](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/main.py:108), [app/db.py:6360](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/db.py:6360) | 1–2 |
-| F58 | High | Locally repaired | Not deployed / uncertified | Fresh paper bid can fill outside the sourced exchange session — [app/paper_exchange.py:496](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:496), [app/paper_exchange.py:63](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:63), [app/v2_live.py:4693](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/v2_live.py:4693) | 1–4 |
-| F59 | High | Locally repaired | Not deployed / uncertified | Rounded source-time ordering can select superseded or future contract evidence — [app/execution_contracts.py:65](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/execution_contracts.py:65), [app/paper_exchange.py:38](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:38) | 1–4 |
+| F69 | Critical | Locally repaired | Not deployed / uncertified | Broker permission survives changed owned state — app/broker_reconciliation.py:54, :172 | 1–4 |
 
 ## C. Architecture/data models
 
@@ -129,7 +129,7 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 
 ## Verification and limits
 
-Final frozen source: **2,463 unittest checks run; 2,330 passed, 133 skipped, zero failures/errors**, 19.592 seconds, exit 0. Separate research/UI functions: **102 passed**, exit 0. Both isolated paper rehearsals pass; balanced cash, no duplicates/ownership errors/negative cash, zero broker orders. Earlier failed runs remain recorded separately; final source also repairs the actual copied-production startup no-op timestamp defect without weakening entry gates.
+Final frozen source: **2,502 unittest checks run; 2,369 passed, 133 skipped, zero failures/errors**, 21.233 seconds, exit 0. Separate research/UI functions: **102 passed**, exit 0. Both isolated paper rehearsals pass; balanced cash, no duplicates/ownership errors/negative cash, zero broker orders. Earlier failed runs remain recorded separately; final source also repairs the actual copied-production startup no-op timestamp defect without weakening entry gates.
 
 [verification.json](verification.json) retains earlier failed runs, the initial local-test isolation defect and its repair, dependency evidence and browser scope. Legacy storage fixtures explicitly replace external contract/native authorization evidence; new boundary tests use actual dated synthetic catalogues and real risk/ledger/approval code. No source was edited during the final broad run.
 
@@ -170,3 +170,5 @@ The final sourced-session candidate also passed actual app startup and migration
 ## 7 October protection/accounting recheck
 
 F60–F68 record nine additional safety/accounting/interface defects. F08 gains exact completed-child recovery and claim-once quantity maintenance; F09 gains source-complete closed-unit net P&L. Production remains unchanged and uncertified. See [reproductions and remaining work](../broker-protection-review-2026-10-07.md) and [operating contract](../../docs/broker-protection-recovery.md).
+
+F69 additionally closes stale owned-order reconciliation permission. Six regressions fail against exact `984d36a` and pass on the current code; actual entry refuses stale pre-round-trip funds evidence. Exact final candidate startup passed on guarded OCI copies, preserving all checked original values and ₹10,000 balances. Full release remains incomplete; production is unchanged.

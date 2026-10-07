@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2496,
-    "passed": 2363,
+    "run": 2502,
+    "passed": 2369,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 19.736,
-    "note": "Frozen final code after capability truth and indistinguishable priced-lot safety repairs; package-aware isolation."
+    "seconds": 21.233,
+    "note": "Frozen runtime source after six exact-parent reconciliation regressions; package-aware isolation."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -419,5 +419,59 @@
       "final_actual_app_boot": "passed; exact final source boot reverified all original values on the fresh migrated v6 copies",
       "production_modified": false
     }
+  },
+  "previous_full_unittest_984d36a": {
+    "run": 2496,
+    "passed": 2363,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 19.736,
+    "note": "Frozen final code after capability truth and indistinguishable priced-lot safety repairs; package-aware isolation."
+  },
+  "reconciliation_snapshot_review": {
+    "parent": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "new_checks": 6,
+    "parent_regressions": "failed: 7 assertions across 6 tests (three malformed-evidence subcases)",
+    "focused_checks": 40,
+    "function_fixtures": 102,
+    "live_certified": false,
+    "deployed": false,
+    "production_modified": false,
+    "profitability_evidence": false,
+    "earlier_runner_error": "Guessed pytest paths did not exist; no tests ran. Correct scripts/run_function_tests.py invocation passed 102 fixtures.",
+    "final_oci_source": {
+      "source_files_verified": 442,
+      "archive_sha256": "eabe4bfca5a55ea5e1017b9be26f822cd9a68f0bbaa7f3245adb106501b96f5a",
+      "regression_exit": 0,
+      "boot_exit": 0,
+      "production_modified": false,
+      "real_orders": 0,
+      "boot": {
+        "status": "passed",
+        "actual_app_startup": true,
+        "unauthenticated_positions": 401,
+        "capital": 10000,
+        "cash": 10000,
+        "equity": 10000,
+        "positions": 0,
+        "original_values_preserved": true,
+        "outbound_http_blocked": true,
+        "workers_disabled": true,
+        "production_modified": false,
+        "real_orders": 0
+      }
+    }
+  },
+  "ci_984d36a": {
+    "commit": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "run_url": "https://github.com/sudarshanbhat94/trading-agent/actions/runs/37586662237",
+    "status": "success",
+    "jobs": [
+      "unittest (3.12)",
+      "unittest (3.14)",
+      "dependencies"
+    ]
   }
 }

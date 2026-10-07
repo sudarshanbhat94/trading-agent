@@ -4,6 +4,7 @@ External holdings are never adopted. Unknown/ambiguous broker data is a
 blocked reconciliation, not a zero balance. Evidence is retained per account.
 """
 import json
+import hashlib
 import math
 import time
 from datetime import datetime, timezone, timedelta
@@ -51,10 +52,36 @@ def inventory(positions, holdings):
 
 
 def reconcile(con, uid, *, positions, holdings, funds, trades, orders=None, checked_at=None):
+    """Compare and publish against one locked owned-order snapshot.
+
+    Network reads happen in refresh before this transaction. A competing fill
+    cannot commit between our inventory comparisons and the readiness write.
+    """
+    ensure_schema(con)
+    with atomic(con):
+        from .worker_fencing import require_current
+        require_current(con)
+        return _reconcile_locked(con, uid, positions=positions, holdings=holdings,
+                                 funds=funds, trades=trades, orders=orders, checked_at=checked_at)
+
+
+def _owned_state_fingerprint(con, uid):
+    # Exclude receipt times/responses: another identical status observation is
+    # harmless. Include commitments, confirmed inventory and financial inputs.
+    rows = list(con.execute('SELECT id,market,symbol,instrument_key,product,side,qty,price,notional,'
+                            'filled_qty,average_price,status,broker_order_id,intent_key,cancel_requested_at,'
+                            'origin_position_id,semantic_key,request_fingerprint FROM v2_live_orders '
+                            'WHERE user_id=? ORDER BY id', (uid,)))
+    payload = json.dumps([1,uid,[list(row) for row in rows]], separators=(',', ':'), allow_nan=False)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _reconcile_locked(con, uid, *, positions, holdings, funds, trades, orders=None, checked_at=None):
     checked_at = time.time() if checked_at is None else checked_at
     reasons, differences = [], []
-    available = None
+    available, fingerprint = None, None
     try:
+        fingerprint = _owned_state_fingerprint(con, uid)
         actual = inventory(positions,holdings)
         available = float(funds["data"]["equity"]["available_margin"])
         if not math.isfinite(available) or available < 0 or not isinstance(trades,list):
@@ -110,20 +137,17 @@ def reconcile(con, uid, *, positions, holdings, funds, trades, orders=None, chec
         status = "mismatch" if reasons else "ok"
     except (KeyError,TypeError,ValueError,OverflowError):
         status, reasons = "unknown", ["complete, unambiguous broker evidence unavailable"]
-    ensure_schema(con)
-    with atomic(con):
-        from .worker_fencing import require_current
-        require_current(con)
-        payload = dict(reasons=sorted(set(reasons)),differences=differences,
-                       managed_only=True,external_adopted=False,fee_certified=False)
-        con.execute("INSERT INTO broker_reconciliation VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
-                    "checked_at=excluded.checked_at,status=excluded.status,available_cash=excluded.available_cash,"
-                    "payload=excluded.payload",(uid,checked_at,status,available,json.dumps(payload)))
-        if status != "ok":
-            incident(con,uid,"BROKER_RECONCILIATION",uid,"; ".join(payload["reasons"]))
-        else:
-            con.execute("UPDATE execution_incidents SET resolved_at=? WHERE user_id=? AND code='BROKER_RECONCILIATION'",
-                        (checked_at,uid))
+    payload = dict(reasons=sorted(set(reasons)),differences=differences,
+                   managed_only=True,external_adopted=False,fee_certified=False,
+                   owned_state_fingerprint=fingerprint)
+    con.execute("INSERT INTO broker_reconciliation VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+                "checked_at=excluded.checked_at,status=excluded.status,available_cash=excluded.available_cash,"
+                "payload=excluded.payload",(uid,checked_at,status,available,json.dumps(payload)))
+    if status != "ok":
+        incident(con,uid,"BROKER_RECONCILIATION",uid,"; ".join(payload["reasons"]))
+    else:
+        con.execute("UPDATE execution_incidents SET resolved_at=? WHERE user_id=? AND code='BROKER_RECONCILIATION'",
+                    (checked_at,uid))
     return dict(status=status,checked_at=checked_at,available_cash=available,**payload)
 
 
@@ -147,5 +171,16 @@ def refresh(con, uid, port=None):
 
 def ready(con, uid, now=None):
     now = time.time() if now is None else now
-    row = con.execute("SELECT checked_at,status FROM broker_reconciliation WHERE user_id=?",(uid,)).fetchone()
-    return bool(row and row[1]=='ok' and 0 <= now-row[0] <= 120)
+    # Entry/maintenance callers already hold the writer lock; a standalone
+    # check also reads evidence and current orders from one consistent state.
+    with atomic(con):
+        row = con.execute("SELECT checked_at,status,payload FROM broker_reconciliation WHERE user_id=?",(uid,)).fetchone()
+        if not row or row[1]!='ok' or not 0 <= now-row[0] <= 120:
+            return False
+        try:
+            evidence = json.loads(row[2])
+            return bool(isinstance(evidence,dict) and evidence.get('owned_state_fingerprint') ==
+                        _owned_state_fingerprint(con,uid))
+        except (TypeError,ValueError):
+            # Pre-upgrade or corrupt permission requires fresh broker evidence.
+            return False

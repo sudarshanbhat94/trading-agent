@@ -380,3 +380,7 @@ F58/F59 received targeted semantic review of paper exit/session-cache and exact 
 ## Additional narrow semantic review — 7 October
 
 Protection status/activation/fill/cancellation, amendment claims/resolution, owner-stream collection and exact ledger fee/FIFO/reversal boundaries were reviewed and exercised on current fixtures. Actual broker operation and all other module paths remain uncertified. New modules: `app/protection_amendments.py`, `app/portfolio_stream.py`, `scripts/broker_portfolio_feed.py`; findings F08/F09/F60–F68.
+
+F69 received targeted semantic review of the complete reconciliation comparison/write path and its journal/native-maintenance callers. Six exact-parent regressions cover competing commits, cash-changing zero-inventory round trips, stale fills/commitments, malformed legacy evidence and cross-owner/nonfinancial observations. This adds narrow reviewed scope, not full semantic review of every inventoried file.
+
+Current refreshed static inventory includes 182 test modules. Only explicitly described boundaries are semantically reviewed.

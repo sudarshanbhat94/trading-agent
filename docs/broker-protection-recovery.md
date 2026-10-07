@@ -42,3 +42,5 @@ Use the package-aware runner so the disposable test environment initializes befo
 ```
 
 The actual local WebSocket fixture transfers frames, closes the connection, retains observations, refuses cross-account adoption and leaves the book unchanged. The isolated actual OCI app boot/migration preserves all checked original paper/account/configuration values, ₹10,000 cash/equity, epoch and protocol. Neither is a running production paper cycle or a real broker certification.
+
+Reconciliation permission is bound to the owned order state compared with broker evidence. Comparisons and publication share a fenced transaction. Any changed fill, active commitment or financial/order identity invalidates that permission, even when net inventory returns to zero. Entry/native-maintenance checks require the same fingerprint and the existing 120-second age limit. Identical observation receipt times and other accounts do not invalidate it. Pre-upgrade or malformed evidence must be refreshed; it never grants risk permission. This does not make external broker snapshots atomic or certify a live route.
