@@ -411,9 +411,9 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "House, personal and durable broker entry writers share dated canonical rules, sessions, identity, alias, lot/tick/freeze/circuit/action checks. Reviewed normalized official bundles import atomically with hashes/rights references; ambiguous legacy identities are quarantined. Automatic trigger prices round to sourced ticks without increasing risk. Daily import now checks each new row's own effective interval/current payload; an expired review cannot borrow older valid evidence for the same identity.",
+    "current_state": "House, personal and durable broker entry writers share dated canonical rules, sessions, identity, alias, lot/tick/freeze/circuit/action checks. Reviewed normalized official bundles import atomically with hashes/rights references; ambiguous legacy identities are quarantined. Automatic trigger prices round to sourced ticks without increasing risk. Daily import now checks each new row's own effective interval/current payload; an expired review cannot borrow older valid evidence for the same identity. Dedicated licensed NSE identity normalization and exact-date delivery research joins are now implemented locally; raw source acceptance and execution-rule completion remain open.",
     "remaining": "Actual exchange raw master/action/calendar connectors and production evidence bundles; complete effective historical binding/migration; extra venue certification.",
-    "test_evidence": "tests.test_catalogue_ingestion; tests.test_entry_contract_gate; tests.test_manual_approved_execution; tests.test_catalogue_refresh.DailyReviewedRuleJobTest.test_expired_same_identity_cannot_borrow_previous_valid_rule_or_session",
+    "test_evidence": "tests.test_catalogue_ingestion; tests.test_entry_contract_gate; tests.test_manual_approved_execution; tests.test_catalogue_refresh.DailyReviewedRuleJobTest.test_expired_same_identity_cannot_borrow_previous_valid_rule_or_session; tests.test_official_research_sources",
     "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
@@ -1173,9 +1173,9 @@
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Immutable decision-time research facts now support canonical membership, quality metrics with earnings periods/filing evidence, adjusted bars/actions, delivery, news and benchmarks. Corrections are observed later and cannot rewrite earlier decisions.",
-    "remaining": "Real official/licensed fact connectors, coverage/rights review and production model integration; storage alone does not verify secondary ratios or establish an edge.",
-    "test_evidence": "tests.test_research_point_in_time",
+    "current_state": "Immutable decision-time research facts now support canonical membership, quality metrics with earnings periods/filing evidence, adjusted bars/actions, delivery, news and benchmarks. Corrections are observed later and cannot rewrite earlier decisions. Official current membership/delivery archive and replay now preserve first observation, source hashes and missing coverage. Exact PIT cutoffs/correction ordering are repaired in F73.",
+    "remaining": "Actual licensed/public-source acceptance, verified filing fundamentals, action-aware price history, news/benchmark data, operational coverage and independent model approval.",
+    "test_evidence": "tests.test_research_point_in_time; tests.test_official_research_sources; tests.test_research_time_boundaries",
     "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
@@ -2852,6 +2852,34 @@
     "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
     "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
     "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
+  },
+  {
+    "id": "F73",
+    "area": "Research / point-in-time validation",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded research times admit future facts and reverse corrections",
+    "evidence": [
+      "app/research_data.py:69",
+      "app/research_data.py:80"
+    ],
+    "rootCause": "Julian-day cutoffs can admit a future submillisecond observation; effective-time ordering can put an older version after a later correction. Offset string comparison misses same-instant contradictions.",
+    "fix": "Use padded SQL candidates with exact aware three-time filtering, observation-ordered revisions and normalized same-instant content conflicts.",
+    "acceptance": "Exact-parent future/equivalent-offset/reversed-correction counterexamples fail; current regressions exclude every future boundary, select later corrections and refuse contemporaneous contradictions.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_status": "Deployment and production research consumption unverified",
+    "deployed_repair": false,
+    "current_state": "Five exact-parent failed assertions repaired locally, with the new official-source adapters retaining original publication and first-observation dates.",
+    "remaining": "Actual source/feed acceptance, independent strategy validation, reviewed deployment and all open programme work remain separate.",
+    "test_evidence": "tests.test_research_time_boundaries; tests.test_research_point_in_time; tests.test_official_research_sources",
+    "revalidated_working_parent": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
+    "revalidation_method": "Exact-parent disposable module regressions; current isolated fixtures and full suite",
+    "revalidation_source": "inventory.json source hashes; reports/official-research-review-2026-10-07.md",
     "release_certification": false
   }
 ]

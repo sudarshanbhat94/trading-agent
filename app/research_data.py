@@ -70,14 +70,24 @@ def known(con,instrument_id,kind,decision_at):
     at=_moment(decision_at)
     if kind not in KINDS:raise ValueError('Unknown research fact kind')
     rows=con.execute('SELECT id,fact_key,effective_at,published_at,observed_at,source,rights_reference,payload FROM research_facts '
-                     'WHERE instrument_id=? AND kind=? AND julianday(effective_at)<=julianday(?) '
-                     'AND julianday(published_at)<=julianday(?) AND julianday(observed_at)<=julianday(?) '
-                     'ORDER BY julianday(effective_at),julianday(observed_at)',(instrument_id,kind,at.isoformat(),at.isoformat(),at.isoformat())).fetchall()
-    # Corrections known later supersede a fact for future decisions only.
+                     'WHERE instrument_id=? AND kind=? AND julianday(effective_at)<=julianday(?)+1.0/86400000 '
+                     'AND julianday(published_at)<=julianday(?)+1.0/86400000 '
+                     'AND julianday(observed_at)<=julianday(?)+1.0/86400000',
+                     (instrument_id,kind,at.isoformat(),at.isoformat(),at.isoformat())).fetchall()
+    # SQLite rounds source times. Use it only for a padded candidate lookup;
+    # exact aware times decide visibility, correction order and conflicts.
+    dated=[(row,*map(_moment,row[2:5])) for row in rows]
+    dated=[item for item in dated if all(moment<=at for moment in item[1:])]
+    dated.sort(key=lambda item:(item[3],item[2],item[1],item[0][0]))
+    # A later correction can move a fact's effective date backwards. Its
+    # observation time, not its corrected effective date, orders versions.
     latest={}
-    for row in rows:
+    for row,effective,published,observed in dated:
         previous=latest.get(row[1])
-        if previous and row[4]==previous[4] and row[7]!=previous[7]:raise ValueError('Conflicting contemporaneous research facts')
+        if previous and observed==_moment(previous[4]) and (
+                effective!=_moment(previous[2]) or published!=_moment(previous[3]) or
+                json.loads(row[7])!=json.loads(previous[7])):
+            raise ValueError('Conflicting contemporaneous research facts')
         latest[row[1]]=row
     fields=('id','fact_key','effective_at','published_at','observed_at','source','rights_reference')
     return [dict(zip(fields,row[:7]),payload=json.loads(row[7])) for row in latest.values()]

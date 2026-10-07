@@ -80,6 +80,7 @@
     "app/models.py",
     "app/narrative.py",
     "app/nfo_contracts.py",
+    "app/official_research.py",
     "app/openclaw_bridge.py",
     "app/opportunity_scanner.py",
     "app/opportunity_state.py",
@@ -186,6 +187,7 @@
     "docs/executable-quote-evidence.md",
     "docs/idea-tracking.md",
     "docs/next-session-readiness.md",
+    "docs/official-research-capture.md",
     "docs/paper-candidate-rollout.md",
     "docs/paper-exchange-lifecycle.md",
     "docs/recovery-and-approved-paper.md",
@@ -205,6 +207,7 @@
     "reports/idea-review-2026-10-06.md",
     "reports/idea-validation-plan-2026-10-06.md",
     "reports/oci_signal_generation_analysis_2026-06-11.md",
+    "reports/official-research-review-2026-10-07.md",
     "reports/paper-exchange-implementation-2026-10-07.md",
     "reports/paper_risk_audit_2026-09-23.md",
     "reports/release-audit-2026-10-06/REPORT.md",
@@ -271,6 +274,7 @@
     "scripts/broker_portfolio_feed.py",
     "scripts/btst_bt.py",
     "scripts/candle_ingest.py",
+    "scripts/capture_official_research.py",
     "scripts/check_paper_readiness.py",
     "scripts/check_release.py",
     "scripts/continuation_bt.py",
@@ -431,6 +435,7 @@
     "tests/test_nfo_contracts.py",
     "tests/test_nse_announcements.py",
     "tests/test_nse_reference_ingest.py",
+    "tests/test_official_research_sources.py",
     "tests/test_opportunity_scanner.py",
     "tests/test_option_buying_retired.py",
     "tests/test_option_chain.py",
@@ -483,6 +488,7 @@
     "tests/test_research_baselines.py",
     "tests/test_research_point_in_time.py",
     "tests/test_research_stock_replay_risk.py",
+    "tests/test_research_time_boundaries.py",
     "tests/test_reset_is_shared.py",
     "tests/test_retired_entry_controls.py",
     "tests/test_runtime_settings_preservation.py",
@@ -10353,6 +10359,131 @@
       ]
     },
     {
+      "file": "app/official_research.py",
+      "lines": 475,
+      "imports": [
+        "datetime",
+        "decimal",
+        "csv",
+        "gzip",
+        "hashlib",
+        "io",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "sqlite3",
+        "time",
+        "zoneinfo",
+        "account_safety",
+        "execution_contracts",
+        null,
+        "httpx"
+      ],
+      "symbols": [
+        {
+          "name": "_json",
+          "line": 40,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_capture_id",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "guard_database",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ensure_schema",
+          "line": 56,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_archive",
+          "line": 85,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_text",
+          "line": 111,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_integer",
+          "line": 120,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_number",
+          "line": 129,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_csv",
+          "line": 139,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "parse_master",
+          "line": 156,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_bindings",
+          "line": 226,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_fact",
+          "line": 246,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "parse_membership",
+          "line": 254,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "parse_delivery",
+          "line": 284,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_event",
+          "line": 322,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ingest",
+          "line": 330,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "refresh",
+          "line": 392,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 443,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "migrate",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "verify",
+          "line": 69,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "app/openclaw_bridge.py",
       "lines": 619,
       "imports": [
@@ -13302,7 +13433,7 @@
     },
     {
       "file": "app/research_data.py",
-      "lines": 94,
+      "lines": 104,
       "imports": [
         "datetime",
         "hashlib",
@@ -13330,7 +13461,7 @@
         },
         {
           "name": "coverage",
-          "line": 86,
+          "line": 96,
           "kind": "FunctionDef"
         }
       ]
@@ -19679,6 +19810,26 @@
         {
           "name": "completed",
           "line": 54,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "scripts/capture_official_research.py",
+      "lines": 87,
+      "imports": [
+        "argparse",
+        "datetime",
+        "json",
+        "pathlib",
+        "sqlite3",
+        "sys",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "main",
+          "line": 18,
           "kind": "FunctionDef"
         }
       ]
@@ -33562,6 +33713,185 @@
       ]
     },
     {
+      "file": "tests/test_official_research_sources.py",
+      "lines": 298,
+      "imports": [
+        "datetime",
+        "csv",
+        "gzip",
+        "hashlib",
+        "io",
+        "json",
+        "pathlib",
+        "sqlite3",
+        "tempfile",
+        "unittest",
+        "httpx",
+        "app",
+        "scripts.capture_official_research",
+        "unittest.mock",
+        "contextlib",
+        "contextlib"
+      ],
+      "symbols": [
+        {
+          "name": "OfficialResearchSourceTest",
+          "line": 18,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "master_row",
+          "line": 28,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "master",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "metadata",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ingest",
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "csv",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "membership",
+          "line": 63,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delivery",
+          "line": 68,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_licensed_identity_units_and_settlement_do_not_enable_orders",
+          "line": 72,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_schema_receipt_and_raw_evidence_are_immutable",
+          "line": 86,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_unknown_layout_timezone_and_mii_csv_are_not_licensed_master",
+          "line": 97,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_changed_width_duplicate_tokens_and_ambiguous_isins_refuse",
+          "line": 106,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_suspensions_deletions_and_bse_contingency_are_excluded",
+          "line": 114,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_delivery_binds_exact_dated_master_and_stays_unknown_before_capture",
+          "line": 124,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_or_differently_dated_identity_is_explicit_not_ticker_inference",
+          "line": 136,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_failed_newer_master_does_not_borrow_older_identity_coverage",
+          "line": 146,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_contemporaneous_different_masters_refuse_until_newer_capture",
+          "line": 154,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_bad_delivery_date_duplicate_and_inconsistent_quantities_refuse_atomically",
+          "line": 164,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_delivery_values_remain_missing_and_closed_session_required",
+          "line": 176,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_full_current_membership_removals_and_replay_preserve_original_facts",
+          "line": 184,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_membership_missing_duplicate_columns_and_backdating_refuse",
+          "line": 199,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_raw_digest_mismatch_corrupt_archive_and_source_substitution_refuse",
+          "line": 207,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_source_failure_and_redirect_are_recorded_without_response_body",
+          "line": 217,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_fixed_source_fetch_archives_actual_bytes_and_exposes_missing_coverage",
+          "line": 231,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_parse_failure_has_one_receipt_and_does_not_repeat_or_modify_it",
+          "line": 241,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_production_book_database_is_rejected_before_source_writes",
+          "line": 249,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_forward_experiment_database_is_rejected_before_source_writes",
+          "line": 259,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_gzip_bomb_and_archive_symlinks_refuse",
+          "line": 267,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_cli_report_is_read_only_and_does_not_create_missing_database",
+          "line": 279,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "transport",
+          "line": 219,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_opportunity_scanner.py",
       "lines": 767,
       "imports": [
@@ -38815,6 +39145,64 @@
         {
           "name": "test_replay_tries_next_ranked_name_if_top_is_unfundable",
           "line": 25,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_research_time_boundaries.py",
+      "lines": 71,
+      "imports": [
+        "copy",
+        "datetime",
+        "sqlite3",
+        "unittest",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "ResearchTimeBoundaryTest",
+          "line": 10,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 11,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "record",
+          "line": 21,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "known",
+          "line": 24,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_submillisecond_future_observation_never_enters_a_decision",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_submillisecond_future_effective_and_publication_times_are_excluded",
+          "line": 33,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_latest_correction_uses_exact_observation_time_not_insertion_order",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_equivalent_offsets_cannot_hide_contemporaneous_conflicts",
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_a_later_correction_to_an_earlier_effective_period_stays_latest",
+          "line": 63,
           "kind": "FunctionDef"
         }
       ]
@@ -50344,6 +50732,37 @@
       ]
     },
     {
+      "name": "research_source_events",
+      "file": "app/official_research.py",
+      "line": 61,
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT"
+        },
+        {
+          "name": "feed",
+          "type": "TEXT"
+        },
+        {
+          "name": "source_day",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
       "name": "v2_live_protection",
       "file": "app/order_journal.py",
       "line": 30,
@@ -53498,6 +53917,36 @@
         },
         {
           "name": "sector",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "user_book",
+      "file": "tests/test_official_research_sources.py",
+      "line": 250,
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "cash",
+          "type": "REAL"
+        }
+      ]
+    },
+    {
+      "name": "assessment_events",
+      "file": "tests/test_official_research_sources.py",
+      "line": 260,
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
           "type": "TEXT"
         }
       ]
@@ -62798,6 +63247,65 @@
       ]
     },
     {
+      "file": "app/official_research.py",
+      "line": 1,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/official_research.py",
+      "line": 29,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/official_research.py",
+      "line": 204,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/official_research.py",
+      "line": 215,
+      "names": [
+        "NSE",
+        "NSE_EQ"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/official_research.py",
+      "line": 216,
+      "names": [],
+      "fields": [
+        "lot_size",
+        "tick_size"
+      ]
+    },
+    {
+      "file": "app/official_research.py",
+      "line": 264,
+      "names": [
+        "NSE",
+        "NSE_EQ"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/official_research.py",
+      "line": 315,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
       "file": "app/option_chain.py",
       "line": 8,
       "names": [],
@@ -67562,6 +68070,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/official-research-review-2026-10-07.md",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/paper-exchange-implementation-2026-10-07.md",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -67731,8 +68243,8 @@
     }
   ],
   "baseline": {
-    "source_commit": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
-    "generated_at": "2026-10-07T09:57:42.016443+00:00",
+    "source_commit": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
+    "generated_at": "2026-10-07T10:42:54.505481+00:00",
     "dirty_source": true,
     "coverage": "static declarations; semantic review recorded separately"
   },
@@ -67814,6 +68326,7 @@
     "app/models.py": "c1ce0af0d24fb3d13882f1bb3ee253ea4ddde7a306bd0255c5bd1cd5a3da7c63",
     "app/narrative.py": "310edea66585f60fca08f2c906f0f7423efd8e05d8f9ddd3e695ca0e96d449c7",
     "app/nfo_contracts.py": "9a38ee9f21b14ca73e165db7c6821dee1c6ec14fd9a724e16efb1a6bdeb275ab",
+    "app/official_research.py": "d480d412ab9e87b900e700754810aaea4b2370ba9bab45ada507628e219e09a6",
     "app/openclaw_bridge.py": "eb93221f63724ad87ee7f6f9db2e5a49d6776988f969c282de4dcaafceeee67c",
     "app/opportunity_scanner.py": "9600c82667e4ba02884c424a26abf4e76967dc828131c952a1b9e9ab8c6d17ca",
     "app/opportunity_state.py": "7b32494cc31e0dba47ceb6ebe8f99ad3c42915580bebb8e5b43dd23eda5a8a02",
@@ -67843,7 +68356,7 @@
     "app/release_gate.py": "45dd06b6062c9f7555b6724f593062ec7f58585fe989522713ee9afa730af2bc",
     "app/request_context.py": "ee3bc252a3c3b0d972cb732e52d6e44bb8fcff9b964fdfa9b94601bd1a437069",
     "app/request_security.py": "f56d143c958d912e4c5a67944268fd6e92966c7f47803b8cf6ff5a6af4132777",
-    "app/research_data.py": "2c70ec25d17130317b9e3a31b6ba652abfbb0edb453b768f0897ce2430492b9f",
+    "app/research_data.py": "478bf603f29d22bd5c5bd62d99b9d9d3f35434dd2d4a29f941d326529fa707af",
     "app/schema_migrations.py": "a72ba9adb7bea02150fecc7bed40997cdbd91ab859aff8ef639df0ec35db44bd",
     "app/screening/__init__.py": "19385a317dd043fc1325cf805633775273bf33b0119fbd01cc4898e2e6a2f1d7",
     "app/screening/confirmation.py": "ff838d73232dcce0652d16ad617ee51e603539847850b78eada4b6f14aca69ed",
@@ -67917,6 +68430,7 @@
     "docs/executable-quote-evidence.md": "cb77e524ad2893b34885ba2d8c1b4663d53dc54275c978e8d5660ff7d82974c3",
     "docs/idea-tracking.md": "afe21d4d03f2e62fe06d19594299d1c1912fd575ddf8abf7430af74065d02a07",
     "docs/next-session-readiness.md": "03182898ea35eb38431d74ce4bac19199625d52c910e9e5c3632987269037f85",
+    "docs/official-research-capture.md": "7ce10f2314c2591bd34762a293f01da593c35f301dd0772d467ea1ccd9d75aff",
     "docs/paper-candidate-rollout.md": "8bcf12c58424199f37748606d90105e6824691c52d9465736dc722e47bc4f660",
     "docs/paper-exchange-lifecycle.md": "ecf15a0852f25032190071a9f182b758569455d6cbd5ab41d4d371c888507d17",
     "docs/recovery-and-approved-paper.md": "84632ec477f4f11dd94ea598b0ae960ae0124c38d44395af6157d6bba5d99980",
@@ -67945,6 +68459,7 @@
     "scripts/broker_portfolio_feed.py": "3c89833b35332ef6076ff146c6feff6b75f4ff23dde472bf0a7c1522557ebe76",
     "scripts/btst_bt.py": "b7cacf9204e7bb06a9164a1a971527be49fb62862acbe8e7304968c61d188c0a",
     "scripts/candle_ingest.py": "dd05336296fbd70e3f0b22cac3a0e605daceb3ee00ad70725dc97813ba371423",
+    "scripts/capture_official_research.py": "ac316c0c1393dd27f33180795bb624fd4e2a49bf97cc702d81580e56461bf033",
     "scripts/check_paper_readiness.py": "a7b8e7920795be5dfe8a983c5b210925c0b523829452f0ca18ff00ba0c199897",
     "scripts/check_release.py": "58c8cdc1fc7d545d72ee7c85e4a8c30f590a2de9cd59a8d191b634fc2542a8e3",
     "scripts/continuation_bt.py": "965e0298afea57c8e788a2932ec79a62233df0aae177ec64f7d453eb724d2d07",
@@ -68105,6 +68620,7 @@
     "tests/test_nfo_contracts.py": "f0cc3e4d8aef9e7936aa41949e81d466fb99ad2157966d823608c5da8379137d",
     "tests/test_nse_announcements.py": "f34828de333c9df597e9ec6d3a72b3aa557d1944268fe352f0d9a4f04ea18a17",
     "tests/test_nse_reference_ingest.py": "ab2aa78f010334539e64d2d885e9f0b0d37955b8dac10da7040f5cc6e310ca1f",
+    "tests/test_official_research_sources.py": "b9f3c59b264923d4d0da36ec3b724203f0411c07a4ede813057484a8d9d77ce9",
     "tests/test_opportunity_scanner.py": "a1b1fb7c7aa0011f2ee5607b02d0f4004ab8c6ccecd191616461bdb1b2d6c95b",
     "tests/test_option_buying_retired.py": "664aee94b4d3ec148aa874589ed8c260bc81b394fd25975db206ee39e92bc4a2",
     "tests/test_option_chain.py": "a18529cf93411367aeb711131e6c968a01a8476ec56f6acf9b5011e1cafea3a5",
@@ -68157,6 +68673,7 @@
     "tests/test_research_baselines.py": "8b9c431a187be2da047dd711d8889635507013b667bea7dc9c3fb6ecea0f4b73",
     "tests/test_research_point_in_time.py": "6c5f8bdc769ceaacb5e7c795b16afadd9098e3db336555dfb33bf30473cd56d5",
     "tests/test_research_stock_replay_risk.py": "b47cd9e79ab49782718a17f1f77e1c76c3c1c66009a86c4dca0cb53906c6544c",
+    "tests/test_research_time_boundaries.py": "fe8124a74ec41abe77db38d465e7096dadfeb625c4182b9c41ace6b86c88f5ed",
     "tests/test_reset_is_shared.py": "9a0ded709a31589086e7e3301ffe031ed7e2b0fba5d4f99fabf5cc24e3a889cf",
     "tests/test_retired_entry_controls.py": "781f861acd9972ca606e288d61994cf923284178f9b91671b6014e54cf8e379f",
     "tests/test_runtime_settings_preservation.py": "0761489e8713b1c9279d66995477df9e22e2ea5b609076f6af907e0b0b6d08e8",

@@ -1,0 +1,475 @@
+"""Source-pinned NSE identity/delivery and Nifty 100 research captures.
+
+This module writes a dedicated evidence database, never a trading book.
+Licensed security.txt and public MII CSV are different formats. Only the
+explicitly reviewed 54-field licensed layout is supported here. Missing
+execution rules, source licences and historical coverage remain missing.
+"""
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+import csv
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import time as wall_time
+from zoneinfo import ZoneInfo
+
+from .account_safety import atomic
+from .execution_contracts import _moment
+from . import instrument_catalog, research_data, schema_migrations
+
+IST = ZoneInfo('Asia/Kolkata')
+LAYOUT = 'nse-cm-security-1.6-54'
+MASTER_PROVIDER = 'nse-cm-licensed-research'
+MASTER_SPEC = 'https://nsearchives.nseindia.com/web/sites/default/files/inline-files/NSE-Masters%20Data-v1.6.pdf'
+MEMBERSHIP_URL = 'https://www.niftyindices.com/IndexConstituent/ind_nifty100list.csv'
+DELIVERY_PREFIX = 'https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_'
+MAX_RAW = 32 * 1024 * 1024
+MAX_EXPANDED = 96 * 1024 * 1024
+ISIN = re.compile(r'IN[A-Z0-9]{9}[0-9]\Z')
+SYMBOL = re.compile(r'[A-Z0-9&.\-]{1,30}\Z')
+FEEDS = {'master', 'nifty100', 'delivery'}
+VERSION = 'official-research-v1'
+
+
+def _json(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+def _capture_id(feed, digest, metadata):
+    return hashlib.sha256(_json([VERSION, feed, digest, metadata]).encode()).hexdigest()
+
+
+def guard_database(con):
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    allowed = {'instrument_snapshots', 'instrument_contracts', 'research_facts',
+               'schema_migration_receipts', 'research_source_events'}
+    if {name for name in tables if not name.startswith('sqlite_')} - allowed:
+        raise ValueError('A dedicated research evidence database is required')
+
+
+def ensure_schema(con):
+    guard_database(con)
+    def migrate(proxy):
+        instrument_catalog.ensure_schema(proxy)
+        research_data.ensure_schema(proxy)
+        proxy.execute('''CREATE TABLE IF NOT EXISTS research_source_events(
+          id TEXT PRIMARY KEY,feed TEXT NOT NULL,source_day TEXT NOT NULL,
+          observed_at TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)''')
+        for table in ('research_source_events', 'instrument_snapshots', 'instrument_contracts'):
+            for operation in ('UPDATE', 'DELETE'):
+                proxy.execute(f'CREATE TRIGGER IF NOT EXISTS immutable_research_{table}_{operation.lower()} '
+                              f'BEFORE {operation} ON {table} '
+                              "BEGIN SELECT RAISE(ABORT,'immutable research source evidence'); END")
+    def verify(proxy):
+        required = {'id', 'feed', 'source_day', 'observed_at', 'status', 'payload'}
+        if not required <= {r[1] for r in proxy.execute('PRAGMA table_info(research_source_events)')}:
+            raise RuntimeError('Research source migration incomplete')
+        for table in ('research_source_events', 'research_facts', 'instrument_snapshots', 'instrument_contracts'):
+            triggers = [(row[0] or '').upper() for row in proxy.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (table,))]
+            if any(not any(('BEFORE '+operation) in sql and 'RAISE(ABORT' in sql for sql in triggers)
+                   for operation in ('UPDATE', 'DELETE')):
+                raise RuntimeError('Research source immutability unavailable')
+        if proxy.execute('PRAGMA foreign_key_check').fetchone():
+            raise RuntimeError('Research source foreign-key integrity failed')
+    schema_migrations.apply(con, 'research-source-schema-v1',
+                            {'version': 1, 'scope': 'archived-official-research-only'}, migrate, verify)
+
+
+def _archive(root, raw):
+    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_RAW:
+        raise ValueError('Source size unavailable or exceeds limit')
+    root = Path(root)
+    if root.is_symlink() or any(p.is_symlink() for p in root.parents):
+        raise ValueError('Source archive cannot use symlink directories')
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    digest = hashlib.sha256(raw).hexdigest()
+    path = root / (digest + '.source')
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError('Source archive digest mismatch')
+    else:
+        try:
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+    return digest, path.name
+
+
+def _text(raw):
+    if raw.startswith(b'\x1f\x8b'):
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as handle:
+            raw = handle.read(MAX_EXPANDED+1)
+    if len(raw) > MAX_EXPANDED:
+        raise ValueError('Expanded source exceeds limit')
+    return raw.decode('utf-8-sig')
+
+
+def _integer(value, *, minimum=0):
+    if not isinstance(value, str) or not value.isascii() or not value.isdigit():
+        raise ValueError('Invalid source integer')
+    result = int(value)
+    if result < minimum:
+        raise ValueError('Invalid source integer')
+    return result
+
+
+def _number(value, *, minimum=Decimal('0')):
+    try:
+        number = Decimal(value)
+        if not number.is_finite() or number < minimum:
+            raise ValueError('Invalid source number')
+        return number
+    except (InvalidOperation, TypeError) as exc:
+        raise ValueError('Invalid source number') from exc
+
+
+def _csv(raw, required):
+    reader = csv.DictReader(io.StringIO(_text(raw)))
+    names = [name.strip() for name in (reader.fieldnames or [])]
+    if len(set(names)) != len(names) or not required <= set(names):
+        raise ValueError('Official CSV layout changed')
+    result = []
+    for row in reader:
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError('Official CSV row width changed')
+        result.append({key.strip(): value.strip() for key, value in row.items()})
+        if len(result) > 200_000:
+            raise ValueError('Official CSV row limit exceeded')
+    if not result:
+        raise ValueError('Official source is empty')
+    return result
+
+
+def parse_master(raw, metadata, observed):
+    """Normal market status precedes eligibility in the specification's FAQ.
+
+    Epoch timezone is deliberately supplied by a reviewed delivery receipt:
+    the published spec states the epoch origin but does not resolve its zone.
+    Freeze percent is retained as evidence, never guessed into an order limit.
+    """
+    if metadata.get('layout') != LAYOUT or not metadata.get('review_reference') or \
+            not metadata.get('delivery_reference') or metadata.get('epoch_timezone') not in {'UTC', 'Asia/Kolkata'}:
+        raise ValueError('Reviewed licensed layout, delivery receipt and epoch timezone required')
+    published = _moment(metadata['published_at'])
+    if published > observed:
+        raise ValueError('Source publication follows observation')
+    lines = [line.strip('\r') for line in _text(raw).splitlines() if line.strip()]
+    if not lines or len(lines) > 200_001:
+        raise ValueError('Licensed master row count invalid')
+    header = lines[0].split('|')
+    if len(header) != 3 or header[0] != 'NEATCM' or not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}', header[1]) or \
+            header[1] != metadata.get('header_version'):
+        raise ValueError('Licensed master header changed')
+    source_time = datetime(1980, 1, 1, tzinfo=ZoneInfo(metadata['epoch_timezone'])) + timedelta(seconds=_integer(header[2]))
+    source_day = date.fromisoformat(metadata['source_day'])
+    if source_time > published or source_time.date() != source_day or source_day > observed.astimezone(IST).date():
+        raise ValueError('Licensed master source date disagrees with receipt')
+    rows, exclusions, tokens, symbol_series = [], [], set(), set()
+    for line in lines[1:]:
+        values = line.split('|')
+        if len(values) != 54:
+            raise ValueError('Licensed master detail layout changed')
+        token = _integer(values[0], minimum=1)
+        symbol, series = values[1:3]
+        if token in tokens or (symbol, series) in symbol_series:
+            raise ValueError('Duplicate licensed master token or symbol/series')
+        tokens.add(token); symbol_series.add((symbol, series))
+        if not SYMBOL.fullmatch(symbol) or not re.fullmatch(r'[A-Z0-9]{2}', series):
+            raise ValueError('Invalid licensed master identity')
+        kind = _integer(values[3])
+        permitted = _integer(values[5])
+        if kind not in range(5) or permitted not in {0, 1, 2} or values[51] not in {'N', 'Y'}:
+            raise ValueError('Unknown licensed security classification')
+        pairs = [(_integer(values[i]), _integer(values[i+1])) for i in range(7, 19, 2)]
+        if any(status not in range(1, 7) or eligible not in {0, 1} for status, eligible in pairs):
+            raise ValueError('Unknown licensed market eligibility')
+        # Equity issuer ISINs only. ETFs/other security classes need their own
+        # sourced classification and are not silently labelled as equities.
+        if kind != 0 or series != 'EQ' or not values[53].startswith('INE') or not ISIN.fullmatch(values[53]) or \
+                permitted != 1 or values[51] == 'Y' or pairs[0][1] != 1 or pairs[0][0] == 3 or \
+                values[48] != '1' or symbol.endswith('NSETEST'):
+            exclusions.append(dict(token=token, symbol=symbol, reason='outside active normal NSE equity research scope',
+                              predicates=dict(instrument_type=kind, series=series, isin=values[53],
+                                              permitted=permitted, deleted=values[51], normal_status=pairs[0][0],
+                                              normal_eligible=pairs[0][1], session_type=values[48],
+                                              test_symbol=symbol.endswith('NSETEST'))))
+            continue
+        lot = _integer(values[19], minimum=1)
+        tick = _integer(values[20], minimum=1)
+        _number(values[4]); _integer(values[26])
+        if values[37] not in {'0', '1'} or any(values[i] not in {'0', '1'} for i in range(40, 46)):
+            raise ValueError('Unknown settlement or corporate-action flag')
+        spec = instrument_catalog.Instrument('NSE', 'NSE_EQ', 'EQUITY', symbol, 'INR', values[53], series,
+                    lot_size=lot, tick_size=str(Decimal(tick)/100),
+                    settlement='T+'+values[37], tradable=False)
+        rows.append((spec, str(token)))
+    if not rows:
+        raise ValueError('No supported equity identities in licensed master')
+    if len({spec.id for spec, _ in rows}) != len(rows):
+        raise ValueError('Duplicate canonical equity identity in licensed master')
+    return rows, exclusions
+
+
+def _bindings(con, source_day, observed):
+    """A current ticker cannot bind an older delivery report's ownership."""
+    candidates = [(json.loads(row[0]), _moment(row[1])) for row in con.execute(
+        "SELECT payload,observed_at FROM research_source_events WHERE feed='master' AND source_day=?",
+        (source_day,)) if _moment(row[1]) <= observed]
+    if not candidates:
+        return {}
+    latest = max(moment for _, moment in candidates)
+    receipts = [receipt for receipt, moment in candidates if moment == latest]
+    if any(row['status'] == 'failed' for row in receipts) or len({_json(row) for row in receipts}) != 1:
+        return {}
+    snapshots = [row['snapshot_id'] for row in receipts]
+    bindings = {}
+    for snapshot in snapshots:
+        for payload, in con.execute('SELECT payload FROM instrument_contracts WHERE snapshot_id=?', (snapshot,)):
+            spec = instrument_catalog.Instrument(**json.loads(payload))
+            bindings.setdefault((spec.symbol, spec.series), set()).add(spec.id)
+    return {key: next(iter(values)) for key, values in bindings.items() if len(values) == 1}
+
+
+def _fact(identity, kind, key, effective, observed, source, rights, payload):
+    # Public current files lack a trustworthy original publication time.
+    # First capture is the conservative known-at boundary, not backfilled alpha.
+    return dict(instrument_id=identity, kind=kind, fact_key=key, effective_at=effective.isoformat(),
+                published_at=observed.isoformat(), observed_at=observed.isoformat(),
+                source=source, rights_reference=rights, payload=payload)
+
+
+def parse_membership(con, raw, observed, source, rights):
+    rows = _csv(raw, {'Company Name', 'Industry', 'Symbol', 'Series', 'ISIN Code'})
+    if len(rows) != 100:
+        raise ValueError('Complete Nifty 100 snapshot required')
+    facts, seen, aliases = [], set(), set()
+    for row in rows:
+        symbol, series, isin = row['Symbol'], row['Series'], row['ISIN Code']
+        if not SYMBOL.fullmatch(symbol) or series != 'EQ' or not ISIN.fullmatch(isin) or not isin.startswith('INE') or \
+                not row['Company Name'] or not row['Industry']:
+            raise ValueError('Unknown constituent identity or classification')
+        spec = instrument_catalog.Instrument('NSE', 'NSE_EQ', 'EQUITY', symbol, 'INR', isin, series, tradable=False)
+        if spec.id in seen or (symbol, series) in aliases:
+            raise ValueError('Duplicate index constituent')
+        seen.add(spec.id); aliases.add((symbol, series))
+        facts.append(_fact(spec.id, 'membership', 'NIFTY100:membership', observed, observed, source, rights,
+                          dict(index='NIFTY100', member=True, symbol=symbol, series=series, isin=isin,
+                               company=row['Company Name'], industry=row['Industry'],
+                               historical_membership_proven=False)))
+    previous = {row[0] for row in con.execute("SELECT DISTINCT instrument_id FROM research_facts WHERE kind='membership'")}
+    removed = 0
+    for identity in sorted(previous-seen):
+        versions = research_data.known(con, identity, 'membership', observed.isoformat())
+        current = [row for row in versions if row['fact_key'] == 'NIFTY100:membership']
+        if current and current[0]['payload']['member']:
+            facts.append(_fact(identity, 'membership', 'NIFTY100:membership', observed, observed, source, rights,
+                               dict(current[0]['payload'], member=False, historical_membership_proven=False)))
+            removed += 1
+    return facts, {'source_records': len(rows), 'members': len(seen), 'removals': removed, 'unmatched': 0}
+
+
+def parse_delivery(con, raw, source_day, observed, source, rights):
+    session = date.fromisoformat(source_day)
+    close = datetime.combine(session, time(15, 30), IST)
+    if close > observed:
+        raise ValueError('Completed delivery session required')
+    rows = _csv(raw, {'SYMBOL', 'SERIES', 'DATE1', 'TTL_TRD_QNTY', 'DELIV_QTY', 'DELIV_PER'})
+    bindings = _bindings(con, source_day, observed)
+    facts, missing, unavailable, seen = [], 0, 0, set()
+    for row in rows:
+        if datetime.strptime(row['DATE1'], '%d-%b-%Y').date() != session:
+            raise ValueError('Delivery report returned a different session')
+        key = (row['SYMBOL'], row['SERIES'])
+        if key in seen:
+            raise ValueError('Duplicate delivery symbol/series')
+        seen.add(key)
+        if row['SERIES'] != 'EQ':
+            continue
+        if not SYMBOL.fullmatch(row['SYMBOL']):
+            raise ValueError('Invalid delivery symbol')
+        if any(row[field] in {'', '-'} for field in ('DELIV_PER', 'DELIV_QTY', 'TTL_TRD_QNTY')):
+            unavailable += 1
+            continue
+        traded, delivered = (_integer(row[field]) for field in ('TTL_TRD_QNTY', 'DELIV_QTY'))
+        percent = _number(row['DELIV_PER'])
+        if percent > 100 or delivered > traded or (not traded and (delivered or percent)) or \
+                (traded and abs(percent-Decimal(delivered)*100/traded) > Decimal('0.02')):
+            raise ValueError('Inconsistent delivery quantity or percentage')
+        identity = bindings.get(key)
+        if not identity:
+            missing += 1
+            continue
+        facts.append(_fact(identity, 'delivery', 'NSE:delivery:'+source_day, close, observed, source, rights,
+                          dict(session=source_day, symbol=key[0], series=key[1], traded_quantity=traded,
+                               delivery_quantity=delivered, delivery_pct=str(percent),
+                               identity_source_day=source_day, corporate_action_adjusted=False)))
+    return facts, dict(source_records=len(rows), matched=len(facts), unmatched=missing, unavailable=unavailable)
+
+
+def _event(con, feed, source_day, observed, status, result):
+    text = _json(result)
+    identity = result.get('capture_id') or hashlib.sha256(text.encode()).hexdigest()
+    con.execute('INSERT OR IGNORE INTO research_source_events VALUES(?,?,?,?,?,?)',
+                (identity, feed, source_day, observed.isoformat(), status, text))
+    return result
+
+
+def ingest(con, feed, raw, archive_root, metadata, *, now=None):
+    now = now or datetime.now(timezone.utc)
+    guard_database(con)
+    if feed not in FEEDS or not isinstance(metadata, dict):
+        raise ValueError('Supported source and dated capture receipt required')
+    observed = _moment(metadata['observed_at'])
+    source_day = date.fromisoformat(metadata['source_day']).isoformat()
+    rights = metadata.get('rights_reference')
+    if observed > now or source_day > observed.astimezone(IST).date().isoformat() or \
+            not isinstance(rights, str) or not rights.strip():
+        raise ValueError('Capture chronology and explicit rights classification required')
+    if feed == 'nifty100' and source_day != observed.astimezone(IST).date().isoformat():
+        raise ValueError('Current constituents cannot be backdated')
+    expected_source = (MASTER_SPEC if feed == 'master' else MEMBERSHIP_URL if feed == 'nifty100' else
+                       DELIVERY_PREFIX+date.fromisoformat(source_day).strftime('%d%m%Y')+'.csv')
+    if metadata.get('source') != expected_source:
+        raise ValueError('Capture source does not match the fixed official contract')
+    digest, filename = _archive(archive_root, raw)
+    if digest != metadata.get('sha256'):
+        raise ValueError('Capture receipt digest mismatch')
+    ensure_schema(con)
+    result = dict(feed=feed, source=expected_source, source_day=source_day, observed_at=observed.isoformat(),
+                  sha256=digest, archive=filename, rights_reference=rights,
+                  normalizer_version=VERSION, execution_approved=False,
+                  commercial_rights_verified=False, model_promoted=False)
+    result['capture_id'] = _capture_id(feed, digest, metadata)
+    # The raw capture survives a parse/import failure. Facts and its success
+    # receipt commit together; failure receipts never mutate earlier evidence.
+    try:
+        with atomic(con):
+            previous = con.execute('SELECT status,payload FROM research_source_events WHERE id=?',
+                                   (result['capture_id'],)).fetchone()
+            if previous:
+                if previous[0] == 'failed':
+                    raise ValueError('This immutable capture previously failed; obtain new evidence')
+                return json.loads(previous[1])
+            if feed == 'master':
+                rows, exclusions = parse_master(raw, metadata, observed)
+                snapshot = instrument_catalog.import_snapshot(con, rows, provider=MASTER_PROVIDER,
+                          source='licensed-nse-cm:#sha256='+digest, source_day=source_day,
+                          observed_at=observed.isoformat(), now=now)
+                result.update(snapshot_id=snapshot, source_records=len(rows)+len(exclusions),
+                              identities=len(rows), excluded=len(exclusions), exclusions=exclusions, facts=0, status='partial',
+                              review_reference=metadata['review_reference'], delivery_reference=metadata['delivery_reference'],
+                              header_version=metadata['header_version'], epoch_timezone=metadata['epoch_timezone'],
+                              missing=['circuits', 'freeze quantity', 'sessions', 'restriction clearance',
+                                       'reviewed corporate actions', 'broker aliases', 'actual-source acceptance'])
+            else:
+                source = expected_source+'#sha256='+digest
+                if feed == 'nifty100':
+                    facts, coverage = parse_membership(con, raw, observed, source, rights)
+                else:
+                    facts, coverage = parse_delivery(con, raw, source_day, observed, source, rights)
+                ids = research_data.record(con, facts, now=now) if facts else []
+                result.update(coverage, facts=len(ids), status='partial' if coverage['unmatched'] or coverage.get('unavailable') else 'captured')
+            return _event(con, feed, source_day, observed, result['status'], result)
+    except (ValueError, KeyError, UnicodeError, sqlite3.Error, OverflowError, OSError) as exc:
+        with atomic(con):
+            _event(con, feed, source_day, observed, 'failed', dict(result, status='failed', error_type=type(exc).__name__))
+        raise
+
+
+def refresh(con, archive_root, feed, *, source_day=None, rights_reference, client=None, now=None):
+    """One bounded public request; no cookies, credentials, redirect or retry."""
+    import httpx
+    guard_database(con)
+    if feed not in {'nifty100', 'delivery'}:
+        raise ValueError('Licensed masters require an independently acquired delivery receipt')
+    fixed_clock = now is not None
+    now = now or datetime.now(timezone.utc)
+    source_day = source_day or now.astimezone(IST).date().isoformat()
+    day = date.fromisoformat(source_day)
+    if not rights_reference or day > now.astimezone(IST).date() or \
+            (feed == 'nifty100' and day != now.astimezone(IST).date()) or \
+            (feed == 'delivery' and datetime.combine(day, time(15, 30), IST) > now):
+        raise ValueError('Current capture or completed delivery session required')
+    url = MEMBERSHIP_URL if feed == 'nifty100' else DELIVERY_PREFIX+day.strftime('%d%m%Y')+'.csv'
+    owned = client is None
+    client = client or httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0), follow_redirects=False)
+    started = wall_time.monotonic()
+    metadata = None
+    try:
+        with client.stream('GET', url, follow_redirects=False) as response:
+            if response.status_code != 200:
+                raise ValueError('Official source did not return HTTP 200')
+            size = response.headers.get('content-length')
+            if size is not None and (not size.isdigit() or int(size) > MAX_RAW):
+                raise ValueError('Invalid source declared length')
+            raw = bytearray()
+            for chunk in response.iter_bytes():
+                raw.extend(chunk)
+                if len(raw) > MAX_RAW or wall_time.monotonic()-started > 35:
+                    raise ValueError('Source transfer exceeds limits')
+            # Use actual completion time for visibility, not request start.
+            observed = now if fixed_clock else datetime.now(timezone.utc)
+            metadata = dict(source=url, source_day=source_day, observed_at=observed.isoformat(),
+                            sha256=hashlib.sha256(raw).hexdigest(), rights_reference=rights_reference)
+            return ingest(con, feed, bytes(raw), archive_root, metadata, now=observed)
+    except (ValueError, httpx.HTTPError) as exc:
+        ensure_schema(con)
+        observed = now if fixed_clock else datetime.now(timezone.utc)
+        result = dict(feed=feed, source=url, source_day=source_day, observed_at=observed.isoformat(), status='failed',
+                      error_type=type(exc).__name__, execution_approved=False, commercial_rights_verified=False)
+        if metadata:
+            result['capture_id'] = _capture_id(feed, metadata['sha256'], metadata)
+        with atomic(con):
+            _event(con, feed, source_day, observed, 'failed', result)
+        raise
+    finally:
+        if owned:
+            client.close()
+
+
+def report(con, *, now=None):
+    now = now or datetime.now(timezone.utc)
+    guard_database(con)
+    try:
+        rows = con.execute('SELECT feed,observed_at,payload FROM research_source_events').fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    latest, conflicts = {}, set()
+    for feed, at, text in rows:
+        moment = _moment(at)
+        if moment <= now and (feed not in latest or moment > latest[feed][0]):
+            latest[feed] = (moment, json.loads(text))
+            conflicts.discard(feed)
+        elif moment <= now and feed in latest and moment == latest[feed][0]:
+            candidate = json.loads(text)
+            if candidate != latest[feed][1]:
+                conflicts.add(feed)
+            if candidate.get('status') == 'failed':
+                latest[feed] = (moment, candidate)
+    result = {}
+    for feed in sorted(FEEDS):
+        if feed not in latest:
+            result[feed] = {'status': 'missing'}
+            continue
+        moment, item = latest[feed]
+        result[feed] = dict(item, age_seconds=(now-moment).total_seconds(),
+                            stale=now-moment > timedelta(days=7) if feed == 'nifty100' else now-moment > timedelta(hours=25))
+        if feed in conflicts and item.get('status') != 'failed':
+            result[feed]['status'] = 'conflicting'
+    return dict(feeds=result, execution_approved=False, model_promoted=False, commercial_rights_verified=False,
+                missing_connectors=['verified fundamentals/filings', 'action-aware adjusted price history',
+                                    'official calendars/restrictions/actions', 'dated news/benchmarks'],
+                note='Captured current files do not establish historical point-in-time coverage or profitability')

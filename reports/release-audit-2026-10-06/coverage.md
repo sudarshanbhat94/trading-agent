@@ -386,3 +386,11 @@ F69 received targeted semantic review of the complete reconciliation comparison/
 Current refreshed static inventory includes 182 test modules. Only explicitly described boundaries are semantically reviewed.
 
 F70–F72: narrowly reviewed provider normalization, exact serialized depth updates, immutable conflict withholding, account-schema-v4 and actual provider → stored depth → owned pending paper order → ledger fixture. Current-date public NSE source retrieval timed out; no full raw-source or production execution coverage is claimed.
+
+## 7 October official research milestone
+
+| Module | Review status | Finding evidence |
+|---|---|---|
+| app/official_research.py | Narrow source/archive/identity/chronology/refusal paths reviewed with synthetic isolated fixtures; real source and commercial acceptance pending | F10, F28, F73 |
+| app/research_data.py | Exact effective/publication/observation cutoffs, correction ordering and tied-time conflicts reproduced/repaired; actual research feed/model validation pending | F28, F73 |
+| scripts/capture_official_research.py | Dedicated source import/fetch/read-only report and bounded operational output reviewed; production scheduling not installed | F10, F28 |

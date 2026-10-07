@@ -523,5 +523,39 @@
     "profitability_evidence": false,
     "interim_fixture_error": "Provider-to-paper fixture initially put source time after the real observation clock. Fixed the fixture with an explicit deterministic observation clock; production future rejection was retained.",
     "source_probe": "One current public NSE master request from OCI timed out; no source archive or invented rules imported."
+  },
+  "official_research_capture_20261007": {
+    "source_parent": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
+    "research_behaviour_changed": true,
+    "production_strategy_parameters_changed": false,
+    "exact_parent": {
+      "test_methods": 5,
+      "failed_assertions": 5,
+      "errors": 0
+    },
+    "focused": {
+      "run": 37,
+      "exit_code": 0
+    },
+    "full_suite": {
+      "run": 2537,
+      "passed": 2404,
+      "skipped": 133,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 20.237,
+      "exit_code": 0
+    },
+    "actual_source_acceptance": false,
+    "licensed_fixture_available": false,
+    "source_probe_status": "bounded public-source timeouts; no invented acceptance",
+    "paper_books_and_registered_protocol_modified": false,
+    "execution_enabled": false,
+    "deployed": false,
+    "report": "reports/official-research-review-2026-10-07.md",
+    "function_fixtures": {
+      "passed": 102,
+      "exit_code": 0
+    }
   }
 }
